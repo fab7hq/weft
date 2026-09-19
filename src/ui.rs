@@ -1,27 +1,31 @@
 //! Drawing. Spec: `plans/weft/spec/interface.md`.
+//!
+//! The rule this module enforces: a field that cannot be traced to a ledger
+//! event may not be rendered.
 
 use ratatui::layout::{Constraint, Direction, Layout as RLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
 use crate::app::{App, Modal};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
+use crate::ledger::Sent;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let rows = RLayout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // title
-            Constraint::Length(1), // rule
-            Constraint::Min(1),    // body
-            Constraint::Length(1), // rule
-            Constraint::Length(1), // actions
-            Constraint::Length(1), // hint
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -32,24 +36,32 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(action_bar(app), rows[4]);
     frame.render_widget(hint(app), rows[5]);
 
-    if let Some(modal) = app.modal {
-        overlay(frame, app, modal, area);
+    if let Some(modal) = app.modal.clone() {
+        overlay(frame, app, &modal, area);
     }
 }
 
 fn title_bar(app: &App) -> Paragraph<'static> {
-    let where_you_are = match app.focus {
+    let state = match app.focus {
         Focus::Weft => "in Weft",
         Focus::Agent => "in the agent",
     };
-    let left = format!(" weft · {} · {}", app.project, where_you_are);
+    let left = format!(" weft · {} · {}", app.project, state);
     let right = match app.focus {
-        Focus::Weft => format!("{} panes ", app.panes.len()),
         Focus::Agent => format!("{} to come back ", app.toggle.label()),
+        Focus::Weft => {
+            let open = app.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
+            let needs = app.needs_you();
+            if needs > 0 {
+                format!("{open} open · {needs} needs you ")
+            } else {
+                format!("{open} open ")
+            }
+        }
     };
     Paragraph::new(Line::from(vec![
         Span::styled(left, Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
+        Span::raw("   "),
         Span::raw(right),
     ]))
 }
@@ -63,14 +75,18 @@ fn body(frame: &mut Frame, app: &mut App, area: Rect) {
         Layout::Split { rail, pane } => {
             let cols = RLayout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(rail), Constraint::Length(1), Constraint::Length(pane)])
+                .constraints([
+                    Constraint::Length(rail),
+                    Constraint::Length(1),
+                    Constraint::Length(pane),
+                ])
                 .split(area);
-            frame.render_widget(list(app), cols[0]);
+            frame.render_widget(list(app, rail), cols[0]);
             frame.render_widget(Paragraph::new(vlines(area.height)), cols[1]);
             agent(frame, app, cols[2]);
         }
-        Layout::Single { .. } => match app.focus {
-            Focus::Weft => frame.render_widget(list(app), area),
+        Layout::Single { width } => match app.focus {
+            Focus::Weft => frame.render_widget(list(app, width), area),
             Focus::Agent => agent(frame, app, area),
         },
     }
@@ -80,30 +96,81 @@ fn vlines(height: u16) -> String {
     std::iter::repeat_n("│", height as usize).collect::<Vec<_>>().join("\n")
 }
 
-fn list(app: &App) -> Paragraph<'static> {
+/// One entry per unit of work. Narrow gets two lines; wide gets a table.
+fn list(app: &App, width: u16) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![Line::raw("")];
-    for (i, pane) in app.panes.iter().enumerate() {
-        let picked = i == app.selected && app.focus == Focus::Weft;
-        let marker = if picked { " ▸ " } else { "   " };
+
+    if app.units.is_empty() {
+        lines.push(Line::raw("   Nothing asked for yet."));
+        lines.push(Line::raw(""));
+        lines.push(Line::raw("   Press A to ask for something."));
+        return Paragraph::new(lines);
+    }
+
+    let wide = width >= 60;
+    for (i, unit) in app.units.iter().enumerate() {
+        let picked = i == app.selected;
+        let marker = if picked {
+            "▸"
+        } else if unit.needs_you() {
+            "●"
+        } else {
+            " "
+        };
         let style = if picked {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
-        lines.push(Line::styled(format!("{marker}{}", pane.title), style));
-        lines.push(Line::raw(format!("     {}", pane.status)));
+        if wide {
+            lines.push(Line::styled(
+                format!(
+                    " {marker} {:<24} {:<11} {}",
+                    clip(&unit.title, 24),
+                    clip(&unit.harness, 11),
+                    unit.status()
+                ),
+                style,
+            ));
+            if let Some(c) = &unit.check {
+                lines.push(Line::raw(format!("{:>39}{}", "", agreement_phrase(app, c))));
+            }
+        } else {
+            lines.push(Line::styled(
+                format!("{marker} {}", clip(&unit.title, width.saturating_sub(3) as usize)),
+                style,
+            ));
+            lines.push(Line::raw(format!("  {}", clip(&unit.status(), width.saturating_sub(3) as usize))));
+        }
         lines.push(Line::raw(""));
-    }
-    if app.panes.is_empty() {
-        lines.push(Line::raw("   Nothing is running yet."));
     }
     Paragraph::new(lines)
 }
 
+/// Judge agreement, phrased as agreement. Never correctness, never a score.
+fn agreement_phrase(app: &App, check: &crate::ledger::Check) -> String {
+    match crate::record::Record::read(&app.root, &check.eval_id) {
+        Some(r) => r.agreed(check.agreement),
+        None => format!("agreement {:.2}", check.agreement),
+    }
+}
+
+fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).chain(['…']).collect()
+    }
+}
+
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     app.note_pane_area(area);
-    let Some(pane) = app.panes.get_mut(app.selected) else {
-        frame.render_widget(Paragraph::new("   No agent running."), area);
+    let focus = app.pane_focus;
+    let Some(pane) = app.panes.get_mut(focus) else {
+        frame.render_widget(
+            Paragraph::new("\n   No agent running. Press A to start one.").wrap(Wrap { trim: false }),
+            area,
+        );
         return;
     };
     let _ = pane.fit(area.height, area.width);
@@ -117,51 +184,37 @@ fn action_bar(app: &App) -> Paragraph<'static> {
     if app.focus == Focus::Agent {
         return Paragraph::new("");
     }
-    let right = format!("{} to the agent ", app.toggle.label());
+    let mut left = String::from("  [A]sk   [C]heck   [D]ecide   [H]elp   [X] Quit");
+    if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
+        left = "  [A]sk   [S]end it   [C]heck   [D]ecide   [H]elp   [X] Quit".into();
+    }
     Paragraph::new(Line::from(vec![
-        Span::raw("  [A]sk   [C]heck   [D]ecide   [H]elp   [X] Quit"),
+        Span::raw(left),
         Span::raw("   "),
-        Span::raw(right),
+        Span::raw(format!("{} to the agent ", app.toggle.label())),
     ]))
 }
 
 fn hint(app: &App) -> Paragraph<'static> {
-    let text = match (app.focus, app.modal) {
-        (_, Some(Modal::Quit)) => " Nothing you asked for is lost either way. It is all written down.".into(),
-        (Focus::Agent, _) => format!(
+    let text = match (&app.modal, app.focus) {
+        (Some(Modal::Quit), _) => " Nothing you asked for is lost either way. It is all written down.".into(),
+        (Some(Modal::Confirm(_)), _) => " Weft never types into an agent without asking you first.".into(),
+        (Some(Modal::Ask { .. }), _) => " The agent will ask you which approach to take, in its own pane.".into(),
+        (_, Focus::Agent) => format!(
             " Every key goes to the agent, Esc included. {} comes back to Weft.",
             app.toggle.label()
         ),
-        (Focus::Weft, _) => " ↑↓ pick · Enter open · click anything".to_string(),
+        (_, Focus::Weft) => " ↑↓ pick · Enter open · click anything".to_string(),
     };
     Paragraph::new(text)
 }
 
-fn overlay(frame: &mut Frame, app: &App, modal: Modal, area: Rect) {
-    let (title, lines, buttons) = match modal {
-        Modal::Quit => (
-            " Quit Weft? ",
-            vec![
-                "Your agents are running in the background. They can".to_string(),
-                "keep going without Weft open.".to_string(),
-            ],
-            vec!["[ Quit, leave the agents running ]", "[ Quit and stop the agents ]", "[ Cancel ]"],
-        ),
-        Modal::Help => (
-            " Keys ",
-            vec![
-                "↑ ↓    pick an item".to_string(),
-                "Enter  open it, or go into the agent".to_string(),
-                "A      ask · C  check · D  decide · X  quit".to_string(),
-                format!("{}  switch between Weft and the agent", app.toggle.label()),
-                "In the agent every other key goes straight through.".to_string(),
-            ],
-            vec!["[ Close ]"],
-        ),
-    };
-
-    let height = (lines.len() + buttons.len() + 4) as u16;
-    let width = 62u16.min(area.width.saturating_sub(4));
+fn overlay(frame: &mut Frame, app: &App, modal: &Modal, area: Rect) {
+    // Four rows go to the border, the blank line and the buttons.
+    let room = area.height.saturating_sub(6) as usize;
+    let (title, lines, buttons) = content(app, modal, room);
+    let height = (lines.len() + buttons.len() + 4).min(area.height as usize) as u16;
+    let width = 64u16.min(area.width.saturating_sub(4));
     let box_area = centred(area, width, height);
     frame.render_widget(Clear, box_area);
 
@@ -169,7 +222,9 @@ fn overlay(frame: &mut Frame, app: &App, modal: Modal, area: Rect) {
     for l in lines {
         body.push(Line::raw(format!("  {l}")));
     }
-    body.push(Line::raw(""));
+    if !buttons.is_empty() {
+        body.push(Line::raw(""));
+    }
     for (i, b) in buttons.iter().enumerate() {
         let style = if i == app.modal_choice {
             Style::default().add_modifier(Modifier::REVERSED)
@@ -184,8 +239,172 @@ fn overlay(frame: &mut Frame, app: &App, modal: Modal, area: Rect) {
     );
 }
 
+fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<String>) {
+    match modal {
+        Modal::Quit => (
+            " Quit Weft? ".into(),
+            vec![
+                "Your agents are running in the background. They can".into(),
+                "keep going without Weft open.".into(),
+            ],
+            vec![
+                "[ Quit, leave the agents running ]".into(),
+                "[ Quit and stop the agents ]".into(),
+                "[ Cancel ]".into(),
+            ],
+        ),
+        Modal::Help => (
+            " Keys ".into(),
+            vec![
+                "↑ ↓    pick an item".into(),
+                "Enter  open it".into(),
+                "A      ask for something".into(),
+                "C      check the work · D  decide · X  quit".into(),
+                format!("{}  switch between Weft and the agent", app.toggle.label()),
+                "".into(),
+                "In the agent every other key goes straight through.".into(),
+                "To select text in a pane, hold Shift.".into(),
+            ],
+            vec!["[ Close ]".into()],
+        ),
+        Modal::Note(text) => (" Weft ".into(), vec![text.clone()], vec!["[ OK ]".into()]),
+        Modal::Ask { text, target } => {
+            let who = app.panes.get(*target).map(|p| p.harness.clone()).unwrap_or_default();
+            let mut lines = wrap(text, 58);
+            if text.is_empty() {
+                lines = vec!["_".into()];
+            } else {
+                lines.push("_".into());
+            }
+            lines.push("".into());
+            lines.push(format!("which agent   ▸ {who}        Tab to change"));
+            (" What do you want done? ".into(), lines, vec!["[ Send ]   [ Cancel ]".into()])
+        }
+        Modal::Confirm(p) => {
+            let mut lines = p.why.clone();
+            lines.push("".into());
+            let text = String::from_utf8_lossy(&p.payload);
+            for l in wrap(&text, 58).into_iter().take(8) {
+                lines.push(l);
+            }
+            if text.lines().count() > 8 {
+                lines.push("…".into());
+            }
+            (
+                format!(" {} ", p.what),
+                lines,
+                vec!["[ Do it ]".into(), "[ Cancel ]".into()],
+            )
+        }
+        Modal::Detail { unit, record } => detail(app, *unit, record.as_ref(), room),
+    }
+}
+
+fn detail(
+    app: &App,
+    index: usize,
+    record: Option<&crate::record::Record>,
+    room: usize,
+) -> (String, Vec<String>, Vec<String>) {
+    let Some(unit) = app.units.get(index) else {
+        return (" Detail ".into(), vec!["gone".into()], vec!["[ Close ]".into()]);
+    };
+
+    let mut head = vec![
+        format!("asked {} · {}", &unit.asked_at, unit.harness),
+        format!("route {} · {}", unit.route, unit.status()),
+    ];
+
+    // The conclusion goes above the evidence. A verdict scrolled off the
+    // bottom of the box is worse than one out of narrative order.
+    if let (Some(c), Some(r)) = (&unit.check, record) {
+        head.push(String::new());
+        head.push(format!("{} · {}", c.verdict.plain().to_uppercase(), r.agreed(c.agreement)));
+        head.push("A check is a judgement, not a guarantee.".into());
+        head.push(format!(
+            "Recorded as: {}, {:.2}.",
+            c.verdict.recorded(),
+            c.agreement
+        ));
+    }
+
+    let Some(r) = record else {
+        head.push(String::new());
+        head.push("No check has been run on this yet.".into());
+        head.push("Press C to have the agent's judges look at it.".into());
+        return (format!(" {} ", clip(&unit.title, 40)), head, vec!["[ Close ]".into()]);
+    };
+
+    let mut tail = vec![
+        String::new(),
+        format!(
+            "{} judges checked the work · none of them did it",
+            r.judges.len()
+        ),
+        format!("judged by {}", r.judged_by().join(" and ")),
+        String::new(),
+    ];
+
+    let mut shown = 0usize;
+    for item in &r.items {
+        // Three lines per item at most, and only while there is room left.
+        if head.len() + tail.len() + 4 > room {
+            break;
+        }
+        let mark = match item.plain_majority() {
+            "yes" => "✓",
+            "no" => "✗",
+            _ => "?",
+        };
+        tail.push(format!("{mark} {}", clip(&item.text, 44)));
+        tail.push(format!("     {}   {}", item.plain_majority(), r.agreed(item.agreement)));
+        if let Some(reason) = item.reasons.first() {
+            tail.push(format!("     {}", clip(reason, 50)));
+        }
+        shown += 1;
+    }
+    if shown < r.items.len() {
+        tail.push(format!("… and {} more", r.items.len() - shown));
+    }
+    if !r.unexplained.is_empty() && head.len() + tail.len() + 2 <= room {
+        tail.push(String::new());
+        tail.push(format!(
+            "{} changed and no judge could tie it to what you asked",
+            r.unexplained.join(", ")
+        ));
+    }
+
+    head.extend(tail);
+    (
+        format!(" {} ", clip(&unit.title, 40)),
+        head,
+        vec!["[F] Fix this   [S] Decide   [ Close ]".into()],
+    )
+}
+
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        for word in para.split_whitespace() {
+            if line.chars().count() + word.chars().count() + 1 > width && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        out.push(line);
+    }
+    out
+}
+
 fn centred(area: Rect, width: u16, height: u16) -> Rect {
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    Rect { x, y, width, height: height.min(area.height) }
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height: height.min(area.height),
+    }
 }

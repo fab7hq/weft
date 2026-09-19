@@ -11,13 +11,26 @@ use weft::keys;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let program = args.next().unwrap_or_else(|| std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into()));
-    let cwd = args.next().unwrap_or_else(|| ".".into());
-    let project = std::path::Path::new(&cwd)
+    let first = args.next();
+
+    if matches!(first.as_deref(), Some("--help" | "-h")) {
+        println!("weft [project-dir] [agent ...]\n");
+        println!("  project-dir   the repository to work in (default: .)");
+        println!("  agent         claude and/or codex (default: whichever is installed)");
+        return Ok(());
+    }
+
+    let root = std::path::PathBuf::from(first.unwrap_or_else(|| ".".into()))
         .canonicalize()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "project".into());
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mut agents: Vec<String> = args.collect();
+    if agents.is_empty() {
+        agents = ["claude", "codex"]
+            .iter()
+            .filter(|a| which(a).is_some())
+            .map(|a| a.to_string())
+            .collect();
+    }
 
     // Ctrl+Shift+W is only distinguishable where the terminal reports modifiers
     // on a Ctrl+letter chord; everywhere else Weft uses a legacy-safe key.
@@ -34,13 +47,17 @@ fn main() -> Result<()> {
     }
     let _ = execute!(out, EnableMouseCapture);
 
-    let mut weft = App::new(project, toggle);
-    let started = weft.add(shorten(&program), &program, &cwd);
+    let mut weft = App::new(root, toggle);
+    let mut started = Ok(());
+    for agent in &agents {
+        let harness = if agent == "claude" { "claude-code" } else { agent.as_str() };
+        if let Err(e) = weft.add(harness, agent) {
+            started = Err(e);
+            break;
+        }
+    }
 
-    let result = match started {
-        Ok(()) => weft.run(&mut terminal),
-        Err(e) => Err(e),
-    };
+    let result = started.and_then(|()| weft.run(&mut terminal));
 
     let _ = execute!(out, DisableMouseCapture);
     if kitty {
@@ -54,9 +71,10 @@ fn main() -> Result<()> {
     result
 }
 
-fn shorten(program: &str) -> String {
-    std::path::Path::new(program)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| program.to_string())
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(program))
+            .find(|p| p.is_file())
+    })
 }
