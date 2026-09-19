@@ -49,6 +49,17 @@ fn main() -> anyhow::Result<()> {
 
     let session = attach(&root)?;
     let mut app = App::with_session(root.clone(), Toggle, session);
+    // The server answers an attach asynchronously, so a key pressed before the
+    // panes arrive lands on an App that believes it has none — and `[A]SK`,
+    // quite correctly, refuses. Take delivery first.
+    let settle = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < settle {
+        app.pump();
+        if app.pane_count() > 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
     app.refresh_for_test();
 
     if let Some(spec) = &spawn {
@@ -101,6 +112,12 @@ fn main() -> anyhow::Result<()> {
     }
     println!("\n── Weft ──");
     println!("  focus {:?} · modal {:?}", app.focus, app.modal.as_ref().map(kind_of));
+    if let Some(weft::app::Modal::Ask { text, .. }) = app.modal.as_ref() {
+        println!("  the ask box holds: {text:?}");
+    }
+    if let Some(weft::app::Modal::Confirm(p)) = app.modal.as_ref() {
+        println!("  about to type: {:?}", String::from_utf8_lossy(&p.payload));
+    }
     if let Some(hint) = app.hint_text() {
         println!("  hint: {hint}");
     }
