@@ -87,7 +87,15 @@ impl Drive {
                 self.send(ENTER);
                 return true;
             }
-            if s.contains("Proceed") || s.contains("Accept") || s.contains("Seal") || s.contains("❯ 1.") {
+            // The harnesses word their own dialogs, and the wording is not
+            // ours to predict from memory: each of these was read off a real
+            // screen. Matched without regard to case, because "Proceed" and
+            // "Would you like to proceed?" are the same question.
+            let lower = s.to_lowercase();
+            if ["proceed", "accept", "seal", "❯ 1.", "yes, and"]
+                .iter()
+                .any(|needle| lower.contains(needle))
+            {
                 self.send(ENTER);
                 return true;
             }
@@ -221,7 +229,17 @@ fn main() -> anyhow::Result<()> {
         d.send(ENTER);
     }
     println!("\n── waiting for judges ──");
-    let evaluated = d.wait_ledger("eval.completed", 900);
+    // The judges take as long as they take. Answer whatever the harness puts
+    // up while they work, and do not move on until the ledger says they are
+    // done: a decide step that fires into a working pane proves nothing.
+    let mut evaluated = false;
+    for _ in 0..90 {
+        d.answer_chooser(5);
+        if d.wait_ledger("eval.completed", 10) {
+            evaluated = true;
+            break;
+        }
+    }
     println!("eval.completed: {evaluated}");
     for _ in 0..30 {
         d.answer_chooser(10);
