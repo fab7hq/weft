@@ -1,10 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::supports_keyboard_enhancement;
 
 use weft::app::App;
 use weft::keys;
@@ -32,19 +30,10 @@ fn main() -> Result<()> {
     // scripts and probes; the ordinary way in is to press N.
     let agents: Vec<String> = args.collect();
 
-    // Ctrl+Shift+W is only distinguishable where the terminal reports modifiers
-    // on a Ctrl+letter chord; everywhere else Weft uses a legacy-safe key.
-    let kitty = supports_keyboard_enhancement().unwrap_or(false);
-    let toggle = keys::negotiate(kitty);
+    let toggle = keys::Toggle;
 
     let mut terminal = ratatui::init();
     let mut out = std::io::stdout();
-    if kitty {
-        let _ = execute!(
-            out,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
-    }
     let _ = execute!(out, EnableMouseCapture, EnableBracketedPaste);
 
     let mut weft = App::new(root, toggle);
@@ -61,9 +50,6 @@ fn main() -> Result<()> {
     let result = started.and_then(|()| weft.run(&mut terminal));
 
     let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
-    if kitty {
-        let _ = execute!(out, PopKeyboardEnhancementFlags);
-    }
     ratatui::restore();
 
     if let Err(e) = &result {

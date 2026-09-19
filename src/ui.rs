@@ -17,10 +17,14 @@ use crate::ledger::Sent;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    // The agents strip only exists once there is more than one agent to
+    // confuse: with one, the title bar already names it.
+    let strip = if app.panes.len() > 1 { 1 } else { 0 };
     let rows = RLayout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(strip),
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
@@ -30,11 +34,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(area);
 
     frame.render_widget(title_bar(app), rows[0]);
-    frame.render_widget(rule(area.width), rows[1]);
-    body(frame, app, rows[2]);
-    frame.render_widget(rule(area.width), rows[3]);
-    frame.render_widget(action_bar(app), rows[4]);
-    frame.render_widget(hint(app), rows[5]);
+    if strip == 1 {
+        frame.render_widget(agents_strip(app), rows[1]);
+    }
+    frame.render_widget(rule(area.width), rows[2]);
+    body(frame, app, rows[3]);
+    frame.render_widget(rule(area.width), rows[4]);
+    frame.render_widget(action_bar(app), rows[5]);
+    frame.render_widget(hint(app), rows[6]);
 
     if let Some(modal) = app.modal.clone() {
         overlay(frame, app, &modal, area);
@@ -46,7 +53,11 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         Focus::Weft => "in Weft",
         Focus::Agent => "in the agent",
     };
-    let left = format!(" weft · {} · {}", app.project, state);
+    let who = match app.panes.get(app.pane_focus) {
+        Some(p) if app.panes.len() == 1 => format!(" · {}", p.harness),
+        _ => String::new(),
+    };
+    let left = format!(" weft · {}{} · {}", app.project, who, state);
     let right = match app.focus {
         Focus::Weft if app.panes.is_empty() => "no agent running ".to_string(),
         Focus::Agent if app.waiting(app.pane_focus).is_some() => {
@@ -68,6 +79,25 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         Span::raw("   "),
         Span::raw(right),
     ]))
+}
+
+/// Which agents are running, which one has focus, and how to change it.
+fn agents_strip(app: &App) -> Paragraph<'static> {
+    let mut spans = vec![Span::raw(" agents  ")];
+    for (i, pane) in app.panes.iter().enumerate() {
+        let active = i == app.pane_focus;
+        let waiting = app.waiting(i).is_some();
+        let mark = if active { "▸" } else { " " };
+        let flag = if waiting { " ●" } else { "" };
+        let label = format!("{mark}{} {}{flag}   ", i + 1, pane.harness);
+        spans.push(if active {
+            Span::styled(label, Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+        } else {
+            Span::raw(label)
+        });
+    }
+    spans.push(Span::raw("  Tab or 1-9 to switch"));
+    Paragraph::new(Line::from(spans))
 }
 
 fn rule(width: u16) -> Paragraph<'static> {
@@ -152,11 +182,10 @@ fn list(app: &App, width: u16) -> Paragraph<'static> {
                 lines.push(Line::raw(format!("{:>39}{}", "", agreement_phrase(app, c))));
             }
         } else {
-            lines.push(Line::styled(
-                format!("{marker} {}", clip(&unit.title, width.saturating_sub(3) as usize)),
-                style,
-            ));
-            lines.push(Line::raw(format!("  {}", clip(&unit.status(), width.saturating_sub(3) as usize))));
+            let w = width.saturating_sub(3) as usize;
+            lines.push(Line::styled(format!("{marker} {}", clip(&unit.title, w)), style));
+            lines.push(Line::raw(format!("  {}", clip(&unit.harness, w))));
+            lines.push(Line::raw(format!("  {}", clip(&unit.status(), w))));
         }
         lines.push(Line::raw(""));
     }
@@ -347,6 +376,15 @@ fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<S
                 found.iter().map(|a| format!("[ {a} ]")).collect(),
             )
         }
+        Modal::View { title, lines, offset } => {
+            let shown: Vec<String> = lines.iter().skip(*offset).take(room).cloned().collect();
+            let more = lines.len().saturating_sub(*offset + shown.len());
+            let mut body = shown;
+            if more > 0 {
+                body.push(format!("… {more} more lines · ↓ or the wheel"));
+            }
+            (format!(" {title} "), body, vec!["[ Close ]".into()])
+        }
         Modal::Detail { unit, record } => detail(app, *unit, record.as_ref(), room),
     }
 }
@@ -429,7 +467,7 @@ fn detail(
     (
         format!(" {} ", clip(&unit.title, 40)),
         head,
-        vec!["[F] Fix this   [S] Decide   [ Close ]".into()],
+        vec!["[P] The wording   [J] The judges   [S] Decide   [ Close ]".into()],
     )
 }
 

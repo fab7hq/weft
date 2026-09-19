@@ -8,30 +8,20 @@ pub enum Focus {
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Toggle {
-    /// `Ctrl+Shift+W`, available only where the terminal reports the Shift
-    /// modifier on a Ctrl+letter chord.
-    CtrlShiftW,
-    /// `Ctrl+]`. Legacy-safe: one control byte, claimed by neither the
-    /// harnesses nor the emulators.
-    CtrlRightBracket,
-}
+/// The one key Weft reserves.
+///
+/// `Ctrl+Shift+W` was tried and removed: outside terminals that speak the
+/// Kitty keyboard protocol it is indistinguishable from `Ctrl+W`, and several
+/// emulators bind it to close-tab and swallow it before any application sees
+/// it. `Ctrl+]` is one control byte, arrives everywhere, and is claimed by
+/// neither harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Toggle;
 
 impl Toggle {
     pub fn label(self) -> &'static str {
-        match self {
-            Toggle::CtrlShiftW => "Ctrl+Shift+W",
-            Toggle::CtrlRightBracket => "Ctrl+]",
-        }
+        "Ctrl+]"
     }
-}
-
-/// In the legacy encoding `Ctrl`+letter collapses to one control byte and
-/// `Shift` is not encoded, so `Ctrl+Shift+W` is indistinguishable from
-/// `Ctrl+W` unless the terminal speaks the Kitty keyboard protocol.
-pub fn negotiate(kitty_keyboard: bool) -> Toggle {
-    if kitty_keyboard { Toggle::CtrlShiftW } else { Toggle::CtrlRightBracket }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +49,8 @@ pub enum Action {
     Send,
     /// Start another agent.
     NewAgent,
+    /// Switch to the nth agent, counting from one.
+    PickPane(u8),
     Pick(i8),
     Open,
     Back,
@@ -72,16 +64,10 @@ pub enum Action {
     ToAgent,
 }
 
-pub fn is_toggle(chord: Chord, toggle: Toggle) -> bool {
-    match toggle {
-        // The Kitty protocol may report the base key in either case.
-        Toggle::CtrlShiftW => {
-            chord.ctrl && chord.shift && matches!(chord.code, Key::Char('W' | 'w'))
-        }
-        // Terminals send Ctrl+] as 0x1D, which the legacy DEC convention names
-        // Ctrl+5 — Ctrl+4..7 are Ctrl+\ ] ^ _. Both spellings reach us.
-        Toggle::CtrlRightBracket => chord.ctrl && matches!(chord.code, Key::Char(']' | '5')),
-    }
+/// Terminals send `Ctrl+]` as `0x1D`, which the legacy DEC convention names
+/// `Ctrl+5` — Ctrl+4..7 are Ctrl+`\ ] ^ _`. Both spellings reach us.
+pub fn is_toggle(chord: Chord, _toggle: Toggle) -> bool {
+    chord.ctrl && matches!(chord.code, Key::Char(']' | '5'))
 }
 
 pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
@@ -97,6 +83,9 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
         Key::Enter => Action::Open,
         Key::Left => Action::Back,
         Key::Tab => Action::NextPane,
+        Key::Char(c) if c.is_ascii_digit() && c != '0' => {
+            Action::PickPane(c.to_digit(10).unwrap_or(1) as u8)
+        }
         Key::Char(c) => match c.to_ascii_lowercase() {
             'a' => Action::Ask,
             's' => Action::Send,
@@ -119,38 +108,13 @@ mod tests {
         Chord { code, ctrl: false, shift: false }
     }
 
-    #[test]
-    fn kitty_capable_terminals_get_the_shift_chord() {
-        assert_eq!(negotiate(true), Toggle::CtrlShiftW);
-    }
 
-    #[test]
-    fn everything_else_falls_back_to_a_legacy_safe_key() {
-        assert_eq!(negotiate(false), Toggle::CtrlRightBracket);
-    }
 
-    #[test]
-    fn plain_ctrl_w_is_not_the_toggle_so_the_agent_keeps_delete_word() {
-        let ctrl_w = Chord { code: Key::Char('W'), ctrl: true, shift: false };
-        assert!(!is_toggle(ctrl_w, Toggle::CtrlShiftW));
-        assert_eq!(route(ctrl_w, Focus::Agent, Toggle::CtrlShiftW), Action::ToAgent);
-    }
 
-    #[test]
-    fn the_toggle_works_in_both_directions() {
-        for toggle in [Toggle::CtrlShiftW, Toggle::CtrlRightBracket] {
-            let chord = match toggle {
-                Toggle::CtrlShiftW => Chord { code: Key::Char('W'), ctrl: true, shift: true },
-                Toggle::CtrlRightBracket => Chord { code: Key::Char(']'), ctrl: true, shift: false },
-            };
-            assert_eq!(route(chord, Focus::Weft, toggle), Action::ToggleFocus);
-            assert_eq!(route(chord, Focus::Agent, toggle), Action::ToggleFocus);
-        }
-    }
 
     #[test]
     fn in_the_agent_every_key_goes_through_including_esc_and_ctrl_c() {
-        let t = Toggle::CtrlRightBracket;
+        let t = Toggle;
         let ctrl_c = Chord { code: Key::Char('c'), ctrl: true, shift: false };
         for chord in [plain(Key::Esc), plain(Key::Up), plain(Key::Enter), plain(Key::Char('a')), ctrl_c] {
             assert_eq!(route(chord, Focus::Agent, t), Action::ToAgent, "{chord:?}");
@@ -159,7 +123,7 @@ mod tests {
 
     #[test]
     fn in_weft_the_visible_buttons_have_single_keys() {
-        let t = Toggle::CtrlRightBracket;
+        let t = Toggle;
         for (c, expected) in [
             ('a', Action::Ask),
             ('c', Action::Check),
@@ -175,7 +139,7 @@ mod tests {
     #[test]
     fn every_key_the_action_bar_offers_has_an_action() {
         // The bar advertised [S]end it long before anything was wired to it.
-        let t = Toggle::CtrlRightBracket;
+        let t = Toggle;
         for (c, expected) in [
             ('a', Action::Ask),
             ('s', Action::Send),
@@ -190,8 +154,16 @@ mod tests {
     }
 
     #[test]
+    fn digits_switch_between_agents() {
+        assert_eq!(route(plain(Key::Char('1')), Focus::Weft, Toggle), Action::PickPane(1));
+        assert_eq!(route(plain(Key::Char('3')), Focus::Weft, Toggle), Action::PickPane(3));
+        // and never in the agent, where a digit is just a digit
+        assert_eq!(route(plain(Key::Char('1')), Focus::Agent, Toggle), Action::ToAgent);
+    }
+
+    #[test]
     fn in_weft_arrows_pick_and_enter_opens() {
-        let t = Toggle::CtrlRightBracket;
+        let t = Toggle;
         assert_eq!(route(plain(Key::Up), Focus::Weft, t), Action::Pick(-1));
         assert_eq!(route(plain(Key::Down), Focus::Weft, t), Action::Pick(1));
         assert_eq!(route(plain(Key::Enter), Focus::Weft, t), Action::Open);
@@ -199,25 +171,33 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_right_bracket_is_recognised_as_the_legacy_ctrl_5_spelling() {
-        let ctrl_5 = Chord { code: Key::Char('5'), ctrl: true, shift: false };
-        assert!(is_toggle(ctrl_5, Toggle::CtrlRightBracket));
-        assert_eq!(route(ctrl_5, Focus::Agent, Toggle::CtrlRightBracket), Action::ToggleFocus);
+    fn ctrl_right_bracket_is_recognised_in_both_spellings() {
+        for c in [']', '5'] {
+            let chord = Chord { code: Key::Char(c), ctrl: true, shift: false };
+            assert!(is_toggle(chord, Toggle), "{c}");
+            assert_eq!(route(chord, Focus::Agent, Toggle), Action::ToggleFocus);
+            assert_eq!(route(chord, Focus::Weft, Toggle), Action::ToggleFocus);
+        }
     }
 
     #[test]
-    fn the_shift_chord_is_recognised_in_either_case() {
-        for c in ['W', 'w'] {
-            let chord = Chord { code: Key::Char(c), ctrl: true, shift: true };
-            assert!(is_toggle(chord, Toggle::CtrlShiftW), "{c}");
-        }
+    fn ctrl_w_is_left_to_the_agent_to_delete_a_word() {
+        let ctrl_w = Chord { code: Key::Char('w'), ctrl: true, shift: false };
+        assert!(!is_toggle(ctrl_w, Toggle));
+        assert_eq!(route(ctrl_w, Focus::Agent, Toggle), Action::ToAgent);
     }
+
+    #[test]
+    fn the_toggle_is_named_the_same_everywhere() {
+        assert_eq!(Toggle.label(), "Ctrl+]");
+    }
+
 
     #[test]
     fn in_the_agent_nothing_but_the_toggle_is_ever_intercepted() {
         // Unless the person is using Weft's own ask, check or decide, every
         // keystroke is chat with the harness and is forwarded untouched.
-        for toggle in [Toggle::CtrlShiftW, Toggle::CtrlRightBracket] {
+        for toggle in [Toggle] {
             for code in [
                 Key::Up, Key::Down, Key::Left, Key::Enter, Key::Tab, Key::Esc,
             ] {
@@ -248,9 +228,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_live_toggle_is_the_one_shown_to_the_person() {
-        assert_eq!(negotiate(true).label(), "Ctrl+Shift+W");
-        assert_eq!(negotiate(false).label(), "Ctrl+]");
-    }
 }

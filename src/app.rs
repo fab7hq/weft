@@ -41,6 +41,8 @@ pub enum Modal {
     Note(String),
     /// Pick an agent to start. Weft starts none on its own.
     StartAgent { choice: usize },
+    /// Read something RingFrame recorded, in full.
+    View { title: String, lines: Vec<String>, offset: usize },
 }
 
 pub struct Agent {
@@ -131,10 +133,7 @@ impl App {
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.reload();
         while !self.quit {
-            terminal.draw(|frame| {
-                self.pane_area = None;
-                crate::ui::draw(frame, &mut self);
-            })?;
+            terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
                     Event::Key(key)
@@ -338,6 +337,59 @@ impl App {
         }
     }
 
+    /// The exact wording RingFrame compiled, read back through its CLI.
+    fn view_prompt(&mut self) {
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        match ringframe::ask_copy(&self.root, &unit.ask_id) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                self.modal = Some(Modal::View {
+                    title: format!("What was sent to {}", unit.harness),
+                    lines: text.lines().map(str::to_string).collect(),
+                    offset: 0,
+                });
+            }
+            Err(e) => self.modal = Some(Modal::Note(format!("RingFrame would not hand it over: {e:?}"))),
+        }
+    }
+
+    /// Every judge, every vote, every reason.
+    fn view_judges(&mut self) {
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        let Some(check) = unit.check.clone() else {
+            self.modal = Some(Modal::Note("No check has been run on this yet.".into()));
+            return;
+        };
+        let Some(record) = Record::read(&self.root, &check.eval_id) else {
+            self.modal = Some(Modal::Note("That check's record is not on disk.".into()));
+            return;
+        };
+        let mut lines = vec![
+            format!("judged by {}", record.judged_by().join(" and ")),
+            format!("recorded as {}, {:.2}", record.verdict, record.confidence),
+            String::new(),
+        ];
+        for j in &record.judges {
+            lines.push(format!("judge: {} · {} · {}", j.angle, j.host, j.model));
+        }
+        lines.push(String::new());
+        for item in &record.items {
+            lines.push(format!("[{}] {}", item.plain_majority(), item.text));
+            lines.push(format!("      {}", record.agreed(item.agreement)));
+            for r in &item.reasons {
+                lines.push(format!("      {r}"));
+            }
+            lines.push(String::new());
+        }
+        if !record.unexplained.is_empty() {
+            lines.push("changed with no judge able to tie it to what you asked:".into());
+            for p in &record.unexplained {
+                lines.push(format!("      {p}"));
+            }
+        }
+        self.modal = Some(Modal::View { title: format!("The check · {}", check.eval_id), lines, offset: 0 });
+    }
+
     fn open_detail(&mut self) {
         let Some(unit) = self.selected_unit().cloned() else { return };
         let record = unit
@@ -383,6 +435,12 @@ impl App {
             Action::Ask => self.start_ask(),
             Action::Send => self.start_send(),
             Action::NewAgent => self.start_agent_picker(),
+            Action::PickPane(n) => {
+                let i = (n as usize).saturating_sub(1);
+                if i < self.panes.len() {
+                    self.pane_focus = i;
+                }
+            }
             Action::Check => self.start_skill("eval"),
             Action::Decide => self.start_skill("seal"),
             Action::Back => {}
@@ -431,6 +489,24 @@ impl App {
             Modal::StartAgent { .. } => App::available_agents().len().max(1),
             _ => 1,
         };
+        if let Modal::View { offset, .. } = &modal {
+            let mut offset = *offset;
+            match key.code {
+                event::KeyCode::Up => offset = offset.saturating_sub(1),
+                event::KeyCode::Down => offset += 1,
+                event::KeyCode::PageUp => offset = offset.saturating_sub(15),
+                event::KeyCode::PageDown => offset += 15,
+                event::KeyCode::Esc | event::KeyCode::Enter | event::KeyCode::Left => {
+                    self.modal = None;
+                    return Ok(());
+                }
+                _ => {}
+            }
+            if let Some(Modal::View { offset: o, .. }) = self.modal.as_mut() {
+                *o = offset;
+            }
+            return Ok(());
+        }
         match key.code {
             event::KeyCode::Up | event::KeyCode::Left => {
                 self.modal_choice = self.modal_choice.saturating_sub(1)
@@ -440,6 +516,12 @@ impl App {
             }
             event::KeyCode::Esc => self.modal = None,
             event::KeyCode::Enter => self.confirm_modal(&modal),
+            event::KeyCode::Char('p') if matches!(modal, Modal::Detail { .. }) => {
+                self.view_prompt()
+            }
+            event::KeyCode::Char('j') if matches!(modal, Modal::Detail { .. }) => {
+                self.view_judges()
+            }
             event::KeyCode::Char('s') if matches!(modal, Modal::Detail { .. }) => {
                 self.modal = None;
                 self.start_skill("seal");
@@ -455,7 +537,9 @@ impl App {
 
     fn confirm_modal(&mut self, modal: &Modal) {
         match modal {
-            Modal::Help | Modal::Note(_) | Modal::Detail { .. } => self.modal = None,
+            Modal::Help | Modal::Note(_) | Modal::Detail { .. } | Modal::View { .. } => {
+                self.modal = None
+            }
             Modal::Ask { .. } => {}
             Modal::Confirm(pending) => {
                 if self.modal_choice == 0 {
@@ -502,6 +586,37 @@ impl App {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {
+        // The wheel always moves the focused pane's scrollback, whether or not
+        // that pane happens to be drawn where the pointer is. Requiring the
+        // pointer to be over it meant scrolling silently did nothing whenever
+        // the list had the screen to itself.
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(modal) = self.modal.as_mut() {
+                    if let Modal::View { offset, .. } = modal {
+                        *offset = offset.saturating_sub(3);
+                        return Ok(());
+                    }
+                }
+                if let Some(p) = self.panes.get_mut(self.pane_focus) {
+                    p.pty.scroll(3);
+                }
+                return Ok(());
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(modal) = self.modal.as_mut() {
+                    if let Modal::View { offset, .. } = modal {
+                        *offset += 3;
+                        return Ok(());
+                    }
+                }
+                if let Some(p) = self.panes.get_mut(self.pane_focus) {
+                    p.pty.scroll(-3);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         if self.modal.is_some() {
             return Ok(());
         }
@@ -511,16 +626,6 @@ impl App {
         match m.kind {
             // The harnesses ask for no mouse reporting, so scrolling is Weft's
             // to do: it moves through the scrollback it keeps for the pane.
-            MouseEventKind::ScrollUp if in_pane => {
-                if let Some(p) = self.panes.get_mut(self.pane_focus) {
-                    p.pty.scroll(3);
-                }
-            }
-            MouseEventKind::ScrollDown if in_pane => {
-                if let Some(p) = self.panes.get_mut(self.pane_focus) {
-                    p.pty.scroll(-3);
-                }
-            }
             MouseEventKind::Down(MouseButton::Left) if in_pane => {
                 self.focus = Focus::Agent;
                 if let Some(p) = self.panes.get_mut(self.pane_focus) {
@@ -537,7 +642,8 @@ impl App {
     }
 
     fn click_list(&mut self, row: u16) {
-        let body_row = row.saturating_sub(2);
+        let header = if self.panes.len() > 1 { 3 } else { 2 };
+        let body_row = row.saturating_sub(header);
         if body_row == 0 {
             return;
         }
@@ -589,7 +695,7 @@ mod tests {
 
     fn app() -> App {
         let dir = std::env::temp_dir();
-        let mut a = App::new(dir, Toggle::CtrlRightBracket);
+        let mut a = App::new(dir, Toggle);
         a.add("codex", "/bin/cat").expect("spawn");
         a
     }
@@ -817,7 +923,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut a = App::new(dir.clone(), Toggle::CtrlRightBracket);
+        let mut a = App::new(dir.clone(), Toggle);
         a.reload();
         assert_eq!(a.units.len(), 1);
         assert_eq!(a.units[0].title, "health endpoint");
@@ -831,7 +937,7 @@ mod start_tests {
     use crossterm::event::KeyCode;
 
     fn bare() -> App {
-        App::new(std::env::temp_dir(), Toggle::CtrlRightBracket)
+        App::new(std::env::temp_dir(), Toggle)
     }
 
     #[test]
