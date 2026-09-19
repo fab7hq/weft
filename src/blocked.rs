@@ -32,11 +32,19 @@ const RULES: &[(&str, &str)] = &[
 
 /// How much of the bottom of the screen counts. A prompt lives at the bottom;
 /// the same words scrolled up in transcript history do not mean anything.
+///
+/// Fourteen lines was too few. A chooser that carries a preview box beside it
+/// puts its selector well above the last lines of a tall pane, and Weft missed
+/// it — then typed into a pane that was waiting for its person, which is the
+/// one thing it must never do. The window is now a share of the screen, so it
+/// grows with the pane while still excluding what has scrolled away.
 const TAIL_LINES: usize = 14;
+const TAIL_SHARE: usize = 3; // three quarters of what is on screen
 
 pub fn looks_blocked(screen: &str) -> Option<Evidence> {
     let lines: Vec<&str> = screen.lines().collect();
-    let start = lines.len().saturating_sub(TAIL_LINES);
+    let window = TAIL_LINES.max(lines.len() * TAIL_SHARE / 4);
+    let start = lines.len().saturating_sub(window);
     for line in &lines[start..] {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -148,6 +156,44 @@ mod tests {
     #[test]
     fn an_empty_screen_is_not_blocked() {
         assert_eq!(looks_blocked(""), None);
+    }
+
+    /// Captured from Claude Code 2.1.278 in a Weft pane, asking the Ask
+    /// skill's route question. The selector sits well above the bottom of a
+    /// 40-row pane because a preview box is drawn beside it.
+    const CLAUDE_ROUTE_QUESTION: &str = "\
+⏺ Bash(ringframe ask copy --ask ask_01M2XNX85EJGC44B9MENM7A0E8)
+  ⎿  Find the `health()` function in this codebase, which currently reports
+      a hardcoded literal string \"dev\" as the package version.
+     … +18 lines (ctrl+o to expand)
+⏺ Now confirming the route with you.
+────────────────────────────────────────────────────────────────
+ ☐ Ask route
+How should I proceed with the health() version-reporting fix?
+❯ 1. Proceed (Recommended)        ┌──────────────────────────────┐
+  2. Direct execution             │ Find the health() function   │
+  3. Cancel                       │ in this codebase, which      │
+                                  │ currently reports a          │
+                                  │ hardcoded literal string     │
+                                  │ \"dev\" as the package        │
+                                  │ version. Change it to        │
+                                  │ report the real package      │
+                                  │ version instead — read it    │
+                                  │ from wherever the package's  │
+                                  │ canonical version is         │
+                                  │ defined, e.g. package        │
+                                  │ metadata, a version file,    │
+                                  ├─── ✂ ─── 31 lines hidden ────┤
+                                  └──────────────────────────────┘";
+
+    #[test]
+    fn a_chooser_with_a_preview_beside_it_is_still_a_chooser() {
+        // Found by a W4 run: the selector was twelve rows above the bottom of
+        // a forty-row pane, the window was fourteen lines, and Weft typed into
+        // a pane that was waiting for its person.
+        let evidence = looks_blocked(CLAUDE_ROUTE_QUESTION).expect("a chooser");
+        assert_eq!(evidence.rule, "selector");
+        assert!(evidence.line.contains("1. Proceed"), "{}", evidence.line);
     }
 
     #[test]
