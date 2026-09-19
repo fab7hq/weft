@@ -242,6 +242,11 @@ impl Session {
 }
 
 /// Where a project's session listens. One session per project directory.
+/// A Unix socket path is length-limited by `sun_path` — 104 bytes on macOS,
+/// 108 on Linux — and the limit is on the path, not on the name. A deep
+/// `TMPDIR`, which an isolated host environment routinely has, overruns it.
+const SUN_LEN: usize = 100;
+
 pub fn socket_path(root: &Path) -> PathBuf {
     let key = root.to_string_lossy();
     // A short, stable name: socket paths are length-limited on macOS.
@@ -253,7 +258,17 @@ pub fn socket_path(root: &Path) -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir());
-    base.join("weft").join(format!("{h:016x}.sock"))
+    socket_path_in(&base, format!("{h:016x}.sock"))
+}
+
+fn socket_path_in(base: &Path, name: String) -> PathBuf {
+    let chosen = base.join("weft").join(&name);
+    if chosen.as_os_str().len() <= SUN_LEN {
+        return chosen;
+    }
+    // Too deep to bind. `/tmp` is the one directory that is always short, and
+    // the name already carries the project, so two projects still never meet.
+    PathBuf::from("/tmp").join("weft").join(name)
 }
 
 /// Is a session already listening there?
@@ -279,6 +294,30 @@ mod tests {
         assert_eq!(a, socket_path(Path::new("/tmp/project-a")), "stable");
         assert_ne!(a, b, "separate projects, separate sessions");
         assert!(a.to_string_lossy().ends_with(".sock"));
+    }
+
+    #[test]
+    fn a_deep_tmpdir_still_yields_a_path_a_socket_can_bind() {
+        // Found by the W3 probe: an isolated host environment puts TMPDIR deep
+        // enough that the socket path overran sun_path and no session started.
+        let deep = std::path::Path::new(
+            "/Users/someone/Documents/works/fab7/sandbox/hostlab/hosts/claude/g30/runtime/tmp",
+        );
+        let path = socket_path_in(deep, "7e1ede271e5eceef.sock".into());
+        assert!(
+            path.as_os_str().len() <= SUN_LEN,
+            "{} is {} bytes",
+            path.display(),
+            path.as_os_str().len()
+        );
+    }
+
+    #[test]
+    fn two_projects_never_share_a_session_however_deep_the_tmpdir() {
+        assert_ne!(
+            socket_path(std::path::Path::new("/a/project")),
+            socket_path(std::path::Path::new("/b/project"))
+        );
     }
 
     #[test]

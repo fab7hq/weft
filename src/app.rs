@@ -156,6 +156,12 @@ impl App {
         self.hint.as_deref()
     }
 
+    /// The last refusal the server reported, if any. A refusal is Weft
+    /// declining to type; it is never a statement about the harness.
+    pub fn last_refusal(&self) -> Option<String> {
+        self.session.last_refusal.clone()
+    }
+
     /// Whether there is a `ringframe` to read a record from. Weft still runs
     /// panes without one; it just has nothing to show on the board.
     pub fn record_available(&self) -> bool {
