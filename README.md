@@ -16,8 +16,9 @@ written by [RingFrame](https://pypi.org/project/ringframe/).
 
 ## Status
 
-Early. The runtime and input path work; the RingFrame interface is not built
-yet.
+Early. The runtime, the input path and the RingFrame interface all work:
+agents run in panes, the work list is read from the record, and Weft types a
+confirmed prompt for you after asking. It is not packaged yet.
 
 ## Requirements
 
@@ -34,22 +35,33 @@ cargo test
 
 ## Keys
 
-Weft reserves exactly one key. Everything else belongs to the agent.
+Weft reserves exactly one chord. Everything else belongs to the agent, and
+every action on screen shows its key in brackets.
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+Shift+W` | Switch between Weft and the agent |
-| `↑` `↓` | Pick an item |
-| `Enter` | Open it, or go into the agent |
-| `A` `C` `D` | Ask · Check · Decide |
-| `H` | Help |
-| `X` | Quit |
+| `Ctrl+]` | Into the agent, and back again |
+| `↑` `↓` | Pick a row |
+| `Enter` | Expand the row in place |
+| `←` | Back: collapse, close the drawer, cancel |
+| `Space` | Jump to the next thing that needs you |
+| `Tab` · `1`-`9` | Next agent · that agent |
+| `A` `S` | Ask · send the wording RingFrame compiled |
+| `C` `D` | Check · decide |
+| `P` `J` | Read the wording · read the judges |
+| `F` | Ask again about this work |
+| `N` `W` | New agent · show or hide the work list |
+| `H` `X` | Help · quit |
 
-`Ctrl+Shift+W` needs a terminal that reports modifiers on a Ctrl+letter chord
-(Kitty, Ghostty, WezTerm, foot). Elsewhere Weft falls back to `Ctrl+]`, and the
-hint bar always names the key that is actually live.
+In the agent every other key goes straight through, `Esc` included.
 
 The mouse works everywhere. To select text inside a pane, hold `Shift`.
+
+To read the screens without running an agent:
+
+```sh
+cargo run --example wireframe
+```
 
 ## Licence
 

@@ -9,11 +9,9 @@
 //! client that never left would be showing.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 

@@ -126,6 +126,20 @@ impl Record {
         hosts
     }
 
+    /// "all 3 agreed" / "2 of 3 agreed". The same count, in a row's width.
+    pub fn agreed_short(&self, agreement: f64) -> String {
+        match self.agreed_counts(agreement) {
+            None => "agreement not recorded".into(),
+            Some((n, total)) if n == total => format!("all {total} agreed"),
+            Some((n, total)) => format!("{n} of {total} agreed"),
+        }
+    }
+
+    fn agreed_counts(&self, agreement: f64) -> Option<(usize, usize)> {
+        let total = self.judges.len();
+        (total > 0).then(|| ((agreement * total as f64).round() as usize, total))
+    }
+
     /// "2 of 3 judges agreed". Agreement, never correctness.
     pub fn agreed(&self, agreement: f64) -> String {
         let total = self.judges.len();
@@ -195,6 +209,13 @@ mod tests {
         let r = Record::parse(&record()).expect("parse");
         assert_eq!(r.agreed(0.67), "2 of 3 judges agreed");
         assert_eq!(r.agreed(1.0), "all 3 judges agreed");
+    }
+
+    #[test]
+    fn the_short_form_says_the_same_thing_in_a_rows_width() {
+        let r = Record::parse(&record()).expect("parse");
+        assert_eq!(r.agreed_short(0.67), "2 of 3 agreed");
+        assert_eq!(r.agreed_short(1.0), "all 3 agreed");
     }
 
     #[test]

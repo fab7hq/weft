@@ -107,13 +107,29 @@ impl Unit {
         if let Some(c) = &self.check {
             return c.verdict.plain().into();
         }
+        self.sent_phrase().into()
+    }
+
+    /// Where the Ask itself stands, whatever has happened to it since. The
+    /// status collapses into this once there is no verdict and no seal.
+    pub fn sent_phrase(&self) -> &'static str {
         match self.sent {
-            Sent::NotSent => "not sent yet".into(),
-            Sent::ReadyToSend => "ready to send".into(),
-            Sent::Unconfirmed => "sent, unconfirmed".into(),
-            Sent::TakenByAgent => "the agent took it".into(),
-            Sent::Arrived { exact: true } => "sent · word for word".into(),
-            Sent::Arrived { exact: false } => "sent, reworded".into(),
+            Sent::NotSent => "not sent yet",
+            Sent::ReadyToSend => "ready to send",
+            Sent::Unconfirmed => "sent, unconfirmed",
+            Sent::TakenByAgent => "the agent took it",
+            Sent::Arrived { exact: true } => "sent · word for word",
+            Sent::Arrived { exact: false } => "sent, reworded",
+        }
+    }
+
+    /// The dot the vocabulary puts in front of a status that waits on you:
+    /// `● READY TO SEND`. Only the handoff that is ready carries it.
+    pub fn marker(&self) -> &'static str {
+        if !self.cancelled && self.sealed.is_none() && self.sent == Sent::ReadyToSend {
+            "● "
+        } else {
+            ""
         }
     }
 

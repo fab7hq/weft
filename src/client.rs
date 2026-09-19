@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 
-use crate::protocol::{self, Frames, ToClient, ToServer};
+use crate::protocol::{Frames, ToClient, ToServer};
 use crate::server;
 
 /// One pane, as this client sees it.

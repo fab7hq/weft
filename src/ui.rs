@@ -1,32 +1,110 @@
-//! Drawing. Spec: `plans/weft/spec/interface.md`.
+//! Drawing. Spec: `plans/weft/spec/interface.md` (v2).
 //!
 //! The rule this module enforces: a field that cannot be traced to a ledger
-//! event may not be rendered.
+//! event may not be rendered. One short function per surface, named after the
+//! screen it draws.
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout as RLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
-use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{App, Modal};
+use crate::app::{Act, App, Modal, Reading};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
-use crate::ledger::Sent;
-use crate::theme::{pair, Theme};
+use crate::ledger::Unit;
+use crate::theme::{Theme, pair};
+
+/// The `[W] WORK` cell the tab row keeps when the list is hidden.
+const WORK_TAB: &str = " [W] WORK   ";
+/// How wide the `WORK` header is when the list has the whole width.
+const WORK_HEADER: u16 = 34;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let geo = geometry(app, area);
     let th = app.theme;
-    // The agents strip only exists once there is more than one agent to
-    // confuse: with one, the title bar already names it.
-    let strip = if app.session.panes.len() > 1 { 1 } else { 0 };
+
+    frame.render_widget(title_bar(app, geo.title.width), geo.title);
+    if geo.tabs.height > 0 {
+        let (line, spans) = tab_row(app, &geo);
+        app.note_tabs(spans);
+        frame.render_widget(Paragraph::new(line), geo.tabs);
+    }
+    frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
+
+    if app.pane_count() == 0 {
+        app.note_rows(Vec::new());
+        frame.render_widget(first_run(app, geo.content), geo.content);
+    } else {
+        if let Some(list) = geo.list {
+            let (para, rows) = work_list(app, list);
+            app.note_rows(rows);
+            frame.render_widget(para, list);
+        } else {
+            app.note_rows(Vec::new());
+        }
+        if let Some(divider) = geo.divider_area {
+            frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
+        }
+        if let Some(right) = geo.right {
+            match app.drawer().is_some() {
+                true => frame.render_widget(drawer(app, right), right),
+                false => agent(frame, app, right),
+            }
+        }
+    }
+
+    if let (Some(rule_area), Some(panel_area)) = (geo.panel_rule, geo.panel) {
+        frame.render_widget(rule(rule_area.width, None, '─', th), rule_area);
+        frame.render_widget(panel(app, panel_area), panel_area);
+    }
+
+    frame.render_widget(
+        rule(geo.bottom_rule.width, geo.body_divider, '┴', th),
+        geo.bottom_rule,
+    );
+    frame.render_widget(action_bar(app, geo.actions.width), geo.actions);
+    frame.render_widget(hint(app), geo.hint);
+
+    if let Some(modal) = app.modal.clone() {
+        if let Some((title, lines, choices)) = centred(app, &modal) {
+            overlay(frame, app, &title, &lines, &choices, area);
+        }
+    }
+}
+
+// --- where everything goes ---------------------------------------------------
+
+struct Geo {
+    title: Rect,
+    tabs: Rect,
+    top_rule: Rect,
+    content: Rect,
+    list: Option<Rect>,
+    divider_area: Option<Rect>,
+    right: Option<Rect>,
+    panel_rule: Option<Rect>,
+    panel: Option<Rect>,
+    bottom_rule: Rect,
+    actions: Rect,
+    hint: Rect,
+    /// Column of the vertical divider on the tab row, if there is one.
+    divider: Option<u16>,
+    /// Column of the divider through the body, if it runs that far.
+    body_divider: Option<u16>,
+    top_junction: char,
+}
+
+fn geometry(app: &App, area: Rect) -> Geo {
+    let tab_height = if app.pane_count() > 0 { 1 } else { 0 };
     let rows = RLayout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(strip),
+            Constraint::Length(tab_height),
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
@@ -34,463 +112,778 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(area);
+    let body = rows[3];
 
-    frame.render_widget(title_bar(app), rows[0]);
-    if strip == 1 {
-        frame.render_widget(agents_strip(app), rows[1]);
-    }
-    frame.render_widget(rule(area.width, th), rows[2]);
-    body(frame, app, rows[3]);
-    frame.render_widget(rule(area.width, th), rows[4]);
-    frame.render_widget(action_bar(app), rows[5]);
-    frame.render_widget(hint(app), rows[6]);
-
-    if let Some(modal) = app.modal.clone() {
-        overlay(frame, app, &modal, area);
-    }
-}
-
-fn title_bar(app: &App) -> Paragraph<'static> {
-    let state = match app.focus {
-        Focus::Weft => "in Weft",
-        Focus::Agent => "in the agent",
-    };
-    let who = match app.session.panes.get(app.pane_focus) {
-        Some(p) if app.session.panes.len() == 1 => format!(" · {}", p.harness),
-        _ => String::new(),
-    };
-    let left = format!("WEFT   {}{}   {}", app.project, who, state);
-    let right = match app.focus {
-        Focus::Weft if app.session.panes.is_empty() => "no agent running ".to_string(),
-        Focus::Agent if app.waiting(app.pane_focus).is_some() => {
-            "● needs your answer (from the screen) ".to_string()
+    // A bottom-anchored panel keeps the row it is about in view above it.
+    let (content, panel_rule, panel) = match panel_lines(app) {
+        Some(lines) => {
+            let wanted = (lines.len() as u16 + 1).min(body.height.saturating_sub(3));
+            let split = RLayout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(wanted)])
+                .split(body);
+            (split[0], Some(split[1]), Some(split[2]))
         }
-        Focus::Agent => format!("{} TO COME BACK ", app.toggle.label()),
-        Focus::Weft => {
-            let open = app.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
-            let needs = app.needs_you();
-            if needs > 0 {
-                format!("{}   {} ", pair("open", &open.to_string()), pair("needs you", &needs.to_string()))
-            } else {
-                format!("{} ", pair("open", &open.to_string()))
-            }
-        }
+        None => (body, None, None),
     };
-    let th = app.theme;
-    Paragraph::new(Line::from(vec![
-        Span::styled(" ▚▞ ", Style::default().fg(th.accent())),
-        Span::styled(left, th.title()),
-        Span::raw("   "),
-        Span::styled(right, th.label()),
-    ]))
-}
 
-/// Which agents are running, which one has focus, and how to change it.
-fn agents_strip(app: &App) -> Paragraph<'static> {
-    let th = app.theme;
-    let mut spans = vec![Span::styled(" AGENTS   ", th.label())];
-    for (i, pane) in app.session.panes.iter().enumerate() {
-        let active = i == app.pane_focus;
-        let waiting = app.waiting(i).is_some();
-        let mark = if active { "▸" } else { " " };
-        let flag = if waiting { " ●" } else { "" };
-        let label = format!("{mark}{} {}{flag}   ", i + 1, pane.harness);
-        spans.push(if active {
-            Span::styled(label, Style::default().fg(th.accent()).add_modifier(Modifier::BOLD))
-        } else if waiting {
-            Span::styled(label, th.needs_you())
-        } else {
-            Span::styled(label, th.label())
-        });
+    let mut geo = Geo {
+        title: rows[0],
+        tabs: rows[1],
+        top_rule: rows[2],
+        content,
+        list: None,
+        divider_area: None,
+        right: None,
+        panel_rule,
+        panel,
+        bottom_rule: rows[4],
+        actions: rows[5],
+        hint: rows[6],
+        divider: None,
+        body_divider: None,
+        top_junction: '─',
+    };
+
+    if app.pane_count() == 0 {
+        return geo;
     }
-    spans.push(Span::styled("  TAB · 1-9", th.label()));
-    Paragraph::new(Line::from(spans))
-}
 
-fn rule(width: u16, th: Theme) -> Paragraph<'static> {
-    Paragraph::new(Line::styled("─".repeat(width as usize), th.rule()))
-}
-
-fn body(frame: &mut Frame, app: &mut App, area: Rect) {
-    // With no agent running there is nothing to sit beside, so the first-run
-    // message gets the whole width instead of being clipped to the rail.
-    if app.session.panes.is_empty() {
-        frame.render_widget(list(app, area.width), area);
-        return;
-    }
     match layout::for_width(area.width) {
-        Layout::Split { rail, pane } => {
+        Layout::Split { list, .. } if app.show_work() => {
             let cols = RLayout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Length(rail),
+                    Constraint::Length(list),
                     Constraint::Length(1),
-                    Constraint::Length(pane),
+                    Constraint::Min(1),
                 ])
-                .split(area);
-            frame.render_widget(list(app, rail), cols[0]);
-            frame.render_widget(Paragraph::new(vlines(area.height)), cols[1]);
-            agent(frame, app, cols[2]);
+                .split(content);
+            geo.list = Some(cols[0]);
+            geo.divider_area = Some(cols[1]);
+            geo.right = Some(cols[2]);
+            geo.divider = Some(list);
+            geo.body_divider = Some(list);
+            geo.top_junction = '┼';
         }
-        Layout::Single { width } => match app.focus {
-            Focus::Weft => frame.render_widget(list(app, width), area),
-            Focus::Agent => agent(frame, app, area),
-        },
+        Layout::Split { .. } => {
+            // Hidden, the agent has the whole width and the list keeps a tab.
+            geo.right = Some(content);
+            geo.divider = Some(WORK_TAB.chars().count() as u16);
+            geo.top_junction = '┴';
+        }
+        Layout::Single { .. } => {
+            if app.show_work() && app.focus == Focus::Weft && app.drawer().is_none() {
+                geo.list = Some(content);
+            } else {
+                geo.right = Some(content);
+            }
+        }
     }
+    geo
 }
 
-fn vlines(height: u16) -> String {
-    std::iter::repeat_n("│", height as usize).collect::<Vec<_>>().join("\n")
+fn rule(width: u16, at: Option<u16>, junction: char, th: Theme) -> Paragraph<'static> {
+    let mut line: String = "─".repeat(width as usize);
+    if let Some(col) = at {
+        let col = col as usize;
+        if col < width as usize {
+            line = line
+                .chars()
+                .enumerate()
+                .map(|(i, c)| if i == col { junction } else { c })
+                .collect();
+        }
+    }
+    Paragraph::new(Line::styled(line, th.rule()))
 }
 
-/// One entry per unit of work. Narrow gets two lines; wide gets a table.
-fn list(app: &App, width: u16) -> Paragraph<'static> {
-    let mut lines: Vec<Line> = vec![Line::raw("")];
+fn vlines(height: u16, th: Theme) -> Vec<Line<'static>> {
+    (0..height).map(|_| Line::styled("│", th.rule())).collect()
+}
 
-    if app.units.is_empty() {
-        if app.session.panes.is_empty() {
-            lines.push(Line::raw("   Nothing is running yet."));
-            lines.push(Line::raw(""));
-            lines.push(Line::raw("   Press N to start an agent."));
-        } else {
-            lines.push(Line::raw("   Nothing asked for yet."));
-            lines.push(Line::raw(""));
-            lines.push(Line::raw("   Press A to ask for something."));
+// --- the bars ----------------------------------------------------------------
+
+fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
+    let th = app.theme;
+    let state = match (app.pane_count(), app.focus) {
+        (0, _) => String::new(),
+        (_, Focus::Weft) => "   in Weft".into(),
+        (_, Focus::Agent) => "   in the agent".into(),
+    };
+    let left = vec![
+        Span::styled(" ▚▞ ", Style::default().fg(th.accent())),
+        Span::styled(format!("WEFT   {}{}", app.project, state), th.title()),
+    ];
+    let right = match (app.pane_count(), app.focus) {
+        (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
+        (_, Focus::Agent) => vec![Span::styled(
+            format!("[{}] TO COME BACK ", app.toggle.label().to_uppercase()),
+            th.label(),
+        )],
+        (_, Focus::Weft) => {
+            let mut spans = vec![Span::styled(
+                pair("open", &app.open_count().to_string()),
+                th.label(),
+            )];
+            if app.needs_you() > 0 {
+                spans.push(Span::raw("   "));
+                spans.push(Span::styled(
+                    pair("needs you", &app.needs_you().to_string()),
+                    th.needs_you(),
+                ));
+            }
+            spans.push(Span::raw(" "));
+            spans
         }
-        return Paragraph::new(lines);
+    };
+    Paragraph::new(spread(left, right, width))
+}
+
+/// Agents are tabs over the pane. The focused surface's header is the accent.
+fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>)>) {
+    let th = app.theme;
+    let in_weft = app.focus == Focus::Weft;
+    let mut spans: Vec<Span> = Vec::new();
+    let mut spans_at: Vec<(u16, u16, Option<usize>)> = Vec::new();
+    let mut col = 0u16;
+    let push = |spans: &mut Vec<Span<'static>>, col: &mut u16, text: String, style: Style| {
+        *col += text.chars().count() as u16;
+        spans.push(Span::styled(text, style));
+    };
+
+    let header_style = if in_weft { Style::default().fg(th.accent()) } else { th.label() };
+    match (app.show_work(), geo.divider) {
+        (false, Some(_)) => {
+            push(&mut spans, &mut col, WORK_TAB.to_string(), header_style);
+            push(&mut spans, &mut col, "│ ".into(), th.rule());
+        }
+        (true, Some(at)) => {
+            push(&mut spans, &mut col, padded(" WORK", at as usize), header_style);
+            push(&mut spans, &mut col, "│ ".into(), th.rule());
+        }
+        _ => push(&mut spans, &mut col, padded(" WORK", WORK_HEADER as usize), header_style),
     }
 
-    let wide = width >= 60;
-    for (i, unit) in app.units.iter().enumerate() {
-        let picked = i == app.selected;
-        let marker = if picked {
-            "▸"
-        } else if unit.needs_you() {
-            "●"
-        } else {
-            " "
+    // Reading a drawer replaces the tabs with what is being read.
+    if let Some(d) = app.drawer() {
+        let width = geo.tabs.width.saturating_sub(col);
+        let back = "[←] BACK ";
+        let title = clip(&d.title, width.saturating_sub(back.chars().count() as u16 + 1) as usize);
+        push(&mut spans, &mut col, padded(&title, (width as usize).saturating_sub(back.chars().count())), th.title());
+        push(&mut spans, &mut col, back.into(), th.label());
+        return (Line::from(spans), spans_at);
+    }
+
+    for i in 0..app.pane_count() {
+        let active = i == app.pane_focus;
+        let waiting = app.waiting(i).is_some();
+        let harness = app.harness_at(i).unwrap_or("agent").to_string();
+        let text = format!(
+            "{}{} {}{}",
+            if active { "▸ " } else { "" },
+            i + 1,
+            harness,
+            if waiting { " ●" } else { "" }
+        );
+        let style = match (active, in_weft, waiting) {
+            // In the agent the active tab carries the accent; in Weft the
+            // `WORK` header does, so the tab steps back.
+            (true, false, _) => Style::default().fg(th.accent()).add_modifier(Modifier::BOLD),
+            (true, true, _) => th.selected(),
+            (_, _, true) => th.needs_you(),
+            _ => th.label(),
         };
-        let th = app.theme;
-        let style = if picked { th.selected() } else { Style::default().fg(th.primary()) };
-        if wide {
-            lines.push(Line::from(vec![
-                Span::styled(format!(" {marker} "), Style::default().fg(th.accent())),
-                Span::styled(format!("{:<24} ", clip(&unit.title, 24)), style),
-                Span::styled(format!("{:<11} ", clip(&unit.harness, 11)), th.label()),
-                Span::styled(unit.status().to_uppercase(), status_style(unit, th)),
-            ]));
-            if let Some(c) = &unit.check {
+        let start = col;
+        push(&mut spans, &mut col, text, style);
+        spans_at.push((start, col - start, Some(i)));
+        push(&mut spans, &mut col, "    ".into(), th.label());
+    }
+    let start = col;
+    push(&mut spans, &mut col, "+".into(), th.label());
+    spans_at.push((start, 1, None));
+    (Line::from(spans), spans_at)
+}
+
+/// Every action shows its key. What cannot be done now is drawn muted and
+/// stays where it was, so the shape of the bar never jumps.
+fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
+    let th = app.theme;
+    let plain = |text: &str| Paragraph::new(Line::styled(text.to_string(), th.label()));
+    if app.focus == Focus::Agent {
+        // While you are in the agent, Weft has no keys to offer.
+        return Paragraph::new("");
+    }
+    match &app.modal {
+        Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
+        Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
+        Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
+        Some(Modal::Ask { .. }) => return Paragraph::new(""),
+        Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
+        None => {}
+    }
+    if app.pane_count() == 0 {
+        return plain("  [Enter] START   [H]ELP   [X] QUIT");
+    }
+    if app.waiting_here() {
+        return plain("  [Enter] ANSWER IT   [E]XPLAIN WHY IT SAYS THAT");
+    }
+    if let Some(d) = app.drawer() {
+        let sibling = match d.kind {
+            Reading::Judges => ("[P] WORDING", Act::Wording),
+            Reading::Wording => ("[J] JUDGES", Act::Judges),
+        };
+        let left = vec![
+            Span::raw("  "),
+            key(app, sibling.0, sibling.1),
+            Span::raw("   "),
+            key(app, "[F]IX THIS", Act::Fix),
+            Span::raw("   "),
+            key(app, "[D]ECIDE", Act::Decide),
+        ];
+        return Paragraph::new(spread(left, vec![Span::styled("[←] BACK ", th.label())], width));
+    }
+    let mut spans = vec![Span::raw("  ")];
+    for (i, (label, act)) in [
+        ("[A]SK", Act::Ask),
+        ("[S]END", Act::Send),
+        ("[C]HECK", Act::Check),
+        ("[D]ECIDE", Act::Decide),
+        ("[N]EW AGENT", Act::NewAgent),
+        ("[W]ORK", Act::Work),
+        ("[H]ELP", Act::Help),
+        ("[X] QUIT", Act::Quit),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if i > 0 {
+            spans.push(Span::raw("   "));
+        }
+        spans.push(key(app, label, act));
+    }
+    Paragraph::new(Line::from(spans))
+}
+
+/// One action on the bar, dimmed when it cannot be used.
+fn key(app: &App, label: &str, act: Act) -> Span<'static> {
+    let th = app.theme;
+    let style = match app.unavailable(act) {
+        Some(_) => Style::default().fg(th.line()),
+        None => th.label(),
+    };
+    Span::styled(label.to_string(), style)
+}
+
+fn hint(app: &App) -> Paragraph<'static> {
+    let th = app.theme;
+    if let Some(said) = app.hint_text() {
+        return Paragraph::new(Line::styled(format!(" {said}"), th.needs_you()));
+    }
+    let text = match (&app.modal, app.focus) {
+        (Some(Modal::Quit), _) => {
+            " Nothing you asked for is lost either way. It is all written down.".into()
+        }
+        (Some(Modal::Confirm(_)), _) => {
+            " Weft never types into an agent without asking you first.".into()
+        }
+        (Some(Modal::Ask { .. }), _) => {
+            " The agent will ask you which approach to take, in its own pane.".into()
+        }
+        (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
+        (Some(_), _) => " [Enter] closes this.".to_string(),
+        (None, Focus::Agent) => {
+            let mut s = format!(
+                " Every key goes to the agent, Esc included. [{}] comes back.",
+                app.toggle.label()
+            );
+            if app.needs_you() > 0 {
+                s.push_str(&format!(" {} needs you.", app.needs_you()));
+            }
+            s
+        }
+        (None, Focus::Weft) if app.pane_count() == 0 => " Nothing is running yet.".into(),
+        (None, Focus::Weft) if app.waiting_here() => format!(
+            " {} needs your answer (from the screen). Weft never answers for you.",
+            app.harness_at(app.pane_focus).unwrap_or("the agent")
+        ),
+        (None, Focus::Weft) if app.drawer().is_some() => {
+            " [↑↓] or the wheel to scroll · [←] back to the agent".into()
+        }
+        (None, Focus::Weft) if !app.show_work() => {
+            " [W] brings the list back · [Space] still jumps to what needs you · [Ctrl+]] agent"
+                .into()
+        }
+        (None, Focus::Weft) => {
+            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back · [Ctrl+]] agent".into()
+        }
+    };
+    Paragraph::new(Line::styled(text, th.label()))
+}
+
+// --- the work list -----------------------------------------------------------
+
+/// One row per unit of work: what you asked for, and where it stands. The
+/// selected row expands in place.
+fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize)>) {
+    let th = app.theme;
+    let width = area.width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let mut rows: Vec<(u16, u16, usize)> = Vec::new();
+
+    if app.units().is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(" Nothing asked for yet.".to_string(), th.label()));
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            " [A]SK for something and Weft writes it down.".to_string(),
+            th.label(),
+        ));
+        return (Paragraph::new(lines), rows);
+    }
+
+    for (i, unit) in app.units().iter().enumerate() {
+        let start = area.y + lines.len() as u16;
+        let picked = i == app.selected;
+        let marker = if picked { " ▸ " } else { "   " };
+        // The harness sits just past the title field rather than at the far
+        // edge, so a wide list does not strand it across the screen.
+        let title_width = width
+            .saturating_sub(marker.len() + unit.harness.chars().count() + 2)
+            .min(36);
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::default().fg(th.accent())),
+            Span::styled(
+                padded(&clip(&unit.title, title_width), title_width),
+                if picked { th.selected() } else { Style::default().fg(th.primary()) },
+            ),
+            Span::styled(format!("{} ", unit.harness), th.label()),
+        ]));
+        for line in status_lines(app, unit, width) {
+            lines.push(line);
+        }
+        if app.expanded() == Some(i) {
+            for line in expanded_rows(app, unit, width) {
+                lines.push(line);
+            }
+        }
+        lines.push(Line::raw(""));
+        let height = area.y + lines.len() as u16 - start;
+        rows.push((start, height, i));
+    }
+    (Paragraph::new(lines), rows)
+}
+
+/// The status, and — when the work has been checked — who agreed and who
+/// judged. Every verdict names the host that produced it.
+fn status_lines(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
+    let th = app.theme;
+    let style = if unit.needs_you() { th.needs_you() } else { th.label() };
+    let head = format!("   {}{}", unit.marker(), unit.status().to_uppercase());
+    let Some(check) = &unit.check else {
+        return vec![Line::styled(head, style)];
+    };
+    let record = crate::record::Record::read(&app.root, &check.eval_id);
+    let agreed = match &record {
+        Some(r) => r.agreed(check.agreement),
+        None => format!("agreement {:.2}", check.agreement),
+    };
+    let judged = match check.judged_by.clone().or_else(|| {
+        record.as_ref().map(|r| r.judged_by().join(" and ")).filter(|s| !s.is_empty())
+    }) {
+        Some(h) => format!(" · judged by {h}"),
+        None => String::new(),
+    };
+    let tail = format!("{agreed}{judged}");
+    if head.chars().count() + 3 + tail.chars().count() <= width {
+        return vec![Line::from(vec![
+            Span::styled(head, style),
+            Span::styled(format!(" · {tail}"), th.label()),
+        ])];
+    }
+    // Narrow: the agreement and the host wrap rather than being cut, because
+    // every verdict names the host that produced it.
+    let mut lines = vec![Line::styled(head, style)];
+    for l in wrap(&tail, width.saturating_sub(3)) {
+        lines.push(Line::styled(format!("   {l}"), th.label()));
+    }
+    lines
+}
+
+/// What the expanded row adds: the judges' votes, what changed with no judge
+/// able to explain it, where the fields came from, and the row's own actions.
+fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
+    let th = app.theme;
+    let mut lines = Vec::new();
+    let indent = 5usize;
+    if let Some(check) = &unit.check {
+        if let Some(record) = crate::record::Record::read(&app.root, &check.eval_id) {
+            // One column width for the whole block, so the votes line up.
+            let agreed_width = record
+                .items
+                .iter()
+                .map(|i| record.agreed_short(i.agreement).chars().count())
+                .max()
+                .unwrap_or(0);
+            let room = width.saturating_sub(indent + 12 + agreed_width);
+            for item in &record.items {
+                let vote = item.plain_majority();
+                let agreed = record.agreed_short(item.agreement);
                 lines.push(Line::styled(
-                    format!("{:>40}{}", "", agreement_phrase(app, c)),
+                    format!(
+                        "{:indent$}{} {} {:<8} {}",
+                        "",
+                        mark_for(vote),
+                        padded(&clip(&item.text, room), room),
+                        vote,
+                        agreed,
+                        indent = indent
+                    ),
                     th.label(),
                 ));
             }
-        } else {
-            let w = width.saturating_sub(3) as usize;
-            lines.push(Line::from(vec![
-                Span::styled(format!("{marker} "), Style::default().fg(th.accent())),
-                Span::styled(clip(&unit.title, w), style),
-            ]));
-            lines.push(Line::styled(format!("  {}", clip(&unit.harness, w)), th.label()));
-            lines.push(Line::styled(
-                format!("  {}", clip(&unit.status().to_uppercase(), w)),
-                status_style(unit, th),
-            ));
+            if !record.unexplained.is_empty() {
+                lines.push(Line::styled(
+                    format!(
+                        "{:indent$}{} changed and no judge could tie it to what you asked",
+                        "",
+                        record.unexplained.join(", "),
+                        indent = indent
+                    ),
+                    th.label(),
+                ));
+            }
         }
-        lines.push(Line::raw(""));
+    }
+    lines.push(Line::styled(provenance(unit), th.label()));
+    lines.push(Line::from(vec![
+        Span::raw(" ".repeat(indent)),
+        key(app, "[P] WORDING", Act::Wording),
+        Span::raw("   "),
+        key(app, "[J] JUDGES", Act::Judges),
+        Span::raw("   "),
+        key(app, "[F]IX THIS", Act::Fix),
+        Span::raw("   "),
+        key(app, "[D]ECIDE", Act::Decide),
+    ]));
+    lines
+}
+
+/// Where the row's fields came from, in the terms the record uses.
+fn provenance(unit: &Unit) -> String {
+    let mut parts = vec![format!("asked {}", clock(&unit.asked_at)), unit.sent_phrase().to_string()];
+    if let Some(c) = &unit.check {
+        parts.push(format!("recorded as {}, {:.2}", c.verdict.recorded(), c.agreement));
+    }
+    if let Some(d) = &unit.sealed {
+        parts.push(format!("sealed {d}"));
+    }
+    format!("     {}", parts.join(" · "))
+}
+
+/// The time of day out of a ledger timestamp, which is what a row has room
+/// for. Anything that is not an ISO instant is shown as it was recorded.
+fn clock(recorded: &str) -> String {
+    match (recorded.find('T'), recorded.chars().count()) {
+        (Some(t), n) if n >= t + 6 => recorded.chars().skip(t + 1).take(5).collect(),
+        _ => recorded.to_string(),
+    }
+}
+
+fn mark_for(vote: &str) -> &'static str {
+    match vote {
+        "yes" => "✓",
+        "no" => "✗",
+        _ => "?",
+    }
+}
+
+// --- the pane, the drawer, and first run --------------------------------------
+
+fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
+    app.note_pane_area(area);
+    let focus = app.pane_focus;
+    app.with_pane_screen(focus, area.height, area.width, |screen| {
+        frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
+    });
+}
+
+/// A reading surface beside the list. It replaces the pane, not the screen.
+fn drawer(app: &App, area: Rect) -> Paragraph<'static> {
+    let th = app.theme;
+    let Some(d) = app.drawer() else { return Paragraph::new("") };
+    let room = area.height as usize;
+    let mut lines: Vec<Line> = d
+        .lines
+        .iter()
+        .skip(d.offset)
+        .take(room)
+        .map(|l| Line::styled(format!(" {}", clip(l, area.width.saturating_sub(1) as usize)), th.label()))
+        .collect();
+    let more = d.lines.len().saturating_sub(d.offset + lines.len());
+    if more > 0 && !lines.is_empty() {
+        lines.pop();
+        lines.push(Line::styled(format!(" … {more} more lines · [↓]"), th.label()));
     }
     Paragraph::new(lines)
 }
 
-/// What waits on you is the only thing that gets the bright accent.
-fn status_style(unit: &crate::ledger::Unit, th: Theme) -> Style {
-    if unit.needs_you() { th.needs_you() } else { th.label() }
+/// Screen 1: nothing is running yet, and the one thing to do about it.
+fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
+    let th = app.theme;
+    let found = App::available_agents();
+    let mut lines: Vec<Line> = vec![Line::raw(""), Line::raw("")];
+    for text in [
+        "Weft keeps track of what you asked your coding agents",
+        "for, what came back, and who checked it.",
+        "",
+        "You work in the agent as usual. Weft writes it down.",
+        "",
+    ] {
+        lines.push(Line::styled(format!("   {text}"), th.label()));
+    }
+    lines.push(Line::styled("   ┌────────────────────────────────────────────┐".to_string(), th.rule()));
+    lines.push(Line::from(vec![
+        Span::styled("   │  ".to_string(), th.rule()),
+        Span::styled(padded("START AN AGENT", 42), th.title()),
+        Span::styled("│".to_string(), th.rule()),
+    ]));
+    lines.push(Line::styled("   │                                            │".to_string(), th.rule()));
+    if found.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("   │  ".to_string(), th.rule()),
+            Span::styled(padded("no coding agent found on PATH", 42), th.label()),
+            Span::styled("│".to_string(), th.rule()),
+        ]));
+    }
+    for (i, agent) in found.iter().enumerate() {
+        let picked = i == app.modal_choice;
+        lines.push(Line::from(vec![
+            Span::styled("   │  ".to_string(), th.rule()),
+            Span::styled(
+                padded(&format!(" {} {agent}", if picked { "▸" } else { " " }), 42),
+                if picked { th.selected() } else { th.label() },
+            ),
+            Span::styled("│".to_string(), th.rule()),
+        ]));
+    }
+    lines.push(Line::styled("   │                                            │".to_string(), th.rule()));
+    lines.push(Line::from(vec![
+        Span::styled("   │  ".to_string(), th.rule()),
+        Span::styled(padded("it runs here, with your own settings", 42), th.label()),
+        Span::styled("│".to_string(), th.rule()),
+    ]));
+    lines.push(Line::styled("   └────────────────────────────────────────────┘".to_string(), th.rule()));
+    lines.push(Line::raw(""));
+    lines.push(Line::styled(
+        "   Click anything. Arrows and Enter work too.".to_string(),
+        th.label(),
+    ));
+    let _ = area;
+    Paragraph::new(lines)
 }
 
-/// Judge agreement, phrased as agreement. Never correctness, never a score.
-fn agreement_phrase(app: &App, check: &crate::ledger::Check) -> String {
-    match crate::record::Record::read(&app.root, &check.eval_id) {
-        Some(r) => r.agreed(check.agreement),
-        None => format!("agreement {:.2}", check.agreement),
+// --- the bottom-anchored panels ----------------------------------------------
+
+/// The confirmation and the quit question are anchored to the bottom so the
+/// row they are about stays in view above them.
+fn panel_lines(app: &App) -> Option<Vec<String>> {
+    match app.modal.as_ref()? {
+        Modal::Confirm(p) => {
+            let mut lines = vec![p.what.to_uppercase()];
+            lines.extend(p.why.iter().cloned());
+            lines.push(String::new());
+            lines.extend(String::from_utf8_lossy(&p.payload).lines().map(str::to_string));
+            Some(lines)
+        }
+        Modal::Quit => Some(vec![
+            "QUIT WEFT?".into(),
+            "Your agents are running in the background. They can keep going".into(),
+            "without Weft open.".into(),
+            String::new(),
+            "Quit, leave the agents running".into(),
+            "Quit and stop the agents".into(),
+            "Cancel".into(),
+        ]),
+        _ => None,
+    }
+}
+
+fn panel(app: &App, area: Rect) -> Paragraph<'static> {
+    let th = app.theme;
+    let width = area.width.saturating_sub(2) as usize;
+    match app.modal.as_ref() {
+        Some(Modal::Quit) => {
+            let mut lines = vec![
+                Line::styled(" QUIT WEFT?".to_string(), th.title()),
+                Line::styled(
+                    " Your agents are running in the background. They can keep going".to_string(),
+                    th.label(),
+                ),
+                Line::styled(" without Weft open.".to_string(), th.label()),
+                Line::raw(""),
+            ];
+            for (i, choice) in [
+                "Quit, leave the agents running",
+                "Quit and stop the agents",
+                "Cancel",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let picked = i == app.modal_choice;
+                lines.push(Line::styled(
+                    format!("   {} {choice}", if picked { "▸" } else { " " }),
+                    if picked { th.selected() } else { th.label() },
+                ));
+            }
+            Paragraph::new(lines)
+        }
+        Some(Modal::Confirm(p)) => {
+            let mut lines = vec![Line::styled(format!(" {}", p.what.to_uppercase()), th.title())];
+            for why in &p.why {
+                lines.push(Line::styled(format!(" {why}"), th.label()));
+            }
+            lines.push(Line::raw(""));
+            let text = String::from_utf8_lossy(&p.payload);
+            let body: Vec<String> = text.lines().flat_map(|l| wrap(l, width)).collect();
+            let room = (area.height as usize).saturating_sub(lines.len());
+            for (i, l) in body.iter().take(room).enumerate() {
+                let more = body.len() > room && i + 1 == room;
+                lines.push(Line::styled(
+                    if more { format!(" {l}  ▼") } else { format!(" {l}") },
+                    Style::default().fg(th.primary()),
+                ));
+            }
+            Paragraph::new(lines)
+        }
+        _ => Paragraph::new(""),
+    }
+}
+
+// --- the one remaining overlay -----------------------------------------------
+
+/// Ask, Help, Note and the agent picker are interruptions by nature, so they
+/// stay centred boxes. Everything else in v2 is drawn in place.
+fn centred(app: &App, modal: &Modal) -> Option<(String, Vec<String>, Vec<String>)> {
+    match modal {
+        Modal::Confirm(_) | Modal::Quit => None,
+        Modal::Help => Some((
+            " KEYS ".into(),
+            vec![
+                "[↑↓]     pick a row          [Enter]  expand it".into(),
+                "[←]      back, everywhere    [Space]  next thing that needs you".into(),
+                "[Tab]    next agent          [1]-[9]  that agent".into(),
+                "[A]SK · [S]END · [C]HECK · [D]ECIDE".into(),
+                "[P] the wording · [J] the judges · [F]IX THIS".into(),
+                "[N]EW AGENT · [W]ORK shows or hides the list · [X] QUIT".into(),
+                String::new(),
+                format!("[{}] goes into the agent, and comes back.", app.toggle.label()),
+                "In the agent every other key goes straight through, Esc included.".into(),
+                "To select text in a pane, hold Shift.".into(),
+            ],
+            vec!["[Enter] CLOSE".into()],
+        )),
+        Modal::Note(text) => Some((
+            " WEFT ".into(),
+            text.lines().map(str::to_string).collect(),
+            vec!["[Enter] CLOSE".into()],
+        )),
+        Modal::Ask { text, target } => {
+            let mut lines = if text.is_empty() { Vec::new() } else { wrap(text, 58) };
+            lines.push(format!("{text_cursor}_", text_cursor = ""));
+            lines.push(String::new());
+            let tabs: Vec<String> = (0..app.pane_count())
+                .map(|i| {
+                    format!(
+                        "{}{} {}",
+                        if i == *target { "▸ " } else { "" },
+                        i + 1,
+                        app.harness_at(i).unwrap_or("agent")
+                    )
+                })
+                .collect();
+            lines.push(format!("SEND TO     {}", tabs.join("    ")));
+            Some((
+                " WHAT DO YOU WANT DONE? ".into(),
+                lines,
+                vec!["[Enter] SEND            [←] CANCEL".into()],
+            ))
+        }
+        Modal::StartAgent { .. } => Some((
+            " START AN AGENT ".into(),
+            vec!["It runs here, with your own settings.".into(), String::new()],
+            App::available_agents().iter().map(|a| a.to_string()).collect(),
+        )),
+    }
+}
+
+fn overlay(
+    frame: &mut Frame,
+    app: &App,
+    title: &str,
+    lines: &[String],
+    choices: &[String],
+    area: Rect,
+) {
+    let th = app.theme;
+    let height = (lines.len() + choices.len() + 4).min(area.height as usize) as u16;
+    let width = 74u16.min(area.width.saturating_sub(4));
+    let box_area = centre(area, width, height);
+    frame.render_widget(Clear, box_area);
+
+    let mut body: Vec<Line> = vec![Line::raw("")];
+    for l in lines {
+        body.push(Line::styled(format!("  {l}"), Style::default().fg(th.primary())));
+    }
+    if !choices.is_empty() {
+        body.push(Line::raw(""));
+    }
+    let picker = matches!(app.modal, Some(Modal::StartAgent { .. }));
+    for (i, c) in choices.iter().enumerate() {
+        let picked = picker && i == app.modal_choice;
+        body.push(Line::styled(
+            if picker { format!("   {} {c}", if picked { "▸" } else { " " }) } else { format!("   {c}") },
+            if picked { th.selected() } else { th.label() },
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(body).block(
+            Block::bordered().border_style(th.rule()).title(Span::styled(title.to_string(), th.title())),
+        ),
+        box_area,
+    );
+}
+
+// --- small things -------------------------------------------------------------
+
+/// Left spans, right spans, and the gap between them.
+fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Line<'static> {
+    let used: usize = left.iter().chain(right.iter()).map(|s| s.content.chars().count()).sum();
+    let gap = (width as usize).saturating_sub(used).max(1);
+    let mut spans = left;
+    spans.push(Span::raw(" ".repeat(gap)));
+    spans.extend(right);
+    Line::from(spans)
+}
+
+fn padded(s: &str, n: usize) -> String {
+    let len = s.chars().count();
+    if len >= n {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(n - len))
     }
 }
 
 fn clip(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
+    } else if n == 0 {
+        String::new()
     } else {
         s.chars().take(n.saturating_sub(1)).chain(['…']).collect()
     }
-}
-
-fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.note_pane_area(area);
-    let focus = app.pane_focus;
-    if app.session.panes.is_empty() {
-        // Weft starts no agent on its own. The panel stays empty until asked.
-        frame.render_widget(Paragraph::new(""), area);
-        return;
-    }
-    let _ = app.session.resize(focus, area.height, area.width);
-    let Some(pane) = app.session.panes.get(focus) else { return };
-    pane.with_screen(|screen| {
-        frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
-    });
-}
-
-fn waiting_line(app: &App) -> Option<String> {
-    app.waiting(app.pane_focus)
-        .map(|_| "  ● this agent needs your answer (from the screen)".to_string())
-}
-
-fn action_bar(app: &App) -> Paragraph<'static> {
-    // While the person is in the agent, Weft has no keys to offer.
-    if app.focus == Focus::Agent {
-        return Paragraph::new("");
-    }
-    let mut left = String::from("  NEW AGENT   HELP   QUIT");
-    if !app.session.panes.is_empty() {
-        left = String::from("  ASK   NEW AGENT   CHECK   DECIDE   HELP   QUIT");
-        if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
-            left = "  ASK   SEND IT   CHECK   DECIDE   HELP   QUIT".into();
-        }
-    }
-    let right = if app.session.panes.is_empty() {
-        String::new()
-    } else {
-        format!("{} AGENT ", app.toggle.label())
-    };
-    let th = app.theme;
-    Paragraph::new(Line::from(vec![
-        Span::styled(left, th.label()),
-        Span::raw("   "),
-        Span::styled(right.to_uppercase(), th.label()),
-    ]))
-}
-
-fn hint(app: &App) -> Paragraph<'static> {
-    let text = match (&app.modal, app.focus) {
-        (Some(Modal::Quit), _) => " Nothing you asked for is lost either way. It is all written down.".into(),
-        (Some(Modal::Confirm(_)), _) => " Weft never types into an agent without asking you first.".into(),
-        (Some(Modal::Ask { .. }), _) => " The agent will ask you which approach to take, in its own pane.".into(),
-        (_, Focus::Agent) => format!(
-            " Every key goes to the agent, Esc included. {} comes back to Weft.",
-            app.toggle.label()
-        ),
-        (_, Focus::Weft) if app.session.panes.is_empty() => {
-            " Press N to start an agent in this project.".to_string()
-        }
-        (_, Focus::Weft) => match waiting_line(app) {
-            Some(_) => {
-                " Weft never answers an agent's question for you. Go into the pane and choose."
-                    .to_string()
-            }
-            None => " ↑↓ pick · Enter open · click anything".to_string(),
-        },
-    };
-    Paragraph::new(Line::styled(text, app.theme.label()))
-}
-
-fn overlay(frame: &mut Frame, app: &App, modal: &Modal, area: Rect) {
-    // Four rows go to the border, the blank line and the buttons.
-    let room = area.height.saturating_sub(6) as usize;
-    let (title, lines, buttons) = content(app, modal, room);
-    let height = (lines.len() + buttons.len() + 4).min(area.height as usize) as u16;
-    let width = 64u16.min(area.width.saturating_sub(4));
-    let box_area = centred(area, width, height);
-    frame.render_widget(Clear, box_area);
-
-    let mut body: Vec<Line> = vec![Line::raw("")];
-    for l in lines {
-        body.push(Line::raw(format!("  {l}")));
-    }
-    if !buttons.is_empty() {
-        body.push(Line::raw(""));
-    }
-    for (i, b) in buttons.iter().enumerate() {
-        let style = if i == app.modal_choice {
-            Style::default().fg(app.theme.accent()).add_modifier(Modifier::BOLD | Modifier::REVERSED)
-        } else {
-            app.theme.label()
-        };
-        body.push(Line::styled(format!("   {b}"), style));
-    }
-    let th = app.theme;
-    frame.render_widget(
-        Paragraph::new(body).block(
-            Block::bordered()
-                .border_style(th.rule())
-                .title(Span::styled(title, th.title())),
-        ),
-        box_area,
-    );
-}
-
-fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<String>) {
-    match modal {
-        Modal::Quit => (
-            " Quit Weft? ".into(),
-            vec![
-                "Your agents are running in the background. They can".into(),
-                "keep going without Weft open.".into(),
-            ],
-            vec![
-                "[ Quit, leave the agents running ]".into(),
-                "[ Quit and stop the agents ]".into(),
-                "[ Cancel ]".into(),
-            ],
-        ),
-        Modal::Help => (
-            " Keys ".into(),
-            vec![
-                "↑ ↓    pick an item".into(),
-                "Enter  open it".into(),
-                "A      ask for something".into(),
-                "C      check the work · D  decide · X  quit".into(),
-                format!("{}  switch between Weft and the agent", app.toggle.label()),
-                "".into(),
-                "In the agent every other key goes straight through.".into(),
-                "To select text in a pane, hold Shift.".into(),
-            ],
-            vec!["[ Close ]".into()],
-        ),
-        Modal::Note(text) => (
-            " Weft ".into(),
-            text.lines().map(str::to_string).collect(),
-            vec!["[ OK ]".into()],
-        ),
-        Modal::Ask { text, target } => {
-            let who = app.session.panes.get(*target).map(|p| p.harness.clone()).unwrap_or_default();
-            let mut lines = wrap(text, 58);
-            if text.is_empty() {
-                lines = vec!["_".into()];
-            } else {
-                lines.push("_".into());
-            }
-            lines.push("".into());
-            lines.push(format!("which agent   ▸ {who}        Tab to change"));
-            (" What do you want done? ".into(), lines, vec!["[ Send ]   [ Cancel ]".into()])
-        }
-        Modal::Confirm(p) => {
-            let mut lines = p.why.clone();
-            lines.push("".into());
-            let text = String::from_utf8_lossy(&p.payload);
-            for l in wrap(&text, 58).into_iter().take(8) {
-                lines.push(l);
-            }
-            if text.lines().count() > 8 {
-                lines.push("…".into());
-            }
-            (
-                format!(" {} ", p.what),
-                lines,
-                vec!["[ Do it ]".into(), "[ Cancel ]".into()],
-            )
-        }
-        Modal::StartAgent { .. } => {
-            let found = App::available_agents();
-            (
-                " Start an agent ".into(),
-                vec![
-                    "It runs in this project, with your own settings.".into(),
-                    String::new(),
-                ],
-                found.iter().map(|a| format!("[ {a} ]")).collect(),
-            )
-        }
-        Modal::View { title, lines, offset } => {
-            let shown: Vec<String> = lines.iter().skip(*offset).take(room).cloned().collect();
-            let more = lines.len().saturating_sub(*offset + shown.len());
-            let mut body = shown;
-            if more > 0 {
-                body.push(format!("… {more} more lines · ↓ or the wheel"));
-            }
-            (format!(" {title} "), body, vec!["[ Close ]".into()])
-        }
-        Modal::Detail { unit, record } => detail(app, *unit, record.as_ref(), room),
-    }
-}
-
-fn detail(
-    app: &App,
-    index: usize,
-    record: Option<&crate::record::Record>,
-    room: usize,
-) -> (String, Vec<String>, Vec<String>) {
-    let Some(unit) = app.units.get(index) else {
-        return (" Detail ".into(), vec!["gone".into()], vec!["[ Close ]".into()]);
-    };
-
-    let mut head = vec![
-        format!("asked {} · {}", &unit.asked_at, unit.harness),
-        format!("route {} · {}", unit.route, unit.status()),
-    ];
-
-    // The conclusion goes above the evidence. A verdict scrolled off the
-    // bottom of the box is worse than one out of narrative order.
-    if let (Some(c), Some(r)) = (&unit.check, record) {
-        head.push(String::new());
-        head.push(format!("{} · {}", c.verdict.plain().to_uppercase(), r.agreed(c.agreement)));
-        head.push("A check is a judgement, not a guarantee.".into());
-        head.push(format!(
-            "Recorded as: {}, {:.2}.",
-            c.verdict.recorded(),
-            c.agreement
-        ));
-    }
-
-    let Some(r) = record else {
-        head.push(String::new());
-        head.push("No check has been run on this yet.".into());
-        head.push("Press C to have the agent's judges look at it.".into());
-        return (format!(" {} ", clip(&unit.title, 40)), head, vec!["[ Close ]".into()]);
-    };
-
-    let mut tail = vec![
-        String::new(),
-        format!(
-            "{} judges checked the work · none of them did it",
-            r.judges.len()
-        ),
-        format!("judged by {}", r.judged_by().join(" and ")),
-        String::new(),
-    ];
-
-    let mut shown = 0usize;
-    for item in &r.items {
-        // Three lines per item at most, and only while there is room left.
-        if head.len() + tail.len() + 4 > room {
-            break;
-        }
-        let mark = match item.plain_majority() {
-            "yes" => "✓",
-            "no" => "✗",
-            _ => "?",
-        };
-        tail.push(format!("{mark} {}", clip(&item.text, 44)));
-        tail.push(format!("     {}   {}", item.plain_majority(), r.agreed(item.agreement)));
-        if let Some(reason) = item.reasons.first() {
-            tail.push(format!("     {}", clip(reason, 50)));
-        }
-        shown += 1;
-    }
-    if shown < r.items.len() {
-        tail.push(format!("… and {} more", r.items.len() - shown));
-    }
-    if !r.unexplained.is_empty() && head.len() + tail.len() + 2 <= room {
-        tail.push(String::new());
-        tail.push(format!(
-            "{} changed and no judge could tie it to what you asked",
-            r.unexplained.join(", ")
-        ));
-    }
-
-    head.extend(tail);
-    (
-        format!(" {} ", clip(&unit.title, 40)),
-        head,
-        vec!["[P] The wording   [J] The judges   [S] Decide   [ Close ]".into()],
-    )
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -511,11 +904,290 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn centred(area: Rect, width: u16, height: u16) -> Rect {
+fn centre(area: Rect, width: u16, height: u16) -> Rect {
     Rect {
         x: area.x + area.width.saturating_sub(width) / 2,
         y: area.y + area.height.saturating_sub(height) / 2,
         width,
         height: height.min(area.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{app, unit, press};
+    use crate::ledger::{Check, Sent, Verdict};
+    use crossterm::event::KeyCode;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// What the frame actually drew, one line per row. The wireframes in
+    /// `spec/interface.md` are the reference; these read the same way.
+    fn screen(app: &mut App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| draw(frame, app)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// An Ask that has been judged, with the record the judges wrote on disk.
+    fn judged() -> App {
+        let mut a = app();
+        let eval_id = "evl_1";
+        let dir = a.root.join(".fab7/rf/evals").join(eval_id);
+        std::fs::create_dir_all(&dir).expect("evals dir");
+        std::fs::write(
+            dir.join("record.json"),
+            serde_json::json!({
+                "eval_id": eval_id,
+                "verdict": "drifted",
+                "confidence": 0.67,
+                "judgements": [
+                    {"judge": {"angle": "coverage", "host": "codex", "model": "gpt-5.6-luna"}},
+                    {"judge": {"angle": "drift", "host": "codex", "model": "gpt-5.6-luna"}},
+                    {"judge": {"angle": "adversary", "host": "codex", "model": "gpt-5.6-luna"}}
+                ],
+                "items": [
+                    {"id": "i1", "status": "active", "text": "returns the real build number",
+                     "majority": "no", "agreement": 1.0,
+                     "votes": [{"angle": "drift", "vote": "no",
+                                "reason": "it still reads a literal \"dev\" at line 41"}]},
+                    {"id": "i2", "status": "active", "text": "the endpoint responds at /health",
+                     "majority": "yes", "agreement": 1.0, "votes": []}
+                ],
+                "drift": {"commission": [{"path": "README.md"}]}
+            })
+            .to_string(),
+        )
+        .expect("record");
+
+        let mut u = unit(Sent::Arrived { exact: true });
+        u.check = Some(Check {
+            eval_id: eval_id.into(),
+            verdict: Verdict::DoesntMatch,
+            agreement: 0.67,
+            judged_by: Some("codex".into()),
+        });
+        let mut ready = unit(Sent::ReadyToSend);
+        ready.ask_id = "ask_2".into();
+        ready.title = "readme fix".into();
+        a.set_units(vec![u, ready]);
+        a
+    }
+
+    #[test]
+    fn the_title_bar_names_the_project_where_you_are_and_what_is_open() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        let title = drawn.lines().next().expect("a title bar");
+        assert!(title.contains("WEFT"), "{title}");
+        assert!(title.contains("in Weft"), "{title}");
+        assert!(title.contains("OPEN  2"), "{title}");
+        assert!(title.contains("NEEDS YOU  2"), "{title}");
+    }
+
+    #[test]
+    fn agents_are_tabs_over_the_pane_numbered_and_marked() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        let tabs = drawn.lines().nth(1).expect("a tab row");
+        assert!(tabs.contains("WORK"), "{tabs}");
+        assert!(tabs.contains("▸ 1 codex"), "the active agent is marked: {tabs}");
+        assert!(tabs.trim_end().ends_with('+'), "a new agent is one click away: {tabs}");
+    }
+
+    #[test]
+    fn a_row_shows_what_you_asked_for_the_agent_and_where_it_stands() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("health endpoint"), "{drawn}");
+        assert!(drawn.contains("codex"), "{drawn}");
+        assert!(drawn.contains("DOESN'T MATCH WHAT YOU ASKED"), "{drawn}");
+    }
+
+    #[test]
+    fn a_handoff_that_is_ready_carries_the_dot_the_vocabulary_gives_it() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("● READY TO SEND"), "{drawn}");
+    }
+
+    #[test]
+    fn every_verdict_names_the_host_that_produced_it() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("2 of 3 judges agreed"), "agreement, never a score: {drawn}");
+        assert!(drawn.contains("judged by codex"), "{drawn}");
+    }
+
+    #[test]
+    fn nothing_on_the_board_claims_the_work_is_done_or_that_a_prompt_is_better() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24).to_lowercase();
+        for forbidden in ["done", "better", "improved", "quality score", "correct"] {
+            assert!(!drawn.contains(forbidden), "{forbidden} must not appear: {drawn}");
+        }
+    }
+
+    #[test]
+    fn an_expanded_row_shows_the_votes_the_provenance_and_its_own_keys() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Enter);
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("returns the real build number"), "{drawn}");
+        assert!(drawn.contains("README.md changed and no judge could tie it"), "{drawn}");
+        assert!(drawn.contains("asked 14:02"), "{drawn}");
+        assert!(drawn.contains("recorded as drifted, 0.67"), "the recorded term travels too: {drawn}");
+        for line in drawn.lines() {
+            assert!(line.chars().count() <= 80, "nothing overflows the screen: {line}");
+        }
+        for key in ["[P] WORDING", "[J] JUDGES", "[F]IX THIS", "[D]ECIDE"] {
+            assert!(drawn.contains(key), "{key} missing from the expanded row: {drawn}");
+        }
+    }
+
+    #[test]
+    fn the_action_bar_shows_a_key_for_everything_it_offers() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        for key in [
+            "[A]SK", "[S]END", "[C]HECK", "[D]ECIDE", "[N]EW AGENT", "[W]ORK", "[H]ELP", "[X] QUIT",
+        ] {
+            assert!(drawn.contains(key), "{key} missing from the bar: {drawn}");
+        }
+    }
+
+    #[test]
+    fn the_bar_keeps_its_shape_whether_or_not_an_action_can_be_used() {
+        // Unavailable actions are drawn muted and stay put, so the bar never
+        // jumps under the pointer.
+        let mut nothing = app();
+        let mut something = judged();
+        let bar = |a: &mut App| {
+            screen(a, 80, 24).lines().nth(22).map(str::to_string).expect("a bar")
+        };
+        assert_eq!(bar(&mut nothing), bar(&mut something));
+    }
+
+    #[test]
+    fn in_the_agent_weft_offers_no_keys_at_all() {
+        let mut a = judged();
+        a.focus = Focus::Agent;
+        let drawn = screen(&mut a, 80, 24);
+        let lines: Vec<&str> = drawn.lines().collect();
+        assert_eq!(lines[22].trim(), "", "the action bar is empty in the agent");
+        assert!(lines[23].contains("Esc included"), "{}", lines[22]);
+        assert!(lines[0].contains("TO COME BACK"), "{}", lines[0]);
+    }
+
+    #[test]
+    fn hiding_the_work_list_leaves_a_tab_to_bring_it_back() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('w'));
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("[W] WORK"), "{drawn}");
+        assert!(!drawn.contains("health endpoint"), "the list is away: {drawn}");
+        assert!(drawn.contains("[W] brings the list back"), "{drawn}");
+    }
+
+    #[test]
+    fn the_drawer_replaces_the_pane_and_keeps_the_list_beside_it() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('j'));
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("THE JUDGES · health endpoint"), "{drawn}");
+        assert!(drawn.contains("[←] BACK"), "{drawn}");
+        assert!(drawn.contains("readme fix"), "the list stays: {drawn}");
+        assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
+        assert!(drawn.contains("none of them did it"), "{drawn}");
+    }
+
+    #[test]
+    fn the_wording_and_the_judges_are_siblings_not_a_stack() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('j'));
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("[P] WORDING"), "the bar offers the other one: {drawn}");
+        press(&mut a, KeyCode::Left);
+        assert!(a.drawer().is_none(), "one [←] closes it, with nothing underneath");
+    }
+
+    #[test]
+    fn the_confirmation_is_anchored_to_the_bottom_with_the_row_still_in_view() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Char('c'));
+        let drawn = screen(&mut a, 80, 24);
+        let lines: Vec<&str> = drawn.lines().collect();
+        let row = lines.iter().position(|l| l.contains("readme fix")).expect("the row");
+        let panel = lines.iter().position(|l| l.contains("CHECK THIS WORK")).expect("the panel");
+        assert!(row < panel, "the row it is about stays above it:\n{drawn}");
+        assert!(lines[22].contains("[Enter] DO IT"), "{}", lines[22]);
+        assert!(lines[22].contains("[←] CANCEL"), "{}", lines[22]);
+        assert!(lines[23].contains("never types into an agent without asking"), "{}", lines[23]);
+    }
+
+    #[test]
+    fn side_by_side_puts_the_list_left_and_never_squeezes_the_pane() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 120, 32);
+        let tabs = drawn.lines().nth(1).expect("a tab row");
+        assert!(tabs.contains('│'), "a divider between the two surfaces: {tabs}");
+        let Layout::Split { list, pane } = layout::for_width(120) else { panic!() };
+        assert_eq!((list, pane), (39, 80), "the spec's own screen 4");
+    }
+
+    #[test]
+    fn first_run_offers_the_one_thing_there_is_to_do() {
+        let (root, session) = crate::app::tests::test_session("first-run");
+        let mut a = App::with_session(root, crate::keys::Toggle, session);
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("NO AGENT RUNNING"), "{drawn}");
+        assert!(drawn.contains("START AN AGENT"), "{drawn}");
+        assert!(drawn.contains("Weft writes it down"), "{drawn}");
+        assert!(drawn.contains("[Enter] START"), "{drawn}");
+        assert!(drawn.contains("Nothing is running yet."), "{drawn}");
+    }
+
+    #[test]
+    fn a_pane_waiting_for_an_answer_offers_to_take_you_there_and_nothing_else() {
+        let mut a = judged();
+        a.input(0, b"Allow command?\r\n").expect("type");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.pump();
+            if a.waiting(0).is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let tabs = screen(&mut a, 80, 24);
+        assert!(tabs.lines().nth(1).is_some_and(|l| l.contains('●')), "the tab carries the dot: {tabs}");
+
+        press(&mut a, KeyCode::Char(' '));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("[Enter] ANSWER IT"), "{drawn}");
+        assert!(drawn.contains("[E]XPLAIN WHY IT SAYS THAT"), "{drawn}");
+        assert!(drawn.contains("(from the screen)"), "the inference is labelled: {drawn}");
+        assert!(drawn.contains("Weft never answers for you"), "{drawn}");
+    }
+
+    #[test]
+    fn an_unavailable_action_puts_one_sentence_in_the_hint_and_no_dialog() {
+        let mut a = app();
+        press(&mut a, KeyCode::Char('s'));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("Nothing has been asked for yet."), "{drawn}");
+        assert!(!drawn.contains("┌"), "no box was opened:\n{drawn}");
     }
 }

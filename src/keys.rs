@@ -1,6 +1,7 @@
 //! The toggle key and where each keystroke goes.
 //!
-//! Spec: `plans/weft/spec/interface.md`. Weft reserves exactly one key.
+//! Spec: `plans/weft/spec/interface.md` §Keys. Weft reserves exactly one
+//! chord; in the agent everything else goes through, `Esc` included.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -52,8 +53,22 @@ pub enum Action {
     /// Switch to the nth agent, counting from one.
     PickPane(u8),
     Pick(i8),
+    /// Expand or collapse the selected row.
     Open,
+    /// Back: collapse the row, close the drawer, dismiss a dialog.
     Back,
+    /// Jump to the next thing that needs you.
+    NextNeedsYou,
+    /// Show or hide the work list.
+    ToggleWork,
+    /// The exact wording that was sent, in the drawer.
+    Wording,
+    /// The judges, their votes and their reasons, in the drawer.
+    Judges,
+    /// Ask again about the selected row's work.
+    Fix,
+    /// Why Weft says a pane is waiting for an answer.
+    Explain,
     Ask,
     Check,
     Decide,
@@ -62,6 +77,8 @@ pub enum Action {
     NextPane,
     /// Hand the keystroke to the harness untouched.
     ToAgent,
+    /// Weft has no meaning for this key, and does nothing with it.
+    Ignore,
 }
 
 /// Terminals send `Ctrl+]` as `0x1D`, which the legacy DEC convention names
@@ -83,6 +100,9 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
         Key::Enter => Action::Open,
         Key::Left => Action::Back,
         Key::Tab => Action::NextPane,
+        // `Esc` is never Weft's; it belongs to the agent.
+        Key::Esc => Action::Ignore,
+        Key::Char(' ') => Action::NextNeedsYou,
         Key::Char(c) if c.is_ascii_digit() && c != '0' => {
             Action::PickPane(c.to_digit(10).unwrap_or(1) as u8)
         }
@@ -92,11 +112,15 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'n' => Action::NewAgent,
             'c' => Action::Check,
             'd' => Action::Decide,
+            'p' => Action::Wording,
+            'j' => Action::Judges,
+            'f' => Action::Fix,
+            'e' => Action::Explain,
+            'w' => Action::ToggleWork,
             'h' => Action::Help,
             'x' => Action::Quit,
-            _ => Action::Help,
+            _ => Action::Ignore,
         },
-        Key::Esc => Action::Help,
     }
 }
 
@@ -108,10 +132,6 @@ mod tests {
         Chord { code, ctrl: false, shift: false }
     }
 
-
-
-
-
     #[test]
     fn in_the_agent_every_key_goes_through_including_esc_and_ctrl_c() {
         let t = Toggle;
@@ -122,35 +142,46 @@ mod tests {
     }
 
     #[test]
-    fn in_weft_the_visible_buttons_have_single_keys() {
-        let t = Toggle;
-        for (c, expected) in [
-            ('a', Action::Ask),
-            ('c', Action::Check),
-            ('d', Action::Decide),
-            ('h', Action::Help),
-            ('x', Action::Quit),
-        ] {
-            assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected);
-            assert_eq!(route(plain(Key::Char(c.to_ascii_uppercase())), Focus::Weft, t), expected);
-        }
-    }
-
-    #[test]
-    fn every_key_the_action_bar_offers_has_an_action() {
-        // The bar advertised [S]end it long before anything was wired to it.
+    fn every_action_the_bar_shows_a_key_for_has_that_key() {
+        // §Keys: every action on screen shows its key in brackets, and the bar
+        // is the reference. A bar entry with nothing behind it is the v1 bug.
         let t = Toggle;
         for (c, expected) in [
             ('a', Action::Ask),
             ('s', Action::Send),
-            ('n', Action::NewAgent),
             ('c', Action::Check),
             ('d', Action::Decide),
+            ('n', Action::NewAgent),
+            ('w', Action::ToggleWork),
             ('h', Action::Help),
             ('x', Action::Quit),
         ] {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected, "{c}");
+            assert_eq!(
+                route(plain(Key::Char(c.to_ascii_uppercase())), Focus::Weft, t),
+                expected,
+                "{c} upper"
+            );
         }
+    }
+
+    #[test]
+    fn a_rows_own_actions_have_their_own_keys() {
+        let t = Toggle;
+        for (c, expected) in [
+            ('p', Action::Wording),
+            ('j', Action::Judges),
+            ('f', Action::Fix),
+            ('d', Action::Decide),
+        ] {
+            assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected, "{c}");
+        }
+    }
+
+    #[test]
+    fn space_jumps_to_what_needs_you_and_e_explains_an_inference() {
+        assert_eq!(route(plain(Key::Char(' ')), Focus::Weft, Toggle), Action::NextNeedsYou);
+        assert_eq!(route(plain(Key::Char('e')), Focus::Weft, Toggle), Action::Explain);
     }
 
     #[test]
@@ -162,12 +193,32 @@ mod tests {
     }
 
     #[test]
-    fn in_weft_arrows_pick_and_enter_opens() {
+    fn in_weft_arrows_pick_enter_opens_and_left_goes_back() {
         let t = Toggle;
         assert_eq!(route(plain(Key::Up), Focus::Weft, t), Action::Pick(-1));
         assert_eq!(route(plain(Key::Down), Focus::Weft, t), Action::Pick(1));
         assert_eq!(route(plain(Key::Enter), Focus::Weft, t), Action::Open);
         assert_eq!(route(plain(Key::Left), Focus::Weft, t), Action::Back);
+    }
+
+    #[test]
+    fn tab_cycles_agents() {
+        assert_eq!(route(plain(Key::Tab), Focus::Weft, Toggle), Action::NextPane);
+    }
+
+    #[test]
+    fn esc_is_never_wefts_even_in_weft() {
+        // v1 opened help on Esc. `Esc` belongs to the agent, so in Weft it
+        // does nothing at all rather than something surprising.
+        assert_eq!(route(plain(Key::Esc), Focus::Weft, Toggle), Action::Ignore);
+    }
+
+    #[test]
+    fn a_key_weft_has_no_meaning_for_does_nothing() {
+        // v1 fell through to Help, which opened a dialog on a stray keystroke.
+        for c in ['q', 'z', 'r', '/'] {
+            assert_eq!(route(plain(Key::Char(c)), Focus::Weft, Toggle), Action::Ignore, "{c}");
+        }
     }
 
     #[test]
@@ -191,7 +242,6 @@ mod tests {
     fn the_toggle_is_named_the_same_everywhere() {
         assert_eq!(Toggle.label(), "Ctrl+]");
     }
-
 
     #[test]
     fn in_the_agent_nothing_but_the_toggle_is_ever_intercepted() {
@@ -227,5 +277,4 @@ mod tests {
             }
         }
     }
-
 }

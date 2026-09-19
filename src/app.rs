@@ -1,4 +1,8 @@
 //! The running application: state, events, and the loop.
+//!
+//! Spec: `plans/weft/spec/interface.md` (v2). Two nouns, two surfaces: agents
+//! are tabs over the pane, work is a list. Details expand inline under a row;
+//! reading opens a drawer beside the list.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -8,12 +12,13 @@ use crossterm::event::{
     self, Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
+use ratatui::layout::Rect;
 
 use crate::blocked::{self, Evidence};
+use crate::client::Session;
 use crate::encode;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
 use crate::ledger::{Ledger, Sent, Unit};
-use crate::client::Session;
 use crate::record::Record;
 use crate::ringframe;
 use crate::theme::Theme;
@@ -29,6 +34,7 @@ pub struct Pending {
     pub ask_id: Option<String>,
 }
 
+/// The surfaces that interrupt. Everything else in v2 is drawn in place.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     Quit,
@@ -37,24 +43,58 @@ pub enum Modal {
     Ask { text: String, target: usize },
     /// Weft is about to type something. Always shown first.
     Confirm(Pending),
-    /// A unit of work, in full.
-    Detail { unit: usize, record: Option<Record> },
     /// Something did not work, said plainly.
     Note(String),
     /// Pick an agent to start. Weft starts none on its own.
     StartAgent { choice: usize },
-    /// Read something RingFrame recorded, in full.
-    View { title: String, lines: Vec<String>, offset: usize },
+}
+
+/// The two reading surfaces. Siblings, not a stack: `P` from the judges
+/// drawer swaps the content rather than piling a second overlay on top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reading {
+    Wording,
+    Judges,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drawer {
+    pub kind: Reading,
+    pub title: String,
+    pub lines: Vec<String>,
+    pub offset: usize,
+}
+
+/// Something the interface offers a key for. One home for whether it can be
+/// used right now, and for the sentence that says what would make it work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Ask,
+    Send,
+    Check,
+    Decide,
+    Wording,
+    Judges,
+    Fix,
+    NewAgent,
+    Work,
+    Help,
+    Quit,
 }
 
 pub struct App {
     pub project: String,
     pub root: PathBuf,
     /// The session's panes are the server's; this is our view of them.
-    pub session: Session,
+    session: Session,
     pub pane_focus: usize,
-    pub units: Vec<Unit>,
+    units: Vec<Unit>,
     pub selected: usize,
+    /// The row expanded in place, if any.
+    expanded: Option<usize>,
+    drawer: Option<Drawer>,
+    /// Whether the work list is on screen. Hidden, the agent has the width.
+    show_work: bool,
     pub focus: Focus,
     pub toggle: Toggle,
     pub theme: Theme,
@@ -62,12 +102,20 @@ pub struct App {
     pub modal_choice: usize,
     pub quit: bool,
     pub stop_agents_on_quit: bool,
+    /// One sentence saying why the key just pressed did nothing. Never a
+    /// dialog: an unavailable action explains itself and stays on the bar.
+    hint: Option<String>,
     ledger: Ledger,
     prefixes: std::collections::HashMap<String, String>,
-    pane_area: Option<ratatui::layout::Rect>,
+    /// What the last frame drew, so a click lands on what the person sees.
+    pane_area: Option<Rect>,
+    row_spans: Vec<(u16, u16, usize)>,
+    tab_spans: Vec<(u16, u16, Option<usize>)>,
 }
 
 impl App {
+    // --- what the interface may ask about ------------------------------------
+
     /// Number of panes in the session, which is what the UI counts.
     pub fn pane_count(&self) -> usize {
         self.session.panes.len()
@@ -76,6 +124,116 @@ impl App {
     pub fn harness_at(&self, i: usize) -> Option<&str> {
         self.session.panes.get(i).map(|p| p.harness.as_str())
     }
+
+    pub fn units(&self) -> &[Unit] {
+        &self.units
+    }
+
+    pub fn unit(&self, i: usize) -> Option<&Unit> {
+        self.units.get(i)
+    }
+
+    pub fn selected_unit(&self) -> Option<&Unit> {
+        self.units.get(self.selected)
+    }
+
+    pub fn expanded(&self) -> Option<usize> {
+        self.expanded
+    }
+
+    pub fn drawer(&self) -> Option<&Drawer> {
+        self.drawer.as_ref()
+    }
+
+    pub fn show_work(&self) -> bool {
+        self.show_work
+    }
+
+    pub fn hint_text(&self) -> Option<&str> {
+        self.hint.as_deref()
+    }
+
+    /// Open units, as the title bar counts them.
+    pub fn open_count(&self) -> usize {
+        self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count()
+    }
+
+    /// Units waiting on a decision only the person can make. Panes waiting for
+    /// an answer are an inference and carry their own dot on the tab, so they
+    /// are not folded into a count the board claims to have read.
+    pub fn needs_you(&self) -> usize {
+        self.units.iter().filter(|u| u.needs_you()).count()
+    }
+
+    /// Whether a pane looks like it is waiting for a person. Inference, and
+    /// labelled as such everywhere it is shown.
+    pub fn waiting(&self, pane: usize) -> Option<Evidence> {
+        let view = self.session.panes.get(pane)?;
+        blocked::looks_blocked(&view.contents())
+    }
+
+    /// Draw the pane at its drawn size. The emulator is the client's, so the
+    /// resize and the screen both belong here rather than in the render code.
+    pub fn with_pane_screen(
+        &mut self,
+        pane: usize,
+        rows: u16,
+        cols: u16,
+        f: impl FnOnce(&vt100::Screen),
+    ) {
+        let _ = self.session.resize(pane, rows, cols);
+        if let Some(p) = self.session.panes.get(pane) {
+            p.with_screen(f);
+        }
+    }
+
+    /// Why an action is not available now, as one sentence. `None` means it is.
+    pub fn unavailable(&self, act: Act) -> Option<String> {
+        let no_pane = |harness: &str| {
+            format!("No {harness} pane is open, so there is nowhere to send this.")
+        };
+        match act {
+            Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
+            Act::Ask => (self.pane_count() == 0)
+                .then(|| "Start an agent first — [N]EW AGENT.".to_string()),
+            Act::Fix => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(_) if self.pane_count() == 0 => {
+                    Some("Start an agent first — [N]EW AGENT.".into())
+                }
+                Some(_) => None,
+            },
+            Act::Send => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(u) if u.sent != Sent::ReadyToSend => Some(
+                    match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
+                        Some(other) => {
+                            format!("{} is the one ready to send. ↓ to select it.", other.title)
+                        }
+                        None => "Nothing is ready to send.".into(),
+                    },
+                ),
+                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
+            },
+            Act::Check | Act::Decide => match self.selected_unit() {
+                None => Some("Nothing to work on yet.".into()),
+                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
+            },
+            Act::Wording => self
+                .selected_unit()
+                .is_none()
+                .then(|| "Nothing has been asked for yet.".to_string()),
+            Act::Judges => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(u) => u.check.is_none().then(|| {
+                    "No check has been run on this yet — [C]HECK asks the judges to look."
+                        .to_string()
+                }),
+            },
+        }
+    }
+
+    // --- construction ---------------------------------------------------------
 
     pub fn new(root: PathBuf, toggle: Toggle) -> Self {
         let session = Session::open(&root, 24, 80).expect("a session");
@@ -95,6 +253,9 @@ impl App {
             pane_focus: 0,
             units: Vec::new(),
             selected: 0,
+            expanded: None,
+            drawer: None,
+            show_work: true,
             focus: Focus::Weft,
             toggle,
             theme: Theme::new(),
@@ -102,9 +263,12 @@ impl App {
             modal_choice: 0,
             quit: false,
             stop_agents_on_quit: false,
+            hint: None,
             ledger,
             prefixes: std::collections::HashMap::new(),
             pane_area: None,
+            row_spans: Vec::new(),
+            tab_spans: Vec::new(),
         }
     }
 
@@ -144,7 +308,7 @@ impl App {
             }
             if self.ledger.refresh() {
                 self.units = self.ledger.units();
-                self.selected = self.selected.min(self.units.len().saturating_sub(1));
+                self.clamp_selection();
             }
             self.session.pump();
         }
@@ -156,12 +320,11 @@ impl App {
         self.units = self.ledger.units();
     }
 
-    pub fn needs_you(&self) -> usize {
-        self.units.iter().filter(|u| u.needs_you()).count()
-    }
-
-    pub fn selected_unit(&self) -> Option<&Unit> {
-        self.units.get(self.selected)
+    fn clamp_selection(&mut self) {
+        self.selected = self.selected.min(self.units.len().saturating_sub(1));
+        if self.expanded.is_some_and(|i| i >= self.units.len()) {
+            self.expanded = None;
+        }
     }
 
     /// How this harness's skills are invoked, asked of RingFrame once per host.
@@ -178,11 +341,26 @@ impl App {
         self.session.panes.iter().position(|p| p.harness == harness)
     }
 
+    fn say(&mut self, sentence: impl Into<String>) {
+        self.hint = Some(sentence.into());
+    }
+
+    /// Guard an action behind its availability, so the bar and the keyboard
+    /// agree on what can be done and give the same reason when it cannot.
+    fn guard(&mut self, act: Act) -> bool {
+        match self.unavailable(act) {
+            Some(why) => {
+                self.say(why);
+                false
+            }
+            None => true,
+        }
+    }
+
     // --- actions -----------------------------------------------------------
 
     fn start_ask(&mut self) {
-        if self.session.panes.is_empty() {
-            self.modal = Some(Modal::Note("Start an agent first.".into()));
+        if !self.guard(Act::Ask) {
             return;
         }
         self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
@@ -198,7 +376,7 @@ impl App {
             payload: format!("{command} {text}").into_bytes(),
             pane: target,
             ask_id: None,
-            what: format!("Ask {harness}"),
+            what: format!("Ready to ask {harness}"),
             why: vec![
                 format!("Weft will type  {command}  into {harness}."),
                 "The agent will ask you which approach to take, in its own pane.".into(),
@@ -215,16 +393,14 @@ impl App {
     fn start_agent_picker(&mut self) {
         let found = Self::available_agents();
         if found.is_empty() {
-            self.modal = Some(Modal::Note(
-                "No coding agent found. Install claude or codex first.".into(),
-            ));
+            self.say("No coding agent found. Install claude or codex first.");
             return;
         }
         self.modal = Some(Modal::StartAgent { choice: 0 });
         self.modal_choice = 0;
     }
 
-    fn start_chosen_agent(&mut self, choice: usize) {
+    pub fn start_chosen_agent(&mut self, choice: usize) {
         let found = Self::available_agents();
         let Some(program) = found.get(choice).copied() else { return };
         let harness = if program == "claude" { "claude-code" } else { program };
@@ -240,17 +416,12 @@ impl App {
 
     /// Check or Decide: type the skill into the pane that owns the work.
     fn start_skill(&mut self, skill: &str) {
-        let Some(unit) = self.selected_unit().cloned() else {
-            self.modal = Some(Modal::Note("Nothing to work on yet.".into()));
+        let act = if skill == "eval" { Act::Check } else { Act::Decide };
+        if !self.guard(act) {
             return;
-        };
-        let Some(pane) = self.pane_for(&unit.harness) else {
-            self.modal = Some(Modal::Note(format!(
-                "No {} pane is open, so there is nowhere to send this.",
-                unit.harness
-            )));
-            return;
-        };
+        }
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        let Some(pane) = self.pane_for(&unit.harness) else { return };
         let prefix = self.prefix_for(&unit.harness);
         let command = ringframe::skill_command(&prefix, skill);
         let why = if skill == "eval" {
@@ -277,14 +448,11 @@ impl App {
 
     /// A confirmed Ask whose route has to be typed by hand.
     fn start_send(&mut self) {
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        if unit.sent != Sent::ReadyToSend {
+        if !self.guard(Act::Send) {
             return;
         }
-        let Some(pane) = self.pane_for(&unit.harness) else {
-            self.modal = Some(Modal::Note(format!("No {} pane is open.", unit.harness)));
-            return;
-        };
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        let Some(pane) = self.pane_for(&unit.harness) else { return };
         match ringframe::ask_copy(&self.root, &unit.ask_id) {
             Ok(bytes) => {
                 self.modal = Some(Modal::Confirm(Pending {
@@ -296,15 +464,12 @@ impl App {
                 }));
                 self.modal_choice = 0;
             }
-            Err(e) => self.modal = Some(Modal::Note(format!("RingFrame would not hand over the wording: {e:?}"))),
+            Err(e) => {
+                self.modal = Some(Modal::Note(format!(
+                    "RingFrame would not hand over the wording: {e:?}"
+                )))
+            }
         }
-    }
-
-    /// Whether a pane looks like it is waiting for a person. Inference, and
-    /// labelled as such everywhere it is shown.
-    pub fn waiting(&self, pane: usize) -> Option<Evidence> {
-        let view = self.session.panes.get(pane)?;
-        blocked::looks_blocked(&view.contents())
     }
 
     fn do_inject(&mut self, pending: &Pending) {
@@ -331,113 +496,258 @@ impl App {
         }
     }
 
+    // --- the drawer ----------------------------------------------------------
+
     /// The exact wording RingFrame compiled, read back through its CLI.
-    fn view_prompt(&mut self) {
+    fn read_wording(&mut self) {
+        if !self.guard(Act::Wording) {
+            return;
+        }
         let Some(unit) = self.selected_unit().cloned() else { return };
         match ringframe::ask_copy(&self.root, &unit.ask_id) {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes).to_string();
-                self.modal = Some(Modal::View {
-                    title: format!("What was sent to {}", unit.harness),
-                    lines: text.lines().map(str::to_string).collect(),
+                let mut lines = vec![
+                    format!("asked {} · {}", unit.asked_at, unit.harness),
+                    "This is the exact wording. Weft did not change it.".into(),
+                    String::new(),
+                ];
+                lines.extend(text.lines().map(str::to_string));
+                self.drawer = Some(Drawer {
+                    kind: Reading::Wording,
+                    title: format!("THE WORDING · {}", unit.title),
+                    lines,
                     offset: 0,
                 });
             }
-            Err(e) => self.modal = Some(Modal::Note(format!("RingFrame would not hand it over: {e:?}"))),
+            Err(e) => {
+                self.modal = Some(Modal::Note(format!("RingFrame would not hand it over: {e:?}")))
+            }
         }
     }
 
     /// Every judge, every vote, every reason.
-    fn view_judges(&mut self) {
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        let Some(check) = unit.check.clone() else {
-            self.modal = Some(Modal::Note("No check has been run on this yet.".into()));
+    fn read_judges(&mut self) {
+        if !self.guard(Act::Judges) {
             return;
-        };
+        }
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        let Some(check) = unit.check.clone() else { return };
         let Some(record) = Record::read(&self.root, &check.eval_id) else {
             self.modal = Some(Modal::Note("That check's record is not on disk.".into()));
             return;
         };
         let mut lines = vec![
-            format!("judged by {}", record.judged_by().join(" and ")),
-            format!("recorded as {}, {:.2}", record.verdict, record.confidence),
+            format!(
+                "judged by {} · recorded as {}, {:.2}",
+                record.judged_by().join(" and "),
+                check.verdict.recorded(),
+                check.agreement
+            ),
+            format!(
+                "{} judges checked the work · none of them did it",
+                record.judges.len()
+            ),
             String::new(),
         ];
         for j in &record.judges {
-            lines.push(format!("judge: {} · {} · {}", j.angle, j.host, j.model));
+            lines.push(format!("JUDGE      {} · {} · {}", j.angle, j.host, j.model));
         }
-        lines.push(String::new());
         for item in &record.items {
-            lines.push(format!("[{}] {}", item.plain_majority(), item.text));
-            lines.push(format!("      {}", record.agreed(item.agreement)));
-            for r in &item.reasons {
-                lines.push(format!("      {r}"));
-            }
             lines.push(String::new());
+            lines.push(format!("{} {}", mark_for(item.plain_majority()), item.text));
+            lines.push(format!(
+                "  {} · {}",
+                item.plain_majority(),
+                record.agreed(item.agreement)
+            ));
+            for r in &item.reasons {
+                lines.push(format!("  {r}"));
+            }
         }
         if !record.unexplained.is_empty() {
-            lines.push("changed with no judge able to tie it to what you asked:".into());
+            lines.push(String::new());
+            lines.push("CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT YOU ASKED".into());
             for p in &record.unexplained {
-                lines.push(format!("      {p}"));
+                lines.push(format!("  {p}"));
             }
         }
-        self.modal = Some(Modal::View { title: format!("The check · {}", check.eval_id), lines, offset: 0 });
+        lines.push(String::new());
+        lines.push("A check is a judgement, not a guarantee.".into());
+        self.drawer = Some(Drawer {
+            kind: Reading::Judges,
+            title: format!("THE JUDGES · {}", unit.title),
+            lines,
+            offset: 0,
+        });
     }
 
-    fn open_detail(&mut self) {
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        let record = unit
-            .check
-            .as_ref()
-            .and_then(|c| Record::read(&self.root, &c.eval_id));
-        self.modal = Some(Modal::Detail { unit: self.selected, record });
-        self.modal_choice = 0;
+    fn scroll_drawer(&mut self, delta: i32) {
+        if let Some(d) = self.drawer.as_mut() {
+            d.offset = (d.offset as i32 + delta).max(0) as usize;
+        }
+    }
+
+    // --- moving about ---------------------------------------------------------
+
+    fn pick(&mut self, delta: i8) {
+        if self.units.is_empty() {
+            return;
+        }
+        let n = self.units.len() as i32;
+        self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
+        // The expansion belongs to the row it was opened on.
+        if self.expanded.is_some_and(|i| i != self.selected) {
+            self.expanded = None;
+        }
+    }
+
+    fn toggle_expand(&mut self) {
+        if self.units.is_empty() {
+            self.say("Nothing has been asked for yet.");
+            return;
+        }
+        self.expanded = match self.expanded {
+            Some(i) if i == self.selected => None,
+            _ => Some(self.selected),
+        };
+    }
+
+    /// `←` is back everywhere in Weft: it closes the drawer, then collapses the
+    /// row. `Esc` is never Weft's.
+    fn back(&mut self) {
+        if self.drawer.take().is_some() {
+            return;
+        }
+        if self.expanded.take().is_some() {
+            return;
+        }
+        if !self.show_work {
+            self.show_work = true;
+        }
+    }
+
+    /// The next thing that needs you: a pane waiting for an answer first,
+    /// because it is blocking whatever was asked of it, then the next row.
+    fn next_needs_you(&mut self) {
+        if let Some(pane) = self.next_waiting_pane() {
+            self.pane_focus = pane;
+            self.show_work = false;
+            self.drawer = None;
+            return;
+        }
+        let n = self.units.len();
+        let start = self.selected;
+        for step in 1..=n {
+            let i = (start + step) % n;
+            if self.units[i].needs_you() {
+                self.selected = i;
+                self.expanded = None;
+                self.show_work = true;
+                self.drawer = None;
+                return;
+            }
+        }
+        self.say("Nothing needs you.");
+    }
+
+    /// The next pane waiting for an answer, skipping the one already shown.
+    fn next_waiting_pane(&self) -> Option<usize> {
+        let n = self.pane_count();
+        let showing_pane = !self.show_work || self.focus == Focus::Agent;
+        for step in 1..=n {
+            let i = (self.pane_focus + step) % n;
+            if i == self.pane_focus && showing_pane {
+                continue;
+            }
+            if self.waiting(i).is_some() {
+                return Some(i);
+            }
+        }
+        (!showing_pane && self.waiting(self.pane_focus).is_some()).then_some(self.pane_focus)
+    }
+
+    /// The one thing Weft infers rather than reads, and its evidence.
+    fn explain_waiting(&mut self) {
+        match self.waiting(self.pane_focus) {
+            Some(e) => {
+                let harness = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
+                self.say(format!(
+                    "{harness}: the {} rule matched \"{}\" near the bottom of the screen.",
+                    e.rule, e.line
+                ));
+            }
+            None => self.say("Nothing on that screen looks like a question for you."),
+        }
+    }
+
+    fn toggle_work(&mut self) {
+        self.show_work = !self.show_work;
+        if self.show_work {
+            self.drawer = None;
+        }
     }
 
     // --- events ------------------------------------------------------------
 
-    fn on_key(&mut self, key: KeyEvent) -> Result<()> {
+    /// One keystroke. Public so a probe or a wireframe run can drive the
+    /// same path the terminal does.
+    pub fn on_key(&mut self, key: KeyEvent) -> Result<()> {
         if self.modal.is_some() {
             return self.on_modal_key(key);
         }
+        self.hint = None;
         let chord = chord_of(key);
         match keys::route(chord, self.focus, self.toggle) {
-            Action::ToggleFocus => {
-                self.focus = match self.focus {
-                    Focus::Weft => Focus::Agent,
-                    Focus::Agent => Focus::Weft,
-                }
-            }
+            Action::ToggleFocus => self.toggle_focus(),
             Action::ToAgent => {
                 if let Some(bytes) = encode::encode(key) {
                     let _ = self.session.input(self.pane_focus, &bytes);
                 }
             }
-            Action::Pick(delta) => self.pick(delta),
-            Action::Open => {
-                if self.units.is_empty() {
-                    self.focus = Focus::Agent;
+            Action::Pick(delta) => {
+                if self.drawer.is_some() {
+                    self.scroll_drawer(delta as i32);
                 } else {
-                    self.open_detail();
+                    self.pick(delta);
                 }
             }
+            Action::Open => {
+                if self.waiting_here() {
+                    // [Enter] ANSWER IT: the person answers, never Weft.
+                    self.focus = Focus::Agent;
+                } else if self.drawer.is_none() {
+                    self.toggle_expand();
+                }
+            }
+            Action::Back => self.back(),
+            Action::NextNeedsYou => self.next_needs_you(),
+            Action::ToggleWork => self.toggle_work(),
             Action::NextPane => {
-                if !self.session.panes.is_empty() {
-                    self.pane_focus = (self.pane_focus + 1) % self.session.panes.len();
+                if self.pane_count() > 0 {
+                    self.pane_focus = (self.pane_focus + 1) % self.pane_count();
+                }
+            }
+            Action::PickPane(n) => {
+                let i = (n as usize).saturating_sub(1);
+                if i < self.pane_count() {
+                    self.pane_focus = i;
                 }
             }
             Action::Ask => self.start_ask(),
             Action::Send => self.start_send(),
             Action::NewAgent => self.start_agent_picker(),
-            Action::PickPane(n) => {
-                let i = (n as usize).saturating_sub(1);
-                if i < self.session.panes.len() {
-                    self.pane_focus = i;
-                }
-            }
             Action::Check => self.start_skill("eval"),
             Action::Decide => self.start_skill("seal"),
-            Action::Back => {}
+            Action::Wording => self.read_wording(),
+            Action::Judges => self.read_judges(),
+            Action::Fix => {
+                if self.guard(Act::Fix) {
+                    self.drawer = None;
+                    self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
+                }
+            }
+            Action::Explain => self.explain_waiting(),
             Action::Quit => {
                 self.modal = Some(Modal::Quit);
                 self.modal_choice = 0;
@@ -446,8 +756,26 @@ impl App {
                 self.modal = Some(Modal::Help);
                 self.modal_choice = 0;
             }
+            Action::Ignore => {}
         }
         Ok(())
+    }
+
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::Weft => Focus::Agent,
+            Focus::Agent => {
+                // Coming back lands on the work list, which is what `Ctrl+]`
+                // out of the agent is for.
+                self.show_work = true;
+                Focus::Weft
+            }
+        };
+    }
+
+    /// Whether the agent on screen is the thing waiting for an answer.
+    pub fn waiting_here(&self) -> bool {
+        !self.show_work && self.waiting(self.pane_focus).is_some()
     }
 
     fn on_modal_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -456,6 +784,7 @@ impl App {
         // Composing text is its own keyboard.
         if let Modal::Ask { mut text, mut target } = modal {
             match key.code {
+                event::KeyCode::Left if text.is_empty() => self.modal = None,
                 event::KeyCode::Esc => self.modal = None,
                 event::KeyCode::Enter if !text.trim().is_empty() => self.send_ask(text, target),
                 event::KeyCode::Backspace => {
@@ -463,8 +792,8 @@ impl App {
                     self.modal = Some(Modal::Ask { text, target });
                 }
                 event::KeyCode::Tab => {
-                    if !self.session.panes.is_empty() {
-                        target = (target + 1) % self.session.panes.len();
+                    if self.pane_count() > 0 {
+                        target = (target + 1) % self.pane_count();
                     }
                     self.modal = Some(Modal::Ask { text, target });
                 }
@@ -479,51 +808,17 @@ impl App {
 
         let options = match &modal {
             Modal::Quit => 3,
-            Modal::Confirm(_) => 2,
             Modal::StartAgent { .. } => App::available_agents().len().max(1),
             _ => 1,
         };
-        if let Modal::View { offset, .. } = &modal {
-            let mut offset = *offset;
-            match key.code {
-                event::KeyCode::Up => offset = offset.saturating_sub(1),
-                event::KeyCode::Down => offset += 1,
-                event::KeyCode::PageUp => offset = offset.saturating_sub(15),
-                event::KeyCode::PageDown => offset += 15,
-                event::KeyCode::Esc | event::KeyCode::Enter | event::KeyCode::Left => {
-                    self.modal = None;
-                    return Ok(());
-                }
-                _ => {}
-            }
-            if let Some(Modal::View { offset: o, .. }) = self.modal.as_mut() {
-                *o = offset;
-            }
-            return Ok(());
-        }
         match key.code {
-            event::KeyCode::Up | event::KeyCode::Left => {
-                self.modal_choice = self.modal_choice.saturating_sub(1)
-            }
-            event::KeyCode::Down | event::KeyCode::Right => {
+            event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
+            event::KeyCode::Down => {
                 self.modal_choice = (self.modal_choice + 1).min(options - 1)
             }
-            event::KeyCode::Esc => self.modal = None,
+            // `←` is back everywhere, and cancels rather than choosing.
+            event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
             event::KeyCode::Enter => self.confirm_modal(&modal),
-            event::KeyCode::Char('p') if matches!(modal, Modal::Detail { .. }) => {
-                self.view_prompt()
-            }
-            event::KeyCode::Char('j') if matches!(modal, Modal::Detail { .. }) => {
-                self.view_judges()
-            }
-            event::KeyCode::Char('s') if matches!(modal, Modal::Detail { .. }) => {
-                self.modal = None;
-                self.start_skill("seal");
-            }
-            event::KeyCode::Char('f') if matches!(modal, Modal::Detail { .. }) => {
-                self.modal = None;
-                self.start_ask();
-            }
             _ => {}
         }
         Ok(())
@@ -531,17 +826,11 @@ impl App {
 
     fn confirm_modal(&mut self, modal: &Modal) {
         match modal {
-            Modal::Help | Modal::Note(_) | Modal::Detail { .. } | Modal::View { .. } => {
-                self.modal = None
-            }
+            Modal::Help | Modal::Note(_) => self.modal = None,
             Modal::Ask { .. } => {}
             Modal::Confirm(pending) => {
-                if self.modal_choice == 0 {
-                    let pending = pending.clone();
-                    self.do_inject(&pending);
-                } else {
-                    self.modal = None;
-                }
+                let pending = pending.clone();
+                self.do_inject(&pending);
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             Modal::Quit => match self.modal_choice {
@@ -560,14 +849,6 @@ impl App {
         }
     }
 
-    fn pick(&mut self, delta: i8) {
-        if self.units.is_empty() {
-            return;
-        }
-        let n = self.units.len() as i32;
-        self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
-    }
-
     /// Pasted text belongs to whoever has focus. In the agent it is forwarded
     /// whole, so a multi-line paste arrives as one paste, not as keystrokes.
     fn on_paste(&mut self, text: &str) -> Result<()> {
@@ -583,80 +864,118 @@ impl App {
     }
 
     fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {
-        // The wheel always moves the focused pane's scrollback, whether or not
-        // that pane happens to be drawn where the pointer is. Requiring the
-        // pointer to be over it meant scrolling silently did nothing whenever
-        // the list had the screen to itself.
-        match m.kind {
-            MouseEventKind::ScrollUp => {
-                if let Some(modal) = self.modal.as_mut() {
-                    if let Modal::View { offset, .. } = modal {
-                        *offset = offset.saturating_sub(3);
-                        return Ok(());
-                    }
-                }
-                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
-                    p.scroll(3);
-                }
-                return Ok(());
+        // The wheel moves whatever is being read: the drawer if one is open,
+        // otherwise the focused pane's scrollback.
+        let wheel = match m.kind {
+            MouseEventKind::ScrollUp => Some(-3),
+            MouseEventKind::ScrollDown => Some(3),
+            _ => None,
+        };
+        if let Some(delta) = wheel {
+            if self.drawer.is_some() {
+                self.scroll_drawer(delta);
+            } else if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                p.scroll(-delta);
             }
-            MouseEventKind::ScrollDown => {
-                if let Some(modal) = self.modal.as_mut() {
-                    if let Modal::View { offset, .. } = modal {
-                        *offset += 3;
-                        return Ok(());
-                    }
-                }
-                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
-                    p.scroll(-3);
-                }
-                return Ok(());
-            }
-            _ => {}
+            return Ok(());
         }
         if self.modal.is_some() {
+            return Ok(());
+        }
+        if m.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Ok(());
+        }
+        if let Some(target) = self.tab_at(m.column, m.row) {
+            match target {
+                Some(pane) => {
+                    self.pane_focus = pane;
+                    self.focus = Focus::Weft;
+                }
+                None => self.start_agent_picker(),
+            }
             return Ok(());
         }
         let in_pane = self.pane_area.is_some_and(|a| {
             m.column >= a.x && m.column < a.x + a.width && m.row >= a.y && m.row < a.y + a.height
         });
-        match m.kind {
-            // The harnesses ask for no mouse reporting, so scrolling is Weft's
-            // to do: it moves through the scrollback it keeps for the pane.
-            MouseEventKind::Down(MouseButton::Left) if in_pane => {
-                self.focus = Focus::Agent;
-                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
-                    p.scroll_to_bottom();
-                }
+        if in_pane && self.drawer.is_none() {
+            self.focus = Focus::Agent;
+            if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                p.scroll_to_bottom();
             }
-            MouseEventKind::Down(MouseButton::Left) => {
-                self.focus = Focus::Weft;
-                self.click_list(m.row);
+            return Ok(());
+        }
+        if let Some(index) = self.row_at(m.row) {
+            self.focus = Focus::Weft;
+            if self.selected == index {
+                self.toggle_expand();
+            } else {
+                self.selected = index;
+                self.expanded = None;
             }
-            _ => {}
         }
         Ok(())
     }
 
-    fn click_list(&mut self, row: u16) {
-        let header = if self.session.panes.len() > 1 { 3 } else { 2 };
-        let body_row = row.saturating_sub(header);
-        if body_row == 0 {
-            return;
-        }
-        let index = ((body_row - 1) / 3) as usize;
-        if index < self.units.len() {
-            self.selected = index;
-        }
+    fn row_at(&self, row: u16) -> Option<usize> {
+        self.row_spans
+            .iter()
+            .find(|(y, h, _)| row >= *y && row < y + h)
+            .map(|(_, _, i)| *i)
     }
 
-    pub fn note_pane_area(&mut self, area: ratatui::layout::Rect) {
+    /// `Some(Some(pane))` is an agent tab; `Some(None)` is the `+`.
+    fn tab_at(&self, column: u16, row: u16) -> Option<Option<usize>> {
+        self.tab_spans
+            .iter()
+            .find(|(x, w, _)| row == 1 && column >= *x && column < x + w)
+            .map(|(_, _, pane)| *pane)
+    }
+
+    // --- what the last frame drew --------------------------------------------
+
+    pub fn note_pane_area(&mut self, area: Rect) {
         self.pane_area = Some(area);
     }
 
-    /// Test seam: the units the board is showing.
+    pub fn note_rows(&mut self, spans: Vec<(u16, u16, usize)>) {
+        self.row_spans = spans;
+    }
+
+    pub fn note_tabs(&mut self, spans: Vec<(u16, u16, Option<usize>)>) {
+        self.tab_spans = spans;
+    }
+
+    // --- test seams -----------------------------------------------------------
+
+    /// The units the board is showing.
     pub fn set_units(&mut self, units: Vec<Unit>) {
         self.units = units;
+        self.clamp_selection();
+    }
+
+    pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
+        self.session.input(pane, bytes)
+    }
+
+    pub fn pump(&mut self) -> bool {
+        self.session.pump()
+    }
+
+    pub fn pane_text(&self, pane: usize) -> Option<String> {
+        self.session.panes.get(pane).map(|p| p.contents())
+    }
+
+    pub fn pane_scroll_offset(&self, pane: usize) -> Option<usize> {
+        self.session.panes.get(pane).map(|p| p.scroll_offset())
+    }
+}
+
+fn mark_for(vote: &str) -> &'static str {
+    match vote {
+        "yes" => "✓",
+        "no" => "✗",
+        _ => "?",
     }
 }
 
@@ -685,15 +1004,14 @@ fn chord_of(key: KeyEvent) -> Chord {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crossterm::event::KeyCode;
     use serde_json::json;
 
-
     /// A session backed by a real server on a scratch root, because the app is
     /// a client now and there is no honest way to test it without one.
-    pub(super) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
+    pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
@@ -711,7 +1029,7 @@ mod tests {
         (root, session)
     }
 
-    fn app() -> App {
+    pub(crate) fn app() -> App {
         let (root, session) = test_session("codex");
         let mut a = App::with_session(root, Toggle, session);
         a.add("codex", "/bin/cat").expect("spawn");
@@ -724,7 +1042,7 @@ mod tests {
         a
     }
 
-    fn unit(sent: Sent) -> Unit {
+    pub(crate) fn unit(sent: Sent) -> Unit {
         Unit {
             ask_id: "ask_1".into(),
             title: "health endpoint".into(),
@@ -740,7 +1058,7 @@ mod tests {
         }
     }
 
-    fn press(a: &mut App, code: KeyCode) {
+    pub(crate) fn press(a: &mut App, code: KeyCode) {
         a.on_key(KeyEvent::new(code, KeyModifiers::NONE)).expect("key");
     }
 
@@ -760,6 +1078,16 @@ mod tests {
         assert_eq!(a.focus, Focus::Agent);
         ctrl(&mut a, ']');
         assert_eq!(a.focus, Focus::Weft);
+    }
+
+    #[test]
+    fn coming_back_out_of_the_agent_shows_the_work_list_again() {
+        let mut a = app();
+        press(&mut a, KeyCode::Char('w'));
+        assert!(!a.show_work());
+        ctrl(&mut a, ']');
+        ctrl(&mut a, ']');
+        assert!(a.show_work(), "Ctrl+] back from the agent lands on the list");
     }
 
     #[test]
@@ -843,8 +1171,7 @@ mod tests {
         let mut a = with_unit(Sent::Arrived { exact: true });
         press(&mut a, KeyCode::Char('c'));
         assert!(matches!(a.modal, Some(Modal::Confirm(_))));
-        press(&mut a, KeyCode::Down); // move to [ Cancel ]
-        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Left); // [←] CANCEL
         assert!(a.modal.is_none());
         assert_eq!(a.focus, Focus::Weft, "cancelling never moves you into the agent");
     }
@@ -859,11 +1186,26 @@ mod tests {
     }
 
     #[test]
-    fn checking_with_nothing_to_check_says_so_plainly() {
+    fn an_unavailable_action_explains_itself_in_the_hint_and_opens_nothing() {
         let mut a = app();
         press(&mut a, KeyCode::Char('c'));
-        let Some(Modal::Note(text)) = a.modal.clone() else { panic!("{:?}", a.modal) };
-        assert!(text.contains("Nothing"), "got {text:?}");
+        assert!(a.modal.is_none(), "never a dialog: {:?}", a.modal);
+        assert_eq!(a.hint_text(), Some("Nothing to work on yet."));
+    }
+
+    #[test]
+    fn send_names_the_row_that_is_ready_instead_of_failing_silently() {
+        let mut a = app();
+        let mut ready = unit(Sent::ReadyToSend);
+        ready.ask_id = "ask_2".into();
+        ready.title = "readme fix".into();
+        a.set_units(vec![unit(Sent::TakenByAgent), ready]);
+        press(&mut a, KeyCode::Char('s'));
+        assert!(a.modal.is_none());
+        assert_eq!(
+            a.hint_text(),
+            Some("readme fix is the one ready to send. ↓ to select it.")
+        );
     }
 
     #[test]
@@ -873,15 +1215,39 @@ mod tests {
         u.harness = "claude-code".into();
         a.set_units(vec![u]);
         press(&mut a, KeyCode::Char('c'));
-        let Some(Modal::Note(text)) = a.modal.clone() else { panic!("{:?}", a.modal) };
-        assert!(text.contains("claude-code"), "names the missing agent: {text:?}");
+        let hint = a.hint_text().expect("a sentence");
+        assert!(hint.contains("claude-code"), "names the missing agent: {hint}");
     }
 
     #[test]
-    fn enter_on_a_unit_opens_its_detail() {
+    fn enter_expands_the_row_in_place_and_enter_again_collapses_it() {
         let mut a = with_unit(Sent::Arrived { exact: true });
         press(&mut a, KeyCode::Enter);
-        assert!(matches!(a.modal, Some(Modal::Detail { .. })));
+        assert_eq!(a.expanded(), Some(0));
+        assert!(a.modal.is_none(), "v2 expands in place; no overlay");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.expanded(), None);
+    }
+
+    #[test]
+    fn back_collapses_the_row_rather_than_quitting_anything() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        press(&mut a, KeyCode::Enter);
+        press(&mut a, KeyCode::Left);
+        assert_eq!(a.expanded(), None);
+        assert!(!a.quit);
+    }
+
+    #[test]
+    fn moving_off_an_expanded_row_collapses_it() {
+        let mut a = app();
+        let mut second = unit(Sent::NotSent);
+        second.ask_id = "ask_2".into();
+        a.set_units(vec![unit(Sent::NotSent), second]);
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.expanded(), Some(0));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.expanded(), None);
     }
 
     #[test]
@@ -898,6 +1264,34 @@ mod tests {
     }
 
     #[test]
+    fn w_hides_the_work_list_and_brings_it_back() {
+        let mut a = app();
+        assert!(a.show_work());
+        press(&mut a, KeyCode::Char('w'));
+        assert!(!a.show_work());
+        press(&mut a, KeyCode::Char('w'));
+        assert!(a.show_work());
+    }
+
+    #[test]
+    fn space_selects_the_next_row_that_needs_you() {
+        let mut a = app();
+        let mut ready = unit(Sent::ReadyToSend);
+        ready.ask_id = "ask_2".into();
+        a.set_units(vec![unit(Sent::TakenByAgent), ready]);
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(a.selected, 1);
+    }
+
+    #[test]
+    fn space_says_so_plainly_when_nothing_needs_you() {
+        let mut a = app();
+        a.set_units(vec![unit(Sent::TakenByAgent)]);
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(a.hint_text(), Some("Nothing needs you."));
+    }
+
+    #[test]
     fn the_needs_you_count_is_derived_from_the_record() {
         let mut a = app();
         a.set_units(vec![unit(Sent::ReadyToSend), unit(Sent::Arrived { exact: true })]);
@@ -905,19 +1299,98 @@ mod tests {
     }
 
     #[test]
-    fn a_click_inside_the_pane_focuses_the_agent_and_outside_comes_back() {
+    fn explaining_a_waiting_pane_quotes_the_line_it_matched() {
         let mut a = app();
-        a.note_pane_area(ratatui::layout::Rect { x: 19, y: 2, width: 60, height: 20 });
+        a.input(0, b"Allow command?\r\n").expect("type");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.pump();
+            if a.waiting(0).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        press(&mut a, KeyCode::Char('e'));
+        let hint = a.hint_text().expect("a sentence");
+        assert!(hint.contains("Allow command?"), "quotes the evidence: {hint}");
+        assert!(hint.contains("permission"), "names the rule: {hint}");
+    }
+
+    #[test]
+    fn weft_never_answers_a_waiting_agent_itself() {
+        // [Enter] ANSWER IT puts the person in the pane; it types nothing.
+        let mut a = app();
+        a.input(0, b"Allow command?\r\n").expect("type");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.pump();
+            if a.waiting(0).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        press(&mut a, KeyCode::Char(' '));
+        assert!(!a.show_work(), "Space shows the pane that is waiting");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.focus, Focus::Agent);
+        assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn a_click_inside_the_pane_focuses_the_agent_and_a_row_click_comes_back() {
+        let mut a = with_unit(Sent::NotSent);
+        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
+        a.note_rows(vec![(3, 2, 0)]);
         let click = |col, row| MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: col,
             row,
             modifiers: KeyModifiers::NONE,
         };
-        a.on_mouse(click(40, 10)).expect("mouse");
+        a.on_mouse(click(50, 10)).expect("mouse");
         assert_eq!(a.focus, Focus::Agent);
         a.on_mouse(click(5, 3)).expect("mouse");
         assert_eq!(a.focus, Focus::Weft);
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn clicking_a_row_twice_expands_it() {
+        let mut a = app();
+        let mut second = unit(Sent::NotSent);
+        second.ask_id = "ask_2".into();
+        a.set_units(vec![unit(Sent::NotSent), second]);
+        a.note_rows(vec![(3, 2, 0), (5, 2, 1)]);
+        let click = |row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(click(5)).expect("mouse");
+        assert_eq!(a.selected, 1);
+        assert_eq!(a.expanded(), None, "the first click only selects");
+        a.on_mouse(click(5)).expect("mouse");
+        assert_eq!(a.expanded(), Some(1));
+    }
+
+    #[test]
+    fn clicking_a_tab_switches_agent_and_clicking_plus_offers_a_new_one() {
+        let mut a = app();
+        a.note_tabs(vec![(10, 8, Some(0)), (20, 12, Some(1)), (34, 1, None)]);
+        let click = |col| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(click(11)).expect("mouse");
+        assert_eq!(a.pane_focus, 0);
+        a.on_mouse(click(34)).expect("mouse");
+        match a.modal {
+            Some(Modal::StartAgent { .. }) | None => {}
+            ref other => panic!("+ offers a new agent, got {other:?}"),
+        }
     }
 
     #[test]
@@ -951,8 +1424,8 @@ mod tests {
         let session = crate::client::Session::connect(&socket, 24, 80).expect("connect");
         let mut a = App::with_session(dir.clone(), Toggle, session);
         a.reload();
-        assert_eq!(a.units.len(), 1);
-        assert_eq!(a.units[0].title, "health endpoint");
+        assert_eq!(a.units().len(), 1);
+        assert_eq!(a.units()[0].title, "health endpoint");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
@@ -970,7 +1443,7 @@ mod start_tests {
     #[test]
     fn weft_starts_no_agent_on_its_own() {
         let a = bare();
-        assert!(a.session.panes.is_empty(), "the panel stays empty until asked");
+        assert_eq!(a.pane_count(), 0, "the panel stays empty until asked");
         assert_eq!(a.focus, Focus::Weft);
     }
 
@@ -980,8 +1453,12 @@ mod start_tests {
         a.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)).expect("key");
         match a.modal {
             Some(Modal::StartAgent { .. }) => {}
-            Some(Modal::Note(ref t)) => assert!(t.contains("No coding agent"), "{t}"),
-            other => panic!("expected a picker, got {other:?}"),
+            None => assert!(
+                a.hint_text().is_some_and(|h| h.contains("No coding agent")),
+                "either a picker or a plain sentence: {:?}",
+                a.hint_text()
+            ),
+            ref other => panic!("expected a picker, got {other:?}"),
         }
     }
 
@@ -1004,18 +1481,21 @@ mod start_tests {
             sealed: None,
         }]);
         a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)).expect("key");
-        assert!(a.modal.is_some(), "S must do something when the bar offers it");
+        assert!(
+            a.modal.is_some() || a.hint_text().is_some(),
+            "S must do something when the bar offers it"
+        );
     }
 
     #[test]
     fn scrolling_over_a_pane_moves_its_scrollback() {
         let mut a = bare();
         a.add("sh", "/bin/sh").expect("spawn");
-        a.session.input(0, b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
+        a.input(0, b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
-            a.session.pump();
-            if a.session.panes[0].contents().contains("line-60") {
+            a.pump();
+            if a.pane_text(0).is_some_and(|t| t.contains("line-60")) {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1025,10 +1505,13 @@ mod start_tests {
         let scroll = |kind| MouseEvent { kind, column: 40, row: 10, modifiers: KeyModifiers::NONE };
         a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
         a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
-        assert!(a.session.panes[0].scroll_offset() > 0, "the wheel moves through the scrollback");
+        assert!(
+            a.pane_scroll_offset(0).is_some_and(|o| o > 0),
+            "the wheel moves through the scrollback"
+        );
 
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
-        assert_eq!(a.session.panes[0].scroll_offset(), 0, "and back to the live output");
+        assert_eq!(a.pane_scroll_offset(0), Some(0), "and back to the live output");
     }
 }
