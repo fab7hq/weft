@@ -4,13 +4,16 @@
 
 pub mod app;
 pub mod blocked;
+pub mod client;
 pub mod encode;
 pub mod inject;
 pub mod keys;
 pub mod ledger;
 pub mod layout;
 pub mod pane;
+pub mod protocol;
 pub mod record;
 pub mod theme;
 pub mod ringframe;
+pub mod server;
 pub mod ui;

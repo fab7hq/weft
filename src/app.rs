@@ -11,10 +11,9 @@ use ratatui::DefaultTerminal;
 
 use crate::blocked::{self, Evidence};
 use crate::encode;
-use crate::inject::Refusal;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
 use crate::ledger::{Ledger, Sent, Unit};
-use crate::pane::Pane;
+use crate::client::Session;
 use crate::record::Record;
 use crate::ringframe;
 use crate::theme::Theme;
@@ -48,31 +47,11 @@ pub enum Modal {
     View { title: String, lines: Vec<String>, offset: usize },
 }
 
-pub struct Agent {
-    pub title: String,
-    pub harness: String,
-    pub status: String,
-    pub pty: Pane,
-    rows: u16,
-    cols: u16,
-}
-
-impl Agent {
-    pub fn fit(&mut self, rows: u16, cols: u16) -> Result<()> {
-        if rows == self.rows && cols == self.cols {
-            return Ok(());
-        }
-        self.pty.resize(rows, cols)?;
-        self.rows = rows;
-        self.cols = cols;
-        Ok(())
-    }
-}
-
 pub struct App {
     pub project: String,
     pub root: PathBuf,
-    pub panes: Vec<Agent>,
+    /// The session's panes are the server's; this is our view of them.
+    pub session: Session,
     pub pane_focus: usize,
     pub units: Vec<Unit>,
     pub selected: usize,
@@ -89,7 +68,21 @@ pub struct App {
 }
 
 impl App {
+    /// Number of panes in the session, which is what the UI counts.
+    pub fn pane_count(&self) -> usize {
+        self.session.panes.len()
+    }
+
+    pub fn harness_at(&self, i: usize) -> Option<&str> {
+        self.session.panes.get(i).map(|p| p.harness.as_str())
+    }
+
     pub fn new(root: PathBuf, toggle: Toggle) -> Self {
+        let session = Session::open(&root, 24, 80).expect("a session");
+        Self::with_session(root, toggle, session)
+    }
+
+    pub fn with_session(root: PathBuf, toggle: Toggle, session: Session) -> Self {
         let project = root
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -98,7 +91,7 @@ impl App {
         Self {
             project,
             root,
-            panes: Vec::new(),
+            session,
             pane_focus: 0,
             units: Vec::new(),
             selected: 0,
@@ -119,19 +112,17 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        let cwd = self.root.to_string_lossy().into_owned();
-        let mut parts = spec.split_whitespace();
-        let program = parts.next().unwrap_or(spec);
-        let args: Vec<&str> = parts.collect();
-        let pty = Pane::spawn_args(harness, program, &args, &cwd, 24, 80)?;
-        self.panes.push(Agent {
-            title: harness.to_string(),
-            harness: harness.to_string(),
-            status: "running".into(),
-            pty,
-            rows: 24,
-            cols: 80,
-        });
+        self.session.spawn(harness, spec)?;
+        // The pane appears when the server says it has one.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let before = self.session.panes.len();
+        while std::time::Instant::now() < deadline {
+            self.session.pump();
+            if self.session.panes.len() > before {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
         Ok(())
     }
 
@@ -155,9 +146,7 @@ impl App {
                 self.units = self.ledger.units();
                 self.selected = self.selected.min(self.units.len().saturating_sub(1));
             }
-            for pane in &mut self.panes {
-                pane.status = if pane.pty.running() { "running" } else { "exited" }.into();
-            }
+            self.session.pump();
         }
         Ok(())
     }
@@ -186,13 +175,13 @@ impl App {
     }
 
     fn pane_for(&self, harness: &str) -> Option<usize> {
-        self.panes.iter().position(|p| p.harness == harness)
+        self.session.panes.iter().position(|p| p.harness == harness)
     }
 
     // --- actions -----------------------------------------------------------
 
     fn start_ask(&mut self) {
-        if self.panes.is_empty() {
+        if self.session.panes.is_empty() {
             self.modal = Some(Modal::Note("Start an agent first.".into()));
             return;
         }
@@ -200,7 +189,7 @@ impl App {
     }
 
     fn send_ask(&mut self, text: String, target: usize) {
-        let Some(harness) = self.panes.get(target).map(|p| p.harness.clone()) else {
+        let Some(harness) = self.session.panes.get(target).map(|p| p.harness.clone()) else {
             return;
         };
         let prefix = self.prefix_for(&harness);
@@ -242,7 +231,7 @@ impl App {
         match self.add(harness, program) {
             Ok(()) => {
                 self.modal = None;
-                self.pane_focus = self.panes.len() - 1;
+                self.pane_focus = self.session.panes.len().saturating_sub(1);
                 self.focus = Focus::Agent;
             }
             Err(e) => self.modal = Some(Modal::Note(format!("Could not start {program}: {e}"))),
@@ -314,15 +303,17 @@ impl App {
     /// Whether a pane looks like it is waiting for a person. Inference, and
     /// labelled as such everywhere it is shown.
     pub fn waiting(&self, pane: usize) -> Option<Evidence> {
-        let agent = self.panes.get(pane)?;
-        blocked::looks_blocked(&agent.pty.with_screen(|s| s.contents()))
+        let view = self.session.panes.get(pane)?;
+        blocked::looks_blocked(&view.contents())
     }
 
     fn do_inject(&mut self, pending: &Pending) {
-        let blocked = self.waiting(pending.pane).is_some();
-        let Some(agent) = self.panes.get_mut(pending.pane) else { return };
-        match agent.pty.inject(&pending.payload, blocked) {
-            Ok(_) => {
+        if self.session.panes.get(pending.pane).is_none() {
+            return;
+        }
+        // The server owns the pane, so the server does the typing.
+        match self.session.inject(pending.pane, &pending.payload) {
+            Ok(()) => {
                 self.modal = None;
                 self.focus = Focus::Agent;
                 self.pane_focus = pending.pane;
@@ -336,21 +327,7 @@ impl App {
                     }
                 }
             }
-            Err(Refusal::PaneBlocked) => {
-                let why = self
-                    .waiting(pending.pane)
-                    .map(|e| format!("It is showing:  {}", e.line))
-                    .unwrap_or_default();
-                self.modal = Some(Modal::Note(format!(
-                    "That agent is waiting for your answer, so Weft did not type.\n{why}\nAnswer it in the pane first."
-                )))
-            }
-            Err(Refusal::NoProcess) => {
-                self.modal = Some(Modal::Note("That agent is no longer running.".into()))
-            }
-            Err(Refusal::InjectionInFlight) => {
-                self.modal = Some(Modal::Note("Weft is already typing into that agent.".into()))
-            }
+            Err(e) => self.modal = Some(Modal::Note(format!("Could not type into that agent: {e}"))),
         }
     }
 
@@ -432,8 +409,8 @@ impl App {
                 }
             }
             Action::ToAgent => {
-                if let (Some(bytes), Some(pane)) = (encode::encode(key), self.panes.get_mut(self.pane_focus)) {
-                    pane.pty.send(&bytes)?;
+                if let Some(bytes) = encode::encode(key) {
+                    let _ = self.session.input(self.pane_focus, &bytes);
                 }
             }
             Action::Pick(delta) => self.pick(delta),
@@ -445,8 +422,8 @@ impl App {
                 }
             }
             Action::NextPane => {
-                if !self.panes.is_empty() {
-                    self.pane_focus = (self.pane_focus + 1) % self.panes.len();
+                if !self.session.panes.is_empty() {
+                    self.pane_focus = (self.pane_focus + 1) % self.session.panes.len();
                 }
             }
             Action::Ask => self.start_ask(),
@@ -454,7 +431,7 @@ impl App {
             Action::NewAgent => self.start_agent_picker(),
             Action::PickPane(n) => {
                 let i = (n as usize).saturating_sub(1);
-                if i < self.panes.len() {
+                if i < self.session.panes.len() {
                     self.pane_focus = i;
                 }
             }
@@ -486,8 +463,8 @@ impl App {
                     self.modal = Some(Modal::Ask { text, target });
                 }
                 event::KeyCode::Tab => {
-                    if !self.panes.is_empty() {
-                        target = (target + 1) % self.panes.len();
+                    if !self.session.panes.is_empty() {
+                        target = (target + 1) % self.session.panes.len();
                     }
                     self.modal = Some(Modal::Ask { text, target });
                 }
@@ -568,9 +545,14 @@ impl App {
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             Modal::Quit => match self.modal_choice {
-                0 => self.quit = true,
+                0 => {
+                    // Leave; the server keeps the agents working.
+                    self.session.detach();
+                    self.quit = true;
+                }
                 1 => {
                     self.stop_agents_on_quit = true;
+                    self.session.shutdown();
                     self.quit = true;
                 }
                 _ => self.modal = None,
@@ -593,9 +575,7 @@ impl App {
             (Some(Modal::Ask { text: buf, .. }), _) => buf.push_str(text),
             (Some(_), _) => {}
             (None, Focus::Agent) => {
-                if let Some(pane) = self.panes.get_mut(self.pane_focus) {
-                    pane.pty.send(text.as_bytes())?;
-                }
+                let _ = self.session.input(self.pane_focus, text.as_bytes());
             }
             (None, Focus::Weft) => {}
         }
@@ -615,8 +595,8 @@ impl App {
                         return Ok(());
                     }
                 }
-                if let Some(p) = self.panes.get_mut(self.pane_focus) {
-                    p.pty.scroll(3);
+                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                    p.scroll(3);
                 }
                 return Ok(());
             }
@@ -627,8 +607,8 @@ impl App {
                         return Ok(());
                     }
                 }
-                if let Some(p) = self.panes.get_mut(self.pane_focus) {
-                    p.pty.scroll(-3);
+                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                    p.scroll(-3);
                 }
                 return Ok(());
             }
@@ -645,8 +625,8 @@ impl App {
             // to do: it moves through the scrollback it keeps for the pane.
             MouseEventKind::Down(MouseButton::Left) if in_pane => {
                 self.focus = Focus::Agent;
-                if let Some(p) = self.panes.get_mut(self.pane_focus) {
-                    p.pty.scroll_to_bottom();
+                if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                    p.scroll_to_bottom();
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -659,7 +639,7 @@ impl App {
     }
 
     fn click_list(&mut self, row: u16) {
-        let header = if self.panes.len() > 1 { 3 } else { 2 };
+        let header = if self.session.panes.len() > 1 { 3 } else { 2 };
         let body_row = row.saturating_sub(header);
         if body_row == 0 {
             return;
@@ -710,9 +690,30 @@ mod tests {
     use crossterm::event::KeyCode;
     use serde_json::json;
 
+
+    /// A session backed by a real server on a scratch root, because the app is
+    /// a client now and there is no honest way to test it without one.
+    pub(super) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir()
+            .join(format!("weft-app-{name}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("root");
+        let socket = crate::server::socket_path(&root);
+        let _ = std::fs::remove_file(&socket);
+        let serving = root.clone();
+        let listening = socket.clone();
+        std::thread::spawn(move || {
+            let _ = crate::server::Session::serve(serving, &listening);
+        });
+        let session = crate::client::Session::connect(&socket, 24, 80).expect("connect");
+        (root, session)
+    }
+
     fn app() -> App {
-        let dir = std::env::temp_dir();
-        let mut a = App::new(dir, Toggle);
+        let (root, session) = test_session("codex");
+        let mut a = App::with_session(root, Toggle, session);
         a.add("codex", "/bin/cat").expect("spawn");
         a
     }
@@ -940,7 +941,15 @@ mod tests {
         )
         .unwrap();
 
-        let mut a = App::new(dir.clone(), Toggle);
+        let socket = crate::server::socket_path(&dir);
+        let _ = std::fs::remove_file(&socket);
+        let serving = dir.clone();
+        let listening = socket.clone();
+        std::thread::spawn(move || {
+            let _ = crate::server::Session::serve(serving, &listening);
+        });
+        let session = crate::client::Session::connect(&socket, 24, 80).expect("connect");
+        let mut a = App::with_session(dir.clone(), Toggle, session);
         a.reload();
         assert_eq!(a.units.len(), 1);
         assert_eq!(a.units[0].title, "health endpoint");
@@ -954,13 +963,14 @@ mod start_tests {
     use crossterm::event::KeyCode;
 
     fn bare() -> App {
-        App::new(std::env::temp_dir(), Toggle)
+        let (root, session) = super::tests::test_session("bare");
+        App::with_session(root, Toggle, session)
     }
 
     #[test]
     fn weft_starts_no_agent_on_its_own() {
         let a = bare();
-        assert!(a.panes.is_empty(), "the panel stays empty until asked");
+        assert!(a.session.panes.is_empty(), "the panel stays empty until asked");
         assert_eq!(a.focus, Focus::Weft);
     }
 
@@ -1001,17 +1011,24 @@ mod start_tests {
     fn scrolling_over_a_pane_moves_its_scrollback() {
         let mut a = bare();
         a.add("sh", "/bin/sh").expect("spawn");
-        a.panes[0].pty.send(b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
-        std::thread::sleep(std::time::Duration::from_millis(600));
+        a.session.input(0, b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.session.pump();
+            if a.session.panes[0].contents().contains("line-60") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         a.note_pane_area(ratatui::layout::Rect { x: 0, y: 2, width: 80, height: 20 });
 
         let scroll = |kind| MouseEvent { kind, column: 40, row: 10, modifiers: KeyModifiers::NONE };
         a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
         a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
-        assert!(a.panes[0].pty.scroll_offset() > 0, "the wheel moves through the scrollback");
+        assert!(a.session.panes[0].scroll_offset() > 0, "the wheel moves through the scrollback");
 
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
-        assert_eq!(a.panes[0].pty.scroll_offset(), 0, "and back to the live output");
+        assert_eq!(a.session.panes[0].scroll_offset(), 0, "and back to the live output");
     }
 }

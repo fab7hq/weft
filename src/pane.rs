@@ -4,6 +4,7 @@
 //! person's own environment and never sandboxes it or alters its permissions.
 
 use std::io::{Read, Write};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -14,6 +15,9 @@ use crate::inject::{self, PaneState, Refusal, Step};
 pub struct Pane {
     pub title: String,
     parser: Arc<Mutex<vt100::Parser>>,
+    /// Installed only when someone asks for the stream, so a pane nobody is
+    /// listening to never accumulates output it will not be asked for.
+    tap: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
@@ -47,8 +51,10 @@ impl Pane {
         drop(pair.slave);
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
+        let tap: Arc<Mutex<Option<Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
         let sink = Arc::clone(&parser);
+        let tap_reader = Arc::clone(&tap);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
@@ -58,6 +64,18 @@ impl Pane {
                 if let Ok(mut p) = sink.lock() {
                     p.process(&buf[..n]);
                 }
+                // The same bytes go to whoever is streaming this pane, so a
+                // client rebuilds the screen from the harness's own output.
+                if let Ok(mut t) = tap_reader.lock() {
+                    if let Some(sender) = t.as_ref() {
+                        if sender.send(buf[..n].to_vec()).is_err() {
+                            *t = None;
+                        }
+                    }
+                }
+            }
+            if let Ok(mut t) = tap_reader.lock() {
+                *t = None;
             }
         });
 
@@ -65,11 +83,19 @@ impl Pane {
         Ok(Self {
             title: title.into(),
             parser,
+            tap,
             master: pair.master,
             writer,
             child,
             injecting: false,
         })
+    }
+
+    /// Every byte this pane prints, from now on. One listener at a time.
+    pub fn stream_output(&mut self) -> Receiver<Vec<u8>> {
+        let (tx, rx) = channel();
+        *self.tap.lock().expect("pane tap") = Some(tx);
+        rx
     }
 
     pub fn running(&mut self) -> bool {
@@ -240,6 +266,29 @@ mod tests {
             .expect("allowed");
         assert!(attempt.echoed, "Enter is sent once the text is visible");
         assert!(attempt.bytes > 0);
+    }
+
+    #[test]
+    fn a_pane_streams_its_output_to_a_listener() {
+        let mut pane = Pane::spawn("test", "/bin/sh", "/tmp", 24, 80).expect("spawn");
+        let stream = pane.stream_output();
+        pane.send(b"printf 'streamed-to-the-server'\n").expect("send");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut seen = Vec::new();
+        while std::time::Instant::now() < deadline {
+            if let Ok(chunk) = stream.recv_timeout(std::time::Duration::from_millis(200)) {
+                seen.extend_from_slice(&chunk);
+                if String::from_utf8_lossy(&seen).contains("streamed-to-the-server") {
+                    break;
+                }
+            }
+        }
+        assert!(
+            String::from_utf8_lossy(&seen).contains("streamed-to-the-server"),
+            "the listener sees what the pane printed"
+        );
+        // And the pane's own screen still has it: the tap is a copy, not a move.
+        assert!(pane.with_screen(|s| s.contents()).contains("streamed-to-the-server"));
     }
 
     #[test]

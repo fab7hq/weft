@@ -21,7 +21,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let th = app.theme;
     // The agents strip only exists once there is more than one agent to
     // confuse: with one, the title bar already names it.
-    let strip = if app.panes.len() > 1 { 1 } else { 0 };
+    let strip = if app.session.panes.len() > 1 { 1 } else { 0 };
     let rows = RLayout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -55,13 +55,13 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         Focus::Weft => "in Weft",
         Focus::Agent => "in the agent",
     };
-    let who = match app.panes.get(app.pane_focus) {
-        Some(p) if app.panes.len() == 1 => format!(" · {}", p.harness),
+    let who = match app.session.panes.get(app.pane_focus) {
+        Some(p) if app.session.panes.len() == 1 => format!(" · {}", p.harness),
         _ => String::new(),
     };
     let left = format!("WEFT   {}{}   {}", app.project, who, state);
     let right = match app.focus {
-        Focus::Weft if app.panes.is_empty() => "no agent running ".to_string(),
+        Focus::Weft if app.session.panes.is_empty() => "no agent running ".to_string(),
         Focus::Agent if app.waiting(app.pane_focus).is_some() => {
             "● needs your answer (from the screen) ".to_string()
         }
@@ -89,7 +89,7 @@ fn title_bar(app: &App) -> Paragraph<'static> {
 fn agents_strip(app: &App) -> Paragraph<'static> {
     let th = app.theme;
     let mut spans = vec![Span::styled(" AGENTS   ", th.label())];
-    for (i, pane) in app.panes.iter().enumerate() {
+    for (i, pane) in app.session.panes.iter().enumerate() {
         let active = i == app.pane_focus;
         let waiting = app.waiting(i).is_some();
         let mark = if active { "▸" } else { " " };
@@ -114,7 +114,7 @@ fn rule(width: u16, th: Theme) -> Paragraph<'static> {
 fn body(frame: &mut Frame, app: &mut App, area: Rect) {
     // With no agent running there is nothing to sit beside, so the first-run
     // message gets the whole width instead of being clipped to the rail.
-    if app.panes.is_empty() {
+    if app.session.panes.is_empty() {
         frame.render_widget(list(app, area.width), area);
         return;
     }
@@ -148,7 +148,7 @@ fn list(app: &App, width: u16) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![Line::raw("")];
 
     if app.units.is_empty() {
-        if app.panes.is_empty() {
+        if app.session.panes.is_empty() {
             lines.push(Line::raw("   Nothing is running yet."));
             lines.push(Line::raw(""));
             lines.push(Line::raw("   Press N to start an agent."));
@@ -226,17 +226,14 @@ fn clip(s: &str, n: usize) -> String {
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     app.note_pane_area(area);
     let focus = app.pane_focus;
-    if app.panes.is_empty() {
+    if app.session.panes.is_empty() {
         // Weft starts no agent on its own. The panel stays empty until asked.
         frame.render_widget(Paragraph::new(""), area);
         return;
     }
-    let Some(pane) = app.panes.get_mut(focus) else {
-        frame.render_widget(Paragraph::new(""), area);
-        return;
-    };
-    let _ = pane.fit(area.height, area.width);
-    pane.pty.with_screen(|screen| {
+    let _ = app.session.resize(focus, area.height, area.width);
+    let Some(pane) = app.session.panes.get(focus) else { return };
+    pane.with_screen(|screen| {
         frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
     });
 }
@@ -252,13 +249,13 @@ fn action_bar(app: &App) -> Paragraph<'static> {
         return Paragraph::new("");
     }
     let mut left = String::from("  NEW AGENT   HELP   QUIT");
-    if !app.panes.is_empty() {
+    if !app.session.panes.is_empty() {
         left = String::from("  ASK   NEW AGENT   CHECK   DECIDE   HELP   QUIT");
         if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
             left = "  ASK   SEND IT   CHECK   DECIDE   HELP   QUIT".into();
         }
     }
-    let right = if app.panes.is_empty() {
+    let right = if app.session.panes.is_empty() {
         String::new()
     } else {
         format!("{} AGENT ", app.toggle.label())
@@ -280,7 +277,7 @@ fn hint(app: &App) -> Paragraph<'static> {
             " Every key goes to the agent, Esc included. {} comes back to Weft.",
             app.toggle.label()
         ),
-        (_, Focus::Weft) if app.panes.is_empty() => {
+        (_, Focus::Weft) if app.session.panes.is_empty() => {
             " Press N to start an agent in this project.".to_string()
         }
         (_, Focus::Weft) => match waiting_line(app) {
@@ -363,7 +360,7 @@ fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<S
             vec!["[ OK ]".into()],
         ),
         Modal::Ask { text, target } => {
-            let who = app.panes.get(*target).map(|p| p.harness.clone()).unwrap_or_default();
+            let who = app.session.panes.get(*target).map(|p| p.harness.clone()).unwrap_or_default();
             let mut lines = wrap(text, 58);
             if text.is_empty() {
                 lines = vec!["_".into()];

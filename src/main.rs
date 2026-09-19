@@ -5,11 +5,35 @@ use crossterm::event::{
 use crossterm::execute;
 
 use weft::app::App;
+use weft::client::Session;
 use weft::keys;
+use weft::server;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
+
+    // Started by a client to own the panes. Runs headless and outlives it.
+    if first.as_deref() == Some("--serve") {
+        let root = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
+        let socket = server::socket_path(&root);
+        return server::Session::serve(root, &socket);
+    }
+
+    if first.as_deref() == Some("stop") {
+        let root = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()))
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let socket = server::socket_path(&root);
+        if server::is_live(&socket) {
+            let mut s = Session::connect(&socket, 24, 80)?;
+            s.shutdown();
+            println!("weft: stopped the session and its agents");
+        } else {
+            println!("weft: nothing is running here");
+        }
+        return Ok(());
+    }
 
     if matches!(first.as_deref(), Some("--help" | "-h")) {
         println!("weft [project-dir] [agent ...]\n");
@@ -19,7 +43,9 @@ fn main() -> Result<()> {
         println!("  weft . \"claude --model sonnet --effort medium\"");
         println!("  weft . \"codex -m gpt-5.6-luna -c model_reasoning_effort=medium\"\n");
         println!("Weft passes them through untouched. It never chooses a model,");
-        println!("and starts no agent unless you name one or press N.");
+        println!("and starts no agent unless you name one or press N.\n");
+        println!("Agents run in a background session that outlives this window.");
+        println!("Closing Weft leaves them working; `weft stop` ends them.");
         return Ok(());
     }
 
@@ -36,7 +62,9 @@ fn main() -> Result<()> {
     let mut out = std::io::stdout();
     let _ = execute!(out, EnableMouseCapture, EnableBracketedPaste);
 
-    let mut weft = App::new(root, toggle);
+    let size = terminal.size().unwrap_or_default();
+    let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
+    let mut weft = App::with_session(root, toggle, session);
     let mut started = Ok(());
     for agent in &agents {
         let program = agent.split_whitespace().next().unwrap_or(agent);
