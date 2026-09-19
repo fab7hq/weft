@@ -410,7 +410,7 @@ impl App {
         let prefix = self.prefix_for(&harness);
         let command = ringframe::skill_command(&prefix, "ask");
         self.modal = Some(Modal::Confirm(Pending {
-            payload: format!("{command} {text}").into_bytes(),
+            payload: format!("{command}{text}").into_bytes(),
             pane: target,
             ask_id: None,
             what: format!("Ready to ask {harness}"),
@@ -1266,7 +1266,8 @@ pub(crate) mod tests {
                 panic!("{key} must confirm first, got {:?}", a.modal)
             };
             let text = String::from_utf8(p.payload).unwrap();
-            assert!(text.ends_with(expect), "got {text:?}");
+            assert!(text.trim_end().ends_with(expect), "got {text:?}");
+            assert!(text.ends_with(' '), "the token is closed so Enter means send: {text:?}");
         }
     }
 

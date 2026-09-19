@@ -90,8 +90,15 @@ pub fn seal_check(project: &Path, seal_id: &str) -> Result<Freshness, Error> {
 }
 
 /// What Weft types to start each step. The intent is appended for `ask`.
+/// The invocation, with the space that closes it.
+///
+/// A harness offers completions while a skill token is still being typed, and
+/// the first Enter after a bare token is taken by that chooser rather than
+/// submitting: `$rf:eval` sat in Codex's composer, unsent, and Weft had no way
+/// to tell. The trailing space ends the token, so Enter means send. Weft never
+/// presses Enter twice to find out.
 pub fn skill_command(prefix: &str, skill: &str) -> String {
-    format!("{prefix}{skill}")
+    format!("{prefix}{skill} ")
 }
 
 #[cfg(test)]
@@ -100,8 +107,17 @@ mod tests {
 
     #[test]
     fn a_skill_command_is_the_profiles_prefix_and_the_verb() {
-        assert_eq!(skill_command("/rf:", "eval"), "/rf:eval");
-        assert_eq!(skill_command("$rf:", "ask"), "$rf:ask");
+        assert_eq!(skill_command("/rf:", "eval"), "/rf:eval ");
+        assert_eq!(skill_command("$rf:", "ask"), "$rf:ask ");
+    }
+
+    #[test]
+    fn a_bare_invocation_ends_with_the_space_that_closes_it() {
+        // Found against Codex: the first Enter after a bare `$rf:eval` was
+        // taken by the completion chooser, and the prompt sat there unsent.
+        for skill in ["eval", "seal"] {
+            assert!(skill_command("$rf:", skill).ends_with(' '), "{skill}");
+        }
     }
 
     #[test]
