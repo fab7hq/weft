@@ -13,6 +13,13 @@ pub const ENTER_DELAY: Duration = Duration::from_millis(80);
 /// sending Enter anyway.
 pub const ECHO_TIMEOUT: Duration = Duration::from_millis(2500);
 
+/// How long the composer must hold still after the text appears, before Enter
+/// is worth sending. Seeing the text is not the same as the harness having
+/// finished taking it: a short payload renders almost at once, so Enter used
+/// to arrive while the composer was still ingesting the paste, and the prompt
+/// sat there unsent. A long payload took long enough to draw that it hid this.
+pub const COMPOSER_SETTLE: Duration = Duration::from_millis(400);
+
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 const ENTER: &[u8] = b"\r";

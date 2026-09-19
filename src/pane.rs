@@ -202,14 +202,27 @@ impl Pane {
             return false;
         };
         let deadline = std::time::Instant::now() + timeout;
+        // Seen, and then unchanged for a moment: a composer still taking the
+        // paste is still redrawing, and Enter sent into that is dropped.
+        let mut settled: Option<(std::time::Instant, String)> = None;
         while std::time::Instant::now() < deadline {
             let screen = inject::squeeze(&self.with_screen(|s| s.contents()));
-            if screen.contains(&head) && screen.contains(&tail) {
-                return true;
-            }
+            let showing = screen.contains(&head) && screen.contains(&tail);
+            settled = match (settled, showing) {
+                (_, false) => None,
+                (None, true) => Some((std::time::Instant::now(), screen)),
+                (Some((since, before)), true) if before == screen => {
+                    if since.elapsed() >= inject::COMPOSER_SETTLE {
+                        return true;
+                    }
+                    Some((since, before))
+                }
+                (Some(_), true) => Some((std::time::Instant::now(), screen)),
+            };
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
-        false
+        // On screen but never still: say so rather than pretend it settled.
+        settled.is_some()
     }
 }
 
