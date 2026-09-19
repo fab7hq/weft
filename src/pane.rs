@@ -82,6 +82,29 @@ impl Pane {
         f(parser.screen())
     }
 
+    /// Move back through what the pane has already printed.
+    ///
+    /// Neither Claude Code nor Codex asks for mouse reporting or uses the
+    /// alternate screen: they print inline and let the terminal own the
+    /// scrollback. Inside Weft there is no terminal to do that, so Weft keeps
+    /// the scrollback itself and moves through it here.
+    pub fn scroll(&mut self, delta: i32) {
+        let mut parser = self.parser.lock().expect("pane parser");
+        let screen = parser.screen_mut();
+        let at = screen.scrollback() as i32;
+        let next = (at + delta).max(0) as usize;
+        screen.set_scrollback(next);
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.parser.lock().expect("pane parser").screen().scrollback()
+    }
+
+    /// Jump back to the live output.
+    pub fn scroll_to_bottom(&mut self) {
+        self.parser.lock().expect("pane parser").screen_mut().set_scrollback(0);
+    }
+
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
         self.parser.lock().expect("pane parser").screen_mut().set_size(rows, cols);
@@ -217,6 +240,29 @@ mod tests {
             .expect("allowed");
         assert!(attempt.echoed, "Enter is sent once the text is visible");
         assert!(attempt.bytes > 0);
+    }
+
+    #[test]
+    fn a_pane_scrolls_back_through_what_it_printed() {
+        let mut pane = sh("for i in $(seq 1 60); do echo line-$i; done");
+        assert_eq!(pane.scroll_offset(), 0, "starts at the live output");
+        assert!(pane.with_screen(|s| s.contents()).contains("line-60"));
+
+        pane.scroll(30);
+        assert_eq!(pane.scroll_offset(), 30);
+        let scrolled = pane.with_screen(|s| s.contents());
+        assert!(scrolled.contains("line-20"), "older output is reachable: {scrolled:?}");
+
+        pane.scroll_to_bottom();
+        assert_eq!(pane.scroll_offset(), 0);
+        assert!(pane.with_screen(|s| s.contents()).contains("line-60"));
+    }
+
+    #[test]
+    fn scrolling_past_the_live_output_stops_at_it() {
+        let mut pane = sh("echo only-one-line");
+        pane.scroll(-50);
+        assert_eq!(pane.scroll_offset(), 0, "never scrolls below the bottom");
     }
 
     #[test]

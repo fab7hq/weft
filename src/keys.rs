@@ -55,6 +55,10 @@ pub enum Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     ToggleFocus,
+    /// Type a confirmed prompt into the agent on the person's behalf.
+    Send,
+    /// Start another agent.
+    NewAgent,
     Pick(i8),
     Open,
     Back,
@@ -95,6 +99,8 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
         Key::Tab => Action::NextPane,
         Key::Char(c) => match c.to_ascii_lowercase() {
             'a' => Action::Ask,
+            's' => Action::Send,
+            'n' => Action::NewAgent,
             'c' => Action::Check,
             'd' => Action::Decide,
             'h' => Action::Help,
@@ -163,6 +169,23 @@ mod tests {
         ] {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected);
             assert_eq!(route(plain(Key::Char(c.to_ascii_uppercase())), Focus::Weft, t), expected);
+        }
+    }
+
+    #[test]
+    fn every_key_the_action_bar_offers_has_an_action() {
+        // The bar advertised [S]end it long before anything was wired to it.
+        let t = Toggle::CtrlRightBracket;
+        for (c, expected) in [
+            ('a', Action::Ask),
+            ('s', Action::Send),
+            ('n', Action::NewAgent),
+            ('c', Action::Check),
+            ('d', Action::Decide),
+            ('h', Action::Help),
+            ('x', Action::Quit),
+        ] {
+            assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected, "{c}");
         }
     }
 

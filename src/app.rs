@@ -39,6 +39,8 @@ pub enum Modal {
     Detail { unit: usize, record: Option<Record> },
     /// Something did not work, said plainly.
     Note(String),
+    /// Pick an agent to start. Weft starts none on its own.
+    StartAgent { choice: usize },
 }
 
 pub struct Agent {
@@ -211,6 +213,37 @@ impl App {
         self.modal_choice = 0;
     }
 
+    /// Which agents are installed, for the start picker.
+    pub fn available_agents() -> Vec<&'static str> {
+        ["claude", "codex"].into_iter().filter(|a| which(a)).collect()
+    }
+
+    fn start_agent_picker(&mut self) {
+        let found = Self::available_agents();
+        if found.is_empty() {
+            self.modal = Some(Modal::Note(
+                "No coding agent found. Install claude or codex first.".into(),
+            ));
+            return;
+        }
+        self.modal = Some(Modal::StartAgent { choice: 0 });
+        self.modal_choice = 0;
+    }
+
+    fn start_chosen_agent(&mut self, choice: usize) {
+        let found = Self::available_agents();
+        let Some(program) = found.get(choice).copied() else { return };
+        let harness = if program == "claude" { "claude-code" } else { program };
+        match self.add(harness, program) {
+            Ok(()) => {
+                self.modal = None;
+                self.pane_focus = self.panes.len() - 1;
+                self.focus = Focus::Agent;
+            }
+            Err(e) => self.modal = Some(Modal::Note(format!("Could not start {program}: {e}"))),
+        }
+    }
+
     /// Check or Decide: type the skill into the pane that owns the work.
     fn start_skill(&mut self, skill: &str) {
         let Some(unit) = self.selected_unit().cloned() else {
@@ -348,6 +381,8 @@ impl App {
                 }
             }
             Action::Ask => self.start_ask(),
+            Action::Send => self.start_send(),
+            Action::NewAgent => self.start_agent_picker(),
             Action::Check => self.start_skill("eval"),
             Action::Decide => self.start_skill("seal"),
             Action::Back => {}
@@ -393,6 +428,7 @@ impl App {
         let options = match &modal {
             Modal::Quit => 3,
             Modal::Confirm(_) => 2,
+            Modal::StartAgent { .. } => App::available_agents().len().max(1),
             _ => 1,
         };
         match key.code {
@@ -429,6 +465,7 @@ impl App {
                     self.modal = None;
                 }
             }
+            Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             Modal::Quit => match self.modal_choice {
                 0 => self.quit = true,
                 1 => {
@@ -472,7 +509,24 @@ impl App {
             m.column >= a.x && m.column < a.x + a.width && m.row >= a.y && m.row < a.y + a.height
         });
         match m.kind {
-            MouseEventKind::Down(MouseButton::Left) if in_pane => self.focus = Focus::Agent,
+            // The harnesses ask for no mouse reporting, so scrolling is Weft's
+            // to do: it moves through the scrollback it keeps for the pane.
+            MouseEventKind::ScrollUp if in_pane => {
+                if let Some(p) = self.panes.get_mut(self.pane_focus) {
+                    p.pty.scroll(3);
+                }
+            }
+            MouseEventKind::ScrollDown if in_pane => {
+                if let Some(p) = self.panes.get_mut(self.pane_focus) {
+                    p.pty.scroll(-3);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) if in_pane => {
+                self.focus = Focus::Agent;
+                if let Some(p) = self.panes.get_mut(self.pane_focus) {
+                    p.pty.scroll_to_bottom();
+                }
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 self.focus = Focus::Weft;
                 self.click_list(m.row);
@@ -501,6 +555,12 @@ impl App {
     pub fn set_units(&mut self, units: Vec<Unit>) {
         self.units = units;
     }
+}
+
+fn which(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
+    })
 }
 
 fn chord_of(key: KeyEvent) -> Chord {
@@ -762,5 +822,73 @@ mod tests {
         assert_eq!(a.units.len(), 1);
         assert_eq!(a.units[0].title, "health endpoint");
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use crossterm::event::KeyCode;
+
+    fn bare() -> App {
+        App::new(std::env::temp_dir(), Toggle::CtrlRightBracket)
+    }
+
+    #[test]
+    fn weft_starts_no_agent_on_its_own() {
+        let a = bare();
+        assert!(a.panes.is_empty(), "the panel stays empty until asked");
+        assert_eq!(a.focus, Focus::Weft);
+    }
+
+    #[test]
+    fn n_offers_the_agents_that_are_installed() {
+        let mut a = bare();
+        a.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)).expect("key");
+        match a.modal {
+            Some(Modal::StartAgent { .. }) => {}
+            Some(Modal::Note(ref t)) => assert!(t.contains("No coding agent"), "{t}"),
+            other => panic!("expected a picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn s_sends_rather_than_doing_nothing() {
+        // The action bar advertised [S]end it while nothing was wired to it.
+        let mut a = bare();
+        a.add("codex", "/bin/cat").expect("spawn");
+        a.set_units(vec![Unit {
+            ask_id: "ask_1".into(),
+            title: "t".into(),
+            harness: "codex".into(),
+            route: "native_plan".into(),
+            asked_at: "now".into(),
+            delivery_mode: "human_handoff".into(),
+            cancelled: false,
+            confirmed: true,
+            sent: Sent::ReadyToSend,
+            check: None,
+            sealed: None,
+        }]);
+        a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)).expect("key");
+        assert!(a.modal.is_some(), "S must do something when the bar offers it");
+    }
+
+    #[test]
+    fn scrolling_over_a_pane_moves_its_scrollback() {
+        let mut a = bare();
+        a.add("sh", "/bin/sh").expect("spawn");
+        a.panes[0].pty.send(b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        a.note_pane_area(ratatui::layout::Rect { x: 0, y: 2, width: 80, height: 20 });
+
+        let scroll = |kind| MouseEvent { kind, column: 40, row: 10, modifiers: KeyModifiers::NONE };
+        a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
+        a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
+        assert!(a.panes[0].pty.scroll_offset() > 0, "the wheel moves through the scrollback");
+
+        a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
+        a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
+        assert_eq!(a.panes[0].pty.scroll_offset(), 0, "and back to the live output");
     }
 }

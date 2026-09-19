@@ -6,7 +6,7 @@
 use ratatui::layout::{Constraint, Direction, Layout as RLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 use tui_term::widget::PseudoTerminal;
 
@@ -48,6 +48,7 @@ fn title_bar(app: &App) -> Paragraph<'static> {
     };
     let left = format!(" weft · {} · {}", app.project, state);
     let right = match app.focus {
+        Focus::Weft if app.panes.is_empty() => "no agent running ".to_string(),
         Focus::Agent if app.waiting(app.pane_focus).is_some() => {
             "● needs your answer (from the screen) ".to_string()
         }
@@ -74,6 +75,12 @@ fn rule(width: u16) -> Paragraph<'static> {
 }
 
 fn body(frame: &mut Frame, app: &mut App, area: Rect) {
+    // With no agent running there is nothing to sit beside, so the first-run
+    // message gets the whole width instead of being clipped to the rail.
+    if app.panes.is_empty() {
+        frame.render_widget(list(app, area.width), area);
+        return;
+    }
     match layout::for_width(area.width) {
         Layout::Split { rail, pane } => {
             let cols = RLayout::default()
@@ -104,9 +111,15 @@ fn list(app: &App, width: u16) -> Paragraph<'static> {
     let mut lines: Vec<Line> = vec![Line::raw("")];
 
     if app.units.is_empty() {
-        lines.push(Line::raw("   Nothing asked for yet."));
-        lines.push(Line::raw(""));
-        lines.push(Line::raw("   Press A to ask for something."));
+        if app.panes.is_empty() {
+            lines.push(Line::raw("   Nothing is running yet."));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("   Press N to start an agent."));
+        } else {
+            lines.push(Line::raw("   Nothing asked for yet."));
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("   Press A to ask for something."));
+        }
         return Paragraph::new(lines);
     }
 
@@ -169,11 +182,13 @@ fn clip(s: &str, n: usize) -> String {
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     app.note_pane_area(area);
     let focus = app.pane_focus;
+    if app.panes.is_empty() {
+        // Weft starts no agent on its own. The panel stays empty until asked.
+        frame.render_widget(Paragraph::new(""), area);
+        return;
+    }
     let Some(pane) = app.panes.get_mut(focus) else {
-        frame.render_widget(
-            Paragraph::new("\n   No agent running. Press A to start one.").wrap(Wrap { trim: false }),
-            area,
-        );
+        frame.render_widget(Paragraph::new(""), area);
         return;
     };
     let _ = pane.fit(area.height, area.width);
@@ -192,15 +207,19 @@ fn action_bar(app: &App) -> Paragraph<'static> {
     if app.focus == Focus::Agent {
         return Paragraph::new("");
     }
-    let mut left = String::from("  [A]sk   [C]heck   [D]ecide   [H]elp   [X] Quit");
-    if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
-        left = "  [A]sk   [S]end it   [C]heck   [D]ecide   [H]elp   [X] Quit".into();
+    let mut left = String::from("  [N]ew agent   [H]elp   [X] Quit");
+    if !app.panes.is_empty() {
+        left = String::from("  [A]sk   [N]ew agent   [C]heck   [D]ecide   [H]elp   [X] Quit");
+        if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
+            left = "  [A]sk   [S]end it   [C]heck   [D]ecide   [H]elp   [X] Quit".into();
+        }
     }
-    Paragraph::new(Line::from(vec![
-        Span::raw(left),
-        Span::raw("   "),
-        Span::raw(format!("{} to the agent ", app.toggle.label())),
-    ]))
+    let right = if app.panes.is_empty() {
+        String::new()
+    } else {
+        format!("{} to the agent ", app.toggle.label())
+    };
+    Paragraph::new(Line::from(vec![Span::raw(left), Span::raw("   "), Span::raw(right)]))
 }
 
 fn hint(app: &App) -> Paragraph<'static> {
@@ -212,6 +231,9 @@ fn hint(app: &App) -> Paragraph<'static> {
             " Every key goes to the agent, Esc included. {} comes back to Weft.",
             app.toggle.label()
         ),
+        (_, Focus::Weft) if app.panes.is_empty() => {
+            " Press N to start an agent in this project.".to_string()
+        }
         (_, Focus::Weft) => match waiting_line(app) {
             Some(_) => {
                 " Weft never answers an agent's question for you. Go into the pane and choose."
@@ -312,6 +334,17 @@ fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<S
                 format!(" {} ", p.what),
                 lines,
                 vec!["[ Do it ]".into(), "[ Cancel ]".into()],
+            )
+        }
+        Modal::StartAgent { .. } => {
+            let found = App::available_agents();
+            (
+                " Start an agent ".into(),
+                vec![
+                    "It runs in this project, with your own settings.".into(),
+                    String::new(),
+                ],
+                found.iter().map(|a| format!("[ {a} ]")).collect(),
             )
         }
         Modal::Detail { unit, record } => detail(app, *unit, record.as_ref(), room),

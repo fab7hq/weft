@@ -16,25 +16,21 @@ fn main() -> Result<()> {
     if matches!(first.as_deref(), Some("--help" | "-h")) {
         println!("weft [project-dir] [agent ...]\n");
         println!("  project-dir   the repository to work in (default: .)");
-        println!("  agent         claude and/or codex (default: whichever is installed)\n");
+        println!("  agent         claude and/or codex; optional, for scripts and probes\n");
         println!("An agent may carry its own arguments, quoted as one word:\n");
         println!("  weft . \"claude --model sonnet --effort medium\"");
         println!("  weft . \"codex -m gpt-5.6-luna -c model_reasoning_effort=medium\"\n");
-        println!("Weft passes them through untouched. It never chooses a model.");
+        println!("Weft passes them through untouched. It never chooses a model,");
+        println!("and starts no agent unless you name one or press N.");
         return Ok(());
     }
 
     let root = std::path::PathBuf::from(first.unwrap_or_else(|| ".".into()))
         .canonicalize()
         .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let mut agents: Vec<String> = args.collect();
-    if agents.is_empty() {
-        agents = ["claude", "codex"]
-            .iter()
-            .filter(|a| which(a).is_some())
-            .map(|a| a.to_string())
-            .collect();
-    }
+    // Weft starts no agent on its own. Named agents are a convenience for
+    // scripts and probes; the ordinary way in is to press N.
+    let agents: Vec<String> = args.collect();
 
     // Ctrl+Shift+W is only distinguishable where the terminal reports modifiers
     // on a Ctrl+letter chord; everywhere else Weft uses a legacy-safe key.
@@ -76,10 +72,3 @@ fn main() -> Result<()> {
     result
 }
 
-fn which(program: &str) -> Option<std::path::PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|dir| dir.join(program))
-            .find(|p| p.is_file())
-    })
-}
