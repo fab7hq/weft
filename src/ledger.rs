@@ -45,14 +45,21 @@ impl Verdict {
     }
 }
 
+/// Where a unit of work stands on its way into an agent.
+///
+/// A route the harness takes for itself and a route the person has to type are
+/// different situations that want opposite things: one needs nothing, the
+/// other is waiting on you. They are not one state with a missing receipt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sent {
-    /// Compiled, not confirmed.
+    /// Compiled on a handoff route, not yet confirmed.
     NotSent,
-    /// Confirmed and waiting to be typed. Every Codex route today.
+    /// Confirmed on a handoff route, waiting to be typed. Needs you.
     ReadyToSend,
-    /// The harness took it on its own.
-    Dispatched,
+    /// Typed by Weft, with no receipt yet. Weft's claim about Weft.
+    Unconfirmed,
+    /// A dispatch route: the harness took it and there is nothing to send.
+    TakenByAgent,
     /// A hook saw it arrive. `exact` is a digest match against `prompt.txt`.
     Arrived { exact: bool },
 }
@@ -103,14 +110,18 @@ impl Unit {
         match self.sent {
             Sent::NotSent => "not sent yet".into(),
             Sent::ReadyToSend => "ready to send".into(),
-            Sent::Dispatched => "sent".into(),
+            Sent::Unconfirmed => "sent, unconfirmed".into(),
+            Sent::TakenByAgent => "the agent took it".into(),
             Sent::Arrived { exact: true } => "sent · word for word".into(),
             Sent::Arrived { exact: false } => "sent, reworded".into(),
         }
     }
 
-    /// Waiting on a person: confirmed but not yet typed, or checked but not
-    /// yet decided — whether the check matched or not.
+    /// Waiting on a decision only the person can make: a prompt to type, or a
+    /// verdict to decide on.
+    ///
+    /// A route the agent took for itself asks nothing, so it never counts —
+    /// otherwise the count stops meaning "act now".
     pub fn needs_you(&self) -> bool {
         if self.cancelled || self.sealed.is_some() {
             return false;
@@ -154,6 +165,9 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
 
         match kind {
             "ask.compiled" => {
+                let mode = s(&data, &["delivery_mode"]).unwrap_or_default().to_string();
+                // A dispatch route has nothing for the person to send.
+                let sent = if mode == "native_dispatch" { Sent::TakenByAgent } else { Sent::NotSent };
                 index.insert(id.clone(), units.len());
                 units.push(Unit {
                     ask_id: id,
@@ -161,10 +175,10 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     harness: s(&data, &["host", "name"]).unwrap_or("unknown").to_string(),
                     route: s(&data, &["selected_capability"]).unwrap_or_default().to_string(),
                     asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
-                    delivery_mode: s(&data, &["delivery_mode"]).unwrap_or_default().to_string(),
+                    delivery_mode: mode,
                     cancelled: false,
                     confirmed: false,
-                    sent: Sent::NotSent,
+                    sent,
                     check: None,
                     sealed: None,
                 });
@@ -184,8 +198,12 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
             }
             "ask.delivery" => {
                 if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
-                    if s(&data, &["state"]) == Some("native_accepted") {
-                        u.sent = Sent::Dispatched;
+                    match s(&data, &["state"]) {
+                        Some("native_accepted") => u.sent = Sent::TakenByAgent,
+                        Some("handoff_ready") if u.sent == Sent::NotSent => {
+                            u.sent = Sent::ReadyToSend
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -359,12 +377,43 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmed_native_route_is_not_waiting_on_the_person_to_type() {
+    fn a_route_the_agent_takes_says_so_and_asks_nothing() {
+        // It used to read "not sent yet", which was the opposite of true:
+        // there is nothing to send, and the work may already be done.
         let units = project(&[
             compiled("ask_1", "t", "claude-code", "native_dispatch"),
             ev("ask.confirmed", "ask_1", json!({"confirmation": {}})),
         ]);
-        assert_eq!(units[0].sent, Sent::NotSent);
+        assert_eq!(units[0].sent, Sent::TakenByAgent);
+        assert_eq!(units[0].status(), "the agent took it");
+        assert!(!units[0].needs_you(), "a dispatch route never waits on you");
+    }
+
+    #[test]
+    fn a_handoff_that_is_ready_is_the_thing_that_waits_on_you() {
+        let units = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.delivery", "ask_1", json!({
+                "mode": "human_handoff", "mechanism": null, "state": "handoff_ready",
+                "qualification": null, "receipt": null, "submission": "unobserved",
+                "limitations": []
+            })),
+        ]);
+        assert_eq!(units[0].sent, Sent::ReadyToSend);
+        assert!(units[0].needs_you());
+    }
+
+    #[test]
+    fn a_receipt_outranks_the_route_it_arrived_on() {
+        let units = project(&[
+            compiled("ask_1", "t", "claude-code", "native_dispatch"),
+            ev("ask.submission", "ask_1", json!({
+                "state": "observed", "observed_by": "hook:UserPromptSubmit",
+                "attributed_by": null, "as_modified": false,
+                "host": {"name": "claude-code"}, "prompt_sha256": "b"
+            })),
+        ]);
+        assert_eq!(units[0].status(), "sent · word for word");
     }
 
     #[test]

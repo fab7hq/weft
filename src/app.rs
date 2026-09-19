@@ -25,6 +25,8 @@ pub struct Pending {
     pub pane: usize,
     pub what: String,
     pub why: Vec<String>,
+    /// Set when this is a confirmed prompt being typed for the person.
+    pub ask_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,6 +205,7 @@ impl App {
         self.modal = Some(Modal::Confirm(Pending {
             payload: format!("{command} {text}").into_bytes(),
             pane: target,
+            ask_id: None,
             what: format!("Ask {harness}"),
             why: vec![
                 format!("Weft will type  {command}  into {harness}."),
@@ -273,6 +276,7 @@ impl App {
         self.modal = Some(Modal::Confirm(Pending {
             payload: command.into_bytes(),
             pane,
+            ask_id: None,
             what: if skill == "eval" { "Check this work?".into() } else { "Decide on this work?".into() },
             why,
         }));
@@ -294,6 +298,7 @@ impl App {
                 self.modal = Some(Modal::Confirm(Pending {
                     payload: bytes,
                     pane,
+                    ask_id: Some(unit.ask_id.clone()),
                     what: format!("Ready to send to {}", unit.harness),
                     why: vec!["This is the exact wording. Weft will not change it.".into()],
                 }));
@@ -318,6 +323,15 @@ impl App {
                 self.modal = None;
                 self.focus = Focus::Agent;
                 self.pane_focus = pending.pane;
+                // Weft typed it. Whether it arrived is the hook's to say, so
+                // the board reports only what Weft itself did until then.
+                if let Some(ask_id) = pending.ask_id.clone() {
+                    if let Some(u) = self.units.iter_mut().find(|u| u.ask_id == ask_id) {
+                        if u.sent == Sent::ReadyToSend {
+                            u.sent = Sent::Unconfirmed;
+                        }
+                    }
+                }
             }
             Err(Refusal::PaneBlocked) => {
                 let why = self
