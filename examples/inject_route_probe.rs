@@ -122,7 +122,16 @@ fn attach(root: &std::path::Path) -> anyhow::Result<Session> {
     if !weft::server::is_live(&socket) {
         weft::server::clear_dead(&socket);
         let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/weft");
-        std::process::Command::new(bin).arg("--serve").arg(root).spawn()?;
+        // Detached, as the product detaches it: a server holding this process's
+        // stdout would keep the pipe open long after the probe has finished,
+        // and whoever ran it would wait forever for output that never ends.
+        std::process::Command::new(bin)
+            .arg("--serve")
+            .arg(root)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline && !weft::server::is_live(&socket) {
             std::thread::sleep(Duration::from_millis(50));
