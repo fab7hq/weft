@@ -1167,6 +1167,19 @@ mod tests {
     }
 
     #[test]
+    fn the_ask_box_cancels_on_the_key_it_shows() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('a'));
+        for c in "half an intent".chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("[←] CANCEL"), "{drawn}");
+        press(&mut a, KeyCode::Left);
+        assert!(a.modal.is_none(), "[←] cancels whatever has been typed");
+    }
+
+    #[test]
     fn a_pane_waiting_for_an_answer_offers_to_take_you_there_and_nothing_else() {
         let mut a = judged();
         a.input(0, b"Allow command?\r\n").expect("type");

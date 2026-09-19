@@ -806,8 +806,9 @@ impl App {
         // Composing text is its own keyboard.
         if let Modal::Ask { mut text, mut target } = modal {
             match key.code {
-                event::KeyCode::Left if text.is_empty() => self.modal = None,
-                event::KeyCode::Esc => self.modal = None,
+                // `[←] CANCEL` is what the box offers, so it cancels whether
+                // or not anything has been typed.
+                event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
                 event::KeyCode::Enter if !text.trim().is_empty() => self.send_ask(text, target),
                 event::KeyCode::Backspace => {
                     text.pop();
