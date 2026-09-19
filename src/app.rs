@@ -92,6 +92,8 @@ pub struct App {
     pub selected: usize,
     /// The row expanded in place, if any.
     expanded: Option<usize>,
+    /// How far the work list is scrolled. A list can be longer than the pane.
+    list_offset: usize,
     drawer: Option<Drawer>,
     /// Whether the work list is on screen. Hidden, the agent has the width.
     show_work: bool,
@@ -111,6 +113,10 @@ pub struct App {
     pane_area: Option<Rect>,
     row_spans: Vec<(u16, u16, usize)>,
     tab_spans: Vec<(u16, u16, Option<usize>)>,
+    action_spans: Vec<(u16, u16, Act)>,
+    action_row: u16,
+    list_area: Option<Rect>,
+    needs_you_span: Option<(u16, u16)>,
     /// Whether the CLI that owns the record is installed. Asked once: it is a
     /// property of the machine, not of the frame being drawn.
     record_available: bool,
@@ -150,6 +156,10 @@ impl App {
 
     pub fn show_work(&self) -> bool {
         self.show_work
+    }
+
+    pub fn list_offset(&self) -> usize {
+        self.list_offset
     }
 
     pub fn hint_text(&self) -> Option<&str> {
@@ -269,6 +279,7 @@ impl App {
             units: Vec::new(),
             selected: 0,
             expanded: None,
+            list_offset: 0,
             drawer: None,
             show_work: true,
             focus: Focus::Weft,
@@ -284,6 +295,10 @@ impl App {
             pane_area: None,
             row_spans: Vec::new(),
             tab_spans: Vec::new(),
+            action_spans: Vec::new(),
+            action_row: 0,
+            list_area: None,
+            needs_you_span: None,
             record_available: ringframe::installed(),
         }
     }
@@ -618,6 +633,10 @@ impl App {
         }
         let n = self.units.len() as i32;
         self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
+        // Picking a row that is scrolled away brings it back into view.
+        if self.selected < self.list_offset {
+            self.list_offset = self.selected;
+        }
         // The expansion belongs to the row it was opened on.
         if self.expanded.is_some_and(|i| i != self.selected) {
             self.expanded = None;
@@ -710,6 +729,40 @@ impl App {
         }
     }
 
+    /// What an action does, wherever it was asked for. The bar shows a key for
+    /// every one of these and each is also a click, so they meet here.
+    pub fn act(&mut self, act: Act) {
+        match act {
+            Act::Ask => self.start_ask(),
+            Act::Send => self.start_send(),
+            Act::Check => self.start_skill("eval"),
+            Act::Decide => self.start_skill("seal"),
+            Act::Wording => self.read_wording(),
+            Act::Judges => self.read_judges(),
+            Act::Fix => {
+                if self.guard(Act::Fix) {
+                    self.drawer = None;
+                    self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
+                }
+            }
+            Act::NewAgent => self.start_agent_picker(),
+            Act::Work => self.toggle_work(),
+            Act::Help => {
+                self.modal = Some(Modal::Help);
+                self.modal_choice = 0;
+            }
+            Act::Quit => {
+                self.modal = Some(Modal::Quit);
+                self.modal_choice = 0;
+            }
+        }
+    }
+
+    fn scroll_list(&mut self, delta: i32) {
+        let rows = self.units.len().saturating_sub(1);
+        self.list_offset = (self.list_offset as i32 + delta).clamp(0, rows as i32) as usize;
+    }
+
     // --- events ------------------------------------------------------------
 
     /// One keystroke. Public so a probe or a wireframe run can drive the
@@ -744,7 +797,7 @@ impl App {
             }
             Action::Back => self.back(),
             Action::NextNeedsYou => self.next_needs_you(),
-            Action::ToggleWork => self.toggle_work(),
+            Action::ToggleWork => self.act(Act::Work),
             Action::NextPane => {
                 if self.pane_count() > 0 {
                     self.pane_focus = (self.pane_focus + 1) % self.pane_count();
@@ -756,28 +809,17 @@ impl App {
                     self.pane_focus = i;
                 }
             }
-            Action::Ask => self.start_ask(),
-            Action::Send => self.start_send(),
-            Action::NewAgent => self.start_agent_picker(),
-            Action::Check => self.start_skill("eval"),
-            Action::Decide => self.start_skill("seal"),
-            Action::Wording => self.read_wording(),
-            Action::Judges => self.read_judges(),
-            Action::Fix => {
-                if self.guard(Act::Fix) {
-                    self.drawer = None;
-                    self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
-                }
-            }
+            Action::Ask => self.act(Act::Ask),
+            Action::Send => self.act(Act::Send),
+            Action::NewAgent => self.act(Act::NewAgent),
+            Action::Check => self.act(Act::Check),
+            Action::Decide => self.act(Act::Decide),
+            Action::Wording => self.act(Act::Wording),
+            Action::Judges => self.act(Act::Judges),
+            Action::Fix => self.act(Act::Fix),
             Action::Explain => self.explain_waiting(),
-            Action::Quit => {
-                self.modal = Some(Modal::Quit);
-                self.modal_choice = 0;
-            }
-            Action::Help => {
-                self.modal = Some(Modal::Help);
-                self.modal_choice = 0;
-            }
+            Action::Quit => self.act(Act::Quit),
+            Action::Help => self.act(Act::Help),
             Action::Ignore => {}
         }
         Ok(())
@@ -886,7 +928,8 @@ impl App {
         Ok(())
     }
 
-    fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {
+    /// One mouse event. Public for the same reason `on_key` is.
+    pub fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {
         // The wheel moves whatever is being read: the drawer if one is open,
         // otherwise the focused pane's scrollback.
         let wheel = match m.kind {
@@ -897,6 +940,8 @@ impl App {
         if let Some(delta) = wheel {
             if self.drawer.is_some() {
                 self.scroll_drawer(delta);
+            } else if self.over_list(m.column, m.row) {
+                self.scroll_list(delta);
             } else if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
                 p.scroll(-delta);
             }
@@ -906,6 +951,15 @@ impl App {
             return Ok(());
         }
         if m.kind != MouseEventKind::Down(MouseButton::Left) {
+            return Ok(());
+        }
+        if self.needs_you_span.is_some_and(|(x, w)| m.row == 0 && m.column >= x && m.column < x + w) {
+            self.next_needs_you();
+            return Ok(());
+        }
+        if let Some(act) = self.action_at(m.column, m.row) {
+            self.focus = Focus::Weft;
+            self.act(act);
             return Ok(());
         }
         if let Some(target) = self.tab_at(m.column, m.row) {
@@ -940,6 +994,20 @@ impl App {
         Ok(())
     }
 
+    fn over_list(&self, column: u16, row: u16) -> bool {
+        self.list_area.is_some_and(|a| {
+            column >= a.x && column < a.x + a.width && row >= a.y && row < a.y + a.height
+        })
+    }
+
+    /// An action word on the bar is the same action as its key.
+    fn action_at(&self, column: u16, row: u16) -> Option<Act> {
+        self.action_spans
+            .iter()
+            .find(|(x, w, _)| row == self.action_row && column >= *x && column < x + w)
+            .map(|(_, _, act)| *act)
+    }
+
     fn row_at(&self, row: u16) -> Option<usize> {
         self.row_spans
             .iter()
@@ -967,6 +1035,19 @@ impl App {
 
     pub fn note_tabs(&mut self, spans: Vec<(u16, u16, Option<usize>)>) {
         self.tab_spans = spans;
+    }
+
+    pub fn note_actions(&mut self, row: u16, spans: Vec<(u16, u16, Act)>) {
+        self.action_row = row;
+        self.action_spans = spans;
+    }
+
+    pub fn note_list_area(&mut self, area: Option<Rect>) {
+        self.list_area = area;
+    }
+
+    pub fn note_needs_you(&mut self, span: Option<(u16, u16)>) {
+        self.needs_you_span = span;
     }
 
     // --- test seams -----------------------------------------------------------

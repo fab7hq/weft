@@ -27,7 +27,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let geo = geometry(app, area);
     let th = app.theme;
 
-    frame.render_widget(title_bar(app, geo.title.width), geo.title);
+    let (title, needs_you) = title_bar(app, geo.title.width);
+    frame.render_widget(title, geo.title);
+    app.note_needs_you(needs_you.map(|(x, w)| (geo.title.x + x, w)));
     if geo.tabs.height > 0 {
         let (line, spans) = tab_row(app, &geo);
         app.note_tabs(spans);
@@ -37,8 +39,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     if app.pane_count() == 0 {
         app.note_rows(Vec::new());
+        app.note_list_area(None);
         frame.render_widget(first_run(app, geo.content), geo.content);
     } else {
+        app.note_list_area(geo.list);
         if let Some(list) = geo.list {
             let (para, rows) = work_list(app, list);
             app.note_rows(rows);
@@ -66,7 +70,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         rule(geo.bottom_rule.width, geo.body_divider, '┴', th),
         geo.bottom_rule,
     );
-    frame.render_widget(action_bar(app, geo.actions.width), geo.actions);
+    let (bar, action_spans) = action_bar(app, geo.actions.width);
+    app.note_actions(
+        geo.actions.y,
+        action_spans.into_iter().map(|(x, w, a)| (geo.actions.x + x, w, a)).collect(),
+    );
+    frame.render_widget(bar, geo.actions);
     frame.render_widget(hint(app), geo.hint);
 
     if let Some(modal) = app.modal.clone() {
@@ -204,7 +213,7 @@ fn vlines(height: u16, th: Theme) -> Vec<Line<'static>> {
 
 // --- the bars ----------------------------------------------------------------
 
-fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
+fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) {
     let th = app.theme;
     let state = match (app.pane_count(), app.focus) {
         (0, _) => String::new(),
@@ -237,7 +246,16 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
             spans
         }
     };
-    Paragraph::new(spread(left, right, width))
+    // The count is a place to click, so where it was drawn has to be known.
+    let counted = app.focus == Focus::Weft && app.needs_you() > 0;
+    let tail: usize = right.iter().map(|s| s.content.chars().count()).sum();
+    let last = right.last().map(|s| s.content.chars().count()).unwrap_or(0);
+    let span = counted.then(|| {
+        let end = width as usize - last;
+        let start = (width as usize).saturating_sub(tail);
+        (start as u16, (end - start) as u16)
+    });
+    (Paragraph::new(spread(left, right, width)), span)
 }
 
 /// Agents are tabs over the pane. The focused surface's header is the accent.
@@ -307,18 +325,18 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
 
 /// Every action shows its key. What cannot be done now is drawn muted and
 /// stays where it was, so the shape of the bar never jumps.
-fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
+fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)>) {
     let th = app.theme;
-    let plain = |text: &str| Paragraph::new(Line::styled(text.to_string(), th.label()));
+    let plain = |text: &str| (Paragraph::new(Line::styled(text.to_string(), th.label())), Vec::new());
     if app.focus == Focus::Agent {
         // While you are in the agent, Weft has no keys to offer.
-        return Paragraph::new("");
+        return (Paragraph::new(""), Vec::new());
     }
     match &app.modal {
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
-        Some(Modal::Ask { .. }) => return Paragraph::new(""),
+        Some(Modal::Ask { .. }) => return (Paragraph::new(""), Vec::new()),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
         None => {}
     }
@@ -333,17 +351,25 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             Reading::Judges => ("[P] WORDING", Act::Wording),
             Reading::Wording => ("[J] JUDGES", Act::Judges),
         };
-        let left = vec![
-            Span::raw("  "),
-            key(app, sibling.0, sibling.1),
-            Span::raw("   "),
-            key(app, "[F]IX THIS", Act::Fix),
-            Span::raw("   "),
-            key(app, "[D]ECIDE", Act::Decide),
-        ];
-        return Paragraph::new(spread(left, vec![Span::styled("[←] BACK ", th.label())], width));
+        let mut at = Vec::new();
+        let mut col = 2u16;
+        let mut left = vec![Span::raw("  ")];
+        for (label, act) in [sibling, ("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)] {
+            let span = key(app, label, act);
+            at.push((col, span.content.chars().count() as u16, act));
+            col += span.content.chars().count() as u16 + 3;
+            left.push(span);
+            left.push(Span::raw("   "));
+        }
+        left.pop();
+        return (
+            Paragraph::new(spread(left, vec![Span::styled("[←] BACK ", th.label())], width)),
+            at,
+        );
     }
     let mut spans = vec![Span::raw("  ")];
+    let mut at = Vec::new();
+    let mut col = 2u16;
     for (i, (label, act)) in [
         ("[A]SK", Act::Ask),
         ("[S]END", Act::Send),
@@ -359,10 +385,14 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     {
         if i > 0 {
             spans.push(Span::raw("   "));
+            col += 3;
         }
-        spans.push(key(app, label, act));
+        let span = key(app, label, act);
+        at.push((col, span.content.chars().count() as u16, act));
+        col += span.content.chars().count() as u16;
+        spans.push(span);
     }
-    Paragraph::new(Line::from(spans))
+    (Paragraph::new(Line::from(spans)), at)
 }
 
 /// One action on the bar, dimmed when it cannot be used.
@@ -449,8 +479,17 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         return (Paragraph::new(lines), rows);
     }
 
-    for (i, unit) in app.units().iter().enumerate() {
+    let offset = app.list_offset().min(app.units().len().saturating_sub(1));
+    if offset > 0 {
+        lines.push(Line::styled(format!("   ↑ {offset} above"), th.label()));
+    }
+    for (i, unit) in app.units().iter().enumerate().skip(offset) {
         let start = area.y + lines.len() as u16;
+        if lines.len() + 2 > area.height as usize {
+            let more = app.units().len() - i;
+            lines.push(Line::styled(format!("   ↓ {more} more"), th.label()));
+            break;
+        }
         let picked = i == app.selected;
         let marker = if picked { " ▸ " } else { "   " };
         // The harness sits just past the title field rather than at the far
@@ -683,7 +722,8 @@ fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
     lines.push(Line::styled("   └────────────────────────────────────────────┘".to_string(), th.rule()));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "   Click anything. Arrows and Enter work too.".to_string(),
+        "   Click anything. Arrows and Enter work too. To select text in a pane, hold Shift."
+            .to_string(),
         th.label(),
     ));
     let _ = area;
@@ -925,7 +965,7 @@ mod tests {
     use super::*;
     use crate::app::tests::{app, unit, press};
     use crate::ledger::{Check, Sent, Verdict};
-    use crossterm::event::KeyCode;
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -945,6 +985,10 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn wheel(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
     }
 
     /// An Ask that has been judged, with the record the judges wrote on disk.
@@ -1164,6 +1208,62 @@ mod tests {
         assert!(drawn.contains("Weft writes it down"), "{drawn}");
         assert!(drawn.contains("[Enter] START"), "{drawn}");
         assert!(drawn.contains("Nothing is running yet."), "{drawn}");
+    }
+
+    #[test]
+    fn a_list_longer_than_the_screen_says_what_is_above_and_below() {
+        let mut a = app();
+        let many: Vec<_> = (0..20)
+            .map(|i| {
+                let mut u = unit(Sent::TakenByAgent);
+                u.ask_id = format!("ask_{i}");
+                u.title = format!("unit {i}");
+                u
+            })
+            .collect();
+        a.set_units(many);
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("↓"), "there is more below: {drawn}");
+        for _ in 0..4 {
+            a.on_mouse(wheel(MouseEventKind::ScrollDown, 10, 6)).expect("wheel");
+        }
+        let scrolled = screen(&mut a, 80, 24);
+        assert!(scrolled.contains("above"), "and above, once scrolled: {scrolled}");
+        assert!(!scrolled.contains("unit 0"), "the first row scrolled away: {scrolled}");
+    }
+
+    #[test]
+    fn clicking_an_action_word_does_what_its_key_does() {
+        let mut a = judged();
+        screen(&mut a, 80, 24);
+        let bar = screen(&mut a, 80, 24);
+        let row = bar.lines().position(|l| l.contains("[H]ELP")).expect("the bar") as u16;
+        let column = bar.lines().nth(row as usize).unwrap().find("[H]ELP").unwrap() as u16;
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("click");
+        assert!(matches!(a.modal, Some(crate::app::Modal::Help)), "{:?}", a.modal);
+    }
+
+    #[test]
+    fn clicking_the_needs_you_count_jumps_to_what_needs_you() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 80, 24);
+        let title = drawn.lines().next().unwrap();
+        let column = title.find("NEEDS YOU").expect("the count") as u16;
+        assert_eq!(a.selected, 0);
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("click");
+        assert_eq!(a.selected, 1, "it moved to the next thing that needs you");
     }
 
     #[test]

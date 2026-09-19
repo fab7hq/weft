@@ -43,7 +43,13 @@ fn main() -> anyhow::Result<()> {
     // Startup questions belong to the agent and are answered there, the way a
     // person would. Weft never answers one on anyone's behalf.
     let answered = settle_startup(&mut app);
-    steps.push(json!({"step": "startup", "answered": answered, "screen": tail(&app)}));
+    let blocked = app.waiting(0).map(|e| format!("{} · {}", e.rule, e.line));
+    steps.push(json!({"step": "startup", "answered": answered, "blocked": blocked, "screen": tail(&app)}));
+    if let Some(evidence) = blocked {
+        // A person would answer it first. Weft refuses to type into a pane
+        // that is waiting, so there is nothing to observe here.
+        return done(json!({"outcome": "pane-blocked", "evidence": evidence, "steps": steps}));
+    }
 
     app.refresh_for_test();
     let Some(index) = app.units().iter().position(|u| u.ask_id == ask_id) else {
@@ -83,8 +89,18 @@ fn main() -> anyhow::Result<()> {
     }));
 
     press(&mut app, KeyCode::Enter);
+    // The server owns the pane, so a refusal comes back over the socket.
+    // Reading before it arrives would report a refusal that happened as none.
+    let until = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < until && app.last_refusal().is_none() {
+        app.pump();
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let refusal = app.last_refusal();
     steps.push(json!({"step": "inject", "weft_refused": refusal}));
+    if refusal.is_some() {
+        return done(json!({"outcome": "weft-refused", "weft_refused": refusal, "steps": steps}));
+    }
 
     // Give the harness room to react, and stop once the record has stopped
     // moving. Waiting for the ledger to settle is not reading a verdict from
@@ -151,36 +167,39 @@ fn press(app: &mut App, code: KeyCode) {
     std::thread::sleep(Duration::from_millis(300));
 }
 
-/// Answer the harness's own startup questions in its pane: an update offer, a
-/// hook-trust panel, a folder-trust question. Returns what was answered.
+/// The harness's own startup questions, as the two harnesses actually word
+/// them, and the keystrokes a person would answer them with. Declared here in
+/// full so that what the probe answers on a person's behalf is on the record
+/// and nothing else is ever answered.
+const STARTUP: &[(&str, &str, &[u8])] = &[
+    ("update", "Update available", b"\x1b[B\r"),
+    ("hook-trust", "Press t to trust", b"t"),
+    // Claude Code, which defaults to "No, exit", so the choice moves down.
+    ("folder-trust", "Is this a project you created", b"\x1b[B\r"),
+    ("folder-trust", "trust this folder", b"\x1b[B\r"),
+    // Codex, which defaults to "1. Yes, continue".
+    ("folder-trust", "Do you trust the contents of this directory", b"\r"),
+];
+
+/// Answer those questions in the pane, the way a person would. Returns what
+/// was answered, and says so plainly when the pane never settled.
 fn settle_startup(app: &mut App) -> Vec<String> {
     let mut answered = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + Duration::from_secs(120);
     let mut quiet = Instant::now();
     while Instant::now() < deadline {
         app.pump();
         let screen = app.pane_text(0).unwrap_or_default();
-        if screen.contains("Update available") {
-            app.input(0, b"\x1b[B").ok();
-            app.input(0, b"\r").ok();
-            answered.push("update".into());
-        } else if screen.contains("Press t to trust") {
-            app.input(0, b"t").ok();
-            answered.push("hook-trust".into());
-        } else if screen.contains("trust this folder") || screen.contains("Is this a project you created") {
-            if screen.contains("No, exit") {
-                app.input(0, b"\x1b[B").ok();
+        match STARTUP.iter().find(|(_, needle, _)| screen.contains(needle)) {
+            Some((name, _, keys)) => {
+                app.input(0, keys).ok();
+                answered.push((*name).to_string());
+                quiet = Instant::now();
+                std::thread::sleep(Duration::from_secs(3));
             }
-            app.input(0, b"\r").ok();
-            answered.push("folder-trust".into());
-        } else if app.waiting(0).is_none() && quiet.elapsed() > SETTLE {
-            return answered;
-        } else {
-            std::thread::sleep(Duration::from_millis(250));
-            continue;
+            None if app.waiting(0).is_none() && quiet.elapsed() > SETTLE => return answered,
+            None => std::thread::sleep(Duration::from_millis(250)),
         }
-        quiet = Instant::now();
-        std::thread::sleep(Duration::from_secs(2));
     }
     answered.push("timed-out".into());
     answered
