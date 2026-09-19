@@ -1,7 +1,7 @@
 use anyhow::Result;
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::supports_keyboard_enhancement;
@@ -16,7 +16,11 @@ fn main() -> Result<()> {
     if matches!(first.as_deref(), Some("--help" | "-h")) {
         println!("weft [project-dir] [agent ...]\n");
         println!("  project-dir   the repository to work in (default: .)");
-        println!("  agent         claude and/or codex (default: whichever is installed)");
+        println!("  agent         claude and/or codex (default: whichever is installed)\n");
+        println!("An agent may carry its own arguments, quoted as one word:\n");
+        println!("  weft . \"claude --model sonnet --effort medium\"");
+        println!("  weft . \"codex -m gpt-5.6-luna -c model_reasoning_effort=medium\"\n");
+        println!("Weft passes them through untouched. It never chooses a model.");
         return Ok(());
     }
 
@@ -45,12 +49,13 @@ fn main() -> Result<()> {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         );
     }
-    let _ = execute!(out, EnableMouseCapture);
+    let _ = execute!(out, EnableMouseCapture, EnableBracketedPaste);
 
     let mut weft = App::new(root, toggle);
     let mut started = Ok(());
     for agent in &agents {
-        let harness = if agent == "claude" { "claude-code" } else { agent.as_str() };
+        let program = agent.split_whitespace().next().unwrap_or(agent);
+        let harness = if program == "claude" { "claude-code" } else { program };
         if let Err(e) = weft.add(harness, agent) {
             started = Err(e);
             break;
@@ -59,7 +64,7 @@ fn main() -> Result<()> {
 
     let result = started.and_then(|()| weft.run(&mut terminal));
 
-    let _ = execute!(out, DisableMouseCapture);
+    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
     if kitty {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }

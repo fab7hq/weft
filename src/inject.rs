@@ -9,6 +9,10 @@ use std::time::Duration;
 /// the same write races the harness's own input handling.
 pub const ENTER_DELAY: Duration = Duration::from_millis(80);
 
+/// How long to wait for a pane to show what was written before giving up and
+/// sending Enter anyway.
+pub const ECHO_TIMEOUT: Duration = Duration::from_millis(2500);
+
 const PASTE_START: &[u8] = b"\x1b[200~";
 const PASTE_END: &[u8] = b"\x1b[201~";
 const ENTER: &[u8] = b"\r";
@@ -60,6 +64,23 @@ pub fn compose(payload: &[u8], bracketed_paste: bool) -> Vec<Step> {
         payload.to_vec()
     };
     vec![Step::Write(body), Step::Wait(ENTER_DELAY), Step::Write(ENTER.to_vec())]
+}
+
+/// Collapse whitespace so a wrapped composer still matches.
+pub fn squeeze(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A short distinctive tail of the payload to look for on screen. Short
+/// enough to survive wrapping and truncation, long enough not to match by
+/// accident.
+pub fn echo_tail(payload: &[u8]) -> Option<String> {
+    let text = squeeze(&String::from_utf8_lossy(payload));
+    if text.chars().count() < 4 {
+        return None;
+    }
+    let tail: String = text.chars().rev().take(24).collect::<Vec<_>>().into_iter().rev().collect();
+    Some(tail)
 }
 
 /// What Weft may do after an injection produced no observable result.
@@ -138,6 +159,24 @@ mod tests {
     fn a_live_idle_pane_is_allowed() {
         let pane = PaneState { running: true, blocked: false, injecting: false };
         assert_eq!(check(&pane), Ok(()));
+    }
+
+    #[test]
+    fn the_echo_tail_survives_a_wrapped_composer() {
+        let tail = echo_tail(b"/rf:ask make health() report the real package version").expect("tail");
+        let wrapped = "› /rf:ask make health() report the\n  real package  version";
+        assert!(squeeze(wrapped).contains(&tail), "tail {tail:?} not in {wrapped:?}");
+    }
+
+    #[test]
+    fn a_very_short_payload_has_no_distinctive_tail() {
+        assert_eq!(echo_tail(b"ok"), None);
+    }
+
+    #[test]
+    fn the_echo_tail_is_the_end_not_the_start() {
+        let tail = echo_tail(b"$rf:eval").expect("tail");
+        assert_eq!(tail, "$rf:eval");
     }
 
     #[test]

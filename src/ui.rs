@@ -48,6 +48,9 @@ fn title_bar(app: &App) -> Paragraph<'static> {
     };
     let left = format!(" weft · {} · {}", app.project, state);
     let right = match app.focus {
+        Focus::Agent if app.waiting(app.pane_focus).is_some() => {
+            "● needs your answer (from the screen) ".to_string()
+        }
         Focus::Agent => format!("{} to come back ", app.toggle.label()),
         Focus::Weft => {
             let open = app.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
@@ -179,6 +182,11 @@ fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     });
 }
 
+fn waiting_line(app: &App) -> Option<String> {
+    app.waiting(app.pane_focus)
+        .map(|_| "  ● this agent needs your answer (from the screen)".to_string())
+}
+
 fn action_bar(app: &App) -> Paragraph<'static> {
     // While the person is in the agent, Weft has no keys to offer.
     if app.focus == Focus::Agent {
@@ -204,7 +212,13 @@ fn hint(app: &App) -> Paragraph<'static> {
             " Every key goes to the agent, Esc included. {} comes back to Weft.",
             app.toggle.label()
         ),
-        (_, Focus::Weft) => " ↑↓ pick · Enter open · click anything".to_string(),
+        (_, Focus::Weft) => match waiting_line(app) {
+            Some(_) => {
+                " Weft never answers an agent's question for you. Go into the pane and choose."
+                    .to_string()
+            }
+            None => " ↑↓ pick · Enter open · click anything".to_string(),
+        },
     };
     Paragraph::new(text)
 }
@@ -267,7 +281,11 @@ fn content(app: &App, modal: &Modal, room: usize) -> (String, Vec<String>, Vec<S
             ],
             vec!["[ Close ]".into()],
         ),
-        Modal::Note(text) => (" Weft ".into(), vec![text.clone()], vec!["[ OK ]".into()]),
+        Modal::Note(text) => (
+            " Weft ".into(),
+            text.lines().map(str::to_string).collect(),
+            vec!["[ OK ]".into()],
+        ),
         Modal::Ask { text, target } => {
             let who = app.panes.get(*target).map(|p| p.harness.clone()).unwrap_or_default();
             let mut lines = wrap(text, 58);

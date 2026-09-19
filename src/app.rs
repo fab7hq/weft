@@ -9,6 +9,7 @@ use crossterm::event::{
 };
 use ratatui::DefaultTerminal;
 
+use crate::blocked::{self, Evidence};
 use crate::encode;
 use crate::inject::Refusal;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
@@ -105,9 +106,15 @@ impl App {
         }
     }
 
-    pub fn add(&mut self, harness: &str, program: &str) -> Result<()> {
+    /// `spec` is the command line the person would have typed, e.g.
+    /// `claude --model sonnet --effort medium`. Weft never chooses the model:
+    /// that is the harness's configuration and the person's decision.
+    pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
         let cwd = self.root.to_string_lossy().into_owned();
-        let pty = Pane::spawn(harness, program, &cwd, 24, 80)?;
+        let mut parts = spec.split_whitespace();
+        let program = parts.next().unwrap_or(spec);
+        let args: Vec<&str> = parts.collect();
+        let pty = Pane::spawn_args(harness, program, &args, &cwd, 24, 80)?;
         self.panes.push(Agent {
             title: harness.to_string(),
             harness: harness.to_string(),
@@ -128,8 +135,13 @@ impl App {
             })?;
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => self.on_key(key)?,
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                    {
+                        self.on_key(key)?
+                    }
                     Event::Mouse(m) => self.on_mouse(m)?,
+                    Event::Paste(text) => self.on_paste(&text)?,
                     _ => {}
                 }
             }
@@ -259,8 +271,15 @@ impl App {
         }
     }
 
+    /// Whether a pane looks like it is waiting for a person. Inference, and
+    /// labelled as such everywhere it is shown.
+    pub fn waiting(&self, pane: usize) -> Option<Evidence> {
+        let agent = self.panes.get(pane)?;
+        blocked::looks_blocked(&agent.pty.with_screen(|s| s.contents()))
+    }
+
     fn do_inject(&mut self, pending: &Pending) {
-        let blocked = false; // Reading a dialog off the screen arrives with the board.
+        let blocked = self.waiting(pending.pane).is_some();
         let Some(agent) = self.panes.get_mut(pending.pane) else { return };
         match agent.pty.inject(&pending.payload, blocked) {
             Ok(_) => {
@@ -269,9 +288,13 @@ impl App {
                 self.pane_focus = pending.pane;
             }
             Err(Refusal::PaneBlocked) => {
-                self.modal = Some(Modal::Note(
-                    "That agent is waiting on a question. Answer it in the pane first.".into(),
-                ))
+                let why = self
+                    .waiting(pending.pane)
+                    .map(|e| format!("It is showing:  {}", e.line))
+                    .unwrap_or_default();
+                self.modal = Some(Modal::Note(format!(
+                    "That agent is waiting for your answer, so Weft did not type.\n{why}\nAnswer it in the pane first."
+                )))
             }
             Err(Refusal::NoProcess) => {
                 self.modal = Some(Modal::Note("That agent is no longer running.".into()))
@@ -423,6 +446,22 @@ impl App {
         }
         let n = self.units.len() as i32;
         self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
+    }
+
+    /// Pasted text belongs to whoever has focus. In the agent it is forwarded
+    /// whole, so a multi-line paste arrives as one paste, not as keystrokes.
+    fn on_paste(&mut self, text: &str) -> Result<()> {
+        match (&mut self.modal, self.focus) {
+            (Some(Modal::Ask { text: buf, .. }), _) => buf.push_str(text),
+            (Some(_), _) => {}
+            (None, Focus::Agent) => {
+                if let Some(pane) = self.panes.get_mut(self.pane_focus) {
+                    pane.pty.send(text.as_bytes())?;
+                }
+            }
+            (None, Focus::Weft) => {}
+        }
+        Ok(())
     }
 
     fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {

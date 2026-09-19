@@ -3,6 +3,7 @@
 //! Specs live in `plans/weft/spec/` in the Fab7 workspace, not in this repo.
 
 pub mod app;
+pub mod blocked;
 pub mod encode;
 pub mod inject;
 pub mod keys;

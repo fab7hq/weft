@@ -22,6 +22,17 @@ pub struct Pane {
 
 impl Pane {
     pub fn spawn(title: impl Into<String>, program: &str, cwd: &str, rows: u16, cols: u16) -> Result<Self> {
+        Self::spawn_args(title, program, &[], cwd, rows, cols)
+    }
+
+    pub fn spawn_args(
+        title: impl Into<String>,
+        program: &str,
+        args: &[&str],
+        cwd: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows,
             cols,
@@ -30,6 +41,7 @@ impl Pane {
         })?;
 
         let mut cmd = CommandBuilder::new(program);
+        cmd.args(args);
         cmd.cwd(cwd);
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -98,6 +110,7 @@ impl Pane {
         self.injecting = true;
         let bracketed = self.bracketed_paste();
         let steps = inject::compose(payload, bracketed);
+        let mut echoed = false;
         for step in &steps {
             match step {
                 Step::Write(bytes) => {
@@ -106,15 +119,39 @@ impl Pane {
                         return Err(Refusal::NoProcess);
                     }
                 }
-                Step::Wait(d) => std::thread::sleep(*d),
+                Step::Wait(d) => {
+                    // A fixed pause is not enough: a harness that is still
+                    // settling drops the Enter and the prompt sits unsent in
+                    // its composer. Wait for the text to appear instead, and
+                    // fall back to the pause if it never does.
+                    std::thread::sleep(*d);
+                    echoed = self.wait_for_echo(payload, inject::ECHO_TIMEOUT);
+                }
             }
         }
         self.injecting = false;
-        Ok(Attempt { bytes: payload.len(), bracketed })
+        Ok(Attempt { bytes: payload.len(), bracketed, echoed })
     }
 
     fn bracketed_paste(&self) -> bool {
         self.with_screen(|s| s.bracketed_paste())
+    }
+
+    /// Wait until the pane shows the tail of what was written, so Enter lands
+    /// on a composer that has the text rather than one still catching up.
+    fn wait_for_echo(&self, payload: &[u8], timeout: std::time::Duration) -> bool {
+        let Some(tail) = inject::echo_tail(payload) else {
+            return false;
+        };
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            let screen = self.with_screen(|s| s.contents());
+            if inject::squeeze(&screen).contains(&tail) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
     }
 }
 
@@ -123,6 +160,9 @@ impl Pane {
 pub struct Attempt {
     pub bytes: usize,
     pub bracketed: bool,
+    /// Whether the pane was seen to show the text before Enter was sent.
+    /// Still not evidence it was received — only the hook receipt is that.
+    pub echoed: bool,
 }
 
 #[cfg(test)]
@@ -167,6 +207,16 @@ mod tests {
     fn injection_into_a_blocked_pane_is_refused_before_anything_is_written() {
         let mut pane = sh("cat > /dev/null");
         assert_eq!(pane.inject(b"anything", true), Err(Refusal::PaneBlocked));
+    }
+
+    #[test]
+    fn an_injection_waits_for_the_pane_to_show_the_text() {
+        let mut pane = sh("cat");
+        let attempt = pane
+            .inject(b"$rf:eval the distinctive tail", false)
+            .expect("allowed");
+        assert!(attempt.echoed, "Enter is sent once the text is visible");
+        assert!(attempt.bytes > 0);
     }
 
     #[test]

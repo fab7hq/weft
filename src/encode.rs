@@ -30,6 +30,8 @@ pub fn encode(key: KeyEvent) -> Option<Vec<u8>> {
         KeyCode::PageDown => b"\x1b[6~".to_vec(),
         KeyCode::Delete => b"\x1b[3~".to_vec(),
         KeyCode::Insert => b"\x1b[2~".to_vec(),
+        KeyCode::F(n) => function_key(n)?,
+        KeyCode::Null => vec![0x00],
         _ => return None,
     };
 
@@ -37,6 +39,25 @@ pub fn encode(key: KeyEvent) -> Option<Vec<u8>> {
         bytes.insert(0, 0x1b);
     }
     Some(bytes)
+}
+
+fn function_key(n: u8) -> Option<Vec<u8>> {
+    let seq: &[u8] = match n {
+        1 => b"\x1bOP",
+        2 => b"\x1bOQ",
+        3 => b"\x1bOR",
+        4 => b"\x1bOS",
+        5 => b"\x1b[15~",
+        6 => b"\x1b[17~",
+        7 => b"\x1b[18~",
+        8 => b"\x1b[19~",
+        9 => b"\x1b[20~",
+        10 => b"\x1b[21~",
+        11 => b"\x1b[23~",
+        12 => b"\x1b[24~",
+        _ => return None,
+    };
+    Some(seq.to_vec())
 }
 
 /// Ctrl+letter is the letter with the top three bits cleared: Ctrl+A is 0x01.
@@ -113,6 +134,17 @@ mod tests {
     fn the_legacy_ctrl_number_spellings_round_trip() {
         assert_eq!(encode(ctrl('5')), Some(vec![0x1d]));
         assert_eq!(encode(ctrl(']')), Some(vec![0x1d]));
+    }
+
+    #[test]
+    fn function_keys_reach_the_agent() {
+        assert_eq!(encode(k(KeyCode::F(1))), Some(b"\x1bOP".to_vec()));
+        assert_eq!(encode(k(KeyCode::F(12))), Some(b"\x1b[24~".to_vec()));
+    }
+
+    #[test]
+    fn shift_tab_reaches_the_agent_so_modes_can_be_cycled() {
+        assert_eq!(encode(k(KeyCode::BackTab)), Some(b"\x1b[Z".to_vec()));
     }
 
     #[test]
