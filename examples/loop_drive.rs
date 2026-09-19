@@ -92,6 +92,25 @@ impl Drive {
         false
     }
 
+    /// Select the row the board says is ready, then send it. v2 dims `[S]END`
+    /// for a row with nothing to send and names the right row in the hint,
+    /// which is the affordance this uses rather than guessing at the layout.
+    fn send_the_ready_one(&mut self, rows: usize) -> bool {
+        for _ in 0..rows.max(1) {
+            self.send(b"s");
+            std::thread::sleep(Duration::from_millis(400));
+            let s = self.screen();
+            if s.contains("[Enter] DO IT") {
+                return true;
+            }
+            if !s.contains("is the one ready to send") {
+                return false;
+            }
+            self.send(b"\x1b[B"); // down, to the row the hint named
+        }
+        false
+    }
+
     fn report(&mut self, label: &str) {
         println!("\n═══ {label} ═══\n{}", self.screen());
     }
@@ -145,10 +164,10 @@ fn main() -> anyhow::Result<()> {
 
     // 1. Ask.
     d.send(b"a");
-    d.wait_screen("What do you want done?", 10);
+    d.wait_screen("WHAT DO YOU WANT DONE?", 10);
     d.send(intent.as_bytes());
     d.send(ENTER);
-    d.wait_screen("Do it", 10);
+    d.wait_screen("[Enter] DO IT", 10);
     d.report("confirmation before typing");
     d.send(ENTER);
 
@@ -162,10 +181,9 @@ fn main() -> anyhow::Result<()> {
 
     // On a handoff route the board offers to type the prompt for the person.
     d.send(TOGGLE);
-    if d.wait_screen("Send it", 20) {
+    if d.wait_screen("READY TO SEND", 20) {
         println!("\n── the board offers to send it ──");
-        d.send(b"s");
-        if d.wait_screen("Do it", 15) {
+        if d.send_the_ready_one(8) {
             d.report("ready to send");
             d.send(ENTER);
         }
@@ -188,7 +206,7 @@ fn main() -> anyhow::Result<()> {
     // 2. Check.
     d.send(TOGGLE);
     d.send(b"c");
-    if d.wait_screen("Do it", 10) {
+    if d.wait_screen("[Enter] DO IT", 10) {
         d.report("check confirmation");
         d.send(ENTER);
     }
@@ -207,7 +225,7 @@ fn main() -> anyhow::Result<()> {
     // 3. Decide.
     d.send(TOGGLE);
     d.send(b"d");
-    if d.wait_screen("Do it", 10) {
+    if d.wait_screen("[Enter] DO IT", 10) {
         d.send(ENTER);
     }
     d.answer_chooser(180);

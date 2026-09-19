@@ -433,12 +433,19 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
 
     if app.units().is_empty() {
         lines.push(Line::raw(""));
-        lines.push(Line::styled(" Nothing asked for yet.".to_string(), th.label()));
+        let (said, next) = if app.record_available() {
+            ("Nothing asked for yet.", "[A]SK for something and Weft writes it down.")
+        } else {
+            // RingFrame owns the record. Without it there is nothing to read,
+            // and saying so is better than an empty list that looks settled.
+            (
+                "No ringframe on PATH, so there is no record to read.",
+                "The agents still run here. Install ringframe to see the work.",
+            )
+        };
+        lines.push(Line::styled(format!(" {said}"), th.label()));
         lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            " [A]SK for something and Weft writes it down.".to_string(),
-            th.label(),
-        ));
+        lines.push(Line::styled(format!(" {next}"), th.label()));
         return (Paragraph::new(lines), rows);
     }
 

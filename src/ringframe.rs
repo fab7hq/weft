@@ -17,7 +17,13 @@ pub enum Error {
 }
 
 fn run(project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
-    let out = Command::new("ringframe")
+    run_program("ringframe", project, args)
+}
+
+/// "No CLI" and "the CLI said no" are different situations, so a spawn failure
+/// becomes `NotInstalled` and never a refusal.
+fn run_program(program: &str, project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
+    let out = Command::new(program)
         .arg("--workspace")
         .arg(project)
         .args(args)
@@ -100,9 +106,8 @@ mod tests {
 
     #[test]
     fn a_missing_cli_is_reported_as_missing_not_as_a_refusal() {
-        // Resolved through PATH, so an empty PATH is the honest simulation.
-        let out = Command::new("definitely-not-a-real-binary-weft").output();
-        assert!(out.is_err(), "the fixture binary must not exist");
+        let got = run_program("definitely-not-a-real-binary-weft", Path::new("/tmp"), &["ask", "list"]);
+        assert_eq!(got, Err(Error::NotInstalled));
     }
 
     #[test]

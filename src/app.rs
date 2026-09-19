@@ -111,6 +111,9 @@ pub struct App {
     pane_area: Option<Rect>,
     row_spans: Vec<(u16, u16, usize)>,
     tab_spans: Vec<(u16, u16, Option<usize>)>,
+    /// Whether the CLI that owns the record is installed. Asked once: it is a
+    /// property of the machine, not of the frame being drawn.
+    record_available: bool,
 }
 
 impl App {
@@ -151,6 +154,12 @@ impl App {
 
     pub fn hint_text(&self) -> Option<&str> {
         self.hint.as_deref()
+    }
+
+    /// Whether there is a `ringframe` to read a record from. Weft still runs
+    /// panes without one; it just has nothing to show on the board.
+    pub fn record_available(&self) -> bool {
+        self.record_available
     }
 
     /// Open units, as the title bar counts them.
@@ -269,6 +278,7 @@ impl App {
             pane_area: None,
             row_spans: Vec::new(),
             tab_spans: Vec::new(),
+            record_available: ringframe::installed(),
         }
     }
 
@@ -318,6 +328,12 @@ impl App {
     fn reload(&mut self) {
         self.ledger.refresh();
         self.units = self.ledger.units();
+    }
+
+    /// Fold whatever the ledger has now. The run loop does this each tick;
+    /// a probe or a test does it once.
+    pub fn refresh_for_test(&mut self) {
+        self.reload();
     }
 
     fn clamp_selection(&mut self) {
