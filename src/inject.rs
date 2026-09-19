@@ -83,6 +83,18 @@ pub fn echo_tail(payload: &[u8]) -> Option<String> {
     Some(tail)
 }
 
+/// And the head, because a composer that was still waking up can swallow the
+/// first characters of a paste. Watching only the tail let Weft press Enter on
+/// a prompt whose beginning had been eaten, and the harness then acted on
+/// something the person never asked for.
+pub fn echo_head(payload: &[u8]) -> Option<String> {
+    let text = squeeze(&String::from_utf8_lossy(payload));
+    if text.chars().count() < 4 {
+        return None;
+    }
+    Some(text.chars().take(24).collect())
+}
+
 /// What Weft may do after an injection produced no observable result.
 ///
 /// Herdr: "A timeout or `agent_prompt_stalled` does not prove that no input
@@ -159,6 +171,21 @@ mod tests {
     fn a_live_idle_pane_is_allowed() {
         let pane = PaneState { running: true, blocked: false, injecting: false };
         assert_eq!(check(&pane), Ok(()));
+    }
+
+    #[test]
+    fn a_composer_that_swallowed_the_first_characters_is_not_an_echo() {
+        // Found by a W4 run: Codex dropped "ma" from the front of the paste,
+        // the tail still matched, and Weft submitted "ke health()…".
+        let payload = b"/rf:ask make health() report the real package version";
+        let head = echo_head(payload).expect("head");
+        let tail = echo_tail(payload).expect("tail");
+        let swallowed = "› ask make health() report the real package version";
+        assert!(squeeze(swallowed).contains(&tail), "the tail alone was never the problem");
+        assert!(
+            !squeeze(swallowed).contains(&head),
+            "the head is what catches it: {head:?}"
+        );
     }
 
     #[test]

@@ -195,7 +195,18 @@ impl Session {
                     Some(slot) => {
                         let screen = slot.pane.with_screen(|s| s.contents());
                         let blocked = crate::blocked::looks_blocked(&screen).is_some();
-                        slot.pane.inject(&bytes, blocked).err().map(|r| format!("{r:?}"))
+                        match slot.pane.inject(&bytes, blocked) {
+                            Err(r) => Some(format!("{r:?}")),
+                            // Written, but the composer never showed the whole
+                            // prompt, so Enter was withheld. The person has to
+                            // know: the text is sitting in the agent unsent.
+                            Ok(a) if !a.submitted => Some(
+                                "the agent did not show the whole prompt, so it was not sent. \
+                                 The text is in its composer."
+                                    .to_string(),
+                            ),
+                            Ok(_) => None,
+                        }
                     }
                     None => Some("NoProcess".to_string()),
                 };

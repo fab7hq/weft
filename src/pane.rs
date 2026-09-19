@@ -171,31 +171,40 @@ impl Pane {
                 Step::Wait(d) => {
                     // A fixed pause is not enough: a harness that is still
                     // settling drops the Enter and the prompt sits unsent in
-                    // its composer. Wait for the text to appear instead, and
-                    // fall back to the pause if it never does.
+                    // its composer. Wait for the text to appear instead.
                     std::thread::sleep(*d);
                     echoed = self.wait_for_echo(payload, inject::ECHO_TIMEOUT);
+                    if !echoed {
+                        // The composer is not showing what was written, so
+                        // Enter would submit something other than the Ask. The
+                        // text stays where it is, unsent, for the person to
+                        // see. Never a blind retry.
+                        self.injecting = false;
+                        return Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: false });
+                    }
                 }
             }
         }
         self.injecting = false;
-        Ok(Attempt { bytes: payload.len(), bracketed, echoed })
+        Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: true })
     }
 
     fn bracketed_paste(&self) -> bool {
         self.with_screen(|s| s.bracketed_paste())
     }
 
-    /// Wait until the pane shows the tail of what was written, so Enter lands
-    /// on a composer that has the text rather than one still catching up.
+    /// Wait until the pane shows both ends of what was written, so Enter
+    /// lands on a composer holding the whole prompt rather than one still
+    /// catching up — or one that swallowed the start of the paste.
     fn wait_for_echo(&self, payload: &[u8], timeout: std::time::Duration) -> bool {
-        let Some(tail) = inject::echo_tail(payload) else {
+        let (Some(head), Some(tail)) = (inject::echo_head(payload), inject::echo_tail(payload))
+        else {
             return false;
         };
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            let screen = self.with_screen(|s| s.contents());
-            if inject::squeeze(&screen).contains(&tail) {
+            let screen = inject::squeeze(&self.with_screen(|s| s.contents()));
+            if screen.contains(&head) && screen.contains(&tail) {
                 return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -212,6 +221,10 @@ pub struct Attempt {
     /// Whether the pane was seen to show the text before Enter was sent.
     /// Still not evidence it was received — only the hook receipt is that.
     pub echoed: bool,
+    /// Whether Enter was sent at all. It is not, when the composer never
+    /// showed the whole prompt: submitting a mangled Ask is worse than
+    /// leaving the text sitting there for the person to see.
+    pub submitted: bool,
 }
 
 #[cfg(test)]
@@ -237,6 +250,21 @@ mod tests {
         let mut pane = sh("exit 0");
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(!pane.running());
+    }
+
+    #[test]
+    fn enter_is_withheld_when_the_pane_never_shows_the_prompt() {
+        // Found by a W4 run against Codex: the composer swallowed the first
+        // characters of the paste, the tail still matched, and Weft submitted
+        // a prompt the person had not asked for. With nothing echoed at all,
+        // Enter must not be sent and the attempt must say so.
+        let mut pane = sh("stty -echo; cat > /dev/null");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let attempt = pane
+            .inject(b"/plan Return the real build number", false)
+            .expect("allowed to write");
+        assert!(!attempt.echoed, "nothing was echoed");
+        assert!(!attempt.submitted, "so Enter was withheld");
     }
 
     #[test]
