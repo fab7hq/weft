@@ -83,6 +83,10 @@ impl Drive {
                 }
                 return true;
             }
+            if s.contains("New MCP server found") {
+                self.send(ENTER);
+                return true;
+            }
             if s.contains("Proceed") || s.contains("Accept") || s.contains("Seal") || s.contains("❯ 1.") {
                 self.send(ENTER);
                 return true;
@@ -150,6 +154,12 @@ fn main() -> anyhow::Result<()> {
             d.send(b"\x1b"); // esc to close
             std::thread::sleep(Duration::from_secs(2));
         }
+    }
+    // A project may offer an MCP server on first entry. A person answers it in
+    // the pane; Weft refuses to type while it is up, which is the point.
+    if d.wait_screen("New MCP server found", 20) {
+        d.send(ENTER); // the highlighted default: continue without it
+        std::thread::sleep(Duration::from_secs(2));
     }
     if d.wait_screen("trust", 25) {
         // Claude Code defaults to "No, exit"; Codex defaults to "Yes, continue".
