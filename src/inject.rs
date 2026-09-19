@@ -90,6 +90,14 @@ pub fn echo_tail(payload: &[u8]) -> Option<String> {
     Some(tail)
 }
 
+/// A harness may collapse a multi-line paste rather than show it: Claude Code
+/// draws `[Pasted text #1 +13 lines]` and the prompt itself never appears. The
+/// composer is saying it took the paste, and that is as much as a screen can
+/// say about a prompt it has folded away.
+pub fn collapsed_paste(screen: &str) -> bool {
+    screen.contains("[Pasted text") && screen.contains("lines]")
+}
+
 /// And the head, because a composer that was still waking up can swallow the
 /// first characters of a paste. Watching only the tail let Weft press Enter on
 /// a prompt whose beginning had been eaten, and the harness then acted on
@@ -178,6 +186,14 @@ mod tests {
     fn a_live_idle_pane_is_allowed() {
         let pane = PaneState { running: true, blocked: false, injecting: false };
         assert_eq!(check(&pane), Ok(()));
+    }
+
+    #[test]
+    fn a_collapsed_paste_is_what_a_folded_prompt_looks_like() {
+        // Read off Claude Code 2.1.278 taking a multi-line `/goal …` prompt.
+        assert!(collapsed_paste("❯ [Pasted text #1 +13 lines]"));
+        assert!(!collapsed_paste("❯ /goal Keep working on this codebase"));
+        assert!(!collapsed_paste("❯ "));
     }
 
     #[test]

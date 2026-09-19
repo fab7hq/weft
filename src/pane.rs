@@ -207,7 +207,11 @@ impl Pane {
         let mut settled: Option<(std::time::Instant, String)> = None;
         while std::time::Instant::now() < deadline {
             let screen = inject::squeeze(&self.with_screen(|s| s.contents()));
-            let showing = screen.contains(&head) && screen.contains(&tail);
+            // A multi-line prompt may be folded into a placeholder instead of
+            // shown. Then the placeholder is the echo; for a single line, which
+            // no harness folds, the text itself still has to be there.
+            let folded = payload.contains(&b'\n') && inject::collapsed_paste(&screen);
+            let showing = folded || (screen.contains(&head) && screen.contains(&tail));
             settled = match (settled, showing) {
                 (_, false) => None,
                 (None, true) => Some((std::time::Instant::now(), screen)),
