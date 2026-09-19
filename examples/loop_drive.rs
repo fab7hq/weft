@@ -87,15 +87,23 @@ impl Drive {
                 self.send(ENTER);
                 return true;
             }
-            // The harnesses word their own dialogs, and the wording is not
-            // ours to predict from memory: each of these was read off a real
-            // screen. Matched without regard to case, because "Proceed" and
-            // "Would you like to proceed?" are the same question.
-            let lower = s.to_lowercase();
-            if ["proceed", "accept", "seal", "❯ 1.", "yes, and"]
-                .iter()
-                .any(|needle| lower.contains(needle))
-            {
+            // Only answer when the pane is actually waiting, and only a
+            // question read off a real screen. Matching prose in a transcript
+            // once put Enter into a composer and ran an unrelated command,
+            // which is the same mistake Weft itself refuses to make.
+            if weft::blocked::looks_blocked(&s).is_none() {
+                std::thread::sleep(Duration::from_millis(400));
+                continue;
+            }
+            const QUESTIONS: &[&str] = &[
+                "Would you like to proceed",
+                "Do you want to proceed",
+                "ready to execute",
+                "Accept edits",
+                "Seal",
+                "❯ 1.",
+            ];
+            if QUESTIONS.iter().any(|needle| s.contains(needle)) {
                 self.send(ENTER);
                 return true;
             }
