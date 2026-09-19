@@ -17,6 +17,7 @@ use crate::ledger::{Ledger, Sent, Unit};
 use crate::pane::Pane;
 use crate::record::Record;
 use crate::ringframe;
+use crate::theme::Theme;
 
 /// What Weft is about to type, and where. Shown before anything is sent.
 #[derive(Debug, Clone, PartialEq)]
@@ -77,6 +78,7 @@ pub struct App {
     pub selected: usize,
     pub focus: Focus,
     pub toggle: Toggle,
+    pub theme: Theme,
     pub modal: Option<Modal>,
     pub modal_choice: usize,
     pub quit: bool,
@@ -102,6 +104,7 @@ impl App {
             selected: 0,
             focus: Focus::Weft,
             toggle,
+            theme: Theme::new(),
             modal: None,
             modal_choice: 0,
             quit: false,

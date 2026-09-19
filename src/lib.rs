@@ -11,5 +11,6 @@ pub mod ledger;
 pub mod layout;
 pub mod pane;
 pub mod record;
+pub mod theme;
 pub mod ringframe;
 pub mod ui;

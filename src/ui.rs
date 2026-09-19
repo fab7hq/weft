@@ -14,9 +14,11 @@ use crate::app::{App, Modal};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::ledger::Sent;
+use crate::theme::{pair, Theme};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
+    let th = app.theme;
     // The agents strip only exists once there is more than one agent to
     // confuse: with one, the title bar already names it.
     let strip = if app.panes.len() > 1 { 1 } else { 0 };
@@ -37,9 +39,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if strip == 1 {
         frame.render_widget(agents_strip(app), rows[1]);
     }
-    frame.render_widget(rule(area.width), rows[2]);
+    frame.render_widget(rule(area.width, th), rows[2]);
     body(frame, app, rows[3]);
-    frame.render_widget(rule(area.width), rows[4]);
+    frame.render_widget(rule(area.width, th), rows[4]);
     frame.render_widget(action_bar(app), rows[5]);
     frame.render_widget(hint(app), rows[6]);
 
@@ -57,33 +59,36 @@ fn title_bar(app: &App) -> Paragraph<'static> {
         Some(p) if app.panes.len() == 1 => format!(" · {}", p.harness),
         _ => String::new(),
     };
-    let left = format!(" weft · {}{} · {}", app.project, who, state);
+    let left = format!("WEFT   {}{}   {}", app.project, who, state);
     let right = match app.focus {
         Focus::Weft if app.panes.is_empty() => "no agent running ".to_string(),
         Focus::Agent if app.waiting(app.pane_focus).is_some() => {
             "● needs your answer (from the screen) ".to_string()
         }
-        Focus::Agent => format!("{} to come back ", app.toggle.label()),
+        Focus::Agent => format!("{} TO COME BACK ", app.toggle.label()),
         Focus::Weft => {
             let open = app.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
             let needs = app.needs_you();
             if needs > 0 {
-                format!("{open} open · {needs} needs you ")
+                format!("{}   {} ", pair("open", &open.to_string()), pair("needs you", &needs.to_string()))
             } else {
-                format!("{open} open ")
+                format!("{} ", pair("open", &open.to_string()))
             }
         }
     };
+    let th = app.theme;
     Paragraph::new(Line::from(vec![
-        Span::styled(left, Style::default().add_modifier(Modifier::BOLD)),
+        Span::styled(" ▚▞ ", Style::default().fg(th.accent())),
+        Span::styled(left, th.title()),
         Span::raw("   "),
-        Span::raw(right),
+        Span::styled(right, th.label()),
     ]))
 }
 
 /// Which agents are running, which one has focus, and how to change it.
 fn agents_strip(app: &App) -> Paragraph<'static> {
-    let mut spans = vec![Span::raw(" agents  ")];
+    let th = app.theme;
+    let mut spans = vec![Span::styled(" AGENTS   ", th.label())];
     for (i, pane) in app.panes.iter().enumerate() {
         let active = i == app.pane_focus;
         let waiting = app.waiting(i).is_some();
@@ -91,17 +96,19 @@ fn agents_strip(app: &App) -> Paragraph<'static> {
         let flag = if waiting { " ●" } else { "" };
         let label = format!("{mark}{} {}{flag}   ", i + 1, pane.harness);
         spans.push(if active {
-            Span::styled(label, Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+            Span::styled(label, Style::default().fg(th.accent()).add_modifier(Modifier::BOLD))
+        } else if waiting {
+            Span::styled(label, th.needs_you())
         } else {
-            Span::raw(label)
+            Span::styled(label, th.label())
         });
     }
-    spans.push(Span::raw("  Tab or 1-9 to switch"));
+    spans.push(Span::styled("  TAB · 1-9", th.label()));
     Paragraph::new(Line::from(spans))
 }
 
-fn rule(width: u16) -> Paragraph<'static> {
-    Paragraph::new("─".repeat(width as usize))
+fn rule(width: u16, th: Theme) -> Paragraph<'static> {
+    Paragraph::new(Line::styled("─".repeat(width as usize), th.rule()))
 }
 
 fn body(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -163,33 +170,41 @@ fn list(app: &App, width: u16) -> Paragraph<'static> {
         } else {
             " "
         };
-        let style = if picked {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
+        let th = app.theme;
+        let style = if picked { th.selected() } else { Style::default().fg(th.primary()) };
         if wide {
-            lines.push(Line::styled(
-                format!(
-                    " {marker} {:<24} {:<11} {}",
-                    clip(&unit.title, 24),
-                    clip(&unit.harness, 11),
-                    unit.status()
-                ),
-                style,
-            ));
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {marker} "), Style::default().fg(th.accent())),
+                Span::styled(format!("{:<24} ", clip(&unit.title, 24)), style),
+                Span::styled(format!("{:<11} ", clip(&unit.harness, 11)), th.label()),
+                Span::styled(unit.status().to_uppercase(), status_style(unit, th)),
+            ]));
             if let Some(c) = &unit.check {
-                lines.push(Line::raw(format!("{:>39}{}", "", agreement_phrase(app, c))));
+                lines.push(Line::styled(
+                    format!("{:>40}{}", "", agreement_phrase(app, c)),
+                    th.label(),
+                ));
             }
         } else {
             let w = width.saturating_sub(3) as usize;
-            lines.push(Line::styled(format!("{marker} {}", clip(&unit.title, w)), style));
-            lines.push(Line::raw(format!("  {}", clip(&unit.harness, w))));
-            lines.push(Line::raw(format!("  {}", clip(&unit.status(), w))));
+            lines.push(Line::from(vec![
+                Span::styled(format!("{marker} "), Style::default().fg(th.accent())),
+                Span::styled(clip(&unit.title, w), style),
+            ]));
+            lines.push(Line::styled(format!("  {}", clip(&unit.harness, w)), th.label()));
+            lines.push(Line::styled(
+                format!("  {}", clip(&unit.status().to_uppercase(), w)),
+                status_style(unit, th),
+            ));
         }
         lines.push(Line::raw(""));
     }
     Paragraph::new(lines)
+}
+
+/// What waits on you is the only thing that gets the bright accent.
+fn status_style(unit: &crate::ledger::Unit, th: Theme) -> Style {
+    if unit.needs_you() { th.needs_you() } else { th.label() }
 }
 
 /// Judge agreement, phrased as agreement. Never correctness, never a score.
@@ -236,19 +251,24 @@ fn action_bar(app: &App) -> Paragraph<'static> {
     if app.focus == Focus::Agent {
         return Paragraph::new("");
     }
-    let mut left = String::from("  [N]ew agent   [H]elp   [X] Quit");
+    let mut left = String::from("  NEW AGENT   HELP   QUIT");
     if !app.panes.is_empty() {
-        left = String::from("  [A]sk   [N]ew agent   [C]heck   [D]ecide   [H]elp   [X] Quit");
+        left = String::from("  ASK   NEW AGENT   CHECK   DECIDE   HELP   QUIT");
         if app.selected_unit().is_some_and(|u| u.sent == Sent::ReadyToSend) {
-            left = "  [A]sk   [S]end it   [C]heck   [D]ecide   [H]elp   [X] Quit".into();
+            left = "  ASK   SEND IT   CHECK   DECIDE   HELP   QUIT".into();
         }
     }
     let right = if app.panes.is_empty() {
         String::new()
     } else {
-        format!("{} to the agent ", app.toggle.label())
+        format!("{} AGENT ", app.toggle.label())
     };
-    Paragraph::new(Line::from(vec![Span::raw(left), Span::raw("   "), Span::raw(right)]))
+    let th = app.theme;
+    Paragraph::new(Line::from(vec![
+        Span::styled(left, th.label()),
+        Span::raw("   "),
+        Span::styled(right.to_uppercase(), th.label()),
+    ]))
 }
 
 fn hint(app: &App) -> Paragraph<'static> {
@@ -271,7 +291,7 @@ fn hint(app: &App) -> Paragraph<'static> {
             None => " ↑↓ pick · Enter open · click anything".to_string(),
         },
     };
-    Paragraph::new(text)
+    Paragraph::new(Line::styled(text, app.theme.label()))
 }
 
 fn overlay(frame: &mut Frame, app: &App, modal: &Modal, area: Rect) {
@@ -292,14 +312,19 @@ fn overlay(frame: &mut Frame, app: &App, modal: &Modal, area: Rect) {
     }
     for (i, b) in buttons.iter().enumerate() {
         let style = if i == app.modal_choice {
-            Style::default().add_modifier(Modifier::REVERSED)
+            Style::default().fg(app.theme.accent()).add_modifier(Modifier::BOLD | Modifier::REVERSED)
         } else {
-            Style::default()
+            app.theme.label()
         };
         body.push(Line::styled(format!("   {b}"), style));
     }
+    let th = app.theme;
     frame.render_widget(
-        Paragraph::new(body).block(Block::bordered().title(title)),
+        Paragraph::new(body).block(
+            Block::bordered()
+                .border_style(th.rule())
+                .title(Span::styled(title, th.title())),
+        ),
         box_area,
     );
 }
