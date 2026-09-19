@@ -121,6 +121,9 @@ fn main() -> anyhow::Result<()> {
     if let Some(hint) = app.hint_text() {
         println!("  hint: {hint}");
     }
+    if let Some(refusal) = app.last_refusal() {
+        println!("  Weft did not type it: {refusal}");
+    }
     match app.waiting(0) {
         Some(e) => println!("  the agent is waiting (from the screen): {} · {}", e.rule, e.line),
         None => println!("  the agent is not waiting, as far as the screen shows"),
