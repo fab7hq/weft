@@ -399,9 +399,11 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
 /// One action on the bar, dimmed when it cannot be used.
 fn key(app: &App, label: &str, act: Act) -> Span<'static> {
     let th = app.theme;
+    // Active in the terminal's own foreground, inactive in grey — the way a
+    // menu reads. It was the other way round, and everything looked off.
     let style = match app.unavailable(act) {
-        Some(_) => Style::default().fg(th.line()),
-        None => th.label(),
+        Some(_) => th.label(),
+        None => Style::default().fg(th.primary()),
     };
     Span::styled(label.to_string(), style)
 }
@@ -804,7 +806,10 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         ],
         Modal::Note(text) => text.lines().map(str::to_string).collect(),
         Modal::Ask { text, target } => {
-            let mut lines = if text.is_empty() { Vec::new() } else { wrap(text, 72) };
+            // Folded, not wrapped: `wrap` rejoins words with single spaces, so
+            // a run of spaces vanished on screen and then reappeared in the
+            // confirmation. An input shows what was typed.
+            let mut lines = if text.is_empty() { Vec::new() } else { fold(text, 72) };
             match lines.last_mut() {
                 Some(last) => last.push('_'),
                 None => lines.push("_".into()),
@@ -882,7 +887,7 @@ fn panel(app: &App, area: Rect) -> Paragraph<'static> {
         .iter()
         .flat_map(|l| {
             if l.chars().count() > area.width.saturating_sub(2) as usize {
-                wrap(l, area.width.saturating_sub(2) as usize)
+                fold(l, area.width.saturating_sub(2) as usize)
             } else {
                 vec![l.clone()]
             }
@@ -936,6 +941,24 @@ fn clip(s: &str, n: usize) -> String {
     } else {
         s.chars().take(n.saturating_sub(1)).chain(['…']).collect()
     }
+}
+
+/// Break a line to a width without touching what it contains. Prefers the
+/// last space, falls back to a hard break, and keeps every character.
+fn fold(text: &str, width: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    for para in text.split('\n') {
+        let chars: Vec<char> = para.chars().collect();
+        let mut at = 0usize;
+        while chars.len() - at > width {
+            let window = &chars[at..at + width];
+            let split = window.iter().rposition(|c| *c == ' ').map(|i| i + 1).unwrap_or(width);
+            out.push(chars[at..at + split].iter().collect());
+            at += split;
+        }
+        out.push(chars[at..].iter().collect());
+    }
+    out
 }
 
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -1319,6 +1342,39 @@ mod tests {
         assert!(drawn.contains("install.sh"), "it carries the command: {drawn}");
         assert!(!drawn.contains("[Enter] DO IT"), "and offers to run nothing: {drawn}");
         assert!(drawn.contains("[←] BACK"), "{drawn}");
+    }
+
+    #[test]
+    fn the_ask_box_shows_what_was_typed_spaces_and_all() {
+        // Typed spaces vanished on screen and came back in the confirmation,
+        // which made the confirmation look like it had changed the wording.
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('a'));
+        for c in "fix    the     build".chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("fix    the     build"), "{drawn}");
+    }
+
+    #[test]
+    fn folding_a_line_keeps_every_character() {
+        // Both the ask box and the confirmation fold rather than wrap: one
+        // shows what was typed, the other promises the exact wording.
+        for text in ["a  b", "one two three four five", "   leading", "trailing   ",
+                     "/plan Fix   the   thing", "averylongwordwithnospacesatall"] {
+            let folded = fold(text, 8).join("");
+            assert_eq!(folded, text.replace('\n', ""), "{text:?} came back as {folded:?}");
+        }
+    }
+
+    #[test]
+    fn what_can_be_used_is_lit_and_what_cannot_is_grey() {
+        let a = judged();
+        let available = key(&a, "[H]ELP", Act::Help);
+        let unavailable = key(&a, "[S]END", Act::Send);
+        assert_eq!(available.style.fg, Some(a.theme.primary()), "active reads as text");
+        assert_eq!(unavailable.style.fg, Some(a.theme.muted()), "inactive reads as grey");
     }
 
     #[test]
