@@ -764,6 +764,17 @@ impl App {
         }
     }
 
+    /// Move through the agents the first-run picker offers. It wraps, like the
+    /// work list, because a three-item list that stops is a list you fight.
+    fn pick_agent(&mut self, delta: i8) {
+        let n = Self::available_agents().len();
+        if n == 0 {
+            return;
+        }
+        self.modal_choice =
+            ((self.modal_choice as i32 + delta as i32).rem_euclid(n as i32)) as usize;
+    }
+
     fn toggle_expand(&mut self) {
         if self.units.is_empty() {
             self.say("Nothing has been asked for yet.");
@@ -903,14 +914,20 @@ impl App {
                 }
             }
             Action::Pick(delta) => {
-                if self.drawer.is_some() {
+                if self.pane_count() == 0 {
+                    // First run: the picker is the surface, and it is drawn in
+                    // the body rather than as a modal, so it owns the arrows.
+                    self.pick_agent(delta);
+                } else if self.drawer.is_some() {
                     self.scroll_drawer(delta as i32);
                 } else {
                     self.pick(delta);
                 }
             }
             Action::Open => {
-                if self.waiting_here() {
+                if self.pane_count() == 0 {
+                    self.start_chosen_agent(self.modal_choice);
+                } else if self.waiting_here() {
                     // [Enter] ANSWER IT: the person answers, never Weft.
                     self.focus = Focus::Agent;
                 } else if self.drawer.is_none() {
@@ -1000,6 +1017,9 @@ impl App {
             _ => 1,
         };
         match key.code {
+            // The agent picker is the same picker wherever it is drawn.
+            event::KeyCode::Up if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(-1),
+            event::KeyCode::Down if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(1),
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => {
                 self.modal_choice = (self.modal_choice + 1).min(options - 1)
@@ -1113,6 +1133,18 @@ impl App {
             self.focus = Focus::Agent;
             if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
                 p.scroll_to_bottom();
+            }
+            return Ok(());
+        }
+        if self.pane_count() == 0 {
+            if let Some(index) = self.row_at(m.row) {
+                // The first-run screen says to click anything, so a click on a
+                // choice picks it and a second one starts it.
+                if self.modal_choice == index {
+                    self.start_chosen_agent(index);
+                } else {
+                    self.modal_choice = index;
+                }
             }
             return Ok(());
         }
@@ -1824,5 +1856,69 @@ mod start_tests {
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
         a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
         assert_eq!(a.pane_scroll_offset(0), Some(0), "and back to the live output");
+    }
+}
+
+#[cfg(test)]
+mod first_run_tests {
+    use super::tests::{press, test_session};
+    use super::*;
+    use crossterm::event::KeyCode;
+
+    #[test]
+    fn the_first_run_picker_moves_and_starts() {
+        let (root, session) = test_session("first-run-keys");
+        let mut a = App::with_session(root, Toggle, session);
+        assert_eq!(a.pane_count(), 0, "first run: the picker is the whole screen");
+        let choices = App::available_agents().len();
+        if choices < 2 {
+            eprintln!("skipped: needs two agents installed");
+            return;
+        }
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.modal_choice, 1, "the arrows move the picker");
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.modal_choice, 0);
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.modal_choice, choices - 1, "and it wraps, like the work list");
+    }
+
+    #[test]
+    fn the_picker_behaves_the_same_wherever_it_is_drawn() {
+        // On first run it is the body; pressing N over a running agent draws
+        // it as a modal. A person should not have to know the difference.
+        let mut a = super::tests::app();
+        let choices = App::available_agents().len();
+        if choices < 2 {
+            eprintln!("skipped: needs two agents installed");
+            return;
+        }
+        press(&mut a, KeyCode::Char('n'));
+        assert!(matches!(a.modal, Some(Modal::StartAgent { .. })));
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.modal_choice, 1);
+        press(&mut a, KeyCode::Up);
+        press(&mut a, KeyCode::Up);
+        assert_eq!(a.modal_choice, choices - 1, "the same wrap");
+    }
+
+    #[test]
+    fn clicking_a_choice_on_first_run_picks_it() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let (root, session) = test_session("first-run-click");
+        let mut a = App::with_session(root, Toggle, session);
+        if App::available_agents().len() < 2 {
+            eprintln!("skipped: needs two agents installed");
+            return;
+        }
+        a.note_rows(vec![(10, 1, 0), (11, 1, 1)]);
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 20,
+            row: 11,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("click");
+        assert_eq!(a.modal_choice, 1, "the screen says to click anything");
     }
 }

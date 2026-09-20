@@ -38,9 +38,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
 
     if app.pane_count() == 0 {
-        app.note_rows(Vec::new());
+        let (para, rows) = first_run(app, geo.content);
+        app.note_rows(rows);
         app.note_list_area(None);
-        frame.render_widget(first_run(app, geo.content), geo.content);
+        frame.render_widget(para, geo.content);
     } else {
         app.note_list_area(geo.list);
         if let Some(list) = geo.list {
@@ -711,7 +712,7 @@ fn drawer(app: &App, area: Rect) -> Paragraph<'static> {
 }
 
 /// Screen 1: nothing is running yet, and the one thing to do about it.
-fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
+fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize)>) {
     let th = app.theme;
     let found = App::available_agents();
     let mut lines: Vec<Line> = vec![Line::raw(""), Line::raw("")];
@@ -738,8 +739,10 @@ fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
             Span::styled("│".to_string(), th.rule()),
         ]));
     }
+    let mut choices = Vec::new();
     for (i, agent) in found.iter().enumerate() {
         let picked = i == app.modal_choice;
+        choices.push((area.y + lines.len() as u16, 1, i));
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
             Span::styled(
@@ -762,8 +765,7 @@ fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
             .to_string(),
         th.label(),
     ));
-    let _ = area;
-    Paragraph::new(lines)
+    (Paragraph::new(lines), choices)
 }
 
 // --- the bottom-anchored panels ----------------------------------------------
