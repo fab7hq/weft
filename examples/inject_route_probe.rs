@@ -179,6 +179,11 @@ const STARTUP: &[(&str, &str, &[u8])] = &[
     ("folder-trust", "trust this folder", b"\x1b[B\r"),
     // Codex, which defaults to "1. Yes, continue".
     ("folder-trust", "Do you trust the contents of this directory", b"\r"),
+    // A project may offer an MCP server, and may ask about imports. Both
+    // default to the careful answer, which is the one a person would take for
+    // a scratch workspace: use neither.
+    ("mcp-offer", "New MCP server found", b"\r"),
+    ("imports", "disable external imports", b"\r"),
 ];
 
 /// Answer those questions in the pane, the way a person would. Returns what
