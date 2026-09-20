@@ -596,7 +596,7 @@ impl App {
             lines.push(format!(
                 "  {} · {}",
                 item.plain_majority(),
-                record.agreed(item.agreement)
+                record.agreed_on(item)
             ));
             for r in &item.reasons {
                 lines.push(format!("  {r}"));

@@ -15,13 +15,46 @@ pub struct Judge {
     pub model: String,
 }
 
+/// One judge's vote on one item, as RingFrame recorded it.
+///
+/// `counted_as` is the whole point: RingFrame decides that a `yes` citing
+/// nothing is not decisive, and writes down both the vote as cast and what it
+/// counted as. Weft renders that decision and never repeats it — the rule has
+/// one home, and it is not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vote {
+    pub angle: String,
+    pub cast: String,
+    pub counted_as: String,
+    pub uncited: bool,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub text: String,
     /// `yes`, `no`, or `unknown` as the majority saw it.
     pub majority: String,
     pub agreement: f64,
+    pub votes: Vec<Vote>,
     pub reasons: Vec<String>,
+}
+
+impl Item {
+    /// How many judges the majority speaks for, counted from the votes
+    /// themselves rather than worked back out of a rounded number.
+    pub fn agreed(&self) -> Option<(usize, usize)> {
+        if self.votes.is_empty() {
+            return None;
+        }
+        let n = self.votes.iter().filter(|v| v.counted_as == self.majority).count();
+        Some((n, self.votes.len()))
+    }
+
+    /// Votes RingFrame set aside because they cited nothing a reader could check.
+    pub fn uncited(&self) -> usize {
+        self.votes.iter().filter(|v| v.uncited).count()
+    }
 }
 
 impl Item {
@@ -78,21 +111,23 @@ impl Record {
                 items
                     .iter()
                     .filter(|i| i.get("status").and_then(Value::as_str) != Some("withdrawn"))
-                    .map(|i| Item {
-                        text: i.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
-                        majority: i.get("majority").and_then(Value::as_str).unwrap_or("unknown").to_string(),
-                        agreement: i.get("agreement").and_then(Value::as_f64).unwrap_or(0.0),
-                        reasons: i
+                    .map(|i| {
+                        let votes: Vec<Vote> = i
                             .get("votes")
                             .and_then(Value::as_array)
-                            .map(|vs| {
-                                vs.iter()
-                                    .filter_map(|x| x.get("reason").and_then(Value::as_str))
-                                    .filter(|r| !r.is_empty())
-                                    .map(str::to_string)
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
+                            .map(|vs| vs.iter().map(vote_of).collect())
+                            .unwrap_or_default();
+                        Item {
+                            text: i.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
+                            majority: i.get("majority").and_then(Value::as_str).unwrap_or("unknown").to_string(),
+                            agreement: i.get("agreement").and_then(Value::as_f64).unwrap_or(0.0),
+                            reasons: votes
+                                .iter()
+                                .filter(|v| !v.reason.is_empty())
+                                .map(|v| v.reason.clone())
+                                .collect(),
+                            votes,
+                        }
                     })
                     .collect()
             })
@@ -126,6 +161,24 @@ impl Record {
         hosts
     }
 
+    /// An item's own agreement, counted from the votes RingFrame recorded.
+    /// Where this is available it is exact, and it is what a row should show.
+    pub fn agreed_on(&self, item: &Item) -> String {
+        match item.agreed() {
+            None => self.agreed(item.agreement),
+            Some((n, total)) if n == total => format!("all {total} judges agreed"),
+            Some((n, total)) => format!("{n} of {total} judges agreed"),
+        }
+    }
+
+    pub fn agreed_short_on(&self, item: &Item) -> String {
+        match item.agreed() {
+            None => self.agreed_short(item.agreement),
+            Some((n, total)) if n == total => format!("all {total} agreed"),
+            Some((n, total)) => format!("{n} of {total} agreed"),
+        }
+    }
+
     /// "all 3 agreed" / "2 of 3 agreed". The same count, in a row's width.
     pub fn agreed_short(&self, agreement: f64) -> String {
         match self.agreed_counts(agreement) {
@@ -152,6 +205,23 @@ impl Record {
         } else {
             format!("{n} of {total} judges agreed")
         }
+    }
+}
+
+fn vote_of(v: &Value) -> Vote {
+    let cast = v.get("vote").and_then(Value::as_str).unwrap_or("unknown").to_string();
+    Vote {
+        angle: v.get("angle").and_then(Value::as_str).unwrap_or("").to_string(),
+        // An older record has no `counted_as`: then the vote as cast is what
+        // counted, which is exactly what it meant before the rule existed.
+        counted_as: v
+            .get("counted_as")
+            .and_then(Value::as_str)
+            .unwrap_or(&cast)
+            .to_string(),
+        uncited: v.get("uncited").and_then(Value::as_bool).unwrap_or(false),
+        reason: v.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
+        cast,
     }
 }
 
@@ -209,6 +279,44 @@ mod tests {
         let r = Record::parse(&record()).expect("parse");
         assert_eq!(r.agreed(0.67), "2 of 3 judges agreed");
         assert_eq!(r.agreed(1.0), "all 3 judges agreed");
+    }
+
+    #[test]
+    fn weft_counts_what_ringframe_said_a_vote_counted_as() {
+        // RingFrame decides that a `yes` citing nothing is not decisive and
+        // records both the vote and what it counted as. Weft renders that
+        // decision; the rule has one home and it is not here.
+        let mut v = record();
+        v["items"][0]["votes"] = json!([
+            {"angle": "coverage", "vote": "yes", "counted_as": "unknown", "uncited": true, "reason": "looks right"},
+            {"angle": "drift", "vote": "no", "counted_as": "no", "reason": "still reads \"dev\""},
+            {"angle": "adversary", "vote": "no", "counted_as": "no", "reason": "src/server.js line 41"}
+        ]);
+        v["items"][0]["majority"] = json!("no");
+        let r = Record::parse(&v).expect("parse");
+        let item = &r.items[0];
+        assert_eq!(item.agreed(), Some((2, 3)), "two of three, the uncited one still counted in");
+        assert_eq!(r.agreed_on(item), "2 of 3 judges agreed");
+        assert_eq!(item.uncited(), 1);
+    }
+
+    #[test]
+    fn a_record_written_before_the_rule_reads_as_it_always_did() {
+        // No `counted_as` means the vote as cast is what counted, which is
+        // exactly what it meant before RingFrame set uncited votes aside.
+        let r = Record::parse(&record()).expect("parse");
+        let item = &r.items[0];
+        assert!(item.votes.iter().all(|v| v.counted_as == v.cast));
+        assert_eq!(item.uncited(), 0);
+    }
+
+    #[test]
+    fn an_item_with_no_recorded_votes_falls_back_to_the_agreement_number() {
+        let mut v = record();
+        v["items"][0]["votes"] = json!([]);
+        let r = Record::parse(&v).expect("parse");
+        assert_eq!(r.items[0].agreed(), None);
+        assert_eq!(r.agreed_on(&r.items[0]), "all 3 judges agreed", "from agreement 1.0");
     }
 
     #[test]

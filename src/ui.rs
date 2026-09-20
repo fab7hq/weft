@@ -568,13 +568,13 @@ fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
             let agreed_width = record
                 .items
                 .iter()
-                .map(|i| record.agreed_short(i.agreement).chars().count())
+                .map(|i| record.agreed_short_on(i).chars().count())
                 .max()
                 .unwrap_or(0);
             let room = width.saturating_sub(indent + 12 + agreed_width);
             for item in &record.items {
                 let vote = item.plain_majority();
-                let agreed = record.agreed_short(item.agreement);
+                let agreed = record.agreed_short_on(item);
                 lines.push(Line::styled(
                     format!(
                         "{:indent$}{} {} {:<8} {}",
