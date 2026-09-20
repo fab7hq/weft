@@ -428,12 +428,7 @@ fn hint(app: &App) -> Paragraph<'static> {
         },
         (Some(_), _) => " [Enter] closes this.".to_string(),
         (None, Focus::Agent) => {
-            // The Esc note lives in the help, because this line has to fit
-            // on an eighty-column terminal and the key matters more.
-            format!(
-                " Every key goes to the agent. {} to switch between Weft and harness.",
-                app.toggle.label()
-            )
+            format!(" {} to switch between Weft and harness.", app.toggle.label())
         }
         (None, Focus::Weft) if app.pane_count() == 0 => " Nothing is running yet.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(
@@ -1139,7 +1134,7 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let lines: Vec<&str> = drawn.lines().collect();
         assert_eq!(lines[22].trim(), "", "the action bar is empty in the agent");
-        assert!(lines[23].contains("Every key goes to the agent"), "{}", lines[23]);
+        assert!(lines[23].trim().starts_with("Ctrl+]"), "{}", lines[23]);
         assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
         assert!(lines[0].contains("NEEDS YOU"), "the counts keep their place: {}", lines[0]);
         assert!(
