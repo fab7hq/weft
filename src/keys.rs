@@ -20,6 +20,8 @@ pub enum Focus {
 pub struct Toggle;
 
 impl Toggle {
+    /// Written without the brackets every other key wears: `[Ctrl+]]` reads as
+    /// a typo, and the key already ends in the bracket that would close it.
     pub fn label(self) -> &'static str {
         "Ctrl+]"
     }

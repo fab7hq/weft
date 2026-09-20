@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout as RLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
 use crate::app::{Act, App, Modal, Reading};
@@ -16,11 +16,6 @@ use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::ledger::Unit;
 use crate::theme::{Theme, pair};
-
-/// The `[W] WORK` cell the tab row keeps when the list is hidden.
-const WORK_TAB: &str = " [W] WORK   ";
-/// How wide the `WORK` header is when the list has the whole width.
-const WORK_HEADER: u16 = 34;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -79,11 +74,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     frame.render_widget(bar, geo.actions);
     frame.render_widget(hint(app), geo.hint);
 
-    if let Some(modal) = app.modal.clone() {
-        if let Some((title, lines, choices)) = centred(app, &modal) {
-            overlay(frame, app, &title, &lines, &choices, area);
-        }
-    }
 }
 
 // --- where everything goes ---------------------------------------------------
@@ -177,10 +167,9 @@ fn geometry(app: &App, area: Rect) -> Geo {
             geo.top_junction = '┼';
         }
         Layout::Split { .. } => {
-            // Hidden, the agent has the whole width and the list keeps a tab.
+            // Hidden, the agent has the whole width and nothing is left over.
+            // [W] brings it back, and the bar says so.
             geo.right = Some(content);
-            geo.divider = Some(WORK_TAB.chars().count() as u16);
-            geo.top_junction = '┴';
         }
         Layout::Single { .. } => {
             if app.show_work() && app.focus == Focus::Weft && app.drawer().is_none() {
@@ -216,19 +205,26 @@ fn vlines(height: u16, th: Theme) -> Vec<Line<'static>> {
 
 fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) {
     let th = app.theme;
-    let state = match (app.pane_count(), app.focus) {
-        (0, _) => String::new(),
-        (_, Focus::Weft) => "   in Weft".into(),
-        (_, Focus::Agent) => "   in the agent".into(),
-    };
+    // Where you are is shown by what is lit, not by a word: WEFT in the accent
+    // means the keys are Weft's, and the agent's own name in the accent means
+    // they are the agent's.
+    let here = app.focus == Focus::Weft || app.pane_count() == 0;
     let left = vec![
         Span::styled(" ▚▞ ", Style::default().fg(th.accent())),
-        Span::styled(format!("WEFT   {}{}", app.project, state), th.title()),
+        Span::styled(
+            "WEFT".to_string(),
+            if here {
+                Style::default().fg(th.accent()).add_modifier(Modifier::BOLD)
+            } else {
+                th.label()
+            },
+        ),
+        Span::styled(format!("   {}", app.project), th.title()),
     ];
     let right = match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
         (_, Focus::Agent) => vec![Span::styled(
-            format!("[{}] TO COME BACK ", app.toggle.label().to_uppercase()),
+            format!("{} TO COME BACK ", app.toggle.label()),
             th.label(),
         )],
         (_, Focus::Weft) => {
@@ -271,17 +267,14 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
         spans.push(Span::styled(text, style));
     };
 
-    let header_style = if in_weft { Style::default().fg(th.accent()) } else { th.label() };
+    // No header word: the list is directly below, and where the keys go is
+    // shown by what is lit in the title bar.
     match (app.show_work(), geo.divider) {
-        (false, Some(_)) => {
-            push(&mut spans, &mut col, WORK_TAB.to_string(), header_style);
+        (_, Some(at)) => {
+            push(&mut spans, &mut col, " ".repeat(at as usize), th.label());
             push(&mut spans, &mut col, "│ ".into(), th.rule());
         }
-        (true, Some(at)) => {
-            push(&mut spans, &mut col, padded(" WORK", at as usize), header_style);
-            push(&mut spans, &mut col, "│ ".into(), th.rule());
-        }
-        _ => push(&mut spans, &mut col, padded(" WORK", WORK_HEADER as usize), header_style),
+        _ => push(&mut spans, &mut col, " ".into(), th.label()),
     }
 
     // Reading a drawer replaces the tabs with what is being read.
@@ -346,7 +339,7 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
                 _ => plain("  [Enter] DO IT   [←] NOT NOW"),
             };
         }
-        Some(Modal::Ask { .. }) => return (Paragraph::new(""), Vec::new()),
+        Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
         None => {}
     }
@@ -438,7 +431,7 @@ fn hint(app: &App) -> Paragraph<'static> {
         (Some(_), _) => " [Enter] closes this.".to_string(),
         (None, Focus::Agent) => {
             let mut s = format!(
-                " Every key goes to the agent, Esc included. [{}] comes back.",
+                " Every key goes to the agent, Esc included. {} comes back.",
                 app.toggle.label()
             );
             if app.needs_you() > 0 {
@@ -465,11 +458,11 @@ fn hint(app: &App) -> Paragraph<'static> {
             format!(" {said}")
         }
         (None, Focus::Weft) if !app.show_work() => {
-            " [W] brings the list back · [Space] still jumps to what needs you · [Ctrl+]] agent"
+            " [W] brings the list back · [Space] still jumps to what needs you · Ctrl+] agent"
                 .into()
         }
         (None, Focus::Weft) => {
-            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back · [Ctrl+]] agent".into()
+            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back · Ctrl+] agent".into()
         }
     };
     Paragraph::new(Line::styled(text, th.label()))
@@ -772,150 +765,60 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
 
 /// The confirmation and the quit question are anchored to the bottom so the
 /// row they are about stays in view above them.
+/// Every interruption is a panel in the same place: anchored to the bottom,
+/// where the quit question appears. Weft has no centred box — one covers
+/// exactly what the person was reading, which is what v1 did wrong.
+///
+/// This is the sizing pass. `panel` draws the same content.
 fn panel_lines(app: &App) -> Option<Vec<String>> {
-    match app.modal.as_ref()? {
-        Modal::Confirm(p) => {
-            let mut lines = vec![p.what.to_uppercase()];
-            lines.extend(p.why.iter().cloned());
-            lines.push(String::new());
-            lines.extend(String::from_utf8_lossy(&p.payload).lines().map(str::to_string));
-            Some(lines)
-        }
-        Modal::SetUp { harness, commands, gap } => {
-            let mut lines = match gap {
-                crate::readiness::Gap::Cli => vec![
-                    "RINGFRAME IS NOT INSTALLED".to_string(),
-                    "Weft reads the record RingFrame writes. Without it there is no record.".into(),
-                    String::new(),
-                    "  curl -LsSf https://fab7.dev/rf/install.sh | sh".into(),
-                    String::new(),
-                    "Weft will not install it for you: it is a tool on your machine, not a".into(),
-                    "change to one agent. Your agents still run here in the meantime.".into(),
-                ],
-                _ => {
-                    let mut l = vec![
-                        format!("SET {} UP FOR RINGFRAME", harness.to_uppercase()),
-                        format!(
-                            "Weft will run these two commands. They change {harness}, not this project."
-                        ),
-                        String::new(),
-                    ];
-                    l.extend(commands.iter().map(|c| format!("  {c}")));
-                    l.push(String::new());
-                    l.push("The ringframe CLI is already installed.".into());
-                    l
-                }
-            };
-            lines.retain(|l| !l.is_empty() || true);
-            Some(lines)
-        }
-        Modal::Quit => Some(vec![
-            "QUIT WEFT?".into(),
+    let modal = app.modal.as_ref()?;
+    let mut lines = vec![panel_title(app, modal)];
+    lines.extend(panel_body(app, modal));
+    lines.extend(panel_choices(app, modal).into_iter().map(|c| format!("  {c}")));
+    Some(lines)
+}
+
+fn panel_title(_app: &App, modal: &Modal) -> String {
+    match modal {
+        Modal::Quit => "QUIT WEFT?".into(),
+        Modal::Help => "KEYS".into(),
+        Modal::Note(_) => "WEFT".into(),
+        Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
+        Modal::Confirm(p) => p.what.to_uppercase(),
+        Modal::StartAgent { .. } => "START AN AGENT".into(),
+        Modal::SetUp { harness, gap, .. } => match gap {
+            crate::readiness::Gap::Cli => "RINGFRAME IS NOT INSTALLED".into(),
+            _ => format!("SET {} UP FOR RINGFRAME", harness.to_uppercase()),
+        },
+    }
+    .to_string()
+}
+
+fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
+    match modal {
+        Modal::Quit => vec![
             "Your agents are running in the background. They can keep going".into(),
             "without Weft open.".into(),
             String::new(),
-            "Quit, leave the agents running".into(),
-            "Quit and stop the agents".into(),
-            "Cancel".into(),
-        ]),
-        _ => None,
-    }
-}
-
-fn panel(app: &App, area: Rect) -> Paragraph<'static> {
-    let th = app.theme;
-    let width = area.width.saturating_sub(2) as usize;
-    match app.modal.as_ref() {
-        Some(Modal::Quit) => {
-            let mut lines = vec![
-                Line::styled(" QUIT WEFT?".to_string(), th.title()),
-                Line::styled(
-                    " Your agents are running in the background. They can keep going".to_string(),
-                    th.label(),
-                ),
-                Line::styled(" without Weft open.".to_string(), th.label()),
-                Line::raw(""),
-            ];
-            for (i, choice) in [
-                "Quit, leave the agents running",
-                "Quit and stop the agents",
-                "Cancel",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let picked = i == app.modal_choice;
-                lines.push(Line::styled(
-                    format!("   {} {choice}", if picked { "▸" } else { " " }),
-                    if picked { th.selected() } else { th.label() },
-                ));
-            }
-            Paragraph::new(lines)
-        }
-        Some(Modal::SetUp { .. }) => {
-            let lines = panel_lines(app).unwrap_or_default();
-            let mut drawn: Vec<Line> = Vec::new();
-            for (i, l) in lines.iter().enumerate() {
-                drawn.push(Line::styled(
-                    format!(" {l}"),
-                    if i == 0 { th.title() } else { th.label() },
-                ));
-            }
-            Paragraph::new(drawn)
-        }
-        Some(Modal::Confirm(p)) => {
-            let mut lines = vec![Line::styled(format!(" {}", p.what.to_uppercase()), th.title())];
-            for why in &p.why {
-                lines.push(Line::styled(format!(" {why}"), th.label()));
-            }
-            lines.push(Line::raw(""));
-            let text = String::from_utf8_lossy(&p.payload);
-            let body: Vec<String> = text.lines().flat_map(|l| wrap(l, width)).collect();
-            let room = (area.height as usize).saturating_sub(lines.len());
-            for (i, l) in body.iter().take(room).enumerate() {
-                let more = body.len() > room && i + 1 == room;
-                lines.push(Line::styled(
-                    if more { format!(" {l}  ▼") } else { format!(" {l}") },
-                    Style::default().fg(th.primary()),
-                ));
-            }
-            Paragraph::new(lines)
-        }
-        _ => Paragraph::new(""),
-    }
-}
-
-// --- the one remaining overlay -----------------------------------------------
-
-/// Ask, Help, Note and the agent picker are interruptions by nature, so they
-/// stay centred boxes. Everything else in v2 is drawn in place.
-fn centred(app: &App, modal: &Modal) -> Option<(String, Vec<String>, Vec<String>)> {
-    match modal {
-        Modal::Confirm(_) | Modal::Quit | Modal::SetUp { .. } => None,
-        Modal::Help => Some((
-            " KEYS ".into(),
-            vec![
-                "[↑↓]     pick a row          [Enter]  expand it".into(),
-                "[←]      back, everywhere    [Space]  next thing that needs you".into(),
-                "[Tab]    next agent          [1]-[9]  that agent".into(),
-                "[A]SK · [S]END · [C]HECK · [D]ECIDE".into(),
-                "[P] the wording · [J] the judges · [F]IX THIS".into(),
-                "[N]EW AGENT · [W]ORK shows or hides the list · [X] QUIT".into(),
-                String::new(),
-                format!("[{}] goes into the agent, and comes back.", app.toggle.label()),
-                "In the agent every other key goes straight through, Esc included.".into(),
-                "To select text in a pane, hold Shift.".into(),
-            ],
-            vec!["[Enter] CLOSE".into()],
-        )),
-        Modal::Note(text) => Some((
-            " WEFT ".into(),
-            text.lines().map(str::to_string).collect(),
-            vec!["[Enter] CLOSE".into()],
-        )),
+        ],
+        Modal::Help => vec![
+            "[↑↓] pick a row        [Enter] expand it        [←] back, everywhere".into(),
+            "[Space] next thing that needs you               [Tab] next agent".into(),
+            "[A]SK · [S]END · [C]HECK · [D]ECIDE · [R]EADY UP".into(),
+            "[P] the wording · [J] the judges · [F]IX THIS".into(),
+            "[N]EW AGENT · [W]ORK hides the list · [X] QUIT".into(),
+            String::new(),
+            format!("{} goes into the agent, and comes back.", app.toggle.label()),
+            "In the agent every other key goes through, Esc included.".into(),
+            "To select text in a pane, hold Shift.".into(),
+        ],
+        Modal::Note(text) => text.lines().map(str::to_string).collect(),
         Modal::Ask { text, target } => {
-            let mut lines = if text.is_empty() { Vec::new() } else { wrap(text, 58) };
-            lines.push(format!("{text_cursor}_", text_cursor = ""));
+            let mut lines = if text.is_empty() { Vec::new() } else { wrap(text, 72) };
+            match lines.last_mut() {
+                Some(last) => last.push('_'),
+                None => lines.push("_".into()),
+            }
             lines.push(String::new());
             let tabs: Vec<String> = (0..app.pane_count())
                 .map(|i| {
@@ -928,55 +831,90 @@ fn centred(app: &App, modal: &Modal) -> Option<(String, Vec<String>, Vec<String>
                 })
                 .collect();
             lines.push(format!("SEND TO     {}", tabs.join("    ")));
-            Some((
-                " WHAT DO YOU WANT DONE? ".into(),
-                lines,
-                vec!["[Enter] SEND            [←] CANCEL".into()],
-            ))
+            lines
         }
-        Modal::StartAgent { .. } => Some((
-            " START AN AGENT ".into(),
-            vec!["It runs here, with your own settings.".into(), String::new()],
-            App::available_agents().iter().map(|a| a.to_string()).collect(),
-        )),
+        Modal::Confirm(p) => {
+            let mut lines = p.why.clone();
+            lines.push(String::new());
+            lines.extend(String::from_utf8_lossy(&p.payload).lines().map(str::to_string));
+            lines
+        }
+        Modal::StartAgent { .. } => {
+            vec!["It runs here, with your own settings.".into(), String::new()]
+        }
+        Modal::SetUp { harness, commands, gap } => match gap {
+            crate::readiness::Gap::Cli => vec![
+                "Weft reads the record RingFrame writes. Without it there is no record.".into(),
+                String::new(),
+                "  curl -LsSf https://fab7.dev/rf/install.sh | sh".into(),
+                String::new(),
+                "Weft will not install it for you: it is a tool on your machine, not a".into(),
+                "change to one agent. Your agents still run here in the meantime.".into(),
+            ],
+            _ => {
+                let mut l = vec![
+                    format!("Weft will run these two commands. They change {harness}, not this project."),
+                    String::new(),
+                ];
+                l.extend(commands.iter().map(|c| format!("  {c}")));
+                l.push(String::new());
+                l.push("The ringframe CLI is already installed.".into());
+                l
+            }
+        },
     }
 }
 
-fn overlay(
-    frame: &mut Frame,
-    app: &App,
-    title: &str,
-    lines: &[String],
-    choices: &[String],
-    area: Rect,
-) {
-    let th = app.theme;
-    let height = (lines.len() + choices.len() + 4).min(area.height as usize) as u16;
-    let width = 74u16.min(area.width.saturating_sub(4));
-    let box_area = centre(area, width, height);
-    frame.render_widget(Clear, box_area);
+/// The choices a panel offers, if it is the kind that picks one.
+fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
+    match modal {
+        Modal::Quit => vec![
+            "Quit, leave the agents running".into(),
+            "Quit and stop the agents".into(),
+            "Cancel".into(),
+        ],
+        Modal::StartAgent { .. } => {
+            let _ = app;
+            App::available_agents().iter().map(|a| a.to_string()).collect()
+        }
+        _ => Vec::new(),
+    }
+}
 
-    let mut body: Vec<Line> = vec![Line::raw("")];
-    for l in lines {
-        body.push(Line::styled(format!("  {l}"), Style::default().fg(th.primary())));
+fn panel(app: &App, area: Rect) -> Paragraph<'static> {
+    let th = app.theme;
+    let Some(modal) = app.modal.as_ref() else { return Paragraph::new("") };
+    let mut drawn = vec![Line::styled(format!(" {}", panel_title(app, modal)), th.title())];
+
+    let room = (area.height as usize).saturating_sub(1);
+    let body = panel_body(app, modal);
+    let body: Vec<String> = body
+        .iter()
+        .flat_map(|l| {
+            if l.chars().count() > area.width.saturating_sub(2) as usize {
+                wrap(l, area.width.saturating_sub(2) as usize)
+            } else {
+                vec![l.clone()]
+            }
+        })
+        .collect();
+    let choices = panel_choices(app, modal);
+    let for_body = room.saturating_sub(choices.len());
+    for (i, l) in body.iter().take(for_body).enumerate() {
+        let more = body.len() > for_body && i + 1 == for_body;
+        drawn.push(Line::styled(
+            if more { format!(" {l}  ▼") } else { format!(" {l}") },
+            th.label(),
+        ));
     }
-    if !choices.is_empty() {
-        body.push(Line::raw(""));
-    }
-    let picker = matches!(app.modal, Some(Modal::StartAgent { .. }));
-    for (i, c) in choices.iter().enumerate() {
-        let picked = picker && i == app.modal_choice;
-        body.push(Line::styled(
-            if picker { format!("   {} {c}", if picked { "▸" } else { " " }) } else { format!("   {c}") },
+    for (i, choice) in choices.iter().enumerate() {
+        let picked = i == app.modal_choice;
+        drawn.push(Line::styled(
+            format!("   {} {choice}", if picked { "▸" } else { " " }),
             if picked { th.selected() } else { th.label() },
         ));
     }
-    frame.render_widget(
-        Paragraph::new(body).block(
-            Block::bordered().border_style(th.rule()).title(Span::styled(title.to_string(), th.title())),
-        ),
-        box_area,
-    );
+    Paragraph::new(drawn)
 }
 
 // --- small things -------------------------------------------------------------
@@ -1028,14 +966,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn centre(area: Rect, width: u16, height: u16) -> Rect {
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height: height.min(area.height),
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -1119,7 +1049,7 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let title = drawn.lines().next().expect("a title bar");
         assert!(title.contains("WEFT"), "{title}");
-        assert!(title.contains("in Weft"), "{title}");
+        assert!(!title.contains("in Weft"), "where you are is lit, not named: {title}");
         assert!(title.contains("OPEN  2"), "{title}");
         assert!(title.contains("NEEDS YOU  2"), "{title}");
     }
@@ -1129,7 +1059,7 @@ mod tests {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
         let tabs = drawn.lines().nth(1).expect("a tab row");
-        assert!(tabs.contains("WORK"), "{tabs}");
+        assert!(!tabs.contains("WORK"), "the row is the tabs, nothing else: {tabs}");
         assert!(tabs.contains("▸ 1 codex"), "the active agent is marked: {tabs}");
         assert!(tabs.trim_end().ends_with('+'), "a new agent is one click away: {tabs}");
     }
@@ -1219,13 +1149,15 @@ mod tests {
     }
 
     #[test]
-    fn hiding_the_work_list_leaves_a_tab_to_bring_it_back() {
+    fn hiding_the_work_list_gives_the_agent_the_whole_width() {
         let mut a = judged();
         press(&mut a, KeyCode::Char('w'));
         let drawn = screen(&mut a, 120, 32);
-        assert!(drawn.contains("[W] WORK"), "{drawn}");
         assert!(!drawn.contains("health endpoint"), "the list is away: {drawn}");
-        assert!(drawn.contains("[W] brings the list back"), "{drawn}");
+        let tabs = drawn.lines().nth(1).expect("a tab row");
+        assert!(!tabs.contains('│'), "and nothing is left behind: {tabs}");
+        assert!(drawn.contains("[W] brings the list back"), "the way back is said: {drawn}");
+        assert!(drawn.contains("[W]ORK"), "and shown on the bar: {drawn}");
     }
 
     #[test]

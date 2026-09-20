@@ -1130,10 +1130,17 @@ impl App {
             m.column >= a.x && m.column < a.x + a.width && m.row >= a.y && m.row < a.y + a.height
         });
         if in_pane && self.drawer.is_none() {
-            self.focus = Focus::Agent;
-            if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
-                p.scroll_to_bottom();
-            }
+            // Clicking the pane is a toggle: into the agent, and out again.
+            // The same click should not mean two different things.
+            self.focus = match self.focus {
+                Focus::Weft => {
+                    if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                        p.scroll_to_bottom();
+                    }
+                    Focus::Agent
+                }
+                Focus::Agent => Focus::Weft,
+            };
             return Ok(());
         }
         if self.pane_count() == 0 {
@@ -1695,6 +1702,22 @@ pub(crate) mod tests {
         a.on_mouse(click(5, 3)).expect("mouse");
         assert_eq!(a.focus, Focus::Weft);
         assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn clicking_the_pane_goes_in_and_clicking_again_comes_out() {
+        let mut a = with_unit(Sent::NotSent);
+        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 50,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(click).expect("mouse");
+        assert_eq!(a.focus, Focus::Agent);
+        a.on_mouse(click).expect("mouse");
+        assert_eq!(a.focus, Focus::Weft, "the same click does not mean two things");
     }
 
     #[test]
