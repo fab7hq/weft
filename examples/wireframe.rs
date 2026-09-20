@@ -14,6 +14,7 @@ use weft::app::App;
 use weft::client::Session;
 use weft::keys::Toggle;
 use weft::ledger::{Check, Sent, Unit, Verdict};
+use weft::readiness::{Gap, Readiness};
 use weft::server;
 
 fn main() {
@@ -26,10 +27,25 @@ fn main() {
     show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Down, KeyCode::Char('c')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
     show("Screen 10 — work list hidden", 120, 32, &[KeyCode::Char('w')], true);
+    unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);
+    unready("Readiness B — the CLI itself", 80, 24, &[KeyCode::Char('r')], Gap::Cli);
+    unready("Readiness C — the setup proposal", 80, 24, &[KeyCode::Char('r')], Gap::Plugin);
+}
+
+/// The same screens with the agent not set up for RingFrame.
+fn unready(name: &str, width: u16, height: u16, keys: &[KeyCode], gap: Gap) {
+    let mut app = fixture(name, true);
+    app.set_units(Vec::new());
+    app.set_readiness("codex", Readiness::Missing(gap));
+    draw_it(name, width, height, keys, &mut app);
 }
 
 fn show(name: &str, width: u16, height: u16, keys: &[KeyCode], with_agent: bool) {
     let mut app = fixture(name, with_agent);
+    draw_it(name, width, height, keys, &mut app);
+}
+
+fn draw_it(name: &str, width: u16, height: u16, keys: &[KeyCode], app: &mut App) {
     for key in keys {
         let modifiers = if *key == KeyCode::Char(']') {
             KeyModifiers::CONTROL
@@ -39,7 +55,7 @@ fn show(name: &str, width: u16, height: u16, keys: &[KeyCode], with_agent: bool)
         app.on_key(KeyEvent::new(*key, modifiers)).expect("key");
     }
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
-    terminal.draw(|frame| weft::ui::draw(frame, &mut app)).expect("draw");
+    terminal.draw(|frame| weft::ui::draw(frame, app)).expect("draw");
     let buffer = terminal.backend().buffer().clone();
     println!("\n=== {name} · {width}×{height} ===");
     for y in 0..height {

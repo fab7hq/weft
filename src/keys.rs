@@ -69,6 +69,8 @@ pub enum Action {
     Fix,
     /// Why Weft says a pane is waiting for an answer.
     Explain,
+    /// Set this agent up for RingFrame, after showing what that runs.
+    ReadyUp,
     Ask,
     Check,
     Decide,
@@ -116,6 +118,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'j' => Action::Judges,
             'f' => Action::Fix,
             'e' => Action::Explain,
+            'r' => Action::ReadyUp,
             'w' => Action::ToggleWork,
             'h' => Action::Help,
             'x' => Action::Quit,
@@ -179,6 +182,14 @@ mod tests {
     }
 
     #[test]
+    fn r_offers_to_set_an_agent_up_for_ringframe() {
+        assert_eq!(route(plain(Key::Char('r')), Focus::Weft, Toggle), Action::ReadyUp);
+        assert_eq!(route(plain(Key::Char('R')), Focus::Weft, Toggle), Action::ReadyUp);
+        // and never in the agent, where r is just a letter
+        assert_eq!(route(plain(Key::Char('r')), Focus::Agent, Toggle), Action::ToAgent);
+    }
+
+    #[test]
     fn space_jumps_to_what_needs_you_and_e_explains_an_inference() {
         assert_eq!(route(plain(Key::Char(' ')), Focus::Weft, Toggle), Action::NextNeedsYou);
         assert_eq!(route(plain(Key::Char('e')), Focus::Weft, Toggle), Action::Explain);
@@ -216,7 +227,7 @@ mod tests {
     #[test]
     fn a_key_weft_has_no_meaning_for_does_nothing() {
         // v1 fell through to Help, which opened a dialog on a stray keystroke.
-        for c in ['q', 'z', 'r', '/'] {
+        for c in ['q', 'z', 'v', '/'] {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, Toggle), Action::Ignore, "{c}");
         }
     }

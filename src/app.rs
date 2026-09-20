@@ -20,6 +20,8 @@ use crate::encode;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
 use crate::ledger::{Ledger, Sent, Unit};
 use crate::record::Record;
+use crate::harness;
+use crate::readiness::{self, Gap, Readiness};
 use crate::ringframe;
 use crate::theme::Theme;
 
@@ -47,6 +49,9 @@ pub enum Modal {
     Note(String),
     /// Pick an agent to start. Weft starts none on its own.
     StartAgent { choice: usize },
+    /// What Weft is about to run to set an agent up, and where. Shown first,
+    /// always: installing into an agent is a larger act than typing into one.
+    SetUp { harness: String, commands: Vec<String>, gap: Gap },
 }
 
 /// The two reading surfaces. Siblings, not a stack: `P` from the judges
@@ -80,6 +85,8 @@ pub enum Act {
     Work,
     Help,
     Quit,
+    /// Set the agent that owns the work up for RingFrame.
+    ReadyUp,
 }
 
 pub struct App {
@@ -120,6 +127,9 @@ pub struct App {
     /// Whether the CLI that owns the record is installed. Asked once: it is a
     /// property of the machine, not of the frame being drawn.
     record_available: bool,
+    /// What each harness is short of, by the name RingFrame records. Asked
+    /// when a pane starts, because that is when a person would care.
+    readiness: std::collections::HashMap<String, Readiness>,
 }
 
 impl App {
@@ -178,6 +188,46 @@ impl App {
         self.record_available
     }
 
+    /// What this harness is short of, if anything. A harness Weft does not
+    /// support, or has not asked about, is `Unknown` — never assumed ready.
+    pub fn readiness(&self, harness: &str) -> Readiness {
+        self.readiness.get(harness).copied().unwrap_or(Readiness::Unknown)
+    }
+
+    /// The harness whose readiness decides what the person can do now: the one
+    /// that owns the selected work, or the agent on screen when there is none.
+    pub fn deciding_harness(&self) -> Option<String> {
+        self.selected_unit()
+            .map(|u| u.harness.clone())
+            .or_else(|| self.harness_at(self.pane_focus).map(str::to_string))
+    }
+
+    /// The harness that decides what can be done now, when it is not ready.
+    /// The hint says so persistently: a dimmed action with no reason on screen
+    /// is the thing v1 did wrong.
+    pub fn not_ready(&self) -> Option<(String, Readiness)> {
+        let name = self.deciding_harness()?;
+        let state = self.readiness(&name);
+        (!state.is_ready()).then_some((name, state))
+    }
+
+    /// Ask a harness where it stands, once, when its pane starts.
+    fn look_at(&mut self, name: &str) {
+        if matches!(self.readiness.get(name), Some(Readiness::Declined)) {
+            return; // a no is not re-asked this session
+        }
+        let state = match harness::find(name) {
+            Some(h) => readiness::check(h, self.record_available),
+            None => Readiness::Unknown,
+        };
+        self.readiness.insert(name.to_string(), state);
+    }
+
+    /// Test seam: what a harness would be found to be, without asking it.
+    pub fn set_readiness(&mut self, harness: &str, state: Readiness) {
+        self.readiness.insert(harness.to_string(), state);
+    }
+
     /// Open units, as the title bar counts them.
     pub fn open_count(&self) -> usize {
         self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count()
@@ -217,8 +267,35 @@ impl App {
         let no_pane = |harness: &str| {
             format!("No {harness} pane is open, so there is nowhere to send this.")
         };
+        // Everything RingFrame owns waits on the harness that owns the work.
+        // Readiness is per harness: Claude Code may be ready while Codex is not.
+        if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix) {
+            if let Some(name) = self.deciding_harness() {
+                let state = self.readiness(&name);
+                if !state.is_ready() {
+                    let mut say = state.say(&name).unwrap_or_default();
+                    if state.can_be_set_up() {
+                        say.push_str(" [R]EADY UP sets it up.");
+                    }
+                    return Some(say);
+                }
+            }
+        }
         match act {
             Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
+            Act::ReadyUp => match self.deciding_harness() {
+                None => Some("Start an agent first — [N]EW AGENT.".into()),
+                Some(name) if self.readiness(&name).is_ready() => {
+                    Some(format!("{name} is already set up for RingFrame."))
+                }
+                // A missing CLI opens the panel too: it has nothing to run,
+                // but it carries the one command the person needs.
+                Some(name) if self.readiness(&name) == Readiness::Unknown => self
+                    .readiness(&name)
+                    .say(&name)
+                    .map(|s| format!("{s} There is nothing to offer until it answers.")),
+                Some(_) => None,
+            },
             Act::Ask => (self.pane_count() == 0)
                 .then(|| "Start an agent first — [N]EW AGENT.".to_string()),
             Act::Fix => match self.selected_unit() {
@@ -300,6 +377,7 @@ impl App {
             list_area: None,
             needs_you_span: None,
             record_available: ringframe::installed(),
+            readiness: std::collections::HashMap::new(),
         }
     }
 
@@ -307,6 +385,7 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
+        self.look_at(harness);
         self.session.spawn(harness, spec)?;
         // The pane appears when the server says it has one.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -507,6 +586,48 @@ impl App {
                 )))
             }
         }
+    }
+
+    /// Show what setting this harness up would run, and run nothing yet.
+    fn start_set_up(&mut self) {
+        if !self.guard(Act::ReadyUp) {
+            return;
+        }
+        let Some(name) = self.deciding_harness() else { return };
+        let Some(h) = harness::find(&name) else { return };
+        let gap = match self.readiness(&name) {
+            Readiness::Missing(gap) => gap,
+            _ => Gap::Plugin,
+        };
+        self.modal = Some(Modal::SetUp { harness: name, commands: h.setup_commands(), gap });
+        self.modal_choice = 0;
+    }
+
+    /// Run the commands, then **ask again**. An exit code is not readiness.
+    fn do_set_up(&mut self, name: &str) {
+        let Some(h) = harness::find(name) else { return };
+        match readiness::set_up(h) {
+            Ok(()) => {
+                self.modal = None;
+                self.readiness.remove(name);
+                self.look_at(name);
+                let now = self.readiness(name);
+                self.say(match now {
+                    Readiness::Ready => format!("{name} is set up for RingFrame."),
+                    other => other
+                        .say(name)
+                        .map(|s| format!("{s} The commands ran, so something else is wrong."))
+                        .unwrap_or_default(),
+                });
+            }
+            Err(why) => self.modal = Some(Modal::Note(format!("That did not work: {why}"))),
+        }
+    }
+
+    fn decline_set_up(&mut self, name: &str) {
+        self.readiness.insert(name.to_string(), Readiness::Declined);
+        self.modal = None;
+        self.say(format!("Not now for {name}. Your agent still runs here."));
     }
 
     fn do_inject(&mut self, pending: &Pending) {
@@ -745,6 +866,7 @@ impl App {
                     self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
                 }
             }
+            Act::ReadyUp => self.start_set_up(),
             Act::NewAgent => self.start_agent_picker(),
             Act::Work => self.toggle_work(),
             Act::Help => {
@@ -818,6 +940,7 @@ impl App {
             Action::Judges => self.act(Act::Judges),
             Action::Fix => self.act(Act::Fix),
             Action::Explain => self.explain_waiting(),
+            Action::ReadyUp => self.act(Act::ReadyUp),
             Action::Quit => self.act(Act::Quit),
             Action::Help => self.act(Act::Help),
             Action::Ignore => {}
@@ -881,8 +1004,15 @@ impl App {
             event::KeyCode::Down => {
                 self.modal_choice = (self.modal_choice + 1).min(options - 1)
             }
-            // `←` is back everywhere, and cancels rather than choosing.
-            event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
+            // `←` is back everywhere, and on this one panel it is an answer:
+            // not now, remembered, rather than a question asked again.
+            event::KeyCode::Left | event::KeyCode::Esc => match &modal {
+                Modal::SetUp { harness, .. } => {
+                    let harness = harness.clone();
+                    self.decline_set_up(&harness);
+                }
+                _ => self.modal = None,
+            },
             event::KeyCode::Enter => self.confirm_modal(&modal),
             _ => {}
         }
@@ -898,6 +1028,10 @@ impl App {
                 self.do_inject(&pending);
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
+            Modal::SetUp { harness, .. } => {
+                let harness = harness.clone();
+                self.do_set_up(&harness);
+            }
             Modal::Quit => match self.modal_choice {
                 0 => {
                     // Leave; the server keeps the agents working.
@@ -1110,6 +1244,7 @@ fn chord_of(key: KeyEvent) -> Chord {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::readiness::{Gap, Readiness};
     use crossterm::event::KeyCode;
     use serde_json::json;
 
@@ -1366,6 +1501,77 @@ pub(crate) mod tests {
         assert_eq!(a.selected, 1);
         press(&mut a, KeyCode::Up);
         assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn readiness_follows_the_harness_that_owns_the_work() {
+        // Claude Code ready, Codex not: the same action is available on one
+        // and not the other, because the plugin is installed per harness.
+        let mut a = app();
+        a.add("claude-code", "/bin/cat").expect("a second pane");
+        a.set_readiness("codex", Readiness::Missing(Gap::Plugin));
+        a.set_readiness("claude-code", Readiness::Ready);
+        let mut codex_row = unit(Sent::Arrived { exact: true });
+        codex_row.harness = "codex".into();
+        let mut claude_row = unit(Sent::Arrived { exact: true });
+        claude_row.ask_id = "ask_2".into();
+        claude_row.harness = "claude-code".into();
+        a.set_units(vec![codex_row, claude_row]);
+
+        let blocked = a.unavailable(Act::Check).expect("codex is not set up");
+        assert!(blocked.contains("codex is not set up"), "{blocked}");
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.unavailable(Act::Check), None, "claude-code is ready");
+    }
+
+    #[test]
+    fn nothing_is_installed_without_an_explicit_yes() {
+        let mut a = app();
+        a.set_readiness("codex", Readiness::Missing(Gap::Plugin));
+        press(&mut a, KeyCode::Char('r'));
+        let Some(Modal::SetUp { harness, commands, .. }) = a.modal.clone() else {
+            panic!("[R] must propose first, got {:?}", a.modal)
+        };
+        assert_eq!(harness, "codex");
+        assert_eq!(commands, vec![
+            "codex plugin marketplace add fab7hq/fab7".to_string(),
+            "codex plugin add rf@fab7".to_string()
+        ], "what is shown is what would run");
+        // Declining runs nothing, and is remembered.
+        press(&mut a, KeyCode::Left);
+        assert!(a.modal.is_none());
+        assert_eq!(a.readiness("codex"), Readiness::Declined);
+    }
+
+    #[test]
+    fn a_harness_that_said_no_is_not_asked_again_this_session() {
+        let mut a = app();
+        a.set_readiness("codex", Readiness::Declined);
+        a.add("codex", "/bin/cat").expect("spawn");
+        assert_eq!(a.readiness("codex"), Readiness::Declined, "the check does not overwrite a no");
+    }
+
+    #[test]
+    fn weft_does_not_offer_to_install_the_cli_itself() {
+        // The panel opens, because it carries the one command that fixes it —
+        // and it offers nothing to run, because a tool on the machine is
+        // RingFrame's to install, not Weft's.
+        let mut a = app();
+        a.set_readiness("codex", Readiness::Missing(Gap::Cli));
+        press(&mut a, KeyCode::Char('r'));
+        let Some(Modal::SetUp { gap, .. }) = a.modal.clone() else {
+            panic!("expected the panel, got {:?}", a.modal)
+        };
+        assert_eq!(gap, Gap::Cli);
+    }
+
+    #[test]
+    fn a_harness_weft_cannot_ask_is_unknown_rather_than_missing() {
+        let mut a = app();
+        a.set_readiness("codex", Readiness::Unknown);
+        let why = a.unavailable(Act::Ask).expect("not ready");
+        assert!(why.contains("could not ask"), "{why}");
+        assert!(!why.contains("[R]EADY UP"), "nothing to offer: {why}");
     }
 
     #[test]

@@ -72,7 +72,7 @@ fn main() -> anyhow::Result<()> {
         app.input(0, &sent)?;
         println!("to the agent: {:?}", String::from_utf8_lossy(&sent));
     }
-    let mut press = |app: &mut App, list: &str| -> anyhow::Result<()> {
+    let press = |app: &mut App, list: &str| -> anyhow::Result<()> {
         for name in list.split(',') {
             app.on_key(KeyEvent::new(key_of(name), KeyModifiers::NONE))?;
             app.pump();
@@ -148,6 +148,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Confirm(_) => "Confirm",
         Note(_) => "Note",
         StartAgent { .. } => "StartAgent",
+        SetUp { .. } => "SetUp",
     }
 }
 

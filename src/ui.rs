@@ -297,12 +297,14 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
         let active = i == app.pane_focus;
         let waiting = app.waiting(i).is_some();
         let harness = app.harness_at(i).unwrap_or("agent").to_string();
+        let ready = app.readiness(&harness).is_ready();
         let text = format!(
-            "{}{} {}{}",
+            "{}{} {}{}{}",
             if active { "▸ " } else { "" },
             i + 1,
             harness,
-            if waiting { " ●" } else { "" }
+            if waiting { " ●" } else { "" },
+            if ready { "" } else { " ⚠" }
         );
         let style = match (active, in_weft, waiting) {
             // In the agent the active tab carries the accent; in Weft the
@@ -336,6 +338,13 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
+        Some(Modal::SetUp { gap, .. }) => {
+            // Nothing to offer for a missing CLI: it is not Weft's to install.
+            return match gap {
+                crate::readiness::Gap::Cli => plain("  [←] BACK"),
+                _ => plain("  [Enter] DO IT   [←] NOT NOW"),
+            };
+        }
         Some(Modal::Ask { .. }) => return (Paragraph::new(""), Vec::new()),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
         None => {}
@@ -421,6 +430,10 @@ fn hint(app: &App) -> Paragraph<'static> {
             " The agent will ask you which approach to take, in its own pane.".into()
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
+        (Some(Modal::SetUp { gap, .. }), _) => match gap {
+            crate::readiness::Gap::Cli => " Run it in a terminal, then start an agent again.".into(),
+            _ => " Weft never changes an agent without asking you first.".into(),
+        },
         (Some(_), _) => " [Enter] closes this.".to_string(),
         (None, Focus::Agent) => {
             let mut s = format!(
@@ -439,6 +452,16 @@ fn hint(app: &App) -> Paragraph<'static> {
         ),
         (None, Focus::Weft) if app.drawer().is_some() => {
             " [↑↓] or the wheel to scroll · [←] back to the agent".into()
+        }
+        (None, Focus::Weft) if app.not_ready().is_some() => {
+            let (name, state) = app.not_ready().expect("not ready");
+            let mut said = state.say(&name).unwrap_or_default();
+            said.push_str(if state.can_be_set_up() {
+                " [R]EADY UP sets it up."
+            } else {
+                " Your agent still runs here."
+            });
+            format!(" {said}")
         }
         (None, Focus::Weft) if !app.show_work() => {
             " [W] brings the list back · [Space] still jumps to what needs you · [Ctrl+]] agent"
@@ -463,6 +486,19 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
 
     if app.units().is_empty() {
         lines.push(Line::raw(""));
+        if let Some((name, state)) = app.not_ready() {
+            lines.push(Line::styled(
+                format!(" {}", state.say(&name).unwrap_or_default()),
+                th.label(),
+            ));
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                " Your agent runs here either way. Nothing is written down until it is set up."
+                    .to_string(),
+                th.label(),
+            ));
+            return (Paragraph::new(lines), rows);
+        }
         let (said, next) = if app.record_available() {
             ("Nothing asked for yet.", "[A]SK for something and Weft writes it down.")
         } else {
@@ -743,6 +779,34 @@ fn panel_lines(app: &App) -> Option<Vec<String>> {
             lines.extend(String::from_utf8_lossy(&p.payload).lines().map(str::to_string));
             Some(lines)
         }
+        Modal::SetUp { harness, commands, gap } => {
+            let mut lines = match gap {
+                crate::readiness::Gap::Cli => vec![
+                    "RINGFRAME IS NOT INSTALLED".to_string(),
+                    "Weft reads the record RingFrame writes. Without it there is no record.".into(),
+                    String::new(),
+                    "  curl -LsSf https://fab7.dev/rf/install.sh | sh".into(),
+                    String::new(),
+                    "Weft will not install it for you: it is a tool on your machine, not a".into(),
+                    "change to one agent. Your agents still run here in the meantime.".into(),
+                ],
+                _ => {
+                    let mut l = vec![
+                        format!("SET {} UP FOR RINGFRAME", harness.to_uppercase()),
+                        format!(
+                            "Weft will run these two commands. They change {harness}, not this project."
+                        ),
+                        String::new(),
+                    ];
+                    l.extend(commands.iter().map(|c| format!("  {c}")));
+                    l.push(String::new());
+                    l.push("The ringframe CLI is already installed.".into());
+                    l
+                }
+            };
+            lines.retain(|l| !l.is_empty() || true);
+            Some(lines)
+        }
         Modal::Quit => Some(vec![
             "QUIT WEFT?".into(),
             "Your agents are running in the background. They can keep going".into(),
@@ -786,6 +850,17 @@ fn panel(app: &App, area: Rect) -> Paragraph<'static> {
             }
             Paragraph::new(lines)
         }
+        Some(Modal::SetUp { .. }) => {
+            let lines = panel_lines(app).unwrap_or_default();
+            let mut drawn: Vec<Line> = Vec::new();
+            for (i, l) in lines.iter().enumerate() {
+                drawn.push(Line::styled(
+                    format!(" {l}"),
+                    if i == 0 { th.title() } else { th.label() },
+                ));
+            }
+            Paragraph::new(drawn)
+        }
         Some(Modal::Confirm(p)) => {
             let mut lines = vec![Line::styled(format!(" {}", p.what.to_uppercase()), th.title())];
             for why in &p.why {
@@ -814,7 +889,7 @@ fn panel(app: &App, area: Rect) -> Paragraph<'static> {
 /// stay centred boxes. Everything else in v2 is drawn in place.
 fn centred(app: &App, modal: &Modal) -> Option<(String, Vec<String>, Vec<String>)> {
     match modal {
-        Modal::Confirm(_) | Modal::Quit => None,
+        Modal::Confirm(_) | Modal::Quit | Modal::SetUp { .. } => None,
         Modal::Help => Some((
             " KEYS ".into(),
             vec![
@@ -1264,6 +1339,56 @@ mod tests {
         })
         .expect("click");
         assert_eq!(a.selected, 1, "it moved to the next thing that needs you");
+    }
+
+    #[test]
+    fn a_harness_that_is_not_set_up_is_marked_and_says_so() {
+        let mut a = judged();
+        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        let drawn = screen(&mut a, 80, 24);
+        let tabs = drawn.lines().nth(1).expect("a tab row");
+        assert!(tabs.contains("codex ⚠"), "the tab carries it: {tabs}");
+        assert!(drawn.contains("codex is not set up for RingFrame"), "{drawn}");
+        assert!(drawn.contains("[R]EADY UP"), "and the key is shown where it is offered: {drawn}");
+        assert!(drawn.contains("[R]EADY UP sets it up"), "{drawn}");
+    }
+
+    #[test]
+    fn the_bar_keeps_its_eight_entries_when_a_harness_is_not_set_up() {
+        // The bar is exactly full at 80 columns, so [R]EADY UP lives in the
+        // hint. Every entry still has to be on screen and readable.
+        let mut a = judged();
+        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        let drawn = screen(&mut a, 80, 24);
+        for key in ["[A]SK", "[S]END", "[C]HECK", "[D]ECIDE", "[N]EW AGENT", "[W]ORK", "[H]ELP", "[X] QUIT"] {
+            assert!(drawn.contains(key), "{key} fell off the bar: {drawn}");
+        }
+    }
+
+    #[test]
+    fn setting_a_harness_up_shows_the_commands_before_running_them() {
+        let mut a = judged();
+        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        press(&mut a, KeyCode::Char('r'));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("SET CODEX UP FOR RINGFRAME"), "{drawn}");
+        assert!(drawn.contains("codex plugin marketplace add fab7hq/fab7"), "{drawn}");
+        assert!(drawn.contains("codex plugin add rf@fab7"), "{drawn}");
+        assert!(drawn.contains("[Enter] DO IT"), "{drawn}");
+        assert!(drawn.contains("[←] NOT NOW"), "{drawn}");
+        assert!(drawn.contains("not this project"), "it says what it changes: {drawn}");
+    }
+
+    #[test]
+    fn a_missing_cli_is_said_rather_than_offered() {
+        let mut a = judged();
+        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Cli));
+        press(&mut a, KeyCode::Char('r'));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("RINGFRAME IS NOT INSTALLED"), "{drawn}");
+        assert!(drawn.contains("install.sh"), "it carries the command: {drawn}");
+        assert!(!drawn.contains("[Enter] DO IT"), "and offers to run nothing: {drawn}");
+        assert!(drawn.contains("[←] BACK"), "{drawn}");
     }
 
     #[test]
