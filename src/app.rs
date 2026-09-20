@@ -127,6 +127,9 @@ pub struct App {
     /// Whether the CLI that owns the record is installed. Asked once: it is a
     /// property of the machine, not of the frame being drawn.
     record_available: bool,
+    /// Why this workspace could not finish an Ask, if it could not. Asked once
+    /// for the same reason, and re-asked after a `[R]EADY UP`.
+    workspace_gap: Option<String>,
     /// What each harness is short of, by the name RingFrame records. Asked
     /// when a pane starts, because that is when a person would care.
     readiness: std::collections::HashMap<String, Readiness>,
@@ -202,6 +205,20 @@ impl App {
             .or_else(|| self.harness_at(self.pane_focus).map(str::to_string))
     }
 
+    /// What stops an Ask in this workspace, if anything does.
+    pub fn workspace_gap(&self) -> Option<&str> {
+        self.workspace_gap.as_deref()
+    }
+
+    /// Ask RingFrame whether this workspace could finish an Ask at all.
+    fn look_at_workspace(&mut self) {
+        self.workspace_gap = match ringframe::ask_preflight(&self.root) {
+            Ok(()) => None,
+            Err(ringframe::Error::NotInstalled) => None, // said elsewhere, once
+            Err(ringframe::Error::Refused { message, .. }) => Some(first_line(&message)),
+        };
+    }
+
     /// The harness that decides what can be done now, when it is not ready.
     /// The hint says so persistently: a dimmed action with no reason on screen
     /// is the thing v1 did wrong.
@@ -221,6 +238,11 @@ impl App {
             None => Readiness::Unknown,
         };
         self.readiness.insert(name.to_string(), state);
+    }
+
+    /// Test seam: what RingFrame would say about this workspace.
+    pub fn set_workspace_gap(&mut self, gap: Option<String>) {
+        self.workspace_gap = gap;
     }
 
     /// Test seam: what a harness would be found to be, without asking it.
@@ -267,6 +289,13 @@ impl App {
         let no_pane = |harness: &str| {
             format!("No {harness} pane is open, so there is nowhere to send this.")
         };
+        // An Ask this workspace could never finish is refused here rather
+        // than after a turn spent composing one.
+        if matches!(act, Act::Ask | Act::Fix) {
+            if let Some(gap) = self.workspace_gap() {
+                return Some(gap.to_string());
+            }
+        }
         // Everything RingFrame owns waits on the harness that owns the work.
         // Readiness is per harness: Claude Code may be ready while Codex is not.
         if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix) {
@@ -377,6 +406,7 @@ impl App {
             list_area: None,
             needs_you_span: None,
             record_available: ringframe::installed(),
+            workspace_gap: None,
             readiness: std::collections::HashMap::new(),
         }
     }
@@ -385,6 +415,7 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
+        self.look_at_workspace();
         self.look_at(harness);
         self.session.spawn(harness, spec)?;
         // The pane appears when the server says it has one.
@@ -1248,6 +1279,17 @@ impl App {
     }
 }
 
+/// A refusal's first line: RingFrame says what is wrong, then what to do, and
+/// a hint has room for the first half.
+fn first_line(message: &str) -> String {
+    let text = message.trim();
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or(text);
+    match first.find(". ") {
+        Some(at) => first[..=at].trim().to_string(),
+        None => first.to_string(),
+    }
+}
+
 fn mark_for(vote: &str) -> &'static str {
     match vote {
         "yes" => "✓",
@@ -1296,6 +1338,23 @@ pub(crate) mod tests {
         let root = std::env::temp_dir()
             .join(format!("weft-app-{name}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&root).expect("root");
+        // A real workspace is a Git repository with a commit, which is what
+        // RingFrame requires before it will compile an Ask. A fixture that is
+        // not one tests a situation Weft now refuses.
+        for args in [
+            vec!["init", "-q"],
+            vec!["commit", "-q", "--allow-empty", "-m", "fixture"],
+        ] {
+            let _ = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(&args)
+                .env("GIT_AUTHOR_NAME", "weft")
+                .env("GIT_AUTHOR_EMAIL", "weft@example.invalid")
+                .env("GIT_COMMITTER_NAME", "weft")
+                .env("GIT_COMMITTER_EMAIL", "weft@example.invalid")
+                .output();
+        }
         let socket = crate::server::socket_path(&root);
         let _ = std::fs::remove_file(&socket);
         let serving = root.clone();
@@ -1611,6 +1670,27 @@ pub(crate) mod tests {
         let why = a.unavailable(Act::Ask).expect("not ready");
         assert!(why.contains("could not ask"), "{why}");
         assert!(!why.contains("[R]EADY UP"), "nothing to offer: {why}");
+    }
+
+    #[test]
+    fn an_ask_this_workspace_could_not_finish_is_refused_before_it_is_typed() {
+        // RingFrame refuses at compile, which is after the skill has
+        // classified, composed and staged. Weft asks first, so nothing is
+        // typed and no turn is spent.
+        let mut a = app();
+        a.set_workspace_gap(Some("This is not a Git repository.".into()));
+        press(&mut a, KeyCode::Char('a'));
+        assert!(a.modal.is_none(), "nothing was opened: {:?}", a.modal);
+        assert_eq!(a.hint_text(), Some("This is not a Git repository."));
+    }
+
+    #[test]
+    fn a_refusal_is_shown_as_its_first_sentence() {
+        assert_eq!(
+            first_line("/tmp/x is not in a Git repository; RingFrame evaluates it. Run `git init`."),
+            "/tmp/x is not in a Git repository; RingFrame evaluates it."
+        );
+        assert_eq!(first_line("one line only"), "one line only");
     }
 
     #[test]
