@@ -223,11 +223,9 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
     ];
     let right = match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
-        (_, Focus::Agent) => vec![Span::styled(
-            format!("{} TO COME BACK ", app.toggle.label()),
-            th.label(),
-        )],
-        (_, Focus::Weft) => {
+        // The counts keep their place whichever surface has the keys: they
+        // are facts about the work, not about where you are.
+        (_, _) => {
             let mut spans = vec![Span::styled(
                 pair("open", &app.open_count().to_string()),
                 th.label(),
@@ -430,14 +428,12 @@ fn hint(app: &App) -> Paragraph<'static> {
         },
         (Some(_), _) => " [Enter] closes this.".to_string(),
         (None, Focus::Agent) => {
-            let mut s = format!(
-                " Every key goes to the agent, Esc included. {} comes back.",
+            // The Esc note lives in the help, because this line has to fit
+            // on an eighty-column terminal and the key matters more.
+            format!(
+                " Every key goes to the agent. {} to switch between Weft and harness.",
                 app.toggle.label()
-            );
-            if app.needs_you() > 0 {
-                s.push_str(&format!(" {} needs you.", app.needs_you()));
-            }
-            s
+            )
         }
         (None, Focus::Weft) if app.pane_count() == 0 => " Nothing is running yet.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(
@@ -458,11 +454,10 @@ fn hint(app: &App) -> Paragraph<'static> {
             format!(" {said}")
         }
         (None, Focus::Weft) if !app.show_work() => {
-            " [W] brings the list back · [Space] still jumps to what needs you · Ctrl+] agent"
-                .into()
+            " [W] brings the list back · [Space] still jumps to what needs you".into()
         }
         (None, Focus::Weft) => {
-            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back · Ctrl+] agent".into()
+            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back".into()
         }
     };
     Paragraph::new(Line::styled(text, th.label()))
@@ -808,7 +803,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             "[P] the wording · [J] the judges · [F]IX THIS".into(),
             "[N]EW AGENT · [W]ORK hides the list · [X] QUIT".into(),
             String::new(),
-            format!("{} goes into the agent, and comes back.", app.toggle.label()),
+            format!("{} to switch between Weft and harness.", app.toggle.label()),
             "In the agent every other key goes through, Esc included.".into(),
             "To select text in a pane, hold Shift.".into(),
         ],
@@ -1144,8 +1139,14 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let lines: Vec<&str> = drawn.lines().collect();
         assert_eq!(lines[22].trim(), "", "the action bar is empty in the agent");
-        assert!(lines[23].contains("Esc included"), "{}", lines[22]);
-        assert!(lines[0].contains("TO COME BACK"), "{}", lines[0]);
+        assert!(lines[23].contains("Every key goes to the agent"), "{}", lines[23]);
+        assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
+        assert!(lines[0].contains("NEEDS YOU"), "the counts keep their place: {}", lines[0]);
+        assert!(
+            lines[23].contains("Ctrl+] to switch between Weft and harness"),
+            "said once, in full: {}",
+            lines[23]
+        );
     }
 
     #[test]
