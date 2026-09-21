@@ -234,8 +234,17 @@ fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalE
 }
 
 /// How many prompts that were neither `/rf:` invocations nor observed Ask
-/// submissions followed each Ask.
-fn unrecorded_prompts(ws: &Workspace, asks: &[Value]) -> Result<Vec<usize>, EvalError> {
+/// submissions bear on this Eval.
+///
+/// Measured from the anchor, which is where the delta is measured from, so
+/// the two facts describe one span. Prompts between the anchor and the first
+/// open Ask are their own count: they were said before that Ask existed and
+/// are not its doing.
+fn unrecorded_prompts(
+    ws: &Workspace,
+    asks: &[Value],
+    since: Option<&str>,
+) -> Result<(usize, Vec<usize>), EvalError> {
     let submitted: BTreeSet<String> = store::events(ws)?
         .iter()
         .filter(|e| e["type"] == "ask.submission")
@@ -261,15 +270,33 @@ fn unrecorded_prompts(ws: &Workspace, asks: &[Value]) -> Result<Vec<usize>, Eval
             }
         }
     }
-    Ok(asks
+    let count_in =
+        |start: &str, end: &str| times.iter().filter(|t| &***t >= start && &***t < end).count();
+    let before = match (since, asks.first()) {
+        (Some(since), Some(first)) => count_in(since, &str_of(first, "time")),
+        _ => 0,
+    };
+    let per_ask = asks
         .iter()
         .enumerate()
         .map(|(i, a)| {
-            let start = str_of(a, "time");
             let end = asks.get(i + 1).map_or_else(|| "9".to_string(), |next| str_of(next, "time"));
-            times.iter().filter(|t| **t >= start && **t < end).count()
+            count_in(&str_of(a, "time"), &end)
         })
-        .collect())
+        .collect();
+    Ok((before, per_ask))
+}
+
+/// When the anchor happened, for the prompts to be counted from. Only a Seal
+/// names a moment in the ledger; an Ask's base commit and a hand-given one do
+/// not, so those keep counting from the first open Ask.
+fn anchor_time(ws: &Workspace, anchor: &Value) -> Option<String> {
+    let seal_id = anchor.get("seal_id")?.as_str()?;
+    store::events(ws)
+        .ok()?
+        .into_iter()
+        .find(|e| e["type"] == "seal.created" && str_of(e, "id") == seal_id)
+        .map(|e| str_of(&e, "time"))
 }
 
 /// The latest completed Eval whose basis shares an Ask with this one: the
@@ -366,7 +393,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let subject =
         json!({"kind": kind, "ref": reference, "sha256": subject_digest(ws, &kind, &reference)?});
     let eval_id = ids::new_id("evl");
-    let counts = unrecorded_prompts(ws, &asks)?;
+    let (before, counts) = unrecorded_prompts(ws, &asks, anchor_time(ws, &anchor).as_deref())?;
     let shares = |r: &Value| {
         array_of(&r["basis"], "asks").iter().any(|a| ask_ids.contains(&str_of_value(a)))
     };
@@ -395,6 +422,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             "unrecorded_prompts_after": counts[i],
         })).collect::<Vec<_>>(),
         "changes": changes(ws, &anchor_ref, &subject)?,
+        "unrecorded_prompts_before": before,
         "previous_evals": previous, "limitations": limitations,
     });
     let mut bytes = store::canonical(&brief);
@@ -403,7 +431,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
     let data = json!({
         "brief": reference, "anchor": anchor, "subject": subject,
-        "basis": {"asks": ask_ids, "unrecorded_prompts": counts.iter().sum::<usize>()},
+        "basis": {
+            "asks": ask_ids,
+            "unrecorded_prompts": before + counts.iter().sum::<usize>(),
+            "unrecorded_prompts_before": before,
+        },
     });
     let links: Vec<Value> =
         asks.iter().map(|a| json!({"rel": "evaluates", "id": a["ask_id"]})).collect();
@@ -847,13 +879,16 @@ pub fn close_eval(
         limitations
             .push("some judges shared one context; their agreement overstates independence".into());
     }
-    let n_unrecorded: u64 = array_of(&brief, "asks")
+    let before = brief["unrecorded_prompts_before"].as_u64().unwrap_or(0);
+    let after: u64 = array_of(&brief, "asks")
         .iter()
         .filter_map(|a| a["unrecorded_prompts_after"].as_u64())
         .sum();
+    let n_unrecorded = before + after;
     if n_unrecorded > 0 {
         limitations.push(format!(
-            "{n_unrecorded} unrecorded prompts followed the open Asks; unexplained changes may follow them"
+            "{after} unrecorded prompts followed the open Asks, and {before} more came between \
+             the anchor and the first of them; unexplained changes may follow either"
         ));
     }
     let intent_ref =
@@ -874,7 +909,8 @@ pub fn close_eval(
     subject_at_close["sha256_at_close"] = json!(now_digest);
     let record = json!({
         "schema": RECORD_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
-        "basis": {"asks": ask_ids, "anchor": brief["anchor"], "unrecorded_prompts": n_unrecorded},
+        "basis": {"asks": ask_ids, "anchor": brief["anchor"],
+                  "unrecorded_prompts": n_unrecorded, "unrecorded_prompts_before": before},
         "subject": subject_at_close,
         "brief": {"path": format!("evals/{eval_id}/brief.json"), "sha256": brief_sha},
         "intent": {"path": intent_ref["path"], "sha256": intent_sha, "judge": intent["judge"],
@@ -1133,6 +1169,68 @@ mod tests {
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0]["state"], "opened");
             assert_eq!(listed[0]["verdict"], json!(null));
+        });
+    }
+
+    #[test]
+    fn prompts_between_a_seal_and_the_next_ask_are_counted() {
+        // A Seal closes the previous Asks and the next one does not exist
+        // yet. Everything said in between used to fall outside every window
+        // and be counted against nothing, which read as reassurance.
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let items = one_item(&o.a);
+            let js: Vec<Value> =
+                angles().iter().map(|ang| judgement(&o.brief_sha, ang, &[("i1", "yes")])).collect();
+            close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js).unwrap();
+            crate::seal::create(ws, "accepted", None, None, None).unwrap();
+
+            // Two plain prompts, then a commit, then the next Ask.
+            for text in ["also update the docs", "and drop the cache bit"] {
+                crate::sessions::capture(
+                    ws,
+                    "claude-code",
+                    &json!({"session_id": "s9", "prompt": text}),
+                    None,
+                )
+                .unwrap();
+            }
+            commit(&ws.root, &[("docs/notes.md", Some("edited by chat\n"))], "chat edit");
+            crate::testing::confirm_ask(ws, "Next", b"do the next thing\n", b"Do it.\n");
+
+            let out = open_eval(ws, Open::default()).unwrap();
+            assert_eq!(out["anchor"]["kind"], "seal", "the anchor is the Seal");
+            assert_eq!(out["basis"]["unrecorded_prompts_before"], 2);
+            assert_eq!(out["basis"]["unrecorded_prompts"], 2, "the total includes them");
+            let brief = brief_of(ws, &out);
+            assert_eq!(brief["unrecorded_prompts_before"], 2);
+            // They belong to no Ask: the Ask did not exist when they were said.
+            assert_eq!(
+                array_of(&brief, "asks")
+                    .iter()
+                    .map(|a| a["unrecorded_prompts_after"].clone())
+                    .collect::<Vec<_>>(),
+                [json!(0)]
+            );
+        });
+    }
+
+    #[test]
+    fn without_a_seal_the_count_is_unchanged() {
+        // An Ask's base commit names no moment in the ledger, so counting
+        // still starts at the first open Ask, exactly as before.
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            crate::sessions::capture(
+                ws,
+                "claude-code",
+                &json!({"session_id": "s9", "prompt": "a plain prompt"}),
+                None,
+            )
+            .unwrap();
+            let out = open_eval(ws, Open::default()).unwrap();
+            assert_eq!(out["anchor"]["kind"], "ask_base");
+            assert_eq!(out["basis"]["unrecorded_prompts_before"], 0);
         });
     }
 
