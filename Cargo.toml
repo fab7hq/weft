@@ -7,6 +7,9 @@ edition = "2024"
 # crates below (ADR-0007).
 [workspace]
 members = ["crates/*"]
+# Without this, a bare `cargo test` here runs the binary's own tests and none of
+# the crates', which is fifteen of nearly three hundred and looks like a pass.
+default-members = [".", "crates/*"]
 
 [dependencies]
 anyhow = "1.0.104"
@@ -20,3 +23,4 @@ weftd = { path = "crates/weftd" }
 
 [dev-dependencies]
 vt100 = "0.16.2"
+sha2 = "0.10"
