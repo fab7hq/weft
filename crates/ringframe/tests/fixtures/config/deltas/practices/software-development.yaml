@@ -94,8 +94,9 @@ entries:
       Write the plan into the repository, not only into the conversation:
       plans/<slug>/ with one file per decision under adr/, one per contract
       under spec/, and plan.md holding the sequence and what done means for
-      each step. The next request implements those files and the review reads
-      the diff against them, so a plan left in the session can be checked by
+      each step. Stop when it is written; do not begin building it. The next
+      request reads those files and implements them, and the review reads the
+      diff against them, so a plan left in the session can be checked by
       nobody.
 
   # ================= architecture laws

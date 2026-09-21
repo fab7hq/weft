@@ -23,6 +23,9 @@ routing:
     take precedence over the general planning default for work with effects.
   - Large scope, the word fully, or write effects alone do not imply persistent continuation. Explain
     material uncertainty in route gaps and let the user revise the proposed route.
+  - A plan-first route delivers the plan itself, not the change it describes. Classify such an Ask as
+    task plan with result plan, and leave building to a later Ask that reads what was written. Loading
+    one Ask with both fills the prompt with rules for work this turn will not do.
   - A declared capability is a RingFrame integration contract, not proof that the current host exposes
     it. Follow its delivery mode and limitations; report unavailable tools or rejected commands without
     claiming activation.
