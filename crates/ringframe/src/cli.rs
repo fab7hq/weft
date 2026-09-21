@@ -1992,3 +1992,99 @@ mod tests {
         });
     }
 }
+
+/// The marketplace's side of the contract, checked against this binary.
+///
+/// `fab7` is synced, not built, and its skills call `ringframe` by name. If a
+/// command they use stops existing, a wording fix in the marketplace becomes a
+/// broken install for everyone (ADR-0013).
+#[cfg(test)]
+mod the_marketplace_contract {
+    use super::*;
+
+    /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
+    /// Taken from `fab7/products/ringframe/`, and checked against it below
+    /// when that tree happens to be beside this one.
+    const CALLED: [(&str, Option<&str>); 19] = [
+        ("init", None),
+        ("profile", Some("show")),
+        ("deltas", Some("domains")),
+        ("deltas", Some("render")),
+        ("ask", Some("preflight")),
+        ("ask", Some("compile")),
+        ("ask", Some("copy")),
+        ("ask", Some("confirm")),
+        ("ask", Some("cancel")),
+        ("ask", Some("unanswered")),
+        ("ask", Some("submitted")),
+        ("ask", Some("delivery")),
+        ("ask", Some("list")),
+        ("eval", Some("open")),
+        ("eval", Some("close")),
+        ("eval", Some("list")),
+        ("seal", Some("create")),
+        ("seal", Some("check")),
+        ("sessions", Some("capture")),
+    ];
+
+    #[test]
+    fn every_command_the_skills_call_still_exists() {
+        for (cmd, sub) in CALLED {
+            assert!(
+                spec(cmd, sub).is_some(),
+                "the skills call `ringframe {cmd} {}` and this release has no such command",
+                sub.unwrap_or("")
+            );
+            assert!(
+                SURFACE.contains(&(cmd, sub)),
+                "`ringframe {cmd} {}` is not in the help",
+                sub.unwrap_or("")
+            );
+        }
+    }
+
+    #[test]
+    fn the_marketplace_calls_nothing_this_release_lacks() {
+        // Read from the marketplace itself when it is checked out beside this
+        // repository, so the list above cannot quietly fall behind.
+        let market = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fab7/products/ringframe");
+        let Ok(market) = market.canonicalize() else {
+            return; // not checked out here; the list above still holds
+        };
+        let mut found: std::collections::BTreeSet<(String, Option<String>)> = Default::default();
+        let mut stack = vec![market];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let Ok(text) = std::fs::read_to_string(&path) else { continue };
+                for call in text.match_indices("ringframe ").map(|(i, _)| &text[i..]) {
+                    // Prose and code fences wrap these in backticks, quotes
+                    // and commas; the command is what is left.
+                    let word = |w: &str| {
+                        w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-').to_string()
+                    };
+                    let mut words = call.split_whitespace().skip(1).map(word);
+                    let Some(cmd) = words.next() else { continue };
+                    if !COMMANDS.contains(&cmd.as_str()) {
+                        continue;
+                    }
+                    let sub = words.next().filter(|_| takes_sub(&cmd));
+                    found.insert((cmd, sub));
+                }
+            }
+        }
+        assert!(found.len() > 10, "only {} calls found; the scan broke", found.len());
+        for (cmd, sub) in &found {
+            assert!(
+                spec(cmd, sub.as_deref()).is_some(),
+                "the marketplace calls `ringframe {cmd} {}`, which this release does not have",
+                sub.clone().unwrap_or_default()
+            );
+        }
+    }
+}
