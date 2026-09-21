@@ -104,6 +104,35 @@ fn the_client_runs_nothing_but_the_daemon() {
     assert!(broken.is_empty(), "the client started doing:\n{}", broken.join("\n"));
 }
 
+/// RingFrame shares this repository; it is not part of Weft.
+///
+/// One repository is not one product (ADR-0013). The moment a Weft crate can
+/// call the core's Rust functions, Weft stops reading a record another program
+/// wrote and starts reporting on itself — which is the whole of what makes its
+/// claims worth anything.
+#[test]
+fn nothing_in_weft_reaches_into_ringframe() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut broken = Vec::new();
+    let mut manifests = vec![("weft".to_string(), root.join("Cargo.toml"))];
+    for (crate_name, ..) in ALLOWED {
+        manifests.push((
+            crate_name.to_string(),
+            root.join("crates").join(crate_name).join("Cargo.toml"),
+        ));
+    }
+    for (name, path) in manifests {
+        let manifest = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        if dependencies(&manifest).iter().any(|d| d == "ringframe") {
+            broken.push(format!("{name} depends on the ringframe crate"));
+        }
+    }
+    // Weft reaches RingFrame by running `ringframe`, and that is the contract
+    // the skills in `fab7` share with it.
+    assert!(broken.is_empty(), "the product boundary moved:\n{}", broken.join("\n"));
+}
+
 #[test]
 fn the_client_cannot_reach_the_daemon() {
     // The one that matters most, stated on its own so a failure says why.

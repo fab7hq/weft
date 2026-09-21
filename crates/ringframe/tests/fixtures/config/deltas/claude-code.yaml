@@ -1,0 +1,42 @@
+# RingFrame host deltas for Claude Code. Rendered by the CLI only when `status: qualified`.
+schema: ringframe.deltas/1
+scope: host
+host: claude-code
+# Evidence IDs below identify unpublished historical tests, not files required at runtime.
+entries:
+  - id: claude-code.native_plan.verify_paths
+    label: Verify paths
+    status: candidate
+    capability: native_plan
+    text: >-
+      Before declaring the work complete, confirm every requested file exists
+      and every check you named has run.
+    why: >-
+      Plan mode continues into implementation under host permissions; the
+      model can stop at the plan or skip its own checks.
+    matrix_ref: https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code
+    evidence: ringframe-compiler-value-q09 (effect on one task of three; not qualified)
+  - id: claude-code.native_plan.continue_after_approval
+    label: Continue after approval
+    status: candidate
+    capability: native_plan
+    text: >-
+      After the plan is approved, continue to the requested artifacts in this
+      session instead of stopping at the plan.
+    why: >-
+      ExitPlanMode approval hands control back; a plan-only stop is a common
+      end state.
+    matrix_ref: https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code
+    evidence: null
+  - id: claude-code.native_plan.checks_first
+    label: Checks first
+    status: candidate
+    capability: native_plan
+    text: >-
+      Name the runnable checks that will show the work is done before the
+      implementation steps.
+    why: >-
+      The plan is reviewed by a person before effects; checks named up front
+      make the review concrete.
+    matrix_ref: https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code
+    evidence: ringframe-compiler-value-q09 (never emitted by the prose compiler; unmeasured)

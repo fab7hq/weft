@@ -23,4 +23,3 @@ weftd = { path = "crates/weftd" }
 
 [dev-dependencies]
 vt100 = "0.16.2"
-sha2 = "0.10"
