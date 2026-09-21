@@ -330,6 +330,121 @@ mod tests {
     }
 
     #[test]
+    fn global_and_project_configuration_share_rf_without_creating_rt() {
+        use crate::{deltas, profiles, testing::{repo, with_config_home, ws_for}};
+        with_config_home(|home| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            assert_eq!(super::home(), home.join(".fab7/rf"));
+            assert_eq!(
+                profiles::load("codex").unwrap()["confirmation"]["tool"],
+                "request_user_input"
+            );
+            // The project seeds only the base domain's empty override file.
+            let practices = ws.rf_dir().join("deltas/practices");
+            let mut seeded: Vec<String> = std::fs::read_dir(&practices)
+                .unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            seeded.sort();
+            assert_eq!(seeded, ["software-development.yaml"]);
+            assert_eq!(std::fs::read(practices.join("software-development.yaml")).unwrap(), b"");
+            // The home holds the synced mirror and an empty overrides tree, nothing else.
+            let mut held: Vec<String> = std::fs::read_dir(home.join(".fab7/rf"))
+                .unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            held.sort();
+            assert_eq!(held, ["config", "overrides"]);
+            assert_eq!(
+                std::fs::read_to_string(config_dir().join(".revision")).unwrap().trim(),
+                "local"
+            );
+            assert!(!home.join(".fab7/rt").exists());
+            assert!(!ws.root.join(".fab7/rt").exists());
+            let _ = deltas::revision();
+        });
+    }
+
+    #[test]
+    fn scoped_delta_catalogs_apply_project_conflicts_and_render_settings() {
+        use crate::{deltas, profiles, testing::{repo, to_yaml, with_config_home, ws_for}};
+        with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            let global = overrides_dir().join("deltas/practices/software-development.yaml");
+            std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+            let mut doc = load_yaml(
+                &config_dir().join("deltas/practices/software-development.yaml"), false).unwrap();
+            doc["render"]["core_cap"] = json!(1);
+            doc["entries"][0]["text"] = json!("Global rule.");
+            std::fs::write(&global, to_yaml(&doc)).unwrap();
+            std::fs::write(
+                ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
+                "render: {core_cap: 2}\nentries: [{id: practice.kiss, text: Project rule.}]\n",
+            ).unwrap();
+            std::fs::write(
+                ws.root.join(".fab7/rf/deltas/codex.yaml"),
+                "entries: [{id: codex.native_plan.hand_back, status: qualified, text: Project host rule.}]\n",
+            ).unwrap();
+            let result = deltas::render(
+                Some(&ws), &profiles::load("codex").unwrap(), "native_plan",
+                &json!({"task": ["implement"]}), &["qualified".to_string()],
+                deltas::DEFAULT_DOMAIN,
+            ).unwrap();
+            assert_eq!(result["practice"]["selected"], json!(["practice.kiss", "practice.yagni"]));
+            let text = result["text"].as_str().unwrap();
+            assert!(text.contains("Project rule."), "{text}");
+            assert!(!text.contains("Global rule."));
+            assert!(text.contains("Project host rule."));
+            let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            let kiss = &listing.iter().find(|(k, _)| k == "practice.kiss").unwrap().1;
+            assert_eq!(kiss["layer"], "workspace");
+        });
+    }
+
+    #[test]
+    fn an_empty_project_override_inherits_and_the_project_can_clear_entries() {
+        use crate::{deltas, testing::{repo, with_config_home, ws_for}};
+        with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            let original = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            assert!(original.iter().any(|(k, _)| k == "practice.kiss"));
+            let local = ws.root.join(".fab7/rf/deltas/practices/software-development.yaml");
+            assert_eq!(std::fs::read(&local).unwrap(), b"");
+            std::fs::write(&local, "entries: []\n").unwrap();
+            assert!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap().is_empty());
+            std::fs::write(&local, "# Only a comment\n").unwrap();
+            assert_eq!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap(), original);
+        });
+    }
+
+    #[test]
+    fn delta_merge_preserves_global_nested_fields_and_project_list_values() {
+        use crate::{deltas, testing::{repo, to_yaml, with_config_home, ws_for}};
+        with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            let global = overrides_dir().join("deltas/practices/software-development.yaml");
+            std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+            let mut doc = load_yaml(
+                &config_dir().join("deltas/practices/software-development.yaml"), false).unwrap();
+            doc["entries"][0]["applies_to"] =
+                json!({"task": ["implement"], "result": ["workspace_change"]});
+            std::fs::write(&global, to_yaml(&doc)).unwrap();
+            std::fs::write(
+                ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
+                "entries: [{id: practice.kiss, applies_to: {task: [plan]}, why: null}]\n",
+            ).unwrap();
+            let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            let merged = &listing.iter().find(|(k, _)| k == "practice.kiss").unwrap().1;
+            assert_eq!(
+                merged["applies_to"],
+                json!({"task": ["plan"], "result": ["workspace_change"]})
+            );
+            assert_eq!(merged["why"], json!(null));
+            assert_eq!(load_yaml(&global, false).unwrap(), doc);
+        });
+    }
+
+    #[test]
     fn the_shipped_configuration_passes_the_lint() {
         // The claim ADR-0013 makes about the config as it stands. The fixture
         // travels with this repository so the check means something in CI; the
