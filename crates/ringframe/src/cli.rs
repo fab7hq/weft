@@ -117,6 +117,102 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
     }
 }
 
+/// Every (command, subcommand) pair, for the help and for the tests that hold
+/// the surface. The order is the order the help prints them in.
+const SURFACE: [(&str, Option<&str>); 28] = [
+    ("init", None), ("sync", None),
+    ("profile", Some("show")),
+    ("ask", Some("compile")), ("ask", Some("confirm")), ("ask", Some("unanswered")),
+    ("ask", Some("cancel")), ("ask", Some("submitted")), ("ask", Some("copy")),
+    ("ask", Some("delivery")), ("ask", Some("list")), ("ask", Some("show")),
+    ("ask", Some("preflight")), ("ask", Some("resolve")),
+    ("eval", Some("open")), ("eval", Some("close")), ("eval", Some("list")),
+    ("seal", Some("create")), ("seal", Some("check")),
+    ("ledger", Some("verify")),
+    ("deltas", Some("list")), ("deltas", Some("domains")), ("deltas", Some("render")),
+    ("sessions", Some("capture")), ("sessions", Some("prune")),
+    ("export", None),
+    // Listed last because they are not commands.
+    ("--version", None), ("--help", None),
+];
+
+/// What each command is for, in one line.
+fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
+    match (cmd, sub) {
+        ("init", None) => "prepare this project, or with --global the configuration home",
+        ("sync", None) => "replace the synced configuration; personal overrides are untouched",
+        ("profile", _) => "the host's capabilities and how each one has to be delivered",
+        ("ask", Some("compile")) => "persist a staged intent and its prompt; the only Ask that writes artifacts",
+        ("ask", Some("confirm")) => "record the chooser's answer",
+        ("ask", Some("unanswered")) => "the confirmation surface gave no answer; the Ask stays open",
+        ("ask", Some("cancel")) => "record that the person said no",
+        ("ask", Some("submitted")) => "the person attests they submitted the prompt",
+        ("ask", Some("copy")) => "the compiled prompt, verbatim",
+        ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
+        ("ask", Some("list")) => "every compiled Ask, oldest first",
+        ("ask", Some("show")) => "one Ask, resolved by id, title or session",
+        ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
+        ("ask", Some("resolve")) => "the candidate Asks and the rule that chose them",
+        ("eval", Some("open")) => "write the facts-only brief over every open Ask",
+        ("eval", Some("close")) => "aggregate the intent and the judgements into a verdict",
+        ("eval", Some("list")) => "every Eval, opened or completed",
+        ("seal", Some("create")) => "record the decision that closes the open Asks",
+        ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
+        ("ledger", _) => "re-check every event and every published artifact",
+        ("deltas", Some("list")) => "the delta catalogs as installed",
+        ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
+        ("deltas", Some("render")) => "the directives that apply to one classification",
+        ("sessions", Some("capture")) => "store a hook's prompt payload; reads the payload on stdin",
+        ("sessions", Some("prune")) => "remove session captures older than a duration",
+        ("export", None) => "one Ask's artifacts and ledger slice, as a tar",
+        ("--version", None) => "print the version",
+        ("--help", None) => "print this",
+        _ => "",
+    }
+}
+
+fn help() -> String {
+    let mut out = String::new();
+    out.push_str("ringframe \u{2014} record what was asked, judge what was done, seal the decision.\n");
+    out.push_str("\nusage: ringframe [--workspace DIR] [--actor KIND:ID] [--authority A] <command> [...]\n");
+    let mut last = "";
+    for (cmd, sub) in SURFACE {
+        if cmd != last {
+            out.push('\n');
+            last = cmd;
+        }
+        let name = match sub {
+            Some(s) => format!("{cmd} {s}"),
+            None => cmd.to_string(),
+        };
+        out.push_str(&format!("  {name:<20} {}\n", purpose(cmd, sub)));
+    }
+    out.push_str("\nFetch commands take --json or --minimal; actions take neither.\n");
+    out.push_str("`ringframe <command> --help` lists that command's options.\n");
+    out.push_str("\nExit codes: 0 ok, 1 usage, 2 refused by a rule, 3 needs input, 4 internal.\n");
+    out
+}
+
+fn command_help(cmd: &str, sub: Option<&str>, spec: &Spec) -> String {
+    let name = match sub {
+        Some(s) => format!("{cmd} {s}"),
+        None => cmd.to_string(),
+    };
+    let mut out = format!("usage: ringframe {name} [options]\n\n  {}\n\n", purpose(cmd, sub));
+    for flag in spec.values {
+        let mark = if spec.required.contains(flag) { " (required)" } else { "" };
+        let more = if spec.repeated.contains(flag) { " (repeatable)" } else { "" };
+        out.push_str(&format!("  {flag} VALUE{mark}{more}\n"));
+    }
+    for flag in spec.bools {
+        out.push_str(&format!("  {flag}\n"));
+    }
+    if spec.fetch {
+        out.push_str("  --json | --minimal\n");
+    }
+    out
+}
+
 /// Which commands take a subcommand at all.
 fn takes_sub(cmd: &str) -> bool {
     matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "sessions")
@@ -358,9 +454,26 @@ fn from_config_error(e: crate::config::ConfigError) -> Outcome {
 }
 
 pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
-    // `--version` wins wherever it appears, as argparse's does.
-    if argv.iter().any(|a| a == "--version") && !argv.iter().any(|a| a == "show") {
+    // `--version` and `--help` win wherever they appear, as argparse's do.
+    // `profile show --version` names a host version, so it is not one of them.
+    let naming_a_host = argv.iter().any(|a| a == "show");
+    if argv.iter().any(|a| a == "--version") && !naming_a_host {
         return Run { code: 0, out: format!("ringframe {VERSION}\n"), err: String::new() };
+    }
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        let words: Vec<&str> =
+            argv.iter().map(String::as_str).filter(|a| !a.starts_with('-')).collect();
+        let text = match words.first() {
+            None => help(),
+            Some(cmd) => {
+                let sub = if takes_sub(cmd) { words.get(1).copied() } else { None };
+                match spec(cmd, sub) {
+                    Some(s) => command_help(cmd, sub, &s),
+                    None => help(),
+                }
+            }
+        };
+        return Run { code: 0, out: text, err: String::new() };
     }
     let ns = match parse(argv) {
         Ok(ns) => ns,
@@ -426,14 +539,6 @@ fn dispatch(
     macro_rules! bail {
         ($e:expr) => {
             return (ws, $e)
-        };
-    }
-    macro_rules! ask_try {
-        ($e:expr) => {
-            match $e {
-                Ok(v) => v,
-                Err(e) => bail!(from_ask_error(e.into())),
-            }
         };
     }
     macro_rules! json_try {
@@ -1205,6 +1310,62 @@ mod tests {
             assert_eq!(code, 0);
             assert_eq!(out["removed"], json!([]));
         });
+    }
+
+    #[test]
+    fn every_command_is_listed_documented_and_reachable() {
+        // The help is generated from one table and the parser reads another.
+        // If they drift, a command exists that nothing can find, or the help
+        // names one that does not run.
+        for (cmd, sub) in SURFACE {
+            if cmd.starts_with("--") {
+                continue;
+            }
+            assert!(spec(cmd, sub).is_some(), "{cmd} {sub:?} is listed but has no options");
+            assert!(!purpose(cmd, sub).is_empty(), "{cmd} {sub:?} has no one-line purpose");
+            assert!(COMMANDS.contains(&cmd), "{cmd} is listed but is not a command");
+            assert_eq!(
+                takes_sub(cmd),
+                sub.is_some(),
+                "{cmd}: the help and the parser disagree about a subcommand"
+            );
+        }
+        // And every command the help prints answers --help itself.
+        let mut none = || String::new();
+        for (cmd, sub) in SURFACE {
+            let mut argv = vec![cmd.to_string()];
+            if let Some(s) = sub {
+                argv.push(s.to_string());
+            }
+            argv.push("--help".into());
+            let run = super::run(&argv, &mut none);
+            assert_eq!(run.code, 0, "{cmd} {sub:?} --help");
+            assert!(!run.out.is_empty(), "{cmd} {sub:?} --help printed nothing");
+        }
+    }
+
+    #[test]
+    fn help_is_printed_for_the_whole_cli_and_for_one_command() {
+        let mut none = || String::new();
+        let whole = super::run(&["--help".to_string()], &mut none);
+        assert_eq!(whole.code, 0);
+        assert!(whole.out.contains("usage: ringframe"), "{}", whole.out);
+        assert!(whole.out.contains("ask compile"));
+        assert!(whole.out.contains("Exit codes: 0 ok, 1 usage"));
+        let one = super::run(
+            &["eval".to_string(), "close".into(), "--help".into()],
+            &mut none,
+        );
+        assert_eq!(one.code, 0);
+        assert!(one.out.contains("usage: ringframe eval close"), "{}", one.out);
+        assert!(one.out.contains("--judgement VALUE (required) (repeatable)"), "{}", one.out);
+        // `profile show --version` names a host version, not this binary's.
+        let host = super::run(
+            &["profile".to_string(), "show".into(), "--host".into(), "codex".into(),
+              "--version".into(), "0.1".into(), "--minimal".into()],
+            &mut none,
+        );
+        assert!(!host.out.starts_with("ringframe 0."), "{}", host.out);
     }
 
     #[test]
