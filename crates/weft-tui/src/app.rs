@@ -1452,6 +1452,12 @@ pub(crate) mod tests {
         let (root, session) = test_session("codex");
         let mut a = App::with_session(root, Toggle, session);
         a.add("codex", "/bin/cat").expect("spawn");
+        // Say what this fixture's readiness is instead of inheriting the
+        // machine's. Otherwise these tests pass on a laptop with Codex and the
+        // plugin installed and fail everywhere else, which is not a fact about
+        // the code. Tests about readiness itself set their own.
+        a.set_readiness("codex", Readiness::Ready);
+        a.set_readiness("claude-code", Readiness::Ready);
         a
     }
 
