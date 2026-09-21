@@ -46,6 +46,54 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Milliseconds since the epoch from the shape this record writes:
+/// `YYYY-MM-DDTHH:MM:SS[.mmm][Z|±HH:MM]`. Anything else is not our timestamp.
+pub fn parse_time(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let num = |a: usize, b: usize| text.get(a..b)?.parse::<i64>().ok();
+    let (y, mo, d) = (num(0, 4)?, num(5, 7)?, num(8, 10)?);
+    let (h, mi, s) = (num(11, 13)?, num(14, 16)?, num(17, 19)?);
+    let rest = &text[19..];
+    let (frac, rest) = match rest.strip_prefix('.') {
+        Some(r) => {
+            let digits: String = r.chars().take_while(char::is_ascii_digit).collect();
+            let ms = format!("{digits:0<3}")[..3].parse::<i64>().ok()?;
+            (ms, &r[digits.len()..])
+        }
+        None => (0, rest),
+    };
+    let offset = match rest {
+        "" | "Z" | "z" => 0,
+        o => {
+            let sign = if o.starts_with('-') { -1 } else { 1 };
+            let o = o.trim_start_matches(['+', '-']);
+            let (oh, om) = o.split_once(':').unwrap_or((o, "0"));
+            sign * (oh.parse::<i64>().ok()? * 3600 + om.parse::<i64>().ok()? * 60)
+        }
+    };
+    let days = days_from_civil(y, mo as u32, d as u32);
+    Some((days * 86_400 + h * 3600 + mi * 60 + s - offset) * 1000 + frac)
+}
+
+/// The inverse of `civil_from_days`.
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+pub fn now_millis() -> i64 {
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).expect("the clock is before 1970");
+    d.as_millis() as i64
+}
+
 fn dir(ws: &Workspace, host: &str, session: &str) -> std::io::Result<PathBuf> {
     ws.ensure()?;
     let d = ws.rf_dir().join("sessions").join(host).join(session);
@@ -344,6 +392,22 @@ mod tests {
         );
         let plain = capture(&ws, "codex", &payload("$rfx not ours", "c1"), None).unwrap().unwrap();
         assert!(plain.get("prompt").is_none());
+    }
+
+    #[test]
+    fn a_recorded_time_reads_back_as_the_instant_it_named() {
+        assert_eq!(parse_time("1970-01-01T00:00:00.000Z"), Some(0));
+        assert_eq!(parse_time("2026-01-01T00:00:00.007Z"), Some(1_767_225_600_007));
+        assert_eq!(parse_time("2024-02-29T00:00:00.999Z"), Some(1_709_164_800_999));
+        // Offsets and a missing fraction, which a grant file may carry.
+        assert_eq!(parse_time("2026-01-01T00:00:00+00:00"), Some(1_767_225_600_000));
+        assert_eq!(parse_time("2026-01-01T01:00:00+01:00"), Some(1_767_225_600_000));
+        assert_eq!(parse_time("2025-12-31T23:00:00-01:00"), Some(1_767_225_600_000));
+        assert_eq!(parse_time("nonsense"), None);
+        assert_eq!(parse_time(""), None);
+        // Every timestamp this record writes round-trips.
+        let n = now();
+        assert_eq!(parse_time(&n).map(|m| m / 1000), Some(now_millis() / 1000));
     }
 
     #[test]
