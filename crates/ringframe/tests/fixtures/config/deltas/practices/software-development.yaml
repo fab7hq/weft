@@ -86,7 +86,9 @@ entries:
     label: Plan As Files
     principle: A stage ends by committing an artifact the next stage can read
     applies_to:
-      task: [plan]
+      # The route, not the intent: a plan-first Ask is usually classified
+      # `task: [implement]`, because that is what it is ultimately for.
+      capability: [native_plan]
     tier: core
     text: >-
       Write the plan into the repository, not only into the conversation:

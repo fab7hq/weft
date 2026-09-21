@@ -211,8 +211,16 @@ fn non_empty_list(v: Option<&Value>) -> bool {
     v.and_then(Value::as_array).is_some_and(|a| !a.is_empty())
 }
 
-fn matches(entry: &Value, classification: &Value) -> bool {
+fn matches(entry: &Value, classification: &Value, capability: &str) -> bool {
     let a = entry.get("applies_to").cloned().unwrap_or_else(|| json!({}));
+    // The route, not the intent. A plan-first Ask is usually classified by
+    // what it is ultimately for — `task: [implement]` — so a directive that
+    // belongs to planning cannot be found by the classification alone.
+    if non_empty_list(a.get("capability"))
+        && !a["capability"].as_array().into_iter().flatten().any(|v| v == capability)
+    {
+        return false;
+    }
     if non_empty_list(a.get("task"))
         && !any_shared(&a["task"], classification.get("task").unwrap_or(&Value::Null))
     {
@@ -411,6 +419,7 @@ fn practice(
     ws: Option<&Workspace>,
     domain: &str,
     classification: &Value,
+    capability: &str,
     statuses: &[String],
     subagents: bool,
 ) -> Result<Practice, ConfigError> {
@@ -434,7 +443,7 @@ fn practice(
     for (order, (_, e)) in merged.iter().enumerate() {
         if e.get("enabled") == Some(&json!(false))
             || !practice_statuses.contains(status_of(e).as_str())
-            || !matches(e, classification)
+            || !matches(e, classification, capability)
         {
             continue;
         }
@@ -627,7 +636,7 @@ pub fn render(
     let subagents = profile.get("subagents") == Some(&json!(true));
     let blocks: Vec<Practice> = names
         .iter()
-        .map(|n| practice(ws, n, classification, statuses, subagents))
+        .map(|n| practice(ws, n, classification, capability, statuses, subagents))
         .collect::<Result<_, _>>()?;
 
     let all_entries: Vec<Value> = blocks.iter().flat_map(|b| b.entries.clone()).collect();
@@ -1074,6 +1083,38 @@ mod tests {
     fn probe(task: &str, concerns: &[&str]) -> Value {
         json!({"task": [task], "result": "plan", "interaction": "approval_gated",
                "horizon": "session", "effects": ["read"], "concerns": concerns})
+    }
+
+    #[test]
+    fn a_directive_can_belong_to_the_route_rather_than_the_intent() {
+        // A plan-first Ask is usually classified by what it is ultimately
+        // for — `task: [implement]` — so a planning directive keyed on the
+        // task would never fire for the commonest case there is.
+        bench(|ws, _| {
+            let mut cls = impl_task();
+            cls["task"] = json!(["implement"]);
+            let planning = rendered(ws, "claude-code", &cls);
+            assert!(
+                selected(&planning).contains(&"practice.plan_as_files".to_string()),
+                "routed through native_plan: {:?}",
+                selected(&planning)
+            );
+
+            // The same intent on another route does not get it.
+            let elsewhere = render(
+                Some(ws),
+                &profiles::load("claude-code").unwrap(),
+                "native_goal",
+                &cls,
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
+            )
+            .unwrap();
+            assert!(
+                !ids(&elsewhere["practice"]["selected"])
+                    .contains(&"practice.plan_as_files".to_string())
+            );
+        });
     }
 
     #[test]
