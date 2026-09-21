@@ -260,7 +260,7 @@ fn read_staged(staged: &Path) -> Result<(Vec<u8>, &'static str, Vec<u8>), AskErr
             "must contain exactly source.txt and one of composed.txt, body.txt or prompt.txt",
         ));
     };
-    let mut read = |name: &str| -> Result<Vec<u8>, AskError> {
+    let read = |name: &str| -> Result<Vec<u8>, AskError> {
         let data = std::fs::read(staged.join(name))?;
         if data.is_empty() || data.starts_with(b"\xef\xbb\xbf") || String::from_utf8(data.clone()).is_err()
         {

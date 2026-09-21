@@ -127,3 +127,165 @@ fn yaml_scalar(v: &serde_json::Value) -> String {
         other => serde_json::to_string(other).expect("a scalar"),
     }
 }
+
+// ---- Eval and Seal fixtures -------------------------------------------------
+//
+// The Python suite kept these in `test_eval` and imported them into
+// `test_seal`; they sit here so both modules' tests can reach them.
+
+use serde_json::{Value, json};
+
+use crate::workspace::Workspace;
+
+pub fn head(root: &Path) -> String {
+    let out = Command::new("git").arg("-C").arg(root).args(["rev-parse", "HEAD"]).output().unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Write files (a `None` body deletes) and commit them.
+pub fn commit(root: &Path, files: &[(&str, Option<&str>)], message: &str) -> String {
+    for (name, body) in files {
+        let p = root.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        match body {
+            None => std::fs::remove_file(&p).unwrap(),
+            Some(text) => std::fs::write(&p, text).unwrap(),
+        }
+    }
+    let root = root.to_string_lossy().to_string();
+    run(&["git", "-C", &root, "add", "-A"]);
+    run(&[
+        "git", "-C", &root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message,
+    ]);
+    head(Path::new(&root))
+}
+
+/// A staging directory with `source.txt` and one prompt form.
+pub fn stage_in(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std::path::PathBuf {
+    let mut d = ws.rf_dir().join("tmp").join("stage-1");
+    let mut n = 1;
+    while d.exists() {
+        n += 1;
+        d = ws.rf_dir().join("tmp").join(format!("stage-{n}"));
+    }
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("source.txt"), source).unwrap();
+    std::fs::write(d.join(name), prompt).unwrap();
+    d
+}
+
+/// Compile an Ask and confirm it, the way the Python suite's `confirm` did.
+pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) -> Value {
+    let staged = stage_in(ws, "prompt.txt", source, prompt);
+    let out = crate::ask::compile(ws, crate::ask::Compile {
+        staged: &staged,
+        title,
+        capability: "native_plan",
+        classification: json!({"task": ["plan"], "result": "plan",
+                               "interaction": "approval_gated", "horizon": "session",
+                               "effects": ["read"]}),
+        route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
+                      "effects": "reads", "gaps": []}),
+        host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
+                     "session_ref": "s1"}),
+        links: Vec::new(),
+        limitations: Vec::new(),
+        actor: None,
+    })
+    .unwrap();
+    crate::ask::confirm(ws, out["ask_id"].as_str().unwrap(), None).unwrap();
+    out
+}
+
+pub fn judge(angle: &str) -> Value {
+    json!({"host": "claude-code", "model": "claude-sonnet-5", "angle": angle,
+           "independence": "sub_agent"})
+}
+
+pub fn intent_doc(brief_sha: &str, items: Value) -> Value {
+    json!({"schema": "ringframe.eval-intent/1", "brief_sha256": brief_sha,
+           "judge": judge("intent"), "items": items})
+}
+
+/// The work commit of `two_asks_and_work`.
+pub const CHANGED: [&str; 3] = ["docs/notes.md", "src/uptime.js", "tests/uptime.test.js"];
+
+/// Every changed path classified (`required` unless the caller says
+/// otherwise), as the CLI demands of every judge.
+///
+/// A judge that ran a command by default, because an uncited `yes` is not
+/// decisive and these fixtures are about aggregation rather than about
+/// citation. Pass an empty `commands_run` to make one that cites nothing.
+pub fn judgement(brief_sha: &str, angle: &str, votes: &[(&str, &str)]) -> Value {
+    judgement_over(brief_sha, angle, votes, &[], &CHANGED)
+}
+
+pub fn judgement_over(
+    brief_sha: &str,
+    angle: &str,
+    votes: &[(&str, &str)],
+    drift: &[(&str, &str)],
+    paths: &[&str],
+) -> Value {
+    let mut full: std::collections::BTreeMap<&str, &str> =
+        paths.iter().map(|p| (*p, "required")).collect();
+    for (p, c) in drift {
+        full.insert(p, c);
+    }
+    json!({
+        "schema": "ringframe.eval-judgement/1", "brief_sha256": brief_sha,
+        "judge": judge(angle),
+        "votes": votes.iter().map(|(k, v)| json!({
+            "item": k, "vote": v, "reason": format!("{angle} says {v}")
+        })).collect::<Vec<_>>(),
+        "drift": full.iter().map(|(p, c)| json!({
+            "path": p, "finding": "seen", "classification": c
+        })).collect::<Vec<_>>(),
+        "commands_run": ["npm test"],
+    })
+}
+
+/// Base commit → Ask A confirmed → Ask B confirmed → work commit touching
+/// `src/`, `tests/` and `docs/`.
+pub fn two_asks_and_work(ws: &Workspace) -> (String, String, String) {
+    let a = confirm_ask(ws, "Add uptime endpoint", b"fix the login bug\n", b"Fix the login bug.\n");
+    let b = confirm_ask(ws, "Skip the cache", b"skip the cache\n", b"Skip the cache.\n");
+    let sha = commit(
+        &ws.root,
+        &[
+            ("src/uptime.js", Some("export const uptime = () => 1;\n")),
+            ("tests/uptime.test.js", Some("test\n")),
+            ("docs/notes.md", Some("unrelated\n")),
+        ],
+        "work",
+    );
+    (
+        a["ask_id"].as_str().unwrap().to_string(),
+        b["ask_id"].as_str().unwrap().to_string(),
+        sha,
+    )
+}
+
+pub struct Opened {
+    pub a: String,
+    pub b: String,
+    pub sha: String,
+    pub out: Value,
+    pub brief_sha: String,
+}
+
+pub fn opened(ws: &Workspace) -> Opened {
+    let (a, b, sha) = two_asks_and_work(ws);
+    let out = crate::evaluate::open_eval(ws, crate::evaluate::Open::default()).unwrap();
+    let brief_sha = out["brief"]["sha256"].as_str().unwrap().to_string();
+    Opened { a, b, sha, out, brief_sha }
+}
+
+/// A config home, a repository, and a workspace: what every Eval test needs.
+pub fn eval_bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
+    with_config_home(|_| {
+        let repo = repo();
+        let ws = ws_for(repo.path());
+        body(&ws)
+    })
+}
