@@ -341,13 +341,22 @@ pub const PHASES: [(&str, &str); 9] = [
     ("document", "When documenting:"),
 ];
 pub const EVERY_PHASE: &str = "Throughout:";
+/// Rules that belong to the route rather than the work. They say what this
+/// turn is for, so they lead and they are not mixed in with the principles —
+/// a deliverable listed third of ten reads like an aside.
+pub const THIS_ROUTE: &str = "For this route:";
 
 fn phase_heading(task: &str) -> Option<&'static str> {
     PHASES.iter().find(|(t, _)| *t == task).map(|(_, h)| *h)
 }
 
 pub fn is_heading(line: &str) -> bool {
-    line == EVERY_PHASE || PHASES.iter().any(|(_, h)| *h == line)
+    line == EVERY_PHASE || line == THIS_ROUTE || PHASES.iter().any(|(_, h)| *h == line)
+}
+
+/// Whether a rule was chosen for the route rather than for the work.
+fn route_scoped(entry: &Value) -> bool {
+    entry.get("applies_to").is_some_and(|a| non_empty_list(a.get("capability")))
 }
 
 pub fn revision() -> String {
@@ -665,9 +674,20 @@ pub fn render(
             .flat_map(|(_, kept)| kept.iter().cloned())
             .collect()
     };
+    let render_rule = |e: &Value| format!("- {}: {}", label(e), squeeze(&text_of(e, "text")));
     let mut lines: Vec<String> = Vec::new();
+
+    // What this turn is for, before how to do it.
+    let route_rules: Vec<Value> =
+        order.iter().flat_map(|p| rules_in(p)).filter(route_scoped).collect();
+    if !route_rules.is_empty() {
+        lines.push(THIS_ROUTE.to_string());
+        lines.extend(route_rules.iter().map(&render_rule));
+        lines.push(String::new());
+    }
+
     for phase in &order {
-        let rules = rules_in(phase);
+        let rules: Vec<Value> = rules_in(phase).into_iter().filter(|e| !route_scoped(e)).collect();
         if rules.is_empty() {
             continue;
         }
@@ -675,9 +695,7 @@ pub fn render(
             lines.push(String::new());
             lines.push(phase.clone());
         }
-        lines.extend(
-            rules.iter().map(|e| format!("- {}: {}", label(e), squeeze(&text_of(e, "text")))),
-        );
+        lines.extend(rules.iter().map(&render_rule));
     }
     let practice_text = if all_entries.is_empty() {
         String::new()
@@ -744,10 +762,17 @@ pub fn audit_composed(
         format!("[{}]", names.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
     };
     let mut applied: Vec<String> = Vec::new();
+    let mut inside_a_rule = false;
     for line in &lines[start + 1..] {
         let line = line.trim();
         if line.is_empty() || is_heading(line) {
             // A phase heading the CLI printed; match the exact text, never its shape.
+            continue;
+        }
+        // A directive is a sentence, and a sentence wraps. A line that does
+        // not open a rule continues the one above it; only text arriving
+        // before any rule is prose where a list belongs.
+        if inside_a_rule && !line.starts_with("- ") {
             continue;
         }
         check(
@@ -757,6 +782,7 @@ pub fn audit_composed(
                 line.chars().take(60).collect::<String>()
             ),
         )?;
+        inside_a_rule = true;
         let head = line[2..].split(": ").next().unwrap_or_default().replace(" and ", ",");
         for raw in head.split(',') {
             let lab = raw.trim();
@@ -1025,7 +1051,13 @@ mod tests {
             let text = text_of(&r["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
-            assert!(lines[1..].iter().all(|l| l.starts_with("- ") && l.contains(": ")), "{text}");
+            assert!(
+                lines[1..]
+                    .iter()
+                    .filter(|l| !l.trim().is_empty() && !is_heading(l))
+                    .all(|l| l.starts_with("- ") && l.contains(": ")),
+                "{text}"
+            );
             let labels: BTreeSet<String> = r["practice"]["entries"]
                 .as_array()
                 .unwrap()
@@ -1241,10 +1273,17 @@ mod tests {
             assert_eq!(selected(&out)[..base_ids.len()], base_ids[..]);
             assert!(selected(&out).contains(&"practice.widget_first".to_string()));
             assert!(selected(&out).contains(&"practice.widget_check".to_string()));
+            // Route rules lead and are set apart, so compare the principles
+            // among themselves: the base domain's, then the specialist's.
             let text = text_of(p, "text");
-            let labels: Vec<&str> =
-                text.lines().skip(1).map(|l| l.split(':').next().unwrap_or("")).collect();
-            assert_eq!(labels[base_ids.len()], "- Widget First");
+            let labels: Vec<&str> = text
+                .lines()
+                .filter(|l| l.starts_with("- ") && !l.starts_with("- Plan As Files"))
+                .map(|l| l.split(':').next().unwrap_or(""))
+                .collect();
+            let base_principles =
+                base_ids.iter().filter(|i| *i != "practice.plan_as_files").count();
+            assert_eq!(labels[base_principles], "- Widget First", "{text}");
         });
     }
 
@@ -1376,8 +1415,15 @@ mod tests {
             let text = text_of(&out["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
+            // One task means no phase headings. The route heading is not a
+            // phase; it says what the turn is for.
+            assert!(!lines.iter().any(|l| PHASES.iter().any(|(_, h)| h == l)), "{text}");
             assert!(
-                lines[1..].iter().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("- "))
+                lines[1..]
+                    .iter()
+                    .filter(|l| !l.trim().is_empty() && **l != THIS_ROUTE)
+                    .all(|l| l.starts_with("- ")),
+                "{text}"
             );
         });
     }
@@ -1469,6 +1515,77 @@ mod tests {
                 let (applied, _) = audit_composed(&composed, &supplied).unwrap();
                 assert_eq!(applied, [text_of(&supplied[0], "id")], "{heading}");
             }
+        });
+    }
+
+    #[test]
+    fn a_rule_may_wrap_onto_more_than_one_line() {
+        // A directive is a sentence and a sentence wraps. Demanding one line
+        // per rule refuses prompts that are correct in every way that counts.
+        bench(|ws, _| {
+            let supplied = rendered(ws, "claude-code", &impl_task())["practice"]["entries"]
+                .as_array()
+                .unwrap()
+                .clone();
+            let label = text_of(&supplied[0], "label");
+            let wrapped = format!(
+                "Do the thing.\n\nRules:\n- {label}: applied to this task, at such\n  length that it wraps onto a second line,\n  and a third.\n"
+            );
+            let (applied, _) = audit_composed(&wrapped, &supplied).unwrap();
+            assert_eq!(applied, [text_of(&supplied[0], "id")]);
+        });
+    }
+
+    #[test]
+    fn prose_before_any_rule_is_still_refused() {
+        // Wrapping is a continuation of a rule. Text arriving before one is
+        // prose where a list belongs, and that is still wrong.
+        bench(|ws, _| {
+            let supplied = rendered(ws, "claude-code", &impl_task())["practice"]["entries"]
+                .as_array()
+                .unwrap()
+                .clone();
+            let e =
+                audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied).unwrap_err();
+            assert!(e.0.contains("not `- <labels>"), "{e}");
+        });
+    }
+
+    #[test]
+    fn a_route_rule_leads_and_is_set_apart() {
+        // A deliverable listed third of ten reads like an aside.
+        bench(|ws, _| {
+            let mut cls = impl_task();
+            cls["task"] = json!(["implement"]);
+            let out = rendered(ws, "claude-code", &cls);
+            let text = text_of(&out["practice"], "text");
+            let lines: Vec<&str> = text.lines().collect();
+            assert_eq!(lines[0], "Rules:");
+            assert_eq!(lines[1], THIS_ROUTE);
+            assert!(lines[2].starts_with("- Plan As Files:"), "{text}");
+            // And the principles follow, after a blank line.
+            assert!(text.contains("\n\n- KISS:"), "{text}");
+            // The heading is one the audit knows, so a composed prompt may
+            // carry it back.
+            assert!(is_heading(THIS_ROUTE));
+        });
+    }
+
+    #[test]
+    fn with_no_route_rule_there_is_no_route_heading() {
+        bench(|ws, _| {
+            let out = render(
+                Some(ws),
+                &profiles::load("claude-code").unwrap(),
+                "native_goal",
+                &impl_task(),
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
+            )
+            .unwrap();
+            let text = text_of(&out["practice"], "text");
+            assert!(!text.contains(THIS_ROUTE), "{text}");
+            assert!(text.starts_with("Rules:\n- "), "{text}");
         });
     }
 

@@ -2080,7 +2080,9 @@ mod the_marketplace_contract {
                     };
                     let mut words = call.split_whitespace().skip(1).map(word);
                     let Some(cmd) = words.next() else { continue };
-                    if !COMMANDS.contains(&cmd.as_str()) {
+                    // `--version` and `--help` are answered before parsing, so
+                    // they have no options table; SURFACE covers them.
+                    if cmd.starts_with('-') || !COMMANDS.contains(&cmd.as_str()) {
                         continue;
                     }
                     let sub = words.next().filter(|_| takes_sub(&cmd));
