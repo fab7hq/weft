@@ -27,13 +27,16 @@ jobs:
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
-      - name: Put this repository's own ringframe on PATH
+      - name: Put this repository's own ringframe on PATH, configured
         # Weft shells out to `ringframe`, and since the merge the CLI it talks
         # to is built right here. Before, CI had nothing to point at and the
-        # tests that use it could only skip.
+        # tests that use it could only skip. Reading a profile needs a
+        # configuration home as well as a binary, so install the fixture one.
         run: |
           cargo build -p ringframe
           echo "$PWD/target/debug" >> "$GITHUB_PATH"
+          ./target/debug/ringframe init --global \
+            --from crates/ringframe/tests/fixtures/config
       # Scoped to the core: the Weft crates predate `rustfmt.toml` and
       # reformatting them belongs to its own change, not to the port.
       - run: cargo fmt -p ringframe --check
