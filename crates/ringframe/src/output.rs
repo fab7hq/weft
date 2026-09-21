@@ -25,11 +25,21 @@ pub fn candidates(items: &[Value]) -> Value {
 fn capability(data: &Value) -> Value {
     // The prefix and how it behaves travel together: a client that knows the
     // command but not whether it is a mode cannot decide how to submit it.
-    let mut result = pick(data, &[
-        "id", "selection", "effects", "delivery_mode", "continuation", "limitations",
-        "requires_explicit_request_for_effects", "prompt_prefix", "prompt_prefix_kind",
-        "prompt_prefix_active",
-    ]);
+    let mut result = pick(
+        data,
+        &[
+            "id",
+            "selection",
+            "effects",
+            "delivery_mode",
+            "continuation",
+            "limitations",
+            "requires_explicit_request_for_effects",
+            "prompt_prefix",
+            "prompt_prefix_kind",
+            "prompt_prefix_active",
+        ],
+    );
     for (field, keys) in [
         ("confirmation", ["tool", "requires_feature"]),
         ("activation", ["mechanism", "tool"]),
@@ -91,9 +101,8 @@ fn eval_open(data: &Value) -> Value {
 }
 
 fn eval_close(data: &Value) -> Value {
-    let mut out = pick(data, &[
-        "eval_id", "verdict", "confidence", "items", "drift", "delta", "limitations",
-    ]);
+    let mut out =
+        pick(data, &["eval_id", "verdict", "confidence", "items", "drift", "delta", "limitations"]);
     out["basis"] = pick(&data["basis"], &["unrecorded_prompts"]);
     out
 }
@@ -132,10 +141,18 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("ask", Some("list")) => {
             json!({"asks": candidates(d["asks"].as_array().map_or(&[], Vec::as_slice))})
         }
-        ("ask", Some("show")) => pick(d, &[
-            "ask_id", "title", "state", "capability", "prompt_path", "source_verified",
-            "unanswered_at",
-        ]),
+        ("ask", Some("show")) => pick(
+            d,
+            &[
+                "ask_id",
+                "title",
+                "state",
+                "capability",
+                "prompt_path",
+                "source_verified",
+                "unanswered_at",
+            ],
+        ),
         ("ask", Some("resolve")) => json!({
             "rule_applied": d["rule_applied"],
             "candidates": candidates(d["candidates"].as_array().map_or(&[], Vec::as_slice)),

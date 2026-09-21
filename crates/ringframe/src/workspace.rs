@@ -144,10 +144,7 @@ fn version_key(tag: &str) -> (u8, Vec<u64>) {
 /// The highest `vX.Y.Z`. The API does not promise an order, so never take the
 /// first.
 pub fn latest_tag<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
-    names
-        .into_iter()
-        .filter(|n| n.starts_with(BUNDLE_TAG_PREFIX))
-        .max_by_key(|n| version_key(n))
+    names.into_iter().filter(|n| n.starts_with(BUNDLE_TAG_PREFIX)).max_by_key(|n| version_key(n))
 }
 
 /// The manifest the marketplace keeps beside `config/`, or inside it if
@@ -186,9 +183,8 @@ fn validate(staged: &Path, bundle: Option<&str>) -> Result<(), WorkspaceError> {
     let mut expected: Vec<(PathBuf, &str)> = Vec::new();
     expected.extend(yaml_in(&staged.join("harnesses")).into_iter().map(|p| (p, PROFILE_SCHEMA)));
     expected.extend(yaml_in(&staged.join("deltas")).into_iter().map(|p| (p, DELTAS_SCHEMA)));
-    expected.extend(
-        yaml_in(&staged.join("deltas/practices")).into_iter().map(|p| (p, DELTAS_SCHEMA)),
-    );
+    expected
+        .extend(yaml_in(&staged.join("deltas/practices")).into_iter().map(|p| (p, DELTAS_SCHEMA)));
     for (path, schema) in expected {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
         let text = std::fs::read_to_string(&path)
@@ -234,9 +230,8 @@ fn yaml_in(dir: &Path) -> Vec<PathBuf> {
 
 /// Swap in the staged tree, putting the previous one back if the swap fails.
 fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
-    let previous = target
-        .exists()
-        .then(|| target.with_file_name(format!(".previous-{}", std::process::id())));
+    let previous =
+        target.exists().then(|| target.with_file_name(format!(".previous-{}", std::process::id())));
     if let Some(prev) = &previous {
         std::fs::rename(target, prev)?;
     }
@@ -303,11 +298,13 @@ fn newest_tag() -> Result<String, WorkspaceError> {
 /// bundle manifest text.
 fn download(dest: &Path) -> Result<(String, Option<String>), WorkspaceError> {
     let tag = newest_tag()?;
-    let raw = fetch(
-        &format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"),
-        "120",
-    )?;
-    let work = dest.with_file_name(format!(".extract-{}-{}", std::process::id(), crate::ids::random_hex(4)));
+    let raw =
+        fetch(&format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"), "120")?;
+    let work = dest.with_file_name(format!(
+        ".extract-{}-{}",
+        std::process::id(),
+        crate::ids::random_hex(4)
+    ));
     let outcome = (|| {
         std::fs::create_dir_all(&work).map_err(io("config.bundle"))?;
         let archive = work.join("bundle.tar.gz");
@@ -354,7 +351,8 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
     let home_dir = config::home();
     std::fs::create_dir_all(&home_dir).map_err(io("config.source"))?;
     set_private(&home_dir).map_err(io("config.source"))?;
-    let staged = home_dir.join(format!(".staging-{}-{}", std::process::id(), crate::ids::random_hex(4)));
+    let staged =
+        home_dir.join(format!(".staging-{}-{}", std::process::id(), crate::ids::random_hex(4)));
     let outcome = (|| {
         let (revision, bundle) = match source {
             Some(src) => {
@@ -371,7 +369,8 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
             None => download(&staged)?,
         };
         validate(&staged, bundle.as_deref())?;
-        std::fs::write(staged.join(".revision"), format!("{revision}\n")).map_err(io("config.source"))?;
+        std::fs::write(staged.join(".revision"), format!("{revision}\n"))
+            .map_err(io("config.source"))?;
         replace(&staged, &config::config_dir()).map_err(io("config.source"))?;
         Ok(revision)
     })();

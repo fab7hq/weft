@@ -47,9 +47,7 @@ fn yaml_stems(dir: &Path) -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| {
-            e.file_name().to_string_lossy().strip_suffix(".yaml").map(str::to_string)
-        })
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".yaml").map(str::to_string))
         .collect()
 }
 
@@ -135,7 +133,9 @@ pub fn load_host_catalog(host: &str, ws: Option<&Workspace>) -> Result<Value, Co
     for e in entries(&cat) {
         let id = e.get("id").and_then(Value::as_str).unwrap_or("None");
         check(
-            ["id", "capability", "text", "matrix_ref", "status"].iter().all(|k| e.get(*k).is_some()),
+            ["id", "capability", "text", "matrix_ref", "status"]
+                .iter()
+                .all(|k| e.get(*k).is_some()),
             format!("deltas/{host}.yaml: entry {id} incomplete"),
         )?;
         let status = text_of(e, "status");
@@ -147,10 +147,7 @@ pub fn load_host_catalog(host: &str, ws: Option<&Workspace>) -> Result<Value, Co
     Ok(cat)
 }
 
-pub fn load_practice_catalog(
-    domain: &str,
-    ws: Option<&Workspace>,
-) -> Result<Value, ConfigError> {
+pub fn load_practice_catalog(domain: &str, ws: Option<&Workspace>) -> Result<Value, ConfigError> {
     let mut cat = catalog(&format!("practices/{domain}.yaml"), ws)?;
     check(
         cat.get("schema").and_then(Value::as_str) == Some(SCHEMA)
@@ -205,7 +202,8 @@ pub fn effective(
 }
 
 fn any_shared(a: &Value, b: &Value) -> bool {
-    let set: BTreeSet<&str> = b.as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let set: BTreeSet<&str> =
+        b.as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     a.as_array().into_iter().flatten().filter_map(Value::as_str).any(|x| set.contains(x))
 }
 
@@ -244,7 +242,12 @@ pub fn validate_concerns(
     for n in domains {
         let cat = load_practice_catalog(n, ws)?;
         vocab.extend(
-            cat["concerns"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string),
+            cat["concerns"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
         );
     }
     let unknown: Vec<&String> = concerns.iter().filter(|c| !vocab.contains(*c)).collect();
@@ -259,7 +262,10 @@ pub fn validate_concerns(
             if domains.len() == 1 {
                 format!("'{}'", domains[0])
             } else {
-                format!("[{}]", domains.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
+                format!(
+                    "[{}]",
+                    domains.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")
+                )
             },
             vocab.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")
         ),
@@ -485,7 +491,9 @@ fn practice(
             EVERY_PHASE.to_string()
         }
     };
-    let mut by_phase: Vec<(String, (Vec<Ranked>, Vec<Ranked>))> =
+    /// One phase's rules: the core tier, then the situational one.
+    type Phase = (String, (Vec<Ranked>, Vec<Ranked>));
+    let mut by_phase: Vec<Phase> =
         groups.iter().map(|g| (g.clone(), (Vec::new(), Vec::new()))).collect();
     for (is_core, items) in [(true, core), (false, situational)] {
         for r in items {
@@ -707,13 +715,13 @@ pub fn audit_composed(
 ) -> Result<(Vec<String>, Vec<String>), ConfigError> {
     let lines: Vec<&str> = text.lines().collect();
     let last_rules = lines.iter().rposition(|l| l.trim().eq_ignore_ascii_case("rules:"));
-    let start = last_rules.ok_or_else(|| {
-        ConfigError("composed prompt has no `Rules:` section".to_string())
-    })?;
+    let start = last_rules
+        .ok_or_else(|| ConfigError("composed prompt has no `Rules:` section".to_string()))?;
     let mut by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for e in supplied {
         let id = text_of(e, "id");
-        for key in [label(e).to_lowercase(), text_of(e, "principle").to_lowercase(), id.to_lowercase()]
+        for key in
+            [label(e).to_lowercase(), text_of(e, "principle").to_lowercase(), id.to_lowercase()]
         {
             if !key.is_empty() {
                 by_label.insert(key, id.clone());
@@ -757,11 +765,8 @@ pub fn audit_composed(
             }
         }
     }
-    let omitted: Vec<String> = supplied
-        .iter()
-        .map(|e| text_of(e, "id"))
-        .filter(|id| !applied.contains(id))
-        .collect();
+    let omitted: Vec<String> =
+        supplied.iter().map(|e| text_of(e, "id")).filter(|id| !applied.contains(id)).collect();
     Ok((applied, omitted))
 }
 
@@ -848,7 +853,9 @@ mod tests {
                 let tier = text_of(e, "tier");
                 assert!(tier.is_empty() || TIERS.contains(&tier.as_str()), "{id}");
                 assert!(PRACTICE_STATUS.contains(&status_of(e).as_str()), "{id}");
-                for c in e.get("concerns").into_iter().flat_map(|c| c.as_array().into_iter().flatten()) {
+                for c in
+                    e.get("concerns").into_iter().flat_map(|c| c.as_array().into_iter().flatten())
+                {
                     assert!(vocab.contains(c.as_str().unwrap_or_default()), "{id}: {c}");
                 }
                 // Directives, never principle names.
@@ -893,8 +900,13 @@ mod tests {
             let core: Vec<String> = selected(&plain)
                 .into_iter()
                 .filter(|i| {
-                    ["practice.kiss", "practice.yagni", "practice.testing_pyramid", "practice.boy_scout"]
-                        .contains(&i.as_str())
+                    [
+                        "practice.kiss",
+                        "practice.yagni",
+                        "practice.testing_pyramid",
+                        "practice.boy_scout",
+                    ]
+                    .contains(&i.as_str())
                 })
                 .collect();
             assert_eq!(core.len(), 4);
@@ -928,8 +940,12 @@ mod tests {
             let mut bad = impl_task();
             bad["concerns"] = json!(["telepathy"]);
             let e = render(
-                Some(ws), &profiles::load("codex").unwrap(), "native_plan", &bad,
-                &statuses(&QUALIFIED), DEFAULT_DOMAIN,
+                Some(ws),
+                &profiles::load("codex").unwrap(),
+                "native_plan",
+                &bad,
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
             )
             .unwrap_err();
             assert!(e.0.contains("concern"), "{e}");
@@ -939,7 +955,8 @@ mod tests {
     #[test]
     fn user_and_workspace_layers_override_by_id() {
         bench(|ws, _| {
-            let catalog = config::overrides_dir().join("deltas/practices/software-development.yaml");
+            let catalog =
+                config::overrides_dir().join("deltas/practices/software-development.yaml");
             std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
             let mut doc = config::load_yaml(
                 &config::config_dir().join("deltas/practices/software-development.yaml"),
@@ -974,10 +991,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|l| {
-                    (
-                        text_of(l, "root"),
-                        text_of(l, "path").ends_with("software-development.yaml"),
-                    )
+                    (text_of(l, "root"), text_of(l, "path").ends_with("software-development.yaml"))
                 })
                 .collect();
             assert_eq!(
@@ -1026,8 +1040,12 @@ mod tests {
             // A candidate is never in the default prompt.
             assert!(!selected(&default).contains(&"practice.assumptions".to_string()));
             let evaluation = render(
-                Some(ws), &profiles::load("claude-code").unwrap(), "native_plan", &impl_task(),
-                &statuses(&["qualified", "candidate"]), DEFAULT_DOMAIN,
+                Some(ws),
+                &profiles::load("claude-code").unwrap(),
+                "native_plan",
+                &impl_task(),
+                &statuses(&["qualified", "candidate"]),
+                DEFAULT_DOMAIN,
             )
             .unwrap();
             assert!(selected(&evaluation).contains(&"practice.assumptions".to_string()));
@@ -1040,9 +1058,15 @@ mod tests {
     // ---- catalog reachability and task coverage ----------------------------
 
     const TASK_PROBE: [(&str, &[&str]); 9] = [
-        ("question", &[]), ("research", &[]), ("clarify", &[]), ("plan", &[]),
-        ("implement", &[]), ("diagnose", &["tests_only"]), ("review", &[]),
-        ("operate", &["operate"]), ("document", &["cli"]),
+        ("question", &[]),
+        ("research", &[]),
+        ("clarify", &[]),
+        ("plan", &[]),
+        ("implement", &[]),
+        ("diagnose", &["tests_only"]),
+        ("review", &[]),
+        ("operate", &["operate"]),
+        ("document", &["cli"]),
     ];
 
     fn probe(task: &str, concerns: &[&str]) -> Value {
@@ -1060,8 +1084,7 @@ mod tests {
                 .iter()
                 .filter(|e| {
                     let tier = text_of(e, "tier");
-                    (tier.is_empty() || tier == "situational")
-                        && !non_empty_list(e.get("concerns"))
+                    (tier.is_empty() || tier == "situational") && !non_empty_list(e.get("concerns"))
                 })
                 .map(|e| text_of(e, "id"))
                 .collect();
@@ -1188,8 +1211,12 @@ mod tests {
             let mut cls = impl_task();
             cls["domains"] = json!(["teleportation"]);
             let e = render(
-                Some(ws), &profiles::load("claude-code").unwrap(), "native_plan", &cls,
-                &statuses(&QUALIFIED), DEFAULT_DOMAIN,
+                Some(ws),
+                &profiles::load("claude-code").unwrap(),
+                "native_plan",
+                &cls,
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
             )
             .unwrap_err();
             assert!(e.0.contains("installed"), "{e}");
@@ -1202,8 +1229,12 @@ mod tests {
             let mut only_concern = impl_task();
             only_concern["concerns"] = json!(["widgets"]);
             let e = render(
-                Some(ws), &profiles::load("claude-code").unwrap(), "native_plan", &only_concern,
-                &statuses(&QUALIFIED), DEFAULT_DOMAIN,
+                Some(ws),
+                &profiles::load("claude-code").unwrap(),
+                "native_plan",
+                &only_concern,
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
             )
             .unwrap_err();
             assert!(e.0.contains("concern"), "{e}");
@@ -1220,7 +1251,11 @@ mod tests {
         two_domains(|ws| {
             let listed = domains(Some(ws)).unwrap();
             let find = |name: &str| {
-                listed.iter().find(|d| d["domain"] == name).unwrap_or_else(|| panic!("{name}")).clone()
+                listed
+                    .iter()
+                    .find(|d| d["domain"] == name)
+                    .unwrap_or_else(|| panic!("{name}"))
+                    .clone()
             };
             assert_eq!(find("software-development")["base"], true);
             let fixture = find("fixture-domain");
@@ -1298,7 +1333,9 @@ mod tests {
             let text = text_of(&out["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
-            assert!(lines[1..].iter().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("- ")));
+            assert!(
+                lines[1..].iter().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("- "))
+            );
         });
     }
 
@@ -1343,10 +1380,7 @@ mod tests {
             cls["task"] = json!(["implement", "research"]);
             let out = rendered(ws, "claude-code", &cls);
             let text = text_of(&out["practice"], "text");
-            assert!(
-                text.find("While implementing:") < text.find("While researching:"),
-                "{text}"
-            );
+            assert!(text.find("While implementing:") < text.find("While researching:"), "{text}");
         });
     }
 
@@ -1370,7 +1404,8 @@ mod tests {
         bench(|ws, _| {
             let out = rendered(ws, "claude-code", &impl_task());
             let supplied: Vec<Value> = out["practice"]["entries"].as_array().unwrap().clone();
-            let e = audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied).unwrap_err();
+            let e =
+                audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied).unwrap_err();
             assert!(e.0.contains("not `- <labels>"), "{e}");
         });
     }

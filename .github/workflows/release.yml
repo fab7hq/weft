@@ -1,0 +1,98 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The tag to build and publish
+        required: true
+
+# `install.sh` downloads what this publishes. Nothing is built on a user's
+# machine any more (ADR-0013), so a platform missing here is a platform nobody
+# can install on.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install the musl toolchain
+        # Statically linked, so one Linux build runs on every distribution
+        # rather than tracking a glibc version.
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - run: cargo build --release --locked --target ${{ matrix.target }} --bin weft --bin ringframe
+
+      - name: Pack and checksum
+        id: pack
+        run: |
+          set -eu
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          archive="fab7-$tag-${{ matrix.target }}.tar.gz"
+          out=target/${{ matrix.target }}/release
+          # Flat, because install.sh extracts the names directly.
+          tar -czf "$archive" -C "$out" weft ringframe
+          if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$archive" > "$archive.sha256"
+          else
+              shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Check what was built actually runs
+        # A cross-built binary that cannot start is worse than no binary.
+        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          ./target/${{ matrix.target }}/release/ringframe --version
+          ./target/${{ matrix.target }}/release/weft --help > /dev/null
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ steps.pack.outputs.archive }}
+            ${{ steps.pack.outputs.archive }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Refuse a partial release
+        # Four platforms or none: install.sh has no fallback to building.
+        run: |
+          set -eu
+          count=$(ls -1 fab7-*.tar.gz | wc -l | tr -d ' ')
+          [ "$count" -eq 4 ] || { echo "only $count of 4 platforms built"; exit 1; }
+          ls -l fab7-*
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            fab7-*.tar.gz
+            fab7-*.tar.gz.sha256
+          fail_on_unmatched_files: true

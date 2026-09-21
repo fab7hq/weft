@@ -262,7 +262,9 @@ fn read_staged(staged: &Path) -> Result<(Vec<u8>, &'static str, Vec<u8>), AskErr
     };
     let read = |name: &str| -> Result<Vec<u8>, AskError> {
         let data = std::fs::read(staged.join(name))?;
-        if data.is_empty() || data.starts_with(b"\xef\xbb\xbf") || String::from_utf8(data.clone()).is_err()
+        if data.is_empty()
+            || data.starts_with(b"\xef\xbb\xbf")
+            || String::from_utf8(data.clone()).is_err()
         {
             return Err(ledger(
                 "ask.staged_file",
@@ -436,9 +438,8 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         .map_err(|e| ledger("ask.classification", e.0))?;
     let mut compiler = json!({"source": "prompt"});
     if form != "prompt" {
-        let (rendered, prov) = render_prompt(
-            ws, &profile, &cap, args.capability, &classification, &prompt, form,
-        )?;
+        let (rendered, prov) =
+            render_prompt(ws, &profile, &cap, args.capability, &classification, &prompt, form)?;
         prompt = rendered;
         compiler = prov;
     }
@@ -509,7 +510,8 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &args.links);
     schema::validate_event(&ev)?;
     let wrote_source = store::publish(ws, &str_of(&source_ref, "path"), &source, "source_intent")?;
-    let wrote_prompt = store::publish(ws, &str_of(&prompt_ref, "path"), &prompt, "generated_prompt")?;
+    let wrote_prompt =
+        store::publish(ws, &str_of(&prompt_ref, "path"), &prompt, "generated_prompt")?;
     // The references went into a validated event before the bytes existed; if
     // they now disagree, the record would describe a file that is not there.
     assert_eq!(wrote_source, source_ref, "the published source is not what was recorded");
@@ -638,8 +640,7 @@ pub fn unanswered(
     }
     let a = default_actor(actor);
     let d = &rec.compiled.as_ref().expect("a record has a compiled event")["data"];
-    let mut data =
-        json!({"unanswered": {"observed_by": "skill", "surface": confirmation_surface(&d["host"])}});
+    let mut data = json!({"unanswered": {"observed_by": "skill", "surface": confirmation_surface(&d["host"])}});
     if let Some(reason) = reason.filter(|r| !r.is_empty()) {
         data["reason"] = json!(reason);
     }
@@ -740,9 +741,7 @@ fn prompt_match(
     }
     let prefix = profiles::for_host(&compiled["host"])
         .ok()
-        .and_then(|p| {
-            profiles::capability(&p, &str_of(compiled, "selected_capability")).cloned()
-        })
+        .and_then(|p| profiles::capability(&p, &str_of(compiled, "selected_capability")).cloned())
         .map(|c| str_of(&c, "prompt_prefix"))
         .unwrap_or_default();
     if !prefix.is_empty() && data.starts_with(prefix.as_bytes()) {
@@ -809,17 +808,24 @@ fn record(ws: &Workspace, ask_id: &str) -> Result<AskRecord, AskError> {
         .ok_or_else(|| ledger("ask.not_compiled", ask_id))
 }
 
+/// One delivery, as the record carries it. They arrive together and are
+/// written together, so they are one thing rather than nine.
+struct Delivery<'a> {
+    mode: &'a str,
+    mechanism: Value,
+    state: &'a str,
+    receipt: Value,
+    limitations: Vec<String>,
+}
+
 fn append_delivery(
     ws: &Workspace,
     ask_id: &str,
     compiled: &Value,
-    mode: &str,
-    mechanism: Value,
-    state: &str,
-    receipt: Value,
-    limitations: Vec<String>,
+    delivery: Delivery<'_>,
     actor: Option<&Value>,
 ) -> Result<Value, AskError> {
+    let Delivery { mode, mechanism, state, receipt, limitations } = delivery;
     if by_id(ws)?.iter().any(|(k, v)| k == ask_id && v.delivery.is_some()) {
         return Err(ledger("delivery.duplicate", ask_id));
     }
@@ -901,8 +907,8 @@ pub fn delivery_from_hook(ws: &Workspace, payload: &Value) -> Result<Option<Valu
     let (ask_id, compiled) = candidates.remove(0);
     let response = payload.get("tool_response").cloned().unwrap_or(Value::Null);
     let error = response.get("error").filter(|v| !v.is_null()).cloned();
-    let failed = response.is_object()
-        && (error.is_some() || response.get("is_error") == Some(&json!(true)));
+    let failed =
+        response.is_object() && (error.is_some() || response.get("is_error") == Some(&json!(true)));
     let receipt = json!({
         "tool": tool, "tool_use_id": payload.get("tool_use_id").cloned().unwrap_or(Value::Null),
         "session_id": session, "response_sha256": digest::sha256_bytes(&store::canonical(&response)),
@@ -911,9 +917,11 @@ pub fn delivery_from_hook(ws: &Workspace, payload: &Value) -> Result<Option<Valu
     let limitations = if failed {
         vec![format!(
             "tool error: {}",
-            error.as_ref().and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| {
-                error.map_or("None".to_string(), |e| e.to_string())
-            })
+            error
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| { error.map_or("None".to_string(), |e| e.to_string()) })
         )]
     } else {
         Vec::new()
@@ -922,11 +930,13 @@ pub fn delivery_from_hook(ws: &Workspace, payload: &Value) -> Result<Option<Valu
         ws,
         &ask_id,
         &compiled,
-        "native_dispatch",
-        json!("capability_activate"),
-        if failed { "delivery_failed" } else { "native_accepted" },
-        receipt,
-        limitations,
+        Delivery {
+            mode: "native_dispatch",
+            mechanism: json!("capability_activate"),
+            state: if failed { "delivery_failed" } else { "native_accepted" },
+            receipt,
+            limitations,
+        },
         None,
     )?))
 }
@@ -937,22 +947,27 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
     let path = ws.rf_dir().join(str_of(&d["prompt"], "path"));
     let host = str_of(&d["host"], "name");
     let title = host_title(&host).to_string();
-    let mut text = fill(HANDOFF, &[
-        ("host", host.clone()),
-        ("capability", str_of(d, "selected_capability")),
-        ("path", path.to_string_lossy().to_string()),
-        ("host_title", title.clone()),
-    ]);
+    let mut text = fill(
+        HANDOFF,
+        &[
+            ("host", host.clone()),
+            ("capability", str_of(d, "selected_capability")),
+            ("path", path.to_string_lossy().to_string()),
+            ("host_title", title.clone()),
+        ],
+    );
     text.push_str(&handoff_mode(d.get("delivery").unwrap_or(&Value::Null), &title));
     let rec = append_delivery(
         ws,
         ask_id,
         &compiled,
-        "human_handoff",
-        Value::Null,
-        "handoff_ready",
-        json!({"path": str_of(&d["prompt"], "path"), "emitted_by": "cli"}),
-        vec!["submission unobserved".into()],
+        Delivery {
+            mode: "human_handoff",
+            mechanism: Value::Null,
+            state: "handoff_ready",
+            receipt: json!({"path": str_of(&d["prompt"], "path"), "emitted_by": "cli"}),
+            limitations: vec!["submission unobserved".into()],
+        },
         None,
     )?;
     Ok((text, rec))
@@ -969,23 +984,25 @@ fn handoff_mode(delivery: &Value, title: &str) -> String {
     }
     let active = str_of(delivery, "mode_active");
     let how = if str_of(delivery, "mode_kind") == "mode" && !active.is_empty() {
-        fill(HANDOFF_MODE_FIRST, &[
-            ("mode", mode.to_string()),
-            ("host_title", title.to_string()),
-            ("active", active),
-        ])
+        fill(
+            HANDOFF_MODE_FIRST,
+            &[("mode", mode.to_string()), ("host_title", title.to_string()), ("active", active)],
+        )
     } else {
         fill(HANDOFF_TYPE_PREFIX, &[("mode", mode.to_string())])
     };
     let total = delivery.get("prefix_bytes").and_then(Value::as_u64).unwrap_or(0)
         + delivery.get("body_bytes").and_then(Value::as_u64).unwrap_or(0);
-    fill(HANDOFF_FOLDS_MODE, &[
-        ("host_title", title.to_string()),
-        ("fold", delivery.get("paste_fold_chars").map_or(String::new(), |v| v.to_string())),
-        ("total", total.to_string()),
-        ("mode", mode.to_string()),
-        ("how", how),
-    ])
+    fill(
+        HANDOFF_FOLDS_MODE,
+        &[
+            ("host_title", title.to_string()),
+            ("fold", delivery.get("paste_fold_chars").map_or(String::new(), |v| v.to_string())),
+            ("total", total.to_string()),
+            ("mode", mode.to_string()),
+            ("how", how),
+        ],
+    )
 }
 
 pub fn delivery_state(
@@ -1001,11 +1018,13 @@ pub fn delivery_state(
         ws,
         ask_id,
         &compiled,
-        &mode,
-        Value::Null,
-        state,
-        Value::Null,
-        vec![reason.to_string()],
+        Delivery {
+            mode: &mode,
+            mechanism: Value::Null,
+            state,
+            receipt: Value::Null,
+            limitations: vec![reason.to_string()],
+        },
         None,
     )
 }
@@ -1222,17 +1241,20 @@ mod tests {
 
     fn compile_with(ws: &Workspace, args: Args) -> Result<Value, AskError> {
         let staged = args.staged.unwrap_or_else(|| stage(ws));
-        compile(ws, Compile {
-            staged: &staged,
-            title: &args.title,
-            capability: &args.capability,
-            classification: args.classification,
-            route: args.route,
-            host: args.host,
-            links: Vec::new(),
-            limitations: Vec::new(),
-            actor: args.actor,
-        })
+        compile(
+            ws,
+            Compile {
+                staged: &staged,
+                title: &args.title,
+                capability: &args.capability,
+                classification: args.classification,
+                route: args.route,
+                host: args.host,
+                links: Vec::new(),
+                limitations: Vec::new(),
+                actor: args.actor,
+            },
+        )
     }
 
     fn compiled(ws: &Workspace) -> Value {
@@ -1254,7 +1276,13 @@ mod tests {
         events(ws).iter().map(|e| str_of(e, "type")).collect()
     }
 
-    fn capture(ws: &Workspace, host: &str, session: &str, prompt: &str, version: Option<&str>) -> Value {
+    fn capture(
+        ws: &Workspace,
+        host: &str,
+        session: &str,
+        prompt: &str,
+        version: Option<&str>,
+    ) -> Value {
         sessions::capture(ws, host, &json!({"session_id": session, "prompt": prompt}), version)
             .unwrap()
             .unwrap()
@@ -1312,11 +1340,14 @@ mod tests {
         // It can only do that if the record says which prefix is a mode and
         // where the body starts.
         bench(|ws| {
-            let out = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
-                host: codex(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let evs = events(ws);
             let d = &evs[0]["data"]["delivery"];
@@ -1340,11 +1371,14 @@ mod tests {
             let mut long = b"/plan ".to_vec();
             long.extend(std::iter::repeat_n(b'x', 1200));
             long.push(b'\n');
-            compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, &long)),
-                host: codex(),
-                ..Default::default()
-            })
+            compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, &long)),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(events(ws)[0]["data"]["delivery"]["folds"], true);
         });
@@ -1358,14 +1392,17 @@ mod tests {
         bench(|ws| {
             let mut r = route();
             r["explicit_direct_request"] = json!(true);
-            compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
-                capability: "native_goal".into(),
-                host: codex(),
-                classification: goal_cls(),
-                route: r,
-                ..Default::default()
-            })
+            compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
+                    capability: "native_goal".into(),
+                    host: codex(),
+                    classification: goal_cls(),
+                    route: r,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let d = &events(ws)[0]["data"]["delivery"];
             assert_eq!(d["mode"], "/goal");
@@ -1391,11 +1428,14 @@ mod tests {
             let mut long = b"/plan ".to_vec();
             long.extend(std::iter::repeat_n(b'x', 1200));
             long.push(b'\n');
-            let out = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, &long)),
-                host: codex(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, &long)),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             let (text, _) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
@@ -1404,11 +1444,14 @@ mod tests {
             assert!(text.contains("Plan mode"));
 
             // A prompt short enough to paste whole says nothing extra.
-            let short = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/plan Ship it.\n")),
-                host: codex(),
-                ..Default::default()
-            })
+            let short = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Ship it.\n")),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             confirm(ws, &str_of(&short, "ask_id"), None).unwrap();
             let (plain, _) = delivery_handoff(ws, &str_of(&short, "ask_id")).unwrap();
@@ -1423,11 +1466,14 @@ mod tests {
         // those is a no, so none of them ends the Ask: the candidate stays
         // open for the person.
         bench(|ws| {
-            let out = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
-                host: codex(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let id = str_of(&out, "ask_id");
             unanswered(ws, &id, Some("no answer within the chooser's limit"), None).unwrap();
@@ -1468,11 +1514,17 @@ mod tests {
         bench(|ws| {
             let yes = str_of(&compiled(ws), "ask_id");
             confirm(ws, &yes, None).unwrap();
-            assert_eq!(ledger_error(unanswered(ws, &yes, None, None).unwrap_err()).code, "ask.already_confirmed");
+            assert_eq!(
+                ledger_error(unanswered(ws, &yes, None, None).unwrap_err()).code,
+                "ask.already_confirmed"
+            );
 
             let no = str_of(&compiled(ws), "ask_id");
             cancel(ws, &no, Some("not what I meant"), None, false).unwrap();
-            assert_eq!(ledger_error(unanswered(ws, &no, None, None).unwrap_err()).code, "ask.already_cancelled");
+            assert_eq!(
+                ledger_error(unanswered(ws, &no, None, None).unwrap_err()).code,
+                "ask.already_cancelled"
+            );
         });
     }
 
@@ -1526,7 +1578,10 @@ mod tests {
             let rec = confirm(ws, &id, None).unwrap();
             // The Claude profile has no top-level confirmation surface.
             assert_eq!(rec["confirmation"], json!({"observed_by": "skill", "surface": null}));
-            assert_eq!(ledger_error(confirm(ws, &id, None).unwrap_err()).code, "ask.already_confirmed");
+            assert_eq!(
+                ledger_error(confirm(ws, &id, None).unwrap_err()).code,
+                "ask.already_confirmed"
+            );
             let later = cancel(ws, &id, Some("changed my mind"), None, true).unwrap();
             assert_eq!(later["cancellation"], json!({"attributed_by": "human:local-user"}));
             assert_eq!(types(ws), ["ask.compiled", "ask.confirmed", "ask.cancelled"]);
@@ -1543,19 +1598,25 @@ mod tests {
     fn submission_observed_from_capture_and_attributed_by_human() {
         bench(|ws| {
             let codex_host = json!({"name": "codex", "surface": "native-tui"});
-            let out = compile_with(ws, Args {
-                capability: "native_direct".into(),
-                host: codex_host.clone(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    capability: "native_direct".into(),
+                    host: codex_host.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-            let other = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"Something else.\n")),
-                title: "Other".into(),
-                capability: "native_direct".into(),
-                host: codex_host.clone(),
-                ..Default::default()
-            })
+            let other = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"Something else.\n")),
+                    title: "Other".into(),
+                    capability: "native_direct".into(),
+                    host: codex_host.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             // The person pastes the exact prompt; the hook captures its digest.
             let rec = capture(ws, "codex", "c1", "Fix the login bug.\n", None);
@@ -1584,13 +1645,16 @@ mod tests {
                 show(ws, Some(&str_of(&other, "ask_id")), None).unwrap()["submission"],
                 "observed"
             );
-            let third = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"Third.\n")),
-                title: "Third".into(),
-                capability: "native_direct".into(),
-                host: codex_host,
-                ..Default::default()
-            })
+            let third = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"Third.\n")),
+                    title: "Third".into(),
+                    capability: "native_direct".into(),
+                    host: codex_host,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert!(submission_from_capture(ws, "codex", "c1", &"f".repeat(64)).unwrap().is_none());
             assert_eq!(
@@ -1628,13 +1692,19 @@ mod tests {
     fn confirm_resolves_session_and_version_from_capture() {
         bench(|ws| {
             capture(
-                ws, "claude-code", "hook-session", "/rf:ask fix the login bug",
+                ws,
+                "claude-code",
+                "hook-session",
+                "/rf:ask fix the login bug",
                 Some("2.1.263 (Claude Code)"),
             );
-            let out = compile_with(ws, Args {
-                host: json!({"name": "claude-code", "surface": "native-tui"}),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    host: json!({"name": "claude-code", "surface": "native-tui"}),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             assert_eq!(out["source_verified"], "exact");
@@ -1669,11 +1739,14 @@ mod tests {
                 .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.staged_dir");
             std::fs::remove_file(d.join("extra")).unwrap();
-            let e = compile_with(ws, Args {
-                staged: Some(d.clone()),
-                capability: "native_review".into(),
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    staged: Some(d.clone()),
+                    capability: "native_review".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.capability");
             assert!(events(ws).is_empty());
@@ -1686,11 +1759,14 @@ mod tests {
         bench(|ws| {
             let mut writes = cls();
             writes["effects"] = json!(["write"]);
-            let e = compile_with(ws, Args {
-                capability: "native_direct".into(),
-                classification: writes.clone(),
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    capability: "native_direct".into(),
+                    classification: writes.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.route_policy");
             assert!(events(ws).is_empty());
@@ -1699,26 +1775,37 @@ mod tests {
             // The staging survived the refusal.
             let mut explicit = route();
             explicit["explicit_direct_request"] = json!(true);
-            let out = compile_with(ws, Args {
-                staged: Some(ws.rf_dir().join("tmp/stage-1")),
-                capability: "native_direct".into(),
-                classification: writes,
-                route: explicit,
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(ws.rf_dir().join("tmp/stage-1")),
+                    capability: "native_direct".into(),
+                    classification: writes,
+                    route: explicit,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(out["delivery_mode"], "native_dispatch");
 
             let mut question = cls();
             question["task"] = json!(["question"]);
             question["result"] = json!("answer");
-            compile_with(ws, Args {
-                staged: Some(stage_named(ws, "prompt.txt", b"what does auth.ts do?", b"Explain auth.ts.")),
-                title: "Q".into(),
-                capability: "native_direct".into(),
-                classification: question,
-                ..Default::default()
-            })
+            compile_with(
+                ws,
+                Args {
+                    staged: Some(stage_named(
+                        ws,
+                        "prompt.txt",
+                        b"what does auth.ts do?",
+                        b"Explain auth.ts.",
+                    )),
+                    title: "Q".into(),
+                    capability: "native_direct".into(),
+                    classification: question,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         });
     }
@@ -1728,7 +1815,8 @@ mod tests {
         bench(|ws| {
             let mut bad = cls();
             bad["task"] = json!(["add-endpoint"]);
-            let e = compile_with(ws, Args { classification: bad, ..Default::default() }).unwrap_err();
+            let e =
+                compile_with(ws, Args { classification: bad, ..Default::default() }).unwrap_err();
             assert!(ledger_error(e).detail.contains("classification.task"));
             assert_eq!(std::fs::read_dir(ws.rf_dir().join("asks")).unwrap().count(), 0);
             assert!(events(ws).is_empty());
@@ -1755,12 +1843,15 @@ mod tests {
     #[test]
     fn an_unknown_host_falls_back_to_handoff() {
         bench(|ws| {
-            let out = compile_with(ws, Args {
-                host: json!({"name": "cursor", "version": "1.0", "surface": "cli",
+            let out = compile_with(
+                ws,
+                Args {
+                    host: json!({"name": "cursor", "version": "1.0", "surface": "cli",
                              "session_ref": null}),
-                capability: "human_handoff".into(),
-                ..Default::default()
-            })
+                    capability: "human_handoff".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(out["delivery_mode"], "human_handoff");
             let limitations = events(ws)[0]["data"]["limitations"].to_string().to_lowercase();
@@ -1772,7 +1863,8 @@ mod tests {
     fn cancel_after_compile_keeps_both_artifacts() {
         bench(|ws| {
             let out = compiled(ws);
-            let rec = cancel(ws, &str_of(&out, "ask_id"), Some("changed mind"), None, false).unwrap();
+            let rec =
+                cancel(ws, &str_of(&out, "ask_id"), Some("changed mind"), None, false).unwrap();
             assert_eq!(types(ws), ["ask.compiled", "ask.cancelled"]);
             assert_eq!(events(ws)[1]["data"]["reason"], "changed mind");
             assert_eq!(rec["cancellation"], json!({"observed_by": "skill"}));
@@ -1796,9 +1888,10 @@ mod tests {
             assert_eq!(last["data"]["qualification"]["id"], "ringframe-ask-plan-q04");
             // Already delivered: skip, and log why.
             assert!(delivery_from_hook(ws, &hook("s1", false, "EnterPlanMode")).unwrap().is_none());
-            let skipped =
-                std::fs::read_to_string(ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"))
-                    .unwrap();
+            let skipped = std::fs::read_to_string(
+                ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"),
+            )
+            .unwrap();
             assert!(skipped.contains("no_candidate"), "{skipped}");
             assert_eq!(types(ws).iter().filter(|t| *t == "ask.delivery").count(), 1);
         });
@@ -1819,18 +1912,24 @@ mod tests {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            assert!(delivery_from_hook(ws, &hook("other", false, "EnterPlanMode")).unwrap().is_none());
+            assert!(
+                delivery_from_hook(ws, &hook("other", false, "EnterPlanMode")).unwrap().is_none()
+            );
             assert!(delivery_from_hook(ws, &hook("s1", false, "Write")).unwrap().is_none());
-            compile_with(ws, Args {
-                staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
-                title: "second".into(),
-                ..Default::default()
-            })
+            compile_with(
+                ws,
+                Args {
+                    staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
+                    title: "second".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert!(delivery_from_hook(ws, &hook("s1", false, "EnterPlanMode")).unwrap().is_none());
-            let skipped =
-                std::fs::read_to_string(ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"))
-                    .unwrap();
+            let skipped = std::fs::read_to_string(
+                ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"),
+            )
+            .unwrap();
             assert!(skipped.contains("ambiguous"), "{skipped}");
         });
     }
@@ -1869,21 +1968,31 @@ mod tests {
 
             let mut other = host();
             other["session_ref"] = json!("s2");
-            let b = compile_with(ws, Args {
-                staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
-                title: "Logout".into(),
-                capability: "native_direct".into(),
-                host: other,
-                ..Default::default()
-            })
+            let b = compile_with(
+                ws,
+                Args {
+                    staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
+                    title: "Logout".into(),
+                    capability: "native_direct".into(),
+                    host: other,
+                    ..Default::default()
+                },
+            )
             .unwrap();
-            let AskError::Needs(e) = show(ws, None, None).unwrap_err() else { panic!("wanted a chooser") };
+            let AskError::Needs(e) = show(ws, None, None).unwrap_err() else {
+                panic!("wanted a chooser")
+            };
             let ids: BTreeSet<String> = e.candidates.iter().map(|c| str_of(c, "id")).collect();
             assert_eq!(ids, [str_of(&a, "ask_id"), str_of(&b, "ask_id")].into());
             assert!(matches!(show(ws, Some("Log"), None), Err(AskError::Needs(_))));
             let cands = resolve(ws, Some("s2"), None).unwrap();
             assert_eq!(
-                cands["candidates"].as_array().unwrap().iter().map(|c| str_of(c, "id")).collect::<Vec<_>>(),
+                cands["candidates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| str_of(c, "id"))
+                    .collect::<Vec<_>>(),
                 [str_of(&b, "ask_id")]
             );
             assert_eq!(cands["rule_applied"], "same_session");
@@ -1893,40 +2002,50 @@ mod tests {
     #[test]
     fn the_codex_handoff_has_a_prompt_prefix_and_a_length_policy() {
         bench(|ws| {
-            let host = json!({"name": "codex", "version": "codex-cli 0.153.1", "surface": "native-tui"});
+            let host =
+                json!({"name": "codex", "version": "codex-cli 0.153.1", "surface": "native-tui"});
             let mut goal = cls();
             goal["result"] = json!("continuing_objective");
             goal["horizon"] = json!("persistent");
-            let out = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/goal Keep the checkout p95 under 800 ms.\n")),
-                capability: "native_goal".into(),
-                host: host.clone(),
-                classification: goal.clone(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/goal Keep the checkout p95 under 800 ms.\n")),
+                    capability: "native_goal".into(),
+                    host: host.clone(),
+                    classification: goal.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(out["delivery_mode"], "human_handoff");
 
-            let e = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"Keep the checkout fast.\n")),
-                capability: "native_goal".into(),
-                host: host.clone(),
-                classification: goal.clone(),
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"Keep the checkout fast.\n")),
+                    capability: "native_goal".into(),
+                    host: host.clone(),
+                    classification: goal.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.prompt_prefix");
 
             let mut long = b"/goal ".to_vec();
             long.extend(std::iter::repeat_n(b'x', 4000));
             long.push(b'\n');
-            let e = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, &long)),
-                capability: "native_goal".into(),
-                host,
-                classification: goal,
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, &long)),
+                    capability: "native_goal".into(),
+                    host,
+                    classification: goal,
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.prompt_too_long");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
@@ -1965,12 +2084,15 @@ mod tests {
             let mut question = cls();
             question["task"] = json!(["question"]);
             question["result"] = json!("answer");
-            let e = compile_with(ws, Args {
-                actor: Some(agent),
-                capability: "native_direct".into(),
-                classification: question,
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    actor: Some(agent),
+                    capability: "native_direct".into(),
+                    classification: question,
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert!(matches!(e, AskError::Needs(_)), "{e}");
         });
@@ -1980,11 +2102,14 @@ mod tests {
     fn the_confirmation_surface_comes_from_the_profile_or_is_unknown() {
         bench(|ws| {
             // An unknown host must not acquire a native confirmation surface.
-            let out = compile_with(ws, Args {
-                host: json!({"name": "unknown-host", "surface": "native-tui"}),
-                capability: "human_handoff".into(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    host: json!({"name": "unknown-host", "surface": "native-tui"}),
+                    capability: "human_handoff".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let rec = confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             assert_eq!(rec["confirmation"]["surface"], json!(null));
@@ -1994,13 +2119,16 @@ mod tests {
             writes["task"] = json!(["implement"]);
             writes["result"] = json!("workspace_change");
             writes["effects"] = json!(["write"]);
-            let out2 = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
-                title: "second".into(),
-                host: json!({"name": "codex", "surface": "native-tui"}),
-                classification: writes,
-                ..Default::default()
-            })
+            let out2 = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
+                    title: "second".into(),
+                    host: json!({"name": "codex", "surface": "native-tui"}),
+                    classification: writes,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert_eq!(
                 confirm(ws, &str_of(&out2, "ask_id"), None).unwrap()["confirmation"]["surface"],
@@ -2013,21 +2141,27 @@ mod tests {
     /// not the model, knows the session.
     fn codex_plan(ws: &Workspace, title: &str, prompt: &[u8]) -> Value {
         capture(
-            ws, "codex", &format!("s-{title}"), "$rf:ask fix the login bug",
+            ws,
+            "codex",
+            &format!("s-{title}"),
+            "$rf:ask fix the login bug",
             Some("codex-cli 0.153.4"),
         );
         let mut writes = cls();
         writes["task"] = json!(["implement"]);
         writes["result"] = json!("workspace_change");
         writes["effects"] = json!(["write"]);
-        compile_with(ws, Args {
-            staged: Some(staged_prompt(ws, prompt)),
-            title: title.into(),
-            host: json!({"name": "codex", "version": "codex-cli 0.153.4",
+        compile_with(
+            ws,
+            Args {
+                staged: Some(staged_prompt(ws, prompt)),
+                title: title.into(),
+                host: json!({"name": "codex", "version": "codex-cli 0.153.4",
                          "surface": "native-tui", "session_ref": format!("s-{title}")}),
-            classification: writes,
-            ..Default::default()
-        })
+                classification: writes,
+                ..Default::default()
+            },
+        )
         .unwrap()
     }
 
@@ -2085,20 +2219,25 @@ mod tests {
         bench(|ws| {
             capture(ws, "codex", "cg", "$rf:ask keep checkout fast", Some("codex-cli 0.153.4"));
             let d = stage_named(
-                ws, "body.txt", b"keep checkout fast\n",
+                ws,
+                "body.txt",
+                b"keep checkout fast\n",
                 b"Run plans/checkout-perf, every item in order.\n",
             );
             let cls = json!({"task": ["implement"], "result": "continuing_objective",
                              "interaction": "approval_gated", "horizon": "persistent",
                              "effects": ["write"], "concerns": ["performance"]});
-            let out = compile_with(ws, Args {
-                staged: Some(d),
-                title: "Checkout goal".into(),
-                capability: "native_goal".into(),
-                host: json!({"name": "codex", "surface": "native-tui"}),
-                classification: cls,
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(d),
+                    title: "Checkout goal".into(),
+                    capability: "native_goal".into(),
+                    host: json!({"name": "codex", "surface": "native-tui"}),
+                    classification: cls,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
             // Host prefix + body: the CLI added the prefix.
@@ -2112,7 +2251,7 @@ mod tests {
                 text.contains("- Knuth: Do not optimize on suspicion; measure first"),
                 "{text}"
             );
-            let ev = events(ws).into_iter().filter(|e| e["type"] == "ask.compiled").next_back().unwrap();
+            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
             let comp = &ev["data"]["compiler"];
             assert_eq!(comp["source"], "body");
             assert_eq!(comp["host"]["deltas"], json!([]));
@@ -2143,9 +2282,17 @@ mod tests {
     #[test]
     fn a_composed_prompt_records_the_cli_selection_not_the_models_claim() {
         bench(|ws| {
-            capture(ws, "codex", "cc", "$rf:ask add the health endpoint", Some("codex-cli 0.153.4"));
+            capture(
+                ws,
+                "codex",
+                "cc",
+                "$rf:ask add the health endpoint",
+                Some("codex-cli 0.153.4"),
+            );
             let d = stage_named(
-                ws, "composed.txt", b"add the health endpoint\n",
+                ws,
+                "composed.txt",
+                b"add the health endpoint\n",
                 b"Add GET /health returning uptime. Reuse the existing bearer check.\n\nRules:\n\
                   - Hyrum: keep every current endpoint's behaviour unchanged.\n\
                   - KISS, YAGNI: return only uptime; no options.\n",
@@ -2153,22 +2300,27 @@ mod tests {
             let cls = json!({"task": ["implement"], "result": "workspace_change",
                              "interaction": "approval_gated", "horizon": "session",
                              "effects": ["write"], "concerns": ["api_surface"]});
-            let out = compile_with(ws, Args {
-                staged: Some(d),
-                title: "Health".into(),
-                host: json!({"name": "codex", "surface": "native-tui"}),
-                classification: cls,
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(d),
+                    title: "Health".into(),
+                    host: json!({"name": "codex", "surface": "native-tui"}),
+                    classification: cls,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
             // Prefix added, nothing appended.
             assert!(
-                text.starts_with("/plan Add GET /health returning uptime. Reuse the existing bearer check.\n"),
+                text.starts_with(
+                    "/plan Add GET /health returning uptime. Reuse the existing bearer check.\n"
+                ),
                 "{text}"
             );
             assert!(text.trim_end_matches('\n').ends_with("no options."), "{text}");
-            let ev = events(ws).into_iter().filter(|e| e["type"] == "ask.compiled").next_back().unwrap();
+            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
             let comp = &ev["data"]["compiler"];
             assert_eq!(comp["source"], "composed");
             let selected = list_of(&comp["practice"], "selected");
@@ -2204,21 +2356,25 @@ mod tests {
                 "- KISS, YAGNI: Expose only uptime and version; no new options or abstractions.\n\
                  - Hyrum: Keep every existing endpoint's observable behaviour unchanged.\n",
             );
-            let out = compile_with(ws, Args {
-                staged: Some(good),
-                title: "Health".into(),
-                host: host.clone(),
-                classification: cls.clone(),
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(good),
+                    title: "Health".into(),
+                    host: host.clone(),
+                    classification: cls.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
-            let ev = events(ws).into_iter().filter(|e| e["type"] == "ask.compiled").next_back().unwrap();
+            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
             let comp = &ev["data"]["compiler"];
             assert_eq!(comp["source"], "composed");
             let applied: BTreeSet<String> = list_of(comp, "applied").into_iter().collect();
             assert_eq!(
                 applied,
-                ["practice.kiss".to_string(), "practice.yagni".into(), "practice.hyrum".into()].into()
+                ["practice.kiss".to_string(), "practice.yagni".into(), "practice.hyrum".into()]
+                    .into()
             );
             let selected: BTreeSet<String> =
                 list_of(&comp["practice"], "selected").into_iter().collect();
@@ -2227,30 +2383,37 @@ mod tests {
             assert!(omitted.contains("practice.testing_pyramid"));
             assert!(prompt_text(ws, &str_of(&out, "ask_id")).unwrap().starts_with("/plan Add GET"));
 
-            let bad = composed_stage(
+            let bad =
+                composed_stage(ws, "- KISS: Keep it small.\n- Telepathy: Read the user's mind.\n");
+            let e = compile_with(
                 ws,
-                "- KISS: Keep it small.\n- Telepathy: Read the user's mind.\n",
-            );
-            let e = compile_with(ws, Args {
-                staged: Some(bad),
-                title: "Health".into(),
-                host: host.clone(),
-                classification: cls.clone(),
-                ..Default::default()
-            })
+                Args {
+                    staged: Some(bad),
+                    title: "Health".into(),
+                    host: host.clone(),
+                    classification: cls.clone(),
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.composed_rules");
 
             let norules = stage_named(
-                ws, "composed.txt", b"add the health endpoint\n", b"Add GET /health/details.\n",
+                ws,
+                "composed.txt",
+                b"add the health endpoint\n",
+                b"Add GET /health/details.\n",
             );
-            let e = compile_with(ws, Args {
-                staged: Some(norules),
-                title: "Health".into(),
-                host,
-                classification: cls,
-                ..Default::default()
-            })
+            let e = compile_with(
+                ws,
+                Args {
+                    staged: Some(norules),
+                    title: "Health".into(),
+                    host,
+                    classification: cls,
+                    ..Default::default()
+                },
+            )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.composed_rules");
         });
@@ -2261,11 +2424,14 @@ mod tests {
         bench(|ws| {
             assert!(list_asks(ws).unwrap().is_empty());
             let a = compiled(ws);
-            let b = compile_with(ws, Args {
-                staged: Some(staged_prompt(ws, b"Other.\n")),
-                title: "Other".into(),
-                ..Default::default()
-            })
+            let b = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"Other.\n")),
+                    title: "Other".into(),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             confirm(ws, &str_of(&b, "ask_id"), None).unwrap();
             let listed = list_asks(ws).unwrap();
@@ -2283,10 +2449,15 @@ mod tests {
     fn compile_records_the_base_commit_and_asks_stay_open_until_sealed_or_cancelled() {
         bench(|ws| {
             let out = std::process::Command::new("git")
-                .arg("-C").arg(&ws.root).args(["rev-parse", "HEAD"]).output().unwrap();
+                .arg("-C")
+                .arg(&ws.root)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap();
             let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
             let a = compiled(ws);
-            let b = compile_with(ws, Args { title: "Second".into(), ..Default::default() }).unwrap();
+            let b =
+                compile_with(ws, Args { title: "Second".into(), ..Default::default() }).unwrap();
             assert_eq!(events(ws)[0]["data"]["base_commit"], head);
             let states = |ws: &Workspace| {
                 list_asks(ws).unwrap().iter().map(|x| str_of(x, "state")).collect::<Vec<_>>()
@@ -2343,11 +2514,14 @@ mod tests {
         for version in [Some("codex-cli 1.0.0"), Some("development"), None] {
             bench(|ws| {
                 capture(ws, "codex", "new", "$rf:ask fix the login bug", version);
-                let out = compile_with(ws, Args {
-                    staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
-                    host: json!({"name": "codex"}),
-                    ..Default::default()
-                })
+                let out = compile_with(
+                    ws,
+                    Args {
+                        staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
+                        host: json!({"name": "codex"}),
+                        ..Default::default()
+                    },
+                )
                 .unwrap();
                 let recorded = events(ws)[0]["data"]["host"].clone();
                 assert_eq!(recorded["version"], json!(version));
@@ -2366,26 +2540,31 @@ mod tests {
     fn codex_review_compiles_and_hands_off_from_the_profile() {
         bench(|ws| {
             let d = stage_named(
-                ws, "body.txt", b"fix the login bug\n",
+                ws,
+                "body.txt",
+                b"fix the login bug\n",
                 b"Review the current diff for regressions.\n",
             );
             let mut review = cls();
             review["task"] = json!(["review"]);
             review["result"] = json!("evidence");
-            let out = compile_with(ws, Args {
-                staged: Some(d),
-                capability: "native_review".into(),
-                host: json!({"name": "codex", "surface": "native-tui"}),
-                classification: review,
-                ..Default::default()
-            })
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(d),
+                    capability: "native_review".into(),
+                    host: json!({"name": "codex", "surface": "native-tui"}),
+                    classification: review,
+                    ..Default::default()
+                },
+            )
             .unwrap();
             let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
             assert!(text.starts_with("/review Review the current diff for regressions."), "{text}");
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             let (_, delivery) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
             assert_eq!(delivery["state"], "handoff_ready");
-            let ev = events(ws).into_iter().filter(|e| e["type"] == "ask.compiled").next_back().unwrap();
+            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
             assert_eq!(ev["data"]["host"]["profile_sha256"], profiles::sha256("codex").unwrap());
             assert_eq!(ev["data"]["selected_capability"], "native_review");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());

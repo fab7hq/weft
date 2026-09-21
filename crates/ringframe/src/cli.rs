@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 use crate::ask::{AskError, NeedsInput};
 use crate::seal::SealError;
 use crate::workspace::Workspace;
-use crate::{VERSION, ask, deltas, evaluate, ids, output, profiles, seal, sessions, store, workspace};
+use crate::{
+    VERSION, ask, deltas, evaluate, ids, output, profiles, seal, sessions, store, workspace,
+};
 
 /// What one invocation produced. The tests drive this directly, so nothing
 /// here touches the real streams.
@@ -56,8 +58,16 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("sync", None) => s(&["--from"], NONE, NONE, false, NONE),
         ("profile", Some("show")) => s(&["--host", "--version"], NONE, &["--host"], true, NONE),
         ("ask", Some("compile")) => s(
-            &["--staged", "--title", "--capability", "--classification", "--route", "--host",
-              "--link", "--limitation"],
+            &[
+                "--staged",
+                "--title",
+                "--capability",
+                "--classification",
+                "--route",
+                "--host",
+                "--link",
+                "--limitation",
+            ],
             NONE,
             &["--staged", "--title", "--capability", "--classification", "--route", "--host"],
             false,
@@ -70,13 +80,9 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
         ("ask", Some("copy")) => s(&["--ask"], NONE, &["--ask"], false, NONE),
-        ("ask", Some("delivery")) => s(
-            &["--ask", "--state", "--reason"],
-            &["--from-hook", "--handoff"],
-            NONE,
-            false,
-            NONE,
-        ),
+        ("ask", Some("delivery")) => {
+            s(&["--ask", "--state", "--reason"], &["--from-hook", "--handoff"], NONE, false, NONE)
+        }
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("show")) => s(&["--ask", "--session"], NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
@@ -120,20 +126,35 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
 const SURFACE: [(&str, Option<&str>); 28] = [
-    ("init", None), ("sync", None),
+    ("init", None),
+    ("sync", None),
     ("profile", Some("show")),
-    ("ask", Some("compile")), ("ask", Some("confirm")), ("ask", Some("unanswered")),
-    ("ask", Some("cancel")), ("ask", Some("submitted")), ("ask", Some("copy")),
-    ("ask", Some("delivery")), ("ask", Some("list")), ("ask", Some("show")),
-    ("ask", Some("preflight")), ("ask", Some("resolve")),
-    ("eval", Some("open")), ("eval", Some("close")), ("eval", Some("list")),
-    ("seal", Some("create")), ("seal", Some("check")),
+    ("ask", Some("compile")),
+    ("ask", Some("confirm")),
+    ("ask", Some("unanswered")),
+    ("ask", Some("cancel")),
+    ("ask", Some("submitted")),
+    ("ask", Some("copy")),
+    ("ask", Some("delivery")),
+    ("ask", Some("list")),
+    ("ask", Some("show")),
+    ("ask", Some("preflight")),
+    ("ask", Some("resolve")),
+    ("eval", Some("open")),
+    ("eval", Some("close")),
+    ("eval", Some("list")),
+    ("seal", Some("create")),
+    ("seal", Some("check")),
     ("ledger", Some("verify")),
-    ("deltas", Some("list")), ("deltas", Some("domains")), ("deltas", Some("render")),
-    ("sessions", Some("capture")), ("sessions", Some("prune")),
+    ("deltas", Some("list")),
+    ("deltas", Some("domains")),
+    ("deltas", Some("render")),
+    ("sessions", Some("capture")),
+    ("sessions", Some("prune")),
     ("export", None),
     // Listed last because they are not commands.
-    ("--version", None), ("--help", None),
+    ("--version", None),
+    ("--help", None),
 ];
 
 /// What each command is for, in one line.
@@ -142,9 +163,13 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("init", None) => "prepare this project, or with --global the configuration home",
         ("sync", None) => "replace the synced configuration; personal overrides are untouched",
         ("profile", _) => "the host's capabilities and how each one has to be delivered",
-        ("ask", Some("compile")) => "persist a staged intent and its prompt; the only Ask that writes artifacts",
+        ("ask", Some("compile")) => {
+            "persist a staged intent and its prompt; the only Ask that writes artifacts"
+        }
         ("ask", Some("confirm")) => "record the chooser's answer",
-        ("ask", Some("unanswered")) => "the confirmation surface gave no answer; the Ask stays open",
+        ("ask", Some("unanswered")) => {
+            "the confirmation surface gave no answer; the Ask stays open"
+        }
         ("ask", Some("cancel")) => "record that the person said no",
         ("ask", Some("submitted")) => "the person attests they submitted the prompt",
         ("ask", Some("copy")) => "the compiled prompt, verbatim",
@@ -162,7 +187,9 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("deltas", Some("list")) => "the delta catalogs as installed",
         ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
         ("deltas", Some("render")) => "the directives that apply to one classification",
-        ("sessions", Some("capture")) => "store a hook's prompt payload; reads the payload on stdin",
+        ("sessions", Some("capture")) => {
+            "store a hook's prompt payload; reads the payload on stdin"
+        }
         ("sessions", Some("prune")) => "remove session captures older than a duration",
         ("export", None) => "one Ask's artifacts and ledger slice, as a tar",
         ("--version", None) => "print the version",
@@ -173,8 +200,12 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
 
 fn help() -> String {
     let mut out = String::new();
-    out.push_str("ringframe \u{2014} record what was asked, judge what was done, seal the decision.\n");
-    out.push_str("\nusage: ringframe [--workspace DIR] [--actor KIND:ID] [--authority A] <command> [...]\n");
+    out.push_str(
+        "ringframe \u{2014} record what was asked, judge what was done, seal the decision.\n",
+    );
+    out.push_str(
+        "\nusage: ringframe [--workspace DIR] [--actor KIND:ID] [--authority A] <command> [...]\n",
+    );
     let mut last = "";
     for (cmd, sub) in SURFACE {
         if cmd != last {
@@ -218,9 +249,19 @@ fn takes_sub(cmd: &str) -> bool {
     matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "sessions")
 }
 
-const COMMANDS: [&str; 11] =
-    ["init", "sync", "profile", "ask", "eval", "seal", "ledger", "deltas", "sessions", "export"
-     , "--version"];
+const COMMANDS: [&str; 11] = [
+    "init",
+    "sync",
+    "profile",
+    "ask",
+    "eval",
+    "seal",
+    "ledger",
+    "deltas",
+    "sessions",
+    "export",
+    "--version",
+];
 
 struct Parsed {
     cmd: String,
@@ -511,9 +552,7 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
                               else { json!(n.candidates) },
             }),
         ),
-        Outcome::Refused(codes) => {
-            (2, json!({"error": "seal.refused", "refusal_codes": codes}))
-        }
+        Outcome::Refused(codes) => (2, json!({"error": "seal.refused", "refusal_codes": codes})),
         Outcome::Error(code, detail) => (2, json!({"error": code, "detail": detail})),
     };
     Run { code, out: emit(&body, ns.json, concise), err: String::new() }
@@ -581,7 +620,8 @@ fn dispatch(
             }
         }
         ("profile", Some("show")) => {
-            let host = json!({"name": ns.one("--host"), "version": ns.one("--version").unwrap_or("")});
+            let host =
+                json!({"name": ns.one("--host"), "version": ns.one("--version").unwrap_or("")});
             let profile = match profiles::for_host(&host) {
                 Ok(p) => p,
                 Err(e) => bail!(from_config_error(e)),
@@ -602,12 +642,15 @@ fn dispatch(
             Err(e) => (ws, from_ask_error(e)),
         },
         ("eval", Some("open")) => {
-            let out = evaluate::open_eval(&ws, evaluate::Open {
-                anchor: ns.one("--anchor"),
-                subject_kind: ns.one("--subject-kind"),
-                subject_ref: ns.one("--subject-ref"),
-                actor: Some(actor),
-            });
+            let out = evaluate::open_eval(
+                &ws,
+                evaluate::Open {
+                    anchor: ns.one("--anchor"),
+                    subject_kind: ns.one("--subject-kind"),
+                    subject_ref: ns.one("--subject-ref"),
+                    actor: Some(actor),
+                },
+            );
             match out {
                 Ok(v) => (ws, Outcome::Ok(0, v)),
                 Err(e) => (ws, from_ask_error(e)),
@@ -623,7 +666,11 @@ fn dispatch(
                 }
             }
             let out = evaluate::close_eval(
-                &ws, ns.one("--eval").unwrap_or_default(), &intent, &judgements, Some(&actor),
+                &ws,
+                ns.one("--eval").unwrap_or_default(),
+                &intent,
+                &judgements,
+                Some(&actor),
             );
             match out {
                 Ok(v) => (ws, Outcome::Ok(0, v)),
@@ -653,8 +700,13 @@ fn dispatch(
         ("ledger", Some("verify")) => match store::verify(&ws) {
             Ok(findings) => {
                 let clean = findings.is_empty();
-                (ws, Outcome::Ok(if clean { 0 } else { 2 },
-                                 json!({"findings": findings, "clean": clean})))
+                (
+                    ws,
+                    Outcome::Ok(
+                        if clean { 0 } else { 2 },
+                        json!({"findings": findings, "clean": clean}),
+                    ),
+                )
             }
             Err(e) => (ws, Outcome::Error(e.code, e.detail)),
         },
@@ -665,8 +717,9 @@ fn dispatch(
             };
             let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
                 Ok(w) => w,
-                Err(e) => return (workspace::resolve(None, None).expect("cwd"),
-                                  Outcome::UsageDetail(e)),
+                Err(e) => {
+                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
+                }
             };
             let host = ns.one("--host").unwrap_or_default();
             let rec = match sessions::capture(&ws, host, &payload, ns.one("--host-version")) {
@@ -698,7 +751,11 @@ fn dispatch(
             }
         }
         ("export", None) => {
-            let out = export(&ws, ns.one("--ask").unwrap_or_default(), Path::new(ns.one("--out").unwrap_or_default()));
+            let out = export(
+                &ws,
+                ns.one("--ask").unwrap_or_default(),
+                Path::new(ns.one("--out").unwrap_or_default()),
+            );
             match out {
                 Ok(v) => (ws, Outcome::Ok(0, v)),
                 Err(e) => (ws, from_ask_error(e)),
@@ -739,23 +796,26 @@ fn ask_command(
                 Err(e) => return (ws, Outcome::UsageDetail(e)),
             };
             let staged = PathBuf::from(ns.one("--staged").unwrap_or_default());
-            done!(ask::compile(&ws, ask::Compile {
-                staged: &staged,
-                title: ns.one("--title").unwrap_or_default(),
-                capability: ns.one("--capability").unwrap_or_default(),
-                classification,
-                route,
-                host,
-                links: links_of(&ns.all("--link")),
-                limitations: ns.all("--limitation"),
-                actor: Some(actor),
-            }))
+            done!(ask::compile(
+                &ws,
+                ask::Compile {
+                    staged: &staged,
+                    title: ns.one("--title").unwrap_or_default(),
+                    capability: ns.one("--capability").unwrap_or_default(),
+                    classification,
+                    route,
+                    host,
+                    links: links_of(&ns.all("--link")),
+                    limitations: ns.all("--limitation"),
+                    actor: Some(actor),
+                }
+            ))
         }
         "confirm" => done!(ask::confirm(&ws, &id, Some(&actor))),
         "unanswered" => done!(ask::unanswered(&ws, &id, ns.one("--reason"), Some(&actor))),
-        "cancel" => done!(ask::cancel(
-            &ws, &id, ns.one("--reason"), Some(&actor), ns.has("--attributed")
-        )),
+        "cancel" => {
+            done!(ask::cancel(&ws, &id, ns.one("--reason"), Some(&actor), ns.has("--attributed")))
+        }
         "submitted" => done!(ask::submitted(&ws, &id, ns.has("--as-modified"), Some(&actor))),
         "preflight" => done!(ask::preflight(&ws)),
         "copy" => match ask::prompt_text(&ws, &id) {
@@ -769,8 +829,7 @@ fn ask_command(
                     let payload: Value =
                         serde_json::from_str(&read_stdin()).map_err(|e| e.to_string())?;
                     let ws = hook_workspace(ns.workspace.as_ref(), ws, &payload)?;
-                    let rec =
-                        ask::delivery_from_hook(&ws, &payload).map_err(|e| e.to_string())?;
+                    let rec = ask::delivery_from_hook(&ws, &payload).map_err(|e| e.to_string())?;
                     Ok((ws, rec))
                 })();
                 return match recorded {
@@ -849,9 +908,15 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
                 }
             }
             let catalog = config_try!(deltas::load_practice_catalog(&domain, Some(&ws)));
-            (ws, Outcome::Ok(0, json!({
-                "host": entries, "practice": catalog["entries"], "concerns": catalog["concerns"]
-            })))
+            (
+                ws,
+                Outcome::Ok(
+                    0,
+                    json!({
+                        "host": entries, "practice": catalog["entries"], "concerns": catalog["concerns"]
+                    }),
+                ),
+            )
         }
         _ => {
             let host = json!({"name": ns.one("--host"),
@@ -942,8 +1007,7 @@ fn export(ws: &Workspace, ask_id: &str, out: &Path) -> Result<Value, AskError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{commit, eval_bench, intent_doc, judgement, two_asks_and_work,
-                         with_config_home};
+    use crate::testing::{commit, eval_bench, intent_doc, two_asks_and_work, with_config_home};
 
     struct Cli {
         root: PathBuf,
@@ -961,8 +1025,8 @@ mod tests {
             argv.extend(args.iter().map(|a| (*a).to_string()));
             let mut read = || stdin.to_string();
             let run = super::run(&argv, &mut read);
-            let body = serde_json::from_str(&run.out)
-                .unwrap_or_else(|_| Value::String(run.out.clone()));
+            let body =
+                serde_json::from_str(&run.out).unwrap_or_else(|_| Value::String(run.out.clone()));
             (run.code, body, run.err)
         }
 
@@ -979,8 +1043,20 @@ mod tests {
             let staged = self.staged(stage);
             let host = host_json(session);
             let (code, out, _) = self.go(&[
-                "ask", "compile", "--staged", &staged, "--title", title, "--capability",
-                capability, "--classification", CLS, "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                title,
+                "--capability",
+                capability,
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             if code == 0 {
                 let id = out["ask_id"].as_str().unwrap().to_string();
@@ -993,7 +1069,8 @@ mod tests {
     }
 
     const CLS: &str = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read"]}"#;
-    const ROUTE: &str = r#"{"fits":"f","alternatives":[],"continuation":"c","effects":"e","gaps":[]}"#;
+    const ROUTE: &str =
+        r#"{"fits":"f","alternatives":[],"continuation":"c","effects":"e","gaps":[]}"#;
 
     fn host_json(session: &str) -> String {
         format!(
@@ -1012,8 +1089,15 @@ mod tests {
             assert_eq!(code, 0);
             assert!(out["rf_dir"].as_str().unwrap().ends_with(".fab7/rf"));
             assert!(c.root.join(".fab7/rf/.gitignore").exists());
-            let (code, out, _) =
-                c.go(&["profile", "show", "--host", "claude-code", "--version", "2.1.260", "--json"]);
+            let (code, out, _) = c.go(&[
+                "profile",
+                "show",
+                "--host",
+                "claude-code",
+                "--version",
+                "2.1.260",
+                "--json",
+            ]);
             assert_eq!(code, 0);
             assert_eq!(out["profile_id"], "claude-code");
             assert_eq!(out["sha256"].as_str().unwrap().len(), 64);
@@ -1074,8 +1158,16 @@ mod tests {
             let text = out.as_str().unwrap();
             assert!(text.contains("prompt.txt"), "{text}");
             assert!(text.contains("Claude Code TUI"));
-            let (code, out, _) =
-                c.go(&["ask", "delivery", "--ask", &a_id, "--state", "unavailable", "--reason", "x"]);
+            let (code, out, _) = c.go(&[
+                "ask",
+                "delivery",
+                "--ask",
+                &a_id,
+                "--state",
+                "unavailable",
+                "--reason",
+                "x",
+            ]);
             assert_eq!(code, 2);
             assert_eq!(out["error"], "delivery.duplicate");
 
@@ -1109,8 +1201,20 @@ mod tests {
             let staged = c.staged("stage-1");
             let host = host_json("s1");
             let (code, out, _) = c.go(&[
-                "ask", "compile", "--staged", &staged, "--title", "t", "--capability",
-                "native_plan", "--classification", CLS, "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "t",
+                "--capability",
+                "native_plan",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             assert_eq!(code, 0);
             assert_eq!(out["delivery_mode"], "native_dispatch");
@@ -1128,8 +1232,20 @@ mod tests {
             assert_eq!(out, "Fix login.\n");
 
             let (code, out, _) = c.go(&[
-                "ask", "compile", "--staged", "/nope", "--title", "t", "--capability",
-                "native_plan", "--classification", CLS, "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                "/nope",
+                "--title",
+                "t",
+                "--capability",
+                "native_plan",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             assert_eq!(code, 2);
             assert_eq!(out["error"], "ask.staged_dir");
@@ -1141,8 +1257,20 @@ mod tests {
 
             let staged = c.staged("s3");
             let (code, out, _) = c.go(&[
-                "ask", "compile", "--staged", &staged, "--title", "t", "--capability",
-                "native_plan", "--classification", "{not json", "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "t",
+                "--capability",
+                "native_plan",
+                "--classification",
+                "{not json",
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             assert_eq!(code, 1);
             assert_eq!(out["error"], "usage");
@@ -1154,8 +1282,19 @@ mod tests {
         cli(|c| {
             let staged = c.staged("stage-1");
             let (code, out, _) = c.go(&[
-                "ask", "compile", "--staged", &staged, "--title", "t", "--capability",
-                "native_direct", "--classification", CLS, "--route", ROUTE, "--host",
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "t",
+                "--capability",
+                "native_direct",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
                 r#"{"name":"codex","surface":"native-tui"}"#,
             ]);
             assert_eq!(code, 0);
@@ -1190,8 +1329,12 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                brief["asks"].as_array().unwrap().iter()
-                    .map(|x| x["ask_id"].as_str().unwrap()).collect::<Vec<_>>(),
+                brief["asks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x["ask_id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
                 [a.as_str(), b.as_str()]
             );
             assert_eq!(brief["subject"]["ref"], sha);
@@ -1202,8 +1345,7 @@ mod tests {
             // dirty the tree, so the Seal's subject is the worktree rather
             // than a commit, and a later change stops matching it.
             let dir = c.root.clone();
-            let items =
-                json!([{"id": "i1", "text": "Expose an uptime endpoint", "ask_id": a, "status": "active"}]);
+            let items = json!([{"id": "i1", "text": "Expose an uptime endpoint", "ask_id": a, "status": "active"}]);
             let intent_path = dir.join("intent.json");
             std::fs::write(&intent_path, intent_doc(&brief_sha, items).to_string()).unwrap();
             let intent_arg = format!("@{}", intent_path.display());
@@ -1211,16 +1353,23 @@ mod tests {
             for (n, ang) in ["coverage", "drift", "adversary"].iter().enumerate() {
                 let f = dir.join(format!("j{n}.json"));
                 let j = crate::testing::judgement_over(
-                    &brief_sha, ang, &[("i1", "yes")],
-                    &[("docs/notes.md", "unexplained")], &crate::testing::CHANGED,
+                    &brief_sha,
+                    ang,
+                    &[("i1", "yes")],
+                    &[("docs/notes.md", "unexplained")],
+                    &crate::testing::CHANGED,
                 );
                 std::fs::write(&f, j.to_string()).unwrap();
                 judgement_args.push("--judgement".into());
                 judgement_args.push(format!("@{}", f.display()));
             }
-            let base: Vec<&str> = vec!["eval", "close", "--eval", &eval_id, "--intent", &intent_arg];
-            let two: Vec<&str> =
-                base.iter().copied().chain(judgement_args[..4].iter().map(String::as_str)).collect();
+            let base: Vec<&str> =
+                vec!["eval", "close", "--eval", &eval_id, "--intent", &intent_arg];
+            let two: Vec<&str> = base
+                .iter()
+                .copied()
+                .chain(judgement_args[..4].iter().map(String::as_str))
+                .collect();
             let (code, out, _) = c.go(&two);
             assert_eq!(code, 2);
             assert_eq!(out["error"], "eval.too_few_judges");
@@ -1238,13 +1387,21 @@ mod tests {
 
             let (_, listed, _) = c.go(&["eval", "list", "--json"]);
             assert_eq!(
-                listed["evals"].as_array().unwrap().iter()
-                    .map(|e| e["verdict"].clone()).collect::<Vec<_>>(),
+                listed["evals"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e["verdict"].clone())
+                    .collect::<Vec<_>>(),
                 [json!("drifted")]
             );
 
             let (code, receipt, _) = c.go(&[
-                "seal", "create", "--disposition", "accepted", "--note",
+                "seal",
+                "create",
+                "--disposition",
+                "accepted",
+                "--note",
                 "shipping the drift knowingly",
             ]);
             assert_eq!(code, 0);
@@ -1293,16 +1450,16 @@ mod tests {
             let dir = crate::testing::tmp_dir();
             let out_path = dir.path().join("x.tar");
             let (code, out, _) = c.go(&[
-                "export", "--ask", a["ask_id"].as_str().unwrap(), "--out",
+                "export",
+                "--ask",
+                a["ask_id"].as_str().unwrap(),
+                "--out",
                 &out_path.to_string_lossy(),
             ]);
             assert_eq!(code, 0);
             assert_eq!(out["files"], 3);
-            let listing = std::process::Command::new("tar")
-                .arg("-tf")
-                .arg(&out_path)
-                .output()
-                .unwrap();
+            let listing =
+                std::process::Command::new("tar").arg("-tf").arg(&out_path).output().unwrap();
             let names = String::from_utf8_lossy(&listing.stdout).to_string();
             assert!(names.contains("prompt.txt"), "{names}");
             assert!(names.contains("ledger.jsonl"), "{names}");
@@ -1352,17 +1509,21 @@ mod tests {
         assert!(whole.out.contains("usage: ringframe"), "{}", whole.out);
         assert!(whole.out.contains("ask compile"));
         assert!(whole.out.contains("Exit codes: 0 ok, 1 usage"));
-        let one = super::run(
-            &["eval".to_string(), "close".into(), "--help".into()],
-            &mut none,
-        );
+        let one = super::run(&["eval".to_string(), "close".into(), "--help".into()], &mut none);
         assert_eq!(one.code, 0);
         assert!(one.out.contains("usage: ringframe eval close"), "{}", one.out);
         assert!(one.out.contains("--judgement VALUE (required) (repeatable)"), "{}", one.out);
         // `profile show --version` names a host version, not this binary's.
         let host = super::run(
-            &["profile".to_string(), "show".into(), "--host".into(), "codex".into(),
-              "--version".into(), "0.1".into(), "--minimal".into()],
+            &[
+                "profile".to_string(),
+                "show".into(),
+                "--host".into(),
+                "codex".into(),
+                "--version".into(),
+                "0.1".into(),
+                "--minimal".into(),
+            ],
             &mut none,
         );
         assert!(!host.out.starts_with("ringframe 0."), "{}", host.out);
@@ -1380,12 +1541,23 @@ mod tests {
     #[test]
     fn deltas_commands() {
         cli(|c| {
-            let (code, out, _) =
-                c.go(&["deltas", "list", "--host", "codex", "--capability", "native_goal", "--json"]);
+            let (code, out, _) = c.go(&[
+                "deltas",
+                "list",
+                "--host",
+                "codex",
+                "--capability",
+                "native_goal",
+                "--json",
+            ]);
             assert_eq!(code, 0);
             assert_eq!(
-                out["host"].as_array().unwrap().iter()
-                    .map(|e| e["id"].as_str().unwrap()).collect::<Vec<_>>(),
+                out["host"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|e| e["id"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
                 ["codex.native_goal.item_loop", "codex.native_goal.terminal_condition"]
             );
             assert!(out["host"].as_array().unwrap().iter().all(|e| e["status"] == "candidate"));
@@ -1394,8 +1566,17 @@ mod tests {
             assert_eq!(out["practice.kiss"]["layer"], "config");
             let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["api_surface"]}"#;
             let (code, out, _) = c.go(&[
-                "deltas", "render", "--host", "codex", "--host-version", "codex-cli 0.153.4",
-                "--capability", "native_plan", "--classification", cls, "--json",
+                "deltas",
+                "render",
+                "--host",
+                "codex",
+                "--host-version",
+                "codex-cli 0.153.4",
+                "--capability",
+                "native_plan",
+                "--classification",
+                cls,
+                "--json",
             ]);
             assert_eq!(code, 0);
             assert!(
@@ -1403,8 +1584,16 @@ mod tests {
             );
             assert!(!out["text"].as_str().unwrap().is_empty());
             let (code, text, _) = c.go(&[
-                "deltas", "render", "--host", "codex", "--host-version", "codex-cli 0.153.4",
-                "--capability", "native_plan", "--classification", cls,
+                "deltas",
+                "render",
+                "--host",
+                "codex",
+                "--host-version",
+                "codex-cli 0.153.4",
+                "--capability",
+                "native_plan",
+                "--classification",
+                cls,
             ]);
             assert_eq!(code, 0);
             assert!(text.as_str().unwrap().contains("observable behaviour"));
@@ -1416,17 +1605,39 @@ mod tests {
         cli(|c| {
             let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["api_surface"]}"#;
             let (code, out, _) = c.go(&[
-                "deltas", "render", "--host", "codex", "--host-version", "codex-cli 0.153.4",
-                "--capability", "native_plan", "--classification", cls, "--json",
+                "deltas",
+                "render",
+                "--host",
+                "codex",
+                "--host-version",
+                "codex-cli 0.153.4",
+                "--capability",
+                "native_plan",
+                "--classification",
+                cls,
+                "--json",
             ]);
             assert_eq!(code, 0);
-            let ids: Vec<&str> = out["practice"]["entries"].as_array().unwrap().iter()
-                .map(|e| e["id"].as_str().unwrap()).collect();
-            let selected: Vec<&str> = out["practice"]["selected"].as_array().unwrap().iter()
-                .map(|e| e.as_str().unwrap()).collect();
+            let ids: Vec<&str> = out["practice"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["id"].as_str().unwrap())
+                .collect();
+            let selected: Vec<&str> = out["practice"]["selected"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e.as_str().unwrap())
+                .collect();
             assert_eq!(ids, selected);
-            assert!(out["practice"]["entries"].as_array().unwrap().iter()
-                .all(|e| !e["text"].as_str().unwrap_or_default().is_empty()));
+            assert!(
+                out["practice"]["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|e| !e["text"].as_str().unwrap_or_default().is_empty())
+            );
             // Nothing qualified yet.
             assert_eq!(out["host"]["entries"], json!([]));
         });
@@ -1471,17 +1682,20 @@ mod tests {
             let repo = crate::testing::repo();
             let c = Cli { root: repo.path().to_path_buf() };
             let fixture = crate::testing::fixture_config();
-            let (code, out, _) =
-                c.go(&["init", "--global", "--from", &fixture.to_string_lossy()]);
+            let (code, out, _) = c.go(&["init", "--global", "--from", &fixture.to_string_lossy()]);
             assert_eq!(code, 0);
             assert_eq!(out["revision"], "local");
             let root = home.join(".fab7/rf");
-            let mut held: Vec<String> = std::fs::read_dir(&root).unwrap().flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            let mut held: Vec<String> = std::fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
             held.sort();
             assert_eq!(held, ["config", "overrides"]);
             for rel in [
-                "deltas/codex.yaml", "deltas/claude-code.yaml",
+                "deltas/codex.yaml",
+                "deltas/claude-code.yaml",
                 "deltas/practices/software-development.yaml",
             ] {
                 assert_eq!(
@@ -1524,8 +1738,20 @@ mod tests {
             let staged = c.staged("stage-1");
             let host = host_json("s1");
             let compile: Vec<&str> = vec![
-                "ask", "compile", "--staged", &staged, "--title", "Login", "--capability",
-                "native_plan", "--classification", CLS, "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "Login",
+                "--capability",
+                "native_plan",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ];
             let (code, out, _) = c.go(&compile);
             assert_eq!(code, 2);
@@ -1543,16 +1769,32 @@ mod tests {
         cli(|c| {
             let (code, out, _) = c.go(&["deltas", "domains", "--json"]);
             assert_eq!(code, 0);
-            let base = out["domains"].as_array().unwrap().iter()
-                .find(|d| d["base"] == json!(true)).unwrap();
+            let base = out["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["base"] == json!(true))
+                .unwrap();
             assert_eq!(base["domain"], "software-development");
             assert!(!base["concerns"].as_array().unwrap().is_empty());
             let cls = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read"],"domains":["teleportation"]}"#;
             let staged = c.staged("stage-1");
             let host = host_json("s1");
             let (code, out, _) = c.go(&[
-                "ask", "compile", "--staged", &staged, "--title", "T", "--capability",
-                "native_plan", "--classification", cls, "--route", ROUTE, "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "T",
+                "--capability",
+                "native_plan",
+                "--classification",
+                cls,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             assert_eq!(code, 2);
             assert_eq!(out["error"], "ask.classification");
@@ -1591,9 +1833,19 @@ mod tests {
             keys.sort();
             assert_eq!(keys, ["capabilities", "host", "paste_fold_chars", "routing"]);
             let allowed: BTreeMap<&str, ()> = [
-                "id", "selection", "effects", "confirmation", "activation", "delivery_mode",
-                "continuation", "limitations", "requires_explicit_request_for_effects", "receipt",
-                "prompt_prefix", "prompt_prefix_kind", "prompt_prefix_active",
+                "id",
+                "selection",
+                "effects",
+                "confirmation",
+                "activation",
+                "delivery_mode",
+                "continuation",
+                "limitations",
+                "requires_explicit_request_for_effects",
+                "receipt",
+                "prompt_prefix",
+                "prompt_prefix_kind",
+                "prompt_prefix_active",
             ]
             .into_iter()
             .map(|k| (k, ()))
@@ -1641,10 +1893,7 @@ mod tests {
             let c = Cli { root: project.clone() };
             let a = c.confirm("stage-1", "Login", "s1", "native_plan");
             let nested = crate::workspace::resolve(Some(&project), None).unwrap();
-            assert_eq!(
-                crate::ask::list_asks(&nested).unwrap()[0]["ask_id"],
-                a["ask_id"]
-            );
+            assert_eq!(crate::ask::list_asks(&nested).unwrap()[0]["ask_id"], a["ask_id"]);
             assert!(nested.rf_dir().join("asks").join(a["ask_id"].as_str().unwrap()).exists());
             assert!(!nested.rf_dir().join("tmp/stage-1").exists());
             // The parent repository keeps nothing.
@@ -1669,9 +1918,20 @@ mod tests {
             std::fs::write(stage.join("body.txt"), "Fix login.").unwrap();
             let host = host_json("s1");
             let (code, out, err) = c.go(&[
-                "ask", "compile", "--staged", &stage.to_string_lossy(), "--title", "Login",
-                "--capability", "native_plan", "--classification", cls, "--route", ROUTE,
-                "--host", &host,
+                "ask",
+                "compile",
+                "--staged",
+                &stage.to_string_lossy(),
+                "--title",
+                "Login",
+                "--capability",
+                "native_plan",
+                "--classification",
+                cls,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
             ]);
             assert_eq!(code, 0, "{err}");
             let text = std::fs::read_to_string(out["prompt_path"].as_str().unwrap()).unwrap();
@@ -1689,18 +1949,28 @@ mod tests {
                 let (code, out, _) = c.go(&["profile", "show", "--host", name, "--json"]);
                 assert_eq!(code, 0);
                 assert_eq!(out["routing"], crate::profiles::load(name).unwrap()["routing"]);
-                let precedence: BTreeMap<String, ()> = out["routing"]["precedence"].as_array()
-                    .unwrap().iter().map(|p| (p.as_str().unwrap().to_string(), ())).collect();
-                let ids: BTreeMap<String, ()> = out["capabilities"].as_array().unwrap().iter()
-                    .map(|c| (c["id"].as_str().unwrap().to_string(), ())).collect();
+                let precedence: BTreeMap<String, ()> = out["routing"]["precedence"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|p| (p.as_str().unwrap().to_string(), ()))
+                    .collect();
+                let ids: BTreeMap<String, ()> = out["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|c| (c["id"].as_str().unwrap().to_string(), ()))
+                    .collect();
                 assert_eq!(precedence.keys().collect::<Vec<_>>(), ids.keys().collect::<Vec<_>>());
                 for cap in out["capabilities"].as_array().unwrap() {
                     assert!(!cap["selection"].as_str().unwrap_or_default().is_empty());
                     let sources = cap["sources"].as_array().unwrap();
                     assert!(!sources.is_empty());
                     assert!(sources.iter().all(|u| u.as_str().unwrap().starts_with("https://")));
-                    assert!(["native_dispatch", "human_handoff"]
-                        .contains(&cap["delivery_mode"].as_str().unwrap()));
+                    assert!(
+                        ["native_dispatch", "human_handoff"]
+                            .contains(&cap["delivery_mode"].as_str().unwrap())
+                    );
                 }
             }
         });

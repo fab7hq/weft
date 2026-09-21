@@ -30,15 +30,20 @@ struct Sample {
 
 fn corpus() -> Vec<Sample> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("corpus/canonical/samples.jsonl");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
     let rows: Vec<Sample> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
             let v: Value = serde_json::from_str(l).expect("a corpus line is not JSON");
             let s = |k: &str| v[k].as_str().unwrap_or_else(|| panic!("no {k} in {l}")).to_string();
-            Sample { name: s("name"), kind: s("kind"), input: s("input"), canonical: s("canonical"), sha256: s("sha256") }
+            Sample {
+                name: s("name"),
+                kind: s("kind"),
+                input: s("input"),
+                canonical: s("canonical"),
+                sha256: s("sha256"),
+            }
         })
         .collect();
     assert!(rows.len() > 50, "the corpus is too small to prove anything: {}", rows.len());
@@ -80,10 +85,20 @@ fn every_sample_canonicalises_the_way_python_did() {
         };
         let got = canonical(&parsed);
         if got != s.canonical {
-            wrong.push(format!("{}\n     python: {}\n     rust:   {}", s.name, cut(&s.canonical), cut(&got)));
+            wrong.push(format!(
+                "{}\n     python: {}\n     rust:   {}",
+                s.name,
+                cut(&s.canonical),
+                cut(&got)
+            ));
         }
     }
-    assert!(wrong.is_empty(), "{} samples differ from the reference:\n  {}", wrong.len(), wrong.join("\n  "));
+    assert!(
+        wrong.is_empty(),
+        "{} samples differ from the reference:\n  {}",
+        wrong.len(),
+        wrong.join("\n  ")
+    );
 }
 
 #[test]
@@ -106,5 +121,9 @@ fn canonicalising_the_canonical_form_changes_nothing() {
 }
 
 fn cut(s: &str) -> String {
-    if s.chars().count() <= 120 { s.to_string() } else { s.chars().take(120).collect::<String>() + "…" }
+    if s.chars().count() <= 120 {
+        s.to_string()
+    } else {
+        s.chars().take(120).collect::<String>() + "…"
+    }
 }

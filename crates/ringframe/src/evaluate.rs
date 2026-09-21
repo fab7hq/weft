@@ -141,8 +141,9 @@ fn anchor_of(ws: &Workspace, asks: &[Value], explicit: Option<&str>) -> Result<V
     match base {
         Some(base) => Ok(json!({"kind": "ask_base", "ref": base, "seal_id": null})),
         None => Err(NeedsInput {
-            reason: "eval.anchor_unknown: no Seal and no Ask with a base commit; pass --anchor <commit>"
-                .into(),
+            reason:
+                "eval.anchor_unknown: no Seal and no Ask with a base commit; pass --anchor <commit>"
+                    .into(),
             candidates: Vec::new(),
         }
         .into()),
@@ -204,27 +205,31 @@ fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalE
         if parts.len() == 3 {
             let name = rename_target(parts[2]);
             let num = |s: &str| if s == "-" { 0 } else { s.parse::<u64>().unwrap_or(0) };
-            files.insert(name.clone(), json!({
-                "path": name,
-                "status": status.get(&name).cloned().unwrap_or_else(|| "modified".into()),
-                "added": num(parts[0]), "removed": num(parts[1]),
-            }));
+            files.insert(
+                name.clone(),
+                json!({
+                    "path": name,
+                    "status": status.get(&name).cloned().unwrap_or_else(|| "modified".into()),
+                    "added": num(parts[0]), "removed": num(parts[1]),
+                }),
+            );
         }
     }
     if kind == "worktree" {
         for name in git(&root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0') {
             if !name.is_empty() && !files.contains_key(name) {
-                files.insert(name.to_string(), json!({
-                    "path": name, "status": "added",
-                    "added": count_lines(&root.join(name)), "removed": 0,
-                }));
+                files.insert(
+                    name.to_string(),
+                    json!({
+                        "path": name, "status": "added",
+                        "added": count_lines(&root.join(name)), "removed": 0,
+                    }),
+                );
             }
         }
     }
     let ordered: Vec<Value> = files.into_values().collect();
-    let sum = |key: &str| -> u64 {
-        ordered.iter().filter_map(|f| f[key].as_u64()).sum()
-    };
+    let sum = |key: &str| -> u64 { ordered.iter().filter_map(|f| f[key].as_u64()).sum() };
     Ok(json!({"files": ordered, "total_added": sum("added"), "total_removed": sum("removed")}))
 }
 
@@ -261,8 +266,7 @@ fn unrecorded_prompts(ws: &Workspace, asks: &[Value]) -> Result<Vec<usize>, Eval
         .enumerate()
         .map(|(i, a)| {
             let start = str_of(a, "time");
-            let end =
-                asks.get(i + 1).map_or_else(|| "9".to_string(), |next| str_of(next, "time"));
+            let end = asks.get(i + 1).map_or_else(|| "9".to_string(), |next| str_of(next, "time"));
             times.iter().filter(|t| **t >= start && **t < end).count()
         })
         .collect())
@@ -276,23 +280,26 @@ fn previous_record(
     ask_ids: &[String],
 ) -> Result<Option<Value>, EvalError> {
     let wanted: BTreeSet<&String> = ask_ids.iter().collect();
-    let found = list_records(ws)?
-        .into_iter()
-        .filter(|r| {
-            r["state"] == "completed"
-                && str_of(r, "eval_id") != eval_id
-                && array_of(&r["basis"], "asks")
-                    .iter()
-                    .any(|a| wanted.contains(&a.as_str().unwrap_or_default().to_string()))
-        })
-        .next_back();
+    let found = list_records(ws)?.into_iter().rfind(|r| {
+        r["state"] == "completed"
+            && str_of(r, "eval_id") != eval_id
+            && array_of(&r["basis"], "asks")
+                .iter()
+                .any(|a| wanted.contains(&a.as_str().unwrap_or_default().to_string()))
+    });
     match found {
         Some(r) => load_record(ws, &str_of(&r, "eval_id")),
         None => Ok(None),
     }
 }
 
-fn event(type_: &str, id: &str, actor: Option<&Value>, data: Value, links: Vec<Value>) -> Result<Value, EvalError> {
+fn event(
+    type_: &str,
+    id: &str,
+    actor: Option<&Value>,
+    data: Value,
+    links: Vec<Value>,
+) -> Result<Value, EvalError> {
     let ev = json!({
         "schema": store::SCHEMA, "event_id": ids::new_id("evt"), "type": type_,
         "time": sessions::now(), "id": id,
@@ -304,6 +311,7 @@ fn event(type_: &str, id: &str, actor: Option<&Value>, data: Value, links: Vec<V
     Ok(ev)
 }
 
+#[derive(Default)]
 pub struct Open<'a> {
     pub anchor: Option<&'a str>,
     pub subject_kind: Option<&'a str>,
@@ -311,17 +319,15 @@ pub struct Open<'a> {
     pub actor: Option<Value>,
 }
 
-impl Default for Open<'_> {
-    fn default() -> Self {
-        Open { anchor: None, subject_kind: None, subject_ref: None, actor: None }
-    }
-}
-
 /// Write the facts-only brief over every open Ask and append `eval.opened`.
 pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     // `ask` does not import `evaluate`.
     let asks = crate::ask::open_asks(ws)?;
-    need(!asks.is_empty(), "eval.no_open_ask", "nothing to evaluate: every Ask is sealed or cancelled")?;
+    need(
+        !asks.is_empty(),
+        "eval.no_open_ask",
+        "nothing to evaluate: every Ask is sealed or cancelled",
+    )?;
     need(
         args.subject_kind.is_some() == args.subject_ref.is_some(),
         "subject.kind",
@@ -338,12 +344,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         _ => default_subject(ws)?,
     };
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
-    let dangling = list_records(ws)?.into_iter().filter(|r| {
+    let mut dangling = list_records(ws)?.into_iter().filter(|r| {
         r["state"] == "opened"
-            && array_of(&r["basis"], "asks").iter().map(|a| str_of_value(a)).collect::<Vec<_>>()
-                == ask_ids
+            && array_of(&r["basis"], "asks").iter().map(str_of_value).collect::<Vec<_>>() == ask_ids
     });
-    if let Some(open) = dangling.last() {
+    if let Some(open) = dangling.next_back() {
         return Err(ledger(
             "eval.already_open",
             format!(
@@ -368,8 +373,10 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let previous: Vec<Value> = list_records(ws)?
         .into_iter()
         .filter(|r| r["state"] == "completed" && shares(r))
-        .map(|r| json!({"eval_id": r["eval_id"], "verdict": r["verdict"],
-                        "confidence": r["confidence"], "time": r["completed_at"]}))
+        .map(|r| {
+            json!({"eval_id": r["eval_id"], "verdict": r["verdict"],
+                        "confidence": r["confidence"], "time": r["completed_at"]})
+        })
         .collect();
     let mut limitations = vec![
         "the brief describes the ledger and the Git delta only; RingFrame runs none of the project's commands".to_string(),
@@ -392,7 +399,8 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     });
     let mut bytes = store::canonical(&brief);
     bytes.push(b'\n');
-    let reference = store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
+    let reference =
+        store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
     let data = json!({
         "brief": reference, "anchor": anchor, "subject": subject,
         "basis": {"asks": ask_ids, "unrecorded_prompts": counts.iter().sum::<usize>()},
@@ -470,11 +478,7 @@ pub fn validate_intent(
             format!("items[{i}].id missing or duplicate"),
         )?;
         seen.insert(id);
-        need(
-            !str_of(it, "text").trim().is_empty(),
-            code,
-            format!("items[{i}].text missing"),
-        )?;
+        need(!str_of(it, "text").trim().is_empty(), code, format!("items[{i}].text missing"))?;
         need(
             ask_ids.contains(&str_of(it, "ask_id")),
             code,
@@ -545,11 +549,7 @@ pub fn validate_judgement(
     )?;
     let mut classified: BTreeSet<String> = BTreeSet::new();
     for (i, d) in array_of(j, "drift").iter().enumerate() {
-        need(
-            !str_of(d, "path").is_empty(),
-            code,
-            format!("{where_}.drift[{i}].path missing"),
-        )?;
+        need(!str_of(d, "path").is_empty(), code, format!("{where_}.drift[{i}].path missing"))?;
         need(
             CLASSIFICATIONS.contains(&str_of(d, "classification").as_str()),
             code,
@@ -568,11 +568,7 @@ pub fn validate_judgement(
         format!("{where_}: no drift classification for changed paths {}", list_of(&missing)),
     )?;
     for k in ["basis_notes", "commands_run"] {
-        need(
-            j.get(k).is_none_or(Value::is_array),
-            code,
-            format!("{where_}.{k} must be a list"),
-        )?;
+        need(j.get(k).is_none_or(Value::is_array), code, format!("{where_}.{k} must be a list"))?;
     }
     Ok(())
 }
@@ -598,15 +594,14 @@ fn majority(values: &[String], tie: &str) -> (String, f64) {
         *counts.entry(v).or_default() += 1;
     }
     let best = counts.values().copied().max().unwrap_or(0);
-    let winners: Vec<&&String> = counts.iter().filter(|(_, n)| **n == best).map(|(k, _)| k).collect();
-    let name =
-        if winners.len() == 1 { (*winners[0]).clone() } else { tie.to_string() };
+    let winners: Vec<&&String> =
+        counts.iter().filter(|(_, n)| **n == best).map(|(k, _)| k).collect();
+    let name = if winners.len() == 1 { (*winners[0]).clone() } else { tie.to_string() };
     (name, best as f64 / values.len() as f64)
 }
 
 fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) -> Value {
-    let active: Vec<&Value> =
-        items.iter().filter(|it| str_of(it, "status") == "active").collect();
+    let active: Vec<&Value> = items.iter().filter(|it| str_of(it, "status") == "active").collect();
     let mut table: Vec<Value> = Vec::new();
     for it in &active {
         let mut votes: Vec<Value> = Vec::new();
@@ -654,11 +649,9 @@ fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) ->
         // silent on a path outside the brief counts as `required` there, so
         // one loud judge cannot make a finding unanimous. Agreement is always
         // over every judge.
-        let mut votes: Vec<String> =
-            findings.iter().map(|f| str_of(f, "classification")).collect();
-        votes.extend(
-            std::iter::repeat_n("required".to_string(), judgements.len() - findings.len()),
-        );
+        let mut votes: Vec<String> = findings.iter().map(|f| str_of(f, "classification")).collect();
+        votes
+            .extend(std::iter::repeat_n("required".to_string(), judgements.len() - findings.len()));
         let (maj, agr) = majority(&votes, "unexplained");
         paths.push(json!({
             "path": path, "classification": maj, "agreement": round2(agr),
@@ -669,11 +662,8 @@ fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) ->
         changed_paths.iter().filter(|p| !by_path.contains_key(*p)).collect();
     let commission: Vec<&Value> =
         paths.iter().filter(|p| p["classification"] == "unexplained").collect();
-    let omission: Vec<String> = table
-        .iter()
-        .filter(|it| it["majority"] != "yes")
-        .map(|it| str_of(it, "id"))
-        .collect();
+    let omission: Vec<String> =
+        table.iter().filter(|it| it["majority"] != "yes").map(|it| str_of(it, "id")).collect();
     let verdict = if active.is_empty() {
         "incomplete"
     } else if table.iter().any(|it| it["majority"] == "no") || !commission.is_empty() {
@@ -692,8 +682,7 @@ fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) ->
             .filter(|p| p["classification"] != "required" || p["agreement"].as_f64() < Some(1.0))
             .filter_map(|p| p["agreement"].as_f64()),
     );
-    let confidence =
-        deciding.iter().copied().fold(f64::INFINITY, f64::min);
+    let confidence = deciding.iter().copied().fold(f64::INFINITY, f64::min);
     json!({
         "verdict": verdict,
         "confidence": if deciding.is_empty() { 0.0 } else { round2(confidence) },
@@ -726,15 +715,14 @@ fn tokens(text: &str) -> BTreeSet<String> {
 /// text, else the best token overlap (Jaccard >= 0.5) within the same Ask.
 /// Judges reword; the record says how each match was made.
 fn matched<'a>(item: &Value, candidates: &'a [Value]) -> Option<&'a Value> {
-    let same_ask: Vec<&Value> = candidates
-        .iter()
-        .filter(|c| c.get("ask_id") == item.get("ask_id"))
-        .collect();
+    let same_ask: Vec<&Value> =
+        candidates.iter().filter(|c| c.get("ask_id") == item.get("ask_id")).collect();
     if let Some(c) = same_ask.iter().find(|c| str_of(c, "id") == str_of(item, "id")) {
         return Some(c);
     }
-    if let Some(c) =
-        candidates.iter().find(|c| normalized(&str_of(c, "text")) == normalized(&str_of(item, "text")))
+    if let Some(c) = candidates
+        .iter()
+        .find(|c| normalized(&str_of(c, "text")) == normalized(&str_of(item, "text")))
     {
         return Some(c);
     }
@@ -800,9 +788,8 @@ pub fn close_eval(
     actor: Option<&Value>,
 ) -> Result<Value, EvalError> {
     let brief_path = ws.rf_dir().join(format!("evals/{eval_id}/brief.json"));
-    let opened = store::events(ws)?
-        .iter()
-        .any(|e| e["type"] == "eval.opened" && str_of(e, "id") == eval_id);
+    let opened =
+        store::events(ws)?.iter().any(|e| e["type"] == "eval.opened" && str_of(e, "id") == eval_id);
     if !brief_path.exists() || !opened {
         return Err(ledger("eval.missing", eval_id));
     }
@@ -812,7 +799,8 @@ pub fn close_eval(
     let brief_sha = digest::sha256_file(&brief_path)?;
     let brief: Value = serde_json::from_slice(&std::fs::read(&brief_path)?)
         .map_err(|e| ledger("eval.missing", e.to_string()))?;
-    let ask_ids: Vec<String> = array_of(&brief, "asks").iter().map(|a| str_of(a, "ask_id")).collect();
+    let ask_ids: Vec<String> =
+        array_of(&brief, "asks").iter().map(|a| str_of(a, "ask_id")).collect();
     need(
         judgements.len() >= MIN_JUDGES,
         "eval.too_few_judges",
@@ -830,7 +818,12 @@ pub fn close_eval(
     let items = array_of(intent, "items");
     for (n, j) in judgements.iter().enumerate() {
         validate_judgement(
-            j, &brief_sha, &intent_sha, items, &format!("judgement[{}]", n + 1), &changed_paths,
+            j,
+            &brief_sha,
+            &intent_sha,
+            items,
+            &format!("judgement[{}]", n + 1),
+            &changed_paths,
         )?;
     }
     let subject = brief["subject"].clone();
@@ -851,7 +844,8 @@ pub fn close_eval(
         limitations.push("no active intent item: nothing to judge".into());
     }
     if judgements.iter().any(|j| j["judge"]["independence"] == "shared_context") {
-        limitations.push("some judges shared one context; their agreement overstates independence".into());
+        limitations
+            .push("some judges shared one context; their agreement overstates independence".into());
     }
     let n_unrecorded: u64 = array_of(&brief, "asks")
         .iter()
@@ -911,9 +905,12 @@ pub fn close_eval(
         "intent": intent_ref, "judgements": j_refs, "artifact": reference,
         "limitations": limitations,
     });
-    let mut links: Vec<Value> =
-        record["basis"]["asks"].as_array().unwrap_or(&vec![]).iter()
-            .map(|a| json!({"rel": "evaluates", "id": a})).collect();
+    let mut links: Vec<Value> = record["basis"]["asks"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .map(|a| json!({"rel": "evaluates", "id": a}))
+        .collect();
     if let Some(p) = &previous {
         links.push(json!({"rel": "supersedes", "id": p["eval_id"]}));
     }
@@ -967,13 +964,10 @@ pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
 
 /// The latest completed Eval whose basis shares an Ask with the given set.
 pub fn latest_for(ws: &Workspace, ask_ids: &[String]) -> Result<Option<Value>, EvalError> {
-    let found = list_records(ws)?
-        .into_iter()
-        .filter(|r| {
-            r["state"] == "completed"
-                && array_of(&r["basis"], "asks").iter().any(|a| ask_ids.contains(&str_of_value(a)))
-        })
-        .next_back();
+    let found = list_records(ws)?.into_iter().rfind(|r| {
+        r["state"] == "completed"
+            && array_of(&r["basis"], "asks").iter().any(|a| ask_ids.contains(&str_of_value(a)))
+    });
     match found {
         Some(r) => load_record(ws, &str_of(&r, "eval_id")),
         None => Ok(None),
@@ -988,7 +982,12 @@ mod tests {
         two_asks_and_work, with_config_home,
     };
 
-    fn close(ws: &Workspace, eval_id: &str, intent: &Value, js: &[Value]) -> Result<Value, EvalError> {
+    fn close(
+        ws: &Workspace,
+        eval_id: &str,
+        intent: &Value,
+        js: &[Value],
+    ) -> Result<Value, EvalError> {
         close_eval(ws, eval_id, intent, js, None)
     }
 
@@ -1055,7 +1054,10 @@ mod tests {
             // prompt (not counted), one /rf: invocation (not counted).
             let say = |text: &str| {
                 crate::sessions::capture(
-                    ws, "claude-code", &json!({"session_id": "s9", "prompt": text}), None,
+                    ws,
+                    "claude-code",
+                    &json!({"session_id": "s9", "prompt": text}),
+                    None,
                 )
                 .unwrap()
                 .unwrap()
@@ -1065,9 +1067,14 @@ mod tests {
             say("/rf:eval");
             let sub = say("Fix the login bug.\n");
             assert_eq!(
-                crate::ask::submission_from_capture(ws, "claude-code", "s9", &str_of(&sub, "sha256"))
-                    .unwrap()
-                    .unwrap()["state"],
+                crate::ask::submission_from_capture(
+                    ws,
+                    "claude-code",
+                    "s9",
+                    &str_of(&sub, "sha256")
+                )
+                .unwrap()
+                .unwrap()["state"],
                 "observed"
             );
             say("now tidy up");
@@ -1091,12 +1098,15 @@ mod tests {
             assert!(first["confirmed"].is_string());
             assert_eq!(first["submission"], "observed");
             assert_eq!(
-                array_of(&brief, "asks").iter()
-                    .map(|x| x["unrecorded_prompts_after"].clone()).collect::<Vec<_>>(),
+                array_of(&brief, "asks")
+                    .iter()
+                    .map(|x| x["unrecorded_prompts_after"].clone())
+                    .collect::<Vec<_>>(),
                 [json!(0), json!(3)]
             );
             assert_eq!(
-                array_of(&brief["changes"], "files").iter()
+                array_of(&brief["changes"], "files")
+                    .iter()
                     .map(|f| (str_of(f, "path"), str_of(f, "status"), f["added"].clone()))
                     .collect::<Vec<_>>(),
                 [
@@ -1137,10 +1147,7 @@ mod tests {
                 angles().iter().map(|ang| judgement(&o.brief_sha, ang, &[("i1", "yes")])).collect();
             close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js).unwrap();
             // Closed: a new Eval may open.
-            assert_ne!(
-                open_eval(ws, Open::default()).unwrap()["eval_id"],
-                o.out["eval_id"]
-            );
+            assert_ne!(open_eval(ws, Open::default()).unwrap()["eval_id"], o.out["eval_id"]);
         });
     }
 
@@ -1188,10 +1195,7 @@ mod tests {
             })).unwrap();
             let sha2 = commit(&ws.root, &[("src/more.js", Some("x\n"))], "after seal");
             let out = open_eval(ws, Open::default()).unwrap();
-            assert_eq!(
-                out["anchor"],
-                json!({"kind": "seal", "ref": sha, "seal_id": "sel_old"})
-            );
+            assert_eq!(out["anchor"], json!({"kind": "seal", "ref": sha, "seal_id": "sel_old"}));
             assert_eq!(paths_of(&brief_of(ws, &out)["changes"]), ["src/more.js"]);
 
             let items = json!([{"id": "i1", "text": "More", "ask_id": a, "status": "active"}]);
@@ -1200,7 +1204,8 @@ mod tests {
                 .iter()
                 .map(|ang| judgement_over(&brief_sha, ang, &[("i1", "yes")], &[], &["src/more.js"]))
                 .collect();
-            close(ws, &str_of(&out, "eval_id"), &intent_doc(&brief_sha, items.clone()), &js).unwrap();
+            close(ws, &str_of(&out, "eval_id"), &intent_doc(&brief_sha, items.clone()), &js)
+                .unwrap();
 
             let explicit =
                 open_eval(ws, Open { anchor: Some(&sha2), ..Default::default() }).unwrap();
@@ -1216,7 +1221,8 @@ mod tests {
                 .iter()
                 .map(|ang| judgement_over(&brief_sha2, ang, &[("i1", "yes")], &[], &[]))
                 .collect();
-            close(ws, &str_of(&explicit, "eval_id"), &intent_doc(&brief_sha2, items), &js2).unwrap();
+            close(ws, &str_of(&explicit, "eval_id"), &intent_doc(&brief_sha2, items), &js2)
+                .unwrap();
             let e = open_eval(ws, Open { anchor: Some(&"0".repeat(40)), ..Default::default() })
                 .unwrap_err();
             refused(e, "eval.anchor_missing");
@@ -1239,7 +1245,10 @@ mod tests {
         eval_bench(|ws| {
             let e = anchor_of(ws, &[json!({"ask_id": "ask_old", "base_commit": null})], None)
                 .unwrap_err();
-            assert!(matches!(&e, EvalError::Needs(n) if n.reason.contains("eval.anchor_unknown")), "{e}");
+            assert!(
+                matches!(&e, EvalError::Needs(n) if n.reason.contains("eval.anchor_unknown")),
+                "{e}"
+            );
         });
     }
 
@@ -1278,7 +1287,11 @@ mod tests {
                 "no vote for active items",
             );
             let bad_class = judgement_over(
-                &o.brief_sha, "c", &[("i1", "yes")], &[("docs/notes.md", "fine")], &CHANGED,
+                &o.brief_sha,
+                "c",
+                &[("i1", "yes")],
+                &[("docs/notes.md", "fine")],
+                &CHANGED,
             );
             refused(
                 close(ws, &eid, &ok_intent, &[good("a"), good("b"), bad_class]).unwrap_err(),
@@ -1319,7 +1332,11 @@ mod tests {
                 .iter()
                 .map(|ang| {
                     judgement_over(
-                        &o.brief_sha, ang, &[("i1", "yes"), ("i3", "yes")], &drift, &CHANGED,
+                        &o.brief_sha,
+                        ang,
+                        &[("i1", "yes"), ("i3", "yes")],
+                        &drift,
+                        &CHANGED,
                     )
                 })
                 .collect();
@@ -1342,11 +1359,14 @@ mod tests {
                 .iter()
                 .map(|p| (str_of(p, "path"), str_of(p, "classification"), p["agreement"].clone()))
                 .collect();
-            assert_eq!(classified, [
-                ("docs/notes.md".to_string(), "consequence".to_string(), json!(1.0)),
-                ("src/uptime.js".to_string(), "required".to_string(), json!(1.0)),
-                ("tests/uptime.test.js".to_string(), "required".to_string(), json!(1.0)),
-            ]);
+            assert_eq!(
+                classified,
+                [
+                    ("docs/notes.md".to_string(), "consequence".to_string(), json!(1.0)),
+                    ("src/uptime.js".to_string(), "required".to_string(), json!(1.0)),
+                    ("tests/uptime.test.js".to_string(), "required".to_string(), json!(1.0)),
+                ]
+            );
             assert_eq!(rec["intent"]["items"], 3);
             assert_eq!(rec["intent"]["active"], 2);
             assert_eq!(array_of(&rec, "judgements").len(), 3);
@@ -1400,7 +1420,10 @@ mod tests {
                 .map(|ang| uncited(judgement(&o.brief_sha, ang, &[("i1", "yes")])))
                 .collect();
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, one_item(&o.a)), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
             )
             .unwrap();
             let item = &rec["items"][0];
@@ -1428,7 +1451,10 @@ mod tests {
             let js: Vec<Value> =
                 angles().iter().map(|ang| judgement(&o.brief_sha, ang, &[("i1", "yes")])).collect();
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, one_item(&o.a)), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
             )
             .unwrap();
             let item = &rec["items"][0];
@@ -1454,7 +1480,10 @@ mod tests {
             js[0]["votes"][0]["reason"] = json!("src/uptime.js exports uptime()");
             js[1]["basis_notes"] = json!(["read the diff"]);
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, one_item(&o.a)), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
             )
             .unwrap();
             let counted: Vec<String> = array_of(&rec["items"][0], "votes")
@@ -1477,7 +1506,10 @@ mod tests {
                 .map(|(ang, vote)| uncited(judgement(&o.brief_sha, ang, &[("i1", vote)])))
                 .collect();
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, one_item(&o.a)), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
             )
             .unwrap();
             let item = &rec["items"][0];
@@ -1501,28 +1533,46 @@ mod tests {
             ]);
             let flagged = [("docs/notes.md", "unexplained")];
             let mut adversary = judgement_over(
-                &o.brief_sha, "adversary", &[("i1", "no"), ("i2", "unknown")],
-                &[("docs/notes.md", "consequence")], &CHANGED,
+                &o.brief_sha,
+                "adversary",
+                &[("i1", "no"), ("i2", "unknown")],
+                &[("docs/notes.md", "consequence")],
+                &CHANGED,
             );
             adversary["basis_notes"] = json!(["i2 is vague"]);
             adversary["commands_run"] = json!(["git log"]);
             let js = vec![
-                judgement_over(&o.brief_sha, "coverage", &[("i1", "yes"), ("i2", "no")], &flagged, &CHANGED),
-                judgement_over(&o.brief_sha, "drift", &[("i1", "yes"), ("i2", "no")], &flagged, &CHANGED),
+                judgement_over(
+                    &o.brief_sha,
+                    "coverage",
+                    &[("i1", "yes"), ("i2", "no")],
+                    &flagged,
+                    &CHANGED,
+                ),
+                judgement_over(
+                    &o.brief_sha,
+                    "drift",
+                    &[("i1", "yes"), ("i2", "no")],
+                    &flagged,
+                    &CHANGED,
+                ),
                 adversary,
             ];
-            let rec =
-                close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js).unwrap();
+            let rec = close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js)
+                .unwrap();
             assert_eq!(rec["verdict"], "drifted");
             assert_eq!(rec["confidence"], 0.67);
             let table: Vec<(String, String, Value)> = array_of(&rec, "items")
                 .iter()
                 .map(|it| (str_of(it, "id"), str_of(it, "majority"), it["agreement"].clone()))
                 .collect();
-            assert_eq!(table, [
-                ("i1".to_string(), "yes".to_string(), json!(0.67)),
-                ("i2".to_string(), "no".to_string(), json!(0.67)),
-            ]);
+            assert_eq!(
+                table,
+                [
+                    ("i1".to_string(), "yes".to_string(), json!(0.67)),
+                    ("i2".to_string(), "no".to_string(), json!(0.67)),
+                ]
+            );
             assert_eq!(rec["drift"]["omission"], json!(["i2"]));
             assert_eq!(
                 rec["drift"]["commission"],
@@ -1530,7 +1580,11 @@ mod tests {
                         "agreement": 0.67}])
             );
             assert_eq!(rec["drift"]["unmentioned"], json!([]));
-            assert!(array_of(&rec, "limitations").iter().any(|l| str_of_value(l).contains("sub-agents")));
+            assert!(
+                array_of(&rec, "limitations")
+                    .iter()
+                    .any(|l| str_of_value(l).contains("sub-agents"))
+            );
         });
     }
 
@@ -1545,7 +1599,10 @@ mod tests {
                 judgement(&o.brief_sha, "adversary", &[("i1", "unknown")]),
             ];
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items.clone()), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, items.clone()),
+                &js,
             )
             .unwrap();
             assert_eq!(rec["verdict"], "incomplete");
@@ -1581,12 +1638,18 @@ mod tests {
                 judgement(&o.brief_sha, "coverage", &[("i1", "yes")]),
                 judgement(&o.brief_sha, "drift", &[("i1", "yes")]),
                 judgement_over(
-                    &o.brief_sha, "adversary", &[("i1", "yes")],
-                    &[("docs/notes.md", "unexplained")], &CHANGED,
+                    &o.brief_sha,
+                    "adversary",
+                    &[("i1", "yes")],
+                    &[("docs/notes.md", "unexplained")],
+                    &CHANGED,
                 ),
             ];
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items.clone()), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, items.clone()),
+                &js,
             )
             .unwrap();
             let docs = array_of(&rec["drift"], "paths")
@@ -1610,7 +1673,8 @@ mod tests {
                 judgement_over(&sha2, "drift", &[("i1", "yes")], &flagged, &CHANGED),
                 judgement(&sha2, "adversary", &[("i1", "yes")]),
             ];
-            let rec2 = close(ws, &str_of(&out2, "eval_id"), &intent_doc(&sha2, items), &js2).unwrap();
+            let rec2 =
+                close(ws, &str_of(&out2, "eval_id"), &intent_doc(&sha2, items), &js2).unwrap();
             assert_eq!(
                 rec2["drift"]["commission"],
                 json!([{"path": "docs/notes.md", "classification": "unexplained",
@@ -1626,11 +1690,14 @@ mod tests {
             two_asks_and_work(ws);
             std::fs::write(ws.root.join("scratch.txt"), "a\n").unwrap();
             let root = ws.root.to_string_lossy().to_string();
-            let out = open_eval(ws, Open {
-                subject_kind: Some("worktree"),
-                subject_ref: Some(&root),
-                ..Default::default()
-            })
+            let out = open_eval(
+                ws,
+                Open {
+                    subject_kind: Some("worktree"),
+                    subject_ref: Some(&root),
+                    ..Default::default()
+                },
+            )
             .unwrap();
             assert!(paths_of(&brief_of(ws, &out)["changes"]).contains(&"scratch.txt".to_string()));
             assert_eq!(out["subject"]["kind"], "worktree");
@@ -1653,7 +1720,10 @@ mod tests {
                 })
                 .collect();
             let rec = close(
-                ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, one_item(&o.a)), &js,
+                ws,
+                &str_of(&o.out, "eval_id"),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
             )
             .unwrap();
             assert_eq!(rec["verdict"], "aligned");
@@ -1678,12 +1748,17 @@ mod tests {
                 .iter()
                 .map(|ang| {
                     judgement_over(
-                        &o.brief_sha, ang, &[("i1", "yes"), ("i2", "no")], &flagged, &CHANGED,
+                        &o.brief_sha,
+                        ang,
+                        &[("i1", "yes"), ("i2", "no")],
+                        &flagged,
+                        &CHANGED,
                     )
                 })
                 .collect();
             let first =
-                close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js).unwrap();
+                close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js)
+                    .unwrap();
             assert_eq!(first["verdict"], "drifted");
 
             commit(
@@ -1713,7 +1788,10 @@ mod tests {
                 .iter()
                 .map(|ang| {
                     judgement_over(
-                        &sha2, ang, &[("x1", "yes"), ("x2", "yes")], &[],
+                        &sha2,
+                        ang,
+                        &[("x1", "yes"), ("x2", "yes")],
+                        &[],
                         &["src/uptime.js", "tests/uptime.test.js"],
                     )
                 })
@@ -1740,7 +1818,7 @@ mod tests {
                 [str_of(&first, "eval_id"), str_of(&second, "eval_id")]
             );
             assert_eq!(
-                latest_for(ws, &[o.a.clone()]).unwrap().unwrap()["eval_id"],
+                latest_for(ws, std::slice::from_ref(&o.a)).unwrap().unwrap()["eval_id"],
                 second["eval_id"]
             );
             assert!(latest_for(ws, &["ask_other".to_string()]).unwrap().is_none());
@@ -1769,7 +1847,8 @@ mod tests {
             assert_eq!(changed["total_added"], 1);
             assert_eq!(changed["total_removed"], 1);
 
-            let project = commit(repo.path(), &[("test/app.py", Some("committed change\n"))], "change");
+            let project =
+                commit(repo.path(), &[("test/app.py", Some("committed change\n"))], "change");
             assert_ne!(subject_digest(&ws, "git_commit", &project).unwrap(), before);
             let committed =
                 changes(&ws, &anchor, &json!({"kind": "git_commit", "ref": project})).unwrap();

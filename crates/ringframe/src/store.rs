@@ -106,6 +106,8 @@ impl Lock {
             .read(true)
             .write(true)
             .create(true)
+            // Nothing is ever written through it; it exists to be locked.
+            .truncate(false)
             .mode(0o600)
             .open(path)?;
         let deadline = Instant::now() + LOCK_TIMEOUT;
@@ -148,12 +150,8 @@ pub fn append(ws: &Workspace, event: &Value) -> Result<(), LedgerError> {
             return Err(LedgerError::new("ledger.torn_tail", "last line has no newline"));
         }
     }
-    let mut out = std::fs::OpenOptions::new()
-        .write(true)
-        .append(true)
-        .create(true)
-        .mode(0o600)
-        .open(&ledger)?;
+    let mut out =
+        std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(&ledger)?;
     out.write_all(&line)?;
     out.sync_all()?;
     Ok(())
@@ -357,10 +355,7 @@ mod tests {
         let repo = repo();
         let ws = ws_for(repo.path());
         let r = publish(&ws, "asks/ask_x/source.txt", b"intent\n", "source_intent").unwrap();
-        assert_eq!(
-            std::fs::read(ws.rf_dir().join("asks/ask_x/source.txt")).unwrap(),
-            b"intent\n"
-        );
+        assert_eq!(std::fs::read(ws.rf_dir().join("asks/ask_x/source.txt")).unwrap(), b"intent\n");
         assert_eq!(r["bytes"], 7);
         assert_eq!(r["role"], "source_intent");
         assert_eq!(std::fs::read_dir(ws.rf_dir().join("tmp")).unwrap().count(), 0);
@@ -438,7 +433,9 @@ mod tests {
         assert_eq!(lines.len(), 1001);
         let seen: std::collections::HashSet<String> = lines[..1000]
             .iter()
-            .map(|l| serde_json::from_str::<Value>(l).unwrap()["event_id"].as_str().unwrap().to_string())
+            .map(|l| {
+                serde_json::from_str::<Value>(l).unwrap()["event_id"].as_str().unwrap().to_string()
+            })
             .collect();
         assert_eq!(seen.len(), 1000);
     }

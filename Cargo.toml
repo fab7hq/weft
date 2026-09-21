@@ -22,4 +22,6 @@ weft-tui = { path = "crates/weft-tui" }
 weftd = { path = "crates/weftd" }
 
 [dev-dependencies]
+sha2 = "0.10"
+tempfile = "3"
 vt100 = "0.16.2"

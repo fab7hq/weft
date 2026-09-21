@@ -94,9 +94,7 @@ fn to_json(node: &Yaml) -> Result<Value, String> {
                 .ok_or_else(|| format!("{} is not a finite number", f.into_inner()))?,
             Scalar::String(s) => Value::String(s.to_string()),
         },
-        Yaml::Sequence(items) => {
-            Value::Array(items.iter().map(to_json).collect::<Result<_, _>>()?)
-        }
+        Yaml::Sequence(items) => Value::Array(items.iter().map(to_json).collect::<Result<_, _>>()?),
         Yaml::Mapping(map) => {
             let mut out = Map::new();
             for (key, value) in map {
@@ -223,7 +221,9 @@ fn nineteen_eleven_scalar(text: &str) -> Option<&'static str> {
         return Some("a YAML 1.1 boolean");
     }
     let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if digits.len() > 1 && digits.starts_with('0') && digits[1..].bytes().all(|b| b.is_ascii_digit())
+    if digits.len() > 1
+        && digits.starts_with('0')
+        && digits[1..].bytes().all(|b| b.is_ascii_digit())
     {
         return Some("a YAML 1.1 octal integer");
     }
@@ -250,7 +250,9 @@ mod tests {
     #[test]
     fn yaml_identity_ignores_comments_and_formatting() {
         let a = parse("schema: x/1\nname: demo   # a comment\nitems:\n  - one\n  - two\n");
-        let b = parse("# different layout, same document\nitems: [one, two]\nschema: x/1\nname: demo\n");
+        let b = parse(
+            "# different layout, same document\nitems: [one, two]\nschema: x/1\nname: demo\n",
+        );
         let want = json!({"schema": "x/1", "name": "demo", "items": ["one", "two"]});
         assert_eq!(a, want);
         assert_eq!(b, want);
@@ -259,12 +261,9 @@ mod tests {
 
     #[test]
     fn the_loader_is_safe_and_requires_a_mapping() {
-        let e = load_yaml_text(
-            "!!python/object/apply:os.system ['echo pwned']\n",
-            "bad.yaml",
-            false,
-        )
-        .unwrap_err();
+        let e =
+            load_yaml_text("!!python/object/apply:os.system ['echo pwned']\n", "bad.yaml", false)
+                .unwrap_err();
         assert!(e.0.contains("bad.yaml"), "{e}");
         let e = load_yaml_text("- just\n- a list\n", "list.yaml", false).unwrap_err();
         assert!(e.0.contains("mapping"), "{e}");
@@ -331,7 +330,10 @@ mod tests {
 
     #[test]
     fn global_and_project_configuration_share_rf_without_creating_rt() {
-        use crate::{deltas, profiles, testing::{repo, with_config_home, ws_for}};
+        use crate::{
+            deltas, profiles,
+            testing::{repo, with_config_home, ws_for},
+        };
         with_config_home(|home| {
             let repo = repo();
             let ws = ws_for(repo.path());
@@ -343,13 +345,19 @@ mod tests {
             // The project seeds only the base domain's empty override file.
             let practices = ws.rf_dir().join("deltas/practices");
             let mut seeded: Vec<String> = std::fs::read_dir(&practices)
-                .unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
             seeded.sort();
             assert_eq!(seeded, ["software-development.yaml"]);
             assert_eq!(std::fs::read(practices.join("software-development.yaml")).unwrap(), b"");
             // The home holds the synced mirror and an empty overrides tree, nothing else.
             let mut held: Vec<String> = std::fs::read_dir(home.join(".fab7/rf"))
-                .unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
             held.sort();
             assert_eq!(held, ["config", "overrides"]);
             assert_eq!(
@@ -364,30 +372,39 @@ mod tests {
 
     #[test]
     fn scoped_delta_catalogs_apply_project_conflicts_and_render_settings() {
-        use crate::{deltas, profiles, testing::{repo, to_yaml, with_config_home, ws_for}};
+        use crate::{
+            deltas, profiles,
+            testing::{repo, to_yaml, with_config_home, ws_for},
+        };
         with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
             let global = overrides_dir().join("deltas/practices/software-development.yaml");
             std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-            let mut doc = load_yaml(
-                &config_dir().join("deltas/practices/software-development.yaml"), false).unwrap();
+            let mut doc =
+                load_yaml(&config_dir().join("deltas/practices/software-development.yaml"), false)
+                    .unwrap();
             doc["render"]["core_cap"] = json!(1);
             doc["entries"][0]["text"] = json!("Global rule.");
             std::fs::write(&global, to_yaml(&doc)).unwrap();
             std::fs::write(
                 ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
                 "render: {core_cap: 2}\nentries: [{id: practice.kiss, text: Project rule.}]\n",
-            ).unwrap();
+            )
+            .unwrap();
             std::fs::write(
                 ws.root.join(".fab7/rf/deltas/codex.yaml"),
                 "entries: [{id: codex.native_plan.hand_back, status: qualified, text: Project host rule.}]\n",
             ).unwrap();
             let result = deltas::render(
-                Some(&ws), &profiles::load("codex").unwrap(), "native_plan",
-                &json!({"task": ["implement"]}), &["qualified".to_string()],
+                Some(&ws),
+                &profiles::load("codex").unwrap(),
+                "native_plan",
+                &json!({"task": ["implement"]}),
+                &["qualified".to_string()],
                 deltas::DEFAULT_DOMAIN,
-            ).unwrap();
+            )
+            .unwrap();
             assert_eq!(result["practice"]["selected"], json!(["practice.kiss", "practice.yagni"]));
             let text = result["text"].as_str().unwrap();
             assert!(text.contains("Project rule."), "{text}");
@@ -401,7 +418,10 @@ mod tests {
 
     #[test]
     fn an_empty_project_override_inherits_and_the_project_can_clear_entries() {
-        use crate::{deltas, testing::{repo, with_config_home, ws_for}};
+        use crate::{
+            deltas,
+            testing::{repo, with_config_home, ws_for},
+        };
         with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
@@ -418,21 +438,26 @@ mod tests {
 
     #[test]
     fn delta_merge_preserves_global_nested_fields_and_project_list_values() {
-        use crate::{deltas, testing::{repo, to_yaml, with_config_home, ws_for}};
+        use crate::{
+            deltas,
+            testing::{repo, to_yaml, with_config_home, ws_for},
+        };
         with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
             let global = overrides_dir().join("deltas/practices/software-development.yaml");
             std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-            let mut doc = load_yaml(
-                &config_dir().join("deltas/practices/software-development.yaml"), false).unwrap();
+            let mut doc =
+                load_yaml(&config_dir().join("deltas/practices/software-development.yaml"), false)
+                    .unwrap();
             doc["entries"][0]["applies_to"] =
                 json!({"task": ["implement"], "result": ["workspace_change"]});
             std::fs::write(&global, to_yaml(&doc)).unwrap();
             std::fs::write(
                 ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
                 "entries: [{id: practice.kiss, applies_to: {task: [plan]}, why: null}]\n",
-            ).unwrap();
+            )
+            .unwrap();
             let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
             let merged = &listing.iter().find(|(k, _)| k == "practice.kiss").unwrap().1;
             assert_eq!(

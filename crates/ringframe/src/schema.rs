@@ -6,8 +6,7 @@ use serde_json::Value;
 
 use crate::store::{LedgerError, SCHEMA};
 
-const TOP: [&str; 8] =
-    ["schema", "event_id", "type", "time", "id", "actor", "links", "data"];
+const TOP: [&str; 8] = ["schema", "event_id", "type", "time", "id", "actor", "links", "data"];
 
 /// The enumerations, by the path they are reached at. A `None` in the list
 /// means the key may be present and null.
@@ -16,8 +15,15 @@ fn enum_values(key: &str) -> &'static [&'static str] {
         "actor.kind" => &["agent", "human", "policy"],
         "links[].rel" => &["evaluates", "remediates", "revises", "seals", "supersedes"],
         "classification.task[]" => &[
-            "clarify", "diagnose", "document", "implement", "operate", "plan", "question",
-            "research", "review",
+            "clarify",
+            "diagnose",
+            "document",
+            "implement",
+            "operate",
+            "plan",
+            "question",
+            "research",
+            "review",
         ],
         "classification.result" => {
             &["answer", "continuing_objective", "evidence", "plan", "workspace_change"]
@@ -25,8 +31,13 @@ fn enum_values(key: &str) -> &'static [&'static str] {
         "classification.interaction" => &["approval_gated", "interactive"],
         "classification.horizon" => &["one_turn", "persistent", "session"],
         "classification.effects[]" => &[
-            "execute", "external_effect", "external_read", "read", "workspace_read",
-            "workspace_write", "write",
+            "execute",
+            "external_effect",
+            "external_read",
+            "read",
+            "workspace_read",
+            "workspace_write",
+            "write",
         ],
         "data.delivery_mode" => &["human_handoff", "native_dispatch", "unsupported"],
         "data.source_verified" => &["exact", "unverified"],
@@ -48,8 +59,15 @@ fn nullable(key: &str) -> bool {
 
 fn required(event_type: &str) -> Option<Vec<&'static str>> {
     const ASK_COMMON: [&str; 9] = [
-        "title", "classification", "selected_capability", "route_explanation", "host", "source",
-        "prompt", "source_verified", "limitations",
+        "title",
+        "classification",
+        "selected_capability",
+        "route_explanation",
+        "host",
+        "source",
+        "prompt",
+        "source_verified",
+        "limitations",
     ];
     let mut out: Vec<&'static str> = match event_type {
         // `delivery` is written but not required: a record from before it
@@ -62,19 +80,34 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
         "ask.cancelled" => return Some(vec!["cancellation"]),
         "ask.submission" => {
             return Some(vec![
-                "state", "observed_by", "attributed_by", "as_modified", "host", "prompt_sha256",
+                "state",
+                "observed_by",
+                "attributed_by",
+                "as_modified",
+                "host",
+                "prompt_sha256",
             ]);
         }
         "ask.delivery" => {
             return Some(vec![
-                "mode", "mechanism", "state", "qualification", "receipt", "submission",
+                "mode",
+                "mechanism",
+                "state",
+                "qualification",
+                "receipt",
+                "submission",
                 "limitations",
             ]);
         }
         "eval.opened" => return Some(vec!["brief", "basis", "anchor", "subject"]),
         "eval.completed" => {
             return Some(vec![
-                "basis", "subject", "verdict", "confidence", "artifact", "limitations",
+                "basis",
+                "subject",
+                "verdict",
+                "confidence",
+                "artifact",
+                "limitations",
             ]);
         }
         "seal.created" => {
@@ -82,7 +115,12 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
         }
         "seal.refused" => {
             return Some(vec![
-                "basis", "eval", "subject", "disposition", "authority", "refusal_codes",
+                "basis",
+                "eval",
+                "subject",
+                "disposition",
+                "authority",
+                "refusal_codes",
             ]);
         }
         _ => return None,
@@ -95,8 +133,16 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
 /// Every event type the record can hold. A type with no required-key list is
 /// not a type this release writes or reads.
 pub const EVENT_TYPES: [&str; 10] = [
-    "ask.compiled", "ask.confirmed", "ask.cancelled", "ask.unanswered", "ask.submission",
-    "ask.delivery", "eval.opened", "eval.completed", "seal.created", "seal.refused",
+    "ask.compiled",
+    "ask.confirmed",
+    "ask.cancelled",
+    "ask.unanswered",
+    "ask.submission",
+    "ask.delivery",
+    "eval.opened",
+    "eval.completed",
+    "seal.created",
+    "seal.refused",
 ];
 
 fn fail(path: &str, why: &str) -> LedgerError {
@@ -123,10 +169,7 @@ fn check_enum(path: &str, key: &str, value: &Value) -> Result<(), LedgerError> {
         Value::Null => Err(fail(path, &format!("must be one of {shown}, got None"))),
         Value::String(s) if allowed.contains(&s.as_str()) => Ok(()),
         Value::String(s) => Err(fail(path, &format!("must be one of {shown}, got '{s}'"))),
-        other => Err(fail(
-            path,
-            &format!("must be one of {shown}, got {}", type_name(other)),
-        )),
+        other => Err(fail(path, &format!("must be one of {shown}, got {}", type_name(other)))),
     }
 }
 
@@ -162,10 +205,7 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
     let extra: BTreeSet<&str> =
         map.keys().map(String::as_str).filter(|k| !TOP.contains(k)).collect();
     if !extra.is_empty() {
-        return Err(fail(
-            &extra.into_iter().collect::<Vec<_>>().join(","),
-            "extra top-level key",
-        ));
+        return Err(fail(&extra.into_iter().collect::<Vec<_>>().join(","), "extra top-level key"));
     }
     for k in TOP {
         if !map.contains_key(k) {
@@ -210,10 +250,7 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
                 .as_object()
                 .is_some_and(|g| g.contains_key("observed_by") || g.contains_key("attributed_by"));
             if !graded {
-                return Err(fail(
-                    &format!("data.{field}"),
-                    "needs observed_by or attributed_by",
-                ));
+                return Err(fail(&format!("data.{field}"), "needs observed_by or attributed_by"));
             }
         }
         "ask.submission" => {
@@ -409,11 +446,13 @@ mod tests {
     fn confirmed_cancelled_and_submission_are_graded_observations() {
         let mut ev = base();
         ev["type"] = json!("ask.confirmed");
-        ev["data"] = json!({"confirmation": {"observed_by": "skill", "surface": "AskUserQuestion"}});
+        ev["data"] =
+            json!({"confirmation": {"observed_by": "skill", "surface": "AskUserQuestion"}});
         validate_event(&ev).unwrap();
 
         ev["type"] = json!("ask.cancelled");
-        ev["data"] = json!({"cancellation": {"attributed_by": "human:local-user"}, "reason": "later"});
+        ev["data"] =
+            json!({"cancellation": {"attributed_by": "human:local-user"}, "reason": "later"});
         validate_event(&ev).unwrap();
 
         ev["type"] = json!("ask.submission");

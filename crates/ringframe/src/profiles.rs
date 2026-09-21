@@ -85,9 +85,14 @@ mod tests {
         with_config_home(|_| {
             for host in ["claude-code", "codex"] {
                 for version in [
-                    json!("0.1.0"), json!("2.2.0"), json!("10.0.0-beta.1"),
-                    json!("codex-cli 0.153.4"), json!("2.1.263 (Claude Code)"),
-                    json!("development"), json!(""), json!(null),
+                    json!("0.1.0"),
+                    json!("2.2.0"),
+                    json!("10.0.0-beta.1"),
+                    json!("codex-cli 0.153.4"),
+                    json!("2.1.263 (Claude Code)"),
+                    json!("development"),
+                    json!(""),
+                    json!(null),
                 ] {
                     let p = for_host(&json!({"name": host, "version": version})).unwrap();
                     assert_eq!(p["profile_id"], host);
@@ -134,10 +139,20 @@ mod tests {
         with_config_home(|_| {
             let p = load("codex").unwrap();
             assert_eq!(p["profile_id"], "codex");
-            assert_eq!(p["confirmation"], json!({"tool": "request_user_input", "requires_feature": null}));
+            assert_eq!(
+                p["confirmation"],
+                json!({"tool": "request_user_input", "requires_feature": null})
+            );
             let ids: std::collections::BTreeSet<&str> = p["capabilities"]
-                .as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
-            assert_eq!(ids, ["native_direct", "native_goal", "native_plan", "native_review"].into());
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| c["id"].as_str().unwrap())
+                .collect();
+            assert_eq!(
+                ids,
+                ["native_direct", "native_goal", "native_plan", "native_review"].into()
+            );
             for c in p["capabilities"].as_array().unwrap() {
                 if c["id"] != "native_direct" {
                     assert_eq!(c["delivery_mode"], "human_handoff", "{}", c["id"]);

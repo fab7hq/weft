@@ -22,7 +22,16 @@ pub fn repo() -> TempDir {
     std::fs::write(dir.path().join("README.md"), "fixture\n").unwrap();
     run(&["git", "-C", &root, "add", "-A"]);
     run(&[
-        "git", "-C", &root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init",
+        "git",
+        "-C",
+        &root,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        "init",
     ]);
     dir
 }
@@ -54,7 +63,7 @@ pub fn with_config_home<T>(body: impl FnOnce(&Path) -> T) -> T {
     let installed = crate::workspace::install_config(Some(&fixture_config()));
     let out = installed
         .map_err(|e| format!("installing the fixture configuration: {e}"))
-        .and_then(|_| Ok(body(home.path())));
+        .map(|_| body(home.path()));
     // SAFETY: as above.
     unsafe {
         match was {
@@ -155,7 +164,16 @@ pub fn commit(root: &Path, files: &[(&str, Option<&str>)], message: &str) -> Str
     let root = root.to_string_lossy().to_string();
     run(&["git", "-C", &root, "add", "-A"]);
     run(&[
-        "git", "-C", &root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", message,
+        "git",
+        "-C",
+        &root,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-qm",
+        message,
     ]);
     head(Path::new(&root))
 }
@@ -177,21 +195,24 @@ pub fn stage_in(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std
 /// Compile an Ask and confirm it, the way the Python suite's `confirm` did.
 pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) -> Value {
     let staged = stage_in(ws, "prompt.txt", source, prompt);
-    let out = crate::ask::compile(ws, crate::ask::Compile {
-        staged: &staged,
-        title,
-        capability: "native_plan",
-        classification: json!({"task": ["plan"], "result": "plan",
+    let out = crate::ask::compile(
+        ws,
+        crate::ask::Compile {
+            staged: &staged,
+            title,
+            capability: "native_plan",
+            classification: json!({"task": ["plan"], "result": "plan",
                                "interaction": "approval_gated", "horizon": "session",
                                "effects": ["read"]}),
-        route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
+            route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
                       "effects": "reads", "gaps": []}),
-        host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
+            host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
                      "session_ref": "s1"}),
-        links: Vec::new(),
-        limitations: Vec::new(),
-        actor: None,
-    })
+            links: Vec::new(),
+            limitations: Vec::new(),
+            actor: None,
+        },
+    )
     .unwrap();
     crate::ask::confirm(ws, out["ask_id"].as_str().unwrap(), None).unwrap();
     out
@@ -259,16 +280,14 @@ pub fn two_asks_and_work(ws: &Workspace) -> (String, String, String) {
         ],
         "work",
     );
-    (
-        a["ask_id"].as_str().unwrap().to_string(),
-        b["ask_id"].as_str().unwrap().to_string(),
-        sha,
-    )
+    (a["ask_id"].as_str().unwrap().to_string(), b["ask_id"].as_str().unwrap().to_string(), sha)
 }
 
 pub struct Opened {
     pub a: String,
     pub b: String,
+    /// The work commit. Not every test reads it; the ones about anchors do.
+    #[allow(dead_code)]
     pub sha: String,
     pub out: Value,
     pub brief_sha: String,

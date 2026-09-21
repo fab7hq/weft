@@ -145,9 +145,9 @@ pub fn create(
             ),
         ));
     }
-    let actor = actor
-        .cloned()
-        .unwrap_or_else(|| json!({"kind": "human", "id": "local-user", "authority": "interactive"}));
+    let actor = actor.cloned().unwrap_or_else(
+        || json!({"kind": "human", "id": "local-user", "authority": "interactive"}),
+    );
     let mut codes: Vec<String> = Vec::new();
     let asks = ask::open_asks(ws)?;
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
@@ -185,8 +185,8 @@ pub fn create(
     let seal_id = ids::new_id("sel");
     let fact = eval_fact(ws, record.as_ref(), &subject["sha256"]);
     let mut authority_block = actor.clone();
-    authority_block["authority"] =
-        granted.map_or_else(|| actor.get("authority").cloned().unwrap_or(Value::Null), Value::String);
+    authority_block["authority"] = granted
+        .map_or_else(|| actor.get("authority").cloned().unwrap_or(Value::Null), Value::String);
     let mut base = json!({
         "basis": {"asks": ask_ids}, "eval": fact, "subject": subject,
         "disposition": disposition, "authority": authority_block,
@@ -194,9 +194,13 @@ pub fn create(
     if let Some(note) = note.filter(|n| !n.is_empty()) {
         base["note"] = json!(note);
     }
-    let mut links: Vec<Value> =
-        base["basis"]["asks"].as_array().cloned().unwrap_or_default().iter()
-            .map(|a| json!({"rel": "seals", "id": a})).collect();
+    let mut links: Vec<Value> = base["basis"]["asks"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .map(|a| json!({"rel": "seals", "id": a}))
+        .collect();
     if let Some(r) = &record {
         links.push(json!({"rel": "seals", "id": r["eval_id"]}));
     }
@@ -215,15 +219,20 @@ pub fn create(
     if base["eval"].is_null() {
         limits.push("no Eval over these Asks; the decision rests on the person alone".into());
     } else if base["eval"]["subject_matches"] != json!(true) {
-        limits.push("the subject changed after the Eval; its verdict describes an earlier state".into());
+        limits.push(
+            "the subject changed after the Eval; its verdict describes an earlier state".into(),
+        );
     }
     let time = sessions::now();
     let mut receipt = json!({"schema": "ringframe.seal/1", "seal_id": seal_id});
     for (k, v) in base.as_object().into_iter().flatten() {
         receipt[k] = v.clone();
     }
-    receipt["asks"] =
-        json!(asks.iter().map(|a| json!({"ask_id": a["ask_id"], "title": a["title"]})).collect::<Vec<_>>());
+    receipt["asks"] = json!(
+        asks.iter()
+            .map(|a| json!({"ask_id": a["ask_id"], "title": a["title"]}))
+            .collect::<Vec<_>>()
+    );
     receipt["limitations"] = json!(limits);
     receipt["time"] = json!(time);
     let mut bytes = store::canonical(&receipt);
@@ -259,8 +268,7 @@ pub fn check(ws: &Workspace, seal_id: &str) -> Result<Value, SealError> {
         .map_err(|e| ledger("seal.receipt_missing", e.to_string()))?;
     let fact = receipt["eval"].clone();
     if !fact.is_null() {
-        let eval_path =
-            ws.rf_dir().join(format!("evals/{}/record.json", str_of(&fact, "eval_id")));
+        let eval_path = ws.rf_dir().join(format!("evals/{}/record.json", str_of(&fact, "eval_id")));
         if !eval_path.exists()
             || digest::sha256_file(&eval_path).unwrap_or_default() != str_of(&fact, "sha256")
         {
@@ -299,8 +307,7 @@ mod tests {
     /// Two Asks, a work commit, and an Eval closed with the given votes.
     fn judged(ws: &Workspace, votes: [&str; 3]) -> (String, String, Value) {
         let o = opened(ws);
-        let items =
-            json!([{"id": "i1", "text": "Expose an uptime endpoint", "ask_id": o.a, "status": "active"}]);
+        let items = json!([{"id": "i1", "text": "Expose an uptime endpoint", "ask_id": o.a, "status": "active"}]);
         let js: Vec<Value> = ["coverage", "drift", "adversary"]
             .iter()
             .zip(votes)
@@ -337,7 +344,12 @@ mod tests {
             assert_eq!(receipt["note"], "good enough for the demo");
             assert_eq!(receipt["authority"]["authority"], "interactive");
             assert_eq!(
-                receipt["asks"].as_array().unwrap().iter().map(|x| str_of(x, "title")).collect::<Vec<_>>(),
+                receipt["asks"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| str_of(x, "title"))
+                    .collect::<Vec<_>>(),
                 ["Add uptime endpoint", "Skip the cache"]
             );
             let last = store::events(ws).unwrap().pop().unwrap();

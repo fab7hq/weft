@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # Both, because the core shells out to git, curl and tar, and those differ.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Identify git
+        # The fixtures make commits; a runner has no identity of its own.
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+      # Scoped to the core: the Weft crates predate `rustfmt.toml` and
+      # reformatting them belongs to its own change, not to the port.
+      - run: cargo fmt -p ringframe --check
+      - run: cargo clippy -p ringframe --all-targets -- -D warnings
+      - run: cargo test --workspace

@@ -187,7 +187,12 @@ fn matches(prompt: &str, want: &str) -> bool {
 ///
 /// The model never knows its own session id; the hook does. Ambiguity resolves
 /// to nothing.
-pub fn resolve_session(ws: &Workspace, host: &str, source: &[u8], window: Duration) -> Option<Value> {
+pub fn resolve_session(
+    ws: &Workspace,
+    host: &str,
+    source: &[u8],
+    window: Duration,
+) -> Option<Value> {
     let base = ws.rf_dir().join("sessions").join(host);
     let want = String::from_utf8_lossy(source).trim_end_matches('\n').to_string();
     let cutoff = SystemTime::now().checked_sub(window)?;
@@ -310,10 +315,7 @@ mod tests {
         capture(&ws, "claude-code", &payload("/rf:ask fix the login bug", "s1"), None).unwrap();
         let got = |s: Option<&str>, b: &[u8]| source_verified(&ws, "claude-code", s, b);
         assert_eq!(got(Some("s1"), b"fix the login bug\n"), ("exact".into(), None));
-        assert_eq!(
-            got(Some("s1"), b"fix login"),
-            ("unverified".into(), Some("mismatch".into()))
-        );
+        assert_eq!(got(Some("s1"), b"fix login"), ("unverified".into(), Some("mismatch".into())));
         assert_eq!(got(Some("nope"), b"x"), ("unverified".into(), Some("no_capture".into())));
         assert_eq!(got(None, b"x"), ("unverified".into(), Some("no_session_ref".into())));
     }
@@ -348,11 +350,18 @@ mod tests {
         capture(&ws, "claude-code", &payload("/rf:ask a", "old"), None).unwrap();
         capture(&ws, "claude-code", &payload("/rf:ask b", "new"), None).unwrap();
         let old = ws.rf_dir().join("sessions/claude-code/old");
-        let ten_days_ago = format!("{}", (std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH).unwrap().as_secs()) - 10 * 86_400);
+        let ten_days_ago = format!(
+            "{}",
+            (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
+                - 10 * 86_400
+        );
         for path in [old.join("prompts.jsonl"), old.clone()] {
-            crate::testing::run(&["touch", "-t",
-                &epoch_to_touch(&ten_days_ago), &path.to_string_lossy()]);
+            crate::testing::run(&[
+                "touch",
+                "-t",
+                &epoch_to_touch(&ten_days_ago),
+                &path.to_string_lossy(),
+            ]);
         }
         assert_eq!(prune(&ws, "7d").unwrap(), ["claude-code/old"]);
         assert!(!old.exists());

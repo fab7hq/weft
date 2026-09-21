@@ -1766,6 +1766,8 @@ dependencies = [
  "crossterm",
  "ratatui",
  "serde_json",
+ "sha2",
+ "tempfile",
  "vt100",
  "weft-core",
  "weft-proto",
