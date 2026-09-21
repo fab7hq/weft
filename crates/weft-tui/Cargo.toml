@@ -1,6 +1,6 @@
 [package]
 name = "weft-tui"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 
 # The terminal client. It draws, and it asks the daemon for everything else.

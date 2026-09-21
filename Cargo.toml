@@ -1,6 +1,6 @@
 [package]
 name = "weft"
-version = "0.0.1"
+version = "0.1.0"
 edition = "2024"
 
 # The binary. It starts the daemon or the terminal client; the work is in the
