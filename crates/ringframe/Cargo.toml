@@ -1,0 +1,23 @@
+[package]
+name = "ringframe"
+version = "0.1.0"
+edition = "2024"
+
+# RingFrame's core, in Weft's repository but not part of Weft (ADR-0013).
+# It ships its own binary, invoked by name, and nothing in Weft may depend on
+# this crate — the skills call `ringframe`, and that string is the contract.
+[lib]
+name = "ringframe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ringframe"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+serde_json = "1.0.151"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
