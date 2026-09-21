@@ -41,6 +41,20 @@ codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7
 The Python-era `uv tool install ringframe` still gets `ringframe` 0.0.5, which
 keeps working and is frozen there.
 
+## Working on it
+
+`./bin/reinstall-local` puts this working tree in front of your hosts: it
+builds both binaries, installs them, syncs the configuration from the `fab7`
+checkout beside this one, and reinstalls the plugins into Claude Code and
+Codex. All three move together, which is the point — change a profile and
+refresh only the plugins, and the skills change while the core keeps reading
+the configuration it last synced from the marketplace.
+
+```sh
+./bin/reinstall-local          # both hosts
+./bin/reinstall-local none     # binaries and configuration only
+```
+
 ## Requirements
 
 - macOS or Linux, a terminal

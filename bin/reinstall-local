@@ -1,0 +1,72 @@
+#!/bin/sh
+# Put this working tree's binaries, configuration and plugins in front of your
+# hosts, for testing an edit before it is released.
+#
+# `install.sh` fetches a published build; this installs what you just wrote.
+# Three things have to move together and they live in two repositories:
+#
+#   the binaries       built here, into ~/.local/bin
+#   the configuration  from the fab7 checkout, into ~/.fab7/rf/config
+#   the plugins        from the fab7 checkout, into each host's cache
+#
+# Miss the middle one and the skills change while the core keeps reading the
+# configuration it last synced from the marketplace, which is a confusing way
+# to spend an afternoon.
+#
+#   ./bin/reinstall-local            both hosts
+#   ./bin/reinstall-local claude     one host
+#   ./bin/reinstall-local codex
+#   ./bin/reinstall-local none       binaries and configuration only
+#
+# FAB7_DIR overrides where the marketplace checkout is (default: ../fab7).
+# WEFT_BIN_DIR overrides where the binaries go (default: ~/.local/bin), the
+# same variable install.sh reads.
+set -eu
+
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+fab7=${FAB7_DIR:-$(CDPATH= cd -- "$root/../fab7" 2>/dev/null && pwd || true)}
+bin_dir=${WEFT_BIN_DIR:-$HOME/.local/bin}
+want=${1:-both}
+
+case $want in
+    claude | codex | both | none) ;;
+    *) printf '%s\n' "usage: reinstall-local [claude|codex|both|none]" >&2; exit 1 ;;
+esac
+
+printf 'Building from %s\n' "$root"
+( cd "$root" && cargo build --release --locked --bin weft --bin ringframe )
+
+mkdir -p "$bin_dir"
+for name in weft ringframe; do
+    # Replaced rather than written through, so a running binary is undisturbed.
+    cp "$root/target/release/$name" "$bin_dir/$name.new"
+    chmod 755 "$bin_dir/$name.new"
+    mv "$bin_dir/$name.new" "$bin_dir/$name"
+    printf '  binary  %-10s %s\n' "$name" "$("$bin_dir/$name" --version 2>/dev/null || echo installed)"
+done
+
+if [ -n "$fab7" ] && [ -d "$fab7/products/ringframe/config" ]; then
+    # From the working tree, not the published tag: the point is to test the
+    # edit. `.revision` reads `local` afterwards, which is how you can tell.
+    "$bin_dir/ringframe" init --global --from "$fab7/products/ringframe/config" >/dev/null
+    printf '  config  %s\n' "$(cat "${HOME}/.fab7/rf/config/.revision" 2>/dev/null || echo installed)"
+else
+    printf '  config  skipped: no marketplace checkout at %s\n' "${fab7:-../fab7}"
+    printf '          set FAB7_DIR if it lives somewhere else\n'
+fi
+
+if [ "$want" = none ]; then
+    :
+elif [ -n "$fab7" ] && [ -x "$fab7/bin/reinstall-local" ]; then
+    # The plugins are the marketplace's to install, and it already knows how:
+    # it clears each host's cache so an edit lands without a version bump.
+    "$fab7/bin/reinstall-local" "$want" | sed -n 's/^  /  plugin /p'
+else
+    printf '  plugin  skipped: no %s/bin/reinstall-local\n' "${fab7:-../fab7}"
+fi
+
+case ":$PATH:" in
+    *":$bin_dir:"*) ;;
+    *) printf '\n%s\n' "Add $bin_dir to your PATH." ;;
+esac
+printf '\n%s\n' 'Restart the host: a running session keeps the skill it loaded at startup.'

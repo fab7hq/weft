@@ -35,7 +35,13 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if matches!(first.as_deref(), Some("--version" | "-V")) {
+        println!("weft {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if matches!(first.as_deref(), Some("--help" | "-h")) {
+        println!("weft {}\n", env!("CARGO_PKG_VERSION"));
         println!("weft [project-dir] [agent ...]\n");
         println!("  project-dir   the repository to work in (default: .)");
         println!("  agent         claude and/or codex; optional, for scripts and probes\n");
