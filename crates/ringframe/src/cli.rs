@@ -79,7 +79,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             s(&["--ask", "--reason"], &["--attributed"], &["--ask"], false, NONE)
         }
         ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
-        ("ask", Some("copy")) => s(&["--ask"], NONE, &["--ask"], false, NONE),
+        ("ask", Some("copy")) => s(&["--ask"], &["--body"], &["--ask"], false, NONE),
         ("ask", Some("delivery")) => {
             s(&["--ask", "--state", "--reason"], &["--from-hook", "--handoff"], NONE, false, NONE)
         }
@@ -172,7 +172,7 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         }
         ("ask", Some("cancel")) => "record that the person said no",
         ("ask", Some("submitted")) => "the person attests they submitted the prompt",
-        ("ask", Some("copy")) => "the compiled prompt, verbatim",
+        ("ask", Some("copy")) => "the compiled prompt, verbatim; --body drops its command prefix",
         ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
         ("ask", Some("list")) => "every compiled Ask, oldest first",
         ("ask", Some("show")) => "one Ask, resolved by id, title or session",
@@ -818,10 +818,20 @@ fn ask_command(
         }
         "submitted" => done!(ask::submitted(&ws, &id, ns.has("--as-modified"), Some(&actor))),
         "preflight" => done!(ask::preflight(&ws)),
-        "copy" => match ask::prompt_text(&ws, &id) {
-            Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
-            Err(e) => (ws, from_ask_error(e)),
-        },
+        "copy" => {
+            // `--body` is the prompt without the command its prefix names, so
+            // a person typing the command has something to paste that needs no
+            // slicing.
+            let got = if ns.has("--body") {
+                ask::prompt_body(&ws, &id)
+            } else {
+                ask::prompt_text(&ws, &id)
+            };
+            match got {
+                Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
         "delivery" => {
             if ns.has("--from-hook") {
                 // A hook must never fail the host turn.

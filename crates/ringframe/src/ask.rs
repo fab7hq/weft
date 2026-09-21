@@ -15,9 +15,16 @@ const HOOK_WINDOW_MS: i64 = 30 * 60 * 1000;
 
 const HANDOFF: &str = "Prompt prepared for {host} ({capability}):
 {path}
-
+";
+/// What to do when the prompt is short enough to go in as it stands. A prompt
+/// that folds gets different instructions, and printing both would contradict
+/// itself: "copy its complete contents" is the one thing that does not work.
+const HANDOFF_WHOLE: &str = "
 Open the file, copy its complete contents, and submit them in the
 active {host_title} TUI. RingFrame does not observe that submission.
+";
+const HANDOFF_OBSERVATION: &str = "
+RingFrame does not observe that submission.
 ";
 
 /// A prompt long enough to be folded cannot carry its own command: the host
@@ -30,12 +37,25 @@ at once would run this as an ordinary request instead of {mode}.
 
 {how}
 ";
+// The body is offered as its own thing rather than as "the rest of the file".
+// `{mode} ` is the first few characters of the first line, not a line of its
+// own, so "the rest" invites a copy that starts at line two and silently drops
+// the first sentence — which is the objective. Nothing here asks anyone to
+// split a line by eye.
 const HANDOFF_MODE_FIRST: &str = "Submit `{mode}` on its own first. {host_title} shows
-`{active}` once it is on. Then paste the rest of the file — everything after
-`{mode} ` — and submit that.";
+`{active}` once it is on. Then copy the body, which is the prompt without its
+command:
+
+    ringframe ask copy --ask {ask} --body
+
+Paste that and submit it.";
 const HANDOFF_TYPE_PREFIX: &str = "Type `{mode} ` yourself at the start of an empty
-composer, then paste the rest of the file — everything after `{mode} ` — beside
-it, and submit. Typed, the command is read; pasted, it is not.";
+composer — typed, the command is read; pasted, it is not. Then copy the body,
+which is the prompt without its command:
+
+    ringframe ask copy --ask {ask} --body
+
+Paste that beside what you typed, and submit.";
 
 fn host_title(host: &str) -> &str {
     match host {
@@ -759,6 +779,32 @@ fn prompt_match(
     Ok(None)
 }
 
+/// The prompt without the command its prefix names.
+///
+/// `prompt.txt` stays what it has always been. This is the part a person
+/// pastes after typing the command, taken at the byte offset the record
+/// already carries rather than by looking for the prefix again.
+pub fn prompt_body(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
+    let rec = record(ws, ask_id)?;
+    let d = &rec.compiled.expect("compiled")["data"];
+    let text = std::fs::read_to_string(ws.rf_dir().join(str_of(&d["prompt"], "path")))?;
+    // A record from before `delivery` existed says nothing about a prefix, so
+    // fall back to what the capability declares, and to the whole prompt.
+    let prefix = d
+        .get("delivery")
+        .and_then(|x| x.get("prefix_bytes"))
+        .and_then(Value::as_u64)
+        .map(|n| n as usize)
+        .unwrap_or_else(|| {
+            profiles::for_host(&d["host"])
+                .ok()
+                .and_then(|p| profiles::capability(&p, &str_of(d, "selected_capability")).cloned())
+                .map(|c| str_of(&c, "prompt_prefix").len())
+                .unwrap_or(0)
+        });
+    Ok(text.get(prefix..).unwrap_or(&text).to_string())
+}
+
 pub fn prompt_text(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
     let rec = record(ws, ask_id)?;
     let path = str_of(&rec.compiled.expect("compiled")["data"]["prompt"], "path");
@@ -953,10 +999,18 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
             ("host", host.clone()),
             ("capability", str_of(d, "selected_capability")),
             ("path", path.to_string_lossy().to_string()),
-            ("host_title", title.clone()),
         ],
     );
-    text.push_str(&handoff_mode(d.get("delivery").unwrap_or(&Value::Null), &title));
+    // One instruction, never two: a prompt that folds cannot be pasted whole,
+    // so saying "copy its complete contents" beside the fold advice would
+    // contradict it.
+    let folded = handoff_mode(d.get("delivery").unwrap_or(&Value::Null), &title, ask_id);
+    if folded.is_empty() {
+        text.push_str(&fill(HANDOFF_WHOLE, &[("host_title", title.clone())]));
+    } else {
+        text.push_str(HANDOFF_OBSERVATION);
+        text.push_str(&folded);
+    }
     let rec = append_delivery(
         ws,
         ask_id,
@@ -977,7 +1031,7 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
 ///
 /// Nothing, unless the prompt is long enough for the host to fold it. A record
 /// from before `delivery` existed has no mode here and says nothing extra.
-fn handoff_mode(delivery: &Value, title: &str) -> String {
+fn handoff_mode(delivery: &Value, title: &str, ask_id: &str) -> String {
     let mode = delivery.get("mode").and_then(Value::as_str).unwrap_or_default();
     if mode.is_empty() || delivery.get("folds") != Some(&json!(true)) {
         return String::new();
@@ -986,10 +1040,15 @@ fn handoff_mode(delivery: &Value, title: &str) -> String {
     let how = if str_of(delivery, "mode_kind") == "mode" && !active.is_empty() {
         fill(
             HANDOFF_MODE_FIRST,
-            &[("mode", mode.to_string()), ("host_title", title.to_string()), ("active", active)],
+            &[
+                ("mode", mode.to_string()),
+                ("host_title", title.to_string()),
+                ("active", active),
+                ("ask", ask_id.to_string()),
+            ],
         )
     } else {
-        fill(HANDOFF_TYPE_PREFIX, &[("mode", mode.to_string())])
+        fill(HANDOFF_TYPE_PREFIX, &[("mode", mode.to_string()), ("ask", ask_id.to_string())])
     };
     let total = delivery.get("prefix_bytes").and_then(Value::as_u64).unwrap_or(0)
         + delivery.get("body_bytes").and_then(Value::as_u64).unwrap_or(0);
@@ -1456,6 +1515,87 @@ mod tests {
             confirm(ws, &str_of(&short, "ask_id"), None).unwrap();
             let (plain, _) = delivery_handoff(ws, &str_of(&short, "ask_id")).unwrap();
             assert!(!plain.contains("characters or more"), "{plain}");
+        });
+    }
+
+    #[test]
+    fn the_handoff_never_asks_anyone_to_split_a_line_by_eye() {
+        // `/plan ` is the first few characters of the first line, not a line
+        // of its own. Telling someone to paste "the rest of the file" invites
+        // a copy that starts at line two and silently drops the first
+        // sentence — which is the objective.
+        bench(|ws| {
+            let mut long = b"/plan ".to_vec();
+            long.extend(std::iter::repeat_n(b'x', 1200));
+            long.push(b'\n');
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, &long)),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = str_of(&out, "ask_id");
+            confirm(ws, &id, None).unwrap();
+            let (text, _) = delivery_handoff(ws, &id).unwrap();
+            assert!(!text.contains("rest of the file"), "{text}");
+            assert!(!text.contains("everything after"), "{text}");
+            // It names the command that produces exactly what to paste.
+            assert!(text.contains(&format!("ringframe ask copy --ask {id} --body")), "{text}");
+            // And it does not also say to copy the whole thing, which is the
+            // one thing that cannot work here.
+            assert!(!text.contains("complete contents"), "{text}");
+        });
+    }
+
+    #[test]
+    fn the_body_is_the_prompt_without_its_command() {
+        bench(|ws| {
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = str_of(&out, "ask_id");
+            let whole = prompt_text(ws, &id).unwrap();
+            let body = prompt_body(ws, &id).unwrap();
+            assert_eq!(whole, "/plan Ship the endpoint.\n");
+            assert_eq!(body, "Ship the endpoint.\n");
+            // Typing the command and pasting the body reproduces the prompt
+            // byte for byte, which is the whole point.
+            assert_eq!(format!("/plan {body}"), whole);
+
+            // A capability with no prefix has nothing to drop.
+            let plain = compiled(ws);
+            let id = str_of(&plain, "ask_id");
+            assert_eq!(prompt_body(ws, &id).unwrap(), prompt_text(ws, &id).unwrap());
+        });
+    }
+
+    #[test]
+    fn a_prompt_that_fits_is_told_to_go_in_whole() {
+        bench(|ws| {
+            let out = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/plan Ship it.\n")),
+                    host: codex(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let id = str_of(&out, "ask_id");
+            confirm(ws, &id, None).unwrap();
+            let (text, _) = delivery_handoff(ws, &id).unwrap();
+            assert!(text.contains("copy its complete contents"), "{text}");
+            assert!(!text.contains("--body"), "{text}");
+            assert!(text.contains("RingFrame does not observe"), "{text}");
         });
     }
 
