@@ -21,6 +21,10 @@ pub struct LedgerError {
 }
 
 impl LedgerError {
+    pub fn schema(detail: impl Into<String>) -> Self {
+        LedgerError::new("ledger.schema", detail)
+    }
+
     fn new(code: &str, detail: impl Into<String>) -> Self {
         LedgerError { code: code.to_string(), detail: detail.into() }
     }

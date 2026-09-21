@@ -8,6 +8,9 @@ pub mod config;
 pub mod deltas;
 pub mod digest;
 pub mod ids;
+pub mod profiles;
+pub mod schema;
+pub mod sessions;
 pub mod store;
 pub mod workspace;
 

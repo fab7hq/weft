@@ -33,3 +33,35 @@ pub fn ws_for(path: &Path) -> crate::workspace::Workspace {
     ws.ensure().expect("ensure");
     ws
 }
+
+/// `HOME` is one value per process, and Rust runs tests in parallel threads.
+/// Everything that reads the config home takes this lock, so the tests that
+/// need their own configuration cannot see each other's.
+static CONFIG_HOME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn fixture_config() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/config")
+}
+
+/// A real config home, installed from the fixture bundle. The package ships no
+/// configuration; this stands in for a synced one.
+pub fn with_config_home<T>(body: impl FnOnce(&Path) -> T) -> T {
+    let guard = CONFIG_HOME.lock().unwrap_or_else(|e| e.into_inner());
+    let home = tmp_dir();
+    let was = std::env::var_os("HOME");
+    // SAFETY: every reader of HOME in these tests holds the lock above.
+    unsafe { std::env::set_var("HOME", home.path()) };
+    let installed = crate::workspace::install_config(Some(&fixture_config()));
+    let out = installed
+        .map_err(|e| format!("installing the fixture configuration: {e}"))
+        .and_then(|_| Ok(body(home.path())));
+    // SAFETY: as above.
+    unsafe {
+        match was {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+    drop(guard);
+    out.unwrap()
+}

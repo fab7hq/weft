@@ -150,6 +150,247 @@ pub fn latest_tag<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a st
         .max_by_key(|n| version_key(n))
 }
 
+/// The manifest the marketplace keeps beside `config/`, or inside it if
+/// someone puts it there.
+fn bundle_manifest(source: &Path) -> Option<String> {
+    let beside = source.parent().map(|p| p.join("bundle.yaml"));
+    let inside = source.join("bundle.yaml");
+    beside
+        .into_iter()
+        .chain(std::iter::once(inside))
+        .find(|c| c.is_file())
+        .and_then(|c| std::fs::read_to_string(c).ok())
+}
+
+/// Every file must name a schema this release reads, before anything is
+/// replaced.
+fn validate(staged: &Path, bundle: Option<&str>) -> Result<(), WorkspaceError> {
+    use crate::config;
+
+    for rel in ["harnesses", "deltas/practices"] {
+        if !staged.join(rel).is_dir() {
+            return Err(WorkspaceError::new(
+                "config.bundle",
+                format!("configuration has no {rel}/ directory"),
+            ));
+        }
+    }
+    if let Some(text) = bundle {
+        let doc = config::load_yaml_text(text, "bundle.yaml", false)
+            .map_err(|e| WorkspaceError::new("config.unreadable", e.to_string()))?;
+        let found = doc.get("schema").and_then(serde_json::Value::as_str);
+        if found != Some(BUNDLE_SCHEMA) {
+            return Err(schema_refusal("bundle.yaml", found, BUNDLE_SCHEMA));
+        }
+    }
+    let mut expected: Vec<(PathBuf, &str)> = Vec::new();
+    expected.extend(yaml_in(&staged.join("harnesses")).into_iter().map(|p| (p, PROFILE_SCHEMA)));
+    expected.extend(yaml_in(&staged.join("deltas")).into_iter().map(|p| (p, DELTAS_SCHEMA)));
+    expected.extend(
+        yaml_in(&staged.join("deltas/practices")).into_iter().map(|p| (p, DELTAS_SCHEMA)),
+    );
+    for (path, schema) in expected {
+        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| WorkspaceError::new("config.unreadable", format!("{name}: {e}")))?;
+        // The 1.1 lint runs here, where a bad document can still be refused
+        // without anything having been replaced.
+        config::lint_yaml_11(&text, &name)
+            .map_err(|e| WorkspaceError::new("config.unreadable", e.to_string()))?;
+        let doc = config::load_yaml_text(&text, &name, true)
+            .map_err(|e| WorkspaceError::new("config.unreadable", format!("{name}: {e}")))?;
+        let found = doc.get("schema").and_then(serde_json::Value::as_str);
+        if found != Some(schema) {
+            return Err(schema_refusal(&name, found, schema));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal that holds the era boundary: a 0.0.5 core meeting a Rust-era
+/// bundle says this and stops (ADR-0013).
+fn schema_refusal(name: &str, found: Option<&str>, want: &str) -> WorkspaceError {
+    WorkspaceError::new(
+        "config.schema",
+        format!(
+            "{name} declares {}; this release reads '{want}'. \
+             Upgrade ringframe, or install a configuration it can read.",
+            found.map_or("None".to_string(), |s| format!("'{s}'"))
+        ),
+    )
+}
+
+fn yaml_in(dir: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "yaml"))
+        .collect();
+    out.sort();
+    out
+}
+
+/// Swap in the staged tree, putting the previous one back if the swap fails.
+fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
+    let previous = target
+        .exists()
+        .then(|| target.with_file_name(format!(".previous-{}", std::process::id())));
+    if let Some(prev) = &previous {
+        std::fs::rename(target, prev)?;
+    }
+    if let Err(e) = std::fs::rename(staged, target) {
+        if let Some(prev) = &previous {
+            std::fs::rename(prev, target)?;
+        }
+        return Err(e);
+    }
+    if let Some(prev) = &previous {
+        let _ = std::fs::remove_dir_all(prev);
+    }
+    Ok(())
+}
+
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// `curl` and `tar`, rather than an HTTP stack and a decompressor linked in.
+///
+/// Both are on every machine that can run `install.sh`, which fetches this
+/// binary the same way. Carrying TLS, gzip and tar inside the core to do what
+/// two ubiquitous tools already do would be weight with nothing to show for it.
+fn fetch(url: &str, timeout: &str) -> Result<Vec<u8>, WorkspaceError> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", timeout, url])
+        .output()
+        .map_err(|e| WorkspaceError::new("config.fetch", format!("curl: {e}")))?;
+    if !out.status.success() {
+        return Err(WorkspaceError::new(
+            "config.fetch",
+            format!("{url}: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        ));
+    }
+    Ok(out.stdout)
+}
+
+fn newest_tag() -> Result<String, WorkspaceError> {
+    let body = fetch(&format!("https://api.github.com/repos/{BUNDLE_REPO}/tags"), "30")?;
+    let tags: Value = serde_json::from_slice(&body)
+        .map_err(|e| WorkspaceError::new("config.fetch", format!("tags: {e}")))?;
+    let names: Vec<&str> =
+        tags.as_array().into_iter().flatten().filter_map(|t| t["name"].as_str()).collect();
+    latest_tag(names).map(str::to_string).ok_or_else(|| {
+        WorkspaceError::new(
+            "config.no_release",
+            format!("{BUNDLE_REPO} has no {BUNDLE_TAG_PREFIX}* release tag"),
+        )
+    })
+}
+
+/// Extract `products/<product>/config` into `dest`. Returns the tag and the
+/// bundle manifest text.
+fn download(dest: &Path) -> Result<(String, Option<String>), WorkspaceError> {
+    let tag = newest_tag()?;
+    let raw = fetch(
+        &format!("https://codeload.github.com/{BUNDLE_REPO}/tar.gz/refs/tags/{tag}"),
+        "120",
+    )?;
+    let work = dest.with_file_name(format!(".extract-{}-{}", std::process::id(), crate::ids::random_hex(4)));
+    let outcome = (|| {
+        std::fs::create_dir_all(&work).map_err(io("config.bundle"))?;
+        let archive = work.join("bundle.tar.gz");
+        std::fs::write(&archive, &raw).map_err(io("config.bundle"))?;
+        let status = Command::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&work)
+            .status()
+            .map_err(|e| WorkspaceError::new("config.bundle", format!("tar: {e}")))?;
+        if !status.success() {
+            return Err(WorkspaceError::new("config.bundle", format!("{tag} did not unpack")));
+        }
+        // GitHub wraps the tree in one directory named for the repository and tag.
+        let top = std::fs::read_dir(&work)
+            .map_err(io("config.bundle"))?
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_dir())
+            .ok_or_else(|| WorkspaceError::new("config.bundle", format!("{tag} is empty")))?;
+        let product = top.join("products").join(BUNDLE_PRODUCT);
+        let config = product.join("config");
+        if !config.is_dir() {
+            return Err(WorkspaceError::new(
+                "config.bundle",
+                format!("{tag} contains no products/{BUNDLE_PRODUCT}/config/"),
+            ));
+        }
+        copy_tree(&config, dest).map_err(io("config.bundle"))?;
+        // The manifest sits beside config/, so it is read but never mirrored:
+        // the installed tree stays exactly the config/ tree.
+        Ok((tag.clone(), std::fs::read_to_string(product.join("bundle.yaml")).ok()))
+    })();
+    let _ = std::fs::remove_dir_all(&work);
+    outcome
+}
+
+/// Replace the synced config layer; create the overrides layer once and never
+/// touch it again.
+pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
+    use crate::config;
+
+    let home_dir = config::home();
+    std::fs::create_dir_all(&home_dir).map_err(io("config.source"))?;
+    set_private(&home_dir).map_err(io("config.source"))?;
+    let staged = home_dir.join(format!(".staging-{}-{}", std::process::id(), crate::ids::random_hex(4)));
+    let outcome = (|| {
+        let (revision, bundle) = match source {
+            Some(src) => {
+                let src = canonical_path(src).map_err(io("config.source"))?;
+                if !src.join("harnesses").is_dir() {
+                    return Err(WorkspaceError::new(
+                        "config.source",
+                        format!("{} has no harnesses/ directory", src.display()),
+                    ));
+                }
+                copy_tree(&src, &staged).map_err(io("config.source"))?;
+                ("local".to_string(), bundle_manifest(&src))
+            }
+            None => download(&staged)?,
+        };
+        validate(&staged, bundle.as_deref())?;
+        std::fs::write(staged.join(".revision"), format!("{revision}\n")).map_err(io("config.source"))?;
+        replace(&staged, &config::config_dir()).map_err(io("config.source"))?;
+        Ok(revision)
+    })();
+    let _ = std::fs::remove_dir_all(&staged);
+    let revision = outcome?;
+    let overrides = config::overrides_dir().join("deltas").join("practices");
+    std::fs::create_dir_all(&overrides).map_err(io("config.source"))?;
+    Ok(json!({
+        "rf_dir": home_dir.to_string_lossy(),
+        "config": config::config_dir().to_string_lossy(),
+        "overrides": config::overrides_dir().to_string_lossy(),
+        "revision": revision,
+    }))
+}
+
+fn io(code: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
+    move |e| WorkspaceError::new(code, e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
