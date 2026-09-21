@@ -1414,6 +1414,15 @@ pub(crate) mod tests {
 
     /// A session backed by a real server on a scratch root, because the app is
     /// a client now and there is no honest way to test it without one.
+    /// Whether this machine has Codex at all. Some tests are about what Weft
+    /// offers for a harness that exists, and there is nothing to offer when it
+    /// does not.
+    pub(crate) fn codex_on_path() -> bool {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join("codex").is_file())
+        })
+    }
+
     pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
@@ -1620,6 +1629,12 @@ pub(crate) mod tests {
 
     #[test]
     fn the_session_offered_is_the_one_the_hook_wrote_down() {
+        // `starts()` only offers a harness that is on this machine, so this
+        // is about what Weft does when one is. A runner has no Codex.
+        if !codex_on_path() {
+            eprintln!("skipped: codex is not on PATH");
+            return;
+        }
         let mut a = app();
         record_a_session(&a.root.clone(), "codex", "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
         a.input(0, &[4]).expect("end it");
@@ -1717,6 +1732,12 @@ pub(crate) mod tests {
 
     #[test]
     fn the_picker_offers_a_recorded_session_before_a_fresh_agent() {
+        // `starts()` only offers a harness that is on this machine, so this
+        // is about what Weft does when one is. A runner has no Codex.
+        if !codex_on_path() {
+            eprintln!("skipped: codex is not on PATH");
+            return;
+        }
         let mut a = app();
         let root = a.root.clone();
         let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");

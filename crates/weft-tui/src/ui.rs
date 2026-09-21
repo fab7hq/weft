@@ -1352,6 +1352,10 @@ mod tests {
     #[test]
     fn reopening_a_workspace_with_history_offers_to_pick_it_up() {
         let (root, session) = crate::app::tests::test_session("reopen");
+        if !crate::app::tests::codex_on_path() {
+            eprintln!("skipped: codex is not on PATH");
+            return;
+        }
         let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
         std::fs::create_dir_all(&dir).expect("dir");
         let line = serde_json::json!({
