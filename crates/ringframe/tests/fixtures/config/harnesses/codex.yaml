@@ -4,7 +4,7 @@ profile_id: codex
 host: codex
 version_range: null
 surface: native-tui
-invocation_prefix: '/rf:'
+invocation_prefix: '$rf:'
 confirmation:
   tool: request_user_input
   requires_feature: null
@@ -47,6 +47,9 @@ capabilities:
   continuation: the person submits the prompt; Codex Plan mode owns research and review
   effects:
   - workspace_read
+  # Plan mode reads; the approved continuation writes. Declaring only the
+  # read half made the profile contradict its own `continuation` line.
+  - workspace_write
   permission_owner: host
   delivery_mode: human_handoff
   prompt_prefix: '/plan '

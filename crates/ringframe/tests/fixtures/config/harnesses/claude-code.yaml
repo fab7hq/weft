@@ -44,6 +44,9 @@ capabilities:
     host permissions
   effects:
   - workspace_read
+  # Plan mode reads; the approved continuation writes. Declaring only the
+  # read half made the profile contradict its own `continuation` line.
+  - workspace_write
   permission_owner: host
   delivery_mode: native_dispatch
   receipt:

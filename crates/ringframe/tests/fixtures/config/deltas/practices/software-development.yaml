@@ -2,9 +2,15 @@
 schema: ringframe.deltas/1
 scope: practice
 domain: software-development
+description: >-
+  Building and changing software: design, implementation, refactoring, tests,
+  debugging, review, dependencies, and running what you shipped.
 render:
   heading: 'Rules:'
-  core_cap: 5
+  # Six, because planning carries one structural rule (where the plan goes)
+  # on top of the five principles. Raised with practice.plan_as_files so that
+  # adding it displaced nothing.
+  core_cap: 6
 source: https://lawsofsoftwareengineering.com/
 concerns: [api_surface, auth, data_migration, concurrency, performance, refactor, dependency_change, ui, cli, tests_only, operate]
 # tier: core | situational | reference (default situational); concerns from the domain vocabulary
@@ -75,6 +81,20 @@ entries:
       Make names, signatures, defaults, and behaviour match what a reader of
       the surrounding code would expect; when a choice would surprise, prefer
       the conventional one.
+
+  - id: practice.plan_as_files
+    label: Plan As Files
+    principle: A stage ends by committing an artifact the next stage can read
+    applies_to:
+      task: [plan]
+    tier: core
+    text: >-
+      Write the plan into the repository, not only into the conversation:
+      plans/<slug>/ with one file per decision under adr/, one per contract
+      under spec/, and plan.md holding the sequence and what done means for
+      each step. The next request implements those files and the review reads
+      the diff against them, so a plan left in the session can be checked by
+      nobody.
 
   # ================= architecture laws
   - id: practice.gall

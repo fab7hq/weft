@@ -840,7 +840,9 @@ mod tests {
             }
             let prac = load_practice_catalog(DEFAULT_DOMAIN, None).unwrap();
             assert_eq!(prac["scope"], "practice");
-            assert_eq!(prac["render"], json!({"heading": "Rules:", "core_cap": 5}));
+            // Six since practice.plan_as_files: planning carries one
+            // structural rule on top of the five principles.
+            assert_eq!(prac["render"], json!({"heading": "Rules:", "core_cap": 6}));
             let all: Vec<String> = entries(&prac).iter().map(|e| text_of(e, "id")).collect();
             let unique: BTreeSet<&String> = all.iter().collect();
             assert_eq!(all.len(), unique.len(), "duplicate entry ids");
