@@ -14,7 +14,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 pub use weft_core::board::PaneInfo;
 use weft_core::inject::Handoff;
 use weft_core::ledger::Unit;
@@ -30,35 +30,75 @@ pub const MAX_LINE: usize = 16 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
     /// Version handshake, first.
-    Hello { client: String, protocol: u64 },
+    Hello {
+        client: String,
+        protocol: u64,
+    },
     /// Watch a project. The daemon holds many; a client sees one.
-    Open { path: String, rows: u16, cols: u16 },
+    Open {
+        path: String,
+        rows: u16,
+        cols: u16,
+    },
     /// Start a harness, fresh or resuming a recorded session.
-    StartAgent { harness: String, spec: String },
+    StartAgent {
+        harness: String,
+        spec: String,
+    },
     /// Stop an agent and take its pane away.
-    CloseAgent { pane: u32 },
+    CloseAgent {
+        pane: u32,
+    },
     /// A person's own typing, into a pane they are showing. Not an act.
-    Input { pane: u32, bytes: Vec<u8> },
-    Resize { pane: u32, rows: u16, cols: u16 },
+    Input {
+        pane: u32,
+        bytes: Vec<u8>,
+    },
+    Resize {
+        pane: u32,
+        rows: u16,
+        cols: u16,
+    },
     /// Put a prompt in front of the person. Answers with its pending id;
     /// nothing is typed until that is resolved.
-    Stage { pane: u32, bytes: Vec<u8>, how: Handoff, what: String, why: String },
+    Stage {
+        pane: u32,
+        bytes: Vec<u8>,
+        how: Handoff,
+        what: String,
+        why: String,
+    },
     /// One of RingFrame's three acts, by name. The daemon works out what to
     /// type, where it goes, and how it has to be typed; a client that
     /// assembled bytes would be re-deriving all of that. Answers with a
     /// pending.
-    Act { act: String, unit: Option<String>, pane: Option<u32>, text: Option<String> },
+    Act {
+        act: String,
+        unit: Option<String>,
+        pane: Option<u32>,
+        text: Option<String>,
+    },
     /// Record the person's yes for an Ask whose chooser never got one.
-    ConfirmAsk { unit: String },
+    ConfirmAsk {
+        unit: String,
+    },
     /// The exact wording, or the judgements, as RingFrame recorded them.
-    Read { what: String, unit: String },
+    Read {
+        what: String,
+        unit: String,
+    },
     /// Run the install commands for a harness, then ask it again.
-    SetUp { harness: String },
+    SetUp {
+        harness: String,
+    },
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
     Available,
     /// Yes or no, by id. Whoever answers first answers for everyone.
-    Resolve { pending: String, yes: bool },
+    Resolve {
+        pending: String,
+        yes: bool,
+    },
     /// Leave, without stopping anything.
     Detach,
     /// Stop every agent and end the session.
@@ -69,22 +109,50 @@ pub enum Call {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The panes of the project just opened, in order.
-    Panes { panes: Vec<PaneInfo> },
-    Output { pane: u32, bytes: Vec<u8> },
-    Added { pane: u32, harness: String, spec: String },
-    Exited { pane: u32 },
+    Panes {
+        panes: Vec<PaneInfo>,
+    },
+    Output {
+        pane: u32,
+        bytes: Vec<u8>,
+    },
+    Added {
+        pane: u32,
+        harness: String,
+        spec: String,
+    },
+    Exited {
+        pane: u32,
+    },
     /// The board, and the Eval record behind each check. Sent on opening a
     /// project and whenever the ledger moves, so nothing reads a file to draw
     /// a frame.
-    Units { units: Vec<Unit>, records: Value },
+    Units {
+        units: Vec<Unit>,
+        records: Value,
+    },
     /// Something is waiting on a person. Every attached client is told.
-    Pending { id: String, pane: u32, what: String, why: String, payload: Vec<u8> },
+    Pending {
+        id: String,
+        pane: u32,
+        what: String,
+        why: String,
+        payload: Vec<u8>,
+    },
     /// It was answered. Once.
-    Resolved { id: String, yes: bool },
+    Resolved {
+        id: String,
+        yes: bool,
+    },
     /// A prompt was typed, or was not, and why not.
-    Injected { pane: u32, refusal: Option<String> },
+    Injected {
+        pane: u32,
+        refusal: Option<String>,
+    },
     /// What each harness is short of here, by the name RingFrame records.
-    Readiness { states: Value },
+    Readiness {
+        states: Value,
+    },
 }
 
 /// One line on the wire: a call, its answer, or an event.
@@ -109,7 +177,11 @@ fn b64(bytes: &[u8]) -> String {
             | (*c.get(1).unwrap_or(&0) as u32) << 8
             | *c.get(2).unwrap_or(&0) as u32;
         for i in 0..4 {
-            out.push(if i <= c.len() { ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char } else { '=' });
+            out.push(if i <= c.len() {
+                ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
         }
     }
     out
@@ -180,7 +252,9 @@ impl Call {
                 ("agent.start", json!({"harness": harness, "spec": spec}))
             }
             Call::CloseAgent { pane } => ("agent.close", json!({"pane": pane})),
-            Call::Input { pane, bytes } => ("pane.input", json!({"pane": pane, "bytes": b64(bytes)})),
+            Call::Input { pane, bytes } => {
+                ("pane.input", json!({"pane": pane, "bytes": b64(bytes)}))
+            }
             Call::Resize { pane, rows, cols } => {
                 ("pane.resize", json!({"pane": pane, "rows": rows, "cols": cols}))
             }
@@ -398,9 +472,8 @@ const SUN_LEN: usize = 100;
 
 /// Where the daemon listens. One per machine (ADR-0007), so one name.
 pub fn socket_path() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
+    let base =
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     socket_path_in(&base, "weft.sock".to_string())
 }
 
@@ -422,10 +495,7 @@ pub fn private_socket(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    socket_path_in(
-        &std::env::temp_dir(),
-        format!("{name}-{}-{n}.sock", std::process::id()),
-    )
+    socket_path_in(&std::env::temp_dir(), format!("{name}-{}-{n}.sock", std::process::id()))
 }
 
 /// Is a session already listening there?
@@ -532,12 +602,7 @@ mod tests {
             Call::Input { pane: 2, bytes: vec![0x00, 0x1b, 0xff, b'a'] },
             Call::Resize { pane: 1, rows: 24, cols: 80 },
             Call::Resolve { pending: "pnd_1".into(), yes: false },
-            Call::Act {
-                act: "send".into(),
-                unit: Some("ask_1".into()),
-                pane: None,
-                text: None,
-            },
+            Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read { what: "judges".into(), unit: "ask_1".into() },

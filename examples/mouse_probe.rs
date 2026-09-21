@@ -11,8 +11,12 @@ fn main() -> anyhow::Result<()> {
     let pane = Pane::spawn_args("probe", &prog, &argv, &cwd, 40, 120)?;
     std::thread::sleep(std::time::Duration::from_secs(10));
     pane.with_screen(|s| {
-        println!("{prog}: mode={:?} encoding={:?} alt={:?}",
-            s.mouse_protocol_mode(), s.mouse_protocol_encoding(), s.alternate_screen());
+        println!(
+            "{prog}: mode={:?} encoding={:?} alt={:?}",
+            s.mouse_protocol_mode(),
+            s.mouse_protocol_encoding(),
+            s.alternate_screen()
+        );
     });
     Ok(())
 }

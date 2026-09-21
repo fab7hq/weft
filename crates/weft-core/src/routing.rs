@@ -36,9 +36,7 @@ impl Routing {
         let by_act = acts
             .as_object()
             .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
-                    .collect()
+                m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
             })
             .unwrap_or_default();
         let unknown = unknown
@@ -62,8 +60,6 @@ impl Routing {
         ACTS.iter().filter_map(|a| self.get(a).map(|h| (*a, h))).collect()
     }
 }
-
-
 
 /// The rule itself, separated from the disk so it can be tested without one.
 pub fn read(text: &str, root: &Path) -> Routing {

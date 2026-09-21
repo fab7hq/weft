@@ -39,10 +39,7 @@ mod tests {
 
     #[test]
     fn the_split_starts_at_a_hundred_and_twelve() {
-        assert_eq!(
-            for_width(SPLIT_THRESHOLD - 1),
-            Layout::Single { width: SPLIT_THRESHOLD - 1 }
-        );
+        assert_eq!(for_width(SPLIT_THRESHOLD - 1), Layout::Single { width: SPLIT_THRESHOLD - 1 });
         assert!(matches!(for_width(SPLIT_THRESHOLD), Layout::Split { .. }));
     }
 

@@ -62,19 +62,11 @@ impl Readiness {
     }
 }
 
-
-
 /// Both harnesses answer with `installed` and `available` lists. They name a
 /// plugin differently — `id` against `pluginId` — and that is the whole of the
 /// difference, so one reader handles both.
 pub fn read(listing: &Value) -> Readiness {
-    let rows = |key: &str| {
-        listing
-            .get(key)
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-    };
+    let rows = |key: &str| listing.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
     let installed = rows("installed");
     let known: Vec<Value> = installed.iter().cloned().chain(rows("available")).collect();
 
@@ -92,10 +84,7 @@ pub fn read(listing: &Value) -> Readiness {
 }
 
 fn id_of(row: &Value) -> Option<String> {
-    row.get("id")
-        .or_else(|| row.get("pluginId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
+    row.get("id").or_else(|| row.get("pluginId")).and_then(Value::as_str).map(str::to_string)
 }
 
 /// Whether a listed plugin comes from the marketplace we are looking for.
@@ -105,7 +94,6 @@ fn from(row: &Value, marketplace: &str) -> bool {
     }
     id_of(row).is_some_and(|id| id.rsplit('@').next() == Some(marketplace))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -147,7 +135,8 @@ mod tests {
 
     #[test]
     fn a_marketplace_that_was_never_added_reads_as_the_marketplace_missing() {
-        let bare = json!({"installed": [{"id": "feature-dev@claude-plugins-official"}], "available": []});
+        let bare =
+            json!({"installed": [{"id": "feature-dev@claude-plugins-official"}], "available": []});
         assert_eq!(read(&bare), Readiness::Missing(Gap::Marketplace));
     }
 
@@ -160,7 +149,6 @@ mod tests {
         });
         assert_eq!(read(&available), Readiness::Missing(Gap::Plugin));
     }
-
 
     #[test]
     fn each_state_says_a_different_thing_and_names_its_harness() {
@@ -186,5 +174,4 @@ mod tests {
         assert!(!Readiness::Unknown.can_be_set_up(), "nothing to offer for an unanswered question");
         assert!(!Readiness::Ready.can_be_set_up());
     }
-
 }

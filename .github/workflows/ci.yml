@@ -37,8 +37,6 @@ jobs:
           echo "$PWD/target/debug" >> "$GITHUB_PATH"
           ./target/debug/ringframe init --global \
             --from crates/ringframe/tests/fixtures/config
-      # Scoped to the core: the Weft crates predate `rustfmt.toml` and
-      # reformatting them belongs to its own change, not to the port.
-      - run: cargo fmt -p ringframe --check
-      - run: cargo clippy -p ringframe --all-targets -- -D warnings
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

@@ -6,8 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use weft::protocol::{Call, Event, Line, Lines, PROTOCOL};
 use weft::protocol;
+use weft::protocol::{Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
 struct Client {
@@ -32,11 +32,7 @@ impl Client {
         let mut c = Client { stream, frames, next: 1, opened: serde_json::json!({}) };
         c.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("hello");
         c.opened = c
-            .answer(Call::Open {
-                rows: 24,
-                cols: 80,
-                path: project.to_string_lossy().into_owned(),
-            })
+            .answer(Call::Open { rows: 24, cols: 80, path: project.to_string_lossy().into_owned() })
             .expect("project.open");
         c
     }
@@ -154,10 +150,7 @@ impl Client {
 
     /// Whether nothing that would type or add a pane arrives.
     fn quiet_for(&mut self, how_long: Duration) -> bool {
-        !matches!(
-            self.next_event(how_long),
-            Some(Event::Added { .. } | Event::Output { .. })
-        )
+        !matches!(self.next_event(how_long), Some(Event::Added { .. } | Event::Output { .. }))
     }
 }
 
@@ -181,10 +174,7 @@ fn an_agent_keeps_working_while_no_client_is_attached() {
     let mut first = Client::attach(&socket, &root);
     first.hello();
     first.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into() });
-    first.send(Call::Input {
-        pane: 0,
-        bytes: b"printf 'before-the-client-left\\n'\n".to_vec(),
-    });
+    first.send(Call::Input { pane: 0, bytes: b"printf 'before-the-client-left\\n'\n".to_vec() });
     assert!(
         first.wait_for("before-the-client-left", 5).contains("before-the-client-left"),
         "the first client sees its own output"
@@ -208,10 +198,8 @@ fn an_agent_keeps_working_while_no_client_is_attached() {
     );
 
     // And it is a live pane, not a recording.
-    second.send(Call::Input {
-        pane: 0,
-        bytes: b"printf 'after-the-client-returned\\n'\n".to_vec(),
-    });
+    second
+        .send(Call::Input { pane: 0, bytes: b"printf 'after-the-client-returned\\n'\n".to_vec() });
     assert!(
         second.wait_for("after-the-client-returned", 5).contains("after-the-client-returned"),
         "the agent still takes input from the new client"
@@ -352,10 +340,7 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 
     // And the first client's own answer finds nothing left to answer, rather
     // than typing the prompt a second time.
-    assert_eq!(
-        one.answer(Call::Resolve { pending: id_one, yes: true }),
-        Err("gone".to_string())
-    );
+    assert_eq!(one.answer(Call::Resolve { pending: id_one, yes: true }), Err("gone".to_string()));
 
     let mut stop = Client::attach(&socket, &root);
     stop.send(Call::Shutdown);

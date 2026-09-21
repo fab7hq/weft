@@ -11,11 +11,11 @@
 
 pub mod blocked;
 pub mod board;
+pub mod harness;
+pub mod inject;
 pub mod ledger;
 pub mod offers;
-pub mod harness;
 pub mod readiness;
 pub mod record;
 pub mod routing;
 pub mod sessions;
-pub mod inject;

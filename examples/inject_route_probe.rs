@@ -38,13 +38,17 @@ fn main() -> anyhow::Result<()> {
     let mut steps: Vec<Value> = Vec::new();
 
     app.add(&harness, &spec)?;
-    steps.push(json!({"step": "spawn", "harness": harness, "spec": spec, "panes": app.pane_count()}));
+    steps.push(
+        json!({"step": "spawn", "harness": harness, "spec": spec, "panes": app.pane_count()}),
+    );
 
     // Startup questions belong to the agent and are answered there, the way a
     // person would. Weft never answers one on anyone's behalf.
     let answered = settle_startup(&mut app);
     let blocked = app.waiting(0).map(|e| format!("{} · {}", e.rule, e.line));
-    steps.push(json!({"step": "startup", "answered": answered, "blocked": blocked, "screen": tail(&app)}));
+    steps.push(
+        json!({"step": "startup", "answered": answered, "blocked": blocked, "screen": tail(&app)}),
+    );
     if let Some(evidence) = blocked {
         // A person would answer it first. Weft refuses to type into a pane
         // that is waiting, so there is nothing to observe here.

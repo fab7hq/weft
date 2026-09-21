@@ -55,11 +55,7 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     // receipt needs an ask.submission. Adding them one at a time shows that
     // each phrase is carried by its own event and by nothing else.
     let compiled_only = vec![compiled("ask_1", "health endpoint", "codex")];
-    let with_receipt = [
-        compiled_only.clone(),
-        vec![submission("ask_1")],
-    ]
-    .concat();
+    let with_receipt = [compiled_only.clone(), vec![submission("ask_1")]].concat();
     let with_verdict = [with_receipt.clone(), vec![evaluated("evl_1", "ask_1")]].concat();
     let with_decision = [with_verdict.clone(), vec![sealed("sea_1", "ask_1")]].concat();
 
@@ -175,39 +171,55 @@ fn clean(root: &Path) {
 }
 
 fn compiled(id: &str, title: &str, host: &str) -> Value {
-    event("ask.compiled", id, json!({
-        "title": title,
-        "selected_capability": "native_plan",
-        "delivery_mode": "human_handoff",
-        "host": {"name": host},
-        "source": {}, "prompt": {}, "source_verified": "exact",
-        "limitations": [], "classification": {}, "route_explanation": {}
-    }))
+    event(
+        "ask.compiled",
+        id,
+        json!({
+            "title": title,
+            "selected_capability": "native_plan",
+            "delivery_mode": "human_handoff",
+            "host": {"name": host},
+            "source": {}, "prompt": {}, "source_verified": "exact",
+            "limitations": [], "classification": {}, "route_explanation": {}
+        }),
+    )
 }
 
 fn submission(ask: &str) -> Value {
-    event("ask.submission", ask, json!({
-        "state": "observed",
-        "observed_by": "hook:UserPromptSubmit",
-        "prompt_sha256": "a".repeat(64),
-        "as_modified": false
-    }))
+    event(
+        "ask.submission",
+        ask,
+        json!({
+            "state": "observed",
+            "observed_by": "hook:UserPromptSubmit",
+            "prompt_sha256": "a".repeat(64),
+            "as_modified": false
+        }),
+    )
 }
 
 fn evaluated(id: &str, ask: &str) -> Value {
-    event("eval.completed", id, json!({
-        "verdict": "drifted",
-        "confidence": 0.67,
-        "judged_by": "codex",
-        "basis": {"asks": [ask]}
-    }))
+    event(
+        "eval.completed",
+        id,
+        json!({
+            "verdict": "drifted",
+            "confidence": 0.67,
+            "judged_by": "codex",
+            "basis": {"asks": [ask]}
+        }),
+    )
 }
 
 fn sealed(id: &str, ask: &str) -> Value {
-    event("seal.created", id, json!({
-        "disposition": "accepted",
-        "basis": {"asks": [ask]}
-    }))
+    event(
+        "seal.created",
+        id,
+        json!({
+            "disposition": "accepted",
+            "basis": {"asks": [ask]}
+        }),
+    )
 }
 
 fn event(kind: &str, id: &str, data: Value) -> Value {

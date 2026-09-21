@@ -12,10 +12,8 @@ use weft::protocol;
 use weft::server;
 
 fn main() -> anyhow::Result<()> {
-    let root = std::path::PathBuf::from(
-        std::env::args().nth(1).unwrap_or_else(|| ".".into()),
-    )
-    .canonicalize()?;
+    let root = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| ".".into()))
+        .canonicalize()?;
     let keys: Vec<char> = std::env::args().nth(2).unwrap_or_default().chars().collect();
 
     let socket = protocol::private_socket("weft-reopen");
@@ -40,9 +38,8 @@ fn main() -> anyhow::Result<()> {
     terminal.draw(|f| weft::ui::draw(f, &mut app))?;
     let buffer = terminal.backend().buffer().clone();
     for y in 0..24 {
-        let row: String = (0..80)
-            .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
-            .collect();
+        let row: String =
+            (0..80).map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect();
         println!("{}", row.trim_end());
     }
     Ok(())

@@ -61,9 +61,10 @@ impl Drive {
         while Instant::now() < deadline {
             let path = std::path::Path::new(&self.project).join(".fab7/rf/ledger.jsonl");
             if let Ok(text) = std::fs::read_to_string(&path)
-                && text.contains(&format!("\"type\":\"{kind}\"")) {
-                    return true;
-                }
+                && text.contains(&format!("\"type\":\"{kind}\""))
+            {
+                return true;
+            }
             std::thread::sleep(Duration::from_secs(2));
         }
         false

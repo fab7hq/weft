@@ -6,7 +6,6 @@
 //! promised to keep, and a reader that guesses at them is wrong the day they
 //! change.
 
-
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +79,6 @@ pub fn for_program(program: &str) -> Option<&'static Harness> {
 }
 
 impl Harness {
-
     /// The rule itself, separated from the environment so it can be tested
     /// without setting a variable every other test in the binary can see.
     /// Public because the environment half now lives in another crate.
@@ -90,7 +88,6 @@ impl Harness {
             _ => home.join(self.config_default),
         }
     }
-
 
     /// The two commands, exactly as they will be run and as they are shown.
     /// One list, so what is displayed cannot drift from what happens.
@@ -112,7 +109,6 @@ impl Harness {
         self.program.to_string()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -176,7 +172,9 @@ mod tests {
     #[test]
     fn a_recorded_session_is_reopened_the_way_each_harness_spells_it() {
         assert_eq!(
-            find("claude-code").expect("claude").resume_spec("883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"),
+            find("claude-code")
+                .expect("claude")
+                .resume_spec("883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"),
             "claude --resume 883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"
         );
         assert_eq!(

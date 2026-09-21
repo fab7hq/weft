@@ -10,10 +10,7 @@ use serde_json::Value;
 pub use weft_core::record::*;
 
 pub fn read(project_root: &Path, eval_id: &str) -> Option<Record> {
-    let path = project_root
-        .join(".fab7/rf/evals")
-        .join(eval_id)
-        .join("record.json");
+    let path = project_root.join(".fab7/rf/evals").join(eval_id).join("record.json");
     let bytes = std::fs::read(path).ok()?;
     Record::parse(&serde_json::from_slice::<Value>(&bytes).ok()?)
 }

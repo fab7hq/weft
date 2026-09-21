@@ -5,8 +5,6 @@
 //! append-only and each line is written whole: a reader sees a prefix of
 //! complete lines, possibly followed by a partial tail, which is discarded.
 
-
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -191,11 +189,7 @@ impl Unit {
         }
         // An Ask that was asked about and never answered wants the same
         // attention as one ready to send: both are waiting on the person.
-        if self.sent == Sent::ReadyToSend || self.awaiting_yes() {
-            "● "
-        } else {
-            ""
-        }
+        if self.sent == Sent::ReadyToSend || self.awaiting_yes() { "● " } else { "" }
     }
 
     /// Compiled, asked about, and never answered. The candidate is on disk and
@@ -254,7 +248,8 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
             "ask.compiled" => {
                 let mode = s(&data, &["delivery_mode"]).unwrap_or_default().to_string();
                 // A dispatch route has nothing for the person to send.
-                let sent = if mode == "native_dispatch" { Sent::TakenByAgent } else { Sent::NotSent };
+                let sent =
+                    if mode == "native_dispatch" { Sent::TakenByAgent } else { Sent::NotSent };
                 index.insert(id.clone(), units.len());
                 units.push(Unit {
                     ask_id: id,
@@ -429,11 +424,15 @@ mod tests {
     fn a_handoff_that_is_ready_is_the_thing_that_waits_on_you() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("ask.delivery", "ask_1", json!({
-                "mode": "human_handoff", "mechanism": null, "state": "handoff_ready",
-                "qualification": null, "receipt": null, "submission": "unobserved",
-                "limitations": []
-            })),
+            ev(
+                "ask.delivery",
+                "ask_1",
+                json!({
+                    "mode": "human_handoff", "mechanism": null, "state": "handoff_ready",
+                    "qualification": null, "receipt": null, "submission": "unobserved",
+                    "limitations": []
+                }),
+            ),
         ]);
         assert_eq!(units[0].sent, Sent::ReadyToSend);
         assert!(units[0].needs_you());
@@ -443,11 +442,15 @@ mod tests {
     fn a_receipt_outranks_the_route_it_arrived_on() {
         let units = project(&[
             compiled("ask_1", "t", "claude-code", "native_dispatch"),
-            ev("ask.submission", "ask_1", json!({
-                "state": "observed", "observed_by": "hook:UserPromptSubmit",
-                "attributed_by": null, "as_modified": false,
-                "host": {"name": "claude-code"}, "prompt_sha256": "b"
-            })),
+            ev(
+                "ask.submission",
+                "ask_1",
+                json!({
+                    "state": "observed", "observed_by": "hook:UserPromptSubmit",
+                    "attributed_by": null, "as_modified": false,
+                    "host": {"name": "claude-code"}, "prompt_sha256": "b"
+                }),
+            ),
         ]);
         assert_eq!(units[0].status(), "sent · word for word");
     }
@@ -457,11 +460,15 @@ mod tests {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
             ev("ask.confirmed", "ask_1", json!({"confirmation": {}})),
-            ev("ask.submission", "ask_1", json!({
-                "state": "observed", "observed_by": "hook:UserPromptSubmit",
-                "attributed_by": null, "as_modified": false,
-                "host": {"name": "codex"}, "prompt_sha256": "b"
-            })),
+            ev(
+                "ask.submission",
+                "ask_1",
+                json!({
+                    "state": "observed", "observed_by": "hook:UserPromptSubmit",
+                    "attributed_by": null, "as_modified": false,
+                    "host": {"name": "codex"}, "prompt_sha256": "b"
+                }),
+            ),
         ]);
         assert_eq!(units[0].sent, Sent::Arrived { exact: true });
         assert_eq!(units[0].status(), "sent · word for word");
@@ -471,11 +478,15 @@ mod tests {
     fn a_reworded_submission_says_so() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("ask.submission", "ask_1", json!({
-                "state": "observed", "observed_by": "hook:UserPromptSubmit",
-                "attributed_by": null, "as_modified": true,
-                "host": {"name": "codex"}, "prompt_sha256": "zz"
-            })),
+            ev(
+                "ask.submission",
+                "ask_1",
+                json!({
+                    "state": "observed", "observed_by": "hook:UserPromptSubmit",
+                    "attributed_by": null, "as_modified": true,
+                    "host": {"name": "codex"}, "prompt_sha256": "zz"
+                }),
+            ),
         ]);
         assert_eq!(units[0].status(), "sent, reworded");
     }
@@ -484,11 +495,15 @@ mod tests {
     fn a_verdict_is_shown_in_plain_words_and_keeps_its_recorded_term() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("eval.completed", "evl_1", json!({
-                "basis": {"asks": ["ask_1"]}, "subject": {},
-                "verdict": "drifted", "confidence": 0.67,
-                "artifact": {}, "limitations": []
-            })),
+            ev(
+                "eval.completed",
+                "evl_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "subject": {},
+                    "verdict": "drifted", "confidence": 0.67,
+                    "artifact": {}, "limitations": []
+                }),
+            ),
         ]);
         let check = units[0].check.clone().expect("a check");
         assert_eq!(check.verdict, Verdict::DoesntMatch);
@@ -503,10 +518,14 @@ mod tests {
         let units = project(&[
             compiled("ask_1", "one", "codex", "human_handoff"),
             compiled("ask_2", "two", "codex", "human_handoff"),
-            ev("eval.completed", "evl_1", json!({
-                "basis": {"asks": ["ask_1", "ask_2"]}, "subject": {},
-                "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
-            })),
+            ev(
+                "eval.completed",
+                "evl_1",
+                json!({
+                    "basis": {"asks": ["ask_1", "ask_2"]}, "subject": {},
+                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                }),
+            ),
         ]);
         assert!(units.iter().all(|u| u.check.is_some()));
     }
@@ -515,14 +534,22 @@ mod tests {
     fn a_seal_closes_the_unit_and_nothing_needs_you_afterwards() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("eval.completed", "evl_1", json!({
-                "basis": {"asks": ["ask_1"]}, "subject": {},
-                "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
-            })),
-            ev("seal.created", "sel_1", json!({
-                "basis": {"asks": ["ask_1"]}, "eval": null, "subject": {},
-                "disposition": "deferred", "authority": {}, "artifact": {}
-            })),
+            ev(
+                "eval.completed",
+                "evl_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "subject": {},
+                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                }),
+            ),
+            ev(
+                "seal.created",
+                "sel_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "eval": null, "subject": {},
+                    "disposition": "deferred", "authority": {}, "artifact": {}
+                }),
+            ),
         ]);
         assert_eq!(units[0].sealed.as_deref(), Some("deferred"));
         assert_eq!(units[0].status(), "parked", "deferred reads as parked");
@@ -533,10 +560,14 @@ mod tests {
     fn a_checked_but_unsealed_unit_still_needs_you_even_when_it_matched() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("eval.completed", "evl_1", json!({
-                "basis": {"asks": ["ask_1"]}, "subject": {},
-                "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
-            })),
+            ev(
+                "eval.completed",
+                "evl_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "subject": {},
+                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                }),
+            ),
         ]);
         assert!(units[0].needs_you(), "an aligned verdict still wants a decision");
     }
@@ -562,7 +593,6 @@ mod tests {
         assert!(consumed < bytes.len(), "the partial tail is left for next time");
     }
 
-
     #[test]
     fn a_completed_tail_is_picked_up_on_the_next_read() {
         let whole = lines(&[
@@ -576,14 +606,16 @@ mod tests {
         assert_eq!(rest.len(), 1);
     }
 
-
-
     #[test]
     fn an_unknown_event_type_contributes_nothing() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
             ev("eval.opened", "evl_1", json!({"brief": {}, "basis": {"asks": ["ask_1"]}})),
-            ev("seal.refused", "sel_1", json!({"basis": {"asks": ["ask_1"]}, "disposition": "accepted"})),
+            ev(
+                "seal.refused",
+                "sel_1",
+                json!({"basis": {"asks": ["ask_1"]}, "disposition": "accepted"}),
+            ),
         ]);
         assert!(units[0].check.is_none(), "an opened Eval is not a verdict");
         assert!(units[0].sealed.is_none(), "a refused Seal is not a decision");
@@ -663,4 +695,3 @@ mod tests {
         assert_eq!(units[0].marker(), "");
     }
 }
-

@@ -78,7 +78,7 @@ fn head_digest(bytes: &[u8]) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     fn compiled(id: &str, title: &str, host: &str, mode: &str) -> Value {
         json!({
@@ -114,7 +114,6 @@ mod tests {
         out
     }
 
-
     #[test]
     fn folding_new_lines_matches_reading_the_whole_file() {
         let dir = std::env::temp_dir().join(format!("weft-ledger-{}", std::process::id()));
@@ -122,7 +121,8 @@ mod tests {
         std::fs::create_dir_all(&rf).unwrap();
         let path = rf.join("ledger.jsonl");
 
-        std::fs::write(&path, lines(&[compiled("ask_1", "one", "codex", "human_handoff")])).unwrap();
+        std::fs::write(&path, lines(&[compiled("ask_1", "one", "codex", "human_handoff")]))
+            .unwrap();
         let mut led = Ledger::at(&dir);
         assert!(led.refresh());
         assert_eq!(led.units().len(), 1);
@@ -148,7 +148,8 @@ mod tests {
         std::fs::create_dir_all(&rf).unwrap();
         let path = rf.join("ledger.jsonl");
 
-        std::fs::write(&path, lines(&[compiled("ask_1", "first", "codex", "human_handoff")])).unwrap();
+        std::fs::write(&path, lines(&[compiled("ask_1", "first", "codex", "human_handoff")]))
+            .unwrap();
         let mut led = Ledger::at(&dir);
         led.refresh();
         assert_eq!(led.units()[0].title, "first");

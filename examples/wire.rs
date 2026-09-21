@@ -16,22 +16,20 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let project = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()))
-        .canonicalize()?;
+    let project =
+        std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into())).canonicalize()?;
     let what = args.next().unwrap_or_else(|| "board".into());
 
     let mut wire = Wire::open(&weft::protocol::socket_path())?;
     wire.call("hello", json!({"client": "wire/0.1", "protocol": 1}))?;
     // The board and the panes come back in the answer, so there is nothing to
     // wait for and nothing to miss.
-    let opened = wire.call(
-        "project.open",
-        json!({"path": project.to_string_lossy(), "rows": 24, "cols": 80}),
-    )?;
+    let opened = wire
+        .call("project.open", json!({"path": project.to_string_lossy(), "rows": 24, "cols": 80}))?;
 
     match what.as_str() {
         "board" => {
@@ -96,7 +94,11 @@ fn string(v: &Value, key: &str) -> String {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_string() } else { s.chars().take(n).collect::<String>() + "…" }
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n).collect::<String>() + "…"
+    }
 }
 
 /// NDJSON over a Unix socket: one object per line, `id`/`method`/`params` out,

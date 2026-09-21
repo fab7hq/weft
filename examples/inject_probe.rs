@@ -25,7 +25,9 @@ fn main() -> anyhow::Result<()> {
     println!("--- bracketed paste advertised: {bracketed} ---");
 
     match pane.inject(payload.as_bytes(), false) {
-        Ok(attempt) => println!("--- injected {} bytes (bracketed={}) ---", attempt.bytes, attempt.bracketed),
+        Ok(attempt) => {
+            println!("--- injected {} bytes (bracketed={}) ---", attempt.bytes, attempt.bracketed)
+        }
         Err(refusal) => println!("--- refused: {refusal:?} ---"),
     }
     std::thread::sleep(Duration::from_secs(6));

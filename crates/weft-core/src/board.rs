@@ -123,28 +123,29 @@ impl Board<'_> {
 
     /// Why an action is not available now, as one sentence. `None` means it is.
     pub fn unavailable(&self, act: Act) -> Option<String> {
-        let no_pane = |harness: &str| {
-            format!("No {harness} pane is open, so there is nowhere to send this.")
-        };
+        let no_pane =
+            |harness: &str| format!("No {harness} pane is open, so there is nowhere to send this.");
         // An Ask this workspace could never finish is refused here rather
         // than after a turn spent composing one.
         if matches!(act, Act::Ask | Act::Fix)
-            && let Some(gap) = self.workspace_gap {
-                return Some(gap.to_string());
-            }
+            && let Some(gap) = self.workspace_gap
+        {
+            return Some(gap.to_string());
+        }
         // Everything RingFrame owns waits on the harness that owns the work.
         // Readiness is per harness: Claude Code may be ready while Codex is not.
         if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix)
-            && let Some(name) = self.deciding_harness(act) {
-                let state = self.readiness(&name);
-                if !state.is_ready() {
-                    let mut say = state.say(&name).unwrap_or_default();
-                    if state.can_be_set_up() {
-                        say.push_str(" [R]EADY UP sets it up.");
-                    }
-                    return Some(say);
+            && let Some(name) = self.deciding_harness(act)
+        {
+            let state = self.readiness(&name);
+            if !state.is_ready() {
+                let mut say = state.say(&name).unwrap_or_default();
+                if state.can_be_set_up() {
+                    say.push_str(" [R]EADY UP sets it up.");
                 }
+                return Some(say);
             }
+        }
         match act {
             Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
             Act::ReadyUp => match self.deciding_harness(Act::ReadyUp) {
@@ -160,8 +161,9 @@ impl Board<'_> {
                     .map(|s| format!("{s} There is nothing to offer until it answers.")),
                 Some(_) => None,
             },
-            Act::Ask => (self.panes.is_empty())
-                .then(|| "Start an agent first — [N]EW AGENT.".to_string()),
+            Act::Ask => {
+                (self.panes.is_empty()).then(|| "Start an agent first — [N]EW AGENT.".to_string())
+            }
             Act::Fix => match self.selected_unit() {
                 None => Some("Nothing has been asked for yet.".into()),
                 Some(_) if self.panes.is_empty() => {
@@ -176,14 +178,14 @@ impl Board<'_> {
                 Some(u) if u.awaiting_yes() => {
                     self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
                 }
-                Some(u) if u.sent != Sent::ReadyToSend => Some(
-                    match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
+                Some(u) if u.sent != Sent::ReadyToSend => {
+                    Some(match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
                         Some(other) => {
                             format!("{} is the one ready to send. ↓ to select it.", other.title)
                         }
                         None => "Nothing is ready to send.".into(),
-                    },
-                ),
+                    })
+                }
                 Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
             },
             Act::Check | Act::Decide => match self.selected_unit() {
@@ -207,9 +209,9 @@ impl Board<'_> {
                 Some(u) if !crate::harness::SUPPORTED.iter().any(|h| h.name == u.harness) => {
                     Some(format!("Weft does not know how to open {}.", u.harness))
                 }
-                Some(u) => self.pane_running(u).map(|i| {
-                    format!("That session is already open — [{}] is its pane.", i + 1)
-                }),
+                Some(u) => self
+                    .pane_running(u)
+                    .map(|i| format!("That session is already open — [{}] is its pane.", i + 1)),
             },
             Act::Wording => self
                 .selected_unit()
@@ -263,7 +265,15 @@ mod tests {
         ready: &'a dyn Fn(&str) -> Readiness,
         routing: &'a Routing,
     ) -> Board<'a> {
-        Board { units, selected: 0, panes, focused: 0, readiness: ready, routing, workspace_gap: None }
+        Board {
+            units,
+            selected: 0,
+            panes,
+            focused: 0,
+            readiness: ready,
+            routing,
+            workspace_gap: None,
+        }
     }
 
     const READY: &dyn Fn(&str) -> Readiness = &|_| Readiness::Ready;
@@ -282,10 +292,8 @@ mod tests {
     fn a_routed_act_is_about_the_harness_it_goes_to() {
         let units = [unit("codex", Sent::ReadyToSend)];
         let panes = [pane("codex")];
-        let routing = crate::routing::read(
-            r#"{"/p": {"eval": "claude-code"}}"#,
-            std::path::Path::new("/p"),
-        );
+        let routing =
+            crate::routing::read(r#"{"/p": {"eval": "claude-code"}}"#, std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Check).as_deref(), Some("claude-code"));
         let said = b.unavailable(Act::Check).expect("no claude-code pane is open");
@@ -313,7 +321,10 @@ mod tests {
         let none = Routing::default();
         let mut b = board(&units, &panes, READY, &none);
         b.workspace_gap = Some("This workspace is not a Git repository.");
-        assert_eq!(b.unavailable(Act::Ask).as_deref(), Some("This workspace is not a Git repository."));
+        assert_eq!(
+            b.unavailable(Act::Ask).as_deref(),
+            Some("This workspace is not a Git repository.")
+        );
         // And only for the acts that would compile one.
         assert_eq!(b.unavailable(Act::Help), None);
     }

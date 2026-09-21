@@ -13,7 +13,10 @@ use serde_json::Value;
 pub enum Error {
     /// The CLI is not installed. Weft still runs panes; it just has no record.
     NotInstalled,
-    Refused { code: i32, message: String },
+    Refused {
+        code: i32,
+        message: String,
+    },
 }
 
 fn run(project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
@@ -162,7 +165,8 @@ mod tests {
 
     #[test]
     fn a_missing_cli_is_reported_as_missing_not_as_a_refusal() {
-        let got = run_program("definitely-not-a-real-binary-weft", Path::new("/tmp"), &["ask", "list"]);
+        let got =
+            run_program("definitely-not-a-real-binary-weft", Path::new("/tmp"), &["ask", "list"]);
         assert_eq!(got, Err(Error::NotInstalled));
     }
 

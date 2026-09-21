@@ -4,11 +4,11 @@
 //! person's own environment and never sandboxes it or alters its permissions.
 
 use std::io::{Read, Write};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use weft_core::inject::{self, Handoff, PaneState, Refusal, Step};
 
@@ -25,7 +25,13 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn spawn(title: impl Into<String>, program: &str, cwd: &str, rows: u16, cols: u16) -> Result<Self> {
+    pub fn spawn(
+        title: impl Into<String>,
+        program: &str,
+        cwd: &str,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self> {
         Self::spawn_args(title, program, &[], cwd, rows, cols)
     }
 
@@ -37,12 +43,8 @@ impl Pane {
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
-        let pair = native_pty_system().openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })?;
+        let pair =
+            native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
 
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
@@ -68,9 +70,10 @@ impl Pane {
                 // client rebuilds the screen from the harness's own output.
                 if let Ok(mut t) = tap_reader.lock()
                     && let Some(sender) = t.as_ref()
-                        && sender.send(buf[..n].to_vec()).is_err() {
-                            *t = None;
-                        }
+                    && sender.send(buf[..n].to_vec()).is_err()
+                {
+                    *t = None;
+                }
             }
             if let Ok(mut t) = tap_reader.lock() {
                 *t = None;
@@ -264,9 +267,8 @@ impl Pane {
                     // the mode it asked for, which is a different act. Unless
                     // the command was typed in front of it, which is the whole
                     // point of doing that.
-                    if let Some(command) = (!command_typed)
-                        .then(|| self.folded_command(payload))
-                        .flatten()
+                    if let Some(command) =
+                        (!command_typed).then(|| self.folded_command(payload)).flatten()
                     {
                         self.injecting = false;
                         return Ok(Attempt {
@@ -281,7 +283,13 @@ impl Pane {
             }
         }
         self.injecting = false;
-        Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: true, folded_command: None })
+        Ok(Attempt {
+            bytes: payload.len(),
+            bracketed,
+            echoed,
+            submitted: true,
+            folded_command: None,
+        })
     }
 
     /// The command this payload opens with, when the pane has folded the paste
@@ -398,9 +406,8 @@ mod tests {
         // Enter must not be sent and the attempt must say so.
         let mut pane = sh("stty -echo; cat > /dev/null");
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane
-            .inject(b"/plan Return the real build number", false)
-            .expect("allowed to write");
+        let attempt =
+            pane.inject(b"/plan Return the real build number", false).expect("allowed to write");
         assert!(!attempt.echoed, "nothing was echoed");
         assert!(!attempt.submitted, "so Enter was withheld");
     }
@@ -461,9 +468,7 @@ mod tests {
     #[test]
     fn an_injection_waits_for_the_pane_to_show_the_text() {
         let mut pane = sh("cat");
-        let attempt = pane
-            .inject(b"$rf:eval the distinctive tail", false)
-            .expect("allowed");
+        let attempt = pane.inject(b"$rf:eval the distinctive tail", false).expect("allowed");
         assert!(attempt.echoed, "Enter is sent once the text is visible");
         assert!(attempt.bytes > 0);
     }

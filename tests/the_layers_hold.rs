@@ -12,11 +12,7 @@ use std::path::Path;
 
 /// What each crate may depend on, and the plain reason.
 const ALLOWED: &[(&str, &[&str], &str)] = &[
-    (
-        "weft-core",
-        &["serde", "serde_json"],
-        "the rules parse and decide; they do not do",
-    ),
+    ("weft-core", &["serde", "serde_json"], "the rules parse and decide; they do not do"),
     (
         "weft-proto",
         &["serde_json", "weft-core"],
@@ -30,7 +26,13 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     (
         "weft-tui",
         &[
-            "anyhow", "crossterm", "ratatui", "serde_json", "tui-term", "vt100", "weft-core",
+            "anyhow",
+            "crossterm",
+            "ratatui",
+            "serde_json",
+            "tui-term",
+            "vt100",
+            "weft-core",
             "weft-proto",
         ],
         "the client draws, and asks the daemon for everything else",
@@ -58,8 +60,8 @@ fn each_crate_reaches_only_what_its_layer_may() {
             .join("crates")
             .join(crate_name)
             .join("Cargo.toml");
-        let manifest = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let manifest =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         let mut found = dependencies(&manifest);
         found.sort();
         let mut want: Vec<String> = allowed.iter().map(|s| s.to_string()).collect();
@@ -122,8 +124,8 @@ fn nothing_in_weft_reaches_into_ringframe() {
         ));
     }
     for (name, path) in manifests {
-        let manifest = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let manifest =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         if dependencies(&manifest).iter().any(|d| d == "ringframe") {
             broken.push(format!("{name} depends on the ringframe crate"));
         }

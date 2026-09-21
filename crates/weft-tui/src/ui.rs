@@ -62,10 +62,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         frame.render_widget(panel(app, panel_area), panel_area);
     }
 
-    frame.render_widget(
-        rule(geo.bottom_rule.width, geo.body_divider, '┴', th),
-        geo.bottom_rule,
-    );
+    frame.render_widget(rule(geo.bottom_rule.width, geo.body_divider, '┴', th), geo.bottom_rule);
     let (bar, action_spans) = action_bar(app, geo.actions.width);
     app.note_actions(
         geo.actions.y,
@@ -73,7 +70,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     frame.render_widget(bar, geo.actions);
     frame.render_widget(hint(app), geo.hint);
-
 }
 
 // --- where everything goes ---------------------------------------------------
@@ -120,7 +116,11 @@ fn geometry(app: &App, area: Rect) -> Geo {
             let wanted = (lines.len() as u16 + 1).min(body.height.saturating_sub(3));
             let split = RLayout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(wanted)])
+                .constraints([
+                    Constraint::Min(1),
+                    Constraint::Length(1),
+                    Constraint::Length(wanted),
+                ])
                 .split(body);
             (split[0], Some(split[1]), Some(split[2]))
         }
@@ -153,11 +153,7 @@ fn geometry(app: &App, area: Rect) -> Geo {
         Layout::Split { list, .. } if app.show_work() => {
             let cols = RLayout::default()
                 .direction(Direction::Horizontal)
-                .constraints([
-                    Constraint::Length(list),
-                    Constraint::Length(1),
-                    Constraint::Min(1),
-                ])
+                .constraints([Constraint::Length(list), Constraint::Length(1), Constraint::Min(1)])
                 .split(content);
             geo.list = Some(cols[0]);
             geo.divider_area = Some(cols[1]);
@@ -226,10 +222,8 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
         // The counts keep their place whichever surface has the keys: they
         // are facts about the work, not about where you are.
         (_, _) => {
-            let mut spans = vec![Span::styled(
-                pair("open", &app.open_count().to_string()),
-                th.label(),
-            )];
+            let mut spans =
+                vec![Span::styled(pair("open", &app.open_count().to_string()), th.label())];
             if app.needs_you() > 0 {
                 spans.push(Span::raw("   "));
                 spans.push(Span::styled(
@@ -280,7 +274,12 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
         let width = geo.tabs.width.saturating_sub(col);
         let back = "[←] BACK ";
         let title = clip(&d.title, width.saturating_sub(back.chars().count() as u16 + 1) as usize);
-        push(&mut spans, &mut col, padded(&title, (width as usize).saturating_sub(back.chars().count())), th.title());
+        push(
+            &mut spans,
+            &mut col,
+            padded(&title, (width as usize).saturating_sub(back.chars().count())),
+            th.title(),
+        );
         push(&mut spans, &mut col, back.into(), th.label());
         return (Line::from(spans), spans_at);
     }
@@ -321,7 +320,8 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
 /// stays where it was, so the shape of the bar never jumps.
 fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)>) {
     let th = app.theme;
-    let plain = |text: &str| (Paragraph::new(Line::styled(text.to_string(), th.label())), Vec::new());
+    let plain =
+        |text: &str| (Paragraph::new(Line::styled(text.to_string(), th.label())), Vec::new());
     if app.focus == Focus::Agent {
         // While you are in the agent, Weft has no keys to offer.
         return (Paragraph::new(""), Vec::new());
@@ -340,7 +340,9 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
         // No cancel: the agent has already gone, so the only question left is
         // what to put in its place.
-        Some(Modal::Ended { .. }) => return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE THE PANE"),
+        Some(Modal::Ended { .. }) => {
+            return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE THE PANE");
+        }
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
         None => {}
     }
@@ -431,7 +433,9 @@ fn hint(app: &App) -> Paragraph<'static> {
             " Weft keeps no session of its own. The harness owns it; the record names it.".into()
         }
         (Some(Modal::SetUp { gap, .. }), _) => match gap {
-            crate::readiness::Gap::Cli => " Run it in a terminal, then start an agent again.".into(),
+            crate::readiness::Gap::Cli => {
+                " Run it in a terminal, then start an agent again.".into()
+            }
             _ => " Weft never changes an agent without asking you first.".into(),
         },
         (Some(_), _) => " [Enter] closes this.".to_string(),
@@ -522,9 +526,8 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         let marker = if picked { " ▸ " } else { "   " };
         // The harness sits just past the title field rather than at the far
         // edge, so a wide list does not strand it across the screen.
-        let title_width = width
-            .saturating_sub(marker.len() + unit.harness.chars().count() + 2)
-            .min(36);
+        let title_width =
+            width.saturating_sub(marker.len() + unit.harness.chars().count() + 2).min(36);
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(th.accent())),
             Span::styled(
@@ -562,12 +565,13 @@ fn status_lines(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
         Some(r) => r.agreed(check.agreement),
         None => format!("agreement {:.2}", check.agreement),
     };
-    let judged = match check.judged_by.clone().or_else(|| {
-        record.as_ref().map(|r| r.judged_by().join(" and ")).filter(|s| !s.is_empty())
-    }) {
-        Some(h) => format!(" · judged by {h}"),
-        None => String::new(),
-    };
+    let judged =
+        match check.judged_by.clone().or_else(|| {
+            record.as_ref().map(|r| r.judged_by().join(" and ")).filter(|s| !s.is_empty())
+        }) {
+            Some(h) => format!(" · judged by {h}"),
+            None => String::new(),
+        };
     let tail = format!("{agreed}{judged}");
     if head.chars().count() + 3 + tail.chars().count() <= width {
         return vec![Line::from(vec![
@@ -591,43 +595,44 @@ fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let indent = 5usize;
     if let Some(check) = &unit.check
-        && let Some(record) = app.record(&check.eval_id) {
-            // One column width for the whole block, so the votes line up.
-            let agreed_width = record
-                .items
-                .iter()
-                .map(|i| record.agreed_short_on(i).chars().count())
-                .max()
-                .unwrap_or(0);
-            let room = width.saturating_sub(indent + 12 + agreed_width);
-            for item in &record.items {
-                let vote = item.plain_majority();
-                let agreed = record.agreed_short_on(item);
-                lines.push(Line::styled(
-                    format!(
-                        "{:indent$}{} {} {:<8} {}",
-                        "",
-                        mark_for(vote),
-                        padded(&clip(&item.text, room), room),
-                        vote,
-                        agreed,
-                        indent = indent
-                    ),
-                    th.label(),
-                ));
-            }
-            if !record.unexplained.is_empty() {
-                lines.push(Line::styled(
-                    format!(
-                        "{:indent$}{} changed and no judge could tie it to what you asked",
-                        "",
-                        record.unexplained.join(", "),
-                        indent = indent
-                    ),
-                    th.label(),
-                ));
-            }
+        && let Some(record) = app.record(&check.eval_id)
+    {
+        // One column width for the whole block, so the votes line up.
+        let agreed_width = record
+            .items
+            .iter()
+            .map(|i| record.agreed_short_on(i).chars().count())
+            .max()
+            .unwrap_or(0);
+        let room = width.saturating_sub(indent + 12 + agreed_width);
+        for item in &record.items {
+            let vote = item.plain_majority();
+            let agreed = record.agreed_short_on(item);
+            lines.push(Line::styled(
+                format!(
+                    "{:indent$}{} {} {:<8} {}",
+                    "",
+                    mark_for(vote),
+                    padded(&clip(&item.text, room), room),
+                    vote,
+                    agreed,
+                    indent = indent
+                ),
+                th.label(),
+            ));
         }
+        if !record.unexplained.is_empty() {
+            lines.push(Line::styled(
+                format!(
+                    "{:indent$}{} changed and no judge could tie it to what you asked",
+                    "",
+                    record.unexplained.join(", "),
+                    indent = indent
+                ),
+                th.label(),
+            ));
+        }
+    }
     lines.push(Line::styled(provenance(unit), th.label()));
     // `[O]PEN AGENT` comes first: for a row whose agent is gone it is the only
     // thing that leads anywhere, and that is the common case on reopening.
@@ -677,7 +682,8 @@ fn keys_for_row(
 
 /// Where the row's fields came from, in the terms the record uses.
 fn provenance(unit: &Unit) -> String {
-    let mut parts = vec![format!("asked {}", clock(&unit.asked_at)), unit.sent_phrase().to_string()];
+    let mut parts =
+        vec![format!("asked {}", clock(&unit.asked_at)), unit.sent_phrase().to_string()];
     if let Some(c) = &unit.check {
         parts.push(format!("recorded as {}, {:.2}", c.verdict.recorded(), c.agreement));
     }
@@ -724,7 +730,9 @@ fn drawer(app: &App, area: Rect) -> Paragraph<'static> {
         .iter()
         .skip(d.offset)
         .take(room)
-        .map(|l| Line::styled(format!(" {}", clip(l, area.width.saturating_sub(1) as usize)), th.label()))
+        .map(|l| {
+            Line::styled(format!(" {}", clip(l, area.width.saturating_sub(1) as usize)), th.label())
+        })
         .collect();
     let more = d.lines.len().saturating_sub(d.offset + lines.len());
     if more > 0 && !lines.is_empty() {
@@ -748,13 +756,19 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
     ] {
         lines.push(Line::styled(format!("   {text}"), th.label()));
     }
-    lines.push(Line::styled("   ┌──────────────────────────────────────────────────┐".to_string(), th.rule()));
+    lines.push(Line::styled(
+        "   ┌──────────────────────────────────────────────────┐".to_string(),
+        th.rule(),
+    ));
     lines.push(Line::from(vec![
         Span::styled("   │  ".to_string(), th.rule()),
         Span::styled(padded("START AN AGENT", 48), th.title()),
         Span::styled("│".to_string(), th.rule()),
     ]));
-    lines.push(Line::styled("   │                                                  │".to_string(), th.rule()));
+    lines.push(Line::styled(
+        "   │                                                  │".to_string(),
+        th.rule(),
+    ));
     if found.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
@@ -769,13 +783,19 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
             Span::styled(
-                padded(&clip(&format!(" {} {}", if picked { "▸" } else { " " }, agent.label), 48), 48),
+                padded(
+                    &clip(&format!(" {} {}", if picked { "▸" } else { " " }, agent.label), 48),
+                    48,
+                ),
                 if picked { th.selected() } else { th.label() },
             ),
             Span::styled("│".to_string(), th.rule()),
         ]));
     }
-    lines.push(Line::styled("   │                                                  │".to_string(), th.rule()));
+    lines.push(Line::styled(
+        "   │                                                  │".to_string(),
+        th.rule(),
+    ));
     // The footer says what the picked choice would actually do: for a session
     // being picked up, which one, by what was last asked in it.
     let footer = match found.get(app.modal_choice).and_then(|c| c.session.as_ref()) {
@@ -787,7 +807,10 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         Span::styled(padded(&clip(&footer, 48), 48), th.label()),
         Span::styled("│".to_string(), th.rule()),
     ]));
-    lines.push(Line::styled("   └──────────────────────────────────────────────────┘".to_string(), th.rule()));
+    lines.push(Line::styled(
+        "   └──────────────────────────────────────────────────┘".to_string(),
+        th.rule(),
+    ));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         "   Click anything. Arrows and Enter work too. To select text in a pane, hold Shift."
@@ -922,7 +945,9 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             ],
             _ => {
                 let mut l = vec![
-                    format!("Weft will run these two commands. They change {harness}, not this project."),
+                    format!(
+                        "Weft will run these two commands. They change {harness}, not this project."
+                    ),
                     String::new(),
                 ];
                 l.extend(commands.iter().map(|c| format!("  {c}")));
@@ -1022,11 +1047,7 @@ fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Li
 
 fn padded(s: &str, n: usize) -> String {
     let len = s.chars().count();
-    if len >= n {
-        s.to_string()
-    } else {
-        format!("{s}{}", " ".repeat(n - len))
-    }
+    if len >= n { s.to_string() } else { format!("{s}{}", " ".repeat(n - len)) }
 }
 
 fn clip(s: &str, n: usize) -> String {
@@ -1075,11 +1096,10 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::{app, unit, press};
+    use crate::app::tests::{app, press, unit};
     use crate::ledger::{Check, Sent, Verdict};
     use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::Terminal;
@@ -1226,7 +1246,10 @@ mod tests {
         assert!(drawn.contains("returns the real build number"), "{drawn}");
         assert!(drawn.contains("README.md changed and no judge could tie it"), "{drawn}");
         assert!(drawn.contains("asked 14:02"), "{drawn}");
-        assert!(drawn.contains("recorded as drifted, 0.67"), "the recorded term travels too: {drawn}");
+        assert!(
+            drawn.contains("recorded as drifted, 0.67"),
+            "the recorded term travels too: {drawn}"
+        );
         for line in drawn.lines() {
             assert!(line.chars().count() <= 80, "nothing overflows the screen: {line}");
         }
@@ -1240,7 +1263,14 @@ mod tests {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
         for key in [
-            "[A]SK", "[S]END", "[C]HECK", "[D]ECIDE", "[N]EW AGENT", "[W]ORK", "[H]ELP", "[X] QUIT",
+            "[A]SK",
+            "[S]END",
+            "[C]HECK",
+            "[D]ECIDE",
+            "[N]EW AGENT",
+            "[W]ORK",
+            "[H]ELP",
+            "[X] QUIT",
         ] {
             assert!(drawn.contains(key), "{key} missing from the bar: {drawn}");
         }
@@ -1252,9 +1282,8 @@ mod tests {
         // jumps under the pointer.
         let mut nothing = app();
         let mut something = judged();
-        let bar = |a: &mut App| {
-            screen(a, 80, 24).lines().nth(22).map(str::to_string).expect("a bar")
-        };
+        let bar =
+            |a: &mut App| screen(a, 80, 24).lines().nth(22).map(str::to_string).expect("a bar");
         assert_eq!(bar(&mut nothing), bar(&mut something));
     }
 
@@ -1446,7 +1475,10 @@ mod tests {
     #[test]
     fn a_harness_that_is_not_set_up_is_marked_and_says_so() {
         let mut a = judged();
-        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        a.set_readiness(
+            "codex",
+            crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
+        );
         let drawn = screen(&mut a, 80, 24);
         let tabs = drawn.lines().nth(1).expect("a tab row");
         assert!(tabs.contains("codex ⚠"), "the tab carries it: {tabs}");
@@ -1460,9 +1492,21 @@ mod tests {
         // The bar is exactly full at 80 columns, so [R]EADY UP lives in the
         // hint. Every entry still has to be on screen and readable.
         let mut a = judged();
-        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        a.set_readiness(
+            "codex",
+            crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
+        );
         let drawn = screen(&mut a, 80, 24);
-        for key in ["[A]SK", "[S]END", "[C]HECK", "[D]ECIDE", "[N]EW AGENT", "[W]ORK", "[H]ELP", "[X] QUIT"] {
+        for key in [
+            "[A]SK",
+            "[S]END",
+            "[C]HECK",
+            "[D]ECIDE",
+            "[N]EW AGENT",
+            "[W]ORK",
+            "[H]ELP",
+            "[X] QUIT",
+        ] {
             assert!(drawn.contains(key), "{key} fell off the bar: {drawn}");
         }
     }
@@ -1470,7 +1514,10 @@ mod tests {
     #[test]
     fn setting_a_harness_up_shows_the_commands_before_running_them() {
         let mut a = judged();
-        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin));
+        a.set_readiness(
+            "codex",
+            crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
+        );
         press(&mut a, KeyCode::Char('r'));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("SET CODEX UP FOR RINGFRAME"), "{drawn}");
@@ -1570,8 +1617,14 @@ mod tests {
     fn folding_a_line_keeps_every_character() {
         // Both the ask box and the confirmation fold rather than wrap: one
         // shows what was typed, the other promises the exact wording.
-        for text in ["a  b", "one two three four five", "   leading", "trailing   ",
-                     "/plan Fix   the   thing", "averylongwordwithnospacesatall"] {
+        for text in [
+            "a  b",
+            "one two three four five",
+            "   leading",
+            "trailing   ",
+            "/plan Fix   the   thing",
+            "averylongwordwithnospacesatall",
+        ] {
             let folded = fold(text, 8).join("");
             assert_eq!(folded, text.replace('\n', ""), "{text:?} came back as {folded:?}");
         }
@@ -1612,7 +1665,10 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let tabs = screen(&mut a, 80, 24);
-        assert!(tabs.lines().nth(1).is_some_and(|l| l.contains('●')), "the tab carries the dot: {tabs}");
+        assert!(
+            tabs.lines().nth(1).is_some_and(|l| l.contains('●')),
+            "the tab carries the dot: {tabs}"
+        );
 
         press(&mut a, KeyCode::Char(' '));
         let drawn = screen(&mut a, 80, 24);

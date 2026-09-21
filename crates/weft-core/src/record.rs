@@ -4,7 +4,6 @@
 //! each judge voted, live in `evals/<id>/record.json`. Weft reads it rather
 //! than inferring, because "every verdict names the host that produced it".
 
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -80,7 +79,6 @@ pub struct Record {
 }
 
 impl Record {
-
     pub fn parse(v: &Value) -> Option<Self> {
         let judges = v
             .get("judgements")?
@@ -111,7 +109,11 @@ impl Record {
                             .unwrap_or_default();
                         Item {
                             text: i.get("text").and_then(Value::as_str).unwrap_or("").to_string(),
-                            majority: i.get("majority").and_then(Value::as_str).unwrap_or("unknown").to_string(),
+                            majority: i
+                                .get("majority")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                                .to_string(),
                             agreement: i.get("agreement").and_then(Value::as_f64).unwrap_or(0.0),
                             reasons: votes
                                 .iter()
@@ -206,11 +208,7 @@ fn vote_of(v: &Value) -> Vote {
         angle: v.get("angle").and_then(Value::as_str).unwrap_or("").to_string(),
         // An older record has no `counted_as`: then the vote as cast is what
         // counted, which is exactly what it meant before the rule existed.
-        counted_as: v
-            .get("counted_as")
-            .and_then(Value::as_str)
-            .unwrap_or(&cast)
-            .to_string(),
+        counted_as: v.get("counted_as").and_then(Value::as_str).unwrap_or(&cast).to_string(),
         uncited: v.get("uncited").and_then(Value::as_bool).unwrap_or(false),
         reason: v.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
         cast,
@@ -218,10 +216,7 @@ fn vote_of(v: &Value) -> Vote {
 }
 
 fn path_of(v: &Value) -> Option<String> {
-    v.get("path")
-        .and_then(Value::as_str)
-        .or_else(|| v.as_str())
-        .map(str::to_string)
+    v.get("path").and_then(Value::as_str).or_else(|| v.as_str()).map(str::to_string)
 }
 
 #[cfg(test)]

@@ -19,13 +19,13 @@ use crate::client::Session;
 use crate::encode;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
 use crate::ledger::Unit;
-use weft_core::harness;
-use weft_core::readiness::{Gap, Readiness};
+use crate::theme::Theme;
 pub use weft_core::board::Act;
 use weft_core::board::{Board, PaneInfo};
-pub use weft_core::offers::{ended_choices, say_handoff, Ended};
+use weft_core::harness;
+pub use weft_core::offers::{Ended, ended_choices, say_handoff};
+use weft_core::readiness::{Gap, Readiness};
 use weft_core::sessions::Recorded;
-use crate::theme::Theme;
 
 /// What Weft is about to type, and where. Shown before anything is sent.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,20 +45,33 @@ pub enum Modal {
     Quit,
     Help,
     /// Composing an intent.
-    Ask { text: String, target: usize },
+    Ask {
+        text: String,
+        target: usize,
+    },
     /// Weft is about to type something. Always shown first.
     Confirm(Pending),
     /// Something did not work, said plainly.
     Note(String),
     /// Pick an agent to start. Weft starts none on its own.
-    StartAgent { choice: usize },
+    StartAgent {
+        choice: usize,
+    },
     /// What Weft is about to run to set an agent up, and where. Shown first,
     /// always: installing into an agent is a larger act than typing into one.
-    SetUp { harness: String, commands: Vec<String>, gap: Gap },
+    SetUp {
+        harness: String,
+        commands: Vec<String>,
+        gap: Gap,
+    },
     /// The agent in this pane is gone — it was quit from inside, or it
     /// stopped. Weft never keeps a harness session of its own, so what it can
     /// offer is whichever session RingFrame has a receipt for.
-    Ended { pane: usize, harness: String, session: Option<Recorded> },
+    Ended {
+        pane: usize,
+        harness: String,
+        session: Option<Recorded>,
+    },
 }
 
 /// The two reading surfaces. Siblings, not a stack: `P` from the judges
@@ -76,7 +89,6 @@ pub struct Drawer {
     pub lines: Vec<String>,
     pub offset: usize,
 }
-
 
 pub struct App {
     pub project: String,
@@ -151,7 +163,6 @@ impl App {
         self.units.get(i)
     }
 
-
     pub fn expanded(&self) -> Option<usize> {
         self.expanded
     }
@@ -199,8 +210,6 @@ impl App {
         readiness_of(self.session.readiness.get(harness).and_then(|v| v.as_str()))
     }
 
-
-
     /// What this project routes, for showing. Empty when it routes nothing.
     pub fn routing(&self) -> &weft_core::routing::Routing {
         &self.routing
@@ -211,7 +220,6 @@ impl App {
         self.workspace_gap.as_deref()
     }
 
-
     /// The harness that decides what can be done now, when it is not ready.
     /// The hint says so persistently: a dimmed action with no reason on screen
     /// is the thing v1 did wrong.
@@ -220,7 +228,6 @@ impl App {
         let state = self.readiness(&name);
         (!state.is_ready()).then_some((name, state))
     }
-
 
     /// Test seam: what RingFrame would say about this workspace.
     pub fn set_workspace_gap(&mut self, gap: Option<String>) {
@@ -241,8 +248,6 @@ impl App {
     pub fn set_readiness(&mut self, harness: &str, state: Readiness) {
         self.readiness.insert(harness.to_string(), state);
     }
-
-
 
     /// Whether a pane looks like it is waiting for a person. Inference, and
     /// labelled as such everywhere it is shown.
@@ -321,7 +326,6 @@ impl App {
             p.with_screen(f);
         }
     }
-
 
     // --- construction ---------------------------------------------------------
 
@@ -498,11 +502,8 @@ impl App {
         self.workspace_gap = self.session.gap.clone();
         // A missing CLI is the same answer for every harness, so any one of
         // them saying so is the machine saying so.
-        self.record_available = !self
-            .session
-            .readiness
-            .as_object()
-            .is_some_and(|m| m.values().any(|v| v == "no_cli"));
+        self.record_available =
+            !self.session.readiness.as_object().is_some_and(|m| m.values().any(|v| v == "no_cli"));
         // A name in the routing file that is not a harness Weft knows. Said
         // once, on the way in: an act routed nowhere would otherwise just look
         // unavailable for no reason anyone could see.
@@ -534,8 +535,6 @@ impl App {
             self.expanded = None;
         }
     }
-
-
 
     fn say(&mut self, sentence: impl Into<String>) {
         self.hint = Some(sentence.into());
@@ -668,14 +667,10 @@ impl App {
         // The compose box opens on the harness this project asks in, when it
         // says. The person can still pick another before sending — routing is
         // where Weft starts, not somewhere it holds them.
-        let target = self
-            .routing
-            .get("ask")
-            .and_then(|name| self.pane_for(name))
-            .unwrap_or(self.pane_focus);
+        let target =
+            self.routing.get("ask").and_then(|name| self.pane_for(name)).unwrap_or(self.pane_focus);
         self.modal = Some(Modal::Ask { text: String::new(), target });
     }
-
 
     /// What starting an agent could mean here. Asked when the picker opens,
     /// not while drawing: it reads receipts off disk in the daemon.
@@ -728,14 +723,9 @@ impl App {
                 self.pane_focus = self.session.panes.len().saturating_sub(1);
                 self.focus = Focus::Agent;
             }
-            Err(e) => {
-                self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec)))
-            }
+            Err(e) => self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec))),
         }
     }
-
-
-
 
     /// Show what setting this harness up would run, and run nothing yet.
     fn start_set_up(&mut self) {
@@ -752,7 +742,6 @@ impl App {
         self.modal_choice = 0;
     }
 
-
     fn decline_set_up(&mut self, name: &str) {
         self.readiness.insert(name.to_string(), Readiness::Declined);
         self.modal = None;
@@ -762,7 +751,13 @@ impl App {
     /// Ask the daemon for an act, and show whatever it puts in front of the
     /// person. The daemon works out what to type, where it goes and how; this
     /// only names the act ([ADR-0007](../plans/weft/adr/0007-three-layers.md)).
-    fn ask_first(&mut self, act: &str, unit: Option<&str>, pane: Option<usize>, text: Option<&str>) {
+    fn ask_first(
+        &mut self,
+        act: &str,
+        unit: Option<&str>,
+        pane: Option<usize>,
+        text: Option<&str>,
+    ) {
         match self.session.act(act, unit, pane, text) {
             Ok(id) => {
                 self.session.pump();
@@ -782,11 +777,7 @@ impl App {
         }
     }
 
-
-
     // --- the drawer ----------------------------------------------------------
-
-
 
     fn scroll_drawer(&mut self, delta: i32) {
         if let Some(d) = self.drawer.as_mut() {
@@ -939,7 +930,6 @@ impl App {
             }
         }
     }
-
 
     /// Open the agent that has the selected work, in the session it was asked
     /// in. The command is the one a person would type; Weft claims nothing
@@ -1094,9 +1084,7 @@ impl App {
             event::KeyCode::Up if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(-1),
             event::KeyCode::Down if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(1),
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
-            event::KeyCode::Down => {
-                self.modal_choice = (self.modal_choice + 1).min(options - 1)
-            }
+            event::KeyCode::Down => self.modal_choice = (self.modal_choice + 1).min(options - 1),
             // `←` is back everywhere, and on this one panel it is an answer:
             // not now, remembered, rather than a question asked again.
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
@@ -1201,7 +1189,8 @@ impl App {
         if m.kind != MouseEventKind::Down(MouseButton::Left) {
             return Ok(());
         }
-        if self.needs_you_span.is_some_and(|(x, w)| m.row == 0 && m.column >= x && m.column < x + w) {
+        if self.needs_you_span.is_some_and(|(x, w)| m.row == 0 && m.column >= x && m.column < x + w)
+        {
             self.next_needs_you();
             return Ok(());
         }
@@ -1281,7 +1270,9 @@ impl App {
         }
         let name = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
         let said = match harness::find(&name).and_then(|h| h.transcript) {
-            Some(key) => format!("{name} keeps its own history: press {key} in the agent to read it."),
+            Some(key) => {
+                format!("{name} keeps its own history: press {key} in the agent to read it.")
+            }
             None => format!("Nothing of {name}'s has scrolled away yet."),
         };
         self.say(said);
@@ -1302,10 +1293,7 @@ impl App {
     }
 
     fn row_at(&self, row: u16) -> Option<usize> {
-        self.row_spans
-            .iter()
-            .find(|(y, h, _)| row >= *y && row < y + h)
-            .map(|(_, _, i)| *i)
+        self.row_spans.iter().find(|(y, h, _)| row >= *y && row < y + h).map(|(_, _, i)| *i)
     }
 
     /// `Some(Some(pane))` is an agent tab; `Some(None)` is the `+`.
@@ -1379,12 +1367,6 @@ pub struct Start {
     pub session: Option<Recorded>,
 }
 
-
-
-
-
-
-
 fn chord_of(key: KeyEvent) -> Chord {
     let code = match key.code {
         event::KeyCode::Char(c) => Key::Char(c),
@@ -1407,10 +1389,10 @@ fn chord_of(key: KeyEvent) -> Chord {
 pub(crate) mod tests {
     use super::*;
     use crate::ledger::Sent;
-    use weft_core::offers::first_line;
-    use weft_core::readiness::{Gap, Readiness};
     use crossterm::event::KeyCode;
     use serde_json::json;
+    use weft_core::offers::first_line;
+    use weft_core::readiness::{Gap, Readiness};
 
     /// A session backed by a real server on a scratch root, because the app is
     /// a client now and there is no honest way to test it without one.
@@ -1427,16 +1409,12 @@ pub(crate) mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
         let n = N.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir()
-            .join(format!("weft-app-{name}-{}-{n}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("weft-app-{name}-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&root).expect("root");
         // A real workspace is a Git repository with a commit, which is what
         // RingFrame requires before it will compile an Ask. A fixture that is
         // not one tests a situation Weft now refuses.
-        for args in [
-            vec!["init", "-q"],
-            vec!["commit", "-q", "--allow-empty", "-m", "fixture"],
-        ] {
+        for args in [vec!["init", "-q"], vec!["commit", "-q", "--allow-empty", "-m", "fixture"]] {
             let _ = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&root)
@@ -1534,8 +1512,7 @@ pub(crate) mod tests {
         }
         let rf = a.root.join(".fab7/rf");
         std::fs::create_dir_all(&rf).expect("rf");
-        let lines: String =
-            events.iter().map(|e| format!("{e}\n")).collect();
+        let lines: String = events.iter().map(|e| format!("{e}\n")).collect();
         std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
         // Wait for the daemon's next look, then take what it read.
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
@@ -1662,7 +1639,8 @@ pub(crate) mod tests {
         let mut a = app();
         assert_eq!(a.pane_count(), 1);
         a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
-        a.modal_choice = ended_choices(None).iter().position(|c| *c == Ended::Close).expect("close");
+        a.modal_choice =
+            ended_choices(None).iter().position(|c| *c == Ended::Close).expect("close");
         press(&mut a, KeyCode::Enter);
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline && a.pane_count() > 0 {
@@ -1786,8 +1764,7 @@ pub(crate) mod tests {
         let mut a = app();
         let acts: serde_json::Map<String, serde_json::Value> =
             pairs.iter().map(|(k, v)| ((*k).to_string(), serde_json::json!(v))).collect();
-        let text =
-            serde_json::json!({ a.root.to_string_lossy().into_owned(): acts }).to_string();
+        let text = serde_json::json!({ a.root.to_string_lossy().into_owned(): acts }).to_string();
         a.routing = weft_core::routing::read(&text, &a.root);
         a.set_units(vec![unit(Sent::TakenByAgent)]);
         a
@@ -1982,10 +1959,7 @@ pub(crate) mod tests {
         a.set_units(vec![unit(Sent::TakenByAgent), ready]);
         press(&mut a, KeyCode::Char('s'));
         assert!(a.modal.is_none());
-        assert_eq!(
-            a.hint_text(),
-            Some("readme fix is the one ready to send. ↓ to select it.")
-        );
+        assert_eq!(a.hint_text(), Some("readme fix is the one ready to send. ↓ to select it."));
     }
 
     #[test]
@@ -2073,10 +2047,14 @@ pub(crate) mod tests {
             panic!("[R] must propose first, got {:?}", a.modal)
         };
         assert_eq!(harness, "codex");
-        assert_eq!(commands, vec![
-            "codex plugin marketplace add fab7hq/fab7".to_string(),
-            "codex plugin add rf@fab7".to_string()
-        ], "what is shown is what would run");
+        assert_eq!(
+            commands,
+            vec![
+                "codex plugin marketplace add fab7hq/fab7".to_string(),
+                "codex plugin add rf@fab7".to_string()
+            ],
+            "what is shown is what would run"
+        );
         // Declining runs nothing, and is remembered.
         press(&mut a, KeyCode::Left);
         assert!(a.modal.is_none());
@@ -2129,7 +2107,9 @@ pub(crate) mod tests {
     #[test]
     fn a_refusal_is_shown_as_its_first_sentence() {
         assert_eq!(
-            first_line("/tmp/x is not in a Git repository; RingFrame evaluates it. Run `git init`."),
+            first_line(
+                "/tmp/x is not in a Git repository; RingFrame evaluates it. Run `git init`."
+            ),
             "/tmp/x is not in a Git repository; RingFrame evaluates it."
         );
         assert_eq!(first_line("one line only"), "one line only");

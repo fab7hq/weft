@@ -107,9 +107,7 @@ impl Handoff {
             return Handoff::Whole;
         }
         match (d.is_mode(), d.active.clone()) {
-            (true, Some(active)) => {
-                Handoff::EnterMode { command, at: d.prefix_bytes, active }
-            }
+            (true, Some(active)) => Handoff::EnterMode { command, at: d.prefix_bytes, active },
             _ => Handoff::TypeCommand { command, at: d.prefix_bytes },
         }
     }
@@ -308,15 +306,13 @@ mod tests {
         let tail = echo_tail(payload).expect("tail");
         let swallowed = "› ask make health() report the real package version";
         assert!(squeeze(swallowed).contains(&tail), "the tail alone was never the problem");
-        assert!(
-            !squeeze(swallowed).contains(&head),
-            "the head is what catches it: {head:?}"
-        );
+        assert!(!squeeze(swallowed).contains(&head), "the head is what catches it: {head:?}");
     }
 
     #[test]
     fn the_echo_tail_survives_a_wrapped_composer() {
-        let tail = echo_tail(b"/rf:ask make health() report the real package version").expect("tail");
+        let tail =
+            echo_tail(b"/rf:ask make health() report the real package version").expect("tail");
         let wrapped = "› /rf:ask make health() report the\n  real package  version";
         assert!(squeeze(wrapped).contains(&tail), "tail {tail:?} not in {wrapped:?}");
     }

@@ -8,13 +8,13 @@
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::mpsc::{channel, Receiver};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 
 use weft_proto::{Call, Event, Line, Lines, PROTOCOL};
-use weft_proto::{is_live, clear_dead, socket_path};
+use weft_proto::{clear_dead, is_live, socket_path};
 
 /// One pane, as this client sees it.
 pub struct PaneView {
@@ -137,7 +137,7 @@ impl Session {
             match UnixStream::connect(socket) {
                 Ok(s) => break s,
                 Err(e) if Instant::now() >= deadline => {
-                    return Err(anyhow!("no session at {}: {e}", socket.display()))
+                    return Err(anyhow!("no session at {}: {e}", socket.display()));
                 }
                 Err(_) => std::thread::sleep(Duration::from_millis(25)),
             }
@@ -176,18 +176,16 @@ impl Session {
         })?;
         // The state comes back in the answer, so nothing is missed between
         // opening a project and the first pump.
-        let opened = session.ask(Call::Open {
-            rows,
-            cols,
-            path: root.to_string_lossy().into_owned(),
-        })?;
+        let opened =
+            session.ask(Call::Open { rows, cols, path: root.to_string_lossy().into_owned() })?;
         if let Some(panes) = opened.get("panes").and_then(weft_proto::panes_of) {
             session.panes = panes.into_iter().map(PaneView::of).collect();
         }
         if let Some(units) = opened.get("units").cloned() {
             session.units = serde_json::from_value(units).unwrap_or_default();
         }
-        session.readiness = opened.get("readiness").cloned().unwrap_or_else(|| serde_json::json!({}));
+        session.readiness =
+            opened.get("readiness").cloned().unwrap_or_else(|| serde_json::json!({}));
         session.records = opened.get("records").cloned().unwrap_or_else(|| serde_json::json!({}));
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
         if let Some(r) = opened.get("routing") {

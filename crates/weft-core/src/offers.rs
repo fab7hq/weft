@@ -105,7 +105,11 @@ pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Askin
         why.push(format!("{into} did not do this work. Both acts read the record."));
     }
     Asking {
-        what: if skill == "eval" { "Check this work?".into() } else { "Decide on this work?".into() },
+        what: if skill == "eval" {
+            "Check this work?".into()
+        } else {
+            "Decide on this work?".into()
+        },
         why,
     }
 }

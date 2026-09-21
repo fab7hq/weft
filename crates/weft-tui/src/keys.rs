@@ -144,7 +144,9 @@ mod tests {
     fn in_the_agent_every_key_goes_through_including_esc_and_ctrl_c() {
         let t = Toggle;
         let ctrl_c = Chord { code: Key::Char('c'), ctrl: true, shift: false };
-        for chord in [plain(Key::Esc), plain(Key::Up), plain(Key::Enter), plain(Key::Char('a')), ctrl_c] {
+        for chord in
+            [plain(Key::Esc), plain(Key::Up), plain(Key::Enter), plain(Key::Char('a')), ctrl_c]
+        {
             assert_eq!(route(chord, Focus::Agent, t), Action::ToAgent, "{chord:?}");
         }
     }
@@ -272,9 +274,7 @@ mod tests {
         // Unless the person is using Weft's own ask, check or decide, every
         // keystroke is chat with the harness and is forwarded untouched.
         for toggle in [Toggle] {
-            for code in [
-                Key::Up, Key::Down, Key::Left, Key::Enter, Key::Tab, Key::Esc,
-            ] {
+            for code in [Key::Up, Key::Down, Key::Left, Key::Enter, Key::Tab, Key::Esc] {
                 for ctrl in [false, true] {
                     for shift in [false, true] {
                         let chord = Chord { code, ctrl, shift };

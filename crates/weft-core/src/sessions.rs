@@ -8,7 +8,6 @@
 //! Weft reads that directory and never writes it (ADR-0001). A session with no
 //! receipt is a session Weft cannot name, and it says so rather than guessing.
 
-
 /// A session a harness recorded a prompt in, here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
@@ -19,8 +18,6 @@ pub struct Recorded {
     /// reopening rather than being shown an opaque id.
     pub last: String,
 }
-
-
 
 pub fn first_line(prompt: &str) -> String {
     prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()

@@ -108,7 +108,13 @@ fn main() -> anyhow::Result<()> {
     }
     for (i, unit) in app.units().iter().enumerate() {
         let mark = if i == app.selected { "▸" } else { " " };
-        println!("  {mark} {:<44} {:<12} {}{}", unit.title, unit.harness, unit.marker(), unit.status().to_uppercase());
+        println!(
+            "  {mark} {:<44} {:<12} {}{}",
+            unit.title,
+            unit.harness,
+            unit.marker(),
+            unit.status().to_uppercase()
+        );
     }
     println!("\n── Weft ──");
     println!("  focus {:?} · modal {:?}", app.focus, app.modal.as_ref().map(kind_of));

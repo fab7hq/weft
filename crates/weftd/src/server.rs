@@ -16,12 +16,12 @@
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::Result;
 
 use crate::pane::Pane;
-use weft_proto::{self, Call, Event as Out, Line, Lines, PaneInfo, PROTOCOL};
+use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
 /// Everything a pane has printed since it started, so a late client can be
 /// shown the same screen as an early one.
@@ -112,9 +112,10 @@ impl Clients {
     fn send_to(&mut self, id: u64, line: &Line) {
         let wire = line.encode();
         if let Some(s) = self.sinks.get_mut(&id)
-            && weft_proto::send(s, &wire).is_err() {
-                self.sinks.remove(&id);
-            }
+            && weft_proto::send(s, &wire).is_err()
+        {
+            self.sinks.remove(&id);
+        }
     }
 }
 
@@ -122,14 +123,29 @@ impl Clients {
 /// the panes, so nothing needs a lock held across a blocking read.
 enum Wake {
     Client(UnixStream),
-    Request { client: u64, call_id: u64, call: Call },
-    Output { project: usize, pane: u32, bytes: Vec<u8> },
-    Exited { project: usize, pane: u32 },
+    Request {
+        client: u64,
+        call_id: u64,
+        call: Call,
+    },
+    Output {
+        project: usize,
+        pane: u32,
+        bytes: Vec<u8>,
+    },
+    Exited {
+        project: usize,
+        pane: u32,
+    },
     /// Time to look at the ledgers again.
     Tick,
     /// A harness answered what it has installed. Asked off the run loop,
     /// because asking costs a process and panes must not wait on it.
-    Readiness { project: usize, harness: String, state: weft_core::readiness::Readiness },
+    Readiness {
+        project: usize,
+        harness: String,
+        state: weft_core::readiness::Readiness,
+    },
 }
 
 pub struct Session {
@@ -230,9 +246,7 @@ fn workspace_gap(root: &Path) -> serde_json::Value {
 }
 
 /// Readiness as a client reads it: one word per harness.
-fn readiness_json(
-    states: &HashMap<String, weft_core::readiness::Readiness>,
-) -> serde_json::Value {
+fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> serde_json::Value {
     use weft_core::readiness::{Gap, Readiness};
     serde_json::Value::Object(
         states
@@ -315,7 +329,8 @@ impl Session {
                     // the daemon quietly dropped.
                     let answer = self.request(client, call);
                     let done = matches!(answer, Ok(Answer::Done));
-                    self.clients.send_to(client, &answer.unwrap_or_else(Answer::failed).line(call_id));
+                    self.clients
+                        .send_to(client, &answer.unwrap_or_else(Answer::failed).line(call_id));
                     if done {
                         return Ok(());
                     }
@@ -388,18 +403,15 @@ impl Session {
         text: Option<&str>,
     ) -> Answer {
         let root = self.projects[at].root.clone();
-        let unit = unit_id.and_then(|id| {
-            self.projects[at].ledger.units().into_iter().find(|u| u.ask_id == id)
-        });
+        let unit = unit_id
+            .and_then(|id| self.projects[at].ledger.units().into_iter().find(|u| u.ask_id == id));
         let built = match act {
             "ask" => {
                 let Some(pane) = pane else {
                     return Answer::No("no_pane", "an Ask needs a pane to go into".into());
                 };
-                let Some(harness) = self.projects[at]
-                    .panes
-                    .get(pane as usize)
-                    .map(|s| s.harness.clone())
+                let Some(harness) =
+                    self.projects[at].panes.get(pane as usize).map(|s| s.harness.clone())
                 else {
                     return Answer::No("no_pane", format!("there is no pane {pane} here"));
                 };
@@ -430,11 +442,7 @@ impl Session {
                 let skill = if act == "check" { "eval" } else { "seal" };
                 // Where it goes is the project's to say (spec/routing.md).
                 let key = if act == "check" { "eval" } else { "seal" };
-                let into = self.projects[at]
-                    .routing
-                    .get(key)
-                    .unwrap_or(&unit.harness)
-                    .to_string();
+                let into = self.projects[at].routing.get(key).unwrap_or(&unit.harness).to_string();
                 let Some(pane) = self.pane_of(at, &into) else {
                     return Answer::No("no_pane", format!("no {into} pane is open here"));
                 };
@@ -491,9 +499,7 @@ impl Session {
             },
             // `unit` is an eval id here: a record is named by the Eval, not the Ask.
             "judges" => match crate::record::read(&root, unit) {
-                Some(r) => Answer::Ok(
-                    serde_json::to_value(&r).unwrap_or(serde_json::Value::Null),
-                ),
+                Some(r) => Answer::Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)),
                 None => Answer::No("no_record", "that check's record is not on disk".into()),
             },
             other => Answer::No("unknown_read", format!("there is nothing called {other}")),
@@ -685,13 +691,8 @@ impl Session {
                 };
                 let id = format!("pnd_{}", self.next_pending);
                 self.next_pending += 1;
-                let message = Out::Pending {
-                    id: id.clone(),
-                    pane,
-                    what,
-                    why,
-                    payload: bytes.clone(),
-                };
+                let message =
+                    Out::Pending { id: id.clone(), pane, what, why, payload: bytes.clone() };
                 self.projects[at].waiting.push(Waiting {
                     id: id.clone(),
                     pane,
@@ -743,8 +744,7 @@ impl Session {
                 };
                 // Taken, not read: whoever answers first answers for everyone,
                 // and a second answer finds nothing to answer.
-                let Some(i) = self.projects[at].waiting.iter().position(|w| w.id == pending)
-                else {
+                let Some(i) = self.projects[at].waiting.iter().position(|w| w.id == pending) else {
                     return Ok(Answer::No("gone", "that was already answered".into()));
                 };
                 let w = self.projects[at].waiting.remove(i);
@@ -822,23 +822,18 @@ impl Session {
                     spec: spec.to_string(),
                     replay: Vec::new(),
                 });
-                self.clients.broadcast(project, &Out::Added {
-                    pane: id,
-                    harness: harness_name,
-                    spec: spec.to_string(),
-                });
-            }
-            Err(e) => {
                 self.clients.broadcast(
                     project,
-                    &Out::Injected { pane: id, refusal: Some(e.to_string()) },
+                    &Out::Added { pane: id, harness: harness_name, spec: spec.to_string() },
                 );
+            }
+            Err(e) => {
+                self.clients
+                    .broadcast(project, &Out::Injected { pane: id, refusal: Some(e.to_string()) });
             }
         }
     }
 }
-
-
 
 #[cfg(test)]
 mod confirming {

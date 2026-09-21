@@ -14,8 +14,8 @@ use weft::app::App;
 use weft::client::Session;
 use weft::keys::Toggle;
 use weft::ledger::{Check, Sent, Unit, Verdict};
-use weft::readiness::{Gap, Readiness};
 use weft::protocol;
+use weft::readiness::{Gap, Readiness};
 use weft::server;
 
 fn main() {
@@ -67,11 +67,8 @@ fn show(name: &str, width: u16, height: u16, keys: &[KeyCode], with_agent: bool)
 
 fn draw_it(name: &str, width: u16, height: u16, keys: &[KeyCode], app: &mut App) {
     for key in keys {
-        let modifiers = if *key == KeyCode::Char(']') {
-            KeyModifiers::CONTROL
-        } else {
-            KeyModifiers::NONE
-        };
+        let modifiers =
+            if *key == KeyCode::Char(']') { KeyModifiers::CONTROL } else { KeyModifiers::NONE };
         app.on_key(KeyEvent::new(*key, modifiers)).expect("key");
     }
     let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
@@ -79,9 +76,8 @@ fn draw_it(name: &str, width: u16, height: u16, keys: &[KeyCode], app: &mut App)
     let buffer = terminal.backend().buffer().clone();
     println!("\n=== {name} · {width}×{height} ===");
     for y in 0..height {
-        let row: String = (0..width)
-            .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
-            .collect();
+        let row: String =
+            (0..width).map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ")).collect();
         println!("{}", row.trim_end());
     }
 }

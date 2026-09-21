@@ -29,15 +29,22 @@ impl Release {
             std::fs::write(&p, format!("#!/bin/sh\necho \"{name} {tag}\"\n")).unwrap();
             make_executable(&p);
         }
-        run(&["tar", "-czf", &serve.join(&archive).to_string_lossy(),
-              "-C", &staged.to_string_lossy(), "weft", "ringframe"]);
+        run(&[
+            "tar",
+            "-czf",
+            &serve.join(&archive).to_string_lossy(),
+            "-C",
+            &staged.to_string_lossy(),
+            "weft",
+            "ringframe",
+        ]);
 
         let digest = sha256_of(&serve.join(&archive));
         let written = if corrupt_checksum { "0".repeat(64) } else { digest };
-        std::fs::write(serve.join(format!("{archive}.sha256")),
-                       format!("{written}  {archive}\n")).unwrap();
-        std::fs::write(serve.join("releases-latest"),
-                       format!("{{\"tag_name\": \"{tag}\"}}\n")).unwrap();
+        std::fs::write(serve.join(format!("{archive}.sha256")), format!("{written}  {archive}\n"))
+            .unwrap();
+        std::fs::write(serve.join("releases-latest"), format!("{{\"tag_name\": \"{tag}\"}}\n"))
+            .unwrap();
 
         // A `curl -fsSL [-o OUT] URL` that reads from `serve/` by the last
         // path segment, and fails on anything it was not given.
@@ -75,8 +82,14 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
         std::fs::create_dir_all(&home).unwrap();
         Command::new("sh")
             .arg(script())
-            .env("PATH", format!("{}:{}", self.dir.path().join("bin").display(),
-                                 std::env::var("PATH").unwrap_or_default()))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    self.dir.path().join("bin").display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
             .env("WEFT_VERSION", tag)
             .env("WEFT_BIN_DIR", &bin_dir)
             .env("HOME", &home)
@@ -120,11 +133,8 @@ fn sha256_of(path: &Path) -> String {
 fn it_downloads_verifies_and_installs_both_binaries() {
     let release = Release::make("v0.1.0", false);
     let out = release.install("v0.1.0");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     // `ringframe init --global` runs at the end and the stub is not the real
     // binary, so the script may end there; what matters is that both binaries
     // were verified and installed first.
@@ -168,11 +178,8 @@ fn the_installer_never_builds() {
     // The whole point of the change: no toolchain on the user's machine.
     // Comments may still name the old path, so only what runs is checked.
     let text = std::fs::read_to_string(script()).expect("install.sh");
-    let code: String = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code: String =
+        text.lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
     for builder in ["cargo ", "uv tool install", "rustc", "pip install", "npm install", "make "] {
         assert!(!code.contains(builder), "install.sh still reaches for {builder}");
     }
