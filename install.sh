@@ -77,7 +77,13 @@ for name in weft ringframe; do
 done
 
 printf 'Installed weft and ringframe %s to %s\n' "$tag" "$BIN_DIR"
-"$BIN_DIR/ringframe" init --global
+
+# The binaries are in place whatever happens next, so a configuration that
+# cannot be read is worth saying plainly rather than aborting on.
+if ! "$BIN_DIR/ringframe" init --global; then
+    printf '\n%s\n' "The binaries are installed, but the configuration could not be."
+    printf '%s\n' "Run \`$BIN_DIR/ringframe init --global\` again once that is sorted."
+fi
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;

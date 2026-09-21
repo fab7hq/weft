@@ -12,18 +12,38 @@ decided.
 
 **Weft has no LLM of its own.** Every model call happens in the agent you
 already run and configured. Weft drives the agents that think; the record is
-written by [RingFrame](https://pypi.org/project/ringframe/).
+written by RingFrame, whose core is the `ringframe` crate in this
+repository and ships as its own binary beside `weft`.
 
 ## Status
 
 Early. The runtime, the input path and the RingFrame interface all work:
 agents run in panes, the work list is read from the record, and Weft types a
-confirmed prompt for you after asking. It is not packaged yet.
+confirmed prompt for you after asking.
+
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
+```
+
+It detects the platform, downloads a prebuilt `weft` and `ringframe`, verifies
+a checksum, and installs both to `~/.local/bin`. There is no toolchain to
+have. Then add the plugin for your harness:
+
+```sh
+# Claude Code
+/plugin marketplace add fab7hq/fab7 && /plugin install rf@fab7
+# Codex
+codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7
+```
+
+The Python-era `uv tool install ringframe` still gets `ringframe` 0.0.5, which
+keeps working and is frozen there.
 
 ## Requirements
 
 - macOS or Linux, a terminal
-- the `ringframe` CLI on `PATH`
 - at least one of `claude` or `codex`
 
 ## Build
