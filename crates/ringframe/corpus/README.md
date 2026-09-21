@@ -45,11 +45,10 @@ hold those rows meanwhile.
 
 ## Regenerating
 
-Don't, unless you are adding coverage. The point of a reference is that it does
-not move. If you must, the Python core has to still be installed:
+Don't. The point of a reference is that it does not move, and the core that
+produced it is archived. The generator went with it, to `tools/corpus.py` in
+the Python repository, because it only runs against that core.
 
-    python3 corpus/generate.py <workspace-root>
-
-It walks every `.fab7/rf/` artifact and `*.yaml` under the root, so it produces
-what that machine happens to hold. Regenerating on a different machine will
-churn the file without proving anything new.
+Adding coverage means adding an edge case there and running it against the
+archived core — not producing a new file from whatever this machine happens to
+hold.
