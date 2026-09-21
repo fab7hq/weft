@@ -2,6 +2,7 @@
 //!
 //!   cargo run --example readiness_probe
 
+use weft::harness::OnThisMachine as _;
 use weft::{harness, readiness};
 
 fn main() {

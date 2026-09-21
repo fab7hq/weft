@@ -6,6 +6,7 @@
 //! promised to keep, and a reader that guesses at them is wrong the day they
 //! change.
 
+
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,13 @@ pub struct Harness {
     pub add_marketplace: &'static [&'static str],
     /// Installs the plugin itself.
     pub install_plugin: &'static [&'static str],
+    /// How this harness is told to pick a recorded session back up. The id is
+    /// appended; `claude --resume <id>`, `codex resume <id>`.
+    pub resume: &'static [&'static str],
+    /// What to press to see what scrolled away, when the harness keeps its own
+    /// transcript instead of letting the terminal keep it. `None` means it
+    /// prints inline and Weft's own scrollback is the whole of it.
+    pub transcript: Option<&'static str>,
 }
 
 /// The marketplace and plugin RingFrame publishes. Named here once.
@@ -39,6 +47,10 @@ pub const SUPPORTED: &[Harness] = &[
         list: &["plugin", "list", "--available", "--json"],
         add_marketplace: &["plugin", "marketplace", "add", "fab7hq/fab7"],
         install_plugin: &["plugin", "install", "rf@fab7", "--scope", "user"],
+        resume: &["--resume"],
+        // Claude Code prints its transcript inline and lets the terminal keep
+        // it, so what Weft captured is what there is to scroll.
+        transcript: None,
     },
     Harness {
         name: "codex",
@@ -48,6 +60,10 @@ pub const SUPPORTED: &[Harness] = &[
         list: &["plugin", "list", "--json"],
         add_marketplace: &["plugin", "marketplace", "add", "fab7hq/fab7"],
         install_plugin: &["plugin", "add", "rf@fab7"],
+        resume: &["resume"],
+        // Codex repaints its viewport rather than scrolling, so nothing ever
+        // reaches Weft's scrollback. Its own transcript is behind Ctrl+T.
+        transcript: Some("Ctrl+T"),
     },
 ];
 
@@ -64,25 +80,17 @@ pub fn for_program(program: &str) -> Option<&'static Harness> {
 }
 
 impl Harness {
-    /// Where this harness keeps its configuration, honouring its own variable.
-    pub fn config_home(&self) -> PathBuf {
-        self.config_home_from(std::env::var_os(self.config_env), home())
-    }
 
     /// The rule itself, separated from the environment so it can be tested
     /// without setting a variable every other test in the binary can see.
-    fn config_home_from(&self, set: Option<std::ffi::OsString>, home: PathBuf) -> PathBuf {
+    /// Public because the environment half now lives in another crate.
+    pub fn config_home_from(&self, set: Option<std::ffi::OsString>, home: PathBuf) -> PathBuf {
         match set {
             Some(set) if !set.is_empty() => PathBuf::from(set),
             _ => home.join(self.config_default),
         }
     }
 
-    pub fn on_path(&self) -> bool {
-        std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(self.program).is_file())
-        })
-    }
 
     /// The two commands, exactly as they will be run and as they are shown.
     /// One list, so what is displayed cannot drift from what happens.
@@ -92,11 +100,19 @@ impl Harness {
             .map(|args| format!("{} {}", self.program, args.join(" ")))
             .collect()
     }
+
+    /// The command line that opens a recorded session again, exactly as a
+    /// person would type it.
+    pub fn resume_spec(&self, session: &str) -> String {
+        format!("{} {} {session}", self.program, self.resume.join(" "))
+    }
+
+    /// The command line that starts a fresh one.
+    pub fn spec(&self) -> String {
+        self.program.to_string()
+    }
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
-}
 
 #[cfg(test)]
 mod tests {
@@ -155,6 +171,27 @@ mod tests {
                 "claude plugin install rf@fab7 --scope user".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn a_recorded_session_is_reopened_the_way_each_harness_spells_it() {
+        assert_eq!(
+            find("claude-code").expect("claude").resume_spec("883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"),
+            "claude --resume 883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"
+        );
+        assert_eq!(
+            find("codex").expect("codex").resume_spec("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"),
+            "codex resume 01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"
+        );
+    }
+
+    #[test]
+    fn only_a_harness_that_keeps_its_own_transcript_names_a_key_for_it() {
+        // Measured, not assumed: Codex repaints its viewport, so Weft's
+        // scrollback stays empty and its transcript is behind Ctrl+T. Claude
+        // Code prints inline, so there is nothing extra to point at.
+        assert_eq!(find("codex").expect("codex").transcript, Some("Ctrl+T"));
+        assert_eq!(find("claude-code").expect("claude").transcript, None);
     }
 
     #[test]

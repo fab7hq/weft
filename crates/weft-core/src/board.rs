@@ -1,0 +1,330 @@
+//! What the board knows, and what may be done with it.
+//!
+//! One borrowed view of the facts an action's availability depends on, and the
+//! rule that reads them. ADR-0007: this is the rule, so it lives here and not
+//! in whatever is drawing at the time. A second client asks the same question
+//! and gets the same sentence.
+
+use crate::ledger::{Sent, Unit};
+use crate::readiness::Readiness;
+use crate::routing::Routing;
+
+/// Something the interface offers a key for. One home for whether it can be
+/// used right now, and for the sentence that says what would make it work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Act {
+    Ask,
+    Send,
+    Check,
+    Decide,
+    Wording,
+    Judges,
+    Fix,
+    NewAgent,
+    Work,
+    Help,
+    Quit,
+    /// Set the agent that owns the work up for RingFrame.
+    ReadyUp,
+    /// Open the agent that has this work, in the session it was asked in.
+    OpenAgent,
+}
+
+/// A pane, as everything outside the daemon sees one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneInfo {
+    pub pane: u32,
+    pub harness: String,
+    /// The command line this pane was started with, so a client knows whether
+    /// a session is already open somewhere rather than starting it twice.
+    pub spec: String,
+    pub running: bool,
+}
+
+/// Everything an availability decision reads. Borrowed: the shell owns this
+/// state and builds one of these when it wants an answer.
+pub struct Board<'a> {
+    pub units: &'a [Unit],
+    pub selected: usize,
+    pub panes: &'a [PaneInfo],
+    /// The pane in front of the person. A fresh Ask goes here when the project
+    /// routes none.
+    pub focused: usize,
+    pub readiness: &'a dyn Fn(&str) -> Readiness,
+    pub routing: &'a Routing,
+    /// Why this workspace could not finish an Ask, if it could not.
+    pub workspace_gap: Option<&'a str>,
+}
+
+impl Board<'_> {
+    fn readiness(&self, harness: &str) -> Readiness {
+        (self.readiness)(harness)
+    }
+
+    pub fn selected_unit(&self) -> Option<&Unit> {
+        self.units.get(self.selected)
+    }
+
+    fn pane_for(&self, harness: &str) -> Option<usize> {
+        self.panes.iter().position(|p| p.harness == harness)
+    }
+
+    /// Whether some pane is already running the session this unit was asked
+    /// in. Compared against the command line the pane was started with, which
+    /// the server reports, so it holds for a pane another client opened.
+    fn pane_running(&self, unit: &Unit) -> Option<usize> {
+        let id = unit.session_ref.as_deref()?;
+        self.panes
+            .iter()
+            .position(|p| p.running && p.harness == unit.harness && p.spec.contains(id))
+    }
+
+    /// Open units, as the title bar counts them.
+    pub fn open_count(&self) -> usize {
+        self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count()
+    }
+
+    /// Units waiting on a decision only the person can make. Panes waiting for
+    /// an answer are an inference and carry their own dot on the tab, so they
+    /// are not folded into a count the board claims to have read.
+    pub fn needs_you(&self) -> usize {
+        self.units.iter().filter(|u| u.needs_you()).count()
+    }
+
+    /// The harness whose readiness decides what the person can do now: the one
+    /// that owns the selected work, or the agent on screen when there is none.
+    /// The harness an act goes to, and so the harness its readiness is about.
+    ///
+    /// Spec: `plans/weft/spec/routing.md`. A project may route each of
+    /// RingFrame's three acts to a harness of its own — *Codex asks, Claude
+    /// implements, Codex evaluates*. Absent, everything falls back to what it
+    /// did before: the harness that owns the work, or the pane in front of you.
+    ///
+    /// `Send` is not routed. It is the delivery of an Ask already compiled, so
+    /// it follows that Ask's own record rather than a preference.
+    pub fn deciding_harness(&self, act: Act) -> Option<String> {
+        if let Some(routed) = Self::act_key(act).and_then(|k| self.routing.get(k)) {
+            return Some(routed.to_string());
+        }
+        self.selected_unit()
+            .map(|u| u.harness.clone())
+            .or_else(|| self.panes.get(self.focused).map(|p| p.harness.clone()))
+    }
+
+    /// Which of RingFrame's three acts this is, if it is one of them.
+    pub fn act_key(act: Act) -> Option<&'static str> {
+        match act {
+            Act::Ask | Act::Fix => Some("ask"),
+            Act::Check => Some("eval"),
+            Act::Decide => Some("seal"),
+            _ => None,
+        }
+    }
+
+    /// Why an action is not available now, as one sentence. `None` means it is.
+    pub fn unavailable(&self, act: Act) -> Option<String> {
+        let no_pane = |harness: &str| {
+            format!("No {harness} pane is open, so there is nowhere to send this.")
+        };
+        // An Ask this workspace could never finish is refused here rather
+        // than after a turn spent composing one.
+        if matches!(act, Act::Ask | Act::Fix)
+            && let Some(gap) = self.workspace_gap {
+                return Some(gap.to_string());
+            }
+        // Everything RingFrame owns waits on the harness that owns the work.
+        // Readiness is per harness: Claude Code may be ready while Codex is not.
+        if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix)
+            && let Some(name) = self.deciding_harness(act) {
+                let state = self.readiness(&name);
+                if !state.is_ready() {
+                    let mut say = state.say(&name).unwrap_or_default();
+                    if state.can_be_set_up() {
+                        say.push_str(" [R]EADY UP sets it up.");
+                    }
+                    return Some(say);
+                }
+            }
+        match act {
+            Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
+            Act::ReadyUp => match self.deciding_harness(Act::ReadyUp) {
+                None => Some("Start an agent first — [N]EW AGENT.".into()),
+                Some(name) if self.readiness(&name).is_ready() => {
+                    Some(format!("{name} is already set up for RingFrame."))
+                }
+                // A missing CLI opens the panel too: it has nothing to run,
+                // but it carries the one command the person needs.
+                Some(name) if self.readiness(&name) == Readiness::Unknown => self
+                    .readiness(&name)
+                    .say(&name)
+                    .map(|s| format!("{s} There is nothing to offer until it answers.")),
+                Some(_) => None,
+            },
+            Act::Ask => (self.panes.is_empty())
+                .then(|| "Start an agent first — [N]EW AGENT.".to_string()),
+            Act::Fix => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(_) if self.panes.is_empty() => {
+                    Some("Start an agent first — [N]EW AGENT.".into())
+                }
+                Some(_) => None,
+            },
+            Act::Send => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                // Asked about and never answered: the prompt is on disk and
+                // the only thing missing is the person's yes, which [S]END is.
+                Some(u) if u.awaiting_yes() => {
+                    self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
+                }
+                Some(u) if u.sent != Sent::ReadyToSend => Some(
+                    match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
+                        Some(other) => {
+                            format!("{} is the one ready to send. ↓ to select it.", other.title)
+                        }
+                        None => "Nothing is ready to send.".into(),
+                    },
+                ),
+                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
+            },
+            Act::Check | Act::Decide => match self.selected_unit() {
+                None => Some("Nothing to work on yet.".into()),
+                // Where it goes is the project's to say. Routed elsewhere, it
+                // is that harness that needs a pane, not the one that worked.
+                Some(_) => {
+                    let name = self.deciding_harness(act)?;
+                    self.pane_for(&name).is_none().then(|| no_pane(&name))
+                }
+            },
+            Act::OpenAgent => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                // Only what the record names. An Ask compiled before RingFrame
+                // captured the host's session carries none, and Weft will not
+                // invent one to fill the gap.
+                Some(u) if u.session_ref.is_none() => Some(format!(
+                    "The record does not name the {} session this was asked in.",
+                    u.harness
+                )),
+                Some(u) if !crate::harness::SUPPORTED.iter().any(|h| h.name == u.harness) => {
+                    Some(format!("Weft does not know how to open {}.", u.harness))
+                }
+                Some(u) => self.pane_running(u).map(|i| {
+                    format!("That session is already open — [{}] is its pane.", i + 1)
+                }),
+            },
+            Act::Wording => self
+                .selected_unit()
+                .is_none()
+                .then(|| "Nothing has been asked for yet.".to_string()),
+            Act::Judges => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(u) => u.check.is_none().then(|| {
+                    "No check has been run on this yet — [C]HECK asks the judges to look."
+                        .to_string()
+                }),
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ledger::{Sent, Unit};
+    use crate::readiness::Gap;
+
+    fn pane(harness: &str) -> PaneInfo {
+        PaneInfo { pane: 0, harness: harness.into(), spec: harness.into(), running: true }
+    }
+
+    fn unit(harness: &str, sent: Sent) -> Unit {
+        Unit {
+            ask_id: "ask_1".into(),
+            title: "health endpoint".into(),
+            harness: harness.into(),
+            session_ref: None,
+            delivery: Default::default(),
+            route: "native_plan".into(),
+            asked_at: "2026-09-19T14:02:00Z".into(),
+            delivery_mode: "human_handoff".into(),
+            cancelled: false,
+            unanswered: false,
+            confirmed: true,
+            sent,
+            check: None,
+            sealed: None,
+        }
+    }
+
+    /// Everything a second client would have to assemble. That it is this
+    /// small, and needs no App and no terminal, is the point of the crate.
+    fn board<'a>(
+        units: &'a [Unit],
+        panes: &'a [PaneInfo],
+        ready: &'a dyn Fn(&str) -> Readiness,
+        routing: &'a Routing,
+    ) -> Board<'a> {
+        Board { units, selected: 0, panes, focused: 0, readiness: ready, routing, workspace_gap: None }
+    }
+
+    const READY: &dyn Fn(&str) -> Readiness = &|_| Readiness::Ready;
+
+    #[test]
+    fn an_act_is_available_when_its_harness_is_ready_and_open() {
+        let units = [unit("codex", Sent::ReadyToSend)];
+        let panes = [pane("codex")];
+        let none = Routing::default();
+        let b = board(&units, &panes, READY, &none);
+        assert_eq!(b.unavailable(Act::Send), None);
+        assert_eq!(b.deciding_harness(Act::Check).as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn a_routed_act_is_about_the_harness_it_goes_to() {
+        let units = [unit("codex", Sent::ReadyToSend)];
+        let panes = [pane("codex")];
+        let routing = crate::routing::read(
+            r#"{"/p": {"eval": "claude-code"}}"#,
+            std::path::Path::new("/p"),
+        );
+        let b = board(&units, &panes, READY, &routing);
+        assert_eq!(b.deciding_harness(Act::Check).as_deref(), Some("claude-code"));
+        let said = b.unavailable(Act::Check).expect("no claude-code pane is open");
+        assert!(said.contains("claude-code"), "{said}");
+        // Seal was not routed, so it still follows the work.
+        assert_eq!(b.deciding_harness(Act::Decide).as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn readiness_is_the_first_answer_and_names_the_harness() {
+        let units = [unit("codex", Sent::ReadyToSend)];
+        let panes = [pane("codex")];
+        let missing: &dyn Fn(&str) -> Readiness = &|_| Readiness::Missing(Gap::Plugin);
+        let none = Routing::default();
+        let b = board(&units, &panes, missing, &none);
+        let said = b.unavailable(Act::Send).expect("not set up");
+        assert!(said.contains("codex is not set up"), "{said}");
+        assert!(said.contains("[R]EADY UP"), "and says what fixes it: {said}");
+    }
+
+    #[test]
+    fn a_workspace_that_could_not_finish_an_ask_refuses_it_first() {
+        let units: [Unit; 0] = [];
+        let panes = [pane("codex")];
+        let none = Routing::default();
+        let mut b = board(&units, &panes, READY, &none);
+        b.workspace_gap = Some("This workspace is not a Git repository.");
+        assert_eq!(b.unavailable(Act::Ask).as_deref(), Some("This workspace is not a Git repository."));
+        // And only for the acts that would compile one.
+        assert_eq!(b.unavailable(Act::Help), None);
+    }
+
+    #[test]
+    fn the_counts_read_the_record_and_nothing_else() {
+        let units = [unit("codex", Sent::ReadyToSend), unit("codex", Sent::TakenByAgent)];
+        let panes = [pane("codex")];
+        let none = Routing::default();
+        let b = board(&units, &panes, READY, &none);
+        assert_eq!(b.open_count(), 2);
+        assert_eq!(b.needs_you(), 1, "only the one waiting on a person");
+    }
+}

@@ -4,11 +4,11 @@
 //! each judge voted, live in `evals/<id>/record.json`. Weft reads it rather
 //! than inferring, because "every verdict names the host that produced it".
 
-use std::path::Path;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Judge {
     pub angle: String,
     pub host: String,
@@ -21,7 +21,7 @@ pub struct Judge {
 /// nothing is not decisive, and writes down both the vote as cast and what it
 /// counted as. Weft renders that decision and never repeats it — the rule has
 /// one home, and it is not here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Vote {
     pub angle: String,
     pub cast: String,
@@ -30,7 +30,7 @@ pub struct Vote {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Item {
     pub text: String,
     /// `yes`, `no`, or `unknown` as the majority saw it.
@@ -68,7 +68,7 @@ impl Item {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub eval_id: String,
     pub verdict: String,
@@ -80,14 +80,6 @@ pub struct Record {
 }
 
 impl Record {
-    pub fn read(project_root: &Path, eval_id: &str) -> Option<Self> {
-        let path = project_root
-            .join(".fab7/rf/evals")
-            .join(eval_id)
-            .join("record.json");
-        let bytes = std::fs::read(path).ok()?;
-        Self::parse(&serde_json::from_slice::<Value>(&bytes).ok()?)
-    }
 
     pub fn parse(v: &Value) -> Option<Self> {
         let judges = v
@@ -137,7 +129,7 @@ impl Record {
             .get("drift")
             .and_then(|d| d.get("commission"))
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|x| path_of(x)).collect())
+            .map(|a| a.iter().filter_map(path_of).collect())
             .unwrap_or_default();
 
         Some(Record {

@@ -1677,11 +1677,56 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "crossterm",
- "portable-pty",
+ "ratatui",
+ "serde_json",
+ "vt100",
+ "weft-core",
+ "weft-proto",
+ "weft-tui",
+ "weftd",
+]
+
+[[package]]
+name = "weft-core"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "weft-proto"
+version = "0.0.1"
+dependencies = [
+ "serde_json",
+ "weft-core",
+]
+
+[[package]]
+name = "weft-tui"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "crossterm",
  "ratatui",
  "serde_json",
  "tui-term",
  "vt100",
+ "weft-core",
+ "weft-proto",
+ "weftd",
+]
+
+[[package]]
+name = "weftd"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "portable-pty",
+ "serde_json",
+ "vt100",
+ "weft-core",
+ "weft-proto",
 ]
 
 [[package]]

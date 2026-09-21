@@ -3,11 +3,20 @@ name = "weft"
 version = "0.0.1"
 edition = "2024"
 
+# The binary. It starts the daemon or the terminal client; the work is in the
+# crates below (ADR-0007).
+[workspace]
+members = ["crates/*"]
+
 [dependencies]
 anyhow = "1.0.104"
 crossterm = "0.29"
-portable-pty = "0.9.0"
 ratatui = "0.30.2"
 serde_json = "1.0.151"
-tui-term = "0.3.4"
+weft-core = { path = "crates/weft-core" }
+weft-proto = { path = "crates/weft-proto" }
+weft-tui = { path = "crates/weft-tui" }
+weftd = { path = "crates/weftd" }
+
+[dev-dependencies]
 vt100 = "0.16.2"

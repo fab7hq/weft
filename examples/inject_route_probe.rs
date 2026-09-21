@@ -134,9 +134,9 @@ fn main() -> anyhow::Result<()> {
 /// the production topology — a separate server process owning the PTY — and
 /// not a library shortcut around it.
 fn attach(root: &std::path::Path) -> anyhow::Result<Session> {
-    let socket = weft::server::socket_path(root);
-    if !weft::server::is_live(&socket) {
-        weft::server::clear_dead(&socket);
+    let socket = weft::protocol::private_socket("weft-inject");
+    if !weft::protocol::is_live(&socket) {
+        weft::protocol::clear_dead(&socket);
         let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/weft");
         // Detached, as the product detaches it: a server holding this process's
         // stdout would keep the pipe open long after the probe has finished,
@@ -149,11 +149,11 @@ fn attach(root: &std::path::Path) -> anyhow::Result<Session> {
             .stderr(std::process::Stdio::null())
             .spawn()?;
         let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline && !weft::server::is_live(&socket) {
+        while Instant::now() < deadline && !weft::protocol::is_live(&socket) {
             std::thread::sleep(Duration::from_millis(50));
         }
     }
-    Session::connect(&socket, 40, 120)
+    Session::connect(&socket, root, 40, 120)
 }
 
 fn done(observation: Value) -> anyhow::Result<()> {

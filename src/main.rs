@@ -7,26 +7,26 @@ use crossterm::execute;
 use weft::app::App;
 use weft::client::Session;
 use weft::keys;
+use weft::protocol;
 use weft::server;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
 
-    // Started by a client to own the panes. Runs headless and outlives it.
+    // Started by a client to own the panes. One per machine, headless, and it
+    // outlives whatever asked for it (ADR-0007).
     if first.as_deref() == Some("--serve") {
-        let root = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
-        let socket = server::socket_path(&root);
-        return server::Session::serve(root, &socket);
+        return server::Session::serve(&protocol::socket_path());
     }
 
     if first.as_deref() == Some("stop") {
         let root = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()))
             .canonicalize()
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let socket = server::socket_path(&root);
-        if server::is_live(&socket) {
-            let mut s = Session::connect(&socket, 24, 80)?;
+        let socket = protocol::socket_path();
+        if protocol::is_live(&socket) {
+            let mut s = Session::connect(&socket, &root, 24, 80)?;
             s.shutdown();
             println!("weft: stopped the session and its agents");
         } else {

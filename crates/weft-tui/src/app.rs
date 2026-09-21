@@ -18,22 +18,25 @@ use crate::blocked::{self, Evidence};
 use crate::client::Session;
 use crate::encode;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
-use crate::ledger::{Ledger, Sent, Unit};
-use crate::record::Record;
-use crate::harness;
-use crate::readiness::{self, Gap, Readiness};
-use crate::ringframe;
+use crate::ledger::Unit;
+use weft_core::harness;
+use weft_core::readiness::{Gap, Readiness};
+pub use weft_core::board::Act;
+use weft_core::board::{Board, PaneInfo};
+pub use weft_core::offers::{ended_choices, say_handoff, Ended};
+use weft_core::sessions::Recorded;
 use crate::theme::Theme;
 
 /// What Weft is about to type, and where. Shown before anything is sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Pending {
-    pub payload: Vec<u8>,
+    /// The daemon's id for this. Resolving by id is what makes two clients
+    /// safe: whoever answers first answers for everyone.
+    pub staged: String,
     pub pane: usize,
+    pub payload: Vec<u8>,
     pub what: String,
     pub why: Vec<String>,
-    /// Set when this is a confirmed prompt being typed for the person.
-    pub ask_id: Option<String>,
 }
 
 /// The surfaces that interrupt. Everything else in v2 is drawn in place.
@@ -52,6 +55,10 @@ pub enum Modal {
     /// What Weft is about to run to set an agent up, and where. Shown first,
     /// always: installing into an agent is a larger act than typing into one.
     SetUp { harness: String, commands: Vec<String>, gap: Gap },
+    /// The agent in this pane is gone — it was quit from inside, or it
+    /// stopped. Weft never keeps a harness session of its own, so what it can
+    /// offer is whichever session RingFrame has a receipt for.
+    Ended { pane: usize, harness: String, session: Option<Recorded> },
 }
 
 /// The two reading surfaces. Siblings, not a stack: `P` from the judges
@@ -70,24 +77,6 @@ pub struct Drawer {
     pub offset: usize,
 }
 
-/// Something the interface offers a key for. One home for whether it can be
-/// used right now, and for the sentence that says what would make it work.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Act {
-    Ask,
-    Send,
-    Check,
-    Decide,
-    Wording,
-    Judges,
-    Fix,
-    NewAgent,
-    Work,
-    Help,
-    Quit,
-    /// Set the agent that owns the work up for RingFrame.
-    ReadyUp,
-}
 
 pub struct App {
     pub project: String,
@@ -114,8 +103,6 @@ pub struct App {
     /// One sentence saying why the key just pressed did nothing. Never a
     /// dialog: an unavailable action explains itself and stays on the bar.
     hint: Option<String>,
-    ledger: Ledger,
-    prefixes: std::collections::HashMap<String, String>,
     /// What the last frame drew, so a click lands on what the person sees.
     pane_area: Option<Rect>,
     row_spans: Vec<(u16, u16, usize)>,
@@ -133,6 +120,15 @@ pub struct App {
     /// What each harness is short of, by the name RingFrame records. Asked
     /// when a pane starts, because that is when a person would care.
     readiness: std::collections::HashMap<String, Readiness>,
+    /// The panes whose agent Weft has already said had ended. Said once: a
+    /// pane that is gone stays gone, and repeating it would take the screen
+    /// back every tick.
+    announced: std::collections::HashSet<usize>,
+    /// What could be started here, as of the last time anyone asked.
+    starts: Vec<Start>,
+    /// Which harness takes which act here. Read once: a person edits the file
+    /// by hand, and a restart is a fair price for that.
+    routing: weft_core::routing::Routing,
 }
 
 impl App {
@@ -155,9 +151,6 @@ impl App {
         self.units.get(i)
     }
 
-    pub fn selected_unit(&self) -> Option<&Unit> {
-        self.units.get(self.selected)
-    }
 
     pub fn expanded(&self) -> Option<usize> {
         self.expanded
@@ -191,18 +184,26 @@ impl App {
         self.record_available
     }
 
+    /// The Eval record behind a check, as the daemon read it. Nothing opens a
+    /// file to draw a frame.
+    pub fn record(&self, eval_id: &str) -> Option<weft_core::record::Record> {
+        serde_json::from_value(self.session.records.get(eval_id)?.clone()).ok()
+    }
+
     /// What this harness is short of, if anything. A harness Weft does not
     /// support, or has not asked about, is `Unknown` — never assumed ready.
     pub fn readiness(&self, harness: &str) -> Readiness {
-        self.readiness.get(harness).copied().unwrap_or(Readiness::Unknown)
+        if let Some(local) = self.readiness.get(harness) {
+            return *local;
+        }
+        readiness_of(self.session.readiness.get(harness).and_then(|v| v.as_str()))
     }
 
-    /// The harness whose readiness decides what the person can do now: the one
-    /// that owns the selected work, or the agent on screen when there is none.
-    pub fn deciding_harness(&self) -> Option<String> {
-        self.selected_unit()
-            .map(|u| u.harness.clone())
-            .or_else(|| self.harness_at(self.pane_focus).map(str::to_string))
+
+
+    /// What this project routes, for showing. Empty when it routes nothing.
+    pub fn routing(&self) -> &weft_core::routing::Routing {
+        &self.routing
     }
 
     /// What stops an Ask in this workspace, if anything does.
@@ -210,35 +211,16 @@ impl App {
         self.workspace_gap.as_deref()
     }
 
-    /// Ask RingFrame whether this workspace could finish an Ask at all.
-    fn look_at_workspace(&mut self) {
-        self.workspace_gap = match ringframe::ask_preflight(&self.root) {
-            Ok(()) => None,
-            Err(ringframe::Error::NotInstalled) => None, // said elsewhere, once
-            Err(ringframe::Error::Refused { message, .. }) => Some(first_line(&message)),
-        };
-    }
 
     /// The harness that decides what can be done now, when it is not ready.
     /// The hint says so persistently: a dimmed action with no reason on screen
     /// is the thing v1 did wrong.
     pub fn not_ready(&self) -> Option<(String, Readiness)> {
-        let name = self.deciding_harness()?;
+        let name = self.deciding_harness(Act::Ask)?;
         let state = self.readiness(&name);
         (!state.is_ready()).then_some((name, state))
     }
 
-    /// Ask a harness where it stands, once, when its pane starts.
-    fn look_at(&mut self, name: &str) {
-        if matches!(self.readiness.get(name), Some(Readiness::Declined)) {
-            return; // a no is not re-asked this session
-        }
-        let state = match harness::find(name) {
-            Some(h) => readiness::check(h, self.record_available),
-            None => Readiness::Unknown,
-        };
-        self.readiness.insert(name.to_string(), state);
-    }
 
     /// Test seam: what RingFrame would say about this workspace.
     pub fn set_workspace_gap(&mut self, gap: Option<String>) {
@@ -246,27 +228,83 @@ impl App {
     }
 
     /// Test seam: what a harness would be found to be, without asking it.
+    /// Test seam: the Eval records a daemon would have read off disk.
+    pub fn set_records(&mut self, records: serde_json::Value) {
+        self.session.records = records;
+    }
+
+    /// Test seam: the routing a project would have read off disk.
+    pub fn set_routing(&mut self, routing: weft_core::routing::Routing) {
+        self.routing = routing;
+    }
+
     pub fn set_readiness(&mut self, harness: &str, state: Readiness) {
         self.readiness.insert(harness.to_string(), state);
     }
 
-    /// Open units, as the title bar counts them.
-    pub fn open_count(&self) -> usize {
-        self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count()
-    }
 
-    /// Units waiting on a decision only the person can make. Panes waiting for
-    /// an answer are an inference and carry their own dot on the tab, so they
-    /// are not folded into a count the board claims to have read.
-    pub fn needs_you(&self) -> usize {
-        self.units.iter().filter(|u| u.needs_you()).count()
-    }
 
     /// Whether a pane looks like it is waiting for a person. Inference, and
     /// labelled as such everywhere it is shown.
     pub fn waiting(&self, pane: usize) -> Option<Evidence> {
         let view = self.session.panes.get(pane)?;
         blocked::looks_blocked(&view.contents())
+    }
+
+    /// The facts a decision reads, borrowed from the state that holds them.
+    /// The decision itself is `weft_core::board` (ADR-0007).
+    fn with_board<T>(&self, f: impl FnOnce(Board<'_>) -> T) -> T {
+        let panes = self.pane_facts();
+        f(Board {
+            units: &self.units,
+            selected: self.selected,
+            panes: &panes,
+            focused: self.pane_focus,
+            readiness: &|h| self.readiness(h),
+            routing: &self.routing,
+            workspace_gap: self.workspace_gap.as_deref(),
+        })
+    }
+
+    fn pane_facts(&self) -> Vec<PaneInfo> {
+        self.session
+            .panes
+            .iter()
+            .enumerate()
+            .map(|(i, p)| PaneInfo {
+                pane: i as u32,
+                harness: p.harness.clone(),
+                spec: p.spec.clone(),
+                running: p.running,
+            })
+            .collect()
+    }
+
+    /// Why an action is not available now, as one sentence. `None` means it is.
+    pub fn unavailable(&self, act: Act) -> Option<String> {
+        self.with_board(|b| b.unavailable(act))
+    }
+
+    pub fn deciding_harness(&self, act: Act) -> Option<String> {
+        self.with_board(|b| b.deciding_harness(act))
+    }
+
+    pub fn selected_unit(&self) -> Option<&Unit> {
+        self.units.get(self.selected)
+    }
+
+    /// Open units, as the title bar counts them.
+    pub fn open_count(&self) -> usize {
+        self.with_board(|b| b.open_count())
+    }
+
+    /// Units waiting on a decision only the person can make.
+    pub fn needs_you(&self) -> usize {
+        self.with_board(|b| b.needs_you())
+    }
+
+    fn pane_for(&self, harness: &str) -> Option<usize> {
+        self.session.panes.iter().position(|p| p.harness == harness)
     }
 
     /// Draw the pane at its drawn size. The emulator is the client's, so the
@@ -284,85 +322,6 @@ impl App {
         }
     }
 
-    /// Why an action is not available now, as one sentence. `None` means it is.
-    pub fn unavailable(&self, act: Act) -> Option<String> {
-        let no_pane = |harness: &str| {
-            format!("No {harness} pane is open, so there is nowhere to send this.")
-        };
-        // An Ask this workspace could never finish is refused here rather
-        // than after a turn spent composing one.
-        if matches!(act, Act::Ask | Act::Fix) {
-            if let Some(gap) = self.workspace_gap() {
-                return Some(gap.to_string());
-            }
-        }
-        // Everything RingFrame owns waits on the harness that owns the work.
-        // Readiness is per harness: Claude Code may be ready while Codex is not.
-        if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix) {
-            if let Some(name) = self.deciding_harness() {
-                let state = self.readiness(&name);
-                if !state.is_ready() {
-                    let mut say = state.say(&name).unwrap_or_default();
-                    if state.can_be_set_up() {
-                        say.push_str(" [R]EADY UP sets it up.");
-                    }
-                    return Some(say);
-                }
-            }
-        }
-        match act {
-            Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
-            Act::ReadyUp => match self.deciding_harness() {
-                None => Some("Start an agent first — [N]EW AGENT.".into()),
-                Some(name) if self.readiness(&name).is_ready() => {
-                    Some(format!("{name} is already set up for RingFrame."))
-                }
-                // A missing CLI opens the panel too: it has nothing to run,
-                // but it carries the one command the person needs.
-                Some(name) if self.readiness(&name) == Readiness::Unknown => self
-                    .readiness(&name)
-                    .say(&name)
-                    .map(|s| format!("{s} There is nothing to offer until it answers.")),
-                Some(_) => None,
-            },
-            Act::Ask => (self.pane_count() == 0)
-                .then(|| "Start an agent first — [N]EW AGENT.".to_string()),
-            Act::Fix => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(_) if self.pane_count() == 0 => {
-                    Some("Start an agent first — [N]EW AGENT.".into())
-                }
-                Some(_) => None,
-            },
-            Act::Send => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(u) if u.sent != Sent::ReadyToSend => Some(
-                    match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
-                        Some(other) => {
-                            format!("{} is the one ready to send. ↓ to select it.", other.title)
-                        }
-                        None => "Nothing is ready to send.".into(),
-                    },
-                ),
-                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
-            },
-            Act::Check | Act::Decide => match self.selected_unit() {
-                None => Some("Nothing to work on yet.".into()),
-                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
-            },
-            Act::Wording => self
-                .selected_unit()
-                .is_none()
-                .then(|| "Nothing has been asked for yet.".to_string()),
-            Act::Judges => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(u) => u.check.is_none().then(|| {
-                    "No check has been run on this yet — [C]HECK asks the judges to look."
-                        .to_string()
-                }),
-            },
-        }
-    }
 
     // --- construction ---------------------------------------------------------
 
@@ -376,7 +335,6 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "project".into());
-        let ledger = Ledger::at(&root);
         Self {
             project,
             root,
@@ -396,8 +354,6 @@ impl App {
             quit: false,
             stop_agents_on_quit: false,
             hint: None,
-            ledger,
-            prefixes: std::collections::HashMap::new(),
             pane_area: None,
             row_spans: Vec::new(),
             tab_spans: Vec::new(),
@@ -405,9 +361,12 @@ impl App {
             action_row: 0,
             list_area: None,
             needs_you_span: None,
-            record_available: ringframe::installed(),
+            record_available: true,
             workspace_gap: None,
             readiness: std::collections::HashMap::new(),
+            announced: std::collections::HashSet::new(),
+            starts: Vec::new(),
+            routing: Default::default(),
         }
     }
 
@@ -415,15 +374,18 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        self.look_at_workspace();
-        self.look_at(harness);
         self.session.spawn(harness, spec)?;
-        // The pane appears when the server says it has one.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // The pane appears when the server says it has one, and what the
+        // harness is short of follows a moment later — asking it costs a
+        // process, so the daemon does that off its own loop.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let before = self.session.panes.len();
+        let mut running = false;
         while std::time::Instant::now() < deadline {
             self.session.pump();
-            if self.session.panes.len() > before {
+            running |= self.session.panes.len() > before;
+            if running && self.session.readiness.get(harness).is_some() {
+                self.take_the_board();
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -432,7 +394,8 @@ impl App {
     }
 
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        self.reload();
+        self.take_the_board();
+        self.look_for_agents();
         while !self.quit {
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
             if event::poll(Duration::from_millis(50))? {
@@ -447,24 +410,122 @@ impl App {
                     _ => {}
                 }
             }
-            if self.ledger.refresh() {
-                self.units = self.ledger.units();
-                self.clamp_selection();
+            if self.session.pump() {
+                self.take_the_board();
             }
-            self.session.pump();
+            self.notice_an_agent_that_ended();
         }
         Ok(())
     }
 
-    fn reload(&mut self) {
-        self.ledger.refresh();
-        self.units = self.ledger.units();
+    /// An agent quit from inside — `Ctrl+D`, `/exit`, or it simply stopped.
+    /// The pane is still on screen showing its last frame, which is worth
+    /// keeping; what must not happen is keystrokes going to a dead process.
+    pub fn notice_an_agent_that_ended(&mut self) {
+        let Some(pane) = (0..self.pane_count())
+            .find(|i| !self.announced.contains(i) && !self.session.panes[*i].running)
+        else {
+            return;
+        };
+        self.announced.insert(pane);
+        let harness = self.harness_at(pane).unwrap_or("the agent").to_string();
+        // Focus leaves a pane nothing is listening to, whatever else happens.
+        self.focus = Focus::Weft;
+        if self.modal.is_some() {
+            return;
+        }
+        // The session to offer is whichever this harness last used here, which
+        // the daemon reads out of RingFrame's receipts.
+        self.look_for_agents();
+        let session = self
+            .starts
+            .iter()
+            .find(|s| s.harness == harness && s.session.is_some())
+            .and_then(|s| s.session.clone());
+        self.modal_choice = 0;
+        self.modal = Some(Modal::Ended { pane, harness, session });
+    }
+
+    /// Take a pane away and forget what was said about it. Every pane after it
+    /// moves up one, so nothing may hold on to an index across this.
+    fn close_pane(&mut self, pane: usize) {
+        let before = self.pane_count();
+        let _ = self.session.close(pane);
+        // Wait for the server's new numbering before anything else acts on a
+        // pane index. Every pane after this one moves up, and a spawn sent
+        // into the gap would be counted against the old list.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && self.pane_count() >= before {
+            self.session.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.announced.clear();
+        if self.pane_focus >= pane && self.pane_focus > 0 {
+            self.pane_focus -= 1;
+        }
+        self.modal = None;
+        self.focus = Focus::Weft;
+    }
+
+    /// Close the ended pane and start the harness again, either where it left
+    /// off or fresh. Weft runs the command a person would type, and does not
+    /// claim the session came back: the harness says that, in its own pane.
+    fn start_again(&mut self, pane: usize, harness: &str, session: Option<&Recorded>) {
+        let Some(h) = harness::find(harness) else {
+            self.modal = Some(Modal::Note(format!("Weft does not know how to start {harness}.")));
+            return;
+        };
+        let spec = match session {
+            Some(s) => h.resume_spec(&s.id),
+            None => h.spec(),
+        };
+        self.close_pane(pane);
+        if let Err(e) = self.add(harness, &spec) {
+            self.modal = Some(Modal::Note(format!("Could not start {spec}: {e}")));
+        } else {
+            self.pane_focus = self.pane_count().saturating_sub(1);
+        }
+    }
+
+    /// Take the board the daemon read, and notice anything it implies. The
+    /// record is followed once, in the daemon, and every client is told.
+    fn take_the_board(&mut self) {
+        if self.units != self.session.units {
+            self.units = self.session.units.clone();
+            self.clamp_selection();
+        }
+        self.routing = self.session.routing.clone();
+        self.workspace_gap = self.session.gap.clone();
+        // A missing CLI is the same answer for every harness, so any one of
+        // them saying so is the machine saying so.
+        self.record_available = !self
+            .session
+            .readiness
+            .as_object()
+            .is_some_and(|m| m.values().any(|v| v == "no_cli"));
+        // A name in the routing file that is not a harness Weft knows. Said
+        // once, on the way in: an act routed nowhere would otherwise just look
+        // unavailable for no reason anyone could see.
+        if !self.routing.unknown.is_empty() && self.hint.is_none() {
+            let said = self.routing.unknown.join(", ");
+            self.say(format!(
+                "Routing names a harness Weft does not know ({said}). That act is not routed."
+            ));
+        }
     }
 
     /// Fold whatever the ledger has now. The run loop does this each tick;
     /// a probe or a test does it once.
+    /// Pump until the daemon has said what the record holds, then take it.
+    /// The run loop does this continuously; a probe or a test does it once.
     pub fn refresh_for_test(&mut self) {
-        self.reload();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && self.session.units.is_empty() {
+            self.session.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        self.take_the_board();
+        self.look_for_agents();
     }
 
     fn clamp_selection(&mut self) {
@@ -474,22 +535,23 @@ impl App {
         }
     }
 
-    /// How this harness's skills are invoked, asked of RingFrame once per host.
-    fn prefix_for(&mut self, harness: &str) -> String {
-        if let Some(p) = self.prefixes.get(harness) {
-            return p.clone();
-        }
-        let p = ringframe::invocation_prefix(&self.root, harness).unwrap_or_else(|_| "/rf:".into());
-        self.prefixes.insert(harness.to_string(), p.clone());
-        p
-    }
 
-    fn pane_for(&self, harness: &str) -> Option<usize> {
-        self.session.panes.iter().position(|p| p.harness == harness)
-    }
 
     fn say(&mut self, sentence: impl Into<String>) {
         self.hint = Some(sentence.into());
+    }
+
+    /// Answer a question the person was asked. The daemon does the typing,
+    /// because the daemon owns the pane.
+    fn do_inject(&mut self, pending: &Pending) {
+        match self.session.resolve(&pending.staged, true) {
+            Ok(()) => {
+                self.modal = None;
+                self.focus = Focus::Agent;
+                self.pane_focus = pending.pane;
+            }
+            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+        }
     }
 
     /// Guard an action behind its availability, so the bar and the keyboard
@@ -506,196 +568,38 @@ impl App {
 
     // --- actions -----------------------------------------------------------
 
-    fn start_ask(&mut self) {
-        if !self.guard(Act::Ask) {
+    /// Send the compiled prompt for the selected work.
+    fn start_send(&mut self) {
+        if !self.guard(Act::Send) {
             return;
         }
-        self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
+        let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) else { return };
+        self.ask_first("send", Some(&id), None, None);
     }
 
-    fn send_ask(&mut self, text: String, target: usize) {
-        let Some(harness) = self.session.panes.get(target).map(|p| p.harness.clone()) else {
-            return;
-        };
-        let prefix = self.prefix_for(&harness);
-        let command = ringframe::skill_command(&prefix, "ask");
-        self.modal = Some(Modal::Confirm(Pending {
-            payload: format!("{command}{text}").into_bytes(),
-            pane: target,
-            ask_id: None,
-            what: format!("Ready to ask {harness}"),
-            why: vec![
-                format!("Weft will type  {command}  into {harness}."),
-                "The agent will ask you which approach to take, in its own pane.".into(),
-            ],
-        }));
-        self.modal_choice = 0;
-    }
-
-    /// Which agents are installed, for the start picker.
-    pub fn available_agents() -> Vec<&'static str> {
-        ["claude", "codex"].into_iter().filter(|a| which(a)).collect()
-    }
-
-    fn start_agent_picker(&mut self) {
-        let found = Self::available_agents();
-        if found.is_empty() {
-            self.say("No coding agent found. Install claude or codex first.");
-            return;
-        }
-        self.modal = Some(Modal::StartAgent { choice: 0 });
-        self.modal_choice = 0;
-    }
-
-    pub fn start_chosen_agent(&mut self, choice: usize) {
-        let found = Self::available_agents();
-        let Some(program) = found.get(choice).copied() else { return };
-        let harness = if program == "claude" { "claude-code" } else { program };
-        match self.add(harness, program) {
-            Ok(()) => {
-                self.modal = None;
-                self.pane_focus = self.session.panes.len().saturating_sub(1);
-                self.focus = Focus::Agent;
-            }
-            Err(e) => self.modal = Some(Modal::Note(format!("Could not start {program}: {e}"))),
-        }
-    }
-
-    /// Check or Decide: type the skill into the pane that owns the work.
+    /// Check or Decide, in whichever harness this project routes it to.
     fn start_skill(&mut self, skill: &str) {
         let act = if skill == "eval" { Act::Check } else { Act::Decide };
         if !self.guard(act) {
             return;
         }
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        let Some(pane) = self.pane_for(&unit.harness) else { return };
-        let prefix = self.prefix_for(&unit.harness);
-        let command = ringframe::skill_command(&prefix, skill);
-        let why = if skill == "eval" {
-            vec![
-                format!("Weft will type  {command}  into {}.", unit.harness),
-                "The agent will look at everything still open and have three".into(),
-                "judges check it. None of them did the work.".into(),
-            ]
-        } else {
-            vec![
-                format!("Weft will type  {command}  into {}.", unit.harness),
-                "The agent will ask what you decided, and write a receipt.".into(),
-            ]
-        };
-        self.modal = Some(Modal::Confirm(Pending {
-            payload: command.into_bytes(),
-            pane,
-            ask_id: None,
-            what: if skill == "eval" { "Check this work?".into() } else { "Decide on this work?".into() },
-            why,
-        }));
-        self.modal_choice = 0;
+        let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) else { return };
+        self.ask_first(if skill == "eval" { "check" } else { "decide" }, Some(&id), None, None);
     }
 
-    /// A confirmed Ask whose route has to be typed by hand.
-    fn start_send(&mut self) {
-        if !self.guard(Act::Send) {
-            return;
-        }
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        let Some(pane) = self.pane_for(&unit.harness) else { return };
-        match ringframe::ask_copy(&self.root, &unit.ask_id) {
-            Ok(bytes) => {
-                self.modal = Some(Modal::Confirm(Pending {
-                    payload: bytes,
-                    pane,
-                    ask_id: Some(unit.ask_id.clone()),
-                    what: format!("Ready to send to {}", unit.harness),
-                    why: vec!["This is the exact wording. Weft will not change it.".into()],
-                }));
-                self.modal_choice = 0;
-            }
-            Err(e) => {
-                self.modal = Some(Modal::Note(format!(
-                    "RingFrame would not hand over the wording: {e:?}"
-                )))
-            }
-        }
+    fn send_ask(&mut self, text: String, target: usize) {
+        self.ask_first("ask", None, Some(target), Some(&text));
     }
 
-    /// Show what setting this harness up would run, and run nothing yet.
-    fn start_set_up(&mut self) {
-        if !self.guard(Act::ReadyUp) {
-            return;
-        }
-        let Some(name) = self.deciding_harness() else { return };
-        let Some(h) = harness::find(&name) else { return };
-        let gap = match self.readiness(&name) {
-            Readiness::Missing(gap) => gap,
-            _ => Gap::Plugin,
-        };
-        self.modal = Some(Modal::SetUp { harness: name, commands: h.setup_commands(), gap });
-        self.modal_choice = 0;
-    }
-
-    /// Run the commands, then **ask again**. An exit code is not readiness.
-    fn do_set_up(&mut self, name: &str) {
-        let Some(h) = harness::find(name) else { return };
-        match readiness::set_up(h) {
-            Ok(()) => {
-                self.modal = None;
-                self.readiness.remove(name);
-                self.look_at(name);
-                let now = self.readiness(name);
-                self.say(match now {
-                    Readiness::Ready => format!("{name} is set up for RingFrame."),
-                    other => other
-                        .say(name)
-                        .map(|s| format!("{s} The commands ran, so something else is wrong."))
-                        .unwrap_or_default(),
-                });
-            }
-            Err(why) => self.modal = Some(Modal::Note(format!("That did not work: {why}"))),
-        }
-    }
-
-    fn decline_set_up(&mut self, name: &str) {
-        self.readiness.insert(name.to_string(), Readiness::Declined);
-        self.modal = None;
-        self.say(format!("Not now for {name}. Your agent still runs here."));
-    }
-
-    fn do_inject(&mut self, pending: &Pending) {
-        if self.session.panes.get(pending.pane).is_none() {
-            return;
-        }
-        // The server owns the pane, so the server does the typing.
-        match self.session.inject(pending.pane, &pending.payload) {
-            Ok(()) => {
-                self.modal = None;
-                self.focus = Focus::Agent;
-                self.pane_focus = pending.pane;
-                // Weft typed it. Whether it arrived is the hook's to say, so
-                // the board reports only what Weft itself did until then.
-                if let Some(ask_id) = pending.ask_id.clone() {
-                    if let Some(u) = self.units.iter_mut().find(|u| u.ask_id == ask_id) {
-                        if u.sent == Sent::ReadyToSend {
-                            u.sent = Sent::Unconfirmed;
-                        }
-                    }
-                }
-            }
-            Err(e) => self.modal = Some(Modal::Note(format!("Could not type into that agent: {e}"))),
-        }
-    }
-
-    // --- the drawer ----------------------------------------------------------
-
-    /// The exact wording RingFrame compiled, read back through its CLI.
+    /// The exact wording RingFrame compiled, read back through the daemon.
     fn read_wording(&mut self) {
         if !self.guard(Act::Wording) {
             return;
         }
         let Some(unit) = self.selected_unit().cloned() else { return };
-        match ringframe::ask_copy(&self.root, &unit.ask_id) {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes).to_string();
+        match self.session.read("wording", &unit.ask_id) {
+            Ok(v) => {
+                let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
                 let mut lines = vec![
                     format!("asked {} · {}", unit.asked_at, unit.harness),
                     "This is the exact wording. Weft did not change it.".into(),
@@ -709,67 +613,180 @@ impl App {
                     offset: 0,
                 });
             }
-            Err(e) => {
-                self.modal = Some(Modal::Note(format!("RingFrame would not hand it over: {e:?}")))
-            }
+            Err(e) => self.modal = Some(Modal::Note(said(&e))),
         }
     }
 
-    /// Every judge, every vote, every reason.
+    /// The judges, their votes and their reasons.
     fn read_judges(&mut self) {
         if !self.guard(Act::Judges) {
             return;
         }
         let Some(unit) = self.selected_unit().cloned() else { return };
         let Some(check) = unit.check.clone() else { return };
-        let Some(record) = Record::read(&self.root, &check.eval_id) else {
+        let record = match self.session.read("judges", &check.eval_id) {
+            Ok(v) => serde_json::from_value::<weft_core::record::Record>(v).ok(),
+            Err(e) => {
+                self.modal = Some(Modal::Note(said(&e)));
+                return;
+            }
+        };
+        let Some(record) = record else {
             self.modal = Some(Modal::Note("That check's record is not on disk.".into()));
             return;
         };
-        let mut lines = vec![
-            format!(
-                "judged by {} · recorded as {}, {:.2}",
-                record.judged_by().join(" and "),
-                check.verdict.recorded(),
-                check.agreement
-            ),
-            format!(
-                "{} judges checked the work · none of them did it",
-                record.judges.len()
-            ),
-            String::new(),
-        ];
-        for j in &record.judges {
-            lines.push(format!("JUDGE      {} · {} · {}", j.angle, j.host, j.model));
-        }
-        for item in &record.items {
-            lines.push(String::new());
-            lines.push(format!("{} {}", mark_for(item.plain_majority()), item.text));
-            lines.push(format!(
-                "  {} · {}",
-                item.plain_majority(),
-                record.agreed_on(item)
-            ));
-            for r in &item.reasons {
-                lines.push(format!("  {r}"));
-            }
-        }
-        if !record.unexplained.is_empty() {
-            lines.push(String::new());
-            lines.push("CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT YOU ASKED".into());
-            for p in &record.unexplained {
-                lines.push(format!("  {p}"));
-            }
-        }
-        lines.push(String::new());
-        lines.push("A check is a judgement, not a guarantee.".into());
         self.drawer = Some(Drawer {
             kind: Reading::Judges,
             title: format!("THE JUDGES · {}", unit.title),
-            lines,
+            lines: weft_core::offers::judges_read(&record, &check),
             offset: 0,
         });
     }
+
+    fn do_set_up(&mut self, name: &str) {
+        match self.session.set_up(name) {
+            Ok(()) => {
+                self.modal = None;
+                self.session.pump();
+                let now = self.readiness(name);
+                self.say(match now {
+                    Readiness::Ready => format!("{name} is set up for RingFrame."),
+                    other => other
+                        .say(name)
+                        .map(|s| format!("{s} The commands ran, so something else is wrong."))
+                        .unwrap_or_default(),
+                });
+            }
+            Err(e) => self.modal = Some(Modal::Note(format!("That did not work: {e}"))),
+        }
+    }
+
+    fn start_ask(&mut self) {
+        if !self.guard(Act::Ask) {
+            return;
+        }
+        // The compose box opens on the harness this project asks in, when it
+        // says. The person can still pick another before sending — routing is
+        // where Weft starts, not somewhere it holds them.
+        let target = self
+            .routing
+            .get("ask")
+            .and_then(|name| self.pane_for(name))
+            .unwrap_or(self.pane_focus);
+        self.modal = Some(Modal::Ask { text: String::new(), target });
+    }
+
+
+    /// What starting an agent could mean here. Asked when the picker opens,
+    /// not while drawing: it reads receipts off disk in the daemon.
+    pub fn starts(&self) -> &[Start] {
+        &self.starts
+    }
+
+    fn look_for_agents(&mut self) {
+        self.starts = self
+            .session
+            .available()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|v| {
+                Some(Start {
+                    harness: harness::find(v.get("harness")?.as_str()?)?.name,
+                    label: v.get("label")?.as_str()?.to_string(),
+                    spec: v.get("spec")?.as_str()?.to_string(),
+                    session: v.get("session").and_then(|s| {
+                        Some(Recorded {
+                            id: s.get("id")?.as_str()?.to_string(),
+                            at: s.get("at")?.as_str()?.to_string(),
+                            last: s.get("last")?.as_str()?.to_string(),
+                        })
+                    }),
+                })
+            })
+            .collect();
+    }
+
+    fn start_agent_picker(&mut self) {
+        self.look_for_agents();
+        let found = self.starts();
+        if found.is_empty() {
+            self.say("No coding agent found. Install claude or codex first.");
+            return;
+        }
+        self.modal = Some(Modal::StartAgent { choice: 0 });
+        self.modal_choice = 0;
+    }
+
+    pub fn start_chosen_agent(&mut self, choice: usize) {
+        if self.starts.is_empty() {
+            self.look_for_agents();
+        }
+        let Some(start) = self.starts.get(choice).cloned() else { return };
+        match self.add(start.harness, &start.spec) {
+            Ok(()) => {
+                self.modal = None;
+                self.pane_focus = self.session.panes.len().saturating_sub(1);
+                self.focus = Focus::Agent;
+            }
+            Err(e) => {
+                self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec)))
+            }
+        }
+    }
+
+
+
+
+    /// Show what setting this harness up would run, and run nothing yet.
+    fn start_set_up(&mut self) {
+        if !self.guard(Act::ReadyUp) {
+            return;
+        }
+        let Some(name) = self.deciding_harness(Act::ReadyUp) else { return };
+        let Some(h) = harness::find(&name) else { return };
+        let gap = match self.readiness(&name) {
+            Readiness::Missing(gap) => gap,
+            _ => Gap::Plugin,
+        };
+        self.modal = Some(Modal::SetUp { harness: name, commands: h.setup_commands(), gap });
+        self.modal_choice = 0;
+    }
+
+
+    fn decline_set_up(&mut self, name: &str) {
+        self.readiness.insert(name.to_string(), Readiness::Declined);
+        self.modal = None;
+        self.say(format!("Not now for {name}. Your agent still runs here."));
+    }
+
+    /// Ask the daemon for an act, and show whatever it puts in front of the
+    /// person. The daemon works out what to type, where it goes and how; this
+    /// only names the act ([ADR-0007](../plans/weft/adr/0007-three-layers.md)).
+    fn ask_first(&mut self, act: &str, unit: Option<&str>, pane: Option<usize>, text: Option<&str>) {
+        match self.session.act(act, unit, pane, text) {
+            Ok(id) => {
+                self.session.pump();
+                let Some(w) = self.session.waiting.iter().find(|w| w.id == id).cloned() else {
+                    return;
+                };
+                self.modal = Some(Modal::Confirm(Pending {
+                    staged: w.id,
+                    pane: w.pane,
+                    payload: w.payload,
+                    what: w.what,
+                    why: w.why.lines().map(str::to_string).collect(),
+                }));
+                self.modal_choice = 0;
+            }
+            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+        }
+    }
+
+
+
+    // --- the drawer ----------------------------------------------------------
+
+
 
     fn scroll_drawer(&mut self, delta: i32) {
         if let Some(d) = self.drawer.as_mut() {
@@ -798,7 +815,7 @@ impl App {
     /// Move through the agents the first-run picker offers. It wraps, like the
     /// work list, because a three-item list that stops is a list you fight.
     fn pick_agent(&mut self, delta: i8) {
-        let n = Self::available_agents().len();
+        let n = self.starts().len();
         if n == 0 {
             return;
         }
@@ -909,6 +926,7 @@ impl App {
                 }
             }
             Act::ReadyUp => self.start_set_up(),
+            Act::OpenAgent => self.open_the_agent(),
             Act::NewAgent => self.start_agent_picker(),
             Act::Work => self.toggle_work(),
             Act::Help => {
@@ -919,6 +937,28 @@ impl App {
                 self.modal = Some(Modal::Quit);
                 self.modal_choice = 0;
             }
+        }
+    }
+
+
+    /// Open the agent that has the selected work, in the session it was asked
+    /// in. The command is the one a person would type; Weft claims nothing
+    /// about what comes back, which the harness shows in its own pane.
+    fn open_the_agent(&mut self) {
+        if !self.guard(Act::OpenAgent) {
+            return;
+        }
+        let Some(u) = self.selected_unit() else { return };
+        let (harness, id) = (u.harness.clone(), u.session_ref.clone().unwrap_or_default());
+        let Some(h) = harness::find(&harness) else { return };
+        let spec = h.resume_spec(&id);
+        match self.add(&harness, &spec) {
+            Ok(()) => {
+                self.pane_focus = self.pane_count().saturating_sub(1);
+                self.show_work = false;
+                self.focus = Focus::Agent;
+            }
+            Err(e) => self.modal = Some(Modal::Note(format!("Could not run {spec}: {e}"))),
         }
     }
 
@@ -989,6 +1029,7 @@ impl App {
             Action::Fix => self.act(Act::Fix),
             Action::Explain => self.explain_waiting(),
             Action::ReadyUp => self.act(Act::ReadyUp),
+            Action::OpenAgent => self.act(Act::OpenAgent),
             Action::Quit => self.act(Act::Quit),
             Action::Help => self.act(Act::Help),
             Action::Ignore => {}
@@ -1044,7 +1085,8 @@ impl App {
 
         let options = match &modal {
             Modal::Quit => 3,
-            Modal::StartAgent { .. } => App::available_agents().len().max(1),
+            Modal::StartAgent { .. } => self.starts().len().max(1),
+            Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
             _ => 1,
         };
         match key.code {
@@ -1061,6 +1103,19 @@ impl App {
                 Modal::SetUp { harness, .. } => {
                     let harness = harness.clone();
                     self.decline_set_up(&harness);
+                }
+                // The agent is gone either way, so backing out of this panel
+                // takes the pane with it rather than leaving a dead one up.
+                Modal::Ended { pane, .. } => {
+                    let pane = *pane;
+                    self.close_pane(pane);
+                }
+                // A question nobody is going to answer is taken off the
+                // daemon's queue, not left there for another client.
+                Modal::Confirm(p) => {
+                    let id = p.staged.clone();
+                    let _ = self.session.resolve(&id, false);
+                    self.modal = None;
                 }
                 _ => self.modal = None,
             },
@@ -1082,6 +1137,14 @@ impl App {
             Modal::SetUp { harness, .. } => {
                 let harness = harness.clone();
                 self.do_set_up(&harness);
+            }
+            Modal::Ended { pane, harness, session } => {
+                let (pane, harness, session) = (*pane, harness.clone(), session.clone());
+                match ended_choices(session.as_ref()).get(self.modal_choice) {
+                    Some(Ended::Resume) => self.start_again(pane, &harness, session.as_ref()),
+                    Some(Ended::Fresh) => self.start_again(pane, &harness, None),
+                    _ => self.close_pane(pane),
+                }
             }
             Modal::Quit => match self.modal_choice {
                 0 => {
@@ -1127,8 +1190,8 @@ impl App {
                 self.scroll_drawer(delta);
             } else if self.over_list(m.column, m.row) {
                 self.scroll_list(delta);
-            } else if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
-                p.scroll(-delta);
+            } else {
+                self.scroll_pane(-delta);
             }
             return Ok(());
         }
@@ -1146,6 +1209,12 @@ impl App {
             self.focus = Focus::Weft;
             self.act(act);
             return Ok(());
+        }
+        // The left pane is Weft. Clicking it comes out of the agent even when
+        // it lands between rows or on an empty list, which is where a person
+        // clicks when there is no work on the board yet.
+        if self.over_list(m.column, m.row) {
+            self.focus = Focus::Weft;
         }
         if let Some(target) = self.tab_at(m.column, m.row) {
             match target {
@@ -1196,6 +1265,26 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// The wheel over a pane. Weft moves the scrollback it kept — and when it
+    /// kept none, says whose scrollback it is rather than doing nothing at
+    /// all. Codex repaints its viewport instead of scrolling, so Weft never
+    /// sees a line leave; its history is behind its own key. Measured, not
+    /// assumed: see `harness::Harness::transcript`.
+    fn scroll_pane(&mut self, delta: i32) {
+        let Some(p) = self.session.panes.get_mut(self.pane_focus) else { return };
+        let before = p.scroll_offset();
+        p.scroll(delta);
+        if p.scroll_offset() != before || delta < 0 {
+            return;
+        }
+        let name = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
+        let said = match harness::find(&name).and_then(|h| h.transcript) {
+            Some(key) => format!("{name} keeps its own history: press {key} in the agent to read it."),
+            None => format!("Nothing of {name}'s has scrolled away yet."),
+        };
+        self.say(said);
     }
 
     fn over_list(&self, column: u16, row: u16) -> bool {
@@ -1279,30 +1368,22 @@ impl App {
     }
 }
 
-/// A refusal's first line: RingFrame says what is wrong, then what to do, and
-/// a hint has room for the first half.
-fn first_line(message: &str) -> String {
-    let text = message.trim();
-    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or(text);
-    match first.find(". ") {
-        Some(at) => first[..=at].trim().to_string(),
-        None => first.to_string(),
-    }
+/// One way to start an agent: a harness, and the command line that does it.
+/// The command is shown before it runs and is the one a person would type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Start {
+    pub harness: &'static str,
+    pub label: String,
+    pub spec: String,
+    /// The session this would pick up, when it picks one up.
+    pub session: Option<Recorded>,
 }
 
-fn mark_for(vote: &str) -> &'static str {
-    match vote {
-        "yes" => "✓",
-        "no" => "✗",
-        _ => "?",
-    }
-}
 
-fn which(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join(program).is_file())
-    })
-}
+
+
+
+
 
 fn chord_of(key: KeyEvent) -> Chord {
     let code = match key.code {
@@ -1325,7 +1406,9 @@ fn chord_of(key: KeyEvent) -> Chord {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::readiness::{Gap, Readiness};
+    use crate::ledger::Sent;
+    use weft_core::offers::first_line;
+    use weft_core::readiness::{Gap, Readiness};
     use crossterm::event::KeyCode;
     use serde_json::json;
 
@@ -1355,14 +1438,13 @@ pub(crate) mod tests {
                 .env("GIT_COMMITTER_EMAIL", "weft@example.invalid")
                 .output();
         }
-        let socket = crate::server::socket_path(&root);
+        let socket = weft_proto::private_socket("weft-app");
         let _ = std::fs::remove_file(&socket);
-        let serving = root.clone();
         let listening = socket.clone();
         std::thread::spawn(move || {
-            let _ = crate::server::Session::serve(serving, &listening);
+            let _ = weftd::server::Session::serve(&listening);
         });
-        let session = crate::client::Session::connect(&socket, 24, 80).expect("connect");
+        let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
         (root, session)
     }
 
@@ -1379,15 +1461,89 @@ pub(crate) mod tests {
         a
     }
 
+    /// Put these Asks on the project's real ledger, so the daemon knows them.
+    pub(crate) fn record_units(app: &App, ids: &[&str]) {
+        let lines: String = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                serde_json::json!({
+                    "schema": "ringframe.ledger/1", "event_id": format!("evt_{i}"),
+                    "type": "ask.compiled", "time": "2026-09-19T14:02:00Z", "id": id,
+                    "actor": {"kind": "human", "id": "local-user"}, "links": [],
+                    "data": {
+                        "title": "t", "selected_capability": "native_plan",
+                        "delivery_mode": "human_handoff",
+                        "host": {"name": "codex", "profile_id": "codex"},
+                        "source": {"role": "source_intent", "path": "x", "bytes": 2, "sha256": "a"},
+                        "prompt": {"role": "generated_prompt", "path": "y", "bytes": 9, "sha256": "b"},
+                        "source_verified": "exact", "limitations": [],
+                        "classification": {}, "route_explanation": {}
+                    }
+                })
+                .to_string()
+                    + "\n"
+            })
+            .collect();
+        let rf = app.root.join(".fab7/rf");
+        std::fs::create_dir_all(&rf).expect("rf");
+        std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
+    }
+
+    /// A project whose daemon can see this work, because it is really on the
+    /// ledger. `set_units` puts a unit in front of the person; only the record
+    /// puts it where an act can reach it.
+    fn recorded(sent: Sent) -> App {
+        let mut a = app();
+        let mut events = vec![serde_json::json!({
+            "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.compiled",
+            "time": "2026-09-19T14:02:00Z", "id": "ask_1",
+            "actor": {"kind": "human", "id": "local-user"}, "links": [],
+            "data": {
+                "title": "health endpoint", "selected_capability": "native_plan",
+                "delivery_mode": "human_handoff",
+                "host": {"name": "codex", "profile_id": "codex"},
+                "source": {"role": "source_intent", "path": "x", "bytes": 2, "sha256": "a"},
+                "prompt": {"role": "generated_prompt", "path": "y", "bytes": 9, "sha256": "b"},
+                "source_verified": "exact", "limitations": [],
+                "classification": {}, "route_explanation": {}
+            }
+        })];
+        if sent == Sent::ReadyToSend {
+            events.push(serde_json::json!({
+                "schema": "ringframe.ledger/1", "event_id": "evt_2", "type": "ask.confirmed",
+                "time": "2026-09-19T14:03:00Z", "id": "ask_1",
+                "actor": {"kind": "human", "id": "local-user"}, "links": [],
+                "data": {"confirmation": {"observed_by": "skill"}}
+            }));
+        }
+        let rf = a.root.join(".fab7/rf");
+        std::fs::create_dir_all(&rf).expect("rf");
+        let lines: String =
+            events.iter().map(|e| format!("{e}\n")).collect();
+        std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
+        // Wait for the daemon's next look, then take what it read.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.session.units.is_empty() {
+            a.session.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        a.take_the_board();
+        a
+    }
+
     pub(crate) fn unit(sent: Sent) -> Unit {
         Unit {
             ask_id: "ask_1".into(),
             title: "health endpoint".into(),
             harness: "codex".into(),
+            session_ref: Some("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into()),
+            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "2026-09-19T14:02:00Z".into(),
             delivery_mode: "human_handoff".into(),
             cancelled: false,
+            unanswered: false,
             confirmed: true,
             sent,
             check: None,
@@ -1401,6 +1557,265 @@ pub(crate) mod tests {
 
     fn ctrl(a: &mut App, c: char) {
         a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)).expect("key");
+    }
+
+    /// Write the receipt RingFrame's hook would have written, so the panel has
+    /// a session to name. Weft only ever reads this.
+    fn record_a_session(root: &std::path::Path, harness: &str, id: &str) {
+        let dir = root.join(".fab7/rf/sessions").join(harness).join(id);
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let line = serde_json::json!({
+            "session_id": id, "time": "2026-09-20T07:27:14.769Z",
+            "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
+        });
+        std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
+    }
+
+    #[test]
+    fn an_agent_that_quits_is_said_once_and_focus_leaves_its_pane() {
+        let mut a = app();
+        a.focus = Focus::Agent;
+        a.input(0, &[4]).expect("Ctrl+D ends /bin/cat");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.pump();
+            a.notice_an_agent_that_ended();
+            if a.modal.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let Some(Modal::Ended { pane, harness, .. }) = a.modal.clone() else {
+            panic!("the panel says the agent has gone: {:?}", a.modal)
+        };
+        assert_eq!((pane, harness.as_str()), (0, "codex"));
+        assert_eq!(a.focus, Focus::Weft, "keystrokes never go to a dead process");
+
+        // Said once. A pane that is gone stays gone.
+        a.modal = None;
+        a.notice_an_agent_that_ended();
+        assert!(a.modal.is_none(), "not raised again every tick");
+    }
+
+    #[test]
+    fn resuming_is_offered_only_when_the_record_names_a_session() {
+        assert_eq!(ended_choices(None), vec![Ended::Fresh, Ended::Close]);
+        let known = Recorded {
+            id: "01a0bdb6".into(),
+            at: "2026-09-20T07:27:14.769Z".into(),
+            last: "$rf:ask research crypto trading".into(),
+        };
+        assert_eq!(
+            ended_choices(Some(&known)),
+            vec![Ended::Resume, Ended::Fresh, Ended::Close],
+            "picking up where you were comes first"
+        );
+    }
+
+    #[test]
+    fn the_session_offered_is_the_one_the_hook_wrote_down() {
+        let mut a = app();
+        record_a_session(&a.root.clone(), "codex", "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
+        a.input(0, &[4]).expect("end it");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            a.pump();
+            a.notice_an_agent_that_ended();
+            if a.modal.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let Some(Modal::Ended { session: Some(s), .. }) = a.modal.clone() else {
+            panic!("a recorded session is offered: {:?}", a.modal)
+        };
+        assert_eq!(s.id, "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
+        assert_eq!(
+            harness::find("codex").expect("codex").resume_spec(&s.id),
+            "codex resume 01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"
+        );
+    }
+
+    #[test]
+    fn closing_an_ended_pane_takes_it_away() {
+        let mut a = app();
+        assert_eq!(a.pane_count(), 1);
+        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
+        a.modal_choice = ended_choices(None).iter().position(|c| *c == Ended::Close).expect("close");
+        press(&mut a, KeyCode::Enter);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() > 0 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(a.pane_count(), 0, "the pane is gone, not left dead on screen");
+        assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn backing_out_of_the_ended_panel_closes_the_pane_too() {
+        // There is nothing to go back to: the agent has already gone.
+        let mut a = app();
+        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
+        press(&mut a, KeyCode::Left);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() > 0 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(a.pane_count(), 0);
+    }
+
+    #[test]
+    fn a_row_of_work_leads_back_to_the_agent_that_has_it() {
+        // The complaint this answers: reopening Weft showed rows of previous
+        // work with no next action on any of them.
+        let a = with_unit(Sent::TakenByAgent);
+        assert_eq!(a.unavailable(Act::OpenAgent), None, "the record names the session");
+    }
+
+    #[test]
+    fn a_unit_whose_record_names_no_session_offers_nothing_to_open() {
+        let mut a = app();
+        let mut u = unit(Sent::TakenByAgent);
+        u.session_ref = None;
+        a.set_units(vec![u]);
+        let said = a.unavailable(Act::OpenAgent).expect("a reason");
+        assert!(said.contains("does not name"), "{said}");
+        assert!(said.contains("codex"), "and names the harness: {said}");
+    }
+
+    #[test]
+    fn a_session_already_open_is_pointed_at_rather_than_opened_twice() {
+        // Two processes on one session would be two writers on one record.
+        let mut a = app();
+        let mut u = unit(Sent::TakenByAgent);
+        u.session_ref = Some("abc123".into());
+        a.set_units(vec![u]);
+        assert_eq!(a.unavailable(Act::OpenAgent), None, "nothing is running it yet");
+
+        // The spec the pane runs is what says so, so it holds for a pane
+        // another client opened.
+        a.session.panes[0].spec = "codex resume abc123".into();
+        let said = a.unavailable(Act::OpenAgent).expect("a reason");
+        assert!(said.contains("already open"), "{said}");
+        assert!(said.contains("[1]"), "and says which pane: {said}");
+    }
+
+    #[test]
+    fn nothing_asked_for_yet_means_nothing_to_open() {
+        let mut a = app();
+        a.set_units(Vec::new());
+        assert!(a.unavailable(Act::OpenAgent).is_some());
+    }
+
+    #[test]
+    fn the_picker_offers_a_recorded_session_before_a_fresh_agent() {
+        let mut a = app();
+        let root = a.root.clone();
+        let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let line = serde_json::json!({
+            "session_id": "01a0bdb6", "time": "2026-09-20T07:27:14.769Z",
+            "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
+        });
+        std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
+        a.refresh_for_test();
+
+        let starts = a.starts();
+        let codex: Vec<_> = starts.iter().filter(|c| c.harness == "codex").collect();
+        assert_eq!(codex.len(), 2, "pick it up, or start fresh");
+        assert_eq!(codex[0].spec, "codex resume 01a0bdb6", "picking it up comes first");
+        assert!(codex[0].session.is_some());
+        assert_eq!(codex[1].spec, "codex");
+        assert!(codex[1].session.is_none());
+    }
+
+    #[test]
+    fn a_harness_with_no_receipt_here_is_offered_fresh_only() {
+        let mut a = app();
+        a.refresh_for_test();
+        for c in a.starts() {
+            assert!(c.session.is_none(), "nothing is on record in a new workspace");
+            assert!(!c.spec.contains("resume"), "and nothing is invented: {}", c.spec);
+        }
+    }
+
+    #[test]
+    fn send_is_offered_for_an_ask_nobody_answered() {
+        // The defect this closes: a chooser that timed out left a row on the
+        // board with nothing anyone could do about it.
+        let mut a = app();
+        let mut u = unit(Sent::NotSent);
+        u.confirmed = false;
+        u.unanswered = true;
+        a.set_units(vec![u]);
+        assert_eq!(a.unavailable(Act::Send), None, "[S]END is the person's yes");
+    }
+
+    /// A project that routes its acts. Weft reads the file once, so this sets
+    /// the routing directly rather than going through a temporary HOME.
+    fn routed(pairs: &[(&str, &str)]) -> App {
+        let mut a = app();
+        let acts: serde_json::Map<String, serde_json::Value> =
+            pairs.iter().map(|(k, v)| ((*k).to_string(), serde_json::json!(v))).collect();
+        let text =
+            serde_json::json!({ a.root.to_string_lossy().into_owned(): acts }).to_string();
+        a.routing = weft_core::routing::read(&text, &a.root);
+        a.set_units(vec![unit(Sent::TakenByAgent)]);
+        a
+    }
+
+    #[test]
+    fn an_act_goes_to_the_harness_this_project_routes_it_to() {
+        // Codex asks, Claude evaluates. The work was done in codex.
+        let a = routed(&[("eval", "claude-code")]);
+        assert_eq!(a.deciding_harness(Act::Check).as_deref(), Some("claude-code"));
+        // Seal was not routed, so it still follows the work.
+        assert_eq!(a.deciding_harness(Act::Decide).as_deref(), Some("codex"));
+        // And Send is never routed: it is the delivery of an Ask already made.
+        assert_eq!(weft_core::board::Board::act_key(Act::Send), None);
+    }
+
+    #[test]
+    fn readiness_is_asked_of_the_harness_the_act_will_go_to() {
+        // The point of routing: Eval going to Claude Code needs Claude Code
+        // set up, whatever the work was done in.
+        let mut a = routed(&[("eval", "claude-code")]);
+        a.set_readiness("codex", Readiness::Ready);
+        a.set_readiness("claude-code", Readiness::Missing(Gap::Plugin));
+        let said = a.unavailable(Act::Check).expect("a reason");
+        assert!(said.contains("claude-code"), "names the harness it would go to: {said}");
+        // And the harness that did the work being ready does not help.
+        assert_eq!(a.unavailable(Act::Decide), None, "seal still follows the work");
+    }
+
+    #[test]
+    fn a_routed_act_with_no_pane_says_which_harness_is_missing() {
+        // Readiness is answered first — that ordering is deliberate — so make
+        // the routed harness ready and leave it without a pane.
+        let mut a = routed(&[("eval", "claude-code")]);
+        a.set_readiness("claude-code", Readiness::Ready);
+        let said = a.unavailable(Act::Check).expect("a reason");
+        assert!(said.contains("claude-code"), "{said}");
+        assert!(said.contains("nowhere to send"), "{said}");
+    }
+
+    #[test]
+    fn a_project_that_routes_nothing_behaves_exactly_as_before() {
+        let a = routed(&[]);
+        assert!(a.routing().is_empty());
+        for act in [Act::Ask, Act::Check, Act::Decide] {
+            assert_eq!(a.deciding_harness(act).as_deref(), Some("codex"), "{act:?}");
+        }
+    }
+
+    #[test]
+    fn asking_opens_on_the_harness_the_project_asks_in() {
+        let mut a = routed(&[("ask", "codex")]);
+        a.act(Act::Ask);
+        let Some(Modal::Ask { target, .. }) = a.modal.clone() else { panic!("{:?}", a.modal) };
+        assert_eq!(a.harness_at(target), Some("codex"));
     }
 
     #[test]
@@ -1493,7 +1908,7 @@ pub(crate) mod tests {
     #[test]
     fn check_and_decide_always_confirm_before_typing() {
         for (key, expect) in [('c', "eval"), ('d', "seal")] {
-            let mut a = with_unit(Sent::Arrived { exact: true });
+            let mut a = recorded(Sent::TakenByAgent);
             press(&mut a, KeyCode::Char(key));
             let Some(Modal::Confirm(p)) = a.modal.clone() else {
                 panic!("{key} must confirm first, got {:?}", a.modal)
@@ -1506,7 +1921,7 @@ pub(crate) mod tests {
 
     #[test]
     fn cancelling_a_confirmation_types_nothing() {
-        let mut a = with_unit(Sent::Arrived { exact: true });
+        let mut a = recorded(Sent::TakenByAgent);
         press(&mut a, KeyCode::Char('c'));
         assert!(matches!(a.modal, Some(Modal::Confirm(_))));
         press(&mut a, KeyCode::Left); // [←] CANCEL
@@ -1516,7 +1931,7 @@ pub(crate) mod tests {
 
     #[test]
     fn confirming_types_it_and_puts_you_in_the_agent() {
-        let mut a = with_unit(Sent::Arrived { exact: true });
+        let mut a = recorded(Sent::TakenByAgent);
         press(&mut a, KeyCode::Char('c'));
         press(&mut a, KeyCode::Enter);
         assert!(a.modal.is_none());
@@ -1785,6 +2200,45 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn clicking_the_left_pane_comes_out_of_the_agent_even_with_nothing_on_it() {
+        // Found by hand: the click only came out of the agent when it landed
+        // on a row, so on an empty board — which is every first run — the left
+        // pane could not be clicked back to at all.
+        let mut a = app();
+        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
+        a.note_list_area(Some(ratatui::layout::Rect { x: 0, y: 2, width: 39, height: 20 }));
+        a.note_rows(Vec::new());
+        let click = |col, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: col,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(click(50, 10)).expect("mouse");
+        assert_eq!(a.focus, Focus::Agent);
+        a.on_mouse(click(10, 15)).expect("mouse");
+        assert_eq!(a.focus, Focus::Weft, "an empty list is still the left pane");
+    }
+
+    #[test]
+    fn the_wheel_says_whose_history_it_is_when_weft_kept_none() {
+        // Codex repaints its viewport rather than scrolling, so nothing ever
+        // reaches Weft's scrollback and the wheel moved nothing, silently.
+        let mut a = app();
+        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 50,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        })
+        .expect("wheel");
+        let said = a.hint_text().expect("a sentence rather than nothing at all");
+        assert!(said.contains("Ctrl+T"), "names the key that does reach it: {said}");
+        assert!(said.contains("codex"), "and names the harness: {said}");
+    }
+
+    #[test]
     fn clicking_the_pane_goes_in_and_clicking_again_comes_out() {
         let mut a = with_unit(Sent::NotSent);
         a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
@@ -1860,16 +2314,15 @@ pub(crate) mod tests {
         )
         .unwrap();
 
-        let socket = crate::server::socket_path(&dir);
+        let socket = weft_proto::private_socket("weft-app");
         let _ = std::fs::remove_file(&socket);
-        let serving = dir.clone();
         let listening = socket.clone();
         std::thread::spawn(move || {
-            let _ = crate::server::Session::serve(serving, &listening);
+            let _ = weftd::server::Session::serve(&listening);
         });
-        let session = crate::client::Session::connect(&socket, 24, 80).expect("connect");
+        let session = crate::client::Session::connect(&socket, &dir, 24, 80).expect("connect");
         let mut a = App::with_session(dir.clone(), Toggle, session);
-        a.reload();
+        a.refresh_for_test();
         assert_eq!(a.units().len(), 1);
         assert_eq!(a.units()[0].title, "health endpoint");
         std::fs::remove_dir_all(&dir).ok();
@@ -1879,6 +2332,7 @@ pub(crate) mod tests {
 #[cfg(test)]
 mod start_tests {
     use super::*;
+    use crate::ledger::Sent;
     use crossterm::event::KeyCode;
 
     fn bare() -> App {
@@ -1917,10 +2371,13 @@ mod start_tests {
             ask_id: "ask_1".into(),
             title: "t".into(),
             harness: "codex".into(),
+            session_ref: Some("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into()),
+            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "now".into(),
             delivery_mode: "human_handoff".into(),
             cancelled: false,
+            unanswered: false,
             confirmed: true,
             sent: Sent::ReadyToSend,
             check: None,
@@ -1972,8 +2429,9 @@ mod first_run_tests {
     fn the_first_run_picker_moves_and_starts() {
         let (root, session) = test_session("first-run-keys");
         let mut a = App::with_session(root, Toggle, session);
+        a.refresh_for_test();
         assert_eq!(a.pane_count(), 0, "first run: the picker is the whole screen");
-        let choices = App::available_agents().len();
+        let choices = a.starts().len();
         if choices < 2 {
             eprintln!("skipped: needs two agents installed");
             return;
@@ -1991,7 +2449,7 @@ mod first_run_tests {
         // On first run it is the body; pressing N over a running agent draws
         // it as a modal. A person should not have to know the difference.
         let mut a = super::tests::app();
-        let choices = App::available_agents().len();
+        let choices = a.starts().len();
         if choices < 2 {
             eprintln!("skipped: needs two agents installed");
             return;
@@ -2010,7 +2468,8 @@ mod first_run_tests {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         let (root, session) = test_session("first-run-click");
         let mut a = App::with_session(root, Toggle, session);
-        if App::available_agents().len() < 2 {
+        a.refresh_for_test();
+        if a.starts().len() < 2 {
             eprintln!("skipped: needs two agents installed");
             return;
         }
@@ -2024,4 +2483,22 @@ mod first_run_tests {
         .expect("click");
         assert_eq!(a.modal_choice, 1, "the screen says to click anything");
     }
+}
+
+/// Readiness as the daemon words it.
+fn readiness_of(word: Option<&str>) -> Readiness {
+    match word {
+        Some("ready") => Readiness::Ready,
+        Some("no_cli") => Readiness::Missing(Gap::Cli),
+        Some("no_marketplace") => Readiness::Missing(Gap::Marketplace),
+        Some("no_plugin") => Readiness::Missing(Gap::Plugin),
+        Some("declined") => Readiness::Declined,
+        _ => Readiness::Unknown,
+    }
+}
+
+/// A refusal from the daemon, as one sentence for the person.
+fn said(e: &anyhow::Error) -> String {
+    let text = e.to_string();
+    text.split_once(": ").map(|(_, rest)| rest.to_string()).unwrap_or(text)
 }

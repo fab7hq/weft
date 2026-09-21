@@ -338,6 +338,9 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
             };
         }
         Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
+        // No cancel: the agent has already gone, so the only question left is
+        // what to put in its place.
+        Some(Modal::Ended { .. }) => return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE THE PANE"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
         None => {}
     }
@@ -424,6 +427,9 @@ fn hint(app: &App) -> Paragraph<'static> {
             " The agent will ask you which approach to take, in its own pane.".into()
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
+        (Some(Modal::Ended { .. }), _) => {
+            " Weft keeps no session of its own. The harness owns it; the record names it.".into()
+        }
         (Some(Modal::SetUp { gap, .. }), _) => match gap {
             crate::readiness::Gap::Cli => " Run it in a terminal, then start an agent again.".into(),
             _ => " Weft never changes an agent without asking you first.".into(),
@@ -551,7 +557,7 @@ fn status_lines(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
     let Some(check) = &unit.check else {
         return vec![Line::styled(head, style)];
     };
-    let record = crate::record::Record::read(&app.root, &check.eval_id);
+    let record = app.record(&check.eval_id);
     let agreed = match &record {
         Some(r) => r.agreed(check.agreement),
         None => format!("agreement {:.2}", check.agreement),
@@ -584,8 +590,8 @@ fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
     let th = app.theme;
     let mut lines = Vec::new();
     let indent = 5usize;
-    if let Some(check) = &unit.check {
-        if let Some(record) = crate::record::Record::read(&app.root, &check.eval_id) {
+    if let Some(check) = &unit.check
+        && let Some(record) = app.record(&check.eval_id) {
             // One column width for the whole block, so the votes line up.
             let agreed_width = record
                 .items
@@ -622,18 +628,50 @@ fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
                 ));
             }
         }
-    }
     lines.push(Line::styled(provenance(unit), th.label()));
-    lines.push(Line::from(vec![
-        Span::raw(" ".repeat(indent)),
-        key(app, "[P] WORDING", Act::Wording),
-        Span::raw("   "),
-        key(app, "[J] JUDGES", Act::Judges),
-        Span::raw("   "),
-        key(app, "[F]IX THIS", Act::Fix),
-        Span::raw("   "),
-        key(app, "[D]ECIDE", Act::Decide),
-    ]));
+    // `[O]PEN AGENT` comes first: for a row whose agent is gone it is the only
+    // thing that leads anywhere, and that is the common case on reopening.
+    lines.extend(keys_for_row(
+        app,
+        &[
+            ("[O]PEN AGENT", Act::OpenAgent),
+            ("[P] WORDING", Act::Wording),
+            ("[J] JUDGES", Act::Judges),
+            ("[F]IX THIS", Act::Fix),
+            ("[D]ECIDE", Act::Decide),
+        ],
+        indent,
+        width,
+    ));
+    lines
+}
+
+/// The row's own keys, wrapped rather than cut. Beside a pane the list is
+/// narrow, and a key that runs off the edge is a key nobody knows is there.
+fn keys_for_row(
+    app: &App,
+    offered: &[(&str, Act)],
+    indent: usize,
+    width: usize,
+) -> Vec<Line<'static>> {
+    const GAP: &str = "   ";
+    let mut lines = Vec::new();
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    let mut at = indent;
+    for (label, act) in offered {
+        let wants = label.chars().count() + if at > indent { GAP.len() } else { 0 };
+        if at > indent && at + wants > width {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            spans.push(Span::raw(" ".repeat(indent)));
+            at = indent;
+        } else if at > indent {
+            spans.push(Span::raw(GAP));
+            at += GAP.len();
+        }
+        spans.push(key(app, label, *act));
+        at += label.chars().count();
+    }
+    lines.push(Line::from(spans));
     lines
 }
 
@@ -699,7 +737,7 @@ fn drawer(app: &App, area: Rect) -> Paragraph<'static> {
 /// Screen 1: nothing is running yet, and the one thing to do about it.
 fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize)>) {
     let th = app.theme;
-    let found = App::available_agents();
+    let found = app.starts().to_vec();
     let mut lines: Vec<Line> = vec![Line::raw(""), Line::raw("")];
     for text in [
         "Weft keeps track of what you asked your coding agents",
@@ -710,17 +748,17 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
     ] {
         lines.push(Line::styled(format!("   {text}"), th.label()));
     }
-    lines.push(Line::styled("   ┌────────────────────────────────────────────┐".to_string(), th.rule()));
+    lines.push(Line::styled("   ┌──────────────────────────────────────────────────┐".to_string(), th.rule()));
     lines.push(Line::from(vec![
         Span::styled("   │  ".to_string(), th.rule()),
-        Span::styled(padded("START AN AGENT", 42), th.title()),
+        Span::styled(padded("START AN AGENT", 48), th.title()),
         Span::styled("│".to_string(), th.rule()),
     ]));
-    lines.push(Line::styled("   │                                            │".to_string(), th.rule()));
+    lines.push(Line::styled("   │                                                  │".to_string(), th.rule()));
     if found.is_empty() {
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
-            Span::styled(padded("no coding agent found on PATH", 42), th.label()),
+            Span::styled(padded("no coding agent found on PATH", 48), th.label()),
             Span::styled("│".to_string(), th.rule()),
         ]));
     }
@@ -731,19 +769,25 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
             Span::styled(
-                padded(&format!(" {} {agent}", if picked { "▸" } else { " " }), 42),
+                padded(&clip(&format!(" {} {}", if picked { "▸" } else { " " }, agent.label), 48), 48),
                 if picked { th.selected() } else { th.label() },
             ),
             Span::styled("│".to_string(), th.rule()),
         ]));
     }
-    lines.push(Line::styled("   │                                            │".to_string(), th.rule()));
+    lines.push(Line::styled("   │                                                  │".to_string(), th.rule()));
+    // The footer says what the picked choice would actually do: for a session
+    // being picked up, which one, by what was last asked in it.
+    let footer = match found.get(app.modal_choice).and_then(|c| c.session.as_ref()) {
+        Some(s) => format!("{} · {}", crate::sessions::clock(&s.at), s.last),
+        None => "it runs here, with your own settings".to_string(),
+    };
     lines.push(Line::from(vec![
         Span::styled("   │  ".to_string(), th.rule()),
-        Span::styled(padded("it runs here, with your own settings", 42), th.label()),
+        Span::styled(padded(&clip(&footer, 48), 48), th.label()),
         Span::styled("│".to_string(), th.rule()),
     ]));
-    lines.push(Line::styled("   └────────────────────────────────────────────┘".to_string(), th.rule()));
+    lines.push(Line::styled("   └──────────────────────────────────────────────────┘".to_string(), th.rule()));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
         "   Click anything. Arrows and Enter work too. To select text in a pane, hold Shift."
@@ -782,6 +826,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
             crate::readiness::Gap::Cli => "RINGFRAME IS NOT INSTALLED".into(),
             _ => format!("SET {} UP FOR RINGFRAME", harness.to_uppercase()),
         },
+        Modal::Ended { harness, .. } => format!("{} HAS ENDED", harness.to_uppercase()),
     }
     .to_string()
 }
@@ -797,13 +842,17 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             "[↑↓] pick a row        [Enter] expand it        [←] back, everywhere".into(),
             "[Space] next thing that needs you               [Tab] next agent".into(),
             "[A]SK · [S]END · [C]HECK · [D]ECIDE · [R]EADY UP".into(),
+            "[O]PEN AGENT reopens the session a row was asked in".into(),
             "[P] the wording · [J] the judges · [F]IX THIS".into(),
             "[N]EW AGENT · [W]ORK hides the list · [X] QUIT".into(),
             String::new(),
             format!("{} to switch between Weft and harness.", app.toggle.label()),
             "In the agent every other key goes through, Esc included.".into(),
             "To select text in a pane, hold Shift.".into(),
-        ],
+        ]
+        .into_iter()
+        .chain(routing_lines(app))
+        .collect(),
         Modal::Note(text) => text.lines().map(str::to_string).collect(),
         Modal::Ask { text, target } => {
             // Folded, not wrapped: `wrap` rejoins words with single spaces, so
@@ -837,6 +886,31 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         Modal::StartAgent { .. } => {
             vec!["It runs here, with your own settings.".into(), String::new()]
         }
+        Modal::Ended { harness, session, .. } => {
+            let mut lines = vec!["Nothing is running in this pane any more.".to_string()];
+            match session {
+                // The id comes from the receipt RingFrame's hook wrote, so
+                // what is named here is a session that really happened.
+                Some(s) => {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "{harness} last wrote to session {} at {}:",
+                        short_id(&s.id),
+                        crate::sessions::clock(&s.at)
+                    ));
+                    lines.push(format!("  {}", clip(&s.last, 68)));
+                }
+                None => {
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "RingFrame has no record of a session for {harness} here, so"
+                    ));
+                    lines.push("there is none Weft can name to open again.".into());
+                }
+            }
+            lines.push(String::new());
+            lines
+        }
         Modal::SetUp { harness, commands, gap } => match gap {
             crate::readiness::Gap::Cli => vec![
                 "Weft reads the record RingFrame writes. Without it there is no record.".into(),
@@ -868,10 +942,15 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             "Quit and stop the agents".into(),
             "Cancel".into(),
         ],
-        Modal::StartAgent { .. } => {
-            let _ = app;
-            App::available_agents().iter().map(|a| a.to_string()).collect()
-        }
+        Modal::StartAgent { .. } => app.starts().iter().map(|c| c.label.clone()).collect(),
+        Modal::Ended { harness, session, .. } => crate::app::ended_choices(session.as_ref())
+            .into_iter()
+            .map(|c| match c {
+                crate::app::Ended::Resume => "Pick it up where it left off".to_string(),
+                crate::app::Ended::Fresh => format!("Start a fresh {harness}"),
+                crate::app::Ended::Close => "Close this pane".to_string(),
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -915,6 +994,23 @@ fn panel(app: &App, area: Rect) -> Paragraph<'static> {
 // --- small things -------------------------------------------------------------
 
 /// Left spans, right spans, and the gap between them.
+/// What this project routes, shown where a person looks for how it is set up.
+/// Nothing at all when it routes nothing, which is most projects.
+fn routing_lines(app: &App) -> Vec<String> {
+    let routed = app.routing().each();
+    if routed.is_empty() {
+        return Vec::new();
+    }
+    let said: Vec<String> = routed.iter().map(|(act, h)| format!("{act} → {h}")).collect();
+    vec![String::new(), format!("This project routes  {}", said.join("   "))]
+}
+
+/// An id is too long to read and too long to fit. Its head is enough to tell
+/// two sessions apart, and the whole of it is in the record.
+fn short_id(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
 fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Line<'static> {
     let used: usize = left.iter().chain(right.iter()).map(|s| s.content.chars().count()).sum();
     let gap = (width as usize).saturating_sub(used).max(1);
@@ -1052,7 +1148,19 @@ mod tests {
         let mut ready = unit(Sent::ReadyToSend);
         ready.ask_id = "ask_2".into();
         ready.title = "readme fix".into();
+        // The daemon is the authority on what work exists, so an act can only
+        // reach a unit that is really on the ledger. These two go there first,
+        // with the same ids; the richer board below is what is drawn.
+        crate::app::tests::record_units(&a, &["ask_1", "ask_2"]);
+        a.refresh_for_test();
         a.set_units(vec![u, ready]);
+        // The daemon reads a record for a unit it knows; this board is
+        // fabricated, so the record is handed over the same way it would be.
+        let text = std::fs::read_to_string(a.root.join(".fab7/rf/evals/evl_1/record.json"))
+            .expect("record");
+        let record: serde_json::Value = serde_json::from_str(&text).expect("json");
+        let parsed = weft_core::record::Record::parse(&record).expect("a record");
+        a.set_records(serde_json::json!({"evl_1": parsed}));
         a
     }
 
@@ -1209,7 +1317,10 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let lines: Vec<&str> = drawn.lines().collect();
         let row = lines.iter().position(|l| l.contains("readme fix")).expect("the row");
-        let panel = lines.iter().position(|l| l.contains("CHECK THIS WORK")).expect("the panel");
+        let panel = lines
+            .iter()
+            .position(|l| l.contains("CHECK THIS WORK"))
+            .unwrap_or_else(|| panic!("the panel:\n{drawn}"));
         assert!(row < panel, "the row it is about stays above it:\n{drawn}");
         assert!(lines[22].contains("[Enter] DO IT"), "{}", lines[22]);
         assert!(lines[22].contains("[←] CANCEL"), "{}", lines[22]);
@@ -1236,6 +1347,40 @@ mod tests {
         assert!(drawn.contains("Weft writes it down"), "{drawn}");
         assert!(drawn.contains("[Enter] START"), "{drawn}");
         assert!(drawn.contains("Nothing is running yet."), "{drawn}");
+    }
+
+    #[test]
+    fn reopening_a_workspace_with_history_offers_to_pick_it_up() {
+        let (root, session) = crate::app::tests::test_session("reopen");
+        let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let line = serde_json::json!({
+            "session_id": "01a0bdb6", "time": "2026-09-20T07:27:14.769Z",
+            "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
+        });
+        std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
+
+        let mut a = App::with_session(root, crate::keys::Toggle, session);
+        a.refresh_for_test();
+        let picked = a.starts().iter().position(|c| c.session.is_some()).expect("one to pick up");
+        a.modal_choice = picked;
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("codex · pick up where you left off"), "{drawn}");
+        assert!(drawn.contains("codex · start fresh"), "{drawn}");
+        // The footer says which session, by what was last asked in it.
+        assert!(drawn.contains("07:27"), "{drawn}");
+        assert!(drawn.contains("research crypto trading"), "{drawn}");
+    }
+
+    #[test]
+    fn a_rows_keys_wrap_rather_than_run_off_a_narrow_list() {
+        // Beside a pane the list is narrow, and a key that runs off the edge
+        // is a key nobody knows is there.
+        let mut a = judged();
+        press(&mut a, KeyCode::Enter);
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("[O]PEN AGENT"), "{drawn}");
+        assert!(drawn.contains("[D]ECIDE"), "the last key is still on screen: {drawn}");
     }
 
     #[test]
@@ -1330,6 +1475,66 @@ mod tests {
         assert!(drawn.contains("[Enter] DO IT"), "{drawn}");
         assert!(drawn.contains("[←] NOT NOW"), "{drawn}");
         assert!(drawn.contains("not this project"), "it says what it changes: {drawn}");
+    }
+
+    #[test]
+    fn an_ended_agent_names_the_session_it_could_be_opened_again_as() {
+        let mut a = judged();
+        a.modal = Some(Modal::Ended {
+            pane: 0,
+            harness: "codex".into(),
+            session: Some(crate::sessions::Recorded {
+                id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
+                at: "2026-09-20T07:27:14.769Z".into(),
+                last: "$rf:ask research crypto trading".into(),
+            }),
+        });
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("CODEX HAS ENDED"), "{drawn}");
+        assert!(drawn.contains("01a0bdb6"), "names the recorded session: {drawn}");
+        assert!(drawn.contains("07:27"), "and when it was last used: {drawn}");
+        assert!(drawn.contains("research crypto trading"), "and what it was: {drawn}");
+        assert!(drawn.contains("Pick it up where it left off"), "{drawn}");
+        assert!(drawn.contains("Start a fresh codex"), "{drawn}");
+        assert!(drawn.contains("Close this pane"), "{drawn}");
+    }
+
+    #[test]
+    fn an_ended_agent_with_no_record_offers_no_session_to_resume() {
+        // Weft keeps no session of its own, so with nothing in the record
+        // there is nothing it can name — and it says that rather than
+        // offering a resume that would have to guess at an id.
+        let mut a = judged();
+        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("CODEX HAS ENDED"), "{drawn}");
+        assert!(drawn.contains("no record of a session"), "{drawn}");
+        assert!(!drawn.contains("Pick it up where it left off"), "{drawn}");
+        assert!(drawn.contains("Start a fresh codex"), "{drawn}");
+        assert!(drawn.contains("Close this pane"), "{drawn}");
+    }
+
+    #[test]
+    fn help_says_what_this_project_routes() {
+        let mut a = judged();
+        let text = serde_json::json!({
+            a.root.to_string_lossy().into_owned(): {"eval": "claude-code", "seal": "codex"}
+        })
+        .to_string();
+        a.set_routing(crate::routing::read(&text, &a.root));
+        press(&mut a, KeyCode::Char('h'));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(drawn.contains("This project routes"), "{drawn}");
+        assert!(drawn.contains("eval → claude-code"), "{drawn}");
+        assert!(drawn.contains("seal → codex"), "{drawn}");
+    }
+
+    #[test]
+    fn help_says_nothing_about_routing_when_there_is_none() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('h'));
+        let drawn = screen(&mut a, 80, 24);
+        assert!(!drawn.contains("This project routes"), "{drawn}");
     }
 
     #[test]

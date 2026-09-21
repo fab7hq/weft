@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use weft::app::App;
 use weft::client::Session;
 use weft::keys::Toggle;
+use weft::protocol;
 use weft::server;
 
 /// Words the screen may use only once a particular event is in the ledger.
@@ -124,14 +125,13 @@ fn board(events: &[Value]) -> (PathBuf, App) {
     let lines: String = events.iter().map(|e| format!("{e}\n")).collect();
     std::fs::write(root.join(".fab7/rf/ledger.jsonl"), lines).expect("ledger");
 
-    let socket = server::socket_path(&root);
+    let socket = protocol::private_socket("weft-board");
     let _ = std::fs::remove_file(&socket);
-    let serving = root.clone();
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(serving, &listening);
+        let _ = server::Session::serve(&listening);
     });
-    let session = Session::connect(&socket, 24, 80).expect("connect");
+    let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);
     app.add("codex", "/bin/cat").expect("a pane");
     app.refresh_for_test();

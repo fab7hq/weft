@@ -73,6 +73,8 @@ pub enum Action {
     Explain,
     /// Set this agent up for RingFrame, after showing what that runs.
     ReadyUp,
+    /// Open the agent that has the selected work, in its own session.
+    OpenAgent,
     Ask,
     Check,
     Decide,
@@ -121,6 +123,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'f' => Action::Fix,
             'e' => Action::Explain,
             'r' => Action::ReadyUp,
+            'o' => Action::OpenAgent,
             'w' => Action::ToggleWork,
             'h' => Action::Help,
             'x' => Action::Quit,
@@ -224,6 +227,14 @@ mod tests {
         // v1 opened help on Esc. `Esc` belongs to the agent, so in Weft it
         // does nothing at all rather than something surprising.
         assert_eq!(route(plain(Key::Esc), Focus::Weft, Toggle), Action::Ignore);
+    }
+
+    #[test]
+    fn o_opens_the_agent_that_has_the_selected_work() {
+        assert_eq!(route(plain(Key::Char('o')), Focus::Weft, Toggle), Action::OpenAgent);
+        assert_eq!(route(plain(Key::Char('O')), Focus::Weft, Toggle), Action::OpenAgent);
+        // and never in the agent, where o is just a letter
+        assert_eq!(route(plain(Key::Char('o')), Focus::Agent, Toggle), Action::ToAgent);
     }
 
     #[test]

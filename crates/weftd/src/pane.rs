@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 
-use crate::inject::{self, PaneState, Refusal, Step};
+use weft_core::inject::{self, Handoff, PaneState, Refusal, Step};
 
 pub struct Pane {
     pub title: String,
@@ -66,13 +66,11 @@ impl Pane {
                 }
                 // The same bytes go to whoever is streaming this pane, so a
                 // client rebuilds the screen from the harness's own output.
-                if let Ok(mut t) = tap_reader.lock() {
-                    if let Some(sender) = t.as_ref() {
-                        if sender.send(buf[..n].to_vec()).is_err() {
+                if let Ok(mut t) = tap_reader.lock()
+                    && let Some(sender) = t.as_ref()
+                        && sender.send(buf[..n].to_vec()).is_err() {
                             *t = None;
                         }
-                    }
-                }
             }
             if let Ok(mut t) = tap_reader.lock() {
                 *t = None;
@@ -98,6 +96,15 @@ impl Pane {
         rx
     }
 
+    /// End this agent. Called when the person closes its pane: the pane is
+    /// the only way to see the process, so it must not outlive it.
+    pub fn stop(&mut self) {
+        if self.running() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+
     pub fn running(&mut self) -> bool {
         matches!(self.child.try_wait(), Ok(None))
     }
@@ -110,10 +117,14 @@ impl Pane {
 
     /// Move back through what the pane has already printed.
     ///
-    /// Neither Claude Code nor Codex asks for mouse reporting or uses the
-    /// alternate screen: they print inline and let the terminal own the
-    /// scrollback. Inside Weft there is no terminal to do that, so Weft keeps
-    /// the scrollback itself and moves through it here.
+    /// Neither supported harness asks for mouse reporting or uses the
+    /// alternate screen, so Weft — which has no terminal behind it to keep a
+    /// scrollback — keeps one itself and moves through it here.
+    ///
+    /// That only reaches what the harness let scroll off. Claude Code prints
+    /// inline, so this is its whole history. Codex repaints its viewport
+    /// instead, so nothing ever arrives here and this moves nothing: its
+    /// history lives inside Codex, behind the key `Harness::transcript` names.
     pub fn scroll(&mut self, delta: i32) {
         let mut parser = self.parser.lock().expect("pane parser");
         let screen = parser.screen_mut();
@@ -154,6 +165,65 @@ impl Pane {
     /// Returns once the bytes are written. That is all it proves: the caller
     /// must never report this as delivery.
     pub fn inject(&mut self, payload: &[u8], blocked: bool) -> Result<Attempt, Refusal> {
+        self.inject_as(payload, blocked, &Handoff::Whole)
+    }
+
+    /// Type a prompt the way its command requires.
+    ///
+    /// The bytes that reach the host are the same whichever way this goes; what
+    /// changes is whether the host reads the command. Typed, it does; inside a
+    /// folded paste, it does not. See `spec/injection.md`.
+    pub fn inject_as(
+        &mut self,
+        payload: &[u8],
+        blocked: bool,
+        how: &Handoff,
+    ) -> Result<Attempt, Refusal> {
+        if let Handoff::EnterMode { command, active, .. } = how {
+            // The mode first, on its own, and only believed when the host says
+            // so. A mode switch is handled by the TUI and submits no prompt, so
+            // this adds nothing to the record.
+            self.send(command.as_bytes()).map_err(|_| Refusal::NoProcess)?;
+            // Enter goes in its own write, after the composer has been left
+            // alone: written together they are one burst, and a host that
+            // suppresses Enter during a burst takes it as a newline.
+            std::thread::sleep(inject::SUBMIT_SETTLE);
+            self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
+            if !self.wait_for(active, inject::MODE_TIMEOUT) {
+                return Err(Refusal::ModeNotEntered);
+            }
+        }
+        let typed = match how {
+            Handoff::TypeCommand { command, .. } => Some(format!("{command} ")),
+            _ => None,
+        };
+        if let Some(text) = &typed {
+            // Typed, not pasted: a pasted command is not read as one.
+            self.send(text.as_bytes()).map_err(|_| Refusal::NoProcess)?;
+            std::thread::sleep(inject::ENTER_DELAY);
+        }
+        let body = how.body(payload);
+        self.write_and_submit(body, blocked, typed.is_some())
+    }
+
+    /// Wait for the host to show something, rather than assuming it did.
+    fn wait_for(&self, needle: &str, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if self.with_screen(|s| s.contents()).contains(needle) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    fn write_and_submit(
+        &mut self,
+        payload: &[u8],
+        blocked: bool,
+        command_typed: bool,
+    ) -> Result<Attempt, Refusal> {
         let state = self.state(blocked);
         inject::check(&state)?;
         self.injecting = true;
@@ -180,13 +250,51 @@ impl Pane {
                         // text stays where it is, unsent, for the person to
                         // see. Never a blind retry.
                         self.injecting = false;
-                        return Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: false });
+                        return Ok(Attempt {
+                            bytes: payload.len(),
+                            bracketed,
+                            echoed,
+                            submitted: false,
+                            folded_command: None,
+                        });
+                    }
+                    // The text is there, but folded into a placeholder — and a
+                    // folded paste is not scanned for slash commands. Enter
+                    // here runs the prompt as an ordinary request instead of
+                    // the mode it asked for, which is a different act. Unless
+                    // the command was typed in front of it, which is the whole
+                    // point of doing that.
+                    if let Some(command) = (!command_typed)
+                        .then(|| self.folded_command(payload))
+                        .flatten()
+                    {
+                        self.injecting = false;
+                        return Ok(Attempt {
+                            bytes: payload.len(),
+                            bracketed,
+                            echoed,
+                            submitted: false,
+                            folded_command: Some(command),
+                        });
                     }
                 }
             }
         }
         self.injecting = false;
-        Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: true })
+        Ok(Attempt { bytes: payload.len(), bracketed, echoed, submitted: true, folded_command: None })
+    }
+
+    /// The command this payload opens with, when the pane has folded the paste
+    /// away so that the host will never see it as a command.
+    ///
+    /// Measured: Codex 0.155.1 folds a paste from 1000 characters, Claude Code
+    /// 2.1.278 from somewhere between 500 and 800. A folded paste submits as
+    /// ordinary text — the model does not even change — so a prompt carrying
+    /// `/plan` gets an ordinary answer.
+    fn folded_command(&self, payload: &[u8]) -> Option<String> {
+        let command = inject::leading_command(payload)?;
+        let screen = self.with_screen(|s| s.contents());
+        inject::collapsed_paste(&screen).then_some(command)
     }
 
     fn bracketed_paste(&self) -> bool {
@@ -207,10 +315,11 @@ impl Pane {
         let mut settled: Option<(std::time::Instant, String)> = None;
         while std::time::Instant::now() < deadline {
             let screen = inject::squeeze(&self.with_screen(|s| s.contents()));
-            // A multi-line prompt may be folded into a placeholder instead of
-            // shown. Then the placeholder is the echo; for a single line, which
-            // no harness folds, the text itself still has to be there.
-            let folded = payload.contains(&b'\n') && inject::collapsed_paste(&screen);
+            // Past a size the host folds the paste into a placeholder instead
+            // of showing it, and then the placeholder is the echo. It is the
+            // length that decides, not the line count: a single long line is
+            // folded just the same.
+            let folded = inject::collapsed_paste_of(&screen, payload.len());
             let showing = folded || (screen.contains(&head) && screen.contains(&tail));
             settled = match (settled, showing) {
                 (_, false) => None,
@@ -231,7 +340,7 @@ impl Pane {
 }
 
 /// An injection that was *attempted*. Never evidence that it arrived.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub bytes: usize,
     pub bracketed: bool,
@@ -242,6 +351,10 @@ pub struct Attempt {
     /// showed the whole prompt: submitting a mangled Ask is worse than
     /// leaving the text sitting there for the person to see.
     pub submitted: bool,
+    /// The slash command this prompt opens with, when the harness folded the
+    /// paste and would therefore run it as ordinary text. Enter is withheld:
+    /// `/plan` that does not enter Plan mode is not the Ask that was confirmed.
+    pub folded_command: Option<String>,
 }
 
 #[cfg(test)]
@@ -260,6 +373,14 @@ mod tests {
         let pane = sh("printf 'hello from a pane'");
         let text = pane.with_screen(|s| s.contents());
         assert!(text.contains("hello from a pane"), "screen was: {text:?}");
+    }
+
+    #[test]
+    fn closing_a_pane_ends_its_process() {
+        let mut pane = sh("sleep 30");
+        assert!(pane.running());
+        pane.stop();
+        assert!(!pane.running(), "nothing is left running behind a closed pane");
     }
 
     #[test]
@@ -282,6 +403,40 @@ mod tests {
             .expect("allowed to write");
         assert!(!attempt.echoed, "nothing was echoed");
         assert!(!attempt.submitted, "so Enter was withheld");
+    }
+
+    #[test]
+    fn enter_is_withheld_when_the_paste_folds_a_command_away() {
+        // Found against Codex 0.155.1: a paste of 1000 characters or more is
+        // folded into `[Pasted Content N chars]`, and a folded paste is not
+        // scanned for slash commands. Enter there submits `/plan …` as an
+        // ordinary request — the model does not even change — which is not
+        // the Ask that was confirmed.
+        let payload = b"/plan ship the health endpoint\nwith rules\nand a tail";
+        let mut pane = sh(&format!(
+            "stty -echo; printf '[Pasted Content {} chars]\\n'; cat > /dev/null",
+            payload.len()
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let attempt = pane.inject(payload, false).expect("allowed to write");
+        assert!(attempt.echoed, "the whole prompt is there, folded");
+        assert!(!attempt.submitted, "so Enter is withheld");
+        assert_eq!(attempt.folded_command.as_deref(), Some("/plan"), "and it says which command");
+    }
+
+    #[test]
+    fn a_folded_paste_with_no_command_is_still_sent() {
+        // Folding is only a problem for a command. Ordinary prompt text reads
+        // the same folded or not, so there is nothing to withhold Enter for.
+        let payload = b"ship the health endpoint\nwith rules\nand a tail";
+        let mut pane = sh(&format!(
+            "stty -echo; printf '[Pasted Content {} chars]\\n'; cat > /dev/null",
+            payload.len()
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let attempt = pane.inject(payload, false).expect("allowed to write");
+        assert!(attempt.submitted, "nothing here needs a command to run");
+        assert_eq!(attempt.folded_command, None);
     }
 
     #[test]

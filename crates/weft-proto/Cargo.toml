@@ -1,0 +1,11 @@
+[package]
+name = "weft-proto"
+version = "0.0.1"
+edition = "2024"
+
+# The wire, and the types on it. No processes, no panes, no terminal: a client
+# in any language could be written from `plans/weft/spec/api.md` alone, and
+# this is only what Weft's own clients use instead of writing that twice.
+[dependencies]
+serde_json = "1.0.151"
+weft-core = { path = "../weft-core" }

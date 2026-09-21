@@ -5,13 +5,14 @@
 //! append-only and each line is written whole: a reader sees a prefix of
 //! complete lines, possibly followed by a partial tail, which is discarded.
 
-use std::path::{Path, PathBuf};
 
+
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// What the screen says, per `spec/interface.md` §Vocabulary. The recorded
 /// term travels alongside so the plain wording is a gloss, never a substitute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {
     Matches,
     DoesntMatch,
@@ -50,7 +51,7 @@ impl Verdict {
 /// A route the harness takes for itself and a route the person has to type are
 /// different situations that want opposite things: one needs nothing, the
 /// other is waiting on you. They are not one state with a missing receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sent {
     /// Compiled on a handoff route, not yet confirmed.
     NotSent,
@@ -64,7 +65,7 @@ pub enum Sent {
     Arrived { exact: bool },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Check {
     pub eval_id: String,
     pub verdict: Verdict,
@@ -74,16 +75,72 @@ pub struct Check {
     pub judged_by: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// The command a prompt carries, and what that command is.
+///
+/// Both hosts fold a paste past a size and stop reading a folded paste for
+/// slash commands, so a prompt that carries `/plan` cannot always be sent in
+/// one piece. RingFrame measures and records this; Weft renders the decision
+/// and does not work it out again.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Delivery {
+    /// The command, without its trailing space: `/plan`, `/goal`, `/review`.
+    pub mode: Option<String>,
+    /// `mode` — it persists once entered, so it can be sent alone and seen.
+    /// `inline` — it consumes its argument, so there is nothing to enter.
+    pub kind: Option<String>,
+    /// What the host shows once the mode is on, for Weft to look for rather
+    /// than assume. Only a `mode` has one.
+    pub active: Option<String>,
+    /// Where the body starts in `prompt.txt`, in bytes.
+    pub prefix_bytes: usize,
+    /// Whether this host would fold this prompt, which is what makes the
+    /// command unreadable in a single paste.
+    pub folds: bool,
+}
+
+impl Delivery {
+    /// Whether the command can be sent on its own first and then confirmed.
+    pub fn is_mode(&self) -> bool {
+        self.mode.is_some() && self.kind.as_deref() == Some("mode")
+    }
+}
+
+/// What `ask.compiled` says about how the prompt has to be submitted. An
+/// event from before RingFrame recorded this yields the default: no mode.
+fn delivery_of(data: &Value) -> Delivery {
+    let d = data.get("delivery").cloned().unwrap_or(Value::Null);
+    let text = |key: &str| d.get(key).and_then(Value::as_str).map(str::to_string);
+    Delivery {
+        mode: text("mode"),
+        kind: text("mode_kind"),
+        active: text("mode_active"),
+        prefix_bytes: d.get("prefix_bytes").and_then(Value::as_u64).unwrap_or(0) as usize,
+        folds: d.get("folds").and_then(Value::as_bool).unwrap_or(false),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Unit {
     pub ask_id: String,
     pub title: String,
     pub harness: String,
+    /// The harness's own session, as RingFrame captured it when the Ask was
+    /// compiled. This is what `claude --resume` and `codex resume` take, so a
+    /// row of work can lead back to the agent that has it. Read, never
+    /// invented: a unit whose event carries none offers nothing.
+    pub session_ref: Option<String>,
+    /// How this prompt has to reach the host, as RingFrame recorded it when
+    /// the Ask was compiled. Absent on a record written before RingFrame wrote
+    /// it down, which then reads as it always did: no mode, send it whole.
+    pub delivery: Delivery,
     pub route: String,
     pub asked_at: String,
     pub delivery_mode: String,
     pub cancelled: bool,
     pub confirmed: bool,
+    /// The confirmation surface was shown and gave no answer. Not a refusal:
+    /// the Ask is still open, and still the person's to say yes to.
+    pub unanswered: bool,
     pub sent: Sent,
     pub check: Option<Check>,
     pub sealed: Option<String>,
@@ -114,6 +171,9 @@ impl Unit {
     /// status collapses into this once there is no verdict and no seal.
     pub fn sent_phrase(&self) -> &'static str {
         match self.sent {
+            // An Ask nobody answered is not an Ask nobody wants. It says what
+            // is missing — a yes — rather than that nothing has happened.
+            Sent::NotSent if self.unanswered => "waiting for your yes",
             Sent::NotSent => "not sent yet",
             Sent::ReadyToSend => "ready to send",
             Sent::Unconfirmed => "sent, unconfirmed",
@@ -126,11 +186,22 @@ impl Unit {
     /// The dot the vocabulary puts in front of a status that waits on you:
     /// `● READY TO SEND`. Only the handoff that is ready carries it.
     pub fn marker(&self) -> &'static str {
-        if !self.cancelled && self.sealed.is_none() && self.sent == Sent::ReadyToSend {
+        if self.cancelled || self.sealed.is_some() {
+            return "";
+        }
+        // An Ask that was asked about and never answered wants the same
+        // attention as one ready to send: both are waiting on the person.
+        if self.sent == Sent::ReadyToSend || self.awaiting_yes() {
             "● "
         } else {
             ""
         }
+    }
+
+    /// Compiled, asked about, and never answered. The candidate is on disk and
+    /// the only thing missing is the person saying yes.
+    pub fn awaiting_yes(&self) -> bool {
+        self.unanswered && !self.confirmed && !self.cancelled && self.sent == Sent::NotSent
     }
 
     /// Waiting on a decision only the person can make: a prompt to type, or a
@@ -142,7 +213,7 @@ impl Unit {
         if self.cancelled || self.sealed.is_some() {
             return false;
         }
-        matches!(self.sent, Sent::ReadyToSend) || self.check.is_some()
+        matches!(self.sent, Sent::ReadyToSend) || self.awaiting_yes() || self.check.is_some()
     }
 }
 
@@ -189,15 +260,28 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     ask_id: id,
                     title: s(&data, &["title"]).unwrap_or("untitled").to_string(),
                     harness: s(&data, &["host", "name"]).unwrap_or("unknown").to_string(),
+                    delivery: delivery_of(&data),
+                    // Only a captured reference. `session_ref_source` says how
+                    // RingFrame came by it, and anything it did not capture
+                    // from the host itself is not a session Weft may reopen.
+                    session_ref: (s(&data, &["host", "session_ref_source"]) == Some("capture"))
+                        .then(|| s(&data, &["host", "session_ref"]).map(str::to_string))
+                        .flatten(),
                     route: s(&data, &["selected_capability"]).unwrap_or_default().to_string(),
                     asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
                     delivery_mode: mode,
                     cancelled: false,
                     confirmed: false,
+                    unanswered: false,
                     sent,
                     check: None,
                     sealed: None,
                 });
+            }
+            "ask.unanswered" => {
+                if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
+                    u.unanswered = true;
+                }
             }
             "ask.confirmed" => {
                 if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
@@ -267,71 +351,6 @@ fn basis_asks(data: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// A ledger being followed. Refresh is a stat, then a read of only new bytes.
-pub struct Ledger {
-    pub path: PathBuf,
-    consumed: usize,
-    head: Option<[u8; 32]>,
-    events: Vec<Value>,
-}
-
-impl Ledger {
-    pub fn at(project_root: &Path) -> Self {
-        Self {
-            path: project_root.join(".fab7/rf/ledger.jsonl"),
-            consumed: 0,
-            head: None,
-            events: Vec::new(),
-        }
-    }
-
-    pub fn units(&self) -> Vec<Unit> {
-        project(&self.events)
-    }
-
-    /// Returns true when anything new was folded in.
-    pub fn refresh(&mut self) -> bool {
-        let Ok(meta) = std::fs::metadata(&self.path) else {
-            return false;
-        };
-        let size = meta.len() as usize;
-        if size == self.consumed && self.head.is_some() {
-            return false;
-        }
-        let Ok(bytes) = std::fs::read(&self.path) else {
-            return false;
-        };
-        let head = head_digest(&bytes);
-        // Shrunk, or rewritten from the start: the cache cannot be trusted.
-        if size < self.consumed || (self.head.is_some() && self.head != head) {
-            self.consumed = 0;
-            self.events.clear();
-        }
-        self.head = head;
-        let (mut new, used) = parse_prefix(&bytes[self.consumed..]);
-        if new.is_empty() && used == 0 {
-            return false;
-        }
-        self.consumed += used;
-        self.events.append(&mut new);
-        true
-    }
-}
-
-fn head_digest(bytes: &[u8]) -> Option<[u8; 32]> {
-    if bytes.is_empty() {
-        return None;
-    }
-    // Cheap change detector over the first block: a rewritten ledger is a
-    // different ledger, and must be re-read from zero rather than appended to.
-    let n = bytes.len().min(4096);
-    let mut out = [0u8; 32];
-    for (i, b) in bytes[..n].iter().enumerate() {
-        out[i % 32] ^= b.rotate_left((i % 8) as u32);
-    }
-    Some(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,7 +365,8 @@ mod tests {
                 "title": title,
                 "selected_capability": "native_plan",
                 "delivery_mode": mode,
-                "host": {"name": host, "profile_id": host},
+                "host": {"name": host, "profile_id": host,
+                         "session_ref": "01a0bdb6-1d1f", "session_ref_source": "capture"},
                 "source": {"role": "source_intent", "path": "x", "bytes": 2, "sha256": "a"},
                 "prompt": {"role": "generated_prompt", "path": "y", "bytes": 9, "sha256": "b"},
                 "source_verified": "exact", "limitations": [],
@@ -542,6 +562,7 @@ mod tests {
         assert!(consumed < bytes.len(), "the partial tail is left for next time");
     }
 
+
     #[test]
     fn a_completed_tail_is_picked_up_on_the_next_read() {
         let whole = lines(&[
@@ -555,59 +576,7 @@ mod tests {
         assert_eq!(rest.len(), 1);
     }
 
-    #[test]
-    fn folding_new_lines_matches_reading_the_whole_file() {
-        let dir = std::env::temp_dir().join(format!("weft-ledger-{}", std::process::id()));
-        let rf = dir.join(".fab7/rf");
-        std::fs::create_dir_all(&rf).unwrap();
-        let path = rf.join("ledger.jsonl");
 
-        std::fs::write(&path, lines(&[compiled("ask_1", "one", "codex", "human_handoff")])).unwrap();
-        let mut led = Ledger::at(&dir);
-        assert!(led.refresh());
-        assert_eq!(led.units().len(), 1);
-        assert!(!led.refresh(), "an untouched ledger reports no change");
-
-        let mut grown = lines(&[compiled("ask_1", "one", "codex", "human_handoff")]);
-        grown.extend(lines(&[ev("ask.confirmed", "ask_1", json!({"confirmation": {}}))]));
-        std::fs::write(&path, &grown).unwrap();
-        assert!(led.refresh());
-
-        let folded = led.units();
-        let (all, _) = parse_prefix(&grown);
-        assert_eq!(folded, project(&all), "folding must equal a full re-read");
-        assert_eq!(folded[0].sent, Sent::ReadyToSend);
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn a_rewritten_ledger_is_read_from_zero_rather_than_appended_to() {
-        let dir = std::env::temp_dir().join(format!("weft-rewrite-{}", std::process::id()));
-        let rf = dir.join(".fab7/rf");
-        std::fs::create_dir_all(&rf).unwrap();
-        let path = rf.join("ledger.jsonl");
-
-        std::fs::write(&path, lines(&[compiled("ask_1", "first", "codex", "human_handoff")])).unwrap();
-        let mut led = Ledger::at(&dir);
-        led.refresh();
-        assert_eq!(led.units()[0].title, "first");
-
-        std::fs::write(
-            &path,
-            lines(&[
-                compiled("ask_9", "replaced", "claude-code", "human_handoff"),
-                compiled("ask_8", "and another", "claude-code", "human_handoff"),
-            ]),
-        )
-        .unwrap();
-        led.refresh();
-        let units = led.units();
-        assert_eq!(units.len(), 2);
-        assert_eq!(units[0].title, "replaced");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
 
     #[test]
     fn an_unknown_event_type_contributes_nothing() {
@@ -619,4 +588,79 @@ mod tests {
         assert!(units[0].check.is_none(), "an opened Eval is not a verdict");
         assert!(units[0].sealed.is_none(), "a refused Seal is not a decision");
     }
+
+    #[test]
+    fn a_unit_carries_the_session_the_ask_was_made_in() {
+        // RingFrame captures the host's own session id on every Ask, so the
+        // row of work leads back to the agent that has it. Weft reads it and
+        // never invents one.
+        let units = project(&[compiled("ask_1", "health endpoint", "codex", "native_plan")]);
+        assert_eq!(units[0].session_ref.as_deref(), Some("01a0bdb6-1d1f"));
+    }
+
+    #[test]
+    fn only_a_captured_session_reference_counts() {
+        // `session_ref_source` says how RingFrame came by the id. Anything it
+        // did not capture from the host is not a session Weft may reopen.
+        let mut event = compiled("ask_1", "health endpoint", "codex", "native_plan");
+        event["data"]["host"]["session_ref_source"] = json!("declared");
+        assert_eq!(project(&[event]).swap_remove(0).session_ref, None);
+
+        let mut missing = compiled("ask_2", "health endpoint", "codex", "native_plan");
+        missing["data"]["host"] = json!({"name": "codex"});
+        assert_eq!(project(&[missing]).swap_remove(0).session_ref, None);
+    }
+
+    #[test]
+    fn an_ask_nobody_answered_still_needs_you() {
+        // Codex's chooser returns the same empty result whether it was
+        // dismissed or timed out, so RingFrame records that no answer came
+        // rather than a refusal. The candidate is on disk and the only thing
+        // missing is the person's yes.
+        let units = project(&[
+            compiled("ask_1", "health endpoint", "codex", "human_handoff"),
+            ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
+        ]);
+        let u = &units[0];
+        assert!(u.unanswered && !u.cancelled && !u.confirmed);
+        assert!(u.awaiting_yes(), "still the person's to say yes to");
+        assert!(u.needs_you(), "and it is waiting on them");
+        assert_eq!(u.status(), "waiting for your yes");
+        assert_eq!(u.marker(), "● ");
+    }
+
+    #[test]
+    fn saying_yes_afterwards_makes_it_ready_to_send() {
+        let units = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
+            ev("ask.confirmed", "ask_1", json!({"confirmation": {"observed_by": "skill"}})),
+        ]);
+        assert!(!units[0].awaiting_yes(), "answered now");
+        assert_eq!(units[0].sent, Sent::ReadyToSend);
+        assert_eq!(units[0].status(), "ready to send");
+    }
+
+    #[test]
+    fn a_cancelled_ask_is_not_waiting_for_anything() {
+        // Unanswered is not a softer cancel: an actual no still ends it, and
+        // an Ask cancelled after going unanswered stays ended.
+        let units = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
+            ev("ask.cancelled", "ask_1", json!({"cancellation": {"observed_by": "skill"}})),
+        ]);
+        assert!(!units[0].awaiting_yes());
+        assert!(!units[0].needs_you());
+        assert_eq!(units[0].status(), "cancelled");
+    }
+
+    #[test]
+    fn a_record_with_no_unanswered_event_reads_as_it_always_did() {
+        let units = project(&[compiled("ask_1", "t", "codex", "human_handoff")]);
+        assert!(!units[0].unanswered && !units[0].awaiting_yes());
+        assert_eq!(units[0].status(), "not sent yet");
+        assert_eq!(units[0].marker(), "");
+    }
 }
+

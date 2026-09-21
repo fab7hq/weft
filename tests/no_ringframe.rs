@@ -9,6 +9,7 @@ use ratatui::backend::TestBackend;
 use weft::app::App;
 use weft::client::Session;
 use weft::keys::Toggle;
+use weft::protocol;
 use weft::server;
 
 #[test]
@@ -21,19 +22,20 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
 
     let root = std::env::temp_dir().join(format!("weft-no-rf-{}", std::process::id()));
     std::fs::create_dir_all(&root).expect("root");
-    let socket = server::socket_path(&root);
+    let socket = protocol::private_socket("weft-no-rf");
     let _ = std::fs::remove_file(&socket);
-    let serving = root.clone();
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(serving, &listening);
+        let _ = server::Session::serve(&listening);
     });
-    let session = Session::connect(&socket, 24, 80).expect("connect");
+    let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);
 
-    assert!(!app.record_available(), "no ringframe is on PATH here");
     app.add("codex", "/bin/cat").expect("a pane still runs");
     assert_eq!(app.pane_count(), 1, "the runtime does not depend on the CLI");
+    // Whether the CLI is there is the daemon's answer, and it asks when a pane
+    // starts — because asking costs a process, and opening a project must not.
+    assert!(!app.record_available(), "no ringframe is on PATH here");
 
     let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
     terminal.draw(|frame| weft::ui::draw(frame, &mut app)).expect("draw");
@@ -47,7 +49,11 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    assert!(drawn.contains("no record to read"), "{drawn}");
-    assert!(drawn.contains("Install ringframe"), "{drawn}");
+    // Said plainly, and said about the record rather than about the agent:
+    // the pane above is running, and the board below it is empty because
+    // there is nothing writing one, not because nothing has happened.
+    assert!(drawn.contains("RingFrame is not installed."), "{drawn}");
+    assert!(drawn.contains("Nothing is written down"), "{drawn}");
+    assert!(drawn.contains("codex"), "the agent is still on the tab row: {drawn}");
     std::fs::remove_dir_all(&root).ok();
 }

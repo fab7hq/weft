@@ -1,21 +1,17 @@
 //! Weft: one interface for RingFrame, across your harnesses.
 //!
 //! Specs live in `plans/weft/spec/` in the Fab7 workspace, not in this repo.
+//!
+//! Four crates (ADR-0007):
+//!
+//! - [`weft_core`] — the rules. No files, no processes, no terminal.
+//! - [`weft_proto`] — the wire, and the types on it.
+//! - [`weftd`] — the daemon: panes, the record, the CLI.
+//! - [`weft_tui`] — the terminal client.
+//!
+//! This crate is the binary that starts one of the last two.
 
-pub mod app;
-pub mod blocked;
-pub mod client;
-pub mod encode;
-pub mod harness;
-pub mod inject;
-pub mod keys;
-pub mod ledger;
-pub mod layout;
-pub mod pane;
-pub mod protocol;
-pub mod readiness;
-pub mod record;
-pub mod theme;
-pub mod ringframe;
-pub mod server;
-pub mod ui;
+pub use weft_core::{blocked, board, harness as harness_table, inject, offers};
+pub use weft_proto as protocol;
+pub use weft_tui::{app, client, encode, keys, layout, theme, ui};
+pub use weftd::{acts, harness, ledger, pane, readiness, record, ringframe, routing, server, sessions};

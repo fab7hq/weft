@@ -1,1 +1,7 @@
 /target
+
+# Dogfood state and local editor settings. Weft is run in its own directory
+# while it is being built, which leaves a RingFrame workspace behind; that is
+# one machine's record, not the product's.
+/.fab7
+/.claude

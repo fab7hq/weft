@@ -3,7 +3,6 @@
 //!   cargo run --example board -- /path/to/project
 
 use weft::ledger::Ledger;
-use weft::record::Record;
 
 fn main() {
     let root = std::env::args().nth(1).unwrap_or_else(|| ".".into());
@@ -16,7 +15,7 @@ fn main() {
         println!("{mark} {:<34} {:<12} {}", truncate(&u.title, 34), u.harness, u.status());
         if let Some(c) = &u.check {
             let root = std::path::Path::new(&root);
-            match Record::read(root, &c.eval_id) {
+            match weft::record::read(root, &c.eval_id) {
                 Some(r) => println!(
                     "    {} · judged by {} · recorded: {}",
                     r.agreed(c.agreement),

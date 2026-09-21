@@ -5,7 +5,7 @@
 //! No harness is started: the panes run `/bin/cat`, and the work comes from a
 //! fixture ledger in a scratch directory, so the screens are reproducible.
 
-use std::path::PathBuf;
+use std::path::Path;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -15,6 +15,7 @@ use weft::client::Session;
 use weft::keys::Toggle;
 use weft::ledger::{Check, Sent, Unit, Verdict};
 use weft::readiness::{Gap, Readiness};
+use weft::protocol;
 use weft::server;
 
 fn main() {
@@ -23,13 +24,32 @@ fn main() {
     show("Screen 3 — in the agent", 80, 24, &[KeyCode::Char(']')], true);
     show("Screen 4 — side by side", 120, 32, &[], true);
     show("Screen 5 — the drawer", 120, 32, &[KeyCode::Char('j')], true);
+    show("Screen 5b — a row expanded beside a pane", 120, 32, &[KeyCode::Enter], true);
     show("Screen 6 — ask", 120, 32, &[KeyCode::Char('a')], true);
     show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Down, KeyCode::Char('c')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
     show("Screen 10 — work list hidden", 120, 32, &[KeyCode::Char('w')], true);
+    ended("Screen 11 — the agent has ended", 80, 24, true);
+    ended("Screen 12 — ended, nothing on record", 80, 24, false);
     unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);
     unready("Readiness B — the CLI itself", 80, 24, &[KeyCode::Char('r')], Gap::Cli);
     unready("Readiness C — the setup proposal", 80, 24, &[KeyCode::Char('r')], Gap::Plugin);
+}
+
+/// The agent in the pane quit from inside. What Weft can offer depends on
+/// whether the record names a session, so both are drawn.
+fn ended(name: &str, width: u16, height: u16, on_record: bool) {
+    let mut app = fixture(name, true);
+    app.modal = Some(weft::app::Modal::Ended {
+        pane: 0,
+        harness: "codex".into(),
+        session: on_record.then(|| weft::sessions::Recorded {
+            id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
+            at: "2026-09-20T07:27:14.769Z".into(),
+            last: "$rf:ask research crypto trading".into(),
+        }),
+    });
+    draw_it(name, width, height, &[], &mut app);
 }
 
 /// The same screens with the agent not set up for RingFrame.
@@ -78,14 +98,13 @@ fn fixture(name: &str, with_agent: bool) -> App {
     std::fs::create_dir_all(&root).expect("root");
     write_record(&root);
 
-    let socket = server::socket_path(&root);
+    let socket = protocol::private_socket("weft-wireframe");
     let _ = std::fs::remove_file(&socket);
-    let serving = root.clone();
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(serving, &listening);
+        let _ = server::Session::serve(&listening);
     });
-    let session = Session::connect(&socket, 24, 80).expect("connect");
+    let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root, Toggle, session);
     if with_agent {
         app.add("codex", "/bin/cat").expect("a pane");
@@ -95,7 +114,7 @@ fn fixture(name: &str, with_agent: bool) -> App {
     app
 }
 
-fn write_record(root: &PathBuf) {
+fn write_record(root: &Path) {
     let dir = root.join(".fab7/rf/evals/evl_1");
     std::fs::create_dir_all(&dir).expect("evals");
     std::fs::write(
@@ -147,10 +166,13 @@ fn units() -> Vec<Unit> {
         ask_id: id.into(),
         title: title.into(),
         harness: harness.into(),
+        session_ref: Some("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into()),
+        delivery: Default::default(),
         route: "native_plan".into(),
         asked_at: "2026-09-19T14:02:00Z".into(),
         delivery_mode: "human_handoff".into(),
         cancelled: false,
+        unanswered: false,
         confirmed: true,
         sent,
         check: None,
