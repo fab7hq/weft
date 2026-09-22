@@ -1,7 +1,7 @@
 //! The harnesses Weft supports, and how to find and prepare one.
 //!
-//! Spec: `plans/weft/spec/readiness.md`. One declared table; nothing outside
-//! it is touched. Weft asks a harness through its own documented commands and
+//! One declared table; nothing outside it is touched. Weft asks a harness
+//! through its own documented commands and
 //! never reads its configuration files: those are not a surface anyone
 //! promised to keep, and a reader that guesses at them is wrong the day they
 //! change.

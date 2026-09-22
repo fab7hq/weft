@@ -1242,7 +1242,7 @@ mod tests {
         stage_named(ws, "prompt.txt", b"fix the login bug\n", prompt)
     }
 
-    /// The Python suite's `compile_` helper: defaults with keyword overrides.
+    /// Defaults with keyword overrides, for building a `Compile` in tests.
     struct Args {
         staged: Option<std::path::PathBuf>,
         title: String,

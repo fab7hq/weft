@@ -1,9 +1,8 @@
 //! The socket API.
 //!
-//! Spec: `plans/weft/spec/api.md`, decided in ADR-0007. One NDJSON line per
-//! message. The TUI is a client of this and so is everything else; if the TUI
-//! needs something this cannot express, that is a gap here rather than a
-//! reason for a private path.
+//! One NDJSON line per message. The TUI is a client of this and so is
+//! everything else; if the TUI needs something this cannot express, that is a
+//! gap here rather than a reason for a private path.
 //!
 //! **It speaks in decisions, never in keystrokes.** `pane.input` is the one
 //! exception: a client showing a pane forwards the person's own typing into
@@ -478,7 +477,7 @@ impl Line {
 /// `TMPDIR`, which an isolated host environment routinely has, overruns it.
 const SUN_LEN: usize = 100;
 
-/// Where the daemon listens. One per machine (ADR-0007), so one name.
+/// Where the daemon listens. One per machine, so one name.
 pub fn socket_path() -> PathBuf {
     let base =
         std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
@@ -557,8 +556,8 @@ mod where_it_listens {
     #[test]
     fn one_machine_has_one_socket() {
         // It used to be one per project, with the project hashed into the
-        // name. One daemon holds every project now (ADR-0007), and a client
-        // says which it wants when it attaches.
+        // name. One daemon holds every project now, and a client says which
+        // it wants when it attaches.
         assert_eq!(socket_path(), socket_path(), "stable");
         assert!(socket_path().to_string_lossy().ends_with("weft.sock"));
     }

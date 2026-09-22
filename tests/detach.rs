@@ -255,8 +255,8 @@ fn a_socket_left_behind_by_a_dead_server_does_not_block_a_new_one() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// One daemon, many projects (ADR-0007). Two clients on two projects see only
-/// their own panes, each numbered from one. Nothing crosses.
+/// One daemon, many projects. Two clients on two projects see only their own
+/// panes, each numbered from one. Nothing crosses.
 #[test]
 fn two_projects_share_a_daemon_and_see_none_of_each_others_panes() {
     let socket = protocol::private_socket("weft-two-projects");
@@ -296,8 +296,8 @@ fn project(name: &str) -> PathBuf {
     dir
 }
 
-/// The pending queue is the daemon's (ADR-0007). Two clients on one project
-/// both see a staged prompt, and only the first answer lands.
+/// The pending queue is the daemon's. Two clients on one project both see a
+/// staged prompt, and only the first answer lands.
 #[test]
 fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     let socket = protocol::private_socket("weft-pending");

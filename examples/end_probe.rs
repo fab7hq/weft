@@ -3,10 +3,10 @@
 //!
 //!   cargo run --example end_probe -- codex /path/to/a/workspace
 //!
-//! By-hand, in the W4 tradition (ADR-0006): no model call is made and nothing
-//! about the model is claimed. What is under test is Weft's own mechanism —
-//! exit detection, the receipt read, and the command it would run — against
-//! the harness a person actually has installed.
+//! Run by hand: no model call is made and nothing about the model is
+//! claimed. What is under test is Weft's own mechanism — exit detection, the
+//! receipt read, and the command it would run — against the harness a person
+//! actually has installed.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

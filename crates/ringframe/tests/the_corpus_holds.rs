@@ -1,4 +1,4 @@
-//! The canonical-JSON gate (ADR-0013).
+//! The canonical-JSON gate.
 //!
 //! RingFrame's evidence rests on one function. Briefs, intents, judgements,
 //! ledger events, `response_sha256`, config digests — all of them are a
@@ -6,15 +6,15 @@
 //!
 //!     json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 //!
-//! `corpus/canonical/samples.jsonl` is what the Python core produced on real
-//! artifacts and on the edge cases real data misses. It was generated once,
-//! while the Python core still existed, and it is the reference: the Rust port
-//! does not get to decide what canonical means.
+//! `corpus/canonical/samples.jsonl` is a frozen reference set: real artifacts
+//! and the edge cases real data misses, each paired with its expected bytes.
+//! It was generated once and is the reference — nothing here gets to decide
+//! what canonical means.
 //!
-//! This is the first thing the port had to pass. It holds `store::canonical`
-//! for JSON, and `config::load_yaml_text` for the config documents whose
-//! *parsed* form is digested into `profile_sha256`. If either drifts, this
-//! says so here rather than in a digest mismatch on someone's ledger.
+//! It holds `store::canonical` for JSON, and `config::load_yaml_text` for the
+//! config documents whose *parsed* form is digested into `profile_sha256`. If
+//! either drifts, this says so here rather than in a digest mismatch on
+//! someone's ledger.
 
 use std::path::PathBuf;
 

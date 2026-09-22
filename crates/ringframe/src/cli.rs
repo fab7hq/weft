@@ -259,8 +259,7 @@ impl Parsed {
     }
 }
 
-/// Global options are accepted anywhere, which is what argparse's hoisting
-/// achieved for the Python CLI.
+/// Global options are accepted anywhere in the command line.
 const GLOBALS: [&str; 3] = ["--workspace", "--actor", "--authority"];
 
 fn parse(argv: &[String]) -> Result<Parsed, Usage> {
@@ -906,7 +905,7 @@ mod tests {
             d.to_string_lossy().to_string()
         }
 
-        /// Compile and confirm, the way the Python suite's `confirm` did.
+        /// Compile an Ask and confirm it in one step.
         fn confirm(&self, stage: &str, title: &str, session: &str, capability: &str) -> Value {
             let staged = self.staged(stage);
             let host = host_json(session);
@@ -1879,7 +1878,7 @@ mod tests {
 ///
 /// `fab7` is synced, not built, and its skills call `ringframe` by name. If a
 /// command they use stops existing, a wording fix in the marketplace becomes a
-/// broken install for everyone (ADR-0013).
+/// broken install for everyone.
 #[cfg(test)]
 mod the_marketplace_contract {
     use super::*;

@@ -1,8 +1,8 @@
 //! Finding a supported harness on this machine.
 //!
-//! The table itself, and every rule about it, live in [`weft_core::harness`]
-//! (ADR-0007). What is here is the two questions only a machine can answer:
-//! where this harness keeps its configuration, and whether it is installed.
+//! The table itself, and every rule about it, live in [`weft_core::harness`].
+//! What is here is the two questions only a machine can answer: where this
+//! harness keeps its configuration, and whether it is installed.
 
 use std::path::PathBuf;
 

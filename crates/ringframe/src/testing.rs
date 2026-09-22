@@ -1,4 +1,4 @@
-//! Fixtures the ported tests share. The Python suite had these in `conftest`.
+//! Fixtures the tests share.
 
 use std::path::Path;
 use std::process::Command;
@@ -75,11 +75,11 @@ pub fn with_config_home<T>(body: impl FnOnce(&Path) -> T) -> T {
     out.unwrap()
 }
 
-/// A YAML document from a JSON one, for tests that rewrite a catalog the way
-/// the Python suite's `yaml.safe_dump` did.
+/// A YAML document from a JSON one, for tests that rewrite a catalog with
+/// every string quoted.
 ///
-/// Every string is quoted, which keeps the output clear of the 1.1/1.2
-/// ambiguities the lint refuses.
+/// Quoting every string keeps the output clear of the 1.1/1.2 ambiguities the
+/// lint refuses.
 pub fn to_yaml(value: &serde_json::Value) -> String {
     let mut out = String::new();
     write_yaml(value, 0, &mut out);
@@ -139,8 +139,7 @@ fn yaml_scalar(v: &serde_json::Value) -> String {
 
 // ---- Eval and Seal fixtures -------------------------------------------------
 //
-// The Python suite kept these in `test_eval` and imported them into
-// `test_seal`; they sit here so both modules' tests can reach them.
+// Shared here so both modules' tests can reach them.
 
 use serde_json::{Value, json};
 
@@ -192,7 +191,7 @@ pub fn stage_in(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std
     d
 }
 
-/// Compile an Ask and confirm it, the way the Python suite's `confirm` did.
+/// Compile an Ask and confirm it in one step.
 pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) -> Value {
     let staged = stage_in(ws, "prompt.txt", source, prompt);
     let out = crate::ask::compile(

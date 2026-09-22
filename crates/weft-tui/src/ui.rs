@@ -1,4 +1,4 @@
-//! Drawing. Spec: `plans/weft/spec/interface.md` (v2).
+//! Drawing.
 //!
 //! The rule this module enforces: a field that cannot be traced to a ledger
 //! event may not be rendered. One short function per surface, named after the

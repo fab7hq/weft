@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     let first = args.next();
 
     // Started by a client to own the panes. One per machine, headless, and it
-    // outlives whatever asked for it (ADR-0007).
+    // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
         return server::Session::serve(&protocol::socket_path());
     }

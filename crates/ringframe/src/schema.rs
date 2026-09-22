@@ -287,7 +287,8 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
     Ok(())
 }
 
-/// Python's truthiness, for the two fields that are checked for it.
+/// Truthiness for the two fields that are checked for it: `null`, `false`,
+/// and an empty string or collection are false; everything else is true.
 fn truthy(v: &Value) -> bool {
     match v {
         Value::Null => false,

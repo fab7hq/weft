@@ -1,7 +1,7 @@
 //! The toggle key and where each keystroke goes.
 //!
-//! Spec: `plans/weft/spec/interface.md` §Keys. Weft reserves exactly one
-//! chord; in the agent everything else goes through, `Esc` included.
+//! Weft reserves exactly one chord; in the agent everything else goes
+//! through, `Esc` included.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {

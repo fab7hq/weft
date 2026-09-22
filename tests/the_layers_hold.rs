@@ -1,4 +1,4 @@
-//! ADR-0007's layering, enforced rather than asserted.
+//! The crate layering, enforced rather than asserted.
 //!
 //! Three layers only work if each can only reach the one below it. The moment
 //! the terminal client can reach a file or the CLI, it starts re-deriving what
@@ -108,9 +108,9 @@ fn the_client_runs_nothing_but_the_daemon() {
 
 /// RingFrame shares this repository; it is not part of Weft.
 ///
-/// One repository is not one product (ADR-0013). The moment a Weft crate can
-/// call the core's Rust functions, Weft stops reading a record another program
-/// wrote and starts reporting on itself — which is the whole of what makes its
+/// One repository is not one product. The moment a Weft crate can call the
+/// core's Rust functions, Weft stops reading a record another program wrote
+/// and starts reporting on itself — which is the whole of what makes its
 /// claims worth anything.
 #[test]
 fn nothing_in_weft_reaches_into_ringframe() {

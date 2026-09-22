@@ -1,7 +1,7 @@
 //! Reading an Eval record off disk.
 //!
-//! What one means lives in [`weft_core::record`] (ADR-0007); this opens the
-//! file and hands the bytes over.
+//! What one means lives in [`weft_core::record`]; this opens the file and
+//! hands the bytes over.
 
 use std::path::Path;
 

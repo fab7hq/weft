@@ -1,7 +1,7 @@
 //! Where this project's routing policy is kept.
 //!
-//! The policy itself, and what it means, live in [`weft_core::routing`]
-//! (ADR-0007). Finding and reading the file is here.
+//! The policy itself, and what it means, live in [`weft_core::routing`].
+//! Finding and reading the file is here.
 
 use std::path::{Path, PathBuf};
 

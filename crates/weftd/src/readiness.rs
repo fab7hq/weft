@@ -1,8 +1,8 @@
 //! Asking a harness what it has installed.
 //!
-//! Reading the answer is a rule and lives in [`weft_core::readiness`]
-//! (ADR-0007). Running the command that produces one is here, because that is
-//! the only part that needs a process.
+//! Reading the answer is a rule and lives in [`weft_core::readiness`].
+//! Running the command that produces one is here, because that is the only
+//! part that needs a process.
 
 use std::process::Command;
 

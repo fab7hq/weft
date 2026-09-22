@@ -1,8 +1,8 @@
 //! The terminal client.
 //!
-//! ADR-0007: it draws, and asks the daemon for everything else. It reaches no
-//! file and runs no process — if it could, it would start re-deriving what the
-//! daemon already decided, and a second client would disagree with it.
+//! It draws, and asks the daemon for everything else. It reaches no file and
+//! runs no process — if it could, it would start re-deriving what the daemon
+//! already decided, and a second client would disagree with it.
 
 pub mod app;
 pub mod client;

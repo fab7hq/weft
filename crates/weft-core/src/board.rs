@@ -1,9 +1,9 @@
 //! What the board knows, and what may be done with it.
 //!
 //! One borrowed view of the facts an action's availability depends on, and the
-//! rule that reads them. ADR-0007: this is the rule, so it lives here and not
-//! in whatever is drawing at the time. A second client asks the same question
-//! and gets the same sentence.
+//! rule that reads them. It lives here and not in whatever is drawing at the
+//! time, so a second client asks the same question and gets the same
+//! sentence.
 
 use crate::ledger::{Sent, Unit};
 use crate::readiness::Readiness;
@@ -141,10 +141,10 @@ impl Board<'_> {
     /// that owns the selected work, or the agent on screen when there is none.
     /// The harness an act goes to, and so the harness its readiness is about.
     ///
-    /// Spec: `plans/weft/spec/routing.md`. A project may route each of
-    /// RingFrame's three acts to a harness of its own — *Codex asks, Claude
-    /// implements, Codex evaluates*. Absent, everything falls back to what it
-    /// did before: the harness that owns the work, or the pane in front of you.
+    /// A project may route each of RingFrame's three acts to a harness of its
+    /// own — *Codex asks, Claude implements, Codex evaluates*. Absent,
+    /// everything falls back to what it did before: the harness that owns the
+    /// work, or the pane in front of you.
     ///
     /// `Send` is not routed. It is the delivery of an Ask already compiled, so
     /// it follows that Ask's own record rather than a preference.

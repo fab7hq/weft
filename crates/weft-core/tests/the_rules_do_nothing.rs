@@ -1,4 +1,4 @@
-//! ADR-0007's invariant, enforced rather than asserted.
+//! The no-I/O invariant, enforced rather than asserted.
 //!
 //! `weft-core` holds the rules and nothing that does anything. The moment it
 //! can reach a file, a process, the network or a terminal, a second client

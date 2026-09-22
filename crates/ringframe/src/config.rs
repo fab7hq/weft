@@ -168,10 +168,10 @@ pub fn merge(base: &Value, override_: &Value) -> Value {
 
 /// Refuse a document that leans on a scalar YAML 1.1 and 1.2 disagree about.
 ///
-/// The Python era read `yes` as a boolean and `0777` as octal; this one reads
-/// the first as a string and the second as seven hundred and seventy-seven.
-/// The shipped configuration has none of these, and this is what keeps it that
-/// way (ADR-0013).
+/// YAML 1.1 reads `yes` as a boolean and `0777` as octal; YAML 1.2 reads the
+/// first as a string and the second as seven hundred and seventy-seven. The
+/// shipped configuration has none of these, and this is what keeps it that
+/// way.
 ///
 /// Only *plain* scalars are at issue, so this asks the parser for the style
 /// rather than guessing from the text: `no` is refused and `"no"` is fine,
@@ -471,9 +471,9 @@ mod tests {
 
     #[test]
     fn the_shipped_configuration_passes_the_lint() {
-        // The claim ADR-0013 makes about the config as it stands. The fixture
-        // travels with this repository so the check means something in CI; the
-        // marketplace itself is checked too when it happens to be beside us.
+        // The fixture travels with this repository so the check means
+        // something in CI; the marketplace itself is checked too when it
+        // happens to be beside us.
         let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut roots = vec![here.join("tests/fixtures/config")];
         if let Ok(market) = here.join("../../../fab7/products/ringframe").canonicalize() {

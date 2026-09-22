@@ -1,8 +1,8 @@
 //! Reading "this agent is waiting for you" off the screen.
 //!
-//! This is the one thing Weft infers rather than reads from the record
-//! ([ADR-0004]). It is labelled as inference wherever it is shown, and the
-//! evidence behind it is always available.
+//! This is the one thing Weft infers rather than reads from the record. It is
+//! labelled as inference wherever it is shown, and the evidence behind it is
+//! always available.
 //!
 //! Conservative on purpose: only a recognised approval, question, or
 //! permission prompt counts. Anything unrecognised is not blocked, because a

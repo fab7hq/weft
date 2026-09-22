@@ -1,8 +1,8 @@
 //! Responsive layout.
 //!
-//! Spec: `plans/weft/spec/interface.md` §Responsive layout. The pane never
-//! drops below 80 columns, which is what the harnesses assume. Below the
-//! threshold there is one surface at a time — the work list *or* the agent.
+//! The pane never drops below 80 columns, which is what the harnesses
+//! assume. Below the threshold there is one surface at a time — the sidebar
+//! *or* the agent.
 
 /// The narrowest the work list is ever drawn.
 pub const LIST_MIN: u16 = 30;

@@ -56,8 +56,8 @@ fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
-/// Python's `round(x, 2)`: nearest, ties to even. The confidence goes into a
-/// published record, so it has to land on the same number.
+/// Round to two decimal places, ties to even. The confidence goes into a
+/// published record, so it has to land on the same number every time.
 fn round2(x: f64) -> f64 {
     (x * 100.0).round_ties_even() / 100.0
 }
@@ -482,7 +482,8 @@ fn check_judge(j: &Value, code: &str, where_: &str) -> Result<(), EvalError> {
     )
 }
 
-/// Python prints a tuple; the messages are part of the surface.
+/// Formats a fixed set of allowed values as `('a', 'b', 'c')`; the messages
+/// are part of the surface.
 fn tuple_of(items: &[&str]) -> String {
     format!("({})", items.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
 }

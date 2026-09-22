@@ -1,5 +1,5 @@
 //! The `ringframe` binary. The skills in `fab7` call it by name, and that
-//! string is the contract (ADR-0013).
+//! string is the contract.
 
 use std::io::{Read, Write};
 

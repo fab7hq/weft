@@ -1,7 +1,7 @@
 //! Whether a harness can do RingFrame work, and what is missing if not.
 //!
-//! Spec: `plans/weft/spec/readiness.md`. Three checks: the `ringframe` CLI,
-//! globally; the `fab7` marketplace and the `rf` plugin, per harness. Weft
+//! Three checks: the `ringframe` CLI, globally; the `fab7` marketplace and the
+//! `rf` plugin, per harness. Weft
 //! asks the harness and believes the answer; when the harness will not answer,
 //! that is `Unknown` and not `Missing`, because "I could not tell" and "it is
 //! not there" are different facts and only one of them is fixable by

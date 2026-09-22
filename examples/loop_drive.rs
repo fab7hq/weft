@@ -12,7 +12,7 @@ use weft::pane::Pane;
 /// The agent configurations this probe runs against. **Test settings only.**
 /// Weft chooses no model and carries no default: in the product the person's
 /// own harness configuration decides, and Weft passes their arguments through
-/// untouched (ADR-0005).
+/// untouched.
 const CLAUDE_UNDER_TEST: &str = "claude --model sonnet --effort medium";
 #[allow(dead_code)]
 const CODEX_UNDER_TEST: &str = "codex -m gpt-5.6-luna -c model_reasoning_effort=medium";

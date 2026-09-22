@@ -6,8 +6,7 @@ use std::process::Command;
 use serde_json::{Value, json};
 
 /// Every file that crosses the boundary names the schema it is written to, and
-/// these are the versions this release reads. Nothing else gates on a version
-/// (ADR-0012).
+/// these are the versions this release reads. Nothing else gates on a version.
 pub const BUNDLE_SCHEMA: &str = "ringframe.bundle/2";
 pub const PROFILE_SCHEMA: &str = "ringframe.profile/1";
 pub const DELTAS_SCHEMA: &str = "ringframe.deltas/1";
@@ -108,8 +107,8 @@ pub fn plans(ws: &Workspace) -> Vec<String> {
     out
 }
 
-/// Python's `Path.resolve()`: absolute, with symlinks followed. A workspace
-/// root reached two ways has to be one root, or the record forks.
+/// Absolute, with symlinks followed. A workspace root reached two ways has to
+/// be one root, or the record forks.
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(p) => Ok(p),
@@ -282,8 +281,8 @@ fn validate(staged: &Path, bundle: Option<&str>) -> Result<(), WorkspaceError> {
     Ok(())
 }
 
-/// The refusal that holds the era boundary: a 0.0.5 core meeting a Rust-era
-/// bundle says this and stops (ADR-0013).
+/// The refusal that holds the era boundary: an older core meeting a newer
+/// bundle says this and stops.
 fn schema_refusal(name: &str, found: Option<&str>, want: &str) -> WorkspaceError {
     WorkspaceError::new(
         "config.schema",

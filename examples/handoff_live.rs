@@ -2,8 +2,8 @@
 //!
 //!   cargo run --example handoff_live -- <cwd> <codex|claude> <mode|inline>
 //!
-//! By-hand, in the W4 tradition: one model call per run, and what is claimed
-//! is Weft's own mechanism, not anything about the model.
+//! Run by hand: one model call per run, and what is claimed is Weft's own
+//! mechanism, not anything about the model.
 use weft::inject::Handoff;
 use weft::ledger::Delivery;
 use weft::pane::Pane;

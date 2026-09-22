@@ -1,9 +1,9 @@
 //! Building what one of RingFrame's three acts would type.
 //!
-//! ADR-0007: this is the daemon's, because it reads files and runs the CLI.
-//! What to *say* about it is a rule and lives in [`weft_core::offers`]; which
-//! harness it goes to is a rule and lives in [`weft_core::board`]. Here is only
-//! the fetching.
+//! This is the daemon's, because it reads files and runs the CLI. What to
+//! *say* about it is a rule and lives in [`weft_core::offers`]; which harness
+//! it goes to is a rule and lives in [`weft_core::board`]. Here is only the
+//! fetching.
 //!
 //! A client asks for an act by name. It never assembles bytes — the moment two
 //! clients do that, they disagree.

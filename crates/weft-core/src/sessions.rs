@@ -1,12 +1,12 @@
 //! The harness sessions RingFrame has a record of, in this workspace.
 //!
-//! Spec: `plans/weft/spec/readiness.md`. A harness owns its own session and
-//! both supported harnesses can open one again by id. Weft owns neither, so it
-//! does not keep one: it reads the id out of the receipt RingFrame's hook
-//! already wrote, under `<project>/.fab7/rf/sessions/<harness>/<id>/`.
+//! A harness owns its own session and both supported harnesses can open one
+//! again by id. Weft owns neither, so it does not keep one: it reads the id
+//! out of the receipt RingFrame's hook already wrote, under
+//! `<project>/.fab7/rf/sessions/<harness>/<id>/`.
 //!
-//! Weft reads that directory and never writes it (ADR-0001). A session with no
-//! receipt is a session Weft cannot name, and it says so rather than guessing.
+//! Weft reads that directory and never writes it. A session with no receipt is
+//! a session Weft cannot name, and it says so rather than guessing.
 
 /// A session a harness recorded a prompt in, here.
 #[derive(Debug, Clone, PartialEq, Eq)]

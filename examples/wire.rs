@@ -1,8 +1,7 @@
-//! A second client, written from `plans/weft/spec/api.md` alone.
+//! A second client, written from the socket API alone.
 //!
-//! This is Phase 3.9's exit criterion. It uses no part of Weft except the
-//! socket path and the line types — no `App`, no board rules, no ledger, no
-//! terminal. If it needs something the spec does not name, the spec was wrong.
+//! It uses no part of Weft except the socket path and the line types — no
+//! `App`, no board rules, no ledger, no terminal.
 //!
 //!   cargo run --example wire -- <project> board
 //!   cargo run --example wire -- <project> agents

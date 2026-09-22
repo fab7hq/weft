@@ -1,7 +1,7 @@
 //! A pane: a real terminal running a harness.
 //!
-//! Spec: `plans/weft/spec/runtime.md`. Weft launches the harness with the
-//! person's own environment and never sandboxes it or alters its permissions.
+//! Weft launches the harness with the person's own environment and never
+//! sandboxes it or alters its permissions.
 
 use std::io::{Read, Write};
 use std::sync::mpsc::{Receiver, Sender, channel};

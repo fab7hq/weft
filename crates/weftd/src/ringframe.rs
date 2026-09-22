@@ -1,7 +1,7 @@
 //! The bridge to the `ringframe` CLI.
 //!
-//! Spec: `plans/weft/spec/board.md`. Weft never writes `.fab7/rf/` itself;
-//! every record goes through this CLI, which validates, digests and refuses.
+//! Weft never writes `.fab7/rf/` itself; every record goes through this CLI,
+//! which validates, digests and refuses.
 //! Everything here is a read or a question — Weft issues no write commands.
 
 use std::path::Path;

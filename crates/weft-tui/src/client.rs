@@ -107,7 +107,7 @@ pub struct Session {
     /// The last refusal the server reported, for the UI to show.
     pub last_refusal: Option<String>,
     /// This project's board, as the daemon read it. A client renders the
-    /// record; it does not read it (ADR-0007).
+    /// record; it does not read it.
     pub units: Vec<weft_core::ledger::Unit>,
     /// What each harness is short of here, as the daemon found it.
     pub readiness: serde_json::Value,

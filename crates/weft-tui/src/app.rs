@@ -1,8 +1,8 @@
 //! The running application: state, events, and the loop.
 //!
-//! Spec: `plans/weft/spec/interface.md` (v2). Two nouns, two surfaces: agents
-//! are tabs over the pane, work is a list. Details expand inline under a row;
-//! reading opens a drawer beside the list.
+//! Two nouns, two surfaces: agents are tabs over the pane, work is a sidebar
+//! tree of project, harness, and action. Opening an action shows its whole
+//! story in a blocking detail view.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -199,7 +199,8 @@ pub struct Detail {
 
 pub struct App {
     /// The projects open in this window, and which one has the focus. The
-    /// daemon has held many since ADR-0007; this is the client catching up.
+    /// daemon has always been able to hold many; this is the client catching
+    /// up.
     projects: Vec<Open>,
     at: usize,
     pub pane_focus: usize,
@@ -361,7 +362,7 @@ impl App {
     }
 
     /// The facts a decision reads, borrowed from the state that holds them.
-    /// The decision itself is `weft_core::board` (ADR-0007).
+    /// The decision itself is `weft_core::board`.
     fn with_board<T>(&self, f: impl FnOnce(Board<'_>) -> T) -> T {
         let panes = self.pane_facts();
         f(Board {
@@ -947,7 +948,7 @@ impl App {
 
     /// Ask the daemon for an act, and show whatever it puts in front of the
     /// person. The daemon works out what to type, where it goes and how; this
-    /// only names the act ([ADR-0007](../plans/weft/adr/0007-three-layers.md)).
+    /// only names the act.
     fn ask_first(
         &mut self,
         act: &str,

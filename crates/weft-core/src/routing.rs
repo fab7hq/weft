@@ -1,7 +1,5 @@
 //! Which harness takes which of RingFrame's three acts, in this project.
 //!
-//! Spec: `plans/weft/spec/routing.md`.
-//!
 //! > Codex asks, Claude implements, Codex evaluates.
 //!
 //! All three acts are host-agnostic on disk — `eval open` briefs over *every*

@@ -1,7 +1,7 @@
 //! Finding the harness sessions RingFrame has a receipt for.
 //!
-//! What a recorded session *is* lives in [`weft_core::sessions`] (ADR-0007);
-//! walking the receipt directory happens here.
+//! What a recorded session *is* lives in [`weft_core::sessions`]; walking the
+//! receipt directory happens here.
 
 use std::path::Path;
 

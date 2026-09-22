@@ -54,9 +54,9 @@ impl From<std::io::Error> for LedgerError {
 
 /// The one serialisation every digest in the product is taken over.
 ///
-/// `weft/corpus/` holds what the Python core produced for this function, and
-/// `cargo test --test the_corpus_holds` compares this against it byte for
-/// byte. Do not make this clever.
+/// `corpus/canonical/samples.jsonl` holds a reference set of values with their
+/// expected bytes, and `cargo test --test the_corpus_holds` compares this
+/// against it byte for byte. Do not make this clever.
 pub fn canonical(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value).expect("a JSON value always serialises")
 }
@@ -402,8 +402,6 @@ mod tests {
         let root = repo.path().to_path_buf();
         // Ten writers, a hundred events each, through the same lock. Each one
         // opens its own descriptor, so `flock` really has to serialise them.
-        // The Python suite used processes; the cross-process claim is proved
-        // against the real binary in `tests/the_cli_holds.rs`, once it exists.
         let writers: Vec<_> = (0..10)
             .map(|w| {
                 let root = root.clone();

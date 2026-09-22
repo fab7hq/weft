@@ -1,8 +1,7 @@
 //! `install.sh` downloads and verifies; it never builds.
 //!
-//! The Python suite stubbed `uv` on PATH to test the old installer's routing.
-//! This stubs `curl`, which is the only thing the new one reaches the network
-//! with, and serves a release made on the spot. Everything else — the platform
+//! This stubs `curl`, the only thing the script reaches the network with, and
+//! serves a release made on the spot. Everything else — the platform
 //! detection, the checksum, the unpacking, the install — is the real script.
 
 use std::path::{Path, PathBuf};

@@ -2,7 +2,7 @@
 //!
 //! The meaning of what is in it lives in [`weft_core::ledger`], which this
 //! re-exports: the rules are testable without a filesystem, and reading one is
-//! all that happens here (ADR-0007).
+//! all that happens here.
 
 use std::path::{Path, PathBuf};
 

@@ -1,7 +1,7 @@
 //! Composing input for a harness pane.
 //!
-//! Spec: `plans/weft/spec/injection.md`. The rule that shapes this module is
-//! that a send is not a receipt: nothing here reports that a prompt arrived.
+//! The rule that shapes this module is that a send is not a receipt: nothing
+//! here reports that a prompt arrived.
 
 use std::time::Duration;
 

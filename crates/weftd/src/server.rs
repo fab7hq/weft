@@ -1,17 +1,16 @@
 //! The session server.
 //!
-//! Spec: `plans/weft/spec/runtime.md`, [ADR-0003]. The server owns the pane
-//! processes. A client is one view of them: closing it, losing an SSH
-//! connection, or quitting Weft leaves the agents working.
+//! The server owns the pane processes. A client is one view of them: closing
+//! it, losing an SSH connection, or quitting Weft leaves the agents working.
 //!
 //! What a client sees on attaching is a replay of everything the panes have
 //! printed, so a client that arrives late reconstructs exactly the screen a
 //! client that never left would be showing.
 //!
-//! **One daemon, many projects** ([ADR-0007](../plans/weft/adr/0007-three-layers.md)).
-//! A client names its project when it attaches and sees only that project's
-//! panes, numbered from one within it. Nothing crosses between projects here;
-//! that a single process holds them all is what later makes it possible.
+//! **One daemon, many projects.** A client names its project when it attaches
+//! and sees only that project's panes, numbered from one within it. Nothing
+//! crosses between projects here; that a single process holds them all is
+//! what later makes it possible.
 
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -53,8 +52,8 @@ impl Slot {
 /// Something that would be typed, waiting on a person.
 ///
 /// It lives here rather than in a client so that every attached client sees
-/// the same question and only one of them can answer it (ADR-0007). Nothing is
-/// written until it is resolved.
+/// the same question and only one of them can answer it. Nothing is written
+/// until it is resolved.
 struct Waiting {
     id: String,
     pane: u32,
@@ -71,7 +70,7 @@ struct Project {
     root: PathBuf,
     panes: Vec<Slot>,
     /// The record, followed here rather than in every client. One reader, and
-    /// clients are told what it says (ADR-0007).
+    /// clients are told what it says.
     ledger: crate::ledger::Ledger,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
@@ -382,7 +381,7 @@ impl Session {
                 let screen = slot.pane.with_screen(|s| s.contents());
                 // Whether the pane looks busy is Weft's inference. When the
                 // person has seen what it read and said to type anyway, the
-                // decision is theirs (ADR-0004).
+                // decision is theirs.
                 let blocked = !force && weft_core::blocked::looks_blocked(&screen).is_some();
                 match slot.pane.inject_as(&w.payload, blocked, &w.how) {
                     Err(r) => Some(format!("{r:?}")),

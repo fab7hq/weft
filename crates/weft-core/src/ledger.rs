@@ -1,7 +1,7 @@
 //! Reading the RingFrame ledger.
 //!
-//! Spec: `plans/weft/spec/board.md`. Weft reads `ledger.jsonl` directly and
-//! never writes it. Direct reads are safe without a lock because the ledger is
+//! Weft reads `ledger.jsonl` directly and never writes it. Direct reads are
+//! safe without a lock because the ledger is
 //! append-only and each line is written whole: a reader sees a prefix of
 //! complete lines, possibly followed by a partial tail, which is discarded.
 

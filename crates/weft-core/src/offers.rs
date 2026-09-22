@@ -1,7 +1,7 @@
 //! Sentences and choices the board offers, derived from the record.
 //!
-//! ADR-0007: these are rules — what to offer, and how to say it — so they live
-//! here rather than in whatever is drawing. Nothing in this file does anything.
+//! These are rules — what to offer, and how to say it — so they live here
+//! rather than in whatever is drawing. Nothing in this file does anything.
 
 use crate::inject::Handoff;
 use crate::sessions::Recorded;

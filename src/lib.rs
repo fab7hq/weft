@@ -1,8 +1,6 @@
 //! Weft: one interface for RingFrame, across your harnesses.
 //!
-//! Specs live in `plans/weft/spec/` in the Fab7 workspace, not in this repo.
-//!
-//! Four crates (ADR-0007):
+//! Four crates:
 //!
 //! - [`weft_core`] — the rules. No files, no processes, no terminal.
 //! - [`weft_proto`] — the wire, and the types on it.
