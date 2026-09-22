@@ -86,6 +86,30 @@ pub fn resolve(cwd: Option<&Path>, explicit: Option<&Path>) -> std::io::Result<W
 
 /// Python's `Path.resolve()`: absolute, with symlinks followed. A workspace
 /// root reached two ways has to be one root, or the record forks.
+/// The plans this project already holds, by slug, sorted.
+///
+/// `plans/<slug>/` is the layout the `plan_as_files` practice writes, and a
+/// plan that is already written is a terminal condition: the Ask that names
+/// it builds it rather than planning it again. Which wording named it — "the
+/// crypto trading agent plan", "plans/crypto-trading-agent", "crypto trading
+/// agent" — is not something the record can settle, so RingFrame reports what
+/// is on disk and the routing reads it from there.
+///
+/// A project that keeps its plans somewhere else simply has none to report,
+/// which is what this said before there was a list at all.
+pub fn plans(ws: &Workspace) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(ws.root.join("plans"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    out.sort();
+    out
+}
+
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(p) => Ok(p),
@@ -393,6 +417,25 @@ fn io(code: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_project_with_no_plans_reports_none_rather_than_failing() {
+        let dir = crate::testing::tmp_dir();
+        let ws = resolve(Some(dir.path()), None).unwrap();
+        assert!(plans(&ws).is_empty(), "no plans/ directory is not an error");
+    }
+
+    #[test]
+    fn the_plans_a_project_holds_are_its_directories_under_plans() {
+        let dir = crate::testing::tmp_dir();
+        let ws = resolve(Some(dir.path()), None).unwrap();
+        for slug in ["crypto-trading-agent", "ringframe", ".scratch"] {
+            std::fs::create_dir_all(ws.root.join("plans").join(slug)).unwrap();
+        }
+        // A loose file is not a plan, and neither is a hidden directory.
+        std::fs::write(ws.root.join("plans/README.md"), "why this exists\n").unwrap();
+        assert_eq!(plans(&ws), vec!["crypto-trading-agent", "ringframe"]);
+    }
 
     #[test]
     fn resolve_uses_the_cwd_and_says_so() {

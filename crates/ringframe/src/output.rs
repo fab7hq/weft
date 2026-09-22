@@ -72,6 +72,11 @@ fn profile(data: &Value) -> Value {
     if let Some(v) = data.get("paste_fold_chars") {
         out["paste_fold_chars"] = v.clone();
     }
+    // Only when there are any: an empty list reads as a fact about the
+    // project, and the commonest project has no plans at all.
+    if data["plans"].as_array().is_some_and(|p| !p.is_empty()) {
+        out["plans"] = data["plans"].clone();
+    }
     out
 }
 

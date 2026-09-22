@@ -24,6 +24,11 @@ routing:
     the plan is for. Building is a later Ask that reads what was written. Classification happens
     before a capability is chosen, so decide this from the work rather than from the route; one Ask
     classified as both draws rules for work that turn will not do.
+  - A plan this project already holds is a terminal condition, so an intent that names one is asking
+    for it to be built. `plans` lists them; match on the subject rather than the wording, since the
+    same plan is named as a path, as a slug, or in words. Classify it as task implement with result
+    workspace_change and prefer the continuing objective. Plan again only when the intent asks to
+    revise that plan, or when the subject has none.
   - A declared capability is a RingFrame integration contract, not proof that the current host exposes
     it. Follow its delivery mode and limitations; report unavailable tools or rejected commands without
     claiming activation.

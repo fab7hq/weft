@@ -213,9 +213,9 @@ fn non_empty_list(v: Option<&Value>) -> bool {
 
 fn matches(entry: &Value, classification: &Value, capability: &str) -> bool {
     let a = entry.get("applies_to").cloned().unwrap_or_else(|| json!({}));
-    // The route, not the intent. A plan-first Ask is usually classified by
-    // what it is ultimately for — `task: [implement]` — so a directive that
-    // belongs to planning cannot be found by the classification alone.
+    // The route, which is how a directive earns its own heading. It narrows
+    // rather than decides: a route that serves two kinds of work needs the
+    // result beside it, or the rule fires on the kind it is not about.
     if non_empty_list(a.get("capability"))
         && !a["capability"].as_array().into_iter().flatten().any(|v| v == capability)
     {
@@ -1118,33 +1118,25 @@ mod tests {
     }
 
     #[test]
-    fn a_directive_can_belong_to_the_route_rather_than_the_intent() {
-        // A plan-first Ask is usually classified by what it is ultimately
-        // for — `task: [implement]` — so a planning directive keyed on the
-        // task would never fire for the commonest case there is.
+    fn a_planning_directive_follows_what_the_turn_delivers_not_the_route() {
+        // It was keyed on the route, and `native_plan` is also the route for
+        // ordinary bounded work — so that work was told to write a plan and
+        // stop, which is the opposite of what it was asked for.
         bench(|ws, _| {
-            let mut cls = impl_task();
-            cls["task"] = json!(["implement"]);
-            let planning = rendered(ws, "claude-code", &cls);
+            let mut plan = impl_task();
+            plan["result"] = json!("plan");
             assert!(
-                selected(&planning).contains(&"practice.plan_as_files".to_string()),
-                "routed through native_plan: {:?}",
-                selected(&planning)
+                selected(&rendered(ws, "claude-code", &plan))
+                    .contains(&"practice.plan_as_files".to_string()),
+                "a turn that delivers a plan is told where to put it"
             );
 
-            // The same intent on another route does not get it.
-            let elsewhere = render(
-                Some(ws),
-                &profiles::load("claude-code").unwrap(),
-                "native_goal",
-                &cls,
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
+            let build = impl_task();
+            assert_eq!(build["result"], json!("workspace_change"));
             assert!(
-                !ids(&elsewhere["practice"]["selected"])
-                    .contains(&"practice.plan_as_files".to_string())
+                !selected(&rendered(ws, "claude-code", &build))
+                    .contains(&"practice.plan_as_files".to_string()),
+                "bounded work on the planning route is not told to stop at a plan"
             );
         });
     }
@@ -1556,7 +1548,7 @@ mod tests {
         // A deliverable listed third of ten reads like an aside.
         bench(|ws, _| {
             let mut cls = impl_task();
-            cls["task"] = json!(["implement"]);
+            cls["result"] = json!("plan");
             let out = rendered(ws, "claude-code", &cls);
             let text = text_of(&out["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();

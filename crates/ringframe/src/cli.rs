@@ -633,6 +633,9 @@ fn dispatch(
             };
             let mut out = profile;
             out["sha256"] = json!(sha);
+            // The routing authority answers "which plan already exists", so
+            // an Ask that names one can be routed to building it.
+            out["plans"] = json!(workspace::plans(&ws));
             (ws, Outcome::Ok(0, out))
         }
         ("ask", Some(what)) => ask_command(ns, ws, actor, what, read_stdin),
@@ -1113,6 +1116,23 @@ mod tests {
             assert_eq!(out["sha256"].as_str().unwrap().len(), 64);
             let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
             assert_eq!(out["profile_id"], "unknown");
+        });
+    }
+
+    #[test]
+    fn the_routing_authority_says_which_plans_the_project_already_holds() {
+        // Which wording named a plan — a path, a slug, or words — is not
+        // something the record can settle. Routing reads what is on disk.
+        cli(|c| {
+            c.go(&["init"]);
+            let (_, out, text) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
+            assert!(out["plans"].is_null(), "a project with none says nothing about plans");
+            assert!(!text.contains("plans"), "{text}");
+
+            std::fs::create_dir_all(c.root.join("plans/crypto-trading-agent/adr")).unwrap();
+            let (code, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
+            assert_eq!(code, 0);
+            assert_eq!(out["plans"], serde_json::json!(["crypto-trading-agent"]));
         });
     }
 

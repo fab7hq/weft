@@ -86,9 +86,12 @@ entries:
     label: Plan As Files
     principle: A stage ends by committing an artifact the next stage can read
     applies_to:
-      # The route, not the intent: a plan-first Ask is usually classified
-      # `task: [implement]`, because that is what it is ultimately for.
+      # Both, and both are needed. The route is what sets this rule apart
+      # under its own heading; the result is what keeps it off ordinary
+      # bounded work, which takes the same route and would otherwise be told
+      # to write a plan and stop.
       capability: [native_plan]
+      result: [plan]
     tier: core
     text: >-
       Write the plan into the repository, not only into the conversation:
