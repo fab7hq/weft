@@ -231,11 +231,19 @@ fn said_plainly(code: &str) -> &str {
 /// The headline of a unit's detail view: where it stands, in the vocabulary
 /// the sidebar uses.
 pub fn detail_headline(unit: &crate::ledger::Unit) -> String {
-    if unit.ask_needs_you() || unit.seal_needs_you() {
-        format!("● {}", unit.status().to_uppercase())
-    } else {
-        unit.status().to_uppercase()
-    }
+    let dot = if unit.ask_needs_you() || unit.seal_needs_you() { "● " } else { "" };
+    format!(
+        "{dot}ASK {}   EVAL {}   SEAL {}",
+        act_state(true),
+        act_state(unit.check.is_some()),
+        act_state(unit.sealed.is_some())
+    )
+}
+
+/// One pair of words for every act, in the headline and on its section, so a
+/// person learns them once. What actually happened is in the section body.
+pub fn act_state(done: bool) -> &'static str {
+    if done { "[DONE]" } else { "[HAVEN'T RUN]" }
 }
 
 /// One unit's whole story: the Ask that started it, the Eval that judged it,
@@ -253,28 +261,42 @@ pub fn detail_read(
 ) -> Vec<String> {
     let mut out = vec![detail_headline(unit), format!("  {}", provenance(unit)), String::new()];
 
-    out.push("ASK".into());
+    out.push(format!("ASK {}", act_state(true)));
     match prompt {
         Some(text) => out.extend(text.lines().map(|l| format!("  {l}"))),
         None => out.push("  the prompt is not on disk".into()),
     }
 
     out.push(String::new());
-    match (record, &unit.check) {
-        (Some(r), Some(check)) => {
-            out.push(format!("EVAL     {}", unit.eval_state().unwrap_or_default()));
-            out.extend(judges_read(r, check).into_iter().map(indent));
+    // Whether the Eval ran is the ledger's to say. Whether its record can be
+    // read is a separate thing, and a record that will not open is not an act
+    // that never happened.
+    match &unit.check {
+        Some(check) => {
+            out.push(format!(
+                "EVAL {}   {}",
+                act_state(true),
+                unit.eval_state().unwrap_or_default()
+            ));
+            match record {
+                Some(r) => out.extend(judges_read(r, check).into_iter().map(indent)),
+                None => out.push("  that check's record is not on disk".into()),
+            }
         }
-        _ => out.push("EVAL     not run".into()),
+        None => out.push(format!("EVAL {}", act_state(false))),
     }
 
     out.push(String::new());
     match seal {
         Some(checked) => {
-            out.push(format!("SEAL     {}", unit.seal_state().unwrap_or_else(|| "sealed".into())));
+            out.push(format!(
+                "SEAL {}   {}",
+                act_state(true),
+                unit.seal_state().unwrap_or_else(|| "sealed".into())
+            ));
             out.extend(seal_read(unit, checked).into_iter().skip(2).map(indent));
         }
-        None => out.push("SEAL     not decided".into()),
+        None => out.push(format!("SEAL {}", act_state(false))),
     }
     out
 }

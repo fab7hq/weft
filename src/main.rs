@@ -1,7 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 
 use weft::app::App;
@@ -122,7 +120,11 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     let mut out = std::io::stdout();
-    let _ = execute!(out, EnableMouseCapture, EnableBracketedPaste);
+    // Weft does not capture the mouse. With capture on, the terminal hands
+    // every click and drag to Weft instead of doing its own selection, so
+    // click-drag-copy stops working over the agent — which is the one thing
+    // a person most wants the mouse for here. Weft is keys only.
+    let _ = execute!(out, EnableBracketedPaste);
 
     // Named a directory, or asked for one. Nothing is opened and no daemon
     // work is done until there is one.
@@ -135,7 +137,7 @@ fn main() -> Result<()> {
         None => choose_project(&mut terminal)?,
     };
     let Some(root) = root else {
-        let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
+        let _ = execute!(out, DisableBracketedPaste);
         ratatui::restore();
         return Ok(());
     };
@@ -155,7 +157,7 @@ fn main() -> Result<()> {
 
     let result = started.and_then(|()| weft.run(&mut terminal));
 
-    let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
+    let _ = execute!(out, DisableBracketedPaste);
     ratatui::restore();
 
     if let Err(e) = &result {

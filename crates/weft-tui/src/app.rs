@@ -8,11 +8,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{
-    self, Event, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::DefaultTerminal;
-use ratatui::layout::Rect;
 
 use crate::blocked::{self, Evidence};
 use crate::client::Session;
@@ -212,6 +209,10 @@ pub struct App {
     detail: Option<Detail>,
     /// The furthest the drawer may be scrolled, as the last render measured it.
     detail_reach: usize,
+    /// How many rows the sidebar had room for, as the last render measured
+    /// it. Only the render knows, and moving the selection has to keep it in
+    /// view now that there is no wheel.
+    list_rows: usize,
     /// Whether the work list is on screen. Hidden, the agent has the width.
     show_work: bool,
     pub focus: Focus,
@@ -224,14 +225,6 @@ pub struct App {
     /// One sentence saying why the key just pressed did nothing. Never a
     /// dialog: an unavailable action explains itself and stays on the bar.
     hint: Option<String>,
-    /// What the last frame drew, so a click lands on what the person sees.
-    pane_area: Option<Rect>,
-    row_spans: Vec<(u16, u16, usize)>,
-    tab_spans: Vec<(u16, u16, Option<usize>)>,
-    action_spans: Vec<(u16, u16, Act)>,
-    action_row: u16,
-    list_area: Option<Rect>,
-    needs_you_span: Option<(u16, u16)>,
     /// Whether the CLI that owns the record is installed. Asked once: it is a
     /// property of the machine, not of the frame being drawn.
     record_available: bool,
@@ -529,6 +522,7 @@ impl App {
             list_offset: 0,
             detail: None,
             detail_reach: 0,
+            list_rows: 1,
             show_work: true,
             focus: Focus::Weft,
             toggle,
@@ -538,13 +532,6 @@ impl App {
             quit: false,
             stop_agents_on_quit: false,
             hint: None,
-            pane_area: None,
-            row_spans: Vec::new(),
-            tab_spans: Vec::new(),
-            action_spans: Vec::new(),
-            action_row: 0,
-            list_area: None,
-            needs_you_span: None,
             record_available: true,
             workspace_gap: None,
             readiness: std::collections::HashMap::new(),
@@ -589,7 +576,6 @@ impl App {
                     {
                         self.on_key(key)?
                     }
-                    Event::Mouse(m) => self.on_mouse(m)?,
                     Event::Paste(text) => self.on_paste(&text)?,
                     _ => {}
                 }
@@ -986,9 +972,14 @@ impl App {
         }
         self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
         self.follow_the_selection();
-        // Picking a row that is scrolled away brings it back into view.
+        // Picking a row that is scrolled away brings it back into view, above
+        // or below. There is no wheel any more, so the arrows have to.
         if self.selected < self.list_offset {
             self.list_offset = self.selected;
+        }
+        let last_visible = self.list_offset + self.list_rows.saturating_sub(1);
+        if self.selected > last_visible {
+            self.list_offset = self.selected + 1 - self.list_rows;
         }
     }
 
@@ -1249,11 +1240,6 @@ impl App {
         }
     }
 
-    fn scroll_list(&mut self, delta: i32) {
-        let rows = self.units.len().saturating_sub(1);
-        self.list_offset = (self.list_offset as i32 + delta).clamp(0, rows as i32) as usize;
-    }
-
     // --- events ------------------------------------------------------------
 
     /// One keystroke. Public so a probe or a wireframe run can drive the
@@ -1508,176 +1494,17 @@ impl App {
         Ok(())
     }
 
-    /// One mouse event. Public for the same reason `on_key` is.
-    pub fn on_mouse(&mut self, m: MouseEvent) -> Result<()> {
-        // The wheel moves whatever is being read: the drawer if one is open,
-        // otherwise the focused pane's scrollback.
-        let wheel = match m.kind {
-            MouseEventKind::ScrollUp => Some(-3),
-            MouseEventKind::ScrollDown => Some(3),
-            _ => None,
-        };
-        if let Some(delta) = wheel {
-            if self.detail.is_some() {
-                self.scroll_detail(delta);
-            } else if self.over_list(m.column, m.row) {
-                self.scroll_list(delta);
-            } else {
-                self.scroll_pane(-delta);
-            }
-            return Ok(());
-        }
-        if self.modal.is_some() {
-            return Ok(());
-        }
-        if m.kind != MouseEventKind::Down(MouseButton::Left) {
-            return Ok(());
-        }
-        if self.needs_you_span.is_some_and(|(x, w)| m.row == 0 && m.column >= x && m.column < x + w)
-        {
-            self.next_needs_you();
-            return Ok(());
-        }
-        if let Some(act) = self.action_at(m.column, m.row) {
-            self.focus = Focus::Weft;
-            self.act(act);
-            return Ok(());
-        }
-        // The left pane is Weft. Clicking it comes out of the agent even when
-        // it lands between rows or on an empty list, which is where a person
-        // clicks when there is no work on the board yet.
-        if self.over_list(m.column, m.row) {
-            self.focus = Focus::Weft;
-        }
-        if let Some(target) = self.tab_at(m.column, m.row) {
-            match target {
-                Some(pane) => {
-                    self.pane_focus = pane;
-                    self.focus = Focus::Weft;
-                }
-                None => self.start_agent_picker(),
-            }
-            return Ok(());
-        }
-        let in_pane = self.pane_area.is_some_and(|a| {
-            m.column >= a.x && m.column < a.x + a.width && m.row >= a.y && m.row < a.y + a.height
-        });
-        if in_pane && self.detail.is_none() {
-            // Clicking the pane is a toggle: into the agent, and out again.
-            // The same click should not mean two different things.
-            self.focus = match self.focus {
-                Focus::Weft => {
-                    if let Some(p) = sess!(self).panes.get_mut(self.pane_focus) {
-                        p.scroll_to_bottom();
-                    }
-                    Focus::Agent
-                }
-                Focus::Agent => Focus::Weft,
-            };
-            return Ok(());
-        }
-        if self.pane_count() == 0 {
-            if let Some(index) = self.row_at(m.row) {
-                // The first-run screen says to click anything, so a click on a
-                // choice picks it and a second one starts it.
-                if self.modal_choice == index {
-                    self.start_chosen_agent(index);
-                } else {
-                    self.modal_choice = index;
-                }
-            }
-            return Ok(());
-        }
-        if let Some(index) = self.row_at(m.row) {
-            self.focus = Focus::Weft;
-            if self.selected == index {
-                self.open_row();
-            } else {
-                self.selected = index;
-            }
-        }
-        Ok(())
-    }
-
-    /// The wheel over a pane. Weft moves the scrollback it kept — and when it
-    /// kept none, says whose scrollback it is rather than doing nothing at
-    /// all. Codex repaints its viewport instead of scrolling, so Weft never
-    /// sees a line leave; its history is behind its own key. Measured, not
-    /// assumed: see `harness::Harness::transcript`.
-    fn scroll_pane(&mut self, delta: i32) {
-        let Some(p) = sess!(self).panes.get_mut(self.pane_focus) else { return };
-        let before = p.scroll_offset();
-        p.scroll(delta);
-        if p.scroll_offset() != before || delta < 0 {
-            return;
-        }
-        let name = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
-        let said = match harness::find(&name).and_then(|h| h.transcript) {
-            Some(key) => {
-                format!("{name} keeps its own history: press {key} in the agent to read it.")
-            }
-            None => format!("Nothing of {name}'s has scrolled away yet."),
-        };
-        self.say(said);
-    }
-
-    fn over_list(&self, column: u16, row: u16) -> bool {
-        self.list_area.is_some_and(|a| {
-            column >= a.x && column < a.x + a.width && row >= a.y && row < a.y + a.height
-        })
-    }
-
-    /// An action word on the bar is the same action as its key.
-    fn action_at(&self, column: u16, row: u16) -> Option<Act> {
-        self.action_spans
-            .iter()
-            .find(|(x, w, _)| row == self.action_row && column >= *x && column < x + w)
-            .map(|(_, _, act)| *act)
-    }
-
-    fn row_at(&self, row: u16) -> Option<usize> {
-        self.row_spans.iter().find(|(y, h, _)| row >= *y && row < y + h).map(|(_, _, i)| *i)
-    }
-
-    /// `Some(Some(pane))` is an agent tab; `Some(None)` is the `+`.
-    fn tab_at(&self, column: u16, row: u16) -> Option<Option<usize>> {
-        self.tab_spans
-            .iter()
-            .find(|(x, w, _)| row == 1 && column >= *x && column < x + w)
-            .map(|(_, _, pane)| *pane)
-    }
-
     // --- what the last frame drew --------------------------------------------
-
-    pub fn note_pane_area(&mut self, area: Rect) {
-        self.pane_area = Some(area);
-    }
-
-    pub fn note_rows(&mut self, spans: Vec<(u16, u16, usize)>) {
-        self.row_spans = spans;
-    }
-
-    pub fn note_tabs(&mut self, spans: Vec<(u16, u16, Option<usize>)>) {
-        self.tab_spans = spans;
-    }
-
-    pub fn note_actions(&mut self, row: u16, spans: Vec<(u16, u16, Act)>) {
-        self.action_row = row;
-        self.action_spans = spans;
-    }
 
     /// How far the drawer can scroll: the folded line count less the room it
     /// has. Only the render knows both, so it says so each frame.
+    /// How many rows the sidebar drew.
+    pub fn note_list_rows(&mut self, rows: usize) {
+        self.list_rows = rows.max(1);
+    }
+
     pub fn note_detail_reach(&mut self, last: usize) {
         self.detail_reach = last;
-    }
-
-    pub fn note_list_area(&mut self, area: Option<Rect>) {
-        self.list_area = area;
-    }
-
-    pub fn note_needs_you(&mut self, span: Option<(u16, u16)>) {
-        self.needs_you_span = span;
     }
 
     // --- test seams -----------------------------------------------------------
@@ -2665,120 +2492,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_click_inside_the_pane_focuses_the_agent_and_a_row_click_comes_back() {
-        let mut a = with_unit(Sent::NotSent);
-        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
-        a.note_rows(vec![(3, 2, 0)]);
-        let click = |col, row| MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        };
-        a.on_mouse(click(50, 10)).expect("mouse");
-        assert_eq!(a.focus, Focus::Agent);
-        a.on_mouse(click(5, 3)).expect("mouse");
-        assert_eq!(a.focus, Focus::Weft);
-        assert_eq!(a.selected, 0);
-    }
-
-    #[test]
-    fn clicking_the_left_pane_comes_out_of_the_agent_even_with_nothing_on_it() {
-        // Found by hand: the click only came out of the agent when it landed
-        // on a row, so on an empty board — which is every first run — the left
-        // pane could not be clicked back to at all.
-        let mut a = app();
-        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
-        a.note_list_area(Some(ratatui::layout::Rect { x: 0, y: 2, width: 39, height: 20 }));
-        a.note_rows(Vec::new());
-        let click = |col, row| MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row,
-            modifiers: KeyModifiers::NONE,
-        };
-        a.on_mouse(click(50, 10)).expect("mouse");
-        assert_eq!(a.focus, Focus::Agent);
-        a.on_mouse(click(10, 15)).expect("mouse");
-        assert_eq!(a.focus, Focus::Weft, "an empty list is still the left pane");
-    }
-
-    #[test]
-    fn the_wheel_says_whose_history_it_is_when_weft_kept_none() {
-        // Codex repaints its viewport rather than scrolling, so nothing ever
-        // reaches Weft's scrollback and the wheel moved nothing, silently.
-        let mut a = app();
-        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
-        a.on_mouse(MouseEvent {
-            kind: MouseEventKind::ScrollUp,
-            column: 50,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        })
-        .expect("wheel");
-        let said = a.hint_text().expect("a sentence rather than nothing at all");
-        assert!(said.contains("Ctrl+T"), "names the key that does reach it: {said}");
-        assert!(said.contains("codex"), "and names the harness: {said}");
-    }
-
-    #[test]
-    fn clicking_the_pane_goes_in_and_clicking_again_comes_out() {
-        let mut a = with_unit(Sent::NotSent);
-        a.note_pane_area(ratatui::layout::Rect { x: 40, y: 2, width: 40, height: 20 });
-        let click = MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 50,
-            row: 10,
-            modifiers: KeyModifiers::NONE,
-        };
-        a.on_mouse(click).expect("mouse");
-        assert_eq!(a.focus, Focus::Agent);
-        a.on_mouse(click).expect("mouse");
-        assert_eq!(a.focus, Focus::Weft, "the same click does not mean two things");
-    }
-
-    #[test]
-    fn clicking_a_row_selects_it_then_opens_it() {
-        let mut a = app();
-        let mut second = unit(Sent::NotSent);
-        second.ask_id = "ask_2".into();
-        a.set_units(vec![unit(Sent::NotSent), second]);
-        a.note_rows(vec![(3, 2, 0), (5, 2, 1)]);
-        let click = |row| MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 4,
-            row,
-            modifiers: KeyModifiers::NONE,
-        };
-        a.on_mouse(click(5)).expect("mouse");
-        assert_eq!(a.selected, 1);
-        assert!(a.detail().is_none(), "the first click only selects");
-        a.on_mouse(click(5)).expect("mouse");
-        // Row 1 of this fabricated list is the harness level, which the
-        // second click unfolds rather than opening anything.
-        assert!(a.detail().is_none());
-    }
-
-    #[test]
-    fn clicking_a_tab_switches_agent_and_clicking_plus_offers_a_new_one() {
-        let mut a = app();
-        a.note_tabs(vec![(10, 8, Some(0)), (20, 12, Some(1)), (34, 1, None)]);
-        let click = |col| MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: col,
-            row: 1,
-            modifiers: KeyModifiers::NONE,
-        };
-        a.on_mouse(click(11)).expect("mouse");
-        assert_eq!(a.pane_focus, 0);
-        a.on_mouse(click(34)).expect("mouse");
-        match a.modal {
-            Some(Modal::StartAgent { .. }) | None => {}
-            ref other => panic!("+ offers a new agent, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn the_board_is_read_from_a_real_ledger_on_disk() {
         let dir = std::env::temp_dir().join(format!("weft-app-{}", std::process::id()));
         std::fs::create_dir_all(dir.join(".fab7/rf")).unwrap();
@@ -2876,34 +2589,6 @@ mod start_tests {
             "S must do something when the bar offers it"
         );
     }
-
-    #[test]
-    fn scrolling_over_a_pane_moves_its_scrollback() {
-        let mut a = bare();
-        a.add("sh", "/bin/sh").expect("spawn");
-        a.input(0, b"for i in $(seq 1 60); do echo line-$i; done\n").expect("send");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            a.pump();
-            if a.pane_text(0).is_some_and(|t| t.contains("line-60")) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        a.note_pane_area(ratatui::layout::Rect { x: 0, y: 2, width: 80, height: 20 });
-
-        let scroll = |kind| MouseEvent { kind, column: 40, row: 10, modifiers: KeyModifiers::NONE };
-        a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
-        a.on_mouse(scroll(MouseEventKind::ScrollUp)).expect("scroll");
-        assert!(
-            a.pane_scroll_offset(0).is_some_and(|o| o > 0),
-            "the wheel moves through the scrollback"
-        );
-
-        a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
-        a.on_mouse(scroll(MouseEventKind::ScrollDown)).expect("scroll");
-        assert_eq!(a.pane_scroll_offset(0), Some(0), "and back to the live output");
-    }
 }
 
 #[cfg(test)]
@@ -2948,27 +2633,6 @@ mod first_run_tests {
         press(&mut a, KeyCode::Up);
         press(&mut a, KeyCode::Up);
         assert_eq!(a.modal_choice, choices - 1, "the same wrap");
-    }
-
-    #[test]
-    fn clicking_a_choice_on_first_run_picks_it() {
-        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        let (root, session) = test_session("first-run-click");
-        let mut a = App::with_session(root, Toggle, session);
-        a.refresh_for_test();
-        if a.starts().len() < 2 {
-            eprintln!("skipped: needs two agents installed");
-            return;
-        }
-        a.note_rows(vec![(10, 1, 0), (11, 1, 1)]);
-        a.on_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: 20,
-            row: 11,
-            modifiers: KeyModifiers::NONE,
-        })
-        .expect("click");
-        assert_eq!(a.modal_choice, 1, "the screen says to click anything");
     }
 }
 

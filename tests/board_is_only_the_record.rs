@@ -30,8 +30,8 @@ const SAYS_A_VERDICT: &[&str] = &[
     "judged by",
     "recorded as",
 ];
-const SAYS_A_DECISION: &[&str] = &["ACCEPTED", "REJECTED", "PARKED", "DROPPED"];
-const SAYS_A_RECEIPT: &[&str] = &["WORD FOR WORD", "SENT, REWORDED"];
+const SAYS_A_DECISION: &[&str] = &["SEALED", "accepted", "rejected", "parked", "dropped"];
+const SAYS_A_RECEIPT: &[&str] = &["word for word", "sent, reworded"];
 
 #[test]
 fn the_board_says_nothing_the_ledger_did_not_say() {
@@ -39,7 +39,9 @@ fn the_board_says_nothing_the_ledger_did_not_say() {
 
     let drawn = screen(&mut app, 100, 30);
     assert!(drawn.contains("health endpoint"), "{drawn}");
-    assert!(drawn.contains("NOT SENT YET"), "{drawn}");
+    // The row names the furthest act that has happened, and only one has.
+    assert!(drawn.contains("ASKED"), "{drawn}");
+    assert!(!drawn.contains("EVALED") && !drawn.contains("SEALED"), "{drawn}");
     for phrase in SAYS_A_VERDICT.iter().chain(SAYS_A_DECISION).chain(SAYS_A_RECEIPT) {
         assert!(
             !drawn.contains(phrase),
@@ -63,9 +65,9 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     // sections of the detail view. Both are screens, and neither may say a
     // thing before its event exists.
     for (events, expected, not_yet) in [
-        (with_receipt, "WORD FOR WORD", SAYS_A_VERDICT),
-        (with_verdict, "DOESN'T MATCH WHAT YOU ASKED", SAYS_A_DECISION),
-        (with_decision, "ACCEPTED", &[] as &[&str]),
+        (with_receipt, "word for word", SAYS_A_VERDICT),
+        (with_verdict, "doesn't match what you asked", SAYS_A_DECISION),
+        (with_decision, "accepted", &[] as &[&str]),
     ] {
         let (root, mut app) = board(&events);
         let row = screen(&mut app, 100, 30);

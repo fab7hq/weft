@@ -22,13 +22,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let geo = geometry(app, area);
     let th = app.theme;
 
-    let (title, needs_you) = title_bar(app, geo.title.width);
-    frame.render_widget(title, geo.title);
-    app.note_needs_you(needs_you.map(|(x, w)| (geo.title.x + x, w)));
+    frame.render_widget(title_bar(app, geo.title.width), geo.title);
     if geo.tabs.height > 0 {
-        let (line, spans) = tab_row(app, &geo);
-        app.note_tabs(spans);
-        frame.render_widget(Paragraph::new(line), geo.tabs);
+        frame.render_widget(Paragraph::new(tab_row(app, &geo)), geo.tabs);
     }
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
 
@@ -36,23 +32,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // It blocks. Nothing behind it is reachable while it is open, which
         // is what keeps `[P]ROCEED` and the acts on the bar from ever being
         // live at the same time.
-        app.note_rows(Vec::new());
-        app.note_list_area(None);
         let para = detail(app, geo.content);
         frame.render_widget(para, geo.content);
     } else if app.pane_count() == 0 {
-        let (para, rows) = first_run(app, geo.content);
-        app.note_rows(rows);
-        app.note_list_area(None);
-        frame.render_widget(para, geo.content);
+        frame.render_widget(first_run(app, geo.content), geo.content);
     } else {
-        app.note_list_area(geo.list);
         if let Some(list) = geo.list {
-            let (para, rows) = work_list(app, list);
-            app.note_rows(rows);
-            frame.render_widget(para, list);
-        } else {
-            app.note_rows(Vec::new());
+            let drawn = work_list(app, list);
+            frame.render_widget(drawn, list);
         }
         if let Some(divider) = geo.divider_area {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
@@ -68,12 +55,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
 
     frame.render_widget(rule(geo.bottom_rule.width, geo.body_divider, '┴', th), geo.bottom_rule);
-    let (bar, action_spans) = action_bar(app, geo.actions.width);
-    app.note_actions(
-        geo.actions.y,
-        action_spans.into_iter().map(|(x, w, a)| (geo.actions.x + x, w, a)).collect(),
-    );
-    frame.render_widget(bar, geo.actions);
+    frame.render_widget(action_bar(app, geo.actions.width), geo.actions);
     frame.render_widget(hint(app), geo.hint);
 }
 
@@ -206,7 +188,7 @@ fn vlines(height: u16, th: Theme) -> Vec<Line<'static>> {
 
 // --- the bars ----------------------------------------------------------------
 
-fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) {
+fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
     let th = app.theme;
     // Where you are is shown by what is lit, not by a word: WEFT in the accent
     // means the keys are Weft's, and the agent's own name in the accent means
@@ -243,24 +225,14 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
             spans
         }
     };
-    // The count is a place to click, so where it was drawn has to be known.
-    let counted = app.focus == Focus::Weft && app.needs_you() > 0;
-    let tail: usize = right.iter().map(|s| s.content.chars().count()).sum();
-    let last = right.last().map(|s| s.content.chars().count()).unwrap_or(0);
-    let span = counted.then(|| {
-        let end = width as usize - last;
-        let start = (width as usize).saturating_sub(tail);
-        (start as u16, (end - start) as u16)
-    });
-    (Paragraph::new(spread(left, right, width)), span)
+    Paragraph::new(spread(left, right, width))
 }
 
 /// Agents are tabs over the pane. The focused surface's header is the accent.
-fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>)>) {
+fn tab_row(app: &App, geo: &Geo) -> Line<'static> {
     let th = app.theme;
     let in_weft = app.focus == Focus::Weft;
     let mut spans: Vec<Span> = Vec::new();
-    let mut spans_at: Vec<(u16, u16, Option<usize>)> = Vec::new();
     let mut col = 0u16;
     let push = |spans: &mut Vec<Span<'static>>, col: &mut u16, text: String, style: Style| {
         *col += text.chars().count() as u16;
@@ -289,7 +261,7 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
             th.title(),
         );
         push(&mut spans, &mut col, back, th.label());
-        return (Line::from(spans), spans_at);
+        return Line::from(spans);
     }
 
     for i in 0..app.pane_count() {
@@ -313,26 +285,21 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
             (_, _, true) => th.needs_you(),
             _ => th.label(),
         };
-        let start = col;
         push(&mut spans, &mut col, text, style);
-        spans_at.push((start, col - start, Some(i)));
         push(&mut spans, &mut col, "    ".into(), th.label());
     }
-    let start = col;
     push(&mut spans, &mut col, "+".into(), th.label());
-    spans_at.push((start, 1, None));
-    (Line::from(spans), spans_at)
+    Line::from(spans)
 }
 
 /// Every action shows its key. What cannot be done now is drawn muted and
 /// stays where it was, so the shape of the bar never jumps.
-fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)>) {
+fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     let th = app.theme;
-    let plain =
-        |text: &str| (Paragraph::new(Line::styled(text.to_string(), th.label())), Vec::new());
+    let plain = |text: &str| Paragraph::new(Line::styled(text.to_string(), th.label()));
     if app.focus == Focus::Agent {
         // While you are in the agent, Weft has no keys to offer.
-        return (Paragraph::new(""), Vec::new());
+        return Paragraph::new("");
     }
     match &app.modal {
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
@@ -369,46 +336,28 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         // Three keys, the same three on every state of the view. `[P]ROCEED`
         // is dim when there is nothing to carry forward, and the state line
         // at the top of the view is what says why.
-        let mut at = Vec::new();
-        let mut col = 2u16;
         let mut left = vec![Span::raw("  ")];
         for (label, act) in [("[P]ROCEED", Act::Proceed), ("[F] FOLLOW UP", Act::FollowUp)] {
-            let span = key(app, label, act);
-            at.push((col, span.content.chars().count() as u16, act));
-            col += span.content.chars().count() as u16 + 3;
-            left.push(span);
+            left.push(key(app, label, act));
             left.push(Span::raw("   "));
         }
         left.pop();
-        return (
-            Paragraph::new(spread(left, vec![Span::styled("[←] CANCEL ", th.label())], width)),
-            at,
-        );
+        return Paragraph::new(spread(left, vec![Span::styled("[←] CANCEL ", th.label())], width));
     }
 
+    // RingFrame's three acts, in the order they happen. Weft's own operations
+    // are in the `[W]` menu, which is not an act on the record.
     let mut spans = vec![Span::raw("  ")];
-    let mut at = Vec::new();
-    let mut col = 2u16;
-    // RingFrame's three acts, in the order they happen, then the one verb and
-    // the one reading. Weft's own operations are in the `[W]` menu.
     for (i, (label, act)) in
         [("[A]SK", Act::Ask), ("[E]VAL", Act::Eval), ("[S]EAL", Act::Seal)].into_iter().enumerate()
     {
         if i > 0 {
             spans.push(Span::raw("   "));
-            col += 3;
         }
-        let span = key(app, label, act);
-        at.push((col, span.content.chars().count() as u16, act));
-        col += span.content.chars().count() as u16;
-        spans.push(span);
+        spans.push(key(app, label, act));
     }
-    // Weft's own operations are not acts on the record, so they sit apart
-    // from the three that are.
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
-    let menu_width = menu.content.chars().count() as u16;
-    at.push((width.saturating_sub(menu_width + 1), menu_width, Act::WeftMenu));
-    (Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width)), at)
+    Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width))
 }
 
 /// One action on the bar, dimmed when it cannot be used.
@@ -484,11 +433,13 @@ fn hint(app: &App) -> Paragraph<'static> {
 
 /// One row per unit of work: what you asked for, and where it stands. The
 /// selected row expands in place.
-fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize)>) {
+fn work_list(app: &mut App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
-    let mut rows: Vec<(u16, u16, usize)> = Vec::new();
+    // What the arrows have to keep the selection inside, now that there is no
+    // wheel. One line goes to the "N above" marker when the list is scrolled.
+    app.note_list_rows(area.height.saturating_sub(1) as usize);
 
     if app.units().is_empty() {
         lines.push(Line::raw(""));
@@ -503,7 +454,7 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
                     .to_string(),
                 th.label(),
             ));
-            return (Paragraph::new(lines), rows);
+            return Paragraph::new(lines);
         }
         let (said, next) = if app.record_available() {
             ("Nothing asked for yet.", "[A]SK for something and Weft writes it down.")
@@ -518,7 +469,7 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         lines.push(Line::styled(format!(" {said}"), th.label()));
         lines.push(Line::raw(""));
         lines.push(Line::styled(format!(" {next}"), th.label()));
-        return (Paragraph::new(lines), rows);
+        return Paragraph::new(lines);
     }
 
     let all = app.rows();
@@ -527,16 +478,13 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         lines.push(Line::styled(format!("   ↑ {offset} above"), th.label()));
     }
     for (i, row) in all.iter().enumerate().skip(offset) {
-        let start = area.y + lines.len() as u16;
         if lines.len() + 1 > area.height as usize {
             lines.push(Line::styled(format!("   ↓ {} more", all.len() - i), th.label()));
             break;
         }
-        let picked = i == app.selected;
-        lines.push(sidebar_row(app, row, picked, width));
-        rows.push((start, 1, i));
+        lines.push(sidebar_row(app, row, i == app.selected, width));
     }
-    (Paragraph::new(lines), rows)
+    Paragraph::new(lines)
 }
 
 /// One row of the sidebar. `▾` and `▸` mark the levels that hold something;
@@ -587,31 +535,28 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
     }
 }
 
-/// Where a unit stands, in one word, and whether it is waiting on the person.
-/// The word names the act that is waiting, so the row and the bar agree.
+/// Where a unit stands, in one word: the furthest act that has happened, in
+/// the past tense, and whether it is waiting on the person.
+///
+/// The same three acts the detail view names, so the sidebar and the view
+/// teach one vocabulary between them rather than two.
 fn row_state(unit: &Unit) -> (String, bool) {
     if unit.cancelled {
         return ("CANCELLED".into(), false);
     }
-    if let Some(word) = unit.seal_state() {
-        return (word.to_uppercase(), false);
-    }
-    match weft_core::board::next_step(unit) {
-        Some(weft_core::board::Next::Confirm) => ("YES?".into(), true),
-        Some(weft_core::board::Next::Send) => ("SEND".into(), true),
-        Some(weft_core::board::Next::Seal) => ("SEAL".into(), true),
-        // Submitted and unjudged. Running the Eval is available, but nothing
-        // is being kept waiting by it. One word, because the row is a list
-        // and the detail view is where the phrasing belongs.
-        Some(weft_core::board::Next::Eval) => ("SENT".into(), false),
-        None => (unit.sent_phrase().to_uppercase(), false),
-    }
+    let word = if unit.sealed.is_some() {
+        "SEALED"
+    } else if unit.check.is_some() {
+        "EVALED"
+    } else {
+        "ASKED"
+    };
+    (word.into(), unit.needs_you())
 }
 
 // --- the pane, the drawer, and first run --------------------------------------
 
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.note_pane_area(area);
     let focus = app.pane_focus;
     app.with_pane_screen(focus, area.height, area.width, |screen| {
         frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
@@ -639,9 +584,7 @@ fn detail(app: &mut App, area: Rect) -> Paragraph<'static> {
         .take(room)
         .map(|l| {
             // A section heading is the one thing that carries weight here.
-            let heading = matches!(l.as_str(), "ASK" | "EVAL" | "SEAL")
-                || l.starts_with("EVAL ")
-                || l.starts_with("SEAL ");
+            let heading = ["ASK ", "EVAL ", "SEAL ", "● "].iter().any(|h| l.starts_with(h));
             let style = if heading { th.title() } else { th.label() };
             Line::styled(format!(" {l}"), style)
         })
@@ -655,7 +598,7 @@ fn detail(app: &mut App, area: Rect) -> Paragraph<'static> {
 }
 
 /// Screen 1: nothing is running yet, and the one thing to do about it.
-fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize)>) {
+fn first_run(app: &App, _area: Rect) -> Paragraph<'static> {
     let th = app.theme;
     let found = app.starts().to_vec();
     let mut lines: Vec<Line> = vec![Line::raw(""), Line::raw("")];
@@ -688,10 +631,8 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
             Span::styled("│".to_string(), th.rule()),
         ]));
     }
-    let mut choices = Vec::new();
     for (i, agent) in found.iter().enumerate() {
         let picked = i == app.modal_choice;
-        choices.push((area.y + lines.len() as u16, 1, i));
         lines.push(Line::from(vec![
             Span::styled("   │  ".to_string(), th.rule()),
             Span::styled(
@@ -725,11 +666,11 @@ fn first_run(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
     ));
     lines.push(Line::raw(""));
     lines.push(Line::styled(
-        "   Click anything. Arrows and Enter work too. To select text in a pane, hold Shift."
+        "   Arrows and Enter move. Weft takes no mouse, so selection is the terminal's."
             .to_string(),
         th.label(),
     ));
-    (Paragraph::new(lines), choices)
+    Paragraph::new(lines)
 }
 
 // --- the bottom-anchored panels ----------------------------------------------
@@ -798,7 +739,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             String::new(),
             format!("{} to switch between Weft and harness.", app.toggle.label()),
             "In the agent every other key goes through, Esc included.".into(),
-            "To select text in a pane, hold Shift.".into(),
+            "Weft takes no mouse, so click-drag-copy is the terminal's own.".into(),
         ]
         .into_iter()
         .chain(routing_lines(app))
@@ -1016,7 +957,7 @@ mod tests {
     use super::*;
     use crate::app::tests::{app, press, unit};
     use crate::ledger::{Check, Sent, Verdict};
-    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use crossterm::event::KeyCode;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1036,10 +977,6 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
-    }
-
-    fn wheel(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
-        MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE }
     }
 
     /// An Ask that has been judged, with the record the judges wrote on disk.
@@ -1166,7 +1103,7 @@ mod tests {
         assert!(drawn.lines().any(|l| l.contains("▾ codex")), "{drawn}");
         // The act that is waiting, named as the bar names it. What the judges
         // said is a section of the detail view, not four more lines here.
-        assert!(row.contains("● SEAL"), "{row}");
+        assert!(row.contains("● EVALED"), "{row}");
         assert!(!drawn.contains("DOESN'T MATCH"), "the verdict is not on the row:\n{drawn}");
     }
 
@@ -1174,7 +1111,7 @@ mod tests {
     fn a_handoff_that_is_ready_carries_the_dot_the_vocabulary_gives_it() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("● SEND"), "{drawn}");
+        assert!(drawn.contains("● ASKED"), "{drawn}");
     }
 
     #[test]
@@ -1391,8 +1328,10 @@ mod tests {
         a.set_units(many);
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("↓"), "there is more below: {drawn}");
-        for _ in 0..4 {
-            a.on_mouse(wheel(MouseEventKind::ScrollDown, 10, 6)).expect("wheel");
+        // Down to the last row, which the arrows have to scroll to now that
+        // there is no wheel.
+        while a.selected + 1 < a.rows().len() {
+            press(&mut a, KeyCode::Down);
         }
         let scrolled = screen(&mut a, 80, 24);
         assert!(scrolled.contains("above"), "and above, once scrolled: {scrolled}");
@@ -1400,36 +1339,9 @@ mod tests {
     }
 
     #[test]
-    fn clicking_an_action_word_does_what_its_key_does() {
+    fn space_goes_to_the_ask_that_needs_you_and_opens_it() {
         let mut a = judged();
-        screen(&mut a, 80, 24);
-        let bar = screen(&mut a, 80, 24);
-        let row = bar.lines().position(|l| l.contains("[A]SK")).expect("the bar") as u16;
-        let column = bar.lines().nth(row as usize).unwrap().find("[A]SK").unwrap() as u16;
-        a.on_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column,
-            row,
-            modifiers: KeyModifiers::NONE,
-        })
-        .expect("click");
-        assert!(matches!(a.modal, Some(crate::app::Modal::Ask { .. })), "{:?}", a.modal);
-    }
-
-    #[test]
-    fn clicking_the_needs_you_count_jumps_to_what_needs_you() {
-        let mut a = judged();
-        let drawn = screen(&mut a, 80, 24);
-        let title = drawn.lines().next().unwrap();
-        let column = title.find("NEEDS YOU").expect("the count") as u16;
-        a.on_mouse(MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column,
-            row: 0,
-            modifiers: KeyModifiers::NONE,
-        })
-        .expect("click");
-        // It goes the whole way: the Ask that needs you, opened.
+        press(&mut a, KeyCode::Char(' '));
         assert_eq!(
             a.selected_unit().map(|u| u.title.clone()),
             Some("readme fix".into()),
