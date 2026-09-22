@@ -104,6 +104,8 @@ pub struct App {
     /// How far the work list is scrolled. A list can be longer than the pane.
     list_offset: usize,
     drawer: Option<Drawer>,
+    /// The furthest the drawer may be scrolled, as the last render measured it.
+    drawer_reach: usize,
     /// Whether the work list is on screen. Hidden, the agent has the width.
     show_work: bool,
     pub focus: Focus,
@@ -350,6 +352,7 @@ impl App {
             expanded: None,
             list_offset: 0,
             drawer: None,
+            drawer_reach: 0,
             show_work: true,
             focus: Focus::Weft,
             toggle,
@@ -803,8 +806,11 @@ impl App {
     // --- the drawer ----------------------------------------------------------
 
     fn scroll_drawer(&mut self, delta: i32) {
+        // Held down, `↓` used to scroll the whole reading off the top and
+        // leave an empty panel. It stops at the last line instead.
+        let reach = self.drawer_reach as i32;
         if let Some(d) = self.drawer.as_mut() {
-            d.offset = (d.offset as i32 + delta).max(0) as usize;
+            d.offset = (d.offset as i32 + delta).clamp(0, reach) as usize;
         }
     }
 
@@ -1346,6 +1352,12 @@ impl App {
     pub fn note_actions(&mut self, row: u16, spans: Vec<(u16, u16, Act)>) {
         self.action_row = row;
         self.action_spans = spans;
+    }
+
+    /// How far the drawer can scroll: the folded line count less the room it
+    /// has. Only the render knows both, so it says so each frame.
+    pub fn note_drawer_reach(&mut self, last: usize) {
+        self.drawer_reach = last;
     }
 
     pub fn note_list_area(&mut self, area: Option<Rect>) {

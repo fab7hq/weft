@@ -817,20 +817,29 @@ fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// A reading surface beside the list. It replaces the pane, not the screen.
-fn drawer(app: &App, area: Rect) -> Paragraph<'static> {
+///
+/// Lines fold rather than being cut. This is where the exact wording is read,
+/// and a prompt missing its right-hand end is not the exact wording — so it
+/// folds the way the confirmation does, keeping every character.
+fn drawer(app: &mut App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
-    let Some(d) = app.drawer() else { return Paragraph::new("") };
     let room = area.height as usize;
-    let mut lines: Vec<Line> = d
-        .lines
+    let width = (area.width.saturating_sub(1) as usize).max(1);
+    // Folded before it is scrolled, so one press of `↓` moves one drawn line
+    // rather than a whole paragraph of them.
+    let (folded, offset) = {
+        let Some(d) = app.drawer() else { return Paragraph::new("") };
+        (d.lines.iter().flat_map(|l| fold(l, width)).collect::<Vec<String>>(), d.offset)
+    };
+    app.note_drawer_reach(folded.len().saturating_sub(room));
+
+    let mut lines: Vec<Line> = folded
         .iter()
-        .skip(d.offset)
+        .skip(offset)
         .take(room)
-        .map(|l| {
-            Line::styled(format!(" {}", clip(l, area.width.saturating_sub(1) as usize)), th.label())
-        })
+        .map(|l| Line::styled(format!(" {l}"), th.label()))
         .collect();
-    let more = d.lines.len().saturating_sub(d.offset + lines.len());
+    let more = folded.len().saturating_sub(offset + lines.len());
     if more > 0 && !lines.is_empty() {
         lines.pop();
         lines.push(Line::styled(format!(" … {more} more lines · [↓]"), th.label()));
@@ -1470,6 +1479,42 @@ mod tests {
         assert!(drawn.contains("readme fix"), "the list stays: {drawn}");
         assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
         assert!(drawn.contains("none of them did it"), "{drawn}");
+    }
+
+    #[test]
+    fn a_reading_too_wide_for_the_drawer_folds_rather_than_being_cut() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('j'));
+        // Narrow enough that the longest reason cannot sit on one line. The
+        // drawer is where the exact wording is read, so nothing may be lost
+        // off the right-hand edge.
+        let drawn = screen(&mut a, 46, 40);
+        // The heading is 54 characters in a 45-column drawer, and both halves
+        // of it are on the screen.
+        assert!(drawn.contains("CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT"), "{drawn}");
+        assert!(drawn.contains("YOU ASKED"), "the end of the line survives:\n{drawn}");
+        for line in drawn.lines() {
+            assert!(
+                !line.trim_end().ends_with('…') || line.contains("more lines"),
+                "a reading was cut instead of folded:\n{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn scrolling_past_the_last_line_stops_there_instead_of_emptying_the_panel() {
+        let mut a = judged();
+        press(&mut a, KeyCode::Char('j'));
+        // A short panel, so there is somewhere to scroll to.
+        let _ = screen(&mut a, 120, 14);
+        for _ in 0..200 {
+            press(&mut a, KeyCode::Down);
+        }
+        let drawn = screen(&mut a, 120, 14);
+        assert!(
+            drawn.contains("A check is a judgement"),
+            "the end of the reading stays in view:\n{drawn}"
+        );
     }
 
     #[test]
