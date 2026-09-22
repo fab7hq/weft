@@ -367,6 +367,16 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         ledger("eval.no_git", "Eval reads the Git delta; this workspace is not a Git repository")
     })?;
     let (kind, reference) = match (args.subject_kind, args.subject_ref) {
+        // A worktree subject is a path, and it is hashed and diffed. It has to
+        // be the opened directory or inside it, or the record would describe a
+        // tree this workspace does not hold.
+        (Some(k), Some(r)) if k == "worktree" => (
+            k.to_string(),
+            crate::workspace::within(ws, std::path::Path::new(r))
+                .map_err(|e| ledger(&e.code, e.detail))?
+                .to_string_lossy()
+                .to_string(),
+        ),
         (Some(k), Some(r)) => (k.to_string(), r.to_string()),
         _ => default_subject(ws)?,
     };

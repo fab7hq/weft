@@ -418,7 +418,10 @@ pub struct Compile<'a> {
 /// The only Ask operation that writes artifacts. Appends `ask.compiled`.
 pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
-    let (source, form, mut prompt) = read_staged(args.staged)?;
+    // Staging is read and then deleted, so it has to be inside the directory
+    // RingFrame was opened in. The skill already stages under `.fab7/rf/tmp/`.
+    let staged = workspace::within(ws, args.staged)?;
+    let (source, form, mut prompt) = read_staged(&staged)?;
     let classification = normalize_classification(&args.classification);
     let mut host = args.host.clone();
     let mut provenance: Vec<(&str, Value)> = Vec::new();
@@ -546,7 +549,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     assert_eq!(wrote_source, source_ref, "the published source is not what was recorded");
     assert_eq!(wrote_prompt, prompt_ref, "the published prompt is not what was recorded");
     store::append(ws, &ev)?;
-    std::fs::remove_dir_all(args.staged)?;
+    std::fs::remove_dir_all(&staged)?;
     Ok(json!({
         "ask_id": ask_id, "source": source_ref, "prompt": prompt_ref,
         "prompt_path": ws.rf_dir().join(str_of(&prompt_ref, "path")).to_string_lossy(),
@@ -1488,6 +1491,25 @@ mod tests {
             assert_eq!(d["mode"], json!(null));
             assert_eq!(d["mode_kind"], json!(null));
             assert_eq!(d["prefix_bytes"], 0);
+        });
+    }
+
+    #[test]
+    fn compile_will_not_read_or_delete_a_staging_directory_outside_the_workspace() {
+        // Compile removes the staging directory when it is done, so a path
+        // that escaped would have RingFrame delete something nobody opened.
+        bench(|ws| {
+            let elsewhere = crate::testing::tmp_dir();
+            let staged = elsewhere.path().join("stage-1");
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("source.txt"), b"do it\n").unwrap();
+            std::fs::write(staged.join("prompt.txt"), b"/plan Do it.\n").unwrap();
+
+            let e = compile_with(ws, Args { staged: Some(staged.clone()), ..Default::default() })
+                .unwrap_err();
+            assert!(matches!(&e, AskError::Workspace(w) if w.code == "workspace.outside"), "{e}");
+            assert!(staged.exists(), "and it is still there");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }
 

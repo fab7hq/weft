@@ -1278,6 +1278,31 @@ mod tests {
                 &host,
             ]);
             assert_eq!(code, 2);
+            // Outside the opened directory is refused before its contents are
+            // ever looked at, because compile deletes what it reads.
+            assert_eq!(out["error"], "workspace.outside");
+
+            // Inside it, a directory that is not a staging directory is still
+            // refused for what it holds.
+            let bad = c.root.join(".fab7/rf/tmp/not-a-stage");
+            std::fs::create_dir_all(&bad).unwrap();
+            let (code, out, _) = c.go(&[
+                "ask",
+                "compile",
+                "--staged",
+                &bad.to_string_lossy(),
+                "--title",
+                "t",
+                "--capability",
+                "native_plan",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                &host,
+            ]);
+            assert_eq!(code, 2);
             assert_eq!(out["error"], "ask.staged_dir");
 
             // Missing required arguments are a usage error, on stderr.

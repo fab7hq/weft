@@ -84,8 +84,6 @@ pub fn resolve(cwd: Option<&Path>, explicit: Option<&Path>) -> std::io::Result<W
     Ok(Workspace { root: canonical_path(&here)?, rule: "cwd".into() })
 }
 
-/// Python's `Path.resolve()`: absolute, with symlinks followed. A workspace
-/// root reached two ways has to be one root, or the record forks.
 /// The plans this project already holds, by slug, sorted.
 ///
 /// `plans/<slug>/` is the layout the `plan_as_files` practice writes, and a
@@ -110,6 +108,8 @@ pub fn plans(ws: &Workspace) -> Vec<String> {
     out
 }
 
+/// Python's `Path.resolve()`: absolute, with symlinks followed. A workspace
+/// root reached two ways has to be one root, or the record forks.
 pub fn canonical_path(path: &Path) -> std::io::Result<PathBuf> {
     match path.canonicalize() {
         Ok(p) => Ok(p),
@@ -126,6 +126,37 @@ pub fn set_private(path: &Path) -> std::io::Result<()> {
 
 fn git(root: &Path, args: &[&str]) -> std::io::Result<std::process::Output> {
     Command::new("git").arg("-C").arg(root).args(args).output()
+}
+
+/// A path a caller named, confined to the opened directory.
+///
+/// Everything RingFrame itself reads and writes stays inside the workspace. A
+/// staged directory is read and then deleted, so one that escaped would have
+/// RingFrame remove something nobody opened; a subject outside it would have
+/// the record describe a tree this workspace does not hold. Symlinks are
+/// followed first, so a link inside pointing out does not get through.
+///
+/// What a harness reads or writes once the prompt reaches it is not this —
+/// that is the harness's own permission model, and RingFrame does not own it.
+pub fn within(ws: &Workspace, path: &Path) -> Result<PathBuf, WorkspaceError> {
+    // Not `canonical_path`: it tolerates a path that does not exist and leaves
+    // `..` in it, and `starts_with` reads those components literally. A path
+    // RingFrame is about to read or delete has to resolve for real.
+    let full = path.canonicalize().map_err(|e| {
+        WorkspaceError::new("workspace.outside", format!("{}: {e}", path.display()))
+    })?;
+    if !full.starts_with(&ws.root) {
+        return Err(WorkspaceError::new(
+            "workspace.outside",
+            format!(
+                "{} is outside the workspace at {}; RingFrame reads and writes only \
+                 inside the directory it was opened in",
+                full.display(),
+                ws.root.display()
+            ),
+        ));
+    }
+    Ok(full)
 }
 
 /// Git is a hard requirement: Eval diffs it and Seal names a commit as the
@@ -417,6 +448,30 @@ fn io(code: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_path_outside_the_opened_directory_is_refused() {
+        let dir = crate::testing::tmp_dir();
+        let ws = resolve(Some(dir.path()), None).unwrap();
+        std::fs::create_dir_all(ws.root.join("inside")).unwrap();
+        assert_eq!(within(&ws, &ws.root.join("inside")).unwrap(), ws.root.join("inside"));
+        assert_eq!(within(&ws, &ws.root).unwrap(), ws.root, "the root itself is within it");
+
+        let outside = crate::testing::tmp_dir();
+        let e = within(&ws, outside.path()).unwrap_err();
+        assert_eq!(e.code, "workspace.outside");
+
+        // `..` does not get through, and neither does a link that leads out.
+        assert!(within(&ws, &ws.root.join("inside/../..")).is_err());
+        std::os::unix::fs::symlink(outside.path(), ws.root.join("link")).unwrap();
+        assert!(
+            within(&ws, &ws.root.join("link")).is_err(),
+            "a link inside pointing out is still out"
+        );
+
+        // A path that does not resolve is refused rather than guessed at.
+        assert!(within(&ws, &ws.root.join("not-there")).is_err());
+    }
 
     #[test]
     fn a_project_with_no_plans_reports_none_rather_than_failing() {
