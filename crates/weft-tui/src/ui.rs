@@ -391,15 +391,8 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
     let mut col = 2u16;
     // RingFrame's three acts, in the order they happen, then the one verb and
     // the one reading. Weft's own operations are in the `[W]` menu.
-    for (i, (label, act)) in [
-        ("[A]SK", Act::Ask),
-        ("[E]VAL", Act::Eval),
-        ("[S]EAL", Act::Seal),
-        ("[P]ROCEED", Act::Proceed),
-        ("[D]ETAIL", Act::Detail),
-    ]
-    .into_iter()
-    .enumerate()
+    for (i, (label, act)) in
+        [("[A]SK", Act::Ask), ("[E]VAL", Act::Eval), ("[S]EAL", Act::Seal)].into_iter().enumerate()
     {
         if i > 0 {
             spans.push(Span::raw("   "));
@@ -1148,7 +1141,7 @@ mod tests {
     #[test]
     fn every_verdict_names_the_host_that_produced_it() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('d'));
+        press(&mut a, KeyCode::Enter);
         let read = a.detail().expect("the view").lines.join("\n");
         assert!(read.contains("judged by codex"), "{read}");
         // Agreement, never a score.
@@ -1169,9 +1162,13 @@ mod tests {
     fn the_action_bar_shows_a_key_for_everything_it_offers() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[P]ROCEED", "[D]ETAIL", "[W]EFT"] {
+        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[W]EFT"] {
             assert!(drawn.contains(key), "{key} missing from the bar: {drawn}");
         }
+        // The verb and the reading are not on it: proceeding happens in the
+        // detail view, and `[Enter]` is how that view is reached.
+        assert!(!drawn.contains("[P]ROCEED"), "{drawn}");
+        assert!(!drawn.contains("[D]ETAIL"), "{drawn}");
     }
 
     #[test]
@@ -1216,7 +1213,7 @@ mod tests {
     #[test]
     fn the_detail_view_blocks_and_holds_all_three_acts() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('d'));
+        press(&mut a, KeyCode::Enter);
         let drawn = screen(&mut a, 120, 32);
         assert!(drawn.contains("health endpoint"), "{drawn}");
         // One unit and one decision. Nothing behind it is reachable, which is
@@ -1238,7 +1235,7 @@ mod tests {
     #[test]
     fn a_reading_too_wide_for_the_view_folds_rather_than_being_cut() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('d'));
+        press(&mut a, KeyCode::Enter);
         // Narrow enough that the longest reason cannot sit on one line. This
         // is where the exact wording is read, so nothing may be lost off the
         // right-hand edge.
@@ -1261,7 +1258,7 @@ mod tests {
     #[test]
     fn scrolling_past_the_last_line_stops_there_instead_of_emptying_the_panel() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('d'));
+        press(&mut a, KeyCode::Enter);
         // A short panel, so there is somewhere to scroll to.
         let _ = screen(&mut a, 120, 14);
         for _ in 0..200 {
@@ -1386,7 +1383,6 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let title = drawn.lines().next().unwrap();
         let column = title.find("NEEDS YOU").expect("the count") as u16;
-        let _ = a.selected;
         a.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column,
@@ -1394,7 +1390,13 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         })
         .expect("click");
-        assert_eq!(a.selected, 1, "it moved to the next thing that needs you");
+        // It goes the whole way: the Ask that needs you, opened.
+        assert_eq!(
+            a.selected_unit().map(|u| u.title.clone()),
+            Some("readme fix".into()),
+            "it moved past the selection to the next thing that needs you"
+        );
+        assert!(a.detail().is_some(), "and opened it");
     }
 
     #[test]
@@ -1423,7 +1425,7 @@ mod tests {
             crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
         );
         let drawn = screen(&mut a, 80, 24);
-        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[P]ROCEED", "[D]ETAIL", "[W]EFT"] {
+        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[W]EFT"] {
             assert!(drawn.contains(key), "{key} fell off the bar: {drawn}");
         }
     }

@@ -1122,18 +1122,34 @@ impl App {
             self.detail = None;
             return;
         }
-        let n = self.units.len();
-        let start = self.selected;
-        for step in 1..=n {
-            let i = (start + step) % n;
-            if self.units[i].needs_you() {
-                self.selected = i;
-                self.show_work = true;
-                self.detail = None;
-                return;
-            }
+        // The thing that needs you is an Ask, and its detail view is where
+        // you act on it, so one key goes the whole way. When nothing needs
+        // you it is the newest Ask, which is the one just made.
+        let rows = self.rows();
+        let actions: Vec<usize> =
+            (0..rows.len()).filter(|i| matches!(rows[*i], Row::Action { .. })).collect();
+        if actions.is_empty() {
+            self.say("Nothing has been asked for yet.");
+            return;
         }
-        self.say("Nothing needs you.");
+        let pick = {
+            let needs = |i: &usize| match &rows[*i] {
+                Row::Action { project, unit } => {
+                    self.units_of(*project).get(*unit).is_some_and(|u| u.needs_you())
+                }
+                _ => false,
+            };
+            actions
+                .iter()
+                .copied()
+                .find(|i| *i > self.selected && needs(i))
+                .or_else(|| actions.iter().copied().find(|i| needs(i)))
+                .unwrap_or(*actions.last().expect("one"))
+        };
+        self.selected = pick;
+        self.show_work = true;
+        self.follow_the_selection();
+        self.act(Act::Detail);
     }
 
     /// The next pane waiting for an answer, skipping the one already shown.
@@ -1295,7 +1311,6 @@ impl App {
             Action::NewAgent => self.act(Act::NewAgent),
             Action::Eval => self.act(Act::Eval),
             Action::Seal => self.act(Act::Seal),
-            Action::Detail => self.act(Act::Detail),
             Action::FollowUp => self.act(Act::FollowUp),
             Action::Explain => self.explain_waiting(),
             Action::ReadyUp => self.act(Act::ReadyUp),
@@ -2559,21 +2574,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn space_selects_the_next_row_that_needs_you() {
+    fn space_goes_to_the_ask_that_needs_you() {
+        // The thing that needs you is an Ask, and its detail view is where
+        // you act on it, so one key goes the whole way.
         let mut a = app();
         let mut ready = unit(Sent::ReadyToSend);
         ready.ask_id = "ask_2".into();
+        ready.title = "readme fix".into();
         a.set_units(vec![unit(Sent::TakenByAgent), ready]);
         press(&mut a, KeyCode::Char(' '));
-        assert_eq!(a.selected, 1);
+        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("readme fix".into()));
     }
 
     #[test]
-    fn space_says_so_plainly_when_nothing_needs_you() {
+    fn space_falls_back_to_the_newest_ask_when_nothing_needs_you() {
         let mut a = app();
-        a.set_units(vec![unit(Sent::TakenByAgent)]);
+        let mut older = unit(Sent::TakenByAgent);
+        older.title = "older".into();
+        let mut newest = unit(Sent::TakenByAgent);
+        newest.ask_id = "ask_2".into();
+        newest.title = "newest".into();
+        a.set_units(vec![older, newest]);
         press(&mut a, KeyCode::Char(' '));
-        assert_eq!(a.hint_text(), Some("Nothing needs you."));
+        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("newest".into()));
     }
 
     #[test]

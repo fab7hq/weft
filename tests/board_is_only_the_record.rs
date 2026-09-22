@@ -69,7 +69,9 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     ] {
         let (root, mut app) = board(&events);
         let row = screen(&mut app, 100, 30);
-        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)).expect("detail");
+        // `[Enter]` on an action opens its detail view; there is no key for
+        // the reading, because the sidebar is how it is reached.
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).expect("detail");
         let opened = screen(&mut app, 100, 30);
         let read = app.detail().map(|d| d.lines.join("\n")).unwrap_or_default();
         let seen = format!("{row}\n{opened}\n{read}");

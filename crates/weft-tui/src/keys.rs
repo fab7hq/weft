@@ -67,8 +67,6 @@ pub enum Action {
     NextNeedsYou,
     /// Show or hide the sidebar.
     ToggleSidebar,
-    /// The selected unit's whole story, in one blocking view.
-    Detail,
     /// Carry the selected unit forward, whatever that means for it.
     Proceed,
     /// A new Ask about work that already exists.
@@ -125,9 +123,9 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'a' => Action::Ask,
             'e' => Action::Eval,
             's' => Action::Seal,
-            // The one verb, and the one reading.
+            // The one verb, in the detail view. `[Enter]` on an action is how
+            // that view is reached, so the reading has no key of its own.
             'p' => Action::Proceed,
-            'd' => Action::Detail,
             'f' => Action::FollowUp,
             'r' => Action::ReadyUp,
             // `y` as in why: `e` is EVAL now.
@@ -172,8 +170,6 @@ mod tests {
             ('a', Action::Ask),
             ('e', Action::Eval),
             ('s', Action::Seal),
-            ('p', Action::Proceed),
-            ('d', Action::Detail),
             ('n', Action::NewAgent),
             ('h', Action::Help),
             ('x', Action::Quit),
@@ -190,12 +186,8 @@ mod tests {
     #[test]
     fn a_rows_own_actions_have_their_own_keys() {
         let t = Toggle;
-        for (c, expected) in [
-            ('p', Action::Proceed),
-            ('d', Action::Detail),
-            ('f', Action::FollowUp),
-            ('s', Action::Seal),
-        ] {
+        for (c, expected) in [('p', Action::Proceed), ('f', Action::FollowUp), ('s', Action::Seal)]
+        {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected, "{c}");
         }
     }
