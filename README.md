@@ -14,18 +14,22 @@ decided.
 
 **Weft has no LLM of its own.** Every model call happens in the agent you
 already run and configured. Weft drives the agents that think; the record is
-written by RingFrame, whose core is the `ringframe` crate in this
-repository and ships as its own binary beside `weft`.
+written by RingFrame, whose core is the `ringframe` crate in this repository
+and ships as its own binary beside `weft`.
 
 ## Status
 
-**0.1.0.** The runtime, the input path and the RingFrame interface all work:
-agents run in panes, the work list is read from the record, and Weft types a
-confirmed prompt for you after asking. One window holds as many projects as
-you open.
+**0.1.0.** Agents run in panes, the work list is read from the record, and
+Weft types a confirmed prompt for you after asking. One window holds as many
+projects as you open.
 
-Early in the sense that matters: the record's shape is settled and the
-interface is not. Expect the screens to move.
+The record's shape is settled; the interface is not. Expect the screens to
+move.
+
+## Requirements
+
+- macOS or Linux, and a terminal
+- at least one of `claude` or `codex`
 
 ## Install
 
@@ -33,52 +37,28 @@ interface is not. Expect the screens to move.
 curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
 ```
 
-It detects the platform, downloads a prebuilt `weft` and `ringframe`, verifies
-a checksum, and installs both to `~/.local/bin`. There is no toolchain to
-have. Then add the plugin for your harness:
+This detects the platform, downloads prebuilt `weft` and `ringframe` binaries,
+verifies their checksum, and installs both to `~/.local/bin` (override with
+`WEFT_BIN_DIR`). No toolchain is needed.
 
-```sh
-# Claude Code
-/plugin marketplace add fab7hq/fab7 && /plugin install rf@fab7
-# Codex
-codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7
+Then add the RingFrame plugin to your harness. In Claude Code:
+
+```text
+/plugin marketplace add fab7hq/fab7
+/plugin install rf@fab7
 ```
 
-The Python-era `uv tool install ringframe` still gets `ringframe` 0.0.5. It
-keeps working and is frozen there; it reads `ringframe.bundle/1` and refuses
-this era's configuration by name, which is the boundary working rather than a
-failure.
-
-## Working on it
-
-`./bin/reinstall-local` puts this working tree in front of your hosts: it
-builds both binaries, installs them, syncs the configuration from the `fab7`
-checkout beside this one, and reinstalls the plugins into Claude Code and
-Codex. All three move together, which is the point — change a profile and
-refresh only the plugins, and the skills change while the core keeps reading
-the configuration it last synced from the marketplace.
+In a shell, for Codex:
 
 ```sh
-./bin/reinstall-local          # both hosts
-./bin/reinstall-local none     # binaries and configuration only
-```
-
-## Requirements
-
-- macOS or Linux, a terminal
-- at least one of `claude` or `codex`
-
-## Build
-
-```sh
-cargo build
-cargo test
+codex plugin marketplace add fab7hq/fab7
+codex plugin add rf@fab7
 ```
 
 ## The screen
 
-The sidebar is a tree: **project → harness → action**. A unit hangs under the
-harness it was asked of, and says the furthest act that has happened.
+The sidebar is a tree: **project → harness → action**. Each action hangs under
+the harness it was asked of and shows the furthest act that has happened.
 
 ```
  ▾ fab7                                         2 open · 1 ●   ⌫
@@ -88,11 +68,10 @@ harness it was asked of, and says the furthest act that has happened.
  ▸ ringframe                                    2 open · 1 ●   ⌫
 ```
 
-`[Enter]` opens what is closed and goes there when it is open — a harness to
-its pane, an action to its detail view. The detail view is one unit's whole
-story, and it blocks: `ASK [DONE]  EVAL [HAVEN'T RUN]  SEAL [HAVEN'T RUN]`,
-each section holding what happened, with `[P]ROCEED` for whatever the next
-step is.
+`Enter` unfolds what is closed and goes to what is open: a harness to its
+pane, an action to its detail view. The detail view is one action's whole
+story, and it blocks — `ASK [DONE]  EVAL [HAVEN'T RUN]  SEAL [HAVEN'T RUN]`,
+each section holding what happened, with `[P]ROCEED` for the next step.
 
 ## Keys
 
@@ -104,26 +83,42 @@ Weft reserves exactly one chord. Everything else belongs to the agent.
 | `↑` `↓` | Move |
 | `Enter` | Unfold what is closed; open, go there |
 | `→` `←` | Unfold · fold, and back everywhere |
-| `Space` | The Ask that needs you, opened |
+| `Space` | Jump to the next thing that needs you |
 | `Tab` · `1`-`9` | Next agent · that agent |
 | `A` `E` `S` | RingFrame's three acts: ask · eval · seal |
 | `P` `F` | In the detail view: proceed · follow up |
-| `R` `Y` | Ready a harness up · why a pane is waiting |
-| `W` | The Weft menu: `O`pen project · `N`ew agent · `B` sidebar · `H`elp · `X` quit |
+| `R` `Y` | Ready a harness · why a pane is waiting |
+| `O` `N` `B` | Open a project · new agent · toggle the sidebar |
+| `H` `X` | Help · quit |
+| `W` | The Weft menu, holding the operations above |
 | `⌫` | Close the selected project, after asking |
 
-In the agent every other key goes straight through, `Esc` included.
+Inside the agent every key goes straight through, `Esc` included.
 
-**Weft takes no mouse.** Capturing it would hand every click and drag to Weft
-instead of to your terminal's own selection, which is what click-drag-copy
-over an agent is. Weft is keys only and the mouse stays where you expect it.
+**Weft takes no mouse.** Capturing it would take every click and drag away
+from your terminal's own selection, which is how you copy text out of an
+agent. Weft is keys only, and the mouse stays where you expect it.
 
-To read the screens without running an agent:
+## Development
 
 ```sh
-cargo run --example wireframe
+cargo build
+cargo test
+cargo run --example wireframe   # the screens, without running an agent
 ```
 
-## Licence
+`./bin/reinstall-local` puts this working tree in front of your hosts. It
+builds both binaries, installs them, syncs the configuration from the `fab7`
+checkout beside this one, and reinstalls the plugins. The three have to move
+together: refresh only the plugins and the skills change while the core keeps
+reading the configuration it last synced.
+
+```sh
+./bin/reinstall-local           # both hosts
+./bin/reinstall-local claude    # one host (or codex)
+./bin/reinstall-local none      # binaries and configuration only
+```
+
+## License
 
 Apache-2.0
