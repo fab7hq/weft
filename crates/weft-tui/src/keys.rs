@@ -67,6 +67,8 @@ pub enum Action {
     Wording,
     /// The judges, their votes and their reasons, in the drawer.
     Judges,
+    /// The Seal that closed the work, re-verified, in the drawer.
+    Seal,
     /// Ask again about the selected row's work.
     Fix,
     /// Why Weft says a pane is waiting for an answer.
@@ -120,6 +122,9 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'd' => Action::Decide,
             'p' => Action::Wording,
             'j' => Action::Judges,
+            // `s` is Send and `d` is Decide, so the receipt takes `t`, as in
+            // "the seal" — the word the panel titles it with.
+            't' => Action::Seal,
             'f' => Action::Fix,
             'e' => Action::Explain,
             'r' => Action::ReadyUp,

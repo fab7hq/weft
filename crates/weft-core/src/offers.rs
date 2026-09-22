@@ -161,3 +161,129 @@ pub fn judges_read(record: &crate::record::Record, check: &crate::ledger::Check)
     lines.push("A check is a judgement, not a guarantee.".into());
     lines
 }
+
+/// The Seal that closed the work. RingFrame re-verifies the receipt on every
+/// read; Weft says what it found rather than deciding anything itself.
+///
+/// `checked` is `ringframe seal check --json`. A field it does not carry is
+/// left out rather than guessed at.
+pub fn seal_read(unit: &crate::ledger::Unit, checked: &serde_json::Value) -> Vec<String> {
+    let str_at = |k: &str| checked.get(k).and_then(serde_json::Value::as_str);
+    let mut lines = vec![
+        format!(
+            "{} · sealed {}",
+            unit.seal_state().unwrap_or_else(|| "sealed".into()),
+            unit.sealed_at.as_deref().unwrap_or("at an hour the record does not give")
+        ),
+        String::new(),
+    ];
+
+    match checked.get("eval") {
+        Some(e) if !e.is_null() => {
+            let verdict = e.get("verdict").and_then(serde_json::Value::as_str).unwrap_or("?");
+            let confidence = e.get("confidence").and_then(serde_json::Value::as_f64);
+            lines.push(match confidence {
+                Some(c) => format!("ON THE CHECK  recorded as {verdict}, {c:.2} agreed"),
+                None => format!("ON THE CHECK  recorded as {verdict}"),
+            });
+        }
+        // A Seal may close work no judge looked at. That is allowed, and
+        // saying so is the point of reading the receipt.
+        _ => lines.push("ON THE CHECK  none — this was sealed without an Eval".into()),
+    }
+    if let Some(id) = str_at("seal_id") {
+        lines.push(format!("RECEIPT       {id}"));
+    }
+
+    lines.push(String::new());
+    let codes: Vec<&str> = checked
+        .get("codes")
+        .and_then(serde_json::Value::as_array)
+        .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+        .unwrap_or_default();
+    if codes.is_empty() {
+        lines.push("The receipt still matches what RingFrame wrote.".into());
+    } else {
+        lines.push("THE RECEIPT NO LONGER HOLDS".into());
+        for c in codes {
+            lines.push(format!("  {}", said_plainly(c)));
+        }
+    }
+    if checked.get("subject_matches").and_then(serde_json::Value::as_bool) == Some(false) {
+        lines.push("  the work has moved on since it was sealed".into());
+    }
+
+    lines.push(String::new());
+    lines.push("A Seal records what was decided. It does not make the work right.".into());
+    lines
+}
+
+/// A refusal code in the words the person reading it would use.
+fn said_plainly(code: &str) -> &str {
+    match code {
+        "seal.receipt_missing" => "the receipt is not on disk",
+        "seal.receipt_tampered" => "the receipt on disk is not the one that was sealed",
+        "seal.eval_changed" => "the check it rests on has changed since",
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::ledger::{Sent, Unit};
+
+    fn sealed(disposition: &str) -> Unit {
+        Unit {
+            ask_id: "ask_1".into(),
+            title: "health endpoint".into(),
+            harness: "codex".into(),
+            session_ref: None,
+            delivery: Default::default(),
+            route: "native_plan".into(),
+            asked_at: "2026-09-19T14:02:00Z".into(),
+            delivery_mode: "human_handoff".into(),
+            cancelled: false,
+            unanswered: false,
+            confirmed: true,
+            sent: Sent::Arrived { exact: true },
+            check: None,
+            sealed: Some(disposition.into()),
+            seal_id: Some("sel_1".into()),
+            sealed_at: Some("2026-09-19T16:40:00Z".into()),
+        }
+    }
+
+    #[test]
+    fn a_receipt_that_still_holds_says_so_and_names_the_check_it_rests_on() {
+        let lines = super::seal_read(
+            &sealed("accepted"),
+            &json!({"seal_id": "sel_1", "fresh": true, "codes": [],
+                    "eval": {"eval_id": "evl_1", "verdict": "aligned", "confidence": 0.92},
+                    "subject_matches": true}),
+        );
+        let read = lines.join("\n");
+        assert!(read.contains("accepted"), "{read}");
+        assert!(read.contains("aligned") && read.contains("0.92"), "{read}");
+        assert!(read.contains("still matches"), "{read}");
+    }
+
+    #[test]
+    fn a_receipt_that_no_longer_holds_says_why_in_words_not_codes() {
+        let lines = super::seal_read(
+            &sealed("accepted"),
+            &json!({"seal_id": "sel_1", "fresh": false,
+                    "codes": ["seal.receipt_tampered", "seal.eval_changed"],
+                    "eval": null, "subject_matches": false}),
+        );
+        let read = lines.join("\n");
+        assert!(!read.contains("seal.receipt_tampered"), "a code is not a sentence:\n{read}");
+        assert!(read.contains("is not the one that was sealed"), "{read}");
+        assert!(read.contains("the check it rests on has changed"), "{read}");
+        assert!(read.contains("moved on since it was sealed"), "{read}");
+        // A Seal may close work no judge looked at, and the reading says so
+        // rather than leaving the line out.
+        assert!(read.contains("sealed without an Eval"), "{read}");
+    }
+}

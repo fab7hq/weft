@@ -173,6 +173,8 @@ fn units() -> Vec<Unit> {
         sent,
         check: None,
         sealed: None,
+        seal_id: None,
+        sealed_at: None,
     };
     let mut checked = base("ask_1", "health endpoint", "codex", Sent::Arrived { exact: true });
     checked.check = Some(Check {
@@ -183,6 +185,8 @@ fn units() -> Vec<Unit> {
     });
     let mut sealed = base("ask_4", "logging cleanup", "claude-code", Sent::Arrived { exact: true });
     sealed.sealed = Some("accepted".into());
+    sealed.seal_id = Some("sel_1".into());
+    sealed.sealed_at = Some("2026-09-19T16:40:00Z".into());
     vec![
         checked,
         base("ask_2", "readme fix", "claude-code", Sent::ReadyToSend),

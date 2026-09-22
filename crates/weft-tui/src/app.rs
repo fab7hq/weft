@@ -80,6 +80,7 @@ pub enum Modal {
 pub enum Reading {
     Wording,
     Judges,
+    Seal,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -642,6 +643,28 @@ impl App {
         });
     }
 
+    /// The Seal that closed the work, re-verified as it is read.
+    fn read_seal(&mut self) {
+        if !self.guard(Act::Seal) {
+            return;
+        }
+        let Some(unit) = self.selected_unit().cloned() else { return };
+        // `guard` already refused a unit with no seal; this keeps the reader
+        // honest rather than inventing an id.
+        let Some(seal_id) = unit.seal_id.clone() else { return };
+        match self.session.read("seal", &seal_id) {
+            Ok(v) => {
+                self.drawer = Some(Drawer {
+                    kind: Reading::Seal,
+                    title: format!("THE SEAL · {}", unit.title),
+                    lines: weft_core::offers::seal_read(&unit, &v),
+                    offset: 0,
+                });
+            }
+            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+        }
+    }
+
     fn do_set_up(&mut self, name: &str) {
         match self.session.set_up(name) {
             Ok(()) => {
@@ -910,6 +933,7 @@ impl App {
             Act::Decide => self.start_skill("seal"),
             Act::Wording => self.read_wording(),
             Act::Judges => self.read_judges(),
+            Act::Seal => self.read_seal(),
             Act::Fix => {
                 if self.guard(Act::Fix) {
                     self.drawer = None;
@@ -1016,6 +1040,7 @@ impl App {
             Action::Decide => self.act(Act::Decide),
             Action::Wording => self.act(Act::Wording),
             Action::Judges => self.act(Act::Judges),
+            Action::Seal => self.act(Act::Seal),
             Action::Fix => self.act(Act::Fix),
             Action::Explain => self.explain_waiting(),
             Action::ReadyUp => self.act(Act::ReadyUp),
@@ -1540,6 +1565,8 @@ pub(crate) mod tests {
             sent,
             check: None,
             sealed: None,
+            seal_id: None,
+            sealed_at: None,
         }
     }
 
@@ -2389,6 +2416,8 @@ mod start_tests {
             sent: Sent::ReadyToSend,
             check: None,
             sealed: None,
+            seal_id: None,
+            sealed_at: None,
         }]);
         a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)).expect("key");
         assert!(

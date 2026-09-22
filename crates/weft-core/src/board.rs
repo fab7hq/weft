@@ -19,6 +19,9 @@ pub enum Act {
     Decide,
     Wording,
     Judges,
+    /// Read the Seal that closed the work: what was decided, on which Eval,
+    /// and whether the receipt still matches what is on disk.
+    Seal,
     Fix,
     NewAgent,
     Work,
@@ -224,6 +227,13 @@ impl Board<'_> {
                         .to_string()
                 }),
             },
+            Act::Seal => match self.selected_unit() {
+                None => Some("Nothing has been asked for yet.".into()),
+                Some(u) => u.seal_id.is_none().then(|| {
+                    "This has not been sealed — [D]ECIDE closes it one way or the other."
+                        .to_string()
+                }),
+            },
         }
     }
 }
@@ -254,6 +264,8 @@ mod tests {
             sent,
             check: None,
             sealed: None,
+            seal_id: None,
+            sealed_at: None,
         }
     }
 
@@ -327,6 +339,23 @@ mod tests {
         );
         // And only for the acts that would compile one.
         assert_eq!(b.unavailable(Act::Help), None);
+    }
+
+    #[test]
+    fn reading_a_seal_is_refused_until_one_exists_and_says_what_would_make_it() {
+        let mut units = [unit("codex", Sent::Arrived { exact: true })];
+        let panes = [pane("codex")];
+        let none = Routing::default();
+
+        let b = board(&units, &panes, READY, &none);
+        let said = b.unavailable(Act::Seal).expect("nothing has been sealed");
+        assert!(said.contains("[D]ECIDE"), "a refusal names the way forward: {said}");
+
+        // And once there is a receipt, reading it is simply available.
+        units[0].sealed = Some("accepted".into());
+        units[0].seal_id = Some("sel_1".into());
+        let b = board(&units, &panes, READY, &none);
+        assert_eq!(b.unavailable(Act::Seal), None);
     }
 
     #[test]

@@ -142,6 +142,10 @@ pub struct Unit {
     pub sent: Sent,
     pub check: Option<Check>,
     pub sealed: Option<String>,
+    /// The Seal that closed this, when one has. `sealed` is its disposition;
+    /// these are the record it came from, so a row can lead to the receipt.
+    pub seal_id: Option<String>,
+    pub sealed_at: Option<String>,
 }
 
 impl Unit {
@@ -150,19 +154,50 @@ impl Unit {
         if self.cancelled {
             return "cancelled".into();
         }
-        if let Some(d) = &self.sealed {
-            return match d.as_str() {
-                "accepted" => "accepted".into(),
-                "rejected" => "rejected".into(),
-                "deferred" => "parked".into(),
-                "abandoned" => "dropped".into(),
-                other => other.into(),
-            };
+        if let Some(word) = self.seal_state() {
+            return word;
         }
         if let Some(c) = &self.check {
             return c.verdict.plain().into();
         }
         self.sent_phrase().into()
+    }
+
+    /// Where each of RingFrame's three acts stands. The list shows one line
+    /// per act, because one collapsed status cannot say both that the Ask
+    /// arrived word for word and that no Eval has run on it yet.
+    ///
+    /// `None` means the act has not happened. That is a fact about the work,
+    /// not a gap in the record, so the row says so rather than leaving a hole.
+    pub fn ask_state(&self) -> &'static str {
+        if self.cancelled { "cancelled" } else { self.sent_phrase() }
+    }
+
+    pub fn eval_state(&self) -> Option<String> {
+        self.check.as_ref().map(|c| format!("{}, {:.2} agreed", c.verdict.plain(), c.agreement))
+    }
+
+    pub fn seal_state(&self) -> Option<String> {
+        self.sealed.as_deref().map(|d| match d {
+            "deferred" => "parked".to_string(),
+            "abandoned" => "dropped".to_string(),
+            // `accepted` and `rejected` are already the words a person reads,
+            // and anything else is shown as the record wrote it.
+            other => other.to_string(),
+        })
+    }
+
+    /// Which act is waiting on the person. Their union is `needs_you`: a
+    /// prompt to send or a yes to give is the Ask's; a verdict with no
+    /// decision on it is the Seal's.
+    pub fn ask_needs_you(&self) -> bool {
+        !self.cancelled
+            && self.sealed.is_none()
+            && (self.sent == Sent::ReadyToSend || self.awaiting_yes())
+    }
+
+    pub fn seal_needs_you(&self) -> bool {
+        !self.cancelled && self.sealed.is_none() && self.check.is_some()
     }
 
     /// Where the Ask itself stands, whatever has happened to it since. The
@@ -271,6 +306,8 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     sent,
                     check: None,
                     sealed: None,
+                    seal_id: None,
+                    sealed_at: None,
                 });
             }
             "ask.unanswered" => {
@@ -326,9 +363,12 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
             }
             "seal.created" => {
                 let disposition = s(&data, &["disposition"]).unwrap_or_default().to_string();
+                let at = s(e, &["time"]).unwrap_or_default().to_string();
                 for ask in basis_asks(&data) {
                     if let Some(u) = index.get(&ask).and_then(|i| units.get_mut(*i)) {
                         u.sealed = Some(disposition.clone());
+                        u.seal_id = Some(id.clone());
+                        u.sealed_at = Some(at.clone());
                     }
                 }
             }
@@ -554,6 +594,67 @@ mod tests {
         assert_eq!(units[0].sealed.as_deref(), Some("deferred"));
         assert_eq!(units[0].status(), "parked", "deferred reads as parked");
         assert!(!units[0].needs_you());
+    }
+
+    #[test]
+    fn the_three_acts_each_say_where_they_stand() {
+        let units = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.confirmed", "ask_1", json!({"confirmation": {}})),
+        ]);
+        let u = &units[0];
+        // An act that has not happened says so. A blank would read as a gap
+        // in the record rather than as work still to do.
+        assert_eq!(u.ask_state(), "ready to send");
+        assert_eq!(u.eval_state(), None);
+        assert_eq!(u.seal_state(), None);
+    }
+
+    #[test]
+    fn exactly_one_act_carries_what_the_row_waits_on() {
+        // The Ask wants sending; nothing else is waiting yet.
+        let ready = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.confirmed", "ask_1", json!({"confirmation": {}})),
+        ]);
+        assert!(ready[0].ask_needs_you() && !ready[0].seal_needs_you());
+
+        // Once it is sent and judged, the decision is the Seal's, not the
+        // Ask's — and the union is still exactly `needs_you`.
+        let judged = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev("ask.submission", "ask_1", json!({"as_modified": false})),
+            ev(
+                "eval.completed",
+                "evl_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "subject": {},
+                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                }),
+            ),
+        ]);
+        let u = &judged[0];
+        assert!(!u.ask_needs_you() && u.seal_needs_you());
+        assert_eq!(u.needs_you(), u.ask_needs_you() || u.seal_needs_you());
+    }
+
+    #[test]
+    fn a_seal_says_which_receipt_closed_the_work() {
+        let units = project(&[
+            compiled("ask_1", "t", "codex", "human_handoff"),
+            ev(
+                "seal.created",
+                "sel_1",
+                json!({
+                    "basis": {"asks": ["ask_1"]}, "eval": null, "subject": {},
+                    "disposition": "accepted", "authority": {}, "artifact": {}
+                }),
+            ),
+        ]);
+        // Without the id the row can say a Seal happened but never lead to it.
+        assert_eq!(units[0].seal_id.as_deref(), Some("sel_1"));
+        assert!(units[0].sealed_at.is_some(), "and when, so the reading is dated");
+        assert_eq!(units[0].seal_state().as_deref(), Some("accepted"));
     }
 
     #[test]

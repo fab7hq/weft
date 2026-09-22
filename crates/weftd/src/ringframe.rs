@@ -114,18 +114,24 @@ pub struct Freshness {
     pub subject_matches: bool,
 }
 
-/// A receipt a script can check. Exit 2 means "not fresh", not "broken".
-pub fn seal_check(project: &Path, seal_id: &str) -> Result<Freshness, Error> {
+/// Everything RingFrame says about a receipt when it re-verifies it. Exit 2
+/// means "not fresh", not "broken", so the JSON is read whatever the code.
+pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
     let out = Command::new("ringframe")
         .arg("--workspace")
         .arg(project)
         .args(["seal", "check", "--seal", seal_id, "--json"])
         .output()
         .map_err(|_| Error::NotInstalled)?;
-    let v: Value = serde_json::from_slice(&out.stdout).map_err(|_| Error::Refused {
+    serde_json::from_slice(&out.stdout).map_err(|_| Error::Refused {
         code: out.status.code().unwrap_or(-1),
         message: String::from_utf8_lossy(&out.stderr).trim().to_string(),
-    })?;
+    })
+}
+
+/// A receipt a script can check.
+pub fn seal_check(project: &Path, seal_id: &str) -> Result<Freshness, Error> {
+    let v = seal_checked(project, seal_id)?;
     Ok(Freshness {
         fresh: v.get("fresh").and_then(Value::as_bool).unwrap_or(false),
         subject_matches: v.get("subject_matches").and_then(Value::as_bool).unwrap_or(false),

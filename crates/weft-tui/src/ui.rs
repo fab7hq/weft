@@ -353,14 +353,19 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         return plain("  [Enter] ANSWER IT   [E]XPLAIN WHY IT SAYS THAT");
     }
     if let Some(d) = app.drawer() {
-        let sibling = match d.kind {
-            Reading::Judges => ("[P] WORDING", Act::Wording),
-            Reading::Wording => ("[J] JUDGES", Act::Judges),
+        // While reading one act, the other two are a key away. `key` dims the
+        // ones this row has nothing to show for.
+        let siblings: [(&str, Act); 2] = match d.kind {
+            Reading::Wording => [("[J] JUDGES", Act::Judges), ("[T] THE SEAL", Act::Seal)],
+            Reading::Judges => [("[P] WORDING", Act::Wording), ("[T] THE SEAL", Act::Seal)],
+            Reading::Seal => [("[P] WORDING", Act::Wording), ("[J] JUDGES", Act::Judges)],
         };
         let mut at = Vec::new();
         let mut col = 2u16;
         let mut left = vec![Span::raw("  ")];
-        for (label, act) in [sibling, ("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)] {
+        for (label, act) in
+            siblings.into_iter().chain([("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)])
+        {
             let span = key(app, label, act);
             at.push((col, span.content.chars().count() as u16, act));
             col += span.content.chars().count() as u16 + 3;
@@ -536,7 +541,7 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
             ),
             Span::styled(format!("{} ", unit.harness), th.label()),
         ]));
-        for line in status_lines(app, unit, width) {
+        for line in status_lines(app, unit, width, picked) {
             lines.push(line);
         }
         if app.expanded() == Some(i) {
@@ -551,14 +556,112 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
     (Paragraph::new(lines), rows)
 }
 
-/// The status, and — when the work has been checked — who agreed and who
-/// judged. Every verdict names the host that produced it.
-fn status_lines(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
+/// One act of the three, as a row shows it.
+struct ActRow {
+    label: &'static str,
+    /// This act, and not another on the same row, is what waits on the person.
+    needs: bool,
+    state: String,
+    /// What wraps away from the state rather than being cut off it, because
+    /// every verdict names the host that produced it.
+    tail: Option<String>,
+    key_label: &'static str,
+    act: Act,
+}
+
+impl ActRow {
+    /// `   EVAL  ● DOESN'T MATCH WHAT YOU ASKED`. The status keeps the
+    /// vocabulary the single headline had, so the row still reads as the
+    /// record's own words; only the tail stays as it was written.
+    fn head(&self, state: &str) -> String {
+        format!("   {:<6}{}{}", self.label, if self.needs { "● " } else { "  " }, state)
+    }
+}
+
+/// Where each of RingFrame's three acts stands for this work.
+fn act_rows(app: &App, unit: &Unit) -> [ActRow; 3] {
+    let (verdict, judged) = eval_state(app, unit);
+    [
+        ActRow {
+            label: "ASK",
+            needs: unit.ask_needs_you(),
+            state: unit.ask_state().to_uppercase(),
+            tail: None,
+            key_label: "[P] WORDING",
+            act: Act::Wording,
+        },
+        ActRow {
+            label: "EVAL",
+            needs: false,
+            state: verdict.to_uppercase(),
+            tail: judged,
+            key_label: "[J] JUDGES",
+            act: Act::Judges,
+        },
+        ActRow {
+            label: "SEAL",
+            needs: unit.seal_needs_you(),
+            state: seal_state(unit).to_uppercase(),
+            tail: None,
+            key_label: "[T] THE SEAL",
+            act: Act::Seal,
+        },
+    ]
+}
+
+/// All three keys or none. A row with a key on one act and not the next reads
+/// as though the others cannot be opened, and below this width the expanded
+/// row carries them instead, so no act is ever out of reach.
+fn reading_keys_on_the_acts(app: &App, unit: &Unit, width: usize) -> bool {
+    act_rows(app, unit)
+        .iter()
+        .all(|r| r.head(&r.state).chars().count() + r.key_label.chars().count() + 2 <= width)
+}
+
+/// One line per act — Ask, Eval, Seal. A single collapsed status cannot say
+/// both that the Ask arrived word for word and that no Eval has run on it,
+/// and the acts are what a person acts on.
+///
+/// The selected row also carries the key that opens each act. Only the
+/// selected row: availability is decided against the selection, so a key
+/// drawn anywhere else would be answering about the wrong work.
+fn status_lines(app: &App, unit: &Unit, width: usize, picked: bool) -> Vec<Line<'static>> {
     let th = app.theme;
-    let style = if unit.needs_you() { th.needs_you() } else { th.label() };
-    let head = format!("   {}{}", unit.marker(), unit.status().to_uppercase());
+    let keyed = picked && reading_keys_on_the_acts(app, unit, width);
+    let mut lines = Vec::new();
+    for r in act_rows(app, unit) {
+        let style = if r.needs { th.needs_you() } else { th.label() };
+        let indent = r.head("").chars().count();
+        let room = width.saturating_sub(if keyed { r.key_label.chars().count() + 2 } else { 0 });
+        let head = r.head(&r.state);
+        let inlined =
+            r.tail.as_ref().filter(|t| head.chars().count() + 3 + t.chars().count() <= room);
+        let drawn = match inlined {
+            Some(t) => format!("{head} · {t}"),
+            None => head,
+        };
+        let mut spans = vec![Span::styled(drawn.clone(), style)];
+        if keyed {
+            spans.push(Span::raw(" ".repeat(room.saturating_sub(drawn.chars().count()) + 1)));
+            spans.push(key(app, r.key_label, r.act));
+        }
+        lines.push(Line::from(spans));
+        if inlined.is_none()
+            && let Some(t) = r.tail
+        {
+            for l in wrap(&t, room.saturating_sub(indent).max(8)) {
+                lines.push(Line::styled(format!("{:indent$}{l}", "", indent = indent), th.label()));
+            }
+        }
+    }
+    lines
+}
+
+/// What the Eval says, split so the host that judged wraps away from the
+/// verdict rather than being cut off it.
+fn eval_state(app: &App, unit: &Unit) -> (String, Option<String>) {
     let Some(check) = &unit.check else {
-        return vec![Line::styled(head, style)];
+        return ("not checked yet".into(), None);
     };
     let record = app.record(&check.eval_id);
     let agreed = match &record {
@@ -569,23 +672,20 @@ fn status_lines(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
         match check.judged_by.clone().or_else(|| {
             record.as_ref().map(|r| r.judged_by().join(" and ")).filter(|s| !s.is_empty())
         }) {
-            Some(h) => format!(" · judged by {h}"),
-            None => String::new(),
+            Some(h) => format!("{agreed} · judged by {h}"),
+            None => agreed,
         };
-    let tail = format!("{agreed}{judged}");
-    if head.chars().count() + 3 + tail.chars().count() <= width {
-        return vec![Line::from(vec![
-            Span::styled(head, style),
-            Span::styled(format!(" · {tail}"), th.label()),
-        ])];
-    }
-    // Narrow: the agreement and the host wrap rather than being cut, because
-    // every verdict names the host that produced it.
-    let mut lines = vec![Line::styled(head, style)];
-    for l in wrap(&tail, width.saturating_sub(3)) {
-        lines.push(Line::styled(format!("   {l}"), th.label()));
-    }
-    lines
+    (check.verdict.plain().to_string(), Some(judged))
+}
+
+fn seal_state(unit: &Unit) -> String {
+    unit.seal_state().unwrap_or_else(|| {
+        if unit.seal_needs_you() {
+            "waiting on your decision".into()
+        } else {
+            "not sealed yet".into()
+        }
+    })
 }
 
 /// What the expanded row adds: the judges' votes, what changed with no judge
@@ -636,18 +736,14 @@ fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
     lines.push(Line::styled(provenance(unit), th.label()));
     // `[O]PEN AGENT` comes first: for a row whose agent is gone it is the only
     // thing that leads anywhere, and that is the common case on reopening.
-    lines.extend(keys_for_row(
-        app,
-        &[
-            ("[O]PEN AGENT", Act::OpenAgent),
-            ("[P] WORDING", Act::Wording),
-            ("[J] JUDGES", Act::Judges),
-            ("[F]IX THIS", Act::Fix),
-            ("[D]ECIDE", Act::Decide),
-        ],
-        indent,
-        width,
-    ));
+    let mut offered = vec![("[O]PEN AGENT", Act::OpenAgent)];
+    // The readings sit on the act lines above when the width allows. When it
+    // does not, this is where they are, so no act is ever unreachable.
+    if !reading_keys_on_the_acts(app, unit, width) {
+        offered.extend(act_rows(app, unit).map(|r| (r.key_label, r.act)));
+    }
+    offered.extend([("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)]);
+    lines.extend(keys_for_row(app, &offered, indent, width));
     lines
 }
 
@@ -1182,6 +1278,54 @@ mod tests {
         let parsed = weft_core::record::Record::parse(&record).expect("a record");
         a.set_records(serde_json::json!({"evl_1": parsed}));
         a
+    }
+
+    #[test]
+    fn every_row_says_where_all_three_acts_stand() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 100, 30);
+        for act in ["ASK", "EVAL", "SEAL"] {
+            // One line per act, on each of the two rows. Counted as a label
+            // in its own column, so a verdict reading "what you asked" is not
+            // mistaken for the Ask's own line.
+            let lines = drawn.lines().filter(|l| l.starts_with(&format!("   {act} "))).count();
+            assert_eq!(lines, 2, "{act} is missing from a row:\n{drawn}");
+        }
+        // An act that has not happened says so rather than leaving a blank,
+        // which would read as a gap in the record.
+        assert!(drawn.contains("NOT CHECKED YET"), "{drawn}");
+        assert!(drawn.contains("NOT SEALED YET"), "{drawn}");
+        // And the one that has says what the ledger said.
+        assert!(drawn.contains("DOESN'T MATCH WHAT YOU ASKED"), "{drawn}");
+    }
+
+    #[test]
+    fn only_the_selected_row_offers_the_key_that_opens_each_act() {
+        let mut a = judged();
+        let drawn = screen(&mut a, 100, 30);
+        for k in ["[P] WORDING", "[J] JUDGES", "[T] THE SEAL"] {
+            // Availability is decided against the selection, so a key on any
+            // other row would be answering about the wrong work.
+            assert_eq!(drawn.matches(k).count(), 1, "{k} is on more than the selection:\n{drawn}");
+        }
+    }
+
+    #[test]
+    fn a_list_too_narrow_for_the_keys_moves_them_into_the_expanded_row() {
+        let mut a = judged();
+        let wide = screen(&mut a, 100, 30);
+        assert!(wide.contains("[T] THE SEAL"), "the acts carry their own keys when they fit");
+
+        // Beside a pane the list is narrow. The keys leave the act lines
+        // rather than being cut, and the expanded row picks them up, so no
+        // act is ever out of reach.
+        let narrow = screen(&mut a, 50, 30);
+        assert!(!narrow.contains("[T] THE SEAL"), "no room, so no key on the act:\n{narrow}");
+        press(&mut a, KeyCode::Enter);
+        let opened = screen(&mut a, 50, 30);
+        for k in ["[P] WORDING", "[J] JUDGES", "[T] THE SEAL"] {
+            assert!(opened.contains(k), "{k} is unreachable at this width:\n{opened}");
+        }
     }
 
     #[test]

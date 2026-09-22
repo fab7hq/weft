@@ -502,6 +502,12 @@ impl Session {
                 Some(r) => Answer::Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)),
                 None => Answer::No("no_record", "that check's record is not on disk".into()),
             },
+            // `unit` is a seal id here, for the same reason: a receipt is
+            // named by the Seal, not by the Ask it closed.
+            "seal" => match crate::ringframe::seal_checked(&root, unit) {
+                Ok(v) => Answer::Ok(v),
+                Err(e) => Answer::No("refused", format!("RingFrame would not check it: {e:?}")),
+            },
             other => Answer::No("unknown_read", format!("there is nothing called {other}")),
         }
     }
