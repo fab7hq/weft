@@ -174,6 +174,30 @@ pub fn require_git(ws: &Workspace) -> Result<(), WorkspaceError> {
             ),
         ));
     }
+    // Git discovery walks up. Without this, a directory inside someone else's
+    // repository becomes a workspace whose anchor, HEAD and history all belong
+    // to a repository nobody opened — and RingFrame is meant to run inside the
+    // directory it was given, not above it.
+    let prefix = git(&ws.root, &["rev-parse", "--show-prefix"])
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if !prefix.is_empty() {
+        let top = git(&ws.root, &["rev-parse", "--show-toplevel"])
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        return Err(WorkspaceError::new(
+            "workspace.not_repo_root",
+            format!(
+                "{} is inside the repository at {}, not its root; RingFrame anchors every \
+                 Eval and Seal to a commit, and that commit would belong to a repository \
+                 this directory does not contain. Run `git init` here to make it its own \
+                 repository, or open {} instead.",
+                ws.root.display(),
+                top,
+                top
+            ),
+        ));
+    }
     if !ok(&["rev-parse", "--verify", "--quiet", "HEAD"]) {
         return Err(WorkspaceError::new(
             "workspace.no_commit",

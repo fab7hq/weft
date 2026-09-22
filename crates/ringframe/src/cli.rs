@@ -1938,21 +1938,50 @@ mod tests {
     }
 
     #[test]
-    fn a_nested_compile_keeps_its_records_in_the_project() {
+    fn a_directory_inside_someone_elses_repository_is_not_a_workspace() {
         with_config_home(|_| {
-            // The parent is a bare repository, never initialised, so that
-            // "nothing landed here" means something.
+            // Git discovery walks up, so this used to work: the records landed
+            // here and the anchor came from the repository above, which the
+            // person never opened. Every Eval and Seal would have been against
+            // a history this directory does not contain.
             let repo = crate::testing::repo();
             let project = repo.path().join("test");
             std::fs::create_dir_all(&project).unwrap();
             let c = Cli { root: project.clone() };
+
+            let (code, out, _) = c.go(&["init"]);
+            assert_eq!(code, 2);
+            assert_eq!(out["error"], "workspace.not_repo_root");
+            let said = out["detail"].as_str().unwrap();
+            assert!(said.contains("git init"), "the way forward is named: {said}");
+            assert!(
+                said.contains(&repo.path().to_string_lossy().to_string()),
+                "and so is the repository it found: {said}"
+            );
+            assert!(!project.join(".fab7").exists(), "and nothing was written");
+
+            // Its own repository makes it its own workspace, and the records
+            // stay in it.
+            crate::testing::run(&["git", "init", "-q", &project.to_string_lossy()]);
+            std::fs::write(project.join("README.md"), "fixture\n").unwrap();
+            let p = project.to_string_lossy().to_string();
+            crate::testing::run(&["git", "-C", &p, "add", "-A"]);
+            crate::testing::run(&[
+                "git",
+                "-C",
+                &p,
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "init",
+            ]);
             let a = c.confirm("stage-1", "Login", "s1", "native_plan");
-            let nested = crate::workspace::resolve(Some(&project), None).unwrap();
-            assert_eq!(crate::ask::list_asks(&nested).unwrap()[0]["ask_id"], a["ask_id"]);
-            assert!(nested.rf_dir().join("asks").join(a["ask_id"].as_str().unwrap()).exists());
-            assert!(!nested.rf_dir().join("tmp/stage-1").exists());
-            // The parent repository keeps nothing.
-            assert!(!repo.path().join(".fab7").exists());
+            let ws = crate::workspace::resolve(Some(&project), None).unwrap();
+            assert_eq!(crate::ask::list_asks(&ws).unwrap()[0]["ask_id"], a["ask_id"]);
+            assert!(!repo.path().join(".fab7").exists(), "the parent keeps nothing");
         });
     }
 
