@@ -151,6 +151,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Quit => "Quit",
         Help => "Help",
         Weft => "Weft",
+        CloseProject { .. } => "CloseProject",
         Ask { .. } => "Ask",
         Confirm(_) => "Confirm",
         Note(_) => "Note",

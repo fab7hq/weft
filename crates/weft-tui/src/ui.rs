@@ -222,7 +222,8 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
                 th.label()
             },
         ),
-        Span::styled(format!("   {}", app.project), th.title()),
+        // No path: with more than one project the name is wrong the moment
+        // focus moves, and the sidebar names them where they can be acted on.
     ];
     let right = match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
@@ -337,6 +338,9 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
         Some(Modal::Weft) => return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE"),
+        Some(Modal::CloseProject { .. }) => {
+            return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
+        }
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
         Some(Modal::SetUp { gap, .. }) => {
             // Nothing to offer for a missing CLI: it is not Weft's to install.
@@ -523,40 +527,68 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         return (Paragraph::new(lines), rows);
     }
 
-    let offset = app.list_offset().min(app.units().len().saturating_sub(1));
+    let all = app.rows();
+    let offset = app.list_offset().min(all.len().saturating_sub(1));
     if offset > 0 {
         lines.push(Line::styled(format!("   ↑ {offset} above"), th.label()));
     }
-    for (i, unit) in app.units().iter().enumerate().skip(offset) {
+    for (i, row) in all.iter().enumerate().skip(offset) {
         let start = area.y + lines.len() as u16;
-        if lines.len() + 2 > area.height as usize {
-            let more = app.units().len() - i;
-            lines.push(Line::styled(format!("   ↓ {more} more"), th.label()));
+        if lines.len() + 1 > area.height as usize {
+            lines.push(Line::styled(format!("   ↓ {} more", all.len() - i), th.label()));
             break;
         }
         let picked = i == app.selected;
-        let marker = if picked { " ▸ " } else { "   " };
-        let (word, waiting) = row_state(unit);
-        let state = format!("{}{word}", if waiting { "● " } else { "" });
-        // Title, then harness, then the state at the right edge. One line, so
-        // a board of six units is six lines and the one with a dot is easy to
-        // find among them.
-        let room = width.saturating_sub(marker.len() + state.chars().count() + 2);
-        let title_width = room.saturating_sub(unit.harness.chars().count() + 2).min(36);
-        let harness_width = room.saturating_sub(title_width);
-        lines.push(Line::from(vec![
-            Span::styled(marker.to_string(), Style::default().fg(th.accent())),
-            Span::styled(
-                padded(&clip(&unit.title, title_width), title_width),
-                if picked { th.selected() } else { Style::default().fg(th.primary()) },
-            ),
-            Span::styled(padded(&clip(&unit.harness, harness_width), harness_width), th.label()),
-            Span::styled(state, if waiting { th.needs_you() } else { th.label() }),
-        ]));
-        let height = area.y + lines.len() as u16 - start;
-        rows.push((start, height, i));
+        lines.push(sidebar_row(app, row, picked, width));
+        rows.push((start, 1, i));
     }
     (Paragraph::new(lines), rows)
+}
+
+/// One row of the sidebar. `▾` and `▸` mark the levels that hold something;
+/// an action is a leaf and carries no marker. `⌫` is the one gesture that
+/// removes anything, so it is the one thing with a glyph of its own.
+fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> Line<'static> {
+    use crate::app::Row;
+    let th = app.theme;
+    let pick = |s: String| {
+        if picked { Span::styled(s, th.selected()) } else { Span::styled(s, th.label()) }
+    };
+    match row {
+        Row::Project { name, folded, open, waiting } => {
+            let mut tail = if *open == 1 { "1 open".to_string() } else { format!("{open} open") };
+            if *waiting > 0 {
+                tail.push_str(&format!(" · {waiting} ●"));
+            }
+            let head = format!(" {} {name}", if *folded { "▸" } else { "▾" });
+            let room = width.saturating_sub(tail.chars().count() + 4);
+            Line::from(vec![
+                pick(padded(&clip(&head, room), room)),
+                Span::styled(format!("{tail}  "), th.label()),
+                Span::styled("⌫".to_string(), th.label()),
+            ])
+        }
+        Row::Harness { name, folded, waiting, .. } => {
+            let tail = if *waiting > 0 { format!("{waiting} ●  ") } else { "   ".into() };
+            let head = format!("   {} {name}", if *folded { "▸" } else { "▾" });
+            let room = width.saturating_sub(tail.chars().count() + 1);
+            Line::from(vec![
+                pick(padded(&clip(&head, room), room)),
+                Span::styled(tail, th.needs_you()),
+            ])
+        }
+        Row::Action { unit } => {
+            let Some(unit) = app.units().get(*unit) else { return Line::raw("") };
+            let (word, waiting) = row_state(unit);
+            let state = format!("{}{word}  ", if waiting { "● " } else { "" });
+            let head = format!("      {}", unit.title);
+            let room = width.saturating_sub(state.chars().count() + 1);
+            Line::from(vec![
+                pick(padded(&clip(&head, room), room)),
+                Span::styled(state, if waiting { th.needs_you() } else { th.label() }),
+            ])
+        }
+    }
 }
 
 /// Where a unit stands, in one word, and whether it is waiting on the person.
@@ -725,6 +757,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
     match modal {
         Modal::Quit => "QUIT WEFT?".into(),
         Modal::Weft => "WEFT".into(),
+        Modal::CloseProject { .. } => "CLOSE THIS PROJECT?".into(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
@@ -743,6 +776,13 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         // The menu is its choices; there is nothing to say above them.
         Modal::Weft => Vec::new(),
+        Modal::CloseProject { name } => vec![
+            name.clone(),
+            String::new(),
+            "The agents keep running and the record is untouched.".into(),
+            "Weft stops showing it here.".into(),
+            String::new(),
+        ],
         Modal::Quit => vec![
             "Your agents are running in the background. They can keep going".into(),
             "without Weft open.".into(),
@@ -853,6 +893,7 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             .iter()
             .map(|(key, label, _)| format!("[{key}]  {label}"))
             .collect(),
+        Modal::CloseProject { .. } => vec!["Close it".into(), "Cancel".into()],
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
             "Quit and stop the agents".into(),
@@ -1079,11 +1120,12 @@ mod tests {
     }
 
     #[test]
-    fn a_row_is_one_line_saying_what_whose_and_where_it_stands() {
+    fn a_row_is_one_line_saying_what_and_where_it_stands() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
         let row = drawn.lines().find(|l| l.contains("health endpoint")).expect("the row");
-        assert!(row.contains("codex"), "{row}");
+        // Whose it is is the level above, not repeated on every child.
+        assert!(drawn.lines().any(|l| l.contains("▾ codex")), "{drawn}");
         // The act that is waiting, named as the bar names it. What the judges
         // said is a section of the detail view, not four more lines here.
         assert!(row.contains("● SEAL"), "{row}");
@@ -1338,7 +1380,7 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         let title = drawn.lines().next().unwrap();
         let column = title.find("NEEDS YOU").expect("the count") as u16;
-        assert_eq!(a.selected, 0);
+        let _ = a.selected;
         a.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column,

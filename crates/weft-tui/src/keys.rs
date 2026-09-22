@@ -40,6 +40,8 @@ pub enum Key {
     Up,
     Down,
     Left,
+    Right,
+    Backspace,
     Enter,
     Tab,
     Esc,
@@ -55,8 +57,12 @@ pub enum Action {
     Pick(i8),
     /// Expand or collapse the selected row.
     Open,
-    /// Back: collapse the row, close the drawer, dismiss a dialog.
+    /// Back: fold the level, close the view, dismiss a dialog.
     Back,
+    /// Unfold the selected level without going anywhere.
+    Unfold,
+    /// Close the selected project, after a confirmation.
+    CloseProject,
     /// Jump to the next thing that needs you.
     NextNeedsYou,
     /// Show or hide the sidebar.
@@ -105,6 +111,8 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
         Key::Down => Action::Pick(1),
         Key::Enter => Action::Open,
         Key::Left => Action::Back,
+        Key::Right => Action::Unfold,
+        Key::Backspace => Action::CloseProject,
         Key::Tab => Action::NextPane,
         // `Esc` is never Weft's; it belongs to the agent.
         Key::Esc => Action::Ignore,

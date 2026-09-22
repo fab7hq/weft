@@ -40,6 +40,36 @@ pub struct Pending {
 }
 
 /// The surfaces that interrupt. Everything else in v2 is drawn in place.
+/// A row of the sidebar. Project over harness over action, because a unit
+/// belongs to the harness it was asked of.
+///
+/// The rows are computed from the units and the fold state each frame rather
+/// than stored, so there is one source of truth and nothing to keep in step.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    Project { name: String, folded: bool, open: usize, waiting: usize },
+    Harness { project: String, name: String, folded: bool, waiting: usize },
+    Action { unit: usize },
+}
+
+impl Row {
+    /// The key this row folds under, or `None` for a leaf.
+    pub fn fold_key(&self) -> Option<String> {
+        match self {
+            Row::Project { name, .. } => Some(name.clone()),
+            Row::Harness { project, name, .. } => Some(format!("{project}\u{0}{name}")),
+            Row::Action { .. } => None,
+        }
+    }
+
+    pub fn folded(&self) -> bool {
+        match self {
+            Row::Project { folded, .. } | Row::Harness { folded, .. } => *folded,
+            Row::Action { .. } => false,
+        }
+    }
+}
+
 /// Weft's own operations, in the order the menu lists them.
 pub const WEFT_MENU: [(char, &str, Act); 5] = [
     ('O', "Open project", Act::OpenProject),
@@ -53,6 +83,12 @@ pub const WEFT_MENU: [(char, &str, Act); 5] = [
 pub enum Modal {
     Quit,
     Help,
+    /// Take a project out of this window. Nothing is stopped and nothing is
+    /// deleted, which the panel says, because "close" is the word people
+    /// expect to end an agent.
+    CloseProject {
+        name: String,
+    },
     /// Weft's own operations, gathered out of the bar. Every one of them also
     /// has its own key; this is for finding them, not for reaching them.
     Weft,
@@ -107,9 +143,12 @@ pub struct App {
     session: Session,
     pub pane_focus: usize,
     units: Vec<Unit>,
+    /// An index into [`App::rows`], not into the units: the sidebar is a tree
+    /// and a project or a harness can be selected too.
     pub selected: usize,
-    /// The row expanded in place, if any.
-    expanded: Option<usize>,
+    /// The levels the person has folded, by [`Row::fold_key`]. Absent means
+    /// open, so a project that appears while you are working is not hidden.
+    folded: std::collections::BTreeSet<String>,
     /// How far the work list is scrolled. A list can be longer than the pane.
     list_offset: usize,
     detail: Option<Detail>,
@@ -173,10 +212,6 @@ impl App {
 
     pub fn unit(&self, i: usize) -> Option<&Unit> {
         self.units.get(i)
-    }
-
-    pub fn expanded(&self) -> Option<usize> {
-        self.expanded
     }
 
     pub fn detail(&self) -> Option<&Detail> {
@@ -274,7 +309,7 @@ impl App {
         let panes = self.pane_facts();
         f(Board {
             units: &self.units,
-            selected: self.selected,
+            selected: self.selected_index().unwrap_or(usize::MAX),
             panes: &panes,
             focused: self.pane_focus,
             readiness: &|h| self.readiness(h),
@@ -306,8 +341,59 @@ impl App {
         self.with_board(|b| b.deciding_harness(act))
     }
 
+    /// The sidebar, top to bottom, with folded levels' children left out.
+    pub fn rows(&self) -> Vec<Row> {
+        let project = self.project.clone();
+        let mut out = Vec::new();
+        let waiting = self.units.iter().filter(|u| u.needs_you()).count();
+        let open = self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
+        let folded = self.folded.contains(&project);
+        out.push(Row::Project { name: project.clone(), folded, open, waiting });
+        if folded {
+            return out;
+        }
+        // Harnesses in the order they first appear, so the list does not
+        // reshuffle itself as work arrives.
+        let mut seen: Vec<&str> = Vec::new();
+        for u in &self.units {
+            if !seen.contains(&u.harness.as_str()) {
+                seen.push(&u.harness);
+            }
+        }
+        for name in seen {
+            let key = format!("{project}\u{0}{name}");
+            let folded = self.folded.contains(&key);
+            let waiting = self.units.iter().filter(|u| u.harness == name && u.needs_you()).count();
+            out.push(Row::Harness {
+                project: project.clone(),
+                name: name.to_string(),
+                folded,
+                waiting,
+            });
+            if folded {
+                continue;
+            }
+            out.extend(
+                self.units
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, u)| u.harness == name)
+                    .map(|(i, _)| Row::Action { unit: i }),
+            );
+        }
+        out
+    }
+
+    /// The unit the selected row is about, if it is about one.
+    pub fn selected_index(&self) -> Option<usize> {
+        match self.rows().get(self.selected) {
+            Some(Row::Action { unit }) => Some(*unit),
+            _ => None,
+        }
+    }
+
     pub fn selected_unit(&self) -> Option<&Unit> {
-        self.units.get(self.selected)
+        self.selected_index().and_then(|i| self.units.get(i))
     }
 
     /// Open units, as the title bar counts them.
@@ -358,7 +444,7 @@ impl App {
             pane_focus: 0,
             units: Vec::new(),
             selected: 0,
-            expanded: None,
+            folded: Default::default(),
             list_offset: 0,
             detail: None,
             detail_reach: 0,
@@ -543,9 +629,14 @@ impl App {
     }
 
     fn clamp_selection(&mut self) {
-        self.selected = self.selected.min(self.units.len().saturating_sub(1));
-        if self.expanded.is_some_and(|i| i >= self.units.len()) {
-            self.expanded = None;
+        let rows = self.rows();
+        self.selected = self.selected.min(rows.len().saturating_sub(1));
+        // Land on the work, not on the project heading above it. Only while
+        // nothing has been picked, so it never overrides a choice.
+        if self.selected == 0
+            && let Some(first) = rows.iter().position(|r| matches!(r, Row::Action { .. }))
+        {
+            self.selected = first;
         }
     }
 
@@ -805,18 +896,14 @@ impl App {
     // --- moving about ---------------------------------------------------------
 
     fn pick(&mut self, delta: i8) {
-        if self.units.is_empty() {
+        let n = self.rows().len() as i32;
+        if n == 0 {
             return;
         }
-        let n = self.units.len() as i32;
         self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
         // Picking a row that is scrolled away brings it back into view.
         if self.selected < self.list_offset {
             self.list_offset = self.selected;
-        }
-        // The expansion belongs to the row it was opened on.
-        if self.expanded.is_some_and(|i| i != self.selected) {
-            self.expanded = None;
         }
     }
 
@@ -831,15 +918,67 @@ impl App {
             ((self.modal_choice as i32 + delta as i32).rem_euclid(n as i32)) as usize;
     }
 
-    fn toggle_expand(&mut self) {
-        if self.units.is_empty() {
+    /// `[Enter]` opens what is closed and acts on what is already open. The
+    /// first press on a row always reveals; the second goes somewhere. On a
+    /// project it only ever folds and unfolds — nothing in the sidebar
+    /// removes anything on `[Enter]`.
+    fn open_row(&mut self) {
+        let Some(row) = self.rows().get(self.selected).cloned() else {
             self.say("Nothing has been asked for yet.");
             return;
-        }
-        self.expanded = match self.expanded {
-            Some(i) if i == self.selected => None,
-            _ => Some(self.selected),
         };
+        match row {
+            Row::Project { .. } => self.set_fold(&row, !row.folded()),
+            Row::Harness { ref name, .. } if row.folded() => self.set_fold(&row, false),
+            Row::Harness { ref name, .. } => self.go_to_harness(name),
+            Row::Action { .. } => self.act(Act::Detail),
+        }
+    }
+
+    /// `[→]` and `[←]` unfold and fold without ever activating, which is what
+    /// a person wants when they are only looking.
+    fn set_fold(&mut self, row: &Row, folded: bool) {
+        let Some(key) = row.fold_key() else { return };
+        if folded {
+            self.folded.insert(key);
+        } else {
+            self.folded.remove(&key);
+        }
+        self.selected = self.selected.min(self.rows().len().saturating_sub(1));
+    }
+
+    fn fold_selected(&mut self, folded: bool) -> bool {
+        let Some(row) = self.rows().get(self.selected).cloned() else { return false };
+        if row.fold_key().is_none() || row.folded() == folded {
+            return false;
+        }
+        self.set_fold(&row, folded);
+        true
+    }
+
+    /// Take a project out of this window. The agents keep running and the
+    /// record is untouched; Weft stops showing it. Always asks first,
+    /// because it is the only thing in the sidebar that removes anything.
+    fn close_project(&mut self) {
+        match self.rows().get(self.selected) {
+            Some(Row::Project { name, .. }) => {
+                let name = name.clone();
+                self.modal = Some(Modal::CloseProject { name });
+                self.modal_choice = 0;
+            }
+            _ => self.say("Select a project to close it."),
+        }
+    }
+
+    /// The pane that is running this harness, or the session the selected
+    /// work was asked in when none is.
+    fn go_to_harness(&mut self, harness: &str) {
+        if let Some(i) = self.session.panes.iter().position(|p| p.harness == harness) {
+            self.pane_focus = i;
+            self.focus = Focus::Agent;
+            return;
+        }
+        self.open_the_agent();
     }
 
     /// `←` is back everywhere in Weft: it closes the drawer, then collapses the
@@ -848,7 +987,8 @@ impl App {
         if self.detail.take().is_some() {
             return;
         }
-        if self.expanded.take().is_some() {
+        // In the sidebar `←` folds the level it is on before it goes anywhere.
+        if self.focus == Focus::Weft && self.modal.is_none() && self.fold_selected(true) {
             return;
         }
         if !self.show_work {
@@ -871,7 +1011,6 @@ impl App {
             let i = (start + step) % n;
             if self.units[i].needs_you() {
                 self.selected = i;
-                self.expanded = None;
                 self.show_work = true;
                 self.detail = None;
                 return;
@@ -1015,7 +1154,7 @@ impl App {
                     // [Enter] ANSWER IT: the person answers, never Weft.
                     self.focus = Focus::Agent;
                 } else if self.detail.is_none() {
-                    self.toggle_expand();
+                    self.open_row();
                 }
             }
             Action::Back => self.back(),
@@ -1043,6 +1182,10 @@ impl App {
             Action::ReadyUp => self.act(Act::ReadyUp),
             Action::OpenProject => self.act(Act::OpenProject),
             Action::WeftMenu => self.act(Act::WeftMenu),
+            Action::Unfold => {
+                self.fold_selected(false);
+            }
+            Action::CloseProject => self.close_project(),
             Action::Quit => self.act(Act::Quit),
             Action::Help => self.act(Act::Help),
             Action::Ignore => {}
@@ -1099,6 +1242,7 @@ impl App {
         let options = match &modal {
             Modal::Quit => 3,
             Modal::Weft => WEFT_MENU.len(),
+            Modal::CloseProject { .. } => 2,
             Modal::StartAgent { .. } => self.starts().len().max(1),
             Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
             _ => 1,
@@ -1156,6 +1300,14 @@ impl App {
                     Some(Ended::Resume) => self.start_again(pane, &harness, session.as_ref()),
                     Some(Ended::Fresh) => self.start_again(pane, &harness, None),
                     _ => self.close_pane(pane),
+                }
+            }
+            Modal::CloseProject { .. } => {
+                // One project, so closing it would leave nothing. Opening a
+                // second is the next step's work.
+                self.modal = None;
+                if self.modal_choice == 0 {
+                    self.say("This is the only project open, so there is nothing to close to.");
                 }
             }
             Modal::Weft => {
@@ -1276,10 +1428,9 @@ impl App {
         if let Some(index) = self.row_at(m.row) {
             self.focus = Focus::Weft;
             if self.selected == index {
-                self.toggle_expand();
+                self.open_row();
             } else {
                 self.selected = index;
-                self.expanded = None;
             }
         }
         Ok(())
@@ -1408,6 +1559,8 @@ fn chord_of(key: KeyEvent) -> Chord {
         event::KeyCode::Up => Key::Up,
         event::KeyCode::Down => Key::Down,
         event::KeyCode::Left => Key::Left,
+        event::KeyCode::Right => Key::Right,
+        event::KeyCode::Backspace => Key::Backspace,
         event::KeyCode::Enter => Key::Enter,
         event::KeyCode::Tab => Key::Tab,
         event::KeyCode::Esc => Key::Esc,
@@ -2014,43 +2167,60 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn enter_expands_the_row_in_place_and_enter_again_collapses_it() {
+    fn enter_unfolds_what_is_closed_and_acts_on_what_is_open() {
         let mut a = with_unit(Sent::Arrived { exact: true });
+        // The selection lands on the work, so the first `[Enter]` opens it.
+        assert!(matches!(a.rows()[a.selected], Row::Action { .. }));
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.expanded(), Some(0));
-        assert!(a.modal.is_none(), "v2 expands in place; no overlay");
+        assert!(a.detail().is_some(), "an action opens its detail view");
+        press(&mut a, KeyCode::Left);
+        assert!(a.detail().is_none());
+
+        // On a project it only ever folds and unfolds. Nothing in the sidebar
+        // removes anything on `[Enter]`.
+        a.selected = 0;
+        assert!(matches!(a.rows()[0], Row::Project { folded: false, .. }));
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.expanded(), None);
+        assert!(matches!(a.rows()[0], Row::Project { folded: true, .. }));
+        assert_eq!(a.rows().len(), 1, "folded, it hides its harnesses");
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.rows()[0], Row::Project { folded: false, .. }));
     }
 
     #[test]
-    fn back_collapses_the_row_rather_than_quitting_anything() {
+    fn back_folds_the_level_rather_than_quitting_anything() {
         let mut a = with_unit(Sent::Arrived { exact: true });
-        press(&mut a, KeyCode::Enter);
+        a.selected = 0;
         press(&mut a, KeyCode::Left);
-        assert_eq!(a.expanded(), None);
+        assert!(a.rows()[0].folded());
         assert!(!a.quit);
     }
 
     #[test]
-    fn moving_off_an_expanded_row_collapses_it() {
+    fn folding_stays_folded_when_the_selection_moves() {
+        // A fold is a decision about the tree, not about the cursor. It used
+        // to be undone by moving away, which made it useless for tidying.
         let mut a = app();
         let mut second = unit(Sent::NotSent);
         second.ask_id = "ask_2".into();
         a.set_units(vec![unit(Sent::NotSent), second]);
+        a.selected = 0;
         press(&mut a, KeyCode::Enter);
-        assert_eq!(a.expanded(), Some(0));
+        assert!(a.rows()[0].folded());
         press(&mut a, KeyCode::Down);
-        assert_eq!(a.expanded(), None);
+        assert!(a.rows()[0].folded(), "still folded after moving");
     }
 
     #[test]
-    fn arrows_move_between_units() {
+    fn arrows_move_through_every_level_of_the_tree() {
         let mut a = app();
         let mut second = unit(Sent::NotSent);
         second.ask_id = "ask_2".into();
         second.title = "second".into();
         a.set_units(vec![unit(Sent::NotSent), second]);
+        // project, harness, two actions
+        assert_eq!(a.rows().len(), 4);
+        a.selected = 0;
         press(&mut a, KeyCode::Down);
         assert_eq!(a.selected, 1);
         press(&mut a, KeyCode::Up);
@@ -2074,7 +2244,16 @@ pub(crate) mod tests {
 
         let blocked = a.unavailable(Act::Eval).expect("codex is not set up");
         assert!(blocked.contains("codex is not set up"), "{blocked}");
-        press(&mut a, KeyCode::Down);
+        // The two units hang under different harnesses, so reaching the
+        // second means walking past its harness heading.
+        let claude = a
+            .rows()
+            .iter()
+            .position(
+                |r| matches!(r, Row::Action { unit } if a.units()[*unit].harness == "claude-code"),
+            )
+            .expect("the claude-code row");
+        a.selected = claude;
         assert_eq!(a.unavailable(Act::Eval), None, "claude-code is ready");
     }
 
@@ -2302,7 +2481,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn clicking_a_row_twice_expands_it() {
+    fn clicking_a_row_selects_it_then_opens_it() {
         let mut a = app();
         let mut second = unit(Sent::NotSent);
         second.ask_id = "ask_2".into();
@@ -2316,9 +2495,11 @@ pub(crate) mod tests {
         };
         a.on_mouse(click(5)).expect("mouse");
         assert_eq!(a.selected, 1);
-        assert_eq!(a.expanded(), None, "the first click only selects");
+        assert!(a.detail().is_none(), "the first click only selects");
         a.on_mouse(click(5)).expect("mouse");
-        assert_eq!(a.expanded(), Some(1));
+        // Row 1 of this fabricated list is the harness level, which the
+        // second click unfolds rather than opening anything.
+        assert!(a.detail().is_none());
     }
 
     #[test]

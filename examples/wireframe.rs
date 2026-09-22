@@ -20,15 +20,16 @@ use weft::server;
 
 fn main() {
     show("Screen 1 — first run", 80, 24, &[], false);
-    show("Screen 2 — work, one row expanded", 80, 24, &[KeyCode::Enter], true);
+    show("Screen 2 — the sidebar", 80, 24, &[], true);
+    show("Screen 2b — a project folded", 80, 24, &[KeyCode::Up, KeyCode::Up, KeyCode::Enter], true);
     show("Screen 3 — in the agent", 80, 24, &[KeyCode::Char(']')], true);
     show("Screen 4 — side by side", 120, 32, &[], true);
-    show("Screen 5 — the drawer", 120, 32, &[KeyCode::Char('j')], true);
-    show("Screen 5b — a row expanded beside a pane", 120, 32, &[KeyCode::Enter], true);
+    show("Screen 5 — the detail view", 120, 32, &[KeyCode::Enter], true);
     show("Screen 6 — ask", 120, 32, &[KeyCode::Char('a')], true);
-    show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Down, KeyCode::Char('c')], true);
+    show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Char('e')], true);
+    show("Screen 8 — the Weft menu", 80, 24, &[KeyCode::Char('w')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
-    show("Screen 10 — work list hidden", 120, 32, &[KeyCode::Char('w')], true);
+    show("Screen 10 — sidebar hidden", 120, 32, &[KeyCode::Char('b')], true);
     ended("Screen 11 — the agent has ended", 80, 24, true);
     ended("Screen 12 — ended, nothing on record", 80, 24, false);
     unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);
