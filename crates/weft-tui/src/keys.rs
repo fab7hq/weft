@@ -48,8 +48,6 @@ pub enum Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     ToggleFocus,
-    /// Type a confirmed prompt into the agent on the person's behalf.
-    Send,
     /// Start another agent.
     NewAgent,
     /// Switch to the nth agent, counting from one.
@@ -61,25 +59,25 @@ pub enum Action {
     Back,
     /// Jump to the next thing that needs you.
     NextNeedsYou,
-    /// Show or hide the work list.
-    ToggleWork,
-    /// The exact wording that was sent, in the drawer.
-    Wording,
-    /// The judges, their votes and their reasons, in the drawer.
-    Judges,
-    /// The Seal that closed the work, re-verified, in the drawer.
-    Seal,
-    /// Ask again about the selected row's work.
-    Fix,
+    /// Show or hide the sidebar.
+    ToggleSidebar,
+    /// The selected unit's whole story, in one blocking view.
+    Detail,
+    /// Carry the selected unit forward, whatever that means for it.
+    Proceed,
+    /// A new Ask about work that already exists.
+    FollowUp,
     /// Why Weft says a pane is waiting for an answer.
     Explain,
     /// Set this agent up for RingFrame, after showing what that runs.
     ReadyUp,
-    /// Open the agent that has the selected work, in its own session.
-    OpenAgent,
+    /// Open a project beside the ones already here.
+    OpenProject,
+    /// Weft's own operations, gathered out of the bar.
+    WeftMenu,
     Ask,
-    Check,
-    Decide,
+    Eval,
+    Seal,
     Help,
     Quit,
     NextPane,
@@ -115,21 +113,22 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             Action::PickPane(c.to_digit(10).unwrap_or(1) as u8)
         }
         Key::Char(c) => match c.to_ascii_lowercase() {
+            // RingFrame's three acts, under RingFrame's names.
             'a' => Action::Ask,
-            's' => Action::Send,
-            'n' => Action::NewAgent,
-            'c' => Action::Check,
-            'd' => Action::Decide,
-            'p' => Action::Wording,
-            'j' => Action::Judges,
-            // `s` is Send and `d` is Decide, so the receipt takes `t`, as in
-            // "the seal" — the word the panel titles it with.
-            't' => Action::Seal,
-            'f' => Action::Fix,
-            'e' => Action::Explain,
+            'e' => Action::Eval,
+            's' => Action::Seal,
+            // The one verb, and the one reading.
+            'p' => Action::Proceed,
+            'd' => Action::Detail,
+            'f' => Action::FollowUp,
             'r' => Action::ReadyUp,
-            'o' => Action::OpenAgent,
-            'w' => Action::ToggleWork,
+            // `y` as in why: `e` is EVAL now.
+            'y' => Action::Explain,
+            // Weft's own operations.
+            'o' => Action::OpenProject,
+            'n' => Action::NewAgent,
+            'b' => Action::ToggleSidebar,
+            'w' => Action::WeftMenu,
             'h' => Action::Help,
             'x' => Action::Quit,
             _ => Action::Ignore,
@@ -163,11 +162,11 @@ mod tests {
         let t = Toggle;
         for (c, expected) in [
             ('a', Action::Ask),
-            ('s', Action::Send),
-            ('c', Action::Check),
-            ('d', Action::Decide),
+            ('e', Action::Eval),
+            ('s', Action::Seal),
+            ('p', Action::Proceed),
+            ('d', Action::Detail),
             ('n', Action::NewAgent),
-            ('w', Action::ToggleWork),
             ('h', Action::Help),
             ('x', Action::Quit),
         ] {
@@ -184,10 +183,10 @@ mod tests {
     fn a_rows_own_actions_have_their_own_keys() {
         let t = Toggle;
         for (c, expected) in [
-            ('p', Action::Wording),
-            ('j', Action::Judges),
-            ('f', Action::Fix),
-            ('d', Action::Decide),
+            ('p', Action::Proceed),
+            ('d', Action::Detail),
+            ('f', Action::FollowUp),
+            ('s', Action::Seal),
         ] {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, t), expected, "{c}");
         }
@@ -202,9 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn space_jumps_to_what_needs_you_and_e_explains_an_inference() {
+    fn space_jumps_to_what_needs_you_and_y_explains_an_inference() {
         assert_eq!(route(plain(Key::Char(' ')), Focus::Weft, Toggle), Action::NextNeedsYou);
-        assert_eq!(route(plain(Key::Char('e')), Focus::Weft, Toggle), Action::Explain);
+        // `y` as in why: `e` is EVAL now.
+        assert_eq!(route(plain(Key::Char('y')), Focus::Weft, Toggle), Action::Explain);
     }
 
     #[test]
@@ -237,9 +237,9 @@ mod tests {
     }
 
     #[test]
-    fn o_opens_the_agent_that_has_the_selected_work() {
-        assert_eq!(route(plain(Key::Char('o')), Focus::Weft, Toggle), Action::OpenAgent);
-        assert_eq!(route(plain(Key::Char('O')), Focus::Weft, Toggle), Action::OpenAgent);
+    fn o_opens_another_project() {
+        assert_eq!(route(plain(Key::Char('o')), Focus::Weft, Toggle), Action::OpenProject);
+        assert_eq!(route(plain(Key::Char('O')), Focus::Weft, Toggle), Action::OpenProject);
         // and never in the agent, where o is just a letter
         assert_eq!(route(plain(Key::Char('o')), Focus::Agent, Toggle), Action::ToAgent);
     }

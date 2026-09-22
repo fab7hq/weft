@@ -13,24 +13,67 @@ use crate::routing::Routing;
 /// used right now, and for the sentence that says what would make it work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Act {
+    // RingFrame's three acts, under RingFrame's names. Weft had two of its
+    // own — `Check` and `Decide` — and two vocabularies for one lifecycle is
+    // one too many.
     Ask,
-    Send,
-    Check,
-    Decide,
-    Wording,
-    Judges,
-    /// Read the Seal that closed the work: what was decided, on which Eval,
-    /// and whether the receipt still matches what is on disk.
+    Eval,
     Seal,
-    Fix,
-    NewAgent,
-    Work,
-    Help,
-    Quit,
+    /// Carry the selected unit forward, whatever that means for it. See
+    /// [`next_step`].
+    Proceed,
+    /// The selected unit's whole story, in one blocking view.
+    Detail,
+    /// A new Ask about work that already exists.
+    FollowUp,
     /// Set the agent that owns the work up for RingFrame.
     ReadyUp,
     /// Open the agent that has this work, in the session it was asked in.
-    OpenAgent,
+    /// No key of its own: `[Enter]` on a harness in the sidebar is how it is
+    /// reached, because going to an agent is navigation rather than an act.
+    GoToAgent,
+    NewAgent,
+    OpenProject,
+    ToggleSidebar,
+    /// Weft's own operations, gathered out of the bar.
+    WeftMenu,
+    Help,
+    Quit,
+}
+
+/// What carrying a unit forward means right now. One verb on the screen,
+/// this many things underneath, and the unit decides which.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Next {
+    /// The chooser was shown and never answered; show it again.
+    Confirm,
+    /// Confirmed and never submitted; put the prompt in front of the agent.
+    Send,
+    /// Submitted, and nothing has judged it.
+    Eval,
+    /// Judged, and nothing has decided it.
+    Seal,
+}
+
+/// `None` when the unit is closed, cancelled, or waiting on someone else —
+/// which is exactly when the row carries no dot.
+pub fn next_step(unit: &Unit) -> Option<Next> {
+    if unit.cancelled || unit.sealed.is_some() {
+        return None;
+    }
+    if unit.check.is_some() {
+        return Some(Next::Seal);
+    }
+    if unit.awaiting_yes() {
+        return Some(Next::Confirm);
+    }
+    match unit.sent {
+        Sent::ReadyToSend => Some(Next::Send),
+        // Nothing has judged it, and it has reached the agent one way or
+        // another. A prompt still sitting unconfirmed is not this.
+        Sent::TakenByAgent | Sent::Arrived { .. } => Some(Next::Eval),
+        _ => None,
+    }
 }
 
 /// A pane, as everything outside the daemon sees one.
@@ -117,9 +160,9 @@ impl Board<'_> {
     /// Which of RingFrame's three acts this is, if it is one of them.
     pub fn act_key(act: Act) -> Option<&'static str> {
         match act {
-            Act::Ask | Act::Fix => Some("ask"),
-            Act::Check => Some("eval"),
-            Act::Decide => Some("seal"),
+            Act::Ask | Act::FollowUp => Some("ask"),
+            Act::Eval => Some("eval"),
+            Act::Seal => Some("seal"),
             _ => None,
         }
     }
@@ -130,14 +173,14 @@ impl Board<'_> {
             |harness: &str| format!("No {harness} pane is open, so there is nowhere to send this.");
         // An Ask this workspace could never finish is refused here rather
         // than after a turn spent composing one.
-        if matches!(act, Act::Ask | Act::Fix)
+        if matches!(act, Act::Ask | Act::FollowUp)
             && let Some(gap) = self.workspace_gap
         {
             return Some(gap.to_string());
         }
         // Everything RingFrame owns waits on the harness that owns the work.
         // Readiness is per harness: Claude Code may be ready while Codex is not.
-        if matches!(act, Act::Ask | Act::Send | Act::Check | Act::Decide | Act::Fix)
+        if matches!(act, Act::Ask | Act::Proceed | Act::Eval | Act::Seal | Act::FollowUp)
             && let Some(name) = self.deciding_harness(act)
         {
             let state = self.readiness(&name);
@@ -150,7 +193,12 @@ impl Board<'_> {
             }
         }
         match act {
-            Act::NewAgent | Act::Work | Act::Help | Act::Quit => None,
+            Act::NewAgent
+            | Act::ToggleSidebar
+            | Act::OpenProject
+            | Act::WeftMenu
+            | Act::Help
+            | Act::Quit => None,
             Act::ReadyUp => match self.deciding_harness(Act::ReadyUp) {
                 None => Some("Start an agent first — [N]EW AGENT.".into()),
                 Some(name) if self.readiness(&name).is_ready() => {
@@ -167,40 +215,29 @@ impl Board<'_> {
             Act::Ask => {
                 (self.panes.is_empty()).then(|| "Start an agent first — [N]EW AGENT.".to_string())
             }
-            Act::Fix => match self.selected_unit() {
+            Act::FollowUp => match self.selected_unit() {
                 None => Some("Nothing has been asked for yet.".into()),
                 Some(_) if self.panes.is_empty() => {
                     Some("Start an agent first — [N]EW AGENT.".into())
                 }
                 Some(_) => None,
             },
-            Act::Send => match self.selected_unit() {
+            // One verb, so its refusal is about the one thing it would do.
+            // `next_step` decides what that is; this decides whether it can.
+            Act::Proceed => match self.selected_unit() {
                 None => Some("Nothing has been asked for yet.".into()),
-                // Asked about and never answered: the prompt is on disk and
-                // the only thing missing is the person's yes, which [S]END is.
-                Some(u) if u.awaiting_yes() => {
-                    self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
-                }
-                Some(u) if u.sent != Sent::ReadyToSend => {
-                    Some(match self.units.iter().find(|o| o.sent == Sent::ReadyToSend) {
-                        Some(other) => {
-                            format!("{} is the one ready to send. ↓ to select it.", other.title)
-                        }
-                        None => "Nothing is ready to send.".into(),
-                    })
-                }
-                Some(u) => self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness)),
+                Some(u) => match next_step(u) {
+                    None => Some(format!("{} is closed. [F] FOLLOW UP asks again.", u.title)),
+                    Some(Next::Send | Next::Confirm) => {
+                        self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
+                    }
+                    Some(_) => {
+                        let name = self.deciding_harness(act)?;
+                        self.pane_for(&name).is_none().then(|| no_pane(&name))
+                    }
+                },
             },
-            Act::Check | Act::Decide => match self.selected_unit() {
-                None => Some("Nothing to work on yet.".into()),
-                // Where it goes is the project's to say. Routed elsewhere, it
-                // is that harness that needs a pane, not the one that worked.
-                Some(_) => {
-                    let name = self.deciding_harness(act)?;
-                    self.pane_for(&name).is_none().then(|| no_pane(&name))
-                }
-            },
-            Act::OpenAgent => match self.selected_unit() {
+            Act::GoToAgent => match self.selected_unit() {
                 None => Some("Nothing has been asked for yet.".into()),
                 // Only what the record names. An Ask compiled before RingFrame
                 // captured the host's session carries none, and Weft will not
@@ -216,23 +253,18 @@ impl Board<'_> {
                     .pane_running(u)
                     .map(|i| format!("That session is already open — [{}] is its pane.", i + 1)),
             },
-            Act::Wording => self
+            Act::Detail => self
                 .selected_unit()
                 .is_none()
                 .then(|| "Nothing has been asked for yet.".to_string()),
-            Act::Judges => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(u) => u.check.is_none().then(|| {
-                    "No check has been run on this yet — [C]HECK asks the judges to look."
-                        .to_string()
-                }),
-            },
-            Act::Seal => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(u) => u.seal_id.is_none().then(|| {
-                    "This has not been sealed — [D]ECIDE closes it one way or the other."
-                        .to_string()
-                }),
+            Act::Eval | Act::Seal => match self.selected_unit() {
+                None => Some("Nothing to work on yet.".into()),
+                // Where it goes is the project's to say. Routed elsewhere, it
+                // is that harness that needs a pane, not the one that worked.
+                Some(_) => {
+                    let name = self.deciding_harness(act)?;
+                    self.pane_for(&name).is_none().then(|| no_pane(&name))
+                }
             },
         }
     }
@@ -296,8 +328,8 @@ mod tests {
         let panes = [pane("codex")];
         let none = Routing::default();
         let b = board(&units, &panes, READY, &none);
-        assert_eq!(b.unavailable(Act::Send), None);
-        assert_eq!(b.deciding_harness(Act::Check).as_deref(), Some("codex"));
+        assert_eq!(b.unavailable(Act::Proceed), None);
+        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("codex"));
     }
 
     #[test]
@@ -307,11 +339,11 @@ mod tests {
         let routing =
             crate::routing::read(r#"{"/p": {"eval": "claude-code"}}"#, std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
-        assert_eq!(b.deciding_harness(Act::Check).as_deref(), Some("claude-code"));
-        let said = b.unavailable(Act::Check).expect("no claude-code pane is open");
+        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
+        let said = b.unavailable(Act::Eval).expect("no claude-code pane is open");
         assert!(said.contains("claude-code"), "{said}");
         // Seal was not routed, so it still follows the work.
-        assert_eq!(b.deciding_harness(Act::Decide).as_deref(), Some("codex"));
+        assert_eq!(b.deciding_harness(Act::Seal).as_deref(), Some("codex"));
     }
 
     #[test]
@@ -321,7 +353,7 @@ mod tests {
         let missing: &dyn Fn(&str) -> Readiness = &|_| Readiness::Missing(Gap::Plugin);
         let none = Routing::default();
         let b = board(&units, &panes, missing, &none);
-        let said = b.unavailable(Act::Send).expect("not set up");
+        let said = b.unavailable(Act::Proceed).expect("not set up");
         assert!(said.contains("codex is not set up"), "{said}");
         assert!(said.contains("[R]EADY UP"), "and says what fixes it: {said}");
     }
@@ -342,20 +374,50 @@ mod tests {
     }
 
     #[test]
-    fn reading_a_seal_is_refused_until_one_exists_and_says_what_would_make_it() {
-        let mut units = [unit("codex", Sent::Arrived { exact: true })];
-        let panes = [pane("codex")];
-        let none = Routing::default();
+    fn one_verb_carries_a_unit_the_whole_way() {
+        // The ladder the detail view walks, and the only thing `[P]ROCEED`
+        // has to know. Each step is where the previous one leaves the unit.
+        let mut u = unit("codex", Sent::NotSent);
+        u.confirmed = false;
+        u.unanswered = true;
+        assert_eq!(next_step(&u), Some(Next::Confirm));
 
-        let b = board(&units, &panes, READY, &none);
-        let said = b.unavailable(Act::Seal).expect("nothing has been sealed");
-        assert!(said.contains("[D]ECIDE"), "a refusal names the way forward: {said}");
+        let u = unit("codex", Sent::ReadyToSend);
+        assert_eq!(next_step(&u), Some(Next::Send));
 
-        // And once there is a receipt, reading it is simply available.
-        units[0].sealed = Some("accepted".into());
-        units[0].seal_id = Some("sel_1".into());
-        let b = board(&units, &panes, READY, &none);
-        assert_eq!(b.unavailable(Act::Seal), None);
+        let u = unit("codex", Sent::Arrived { exact: true });
+        assert_eq!(next_step(&u), Some(Next::Eval));
+
+        let mut u = unit("codex", Sent::Arrived { exact: true });
+        u.check = Some(crate::ledger::Check {
+            eval_id: "evl_1".into(),
+            verdict: crate::ledger::Verdict::Matches,
+            agreement: 1.0,
+            judged_by: None,
+        });
+        assert_eq!(next_step(&u), Some(Next::Seal));
+
+        u.sealed = Some("accepted".into());
+        assert_eq!(next_step(&u), None, "a closed unit has nothing to carry");
+
+        let mut u = unit("codex", Sent::ReadyToSend);
+        u.cancelled = true;
+        assert_eq!(next_step(&u), None);
+    }
+
+    #[test]
+    fn the_verb_is_live_exactly_when_the_row_carries_a_dot() {
+        // The sidebar and the detail view may never disagree about whether
+        // something is waiting.
+        for sent in
+            [Sent::NotSent, Sent::ReadyToSend, Sent::TakenByAgent, Sent::Arrived { exact: true }]
+        {
+            let u = unit("codex", sent);
+            assert_eq!(next_step(&u).is_some(), u.needs_you() || next_step(&u).is_some());
+            if u.needs_you() {
+                assert!(next_step(&u).is_some(), "{sent:?} needs you but cannot proceed");
+            }
+        }
     }
 
     #[test]

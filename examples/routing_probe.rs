@@ -28,7 +28,7 @@ fn main() -> anyhow::Result<()> {
     for h in weft::harness::SUPPORTED {
         app.set_readiness(h.name, weft::readiness::check(h, cli));
     }
-    for act in [Act::Ask, Act::Check, Act::Decide, Act::Send] {
+    for act in [Act::Ask, Act::Eval, Act::Seal, Act::Proceed] {
         println!(
             "{act:?}  -> {:?}   unavailable: {:?}",
             app.deciding_harness(act),

@@ -59,16 +59,23 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     let with_verdict = [with_receipt.clone(), vec![evaluated("evl_1", "ask_1")]].concat();
     let with_decision = [with_verdict.clone(), vec![sealed("sea_1", "ask_1")]].concat();
 
+    // The row says which act is waiting; the verdict and the decision are
+    // sections of the detail view. Both are screens, and neither may say a
+    // thing before its event exists.
     for (events, expected, not_yet) in [
         (with_receipt, "WORD FOR WORD", SAYS_A_VERDICT),
         (with_verdict, "DOESN'T MATCH WHAT YOU ASKED", SAYS_A_DECISION),
         (with_decision, "ACCEPTED", &[] as &[&str]),
     ] {
         let (root, mut app) = board(&events);
-        let drawn = screen(&mut app, 100, 30);
-        assert!(drawn.contains(expected), "expected {expected:?} in:\n{drawn}");
+        let row = screen(&mut app, 100, 30);
+        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)).expect("detail");
+        let opened = screen(&mut app, 100, 30);
+        let read = app.detail().map(|d| d.lines.join("\n")).unwrap_or_default();
+        let seen = format!("{row}\n{opened}\n{read}");
+        assert!(seen.contains(expected), "expected {expected:?} in:\n{seen}");
         for phrase in not_yet {
-            assert!(!drawn.contains(phrase), "too early for {phrase:?}:\n{drawn}");
+            assert!(!seen.contains(phrase), "too early for {phrase:?}:\n{seen}");
         }
         clean(&root);
     }

@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{Act, App, Modal, Reading};
+use crate::app::{Act, App, Modal};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::ledger::Unit;
@@ -32,7 +32,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
 
-    if app.pane_count() == 0 {
+    if app.detail().is_some() {
+        // It blocks. Nothing behind it is reachable while it is open, which
+        // is what keeps `[P]ROCEED` and the acts on the bar from ever being
+        // live at the same time.
+        app.note_rows(Vec::new());
+        app.note_list_area(None);
+        let para = detail(app, geo.content);
+        frame.render_widget(para, geo.content);
+    } else if app.pane_count() == 0 {
         let (para, rows) = first_run(app, geo.content);
         app.note_rows(rows);
         app.note_list_area(None);
@@ -50,10 +58,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
         }
         if let Some(right) = geo.right {
-            match app.drawer().is_some() {
-                true => frame.render_widget(drawer(app, right), right),
-                false => agent(frame, app, right),
-            }
+            agent(frame, app, right);
         }
     }
 
@@ -145,7 +150,9 @@ fn geometry(app: &App, area: Rect) -> Geo {
         top_junction: '─',
     };
 
-    if app.pane_count() == 0 {
+    // The detail view blocks, so it takes the whole body: no split, no
+    // divider, and no junction in the rule above it.
+    if app.pane_count() == 0 || app.detail().is_some() {
         return geo;
     }
 
@@ -168,7 +175,7 @@ fn geometry(app: &App, area: Rect) -> Geo {
             geo.right = Some(content);
         }
         Layout::Single { .. } => {
-            if app.show_work() && app.focus == Focus::Weft && app.drawer().is_none() {
+            if app.show_work() && app.focus == Focus::Weft && app.detail().is_none() {
                 geo.list = Some(content);
             } else {
                 geo.right = Some(content);
@@ -269,10 +276,10 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
         _ => push(&mut spans, &mut col, " ".into(), th.label()),
     }
 
-    // Reading a drawer replaces the tabs with what is being read.
-    if let Some(d) = app.drawer() {
+    // The detail view replaces the tabs with the unit it is about.
+    if let Some(d) = app.detail() {
         let width = geo.tabs.width.saturating_sub(col);
-        let back = "[←] BACK ";
+        let back = format!("{} ", d.harness);
         let title = clip(&d.title, width.saturating_sub(back.chars().count() as u16 + 1) as usize);
         push(
             &mut spans,
@@ -280,7 +287,7 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, Option<usize>
             padded(&title, (width as usize).saturating_sub(back.chars().count())),
             th.title(),
         );
-        push(&mut spans, &mut col, back.into(), th.label());
+        push(&mut spans, &mut col, back, th.label());
         return (Line::from(spans), spans_at);
     }
 
@@ -329,6 +336,7 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
     match &app.modal {
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
+        Some(Modal::Weft) => return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE"),
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
         Some(Modal::SetUp { gap, .. }) => {
             // Nothing to offer for a missing CLI: it is not Weft's to install.
@@ -352,20 +360,14 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
     if app.waiting_here() {
         return plain("  [Enter] ANSWER IT   [E]XPLAIN WHY IT SAYS THAT");
     }
-    if let Some(d) = app.drawer() {
-        // While reading one act, the other two are a key away. `key` dims the
-        // ones this row has nothing to show for.
-        let siblings: [(&str, Act); 2] = match d.kind {
-            Reading::Wording => [("[J] JUDGES", Act::Judges), ("[T] THE SEAL", Act::Seal)],
-            Reading::Judges => [("[P] WORDING", Act::Wording), ("[T] THE SEAL", Act::Seal)],
-            Reading::Seal => [("[P] WORDING", Act::Wording), ("[J] JUDGES", Act::Judges)],
-        };
+    if app.detail().is_some() {
+        // Three keys, the same three on every state of the view. `[P]ROCEED`
+        // is dim when there is nothing to carry forward, and the state line
+        // at the top of the view is what says why.
         let mut at = Vec::new();
         let mut col = 2u16;
         let mut left = vec![Span::raw("  ")];
-        for (label, act) in
-            siblings.into_iter().chain([("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)])
-        {
+        for (label, act) in [("[P]ROCEED", Act::Proceed), ("[F] FOLLOW UP", Act::FollowUp)] {
             let span = key(app, label, act);
             at.push((col, span.content.chars().count() as u16, act));
             col += span.content.chars().count() as u16 + 3;
@@ -374,22 +376,22 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         }
         left.pop();
         return (
-            Paragraph::new(spread(left, vec![Span::styled("[←] BACK ", th.label())], width)),
+            Paragraph::new(spread(left, vec![Span::styled("[←] CANCEL ", th.label())], width)),
             at,
         );
     }
+
     let mut spans = vec![Span::raw("  ")];
     let mut at = Vec::new();
     let mut col = 2u16;
+    // RingFrame's three acts, in the order they happen, then the one verb and
+    // the one reading. Weft's own operations are in the `[W]` menu.
     for (i, (label, act)) in [
         ("[A]SK", Act::Ask),
-        ("[S]END", Act::Send),
-        ("[C]HECK", Act::Check),
-        ("[D]ECIDE", Act::Decide),
-        ("[N]EW AGENT", Act::NewAgent),
-        ("[W]ORK", Act::Work),
-        ("[H]ELP", Act::Help),
-        ("[X] QUIT", Act::Quit),
+        ("[E]VAL", Act::Eval),
+        ("[S]EAL", Act::Seal),
+        ("[P]ROCEED", Act::Proceed),
+        ("[D]ETAIL", Act::Detail),
     ]
     .into_iter()
     .enumerate()
@@ -403,7 +405,12 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         col += span.content.chars().count() as u16;
         spans.push(span);
     }
-    (Paragraph::new(Line::from(spans)), at)
+    // Weft's own operations are not acts on the record, so they sit apart
+    // from the three that are.
+    let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
+    let menu_width = menu.content.chars().count() as u16;
+    at.push((width.saturating_sub(menu_width + 1), menu_width, Act::WeftMenu));
+    (Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width)), at)
 }
 
 /// One action on the bar, dimmed when it cannot be used.
@@ -452,7 +459,7 @@ fn hint(app: &App) -> Paragraph<'static> {
             " {} needs your answer (from the screen). Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")
         ),
-        (None, Focus::Weft) if app.drawer().is_some() => {
+        (None, Focus::Weft) if app.detail().is_some() => {
             " [↑↓] or the wheel to scroll · [←] back to the agent".into()
         }
         (None, Focus::Weft) if app.not_ready().is_some() => {
@@ -466,7 +473,7 @@ fn hint(app: &App) -> Paragraph<'static> {
             format!(" {said}")
         }
         (None, Focus::Weft) if !app.show_work() => {
-            " [W] brings the list back · [Space] still jumps to what needs you".into()
+            " [B] brings the list back · [Space] still jumps to what needs you".into()
         }
         (None, Focus::Weft) => {
             " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back".into()
@@ -529,280 +536,47 @@ fn work_list(app: &App, area: Rect) -> (Paragraph<'static>, Vec<(u16, u16, usize
         }
         let picked = i == app.selected;
         let marker = if picked { " ▸ " } else { "   " };
-        // The harness sits just past the title field rather than at the far
-        // edge, so a wide list does not strand it across the screen.
-        let title_width =
-            width.saturating_sub(marker.len() + unit.harness.chars().count() + 2).min(36);
+        let (word, waiting) = row_state(unit);
+        let state = format!("{}{word}", if waiting { "● " } else { "" });
+        // Title, then harness, then the state at the right edge. One line, so
+        // a board of six units is six lines and the one with a dot is easy to
+        // find among them.
+        let room = width.saturating_sub(marker.len() + state.chars().count() + 2);
+        let title_width = room.saturating_sub(unit.harness.chars().count() + 2).min(36);
+        let harness_width = room.saturating_sub(title_width);
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), Style::default().fg(th.accent())),
             Span::styled(
                 padded(&clip(&unit.title, title_width), title_width),
                 if picked { th.selected() } else { Style::default().fg(th.primary()) },
             ),
-            Span::styled(format!("{} ", unit.harness), th.label()),
+            Span::styled(padded(&clip(&unit.harness, harness_width), harness_width), th.label()),
+            Span::styled(state, if waiting { th.needs_you() } else { th.label() }),
         ]));
-        for line in status_lines(app, unit, width, picked) {
-            lines.push(line);
-        }
-        if app.expanded() == Some(i) {
-            for line in expanded_rows(app, unit, width) {
-                lines.push(line);
-            }
-        }
-        lines.push(Line::raw(""));
         let height = area.y + lines.len() as u16 - start;
         rows.push((start, height, i));
     }
     (Paragraph::new(lines), rows)
 }
 
-/// One act of the three, as a row shows it.
-struct ActRow {
-    label: &'static str,
-    /// This act, and not another on the same row, is what waits on the person.
-    needs: bool,
-    state: String,
-    /// What wraps away from the state rather than being cut off it, because
-    /// every verdict names the host that produced it.
-    tail: Option<String>,
-    key_label: &'static str,
-    act: Act,
-}
-
-impl ActRow {
-    /// `   EVAL  ● DOESN'T MATCH WHAT YOU ASKED`. The status keeps the
-    /// vocabulary the single headline had, so the row still reads as the
-    /// record's own words; only the tail stays as it was written.
-    fn head(&self, state: &str) -> String {
-        format!("   {:<6}{}{}", self.label, if self.needs { "● " } else { "  " }, state)
+/// Where a unit stands, in one word, and whether it is waiting on the person.
+/// The word names the act that is waiting, so the row and the bar agree.
+fn row_state(unit: &Unit) -> (String, bool) {
+    if unit.cancelled {
+        return ("CANCELLED".into(), false);
     }
-}
-
-/// Where each of RingFrame's three acts stands for this work.
-fn act_rows(app: &App, unit: &Unit) -> [ActRow; 3] {
-    let (verdict, judged) = eval_state(app, unit);
-    [
-        ActRow {
-            label: "ASK",
-            needs: unit.ask_needs_you(),
-            state: unit.ask_state().to_uppercase(),
-            tail: None,
-            key_label: "[P] WORDING",
-            act: Act::Wording,
-        },
-        ActRow {
-            label: "EVAL",
-            needs: false,
-            state: verdict.to_uppercase(),
-            tail: judged,
-            key_label: "[J] JUDGES",
-            act: Act::Judges,
-        },
-        ActRow {
-            label: "SEAL",
-            needs: unit.seal_needs_you(),
-            state: seal_state(unit).to_uppercase(),
-            tail: None,
-            key_label: "[T] THE SEAL",
-            act: Act::Seal,
-        },
-    ]
-}
-
-/// All three keys or none. A row with a key on one act and not the next reads
-/// as though the others cannot be opened, and below this width the expanded
-/// row carries them instead, so no act is ever out of reach.
-fn reading_keys_on_the_acts(app: &App, unit: &Unit, width: usize) -> bool {
-    act_rows(app, unit)
-        .iter()
-        .all(|r| r.head(&r.state).chars().count() + r.key_label.chars().count() + 2 <= width)
-}
-
-/// One line per act — Ask, Eval, Seal. A single collapsed status cannot say
-/// both that the Ask arrived word for word and that no Eval has run on it,
-/// and the acts are what a person acts on.
-///
-/// The selected row also carries the key that opens each act. Only the
-/// selected row: availability is decided against the selection, so a key
-/// drawn anywhere else would be answering about the wrong work.
-fn status_lines(app: &App, unit: &Unit, width: usize, picked: bool) -> Vec<Line<'static>> {
-    let th = app.theme;
-    let keyed = picked && reading_keys_on_the_acts(app, unit, width);
-    let mut lines = Vec::new();
-    for r in act_rows(app, unit) {
-        let style = if r.needs { th.needs_you() } else { th.label() };
-        let indent = r.head("").chars().count();
-        let room = width.saturating_sub(if keyed { r.key_label.chars().count() + 2 } else { 0 });
-        let head = r.head(&r.state);
-        let inlined =
-            r.tail.as_ref().filter(|t| head.chars().count() + 3 + t.chars().count() <= room);
-        let drawn = match inlined {
-            Some(t) => format!("{head} · {t}"),
-            None => head,
-        };
-        let mut spans = vec![Span::styled(drawn.clone(), style)];
-        if keyed {
-            spans.push(Span::raw(" ".repeat(room.saturating_sub(drawn.chars().count()) + 1)));
-            spans.push(key(app, r.key_label, r.act));
-        }
-        lines.push(Line::from(spans));
-        if inlined.is_none()
-            && let Some(t) = r.tail
-        {
-            for l in wrap(&t, room.saturating_sub(indent).max(8)) {
-                lines.push(Line::styled(format!("{:indent$}{l}", "", indent = indent), th.label()));
-            }
-        }
+    if let Some(word) = unit.seal_state() {
+        return (word.to_uppercase(), false);
     }
-    lines
-}
-
-/// What the Eval says, split so the host that judged wraps away from the
-/// verdict rather than being cut off it.
-fn eval_state(app: &App, unit: &Unit) -> (String, Option<String>) {
-    let Some(check) = &unit.check else {
-        return ("not checked yet".into(), None);
-    };
-    let record = app.record(&check.eval_id);
-    let agreed = match &record {
-        Some(r) => r.agreed(check.agreement),
-        None => format!("agreement {:.2}", check.agreement),
-    };
-    let judged =
-        match check.judged_by.clone().or_else(|| {
-            record.as_ref().map(|r| r.judged_by().join(" and ")).filter(|s| !s.is_empty())
-        }) {
-            Some(h) => format!("{agreed} · judged by {h}"),
-            None => agreed,
-        };
-    (check.verdict.plain().to_string(), Some(judged))
-}
-
-fn seal_state(unit: &Unit) -> String {
-    unit.seal_state().unwrap_or_else(|| {
-        if unit.seal_needs_you() {
-            "waiting on your decision".into()
-        } else {
-            "not sealed yet".into()
-        }
-    })
-}
-
-/// What the expanded row adds: the judges' votes, what changed with no judge
-/// able to explain it, where the fields came from, and the row's own actions.
-fn expanded_rows(app: &App, unit: &Unit, width: usize) -> Vec<Line<'static>> {
-    let th = app.theme;
-    let mut lines = Vec::new();
-    let indent = 5usize;
-    if let Some(check) = &unit.check
-        && let Some(record) = app.record(&check.eval_id)
-    {
-        // One column width for the whole block, so the votes line up.
-        let agreed_width = record
-            .items
-            .iter()
-            .map(|i| record.agreed_short_on(i).chars().count())
-            .max()
-            .unwrap_or(0);
-        let room = width.saturating_sub(indent + 12 + agreed_width);
-        for item in &record.items {
-            let vote = item.plain_majority();
-            let agreed = record.agreed_short_on(item);
-            lines.push(Line::styled(
-                format!(
-                    "{:indent$}{} {} {:<8} {}",
-                    "",
-                    mark_for(vote),
-                    padded(&clip(&item.text, room), room),
-                    vote,
-                    agreed,
-                    indent = indent
-                ),
-                th.label(),
-            ));
-        }
-        if !record.unexplained.is_empty() {
-            lines.push(Line::styled(
-                format!(
-                    "{:indent$}{} changed and no judge could tie it to what you asked",
-                    "",
-                    record.unexplained.join(", "),
-                    indent = indent
-                ),
-                th.label(),
-            ));
-        }
-    }
-    lines.push(Line::styled(provenance(unit), th.label()));
-    // `[O]PEN AGENT` comes first: for a row whose agent is gone it is the only
-    // thing that leads anywhere, and that is the common case on reopening.
-    let mut offered = vec![("[O]PEN AGENT", Act::OpenAgent)];
-    // The readings sit on the act lines above when the width allows. When it
-    // does not, this is where they are, so no act is ever unreachable.
-    if !reading_keys_on_the_acts(app, unit, width) {
-        offered.extend(act_rows(app, unit).map(|r| (r.key_label, r.act)));
-    }
-    offered.extend([("[F]IX THIS", Act::Fix), ("[D]ECIDE", Act::Decide)]);
-    lines.extend(keys_for_row(app, &offered, indent, width));
-    lines
-}
-
-/// The row's own keys, wrapped rather than cut. Beside a pane the list is
-/// narrow, and a key that runs off the edge is a key nobody knows is there.
-fn keys_for_row(
-    app: &App,
-    offered: &[(&str, Act)],
-    indent: usize,
-    width: usize,
-) -> Vec<Line<'static>> {
-    const GAP: &str = "   ";
-    let mut lines = Vec::new();
-    let mut spans = vec![Span::raw(" ".repeat(indent))];
-    let mut at = indent;
-    for (label, act) in offered {
-        let wants = label.chars().count() + if at > indent { GAP.len() } else { 0 };
-        if at > indent && at + wants > width {
-            lines.push(Line::from(std::mem::take(&mut spans)));
-            spans.push(Span::raw(" ".repeat(indent)));
-            at = indent;
-        } else if at > indent {
-            spans.push(Span::raw(GAP));
-            at += GAP.len();
-        }
-        spans.push(key(app, label, *act));
-        at += label.chars().count();
-    }
-    lines.push(Line::from(spans));
-    lines
-}
-
-/// Where the row's fields came from, in the terms the record uses.
-fn provenance(unit: &Unit) -> String {
-    let mut parts =
-        vec![format!("asked {}", clock(&unit.asked_at)), unit.sent_phrase().to_string()];
-    if let Some(c) = &unit.check {
-        parts.push(format!("recorded as {}, {:.2}", c.verdict.recorded(), c.agreement));
-    }
-    if let Some(d) = &unit.sealed {
-        parts.push(format!("sealed {d}"));
-    }
-    format!("     {}", parts.join(" · "))
-}
-
-/// The time of day out of a ledger timestamp, which is what a row has room
-/// for. Anything that is not an ISO instant is shown as it was recorded.
-fn clock(recorded: &str) -> String {
-    match (recorded.find('T'), recorded.chars().count()) {
-        (Some(t), n) if n >= t + 6 => recorded.chars().skip(t + 1).take(5).collect(),
-        _ => recorded.to_string(),
-    }
-}
-
-fn mark_for(vote: &str) -> &'static str {
-    match vote {
-        "yes" => "✓",
-        "no" => "✗",
-        _ => "?",
+    match weft_core::board::next_step(unit) {
+        Some(weft_core::board::Next::Confirm) => ("YES?".into(), true),
+        Some(weft_core::board::Next::Send) => ("SEND".into(), true),
+        Some(weft_core::board::Next::Seal) => ("SEAL".into(), true),
+        // Submitted and unjudged. Running the Eval is available, but nothing
+        // is being kept waiting by it. One word, because the row is a list
+        // and the detail view is where the phrasing belongs.
+        Some(weft_core::board::Next::Eval) => ("SENT".into(), false),
+        None => (unit.sent_phrase().to_uppercase(), false),
     }
 }
 
@@ -816,28 +590,33 @@ fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     });
 }
 
-/// A reading surface beside the list. It replaces the pane, not the screen.
-///
-/// Lines fold rather than being cut. This is where the exact wording is read,
-/// and a prompt missing its right-hand end is not the exact wording — so it
-/// folds the way the confirmation does, keeping every character.
-fn drawer(app: &mut App, area: Rect) -> Paragraph<'static> {
+/// One unit's whole story, blocking. Lines fold rather than being cut: this
+/// is where the exact wording is read, and a prompt missing its right-hand
+/// end is not the exact wording.
+fn detail(app: &mut App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
     let room = area.height as usize;
     let width = (area.width.saturating_sub(1) as usize).max(1);
     // Folded before it is scrolled, so one press of `↓` moves one drawn line
     // rather than a whole paragraph of them.
     let (folded, offset) = {
-        let Some(d) = app.drawer() else { return Paragraph::new("") };
+        let Some(d) = app.detail() else { return Paragraph::new("") };
         (d.lines.iter().flat_map(|l| fold(l, width)).collect::<Vec<String>>(), d.offset)
     };
-    app.note_drawer_reach(folded.len().saturating_sub(room));
+    app.note_detail_reach(folded.len().saturating_sub(room));
 
     let mut lines: Vec<Line> = folded
         .iter()
         .skip(offset)
         .take(room)
-        .map(|l| Line::styled(format!(" {l}"), th.label()))
+        .map(|l| {
+            // A section heading is the one thing that carries weight here.
+            let heading = matches!(l.as_str(), "ASK" | "EVAL" | "SEAL")
+                || l.starts_with("EVAL ")
+                || l.starts_with("SEAL ");
+            let style = if heading { th.title() } else { th.label() };
+            Line::styled(format!(" {l}"), style)
+        })
         .collect();
     let more = folded.len().saturating_sub(offset + lines.len());
     if more > 0 && !lines.is_empty() {
@@ -945,6 +724,7 @@ fn panel_lines(app: &App) -> Option<Vec<String>> {
 fn panel_title(_app: &App, modal: &Modal) -> String {
     match modal {
         Modal::Quit => "QUIT WEFT?".into(),
+        Modal::Weft => "WEFT".into(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
@@ -961,6 +741,8 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
 
 fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
+        // The menu is its choices; there is nothing to say above them.
+        Modal::Weft => Vec::new(),
         Modal::Quit => vec![
             "Your agents are running in the background. They can keep going".into(),
             "without Weft open.".into(),
@@ -969,7 +751,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         Modal::Help => vec![
             "[↑↓] pick a row        [Enter] expand it        [←] back, everywhere".into(),
             "[Space] next thing that needs you               [Tab] next agent".into(),
-            "[A]SK · [S]END · [C]HECK · [D]ECIDE · [R]EADY UP".into(),
+            "[A]SK · [E]VAL · [S]EAL · [P]ROCEED · [R]EADY UP".into(),
             "[O]PEN AGENT reopens the session a row was asked in".into(),
             "[P] the wording · [J] the judges · [F]IX THIS".into(),
             "[N]EW AGENT · [W]ORK hides the list · [X] QUIT".into(),
@@ -1067,6 +849,10 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
 /// The choices a panel offers, if it is the kind that picks one.
 fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
+        Modal::Weft => crate::app::WEFT_MENU
+            .iter()
+            .map(|(key, label, _)| format!("[{key}]  {label}"))
+            .collect(),
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
             "Quit and stop the agents".into(),
@@ -1183,24 +969,6 @@ fn fold(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut out = Vec::new();
-    for para in text.split('\n') {
-        let mut line = String::new();
-        for word in para.split_whitespace() {
-            if line.chars().count() + word.chars().count() + 1 > width && !line.is_empty() {
-                out.push(std::mem::take(&mut line));
-            }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
-        }
-        out.push(line);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1290,54 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn every_row_says_where_all_three_acts_stand() {
-        let mut a = judged();
-        let drawn = screen(&mut a, 100, 30);
-        for act in ["ASK", "EVAL", "SEAL"] {
-            // One line per act, on each of the two rows. Counted as a label
-            // in its own column, so a verdict reading "what you asked" is not
-            // mistaken for the Ask's own line.
-            let lines = drawn.lines().filter(|l| l.starts_with(&format!("   {act} "))).count();
-            assert_eq!(lines, 2, "{act} is missing from a row:\n{drawn}");
-        }
-        // An act that has not happened says so rather than leaving a blank,
-        // which would read as a gap in the record.
-        assert!(drawn.contains("NOT CHECKED YET"), "{drawn}");
-        assert!(drawn.contains("NOT SEALED YET"), "{drawn}");
-        // And the one that has says what the ledger said.
-        assert!(drawn.contains("DOESN'T MATCH WHAT YOU ASKED"), "{drawn}");
-    }
-
-    #[test]
-    fn only_the_selected_row_offers_the_key_that_opens_each_act() {
-        let mut a = judged();
-        let drawn = screen(&mut a, 100, 30);
-        for k in ["[P] WORDING", "[J] JUDGES", "[T] THE SEAL"] {
-            // Availability is decided against the selection, so a key on any
-            // other row would be answering about the wrong work.
-            assert_eq!(drawn.matches(k).count(), 1, "{k} is on more than the selection:\n{drawn}");
-        }
-    }
-
-    #[test]
-    fn a_list_too_narrow_for_the_keys_moves_them_into_the_expanded_row() {
-        let mut a = judged();
-        let wide = screen(&mut a, 100, 30);
-        assert!(wide.contains("[T] THE SEAL"), "the acts carry their own keys when they fit");
-
-        // Beside a pane the list is narrow. The keys leave the act lines
-        // rather than being cut, and the expanded row picks them up, so no
-        // act is ever out of reach.
-        let narrow = screen(&mut a, 50, 30);
-        assert!(!narrow.contains("[T] THE SEAL"), "no room, so no key on the act:\n{narrow}");
-        press(&mut a, KeyCode::Enter);
-        let opened = screen(&mut a, 50, 30);
-        for k in ["[P] WORDING", "[J] JUDGES", "[T] THE SEAL"] {
-            assert!(opened.contains(k), "{k} is unreachable at this width:\n{opened}");
-        }
-    }
-
-    #[test]
     fn the_title_bar_names_the_project_where_you_are_and_what_is_open() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
@@ -1359,27 +1079,33 @@ mod tests {
     }
 
     #[test]
-    fn a_row_shows_what_you_asked_for_the_agent_and_where_it_stands() {
+    fn a_row_is_one_line_saying_what_whose_and_where_it_stands() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("health endpoint"), "{drawn}");
-        assert!(drawn.contains("codex"), "{drawn}");
-        assert!(drawn.contains("DOESN'T MATCH WHAT YOU ASKED"), "{drawn}");
+        let row = drawn.lines().find(|l| l.contains("health endpoint")).expect("the row");
+        assert!(row.contains("codex"), "{row}");
+        // The act that is waiting, named as the bar names it. What the judges
+        // said is a section of the detail view, not four more lines here.
+        assert!(row.contains("● SEAL"), "{row}");
+        assert!(!drawn.contains("DOESN'T MATCH"), "the verdict is not on the row:\n{drawn}");
     }
 
     #[test]
     fn a_handoff_that_is_ready_carries_the_dot_the_vocabulary_gives_it() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("● READY TO SEND"), "{drawn}");
+        assert!(drawn.contains("● SEND"), "{drawn}");
     }
 
     #[test]
     fn every_verdict_names_the_host_that_produced_it() {
         let mut a = judged();
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("2 of 3 judges agreed"), "agreement, never a score: {drawn}");
-        assert!(drawn.contains("judged by codex"), "{drawn}");
+        press(&mut a, KeyCode::Char('d'));
+        let read = a.detail().expect("the view").lines.join("\n");
+        assert!(read.contains("judged by codex"), "{read}");
+        // Agreement, never a score.
+        assert!(read.contains("agreed"), "{read}");
+        assert!(!read.contains("confidence"), "{read}");
     }
 
     #[test]
@@ -1392,39 +1118,10 @@ mod tests {
     }
 
     #[test]
-    fn an_expanded_row_shows_the_votes_the_provenance_and_its_own_keys() {
-        let mut a = judged();
-        press(&mut a, KeyCode::Enter);
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("returns the real build number"), "{drawn}");
-        assert!(drawn.contains("README.md changed and no judge could tie it"), "{drawn}");
-        assert!(drawn.contains("asked 14:02"), "{drawn}");
-        assert!(
-            drawn.contains("recorded as drifted, 0.67"),
-            "the recorded term travels too: {drawn}"
-        );
-        for line in drawn.lines() {
-            assert!(line.chars().count() <= 80, "nothing overflows the screen: {line}");
-        }
-        for key in ["[P] WORDING", "[J] JUDGES", "[F]IX THIS", "[D]ECIDE"] {
-            assert!(drawn.contains(key), "{key} missing from the expanded row: {drawn}");
-        }
-    }
-
-    #[test]
     fn the_action_bar_shows_a_key_for_everything_it_offers() {
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        for key in [
-            "[A]SK",
-            "[S]END",
-            "[C]HECK",
-            "[D]ECIDE",
-            "[N]EW AGENT",
-            "[W]ORK",
-            "[H]ELP",
-            "[X] QUIT",
-        ] {
+        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[P]ROCEED", "[D]ETAIL", "[W]EFT"] {
             assert!(drawn.contains(key), "{key} missing from the bar: {drawn}");
         }
     }
@@ -1460,39 +1157,51 @@ mod tests {
     #[test]
     fn hiding_the_work_list_gives_the_agent_the_whole_width() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('w'));
+        press(&mut a, KeyCode::Char('b'));
         let drawn = screen(&mut a, 120, 32);
         assert!(!drawn.contains("health endpoint"), "the list is away: {drawn}");
         let tabs = drawn.lines().nth(1).expect("a tab row");
         assert!(!tabs.contains('│'), "and nothing is left behind: {tabs}");
-        assert!(drawn.contains("[W] brings the list back"), "the way back is said: {drawn}");
-        assert!(drawn.contains("[W]ORK"), "and shown on the bar: {drawn}");
+        assert!(drawn.contains("[B] brings the list back"), "the way back is said: {drawn}");
     }
 
     #[test]
-    fn the_drawer_replaces_the_pane_and_keeps_the_list_beside_it() {
+    fn the_detail_view_blocks_and_holds_all_three_acts() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('d'));
         let drawn = screen(&mut a, 120, 32);
-        assert!(drawn.contains("THE JUDGES · health endpoint"), "{drawn}");
-        assert!(drawn.contains("[←] BACK"), "{drawn}");
-        assert!(drawn.contains("readme fix"), "the list stays: {drawn}");
+        assert!(drawn.contains("health endpoint"), "{drawn}");
+        // One unit and one decision. Nothing behind it is reachable, which is
+        // what keeps the bar's acts and `[P]ROCEED` from both being live.
+        assert!(!drawn.contains("readme fix"), "the list is not behind it:\n{drawn}");
+        let lines = &a.detail().expect("the view").lines;
+        for section in ["ASK", "EVAL", "SEAL"] {
+            assert!(
+                lines.iter().any(|l| l.starts_with(section)),
+                "{section} is missing from the view"
+            );
+        }
+        assert!(drawn.contains("ASK"), "and the top of it is on the screen:\n{drawn}");
         assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
-        assert!(drawn.contains("none of them did it"), "{drawn}");
+        assert!(drawn.contains("[P]ROCEED"), "{drawn}");
+        assert!(drawn.contains("[←] CANCEL"), "{drawn}");
     }
 
     #[test]
-    fn a_reading_too_wide_for_the_drawer_folds_rather_than_being_cut() {
+    fn a_reading_too_wide_for_the_view_folds_rather_than_being_cut() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('j'));
-        // Narrow enough that the longest reason cannot sit on one line. The
-        // drawer is where the exact wording is read, so nothing may be lost
-        // off the right-hand edge.
-        let drawn = screen(&mut a, 46, 40);
-        // The heading is 54 characters in a 45-column drawer, and both halves
-        // of it are on the screen.
-        assert!(drawn.contains("CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT"), "{drawn}");
-        assert!(drawn.contains("YOU ASKED"), "the end of the line survives:\n{drawn}");
+        press(&mut a, KeyCode::Char('d'));
+        // Narrow enough that the longest reason cannot sit on one line. This
+        // is where the exact wording is read, so nothing may be lost off the
+        // right-hand edge.
+        let drawn = screen(&mut a, 46, 70);
+        // The longest line in the fixture is 56 characters in a 45-column
+        // view. Every word of it is on the screen, across two lines.
+        let flat: String = drawn.lines().map(str::trim).collect::<Vec<_>>().join(" ");
+        assert!(
+            flat.contains("CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT YOU ASKED"),
+            "the line lost something in the fold:\n{drawn}"
+        );
         for line in drawn.lines() {
             assert!(
                 !line.trim_end().ends_with('…') || line.contains("more lines"),
@@ -1504,7 +1213,7 @@ mod tests {
     #[test]
     fn scrolling_past_the_last_line_stops_there_instead_of_emptying_the_panel() {
         let mut a = judged();
-        press(&mut a, KeyCode::Char('j'));
+        press(&mut a, KeyCode::Char('d'));
         // A short panel, so there is somewhere to scroll to.
         let _ = screen(&mut a, 120, 14);
         for _ in 0..200 {
@@ -1518,20 +1227,10 @@ mod tests {
     }
 
     #[test]
-    fn the_wording_and_the_judges_are_siblings_not_a_stack() {
-        let mut a = judged();
-        press(&mut a, KeyCode::Char('j'));
-        let drawn = screen(&mut a, 120, 32);
-        assert!(drawn.contains("[P] WORDING"), "the bar offers the other one: {drawn}");
-        press(&mut a, KeyCode::Left);
-        assert!(a.drawer().is_none(), "one [←] closes it, with nothing underneath");
-    }
-
-    #[test]
     fn the_confirmation_is_anchored_to_the_bottom_with_the_row_still_in_view() {
         let mut a = judged();
         press(&mut a, KeyCode::Down);
-        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Char('e'));
         let drawn = screen(&mut a, 80, 24);
         let lines: Vec<&str> = drawn.lines().collect();
         let row = lines.iter().position(|l| l.contains("readme fix")).expect("the row");
@@ -1595,17 +1294,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rows_keys_wrap_rather_than_run_off_a_narrow_list() {
-        // Beside a pane the list is narrow, and a key that runs off the edge
-        // is a key nobody knows is there.
-        let mut a = judged();
-        press(&mut a, KeyCode::Enter);
-        let drawn = screen(&mut a, 120, 32);
-        assert!(drawn.contains("[O]PEN AGENT"), "{drawn}");
-        assert!(drawn.contains("[D]ECIDE"), "the last key is still on screen: {drawn}");
-    }
-
-    #[test]
     fn a_list_longer_than_the_screen_says_what_is_above_and_below() {
         let mut a = app();
         let many: Vec<_> = (0..20)
@@ -1632,8 +1320,8 @@ mod tests {
         let mut a = judged();
         screen(&mut a, 80, 24);
         let bar = screen(&mut a, 80, 24);
-        let row = bar.lines().position(|l| l.contains("[H]ELP")).expect("the bar") as u16;
-        let column = bar.lines().nth(row as usize).unwrap().find("[H]ELP").unwrap() as u16;
+        let row = bar.lines().position(|l| l.contains("[A]SK")).expect("the bar") as u16;
+        let column = bar.lines().nth(row as usize).unwrap().find("[A]SK").unwrap() as u16;
         a.on_mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column,
@@ -1641,7 +1329,7 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         })
         .expect("click");
-        assert!(matches!(a.modal, Some(crate::app::Modal::Help)), "{:?}", a.modal);
+        assert!(matches!(a.modal, Some(crate::app::Modal::Ask { .. })), "{:?}", a.modal);
     }
 
     #[test]
@@ -1677,25 +1365,17 @@ mod tests {
     }
 
     #[test]
-    fn the_bar_keeps_its_eight_entries_when_a_harness_is_not_set_up() {
-        // The bar is exactly full at 80 columns, so [R]EADY UP lives in the
-        // hint. Every entry still has to be on screen and readable.
+    fn the_bar_keeps_every_entry_when_a_harness_is_not_set_up() {
+        // Weft's own operations moved into the [W] menu, so the bar fits at
+        // 80 columns with room to spare. Every entry still has to be on
+        // screen and readable.
         let mut a = judged();
         a.set_readiness(
             "codex",
             crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
         );
         let drawn = screen(&mut a, 80, 24);
-        for key in [
-            "[A]SK",
-            "[S]END",
-            "[C]HECK",
-            "[D]ECIDE",
-            "[N]EW AGENT",
-            "[W]ORK",
-            "[H]ELP",
-            "[X] QUIT",
-        ] {
+        for key in ["[A]SK", "[E]VAL", "[S]EAL", "[P]ROCEED", "[D]ETAIL", "[W]EFT"] {
             assert!(drawn.contains(key), "{key} fell off the bar: {drawn}");
         }
     }
@@ -1822,8 +1502,9 @@ mod tests {
     #[test]
     fn what_can_be_used_is_lit_and_what_cannot_is_grey() {
         let a = judged();
-        let available = key(&a, "[H]ELP", Act::Help);
-        let unavailable = key(&a, "[S]END", Act::Send);
+        let available = key(&a, "[A]SK", Act::Ask);
+        // Already set up, so there is nothing to ready.
+        let unavailable = key(&a, "[R]EADY UP", Act::ReadyUp);
         assert_eq!(available.style.fg, Some(a.theme.primary()), "active reads as text");
         assert_eq!(unavailable.style.fg, Some(a.theme.muted()), "inactive reads as grey");
     }
@@ -1870,7 +1551,7 @@ mod tests {
     #[test]
     fn an_unavailable_action_puts_one_sentence_in_the_hint_and_no_dialog() {
         let mut a = app();
-        press(&mut a, KeyCode::Char('s'));
+        press(&mut a, KeyCode::Char('p'));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("Nothing has been asked for yet."), "{drawn}");
         assert!(!drawn.contains("┌"), "no box was opened:\n{drawn}");

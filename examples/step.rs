@@ -150,6 +150,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
     match modal {
         Quit => "Quit",
         Help => "Help",
+        Weft => "Weft",
         Ask { .. } => "Ask",
         Confirm(_) => "Confirm",
         Note(_) => "Note",

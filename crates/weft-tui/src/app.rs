@@ -21,7 +21,7 @@ use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
 use crate::ledger::Unit;
 use crate::theme::Theme;
 pub use weft_core::board::Act;
-use weft_core::board::{Board, PaneInfo};
+use weft_core::board::{Board, Next, PaneInfo};
 use weft_core::harness;
 pub use weft_core::offers::{Ended, ended_choices, say_handoff};
 use weft_core::readiness::{Gap, Readiness};
@@ -40,10 +40,22 @@ pub struct Pending {
 }
 
 /// The surfaces that interrupt. Everything else in v2 is drawn in place.
+/// Weft's own operations, in the order the menu lists them.
+pub const WEFT_MENU: [(char, &str, Act); 5] = [
+    ('O', "Open project", Act::OpenProject),
+    ('N', "New agent", Act::NewAgent),
+    ('B', "Toggle Sidebar", Act::ToggleSidebar),
+    ('H', "Help", Act::Help),
+    ('X', "Quit", Act::Quit),
+];
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     Quit,
     Help,
+    /// Weft's own operations, gathered out of the bar. Every one of them also
+    /// has its own key; this is for finding them, not for reaching them.
+    Weft,
     /// Composing an intent.
     Ask {
         text: String,
@@ -76,19 +88,16 @@ pub enum Modal {
 
 /// The two reading surfaces. Siblings, not a stack: `P` from the judges
 /// drawer swaps the content rather than piling a second overlay on top.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reading {
-    Wording,
-    Judges,
-    Seal,
-}
-
 #[derive(Debug, Clone, PartialEq)]
-pub struct Drawer {
-    pub kind: Reading,
+pub struct Detail {
     pub title: String,
+    pub harness: String,
+    /// The whole story, already assembled. Folded and scrolled at draw time,
+    /// because only the render knows how wide the screen is.
     pub lines: Vec<String>,
     pub offset: usize,
+    /// What `[P]ROCEED` would do. `None` draws it dim.
+    pub next: Option<Next>,
 }
 
 pub struct App {
@@ -103,9 +112,9 @@ pub struct App {
     expanded: Option<usize>,
     /// How far the work list is scrolled. A list can be longer than the pane.
     list_offset: usize,
-    drawer: Option<Drawer>,
+    detail: Option<Detail>,
     /// The furthest the drawer may be scrolled, as the last render measured it.
-    drawer_reach: usize,
+    detail_reach: usize,
     /// Whether the work list is on screen. Hidden, the agent has the width.
     show_work: bool,
     pub focus: Focus,
@@ -170,8 +179,8 @@ impl App {
         self.expanded
     }
 
-    pub fn drawer(&self) -> Option<&Drawer> {
-        self.drawer.as_ref()
+    pub fn detail(&self) -> Option<&Detail> {
+        self.detail.as_ref()
     }
 
     pub fn show_work(&self) -> bool {
@@ -351,8 +360,8 @@ impl App {
             selected: 0,
             expanded: None,
             list_offset: 0,
-            drawer: None,
-            drawer_reach: 0,
+            detail: None,
+            detail_reach: 0,
             show_work: true,
             focus: Focus::Weft,
             toggle,
@@ -573,7 +582,7 @@ impl App {
 
     /// Send the compiled prompt for the selected work.
     fn start_send(&mut self) {
-        if !self.guard(Act::Send) {
+        if !self.guard(Act::Proceed) {
             return;
         }
         let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) else { return };
@@ -582,7 +591,7 @@ impl App {
 
     /// Check or Decide, in whichever harness this project routes it to.
     fn start_skill(&mut self, skill: &str) {
-        let act = if skill == "eval" { Act::Check } else { Act::Decide };
+        let act = if skill == "eval" { Act::Eval } else { Act::Seal };
         if !self.guard(act) {
             return;
         }
@@ -594,77 +603,56 @@ impl App {
         self.ask_first("ask", None, Some(target), Some(&text));
     }
 
-    /// The exact wording RingFrame compiled, read back through the daemon.
-    fn read_wording(&mut self) {
-        if !self.guard(Act::Wording) {
+    /// One unit's whole story, in one blocking view: the Ask that started it,
+    /// the Eval that judged it, the Seal that closed it.
+    ///
+    /// Three reads, because the record keeps the three apart. They are joined
+    /// here rather than behind three keys, which is what `[P] WORDING`,
+    /// `[J] JUDGES` and `[T] THE SEAL` were.
+    fn open_detail(&mut self) {
+        if !self.guard(Act::Detail) {
             return;
         }
         let Some(unit) = self.selected_unit().cloned() else { return };
-        match self.session.read("wording", &unit.ask_id) {
-            Ok(v) => {
-                let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
-                let mut lines = vec![
-                    format!("asked {} · {}", unit.asked_at, unit.harness),
-                    "This is the exact wording. Weft did not change it.".into(),
-                    String::new(),
-                ];
-                lines.extend(text.lines().map(str::to_string));
-                self.drawer = Some(Drawer {
-                    kind: Reading::Wording,
-                    title: format!("THE WORDING · {}", unit.title),
-                    lines,
-                    offset: 0,
-                });
-            }
-            Err(e) => self.modal = Some(Modal::Note(said(&e))),
-        }
-    }
-
-    /// The judges, their votes and their reasons.
-    fn read_judges(&mut self) {
-        if !self.guard(Act::Judges) {
-            return;
-        }
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        let Some(check) = unit.check.clone() else { return };
-        let record = match self.session.read("judges", &check.eval_id) {
-            Ok(v) => serde_json::from_value::<weft_core::record::Record>(v).ok(),
-            Err(e) => {
-                self.modal = Some(Modal::Note(said(&e)));
-                return;
-            }
-        };
-        let Some(record) = record else {
-            self.modal = Some(Modal::Note("That check's record is not on disk.".into()));
-            return;
-        };
-        self.drawer = Some(Drawer {
-            kind: Reading::Judges,
-            title: format!("THE JUDGES · {}", unit.title),
-            lines: weft_core::offers::judges_read(&record, &check),
+        // A part that will not come back is a fact about the record, not a
+        // reason to refuse the view: the section says so and the rest opens.
+        let prompt = self
+            .session
+            .read("wording", &unit.ask_id)
+            .ok()
+            .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string));
+        let record = unit.check.as_ref().and_then(|c| {
+            self.session
+                .read("judges", &c.eval_id)
+                .ok()
+                .and_then(|v| serde_json::from_value::<weft_core::record::Record>(v).ok())
+        });
+        let seal = unit.seal_id.as_ref().and_then(|id| self.session.read("seal", id).ok());
+        self.detail = Some(Detail {
+            lines: weft_core::offers::detail_read(
+                &unit,
+                prompt.as_deref(),
+                record.as_ref(),
+                seal.as_ref(),
+            ),
+            title: unit.title.clone(),
+            harness: unit.harness.clone(),
+            next: weft_core::board::next_step(&unit),
             offset: 0,
         });
     }
 
-    /// The Seal that closed the work, re-verified as it is read.
-    fn read_seal(&mut self) {
-        if !self.guard(Act::Seal) {
+    /// Carry the selected unit forward, whatever that means for it.
+    fn proceed(&mut self) {
+        if !self.guard(Act::Proceed) {
             return;
         }
         let Some(unit) = self.selected_unit().cloned() else { return };
-        // `guard` already refused a unit with no seal; this keeps the reader
-        // honest rather than inventing an id.
-        let Some(seal_id) = unit.seal_id.clone() else { return };
-        match self.session.read("seal", &seal_id) {
-            Ok(v) => {
-                self.drawer = Some(Drawer {
-                    kind: Reading::Seal,
-                    title: format!("THE SEAL · {}", unit.title),
-                    lines: weft_core::offers::seal_read(&unit, &v),
-                    offset: 0,
-                });
-            }
-            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+        match weft_core::board::next_step(&unit) {
+            Some(Next::Confirm) | Some(Next::Send) => self.start_send(),
+            Some(Next::Eval) => self.start_skill("eval"),
+            Some(Next::Seal) => self.start_skill("seal"),
+            None => {}
         }
     }
 
@@ -805,11 +793,11 @@ impl App {
 
     // --- the drawer ----------------------------------------------------------
 
-    fn scroll_drawer(&mut self, delta: i32) {
+    fn scroll_detail(&mut self, delta: i32) {
         // Held down, `↓` used to scroll the whole reading off the top and
         // leave an empty panel. It stops at the last line instead.
-        let reach = self.drawer_reach as i32;
-        if let Some(d) = self.drawer.as_mut() {
+        let reach = self.detail_reach as i32;
+        if let Some(d) = self.detail.as_mut() {
             d.offset = (d.offset as i32 + delta).clamp(0, reach) as usize;
         }
     }
@@ -857,7 +845,7 @@ impl App {
     /// `←` is back everywhere in Weft: it closes the drawer, then collapses the
     /// row. `Esc` is never Weft's.
     fn back(&mut self) {
-        if self.drawer.take().is_some() {
+        if self.detail.take().is_some() {
             return;
         }
         if self.expanded.take().is_some() {
@@ -874,7 +862,7 @@ impl App {
         if let Some(pane) = self.next_waiting_pane() {
             self.pane_focus = pane;
             self.show_work = false;
-            self.drawer = None;
+            self.detail = None;
             return;
         }
         let n = self.units.len();
@@ -885,7 +873,7 @@ impl App {
                 self.selected = i;
                 self.expanded = None;
                 self.show_work = true;
-                self.drawer = None;
+                self.detail = None;
                 return;
             }
         }
@@ -925,7 +913,7 @@ impl App {
     fn toggle_work(&mut self) {
         self.show_work = !self.show_work;
         if self.show_work {
-            self.drawer = None;
+            self.detail = None;
         }
     }
 
@@ -934,22 +922,27 @@ impl App {
     pub fn act(&mut self, act: Act) {
         match act {
             Act::Ask => self.start_ask(),
-            Act::Send => self.start_send(),
-            Act::Check => self.start_skill("eval"),
-            Act::Decide => self.start_skill("seal"),
-            Act::Wording => self.read_wording(),
-            Act::Judges => self.read_judges(),
-            Act::Seal => self.read_seal(),
-            Act::Fix => {
-                if self.guard(Act::Fix) {
-                    self.drawer = None;
+            Act::Proceed => self.proceed(),
+            Act::Detail => self.open_detail(),
+            Act::Eval => self.start_skill("eval"),
+            Act::Seal => self.start_skill("seal"),
+            Act::FollowUp => {
+                if self.guard(Act::FollowUp) {
+                    self.detail = None;
                     self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
                 }
             }
             Act::ReadyUp => self.start_set_up(),
-            Act::OpenAgent => self.open_the_agent(),
+            Act::GoToAgent => self.open_the_agent(),
             Act::NewAgent => self.start_agent_picker(),
-            Act::Work => self.toggle_work(),
+            Act::ToggleSidebar => self.toggle_work(),
+            // Opening another project is the next step's work; until then it
+            // says so rather than pretending.
+            Act::OpenProject => self.say("Opening a second project is not built yet."),
+            Act::WeftMenu => {
+                self.modal = Some(Modal::Weft);
+                self.modal_choice = 0;
+            }
             Act::Help => {
                 self.modal = Some(Modal::Help);
                 self.modal_choice = 0;
@@ -964,8 +957,8 @@ impl App {
     /// Open the agent that has the selected work, in the session it was asked
     /// in. The command is the one a person would type; Weft claims nothing
     /// about what comes back, which the harness shows in its own pane.
-    fn open_the_agent(&mut self) {
-        if !self.guard(Act::OpenAgent) {
+    pub(crate) fn open_the_agent(&mut self) {
+        if !self.guard(Act::GoToAgent) {
             return;
         }
         let Some(u) = self.selected_unit() else { return };
@@ -1009,8 +1002,8 @@ impl App {
                     // First run: the picker is the surface, and it is drawn in
                     // the body rather than as a modal, so it owns the arrows.
                     self.pick_agent(delta);
-                } else if self.drawer.is_some() {
-                    self.scroll_drawer(delta as i32);
+                } else if self.detail.is_some() {
+                    self.scroll_detail(delta as i32);
                 } else {
                     self.pick(delta);
                 }
@@ -1021,13 +1014,13 @@ impl App {
                 } else if self.waiting_here() {
                     // [Enter] ANSWER IT: the person answers, never Weft.
                     self.focus = Focus::Agent;
-                } else if self.drawer.is_none() {
+                } else if self.detail.is_none() {
                     self.toggle_expand();
                 }
             }
             Action::Back => self.back(),
             Action::NextNeedsYou => self.next_needs_you(),
-            Action::ToggleWork => self.act(Act::Work),
+            Action::ToggleSidebar => self.act(Act::ToggleSidebar),
             Action::NextPane => {
                 if self.pane_count() > 0 {
                     self.pane_focus = (self.pane_focus + 1) % self.pane_count();
@@ -1040,17 +1033,16 @@ impl App {
                 }
             }
             Action::Ask => self.act(Act::Ask),
-            Action::Send => self.act(Act::Send),
+            Action::Proceed => self.act(Act::Proceed),
             Action::NewAgent => self.act(Act::NewAgent),
-            Action::Check => self.act(Act::Check),
-            Action::Decide => self.act(Act::Decide),
-            Action::Wording => self.act(Act::Wording),
-            Action::Judges => self.act(Act::Judges),
+            Action::Eval => self.act(Act::Eval),
             Action::Seal => self.act(Act::Seal),
-            Action::Fix => self.act(Act::Fix),
+            Action::Detail => self.act(Act::Detail),
+            Action::FollowUp => self.act(Act::FollowUp),
             Action::Explain => self.explain_waiting(),
             Action::ReadyUp => self.act(Act::ReadyUp),
-            Action::OpenAgent => self.act(Act::OpenAgent),
+            Action::OpenProject => self.act(Act::OpenProject),
+            Action::WeftMenu => self.act(Act::WeftMenu),
             Action::Quit => self.act(Act::Quit),
             Action::Help => self.act(Act::Help),
             Action::Ignore => {}
@@ -1106,6 +1098,7 @@ impl App {
 
         let options = match &modal {
             Modal::Quit => 3,
+            Modal::Weft => WEFT_MENU.len(),
             Modal::StartAgent { .. } => self.starts().len().max(1),
             Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
             _ => 1,
@@ -1165,6 +1158,11 @@ impl App {
                     _ => self.close_pane(pane),
                 }
             }
+            Modal::Weft => {
+                let act = WEFT_MENU[self.modal_choice.min(WEFT_MENU.len() - 1)].2;
+                self.modal = None;
+                self.act(act);
+            }
             Modal::Quit => match self.modal_choice {
                 0 => {
                     // Leave; the server keeps the agents working.
@@ -1205,8 +1203,8 @@ impl App {
             _ => None,
         };
         if let Some(delta) = wheel {
-            if self.drawer.is_some() {
-                self.scroll_drawer(delta);
+            if self.detail.is_some() {
+                self.scroll_detail(delta);
             } else if self.over_list(m.column, m.row) {
                 self.scroll_list(delta);
             } else {
@@ -1249,7 +1247,7 @@ impl App {
         let in_pane = self.pane_area.is_some_and(|a| {
             m.column >= a.x && m.column < a.x + a.width && m.row >= a.y && m.row < a.y + a.height
         });
-        if in_pane && self.drawer.is_none() {
+        if in_pane && self.detail.is_none() {
             // Clicking the pane is a toggle: into the agent, and out again.
             // The same click should not mean two different things.
             self.focus = match self.focus {
@@ -1356,8 +1354,8 @@ impl App {
 
     /// How far the drawer can scroll: the folded line count less the room it
     /// has. Only the render knows both, so it says so each frame.
-    pub fn note_drawer_reach(&mut self, last: usize) {
-        self.drawer_reach = last;
+    pub fn note_detail_reach(&mut self, last: usize) {
+        self.detail_reach = last;
     }
 
     pub fn note_list_area(&mut self, area: Option<Rect>) {
@@ -1709,7 +1707,7 @@ pub(crate) mod tests {
         // The complaint this answers: reopening Weft showed rows of previous
         // work with no next action on any of them.
         let a = with_unit(Sent::TakenByAgent);
-        assert_eq!(a.unavailable(Act::OpenAgent), None, "the record names the session");
+        assert_eq!(a.unavailable(Act::GoToAgent), None, "the record names the session");
     }
 
     #[test]
@@ -1718,7 +1716,7 @@ pub(crate) mod tests {
         let mut u = unit(Sent::TakenByAgent);
         u.session_ref = None;
         a.set_units(vec![u]);
-        let said = a.unavailable(Act::OpenAgent).expect("a reason");
+        let said = a.unavailable(Act::GoToAgent).expect("a reason");
         assert!(said.contains("does not name"), "{said}");
         assert!(said.contains("codex"), "and names the harness: {said}");
     }
@@ -1730,12 +1728,12 @@ pub(crate) mod tests {
         let mut u = unit(Sent::TakenByAgent);
         u.session_ref = Some("abc123".into());
         a.set_units(vec![u]);
-        assert_eq!(a.unavailable(Act::OpenAgent), None, "nothing is running it yet");
+        assert_eq!(a.unavailable(Act::GoToAgent), None, "nothing is running it yet");
 
         // The spec the pane runs is what says so, so it holds for a pane
         // another client opened.
         a.session.panes[0].spec = "codex resume abc123".into();
-        let said = a.unavailable(Act::OpenAgent).expect("a reason");
+        let said = a.unavailable(Act::GoToAgent).expect("a reason");
         assert!(said.contains("already open"), "{said}");
         assert!(said.contains("[1]"), "and says which pane: {said}");
     }
@@ -1744,7 +1742,7 @@ pub(crate) mod tests {
     fn nothing_asked_for_yet_means_nothing_to_open() {
         let mut a = app();
         a.set_units(Vec::new());
-        assert!(a.unavailable(Act::OpenAgent).is_some());
+        assert!(a.unavailable(Act::GoToAgent).is_some());
     }
 
     #[test]
@@ -1794,7 +1792,7 @@ pub(crate) mod tests {
         u.confirmed = false;
         u.unanswered = true;
         a.set_units(vec![u]);
-        assert_eq!(a.unavailable(Act::Send), None, "[S]END is the person's yes");
+        assert_eq!(a.unavailable(Act::Proceed), None, "[S]END is the person's yes");
     }
 
     /// A project that routes its acts. Weft reads the file once, so this sets
@@ -1813,11 +1811,11 @@ pub(crate) mod tests {
     fn an_act_goes_to_the_harness_this_project_routes_it_to() {
         // Codex asks, Claude evaluates. The work was done in codex.
         let a = routed(&[("eval", "claude-code")]);
-        assert_eq!(a.deciding_harness(Act::Check).as_deref(), Some("claude-code"));
+        assert_eq!(a.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
         // Seal was not routed, so it still follows the work.
-        assert_eq!(a.deciding_harness(Act::Decide).as_deref(), Some("codex"));
+        assert_eq!(a.deciding_harness(Act::Seal).as_deref(), Some("codex"));
         // And Send is never routed: it is the delivery of an Ask already made.
-        assert_eq!(weft_core::board::Board::act_key(Act::Send), None);
+        assert_eq!(weft_core::board::Board::act_key(Act::Proceed), None);
     }
 
     #[test]
@@ -1827,10 +1825,10 @@ pub(crate) mod tests {
         let mut a = routed(&[("eval", "claude-code")]);
         a.set_readiness("codex", Readiness::Ready);
         a.set_readiness("claude-code", Readiness::Missing(Gap::Plugin));
-        let said = a.unavailable(Act::Check).expect("a reason");
+        let said = a.unavailable(Act::Eval).expect("a reason");
         assert!(said.contains("claude-code"), "names the harness it would go to: {said}");
         // And the harness that did the work being ready does not help.
-        assert_eq!(a.unavailable(Act::Decide), None, "seal still follows the work");
+        assert_eq!(a.unavailable(Act::Seal), None, "seal still follows the work");
     }
 
     #[test]
@@ -1839,7 +1837,7 @@ pub(crate) mod tests {
         // the routed harness ready and leave it without a pane.
         let mut a = routed(&[("eval", "claude-code")]);
         a.set_readiness("claude-code", Readiness::Ready);
-        let said = a.unavailable(Act::Check).expect("a reason");
+        let said = a.unavailable(Act::Eval).expect("a reason");
         assert!(said.contains("claude-code"), "{said}");
         assert!(said.contains("nowhere to send"), "{said}");
     }
@@ -1848,7 +1846,7 @@ pub(crate) mod tests {
     fn a_project_that_routes_nothing_behaves_exactly_as_before() {
         let a = routed(&[]);
         assert!(a.routing().is_empty());
-        for act in [Act::Ask, Act::Check, Act::Decide] {
+        for act in [Act::Ask, Act::Eval, Act::Seal] {
             assert_eq!(a.deciding_harness(act).as_deref(), Some("codex"), "{act:?}");
         }
     }
@@ -1878,7 +1876,7 @@ pub(crate) mod tests {
     #[test]
     fn coming_back_out_of_the_agent_shows_the_work_list_again() {
         let mut a = app();
-        press(&mut a, KeyCode::Char('w'));
+        press(&mut a, KeyCode::Char('b'));
         assert!(!a.show_work());
         ctrl(&mut a, ']');
         ctrl(&mut a, ']');
@@ -1949,8 +1947,8 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn check_and_decide_always_confirm_before_typing() {
-        for (key, expect) in [('c', "eval"), ('d', "seal")] {
+    fn eval_and_seal_always_confirm_before_typing() {
+        for (key, expect) in [('e', "eval"), ('s', "seal")] {
             let mut a = recorded(Sent::TakenByAgent);
             press(&mut a, KeyCode::Char(key));
             let Some(Modal::Confirm(p)) = a.modal.clone() else {
@@ -1965,7 +1963,7 @@ pub(crate) mod tests {
     #[test]
     fn cancelling_a_confirmation_types_nothing() {
         let mut a = recorded(Sent::TakenByAgent);
-        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Char('e'));
         assert!(matches!(a.modal, Some(Modal::Confirm(_))));
         press(&mut a, KeyCode::Left); // [←] CANCEL
         assert!(a.modal.is_none());
@@ -1975,7 +1973,7 @@ pub(crate) mod tests {
     #[test]
     fn confirming_types_it_and_puts_you_in_the_agent() {
         let mut a = recorded(Sent::TakenByAgent);
-        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Char('e'));
         press(&mut a, KeyCode::Enter);
         assert!(a.modal.is_none());
         assert_eq!(a.focus, Focus::Agent, "you land where the work is happening");
@@ -1984,21 +1982,24 @@ pub(crate) mod tests {
     #[test]
     fn an_unavailable_action_explains_itself_in_the_hint_and_opens_nothing() {
         let mut a = app();
-        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Char('e'));
         assert!(a.modal.is_none(), "never a dialog: {:?}", a.modal);
         assert_eq!(a.hint_text(), Some("Nothing to work on yet."));
     }
 
     #[test]
-    fn send_names_the_row_that_is_ready_instead_of_failing_silently() {
-        let mut a = app();
-        let mut ready = unit(Sent::ReadyToSend);
-        ready.ask_id = "ask_2".into();
-        ready.title = "readme fix".into();
-        a.set_units(vec![unit(Sent::TakenByAgent), ready]);
-        press(&mut a, KeyCode::Char('s'));
-        assert!(a.modal.is_none());
-        assert_eq!(a.hint_text(), Some("readme fix is the one ready to send. ↓ to select it."));
+    fn proceed_does_the_step_the_selected_row_is_actually_waiting_on() {
+        // A confirmed Ask nobody has submitted: there is a step to take, so
+        // the verb is live. What it then types is the send path's own test.
+        let a = recorded(Sent::ReadyToSend);
+        assert_eq!(a.unavailable(Act::Proceed), None);
+
+        // An Ask that was compiled and never answered is waiting on the
+        // harness's chooser, not on the person, so there is nothing to carry.
+        let mut a = recorded(Sent::NotSent);
+        press(&mut a, KeyCode::Char('p'));
+        assert!(a.modal.is_none(), "{:?}", a.modal);
+        assert_eq!(a.hint_text(), Some("health endpoint is closed. [F] FOLLOW UP asks again."));
     }
 
     #[test]
@@ -2007,7 +2008,7 @@ pub(crate) mod tests {
         let mut u = unit(Sent::Arrived { exact: true });
         u.harness = "claude-code".into();
         a.set_units(vec![u]);
-        press(&mut a, KeyCode::Char('c'));
+        press(&mut a, KeyCode::Char('e'));
         let hint = a.hint_text().expect("a sentence");
         assert!(hint.contains("claude-code"), "names the missing agent: {hint}");
     }
@@ -2071,10 +2072,10 @@ pub(crate) mod tests {
         claude_row.harness = "claude-code".into();
         a.set_units(vec![codex_row, claude_row]);
 
-        let blocked = a.unavailable(Act::Check).expect("codex is not set up");
+        let blocked = a.unavailable(Act::Eval).expect("codex is not set up");
         assert!(blocked.contains("codex is not set up"), "{blocked}");
         press(&mut a, KeyCode::Down);
-        assert_eq!(a.unavailable(Act::Check), None, "claude-code is ready");
+        assert_eq!(a.unavailable(Act::Eval), None, "claude-code is ready");
     }
 
     #[test]
@@ -2158,9 +2159,9 @@ pub(crate) mod tests {
     fn w_hides_the_work_list_and_brings_it_back() {
         let mut a = app();
         assert!(a.show_work());
-        press(&mut a, KeyCode::Char('w'));
+        press(&mut a, KeyCode::Char('b'));
         assert!(!a.show_work());
-        press(&mut a, KeyCode::Char('w'));
+        press(&mut a, KeyCode::Char('b'));
         assert!(a.show_work());
     }
 
@@ -2201,7 +2202,7 @@ pub(crate) mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        press(&mut a, KeyCode::Char('e'));
+        press(&mut a, KeyCode::Char('y'));
         let hint = a.hint_text().expect("a sentence");
         assert!(hint.contains("Allow command?"), "quotes the evidence: {hint}");
         assert!(hint.contains("permission"), "names the rule: {hint}");
@@ -2431,7 +2432,7 @@ mod start_tests {
             seal_id: None,
             sealed_at: None,
         }]);
-        a.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)).expect("key");
+        a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)).expect("key");
         assert!(
             a.modal.is_some() || a.hint_text().is_some(),
             "S must do something when the bar offers it"

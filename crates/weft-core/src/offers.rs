@@ -228,6 +228,73 @@ fn said_plainly(code: &str) -> &str {
     }
 }
 
+/// The headline of a unit's detail view: where it stands, in the vocabulary
+/// the sidebar uses.
+pub fn detail_headline(unit: &crate::ledger::Unit) -> String {
+    if unit.ask_needs_you() || unit.seal_needs_you() {
+        format!("● {}", unit.status().to_uppercase())
+    } else {
+        unit.status().to_uppercase()
+    }
+}
+
+/// One unit's whole story: the Ask that started it, the Eval that judged it,
+/// the Seal that closed it. Three sections in the order they happen, so there
+/// is one place to read instead of three keys to find.
+///
+/// Each part is `None` when it has not happened, and the section says so
+/// rather than being left out — a missing section reads as a gap in the
+/// record, and an act that has not happened is not a gap.
+pub fn detail_read(
+    unit: &crate::ledger::Unit,
+    prompt: Option<&str>,
+    record: Option<&crate::record::Record>,
+    seal: Option<&serde_json::Value>,
+) -> Vec<String> {
+    let mut out = vec![detail_headline(unit), format!("  {}", provenance(unit)), String::new()];
+
+    out.push("ASK".into());
+    match prompt {
+        Some(text) => out.extend(text.lines().map(|l| format!("  {l}"))),
+        None => out.push("  the prompt is not on disk".into()),
+    }
+
+    out.push(String::new());
+    match (record, &unit.check) {
+        (Some(r), Some(check)) => {
+            out.push(format!("EVAL     {}", unit.eval_state().unwrap_or_default()));
+            out.extend(judges_read(r, check).into_iter().map(indent));
+        }
+        _ => out.push("EVAL     not run".into()),
+    }
+
+    out.push(String::new());
+    match seal {
+        Some(checked) => {
+            out.push(format!("SEAL     {}", unit.seal_state().unwrap_or_else(|| "sealed".into())));
+            out.extend(seal_read(unit, checked).into_iter().skip(2).map(indent));
+        }
+        None => out.push("SEAL     not decided".into()),
+    }
+    out
+}
+
+fn indent(line: String) -> String {
+    if line.is_empty() { line } else { format!("  {line}") }
+}
+
+/// Where a unit's fields came from, in the terms the record uses.
+fn provenance(unit: &crate::ledger::Unit) -> String {
+    let mut parts = vec![format!("asked {}", unit.asked_at), unit.sent_phrase().to_string()];
+    if let Some(c) = &unit.check {
+        parts.push(format!("judged by {}", c.judged_by.clone().unwrap_or_else(|| "?".into())));
+    }
+    if let Some(at) = &unit.sealed_at {
+        parts.push(format!("sealed {at}"));
+    }
+    parts.join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
