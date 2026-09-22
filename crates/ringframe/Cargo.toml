@@ -2,6 +2,9 @@
 name = "ringframe"
 version = "0.1.0"
 edition = "2024"
+description = "The record a coding agent's work is measured against: Ask, Eval and Seal over an append-only ledger"
+license = "Apache-2.0"
+repository = "https://github.com/fab7hq/weft"
 
 # RingFrame's core, in Weft's repository but not part of Weft (ADR-0013).
 # It ships its own binary, invoked by name, and nothing in Weft may depend on

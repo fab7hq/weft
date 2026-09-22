@@ -2,6 +2,9 @@
 name = "weft"
 version = "0.1.0"
 edition = "2024"
+description = "The interface for RingFrame: your coding agents in panes, and one list of what was asked, checked and decided"
+license = "Apache-2.0"
+repository = "https://github.com/fab7hq/weft"
 
 # The binary. It starts the daemon or the terminal client; the work is in the
 # crates below (ADR-0007).

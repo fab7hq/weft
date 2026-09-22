@@ -1,7 +1,9 @@
 # Weft
 
-> RingFrame is the warp — the fixed threads already on the loom, the record
-> everything is built against. Weft is the thread carried across them.
+> **Warp and weft.** The warp is the fixed threads already on the loom, held
+> under tension — that is RingFrame, the record everything is measured
+> against. The weft is the thread carried across them, and that is this: the
+> interface you work through. Neither is cloth on its own.
 
 Weft keeps track of what you asked your coding agents for, and what came back.
 
@@ -17,9 +19,13 @@ repository and ships as its own binary beside `weft`.
 
 ## Status
 
-Early. The runtime, the input path and the RingFrame interface all work:
+**0.1.0.** The runtime, the input path and the RingFrame interface all work:
 agents run in panes, the work list is read from the record, and Weft types a
-confirmed prompt for you after asking.
+confirmed prompt for you after asking. One window holds as many projects as
+you open.
+
+Early in the sense that matters: the record's shape is settled and the
+interface is not. Expect the screens to move.
 
 ## Install
 
@@ -38,8 +44,10 @@ have. Then add the plugin for your harness:
 codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7
 ```
 
-The Python-era `uv tool install ringframe` still gets `ringframe` 0.0.5, which
-keeps working and is frozen there.
+The Python-era `uv tool install ringframe` still gets `ringframe` 0.0.5. It
+keeps working and is frozen there; it reads `ringframe.bundle/1` and refuses
+this era's configuration by name, which is the boundary working rather than a
+failure.
 
 ## Working on it
 
@@ -67,29 +75,48 @@ cargo build
 cargo test
 ```
 
+## The screen
+
+The sidebar is a tree: **project → harness → action**. A unit hangs under the
+harness it was asked of, and says the furthest act that has happened.
+
+```
+ ▾ fab7                                         2 open · 1 ●   ⌫
+   ▾ codex                                                   1 ●
+        health endpoint                              ● EVALED
+   ▸ claude-code                                             1
+ ▸ ringframe                                    2 open · 1 ●   ⌫
+```
+
+`[Enter]` opens what is closed and goes there when it is open — a harness to
+its pane, an action to its detail view. The detail view is one unit's whole
+story, and it blocks: `ASK [DONE]  EVAL [HAVEN'T RUN]  SEAL [HAVEN'T RUN]`,
+each section holding what happened, with `[P]ROCEED` for whatever the next
+step is.
+
 ## Keys
 
-Weft reserves exactly one chord. Everything else belongs to the agent, and
-every action on screen shows its key in brackets.
+Weft reserves exactly one chord. Everything else belongs to the agent.
 
 | Key | Action |
 | --- | --- |
 | `Ctrl+]` | Into the agent, and back again |
-| `↑` `↓` | Pick a row |
-| `Enter` | Expand the row in place |
-| `←` | Back: collapse, close the drawer, cancel |
-| `Space` | Jump to the next thing that needs you |
+| `↑` `↓` | Move |
+| `Enter` | Unfold what is closed; open, go there |
+| `→` `←` | Unfold · fold, and back everywhere |
+| `Space` | The Ask that needs you, opened |
 | `Tab` · `1`-`9` | Next agent · that agent |
-| `A` `S` | Ask · send the wording RingFrame compiled |
-| `C` `D` | Check · decide |
-| `P` `J` | Read the wording · read the judges |
-| `F` | Ask again about this work |
-| `N` `W` | New agent · show or hide the work list |
-| `H` `X` | Help · quit |
+| `A` `E` `S` | RingFrame's three acts: ask · eval · seal |
+| `P` `F` | In the detail view: proceed · follow up |
+| `R` `Y` | Ready a harness up · why a pane is waiting |
+| `W` | The Weft menu: `O`pen project · `N`ew agent · `B` sidebar · `H`elp · `X` quit |
+| `⌫` | Close the selected project, after asking |
 
 In the agent every other key goes straight through, `Esc` included.
 
-The mouse works everywhere. To select text inside a pane, hold `Shift`.
+**Weft takes no mouse.** Capturing it would hand every click and drag to Weft
+instead of to your terminal's own selection, which is what click-drag-copy
+over an agent is. Weft is keys only and the mouse stays where you expect it.
 
 To read the screens without running an agent:
 
