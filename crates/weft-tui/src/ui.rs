@@ -571,8 +571,10 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
                 Span::styled(tail, th.needs_you()),
             ])
         }
-        Row::Action { unit, .. } => {
-            let Some(unit) = app.units().get(*unit) else { return Line::raw("") };
+        Row::Action { project, unit } => {
+            // The row's own project, not the focused one: a unit in the
+            // background was being drawn from whichever board was in front.
+            let Some(unit) = app.units_of(*project).get(*unit) else { return Line::raw("") };
             let (word, waiting) = row_state(unit);
             let state = format!("{}{word}  ", if waiting { "● " } else { "" });
             let head = format!("      {}", unit.title);
@@ -1098,14 +1100,51 @@ mod tests {
     }
 
     #[test]
-    fn the_title_bar_names_the_project_where_you_are_and_what_is_open() {
+    fn the_title_bar_says_what_is_open_and_never_which_directory() {
         let mut a = judged();
+        for width in [60, 80, 120, 200] {
+            let drawn = screen(&mut a, width, 24);
+            let title = drawn.lines().next().expect("a title bar");
+            assert!(title.contains("WEFT"), "{title}");
+            assert!(!title.contains("in Weft"), "where you are is lit, not named: {title}");
+            // With more than one project a name is wrong the moment focus
+            // moves, and the sidebar names them where they can be acted on.
+            let name = a.project_name().to_string();
+            assert!(!title.contains(&name), "the title named a directory at {width}: {title}");
+        }
         let drawn = screen(&mut a, 80, 24);
         let title = drawn.lines().next().expect("a title bar");
-        assert!(title.contains("WEFT"), "{title}");
-        assert!(!title.contains("in Weft"), "where you are is lit, not named: {title}");
         assert!(title.contains("OPEN  2"), "{title}");
         assert!(title.contains("NEEDS YOU  2"), "{title}");
+    }
+
+    #[test]
+    fn six_units_in_two_projects_fit_on_one_screen() {
+        let mut a = judged();
+        let (other, _) = crate::app::tests::test_session("second");
+        a.open_project(&other.to_string_lossy());
+        a.add("codex", "/bin/cat").expect("an agent in the second project");
+        let mut more: Vec<crate::ledger::Unit> = Vec::new();
+        for i in 0..4 {
+            let mut u = crate::app::tests::unit(crate::ledger::Sent::ReadyToSend);
+            u.ask_id = format!("ask_{i}");
+            u.title = format!("unit {i}");
+            more.push(u);
+        }
+        a.set_units(more);
+        let drawn = screen(&mut a, 80, 24);
+        // Two project rows, two harness rows, six units: ten lines in a body
+        // with room for twenty, and none of them elided. The old row was four
+        // to five lines per unit, which did not fit at two units.
+        assert_eq!(a.rows().len(), 10, "{:?}", a.rows());
+        assert!(!drawn.contains("more"), "something was elided:\n{drawn}");
+        assert!(!drawn.contains("above"), "something scrolled away:\n{drawn}");
+        for row in a.rows() {
+            if let crate::app::Row::Action { project, unit } = row {
+                let title = a.units_of(project)[unit].title.clone();
+                assert!(drawn.contains(&title), "{title} is missing:\n{drawn}");
+            }
+        }
     }
 
     #[test]

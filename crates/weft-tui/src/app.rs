@@ -466,7 +466,7 @@ impl App {
     /// The board of one project. The focused one is kept in `units` because
     /// everything that draws a frame wants it; the rest are read from their
     /// own connection.
-    fn units_of(&self, at: usize) -> &[Unit] {
+    pub fn units_of(&self, at: usize) -> &[Unit] {
         if at == self.at { &self.units } else { &self.projects[at].session.units }
     }
 
@@ -1043,7 +1043,7 @@ impl App {
 
     /// Open another project beside the ones already here. A window holds as
     /// many as the person opens; the daemon has always been able to.
-    fn open_project(&mut self, typed: &str) {
+    pub(crate) fn open_project(&mut self, typed: &str) {
         let root = match std::path::PathBuf::from(shellexpand(typed)).canonicalize() {
             Ok(r) if r.is_dir() => r,
             _ => {
