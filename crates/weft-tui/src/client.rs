@@ -353,8 +353,8 @@ impl Session {
     }
 
     /// Yes or no, by id. Whoever answers first answers for everyone.
-    pub fn resolve(&mut self, pending: &str, yes: bool) -> Result<()> {
-        self.tell(Call::Resolve { pending: pending.to_string(), yes }).map(|_| ())
+    pub fn resolve(&mut self, pending: &str, yes: bool, force: bool) -> Result<()> {
+        self.tell(Call::Resolve { pending: pending.to_string(), yes, force }).map(|_| ())
     }
 
     pub fn resize(&mut self, pane: usize, rows: u16, cols: u16) -> Result<()> {

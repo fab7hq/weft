@@ -376,11 +376,14 @@ impl Session {
 
     /// Type a prompt that was said yes to. The refusal, if there is one, is
     /// the person's to see: it says what is sitting unsent in their agent.
-    fn type_it(&mut self, project: usize, w: Waiting) {
+    fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
         let refusal = match self.projects[project].panes.get_mut(w.pane as usize) {
             Some(slot) => {
                 let screen = slot.pane.with_screen(|s| s.contents());
-                let blocked = weft_core::blocked::looks_blocked(&screen).is_some();
+                // Whether the pane looks busy is Weft's inference. When the
+                // person has seen what it read and said to type anyway, the
+                // decision is theirs (ADR-0004).
+                let blocked = !force && weft_core::blocked::looks_blocked(&screen).is_some();
                 match slot.pane.inject_as(&w.payload, blocked, &w.how) {
                     Err(r) => Some(format!("{r:?}")),
                     Ok(a) if !a.submitted => Some(withheld(&a)),
@@ -744,7 +747,7 @@ impl Session {
                 let root = self.projects[at].root.clone();
                 return Ok(Answer::Ok(serde_json::json!({"starts": starts(&root)})));
             }
-            Call::Resolve { pending, yes } => {
+            Call::Resolve { pending, yes, force } => {
                 let Some(at) = self.clients.watching.get(&client).copied() else {
                     return Ok(Answer::No("no_project", "open a project first".into()));
                 };
@@ -762,7 +765,7 @@ impl Session {
                 if let Err(why) = recorded_first(&root, w.confirm.as_deref()) {
                     return Ok(Answer::No("not_recorded", why));
                 }
-                self.type_it(at, w);
+                self.type_it(at, w, force);
             }
             // A client leaving is not the session ending. That is the point.
             Call::Detach => {}

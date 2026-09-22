@@ -98,6 +98,9 @@ pub enum Call {
     Resolve {
         pending: String,
         yes: bool,
+        /// The person saw what Weft read off the screen and said to type it
+        /// anyway. The inference is Weft's; the decision is theirs.
+        force: bool,
     },
     /// Leave, without stopping anything.
     Detach,
@@ -270,8 +273,8 @@ impl Call {
             Call::Read { what, unit } => ("read", json!({"what": what, "unit": unit})),
             Call::SetUp { harness } => ("readiness.setup", json!({"harness": harness})),
             Call::Available => ("agents.available", json!({})),
-            Call::Resolve { pending, yes } => {
-                ("pending.resolve", json!({"pending": pending, "yes": yes}))
+            Call::Resolve { pending, yes, force } => {
+                ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
             }
             Call::Detach => ("detach", json!({})),
             Call::Shutdown => ("shutdown", json!({})),
@@ -313,7 +316,12 @@ impl Call {
             "readiness.setup" => Call::SetUp { harness: s("harness")? },
             "agents.available" => Call::Available,
             "pending.resolve" => {
-                Call::Resolve { pending: s("pending")?, yes: p.get("yes")?.as_bool()? }
+                Call::Resolve {
+                    pending: s("pending")?,
+                    yes: p.get("yes")?.as_bool()?,
+                    // Absent from an older client, which never forced.
+                    force: p.get("force").and_then(Value::as_bool).unwrap_or(false),
+                }
             }
             "detach" => Call::Detach,
             "shutdown" => Call::Shutdown,
@@ -601,7 +609,7 @@ mod tests {
             // Arbitrary bytes, including what JSON cannot hold as text.
             Call::Input { pane: 2, bytes: vec![0x00, 0x1b, 0xff, b'a'] },
             Call::Resize { pane: 1, rows: 24, cols: 80 },
-            Call::Resolve { pending: "pnd_1".into(), yes: false },
+            Call::Resolve { pending: "pnd_1".into(), yes: false, force: false },
             Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
             Call::ConfirmAsk { unit: "ask_1".into() },

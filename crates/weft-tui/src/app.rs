@@ -133,6 +133,12 @@ pub const WEFT_MENU: [(char, &str, Act); 5] = [
 pub enum Modal {
     Quit,
     Help,
+    /// The agent looks like it is waiting for its person, and the person has
+    /// been shown what Weft read. Typing is theirs to allow.
+    SendAnyway {
+        pending: Pending,
+        evidence: String,
+    },
     /// Take a project out of this window. Nothing is stopped and nothing is
     /// deleted, which the panel says, because "close" is the word people
     /// expect to end an agent.
@@ -719,7 +725,23 @@ impl App {
     /// Answer a question the person was asked. The daemon does the typing,
     /// because the daemon owns the pane.
     fn do_inject(&mut self, pending: &Pending) {
-        match sess!(self).resolve(&pending.staged, true) {
+        // Weft must never answer a dialog meant for a person. What it reads
+        // off the screen is an inference, though, and an inference that
+        // cannot be overruled is a dead end — a stale chooser left in an
+        // agent's scrollback would stop every Ask with no way through.
+        if let Some(e) = self.waiting(pending.pane) {
+            self.modal =
+                Some(Modal::SendAnyway { pending: pending.clone(), evidence: e.line.clone() });
+            self.modal_choice = 1;
+            return;
+        }
+        self.do_inject_forcing(pending, false)
+    }
+
+    /// The pane looked busy and the person said to type anyway. What Weft read
+    /// off the screen is an inference; this is the person overruling it.
+    fn do_inject_forcing(&mut self, pending: &Pending, force: bool) {
+        match sess!(self).resolve(&pending.staged, true, force) {
             Ok(()) => {
                 self.modal = None;
                 self.focus = Focus::Agent;
@@ -1384,6 +1406,7 @@ impl App {
             Modal::Quit => 3,
             Modal::Weft => WEFT_MENU.len(),
             Modal::CloseProject { .. } => 2,
+            Modal::SendAnyway { .. } => 2,
             Modal::OpenProject { .. } => 1,
             Modal::StartAgent { .. } => self.starts().len().max(1),
             Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
@@ -1412,7 +1435,7 @@ impl App {
                 // daemon's queue, not left there for another client.
                 Modal::Confirm(p) => {
                     let id = p.staged.clone();
-                    let _ = sess!(self).resolve(&id, false);
+                    let _ = sess!(self).resolve(&id, false, false);
                     self.modal = None;
                 }
                 _ => self.modal = None,
@@ -1446,6 +1469,13 @@ impl App {
             }
             // Its own keyboard, handled above.
             Modal::OpenProject { .. } => {}
+            Modal::SendAnyway { pending, .. } => {
+                let pending = pending.clone();
+                self.modal = None;
+                if self.modal_choice == 0 {
+                    self.do_inject_forcing(&pending, true);
+                }
+            }
             Modal::CloseProject { name } => {
                 self.modal = None;
                 if self.modal_choice == 0
@@ -2104,6 +2134,41 @@ pub(crate) mod tests {
             assert!(text.trim_end().ends_with(expect), "got {text:?}");
             assert!(text.ends_with(' '), "the token is closed so Enter means send: {text:?}");
         }
+    }
+
+    #[test]
+    fn a_pane_that_looks_busy_asks_before_typing_and_can_be_overruled() {
+        // A stale chooser left in an agent's scrollback used to stop every
+        // Ask, silently and with no way through: the daemon refused and
+        // nothing drew the refusal.
+        let mut a = recorded(Sent::ReadyToSend);
+        a.input(0, b"Do you want to proceed?\r\n").expect("write");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.waiting(0).is_none() {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(a.waiting(0).is_some(), "the fixture has to look busy for this test");
+
+        // Straight to the typing step; what composes the prompt is the send
+        // path's own test.
+        a.do_inject(&Pending {
+            staged: "pnd_1".into(),
+            pane: 0,
+            payload: b"anything".to_vec(),
+            what: "send".into(),
+            why: Vec::new(),
+        });
+        let Some(Modal::SendAnyway { evidence, .. }) = a.modal.clone() else {
+            panic!("it must say what it read, got {:?}", a.modal)
+        };
+        assert!(evidence.contains("Do you want to proceed?"), "{evidence}");
+
+        // And the cancel half is the default, because answering the agent is
+        // usually the right thing.
+        assert_eq!(a.modal_choice, 1);
+        press(&mut a, KeyCode::Enter);
+        assert!(a.modal.is_none(), "{:?}", a.modal);
     }
 
     #[test]

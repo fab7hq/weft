@@ -334,13 +334,16 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 
     // The second client answers. The first is told, and its own answer finds
     // nothing left to answer.
-    two.send(Call::Resolve { pending: id_two.clone(), yes: true });
+    two.send(Call::Resolve { pending: id_two.clone(), yes: true, force: false });
     assert_eq!(one.wait_for_resolved(), (id_one.clone(), true));
     assert!(one.wait_for("ship the endpoint", 3).contains("ship the endpoint"), "typed once");
 
     // And the first client's own answer finds nothing left to answer, rather
     // than typing the prompt a second time.
-    assert_eq!(one.answer(Call::Resolve { pending: id_one, yes: true }), Err("gone".to_string()));
+    assert_eq!(
+        one.answer(Call::Resolve { pending: id_one, yes: true, force: false }),
+        Err("gone".to_string())
+    );
 
     let mut stop = Client::attach(&socket, &root);
     stop.send(Call::Shutdown);

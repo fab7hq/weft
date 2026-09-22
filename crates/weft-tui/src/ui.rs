@@ -292,6 +292,19 @@ fn tab_row(app: &App, geo: &Geo) -> Line<'static> {
     Line::from(spans)
 }
 
+/// A refusal from the daemon, in words that say what to do about it.
+fn refused(code: &str) -> String {
+    match code {
+        "PaneBlocked" => "Weft did not type it: the agent looks like it is waiting for you.".into(),
+        "ModeNotEntered" => {
+            "Weft did not type it: the agent never showed the command as on.".into()
+        }
+        "NoProcess" => "Weft did not type it: that agent is not running.".into(),
+        "InjectionInFlight" => "Weft did not type it: it is still typing the last one.".into(),
+        other => format!("Weft did not type it: {other}"),
+    }
+}
+
 /// Every action shows its key. What cannot be done now is drawn muted and
 /// stays where it was, so the shape of the bar never jumps.
 fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
@@ -309,6 +322,9 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
         }
         Some(Modal::OpenProject { .. }) => return plain("  [Enter] OPEN   [←] CANCEL"),
+        Some(Modal::SendAnyway { .. }) => {
+            return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
+        }
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
         Some(Modal::SetUp { gap, .. }) => {
             // Nothing to offer for a missing CLI: it is not Weft's to install.
@@ -376,6 +392,11 @@ fn hint(app: &App) -> Paragraph<'static> {
     let th = app.theme;
     if let Some(said) = app.hint_text() {
         return Paragraph::new(Line::styled(format!(" {said}"), th.needs_you()));
+    }
+    // What is sitting unsent in their agent. The daemon has always reported
+    // this and nothing drew it, so a refused injection was silence.
+    if let Some(refusal) = app.last_refusal() {
+        return Paragraph::new(Line::styled(format!(" {}", refused(&refusal)), th.needs_you()));
     }
     let text = match (&app.modal, app.focus) {
         (Some(Modal::Quit), _) => {
@@ -696,6 +717,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Weft => "WEFT".into(),
         Modal::CloseProject { .. } => "CLOSE THIS PROJECT?".into(),
         Modal::OpenProject { .. } => "OPEN A PROJECT".into(),
+        Modal::SendAnyway { .. } => "THE AGENT LOOKS LIKE IT IS WAITING".into(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
@@ -714,6 +736,16 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         // The menu is its choices; there is nothing to say above them.
         Modal::Weft => Vec::new(),
+        Modal::SendAnyway { evidence, .. } => vec![
+            "Weft read this on the screen and took it for a question meant".into(),
+            "for you:".into(),
+            String::new(),
+            format!("  {evidence}"),
+            String::new(),
+            "Typing now would answer it. If that line is left over from".into(),
+            "something already dealt with, say so and Weft will type.".into(),
+            String::new(),
+        ],
         Modal::OpenProject { text } => {
             vec![format!("{text}█"), String::new(), "The path of a repository to open.".into()]
         }
@@ -835,6 +867,9 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             .map(|(key, label, _)| format!("[{key}]  {label}"))
             .collect(),
         Modal::CloseProject { .. } => vec!["Close it".into(), "Cancel".into()],
+        Modal::SendAnyway { .. } => {
+            vec!["Type it anyway".into(), "Cancel — I will answer the agent".into()]
+        }
         Modal::OpenProject { .. } => Vec::new(),
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
