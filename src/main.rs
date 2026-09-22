@@ -10,6 +10,64 @@ use weft::keys;
 use weft::protocol;
 use weft::server;
 
+/// The first screen when no directory was named. It opens nothing: the
+/// daemon is not asked for anything until there is a project to ask about.
+fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std::path::PathBuf>> {
+    use crossterm::event::{self, Event, KeyCode};
+    use ratatui::text::Line;
+    use ratatui::widgets::Paragraph;
+
+    let mut typed = String::new();
+    let mut said: Option<String> = None;
+    loop {
+        terminal.draw(|frame| {
+            let mut lines = vec![
+                Line::raw(" ▚▞ WEFT"),
+                Line::raw(""),
+                Line::raw("   Open a project"),
+                Line::raw(""),
+                Line::raw(format!("   {typed}█")),
+                Line::raw(""),
+                Line::raw("   The path of a repository to work in."),
+            ];
+            if let Some(why) = &said {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw(format!("   {why}")));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::raw("  [Enter] OPEN   [X] QUIT"));
+            frame.render_widget(Paragraph::new(lines), frame.area());
+        })?;
+        let Event::Key(key) = event::read()? else { continue };
+        if !key.is_press() {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter if !typed.trim().is_empty() => {
+                let want = typed.trim();
+                let want = match want.strip_prefix('~') {
+                    Some(rest) => match std::env::var_os("HOME") {
+                        Some(home) => format!("{}{rest}", home.to_string_lossy()),
+                        None => want.to_string(),
+                    },
+                    None => want.to_string(),
+                };
+                match std::path::PathBuf::from(&want).canonicalize() {
+                    Ok(root) if root.is_dir() => return Ok(Some(root)),
+                    _ => said = Some("There is no directory there.".into()),
+                }
+            }
+            KeyCode::Backspace => {
+                typed.pop();
+            }
+            KeyCode::Esc => return Ok(None),
+            KeyCode::Char('x' | 'X') if typed.is_empty() => return Ok(None),
+            KeyCode::Char(c) => typed.push(c),
+            _ => {}
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
@@ -55,9 +113,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let root = std::path::PathBuf::from(first.unwrap_or_else(|| ".".into()))
-        .canonicalize()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let named = first.clone();
     // Weft starts no agent on its own. Named agents are a convenience for
     // scripts and probes; the ordinary way in is to press N.
     let agents: Vec<String> = args.collect();
@@ -67,6 +123,22 @@ fn main() -> Result<()> {
     let mut terminal = ratatui::init();
     let mut out = std::io::stdout();
     let _ = execute!(out, EnableMouseCapture, EnableBracketedPaste);
+
+    // Named a directory, or asked for one. Nothing is opened and no daemon
+    // work is done until there is one.
+    let root = match named {
+        Some(path) => Some(
+            std::path::PathBuf::from(path)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ),
+        None => choose_project(&mut terminal)?,
+    };
+    let Some(root) = root else {
+        let _ = execute!(out, DisableMouseCapture, DisableBracketedPaste);
+        ratatui::restore();
+        return Ok(());
+    };
 
     let size = terminal.size().unwrap_or_default();
     let session = Session::open(&root, size.height.max(24), size.width.max(80))?;

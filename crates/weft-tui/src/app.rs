@@ -40,6 +40,46 @@ pub struct Pending {
 }
 
 /// The surfaces that interrupt. Everything else in v2 is drawn in place.
+/// One project open in this window: its name, its root, and the client
+/// connection that watches it. The daemon gives a connection one project to
+/// watch, so a window with two projects holds two connections.
+pub struct Open {
+    pub name: String,
+    pub root: PathBuf,
+    pub session: Session,
+}
+
+impl Open {
+    fn new(root: PathBuf, session: Session) -> Self {
+        let name = root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "project".into());
+        Open { name, root, session }
+    }
+}
+
+/// The focused project's connection. A macro rather than a method so that it
+/// expands to a field access and borrows like one.
+macro_rules! sess {
+    ($self:expr) => {
+        $self.projects[$self.at].session
+    };
+}
+
+/// `~` is what people type for their home directory, and a path box that
+/// does not know it is a path box people stop using.
+fn shellexpand(typed: &str) -> String {
+    let typed = typed.trim();
+    match typed.strip_prefix('~') {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => format!("{}{rest}", home.to_string_lossy()),
+            None => typed.to_string(),
+        },
+        None => typed.to_string(),
+    }
+}
+
 /// A row of the sidebar. Project over harness over action, because a unit
 /// belongs to the harness it was asked of.
 ///
@@ -47,9 +87,22 @@ pub struct Pending {
 /// than stored, so there is one source of truth and nothing to keep in step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
-    Project { name: String, folded: bool, open: usize, waiting: usize },
-    Harness { project: String, name: String, folded: bool, waiting: usize },
-    Action { unit: usize },
+    Project { project: usize, name: String, folded: bool, open: usize, waiting: usize },
+    Harness { project: usize, name: String, folded: bool, waiting: usize },
+    Action { project: usize, unit: usize },
+}
+
+impl Row {
+    /// Which project this row belongs to. Moving the selection moves the
+    /// focus with it, so an act always lands in the project you are looking
+    /// at and never in the one you were.
+    pub fn project(&self) -> usize {
+        match self {
+            Row::Project { project, .. }
+            | Row::Harness { project, .. }
+            | Row::Action { project, .. } => *project,
+        }
+    }
 }
 
 impl Row {
@@ -88,6 +141,11 @@ pub enum Modal {
     /// expect to end an agent.
     CloseProject {
         name: String,
+    },
+    /// Which directory to open. Typed, because the daemon's own list of
+    /// projects is not on the wire and a path always works.
+    OpenProject {
+        text: String,
     },
     /// Weft's own operations, gathered out of the bar. Every one of them also
     /// has its own key; this is for finding them, not for reaching them.
@@ -137,10 +195,10 @@ pub struct Detail {
 }
 
 pub struct App {
-    pub project: String,
-    pub root: PathBuf,
-    /// The session's panes are the server's; this is our view of them.
-    session: Session,
+    /// The projects open in this window, and which one has the focus. The
+    /// daemon has held many since ADR-0007; this is the client catching up.
+    projects: Vec<Open>,
+    at: usize,
     pub pane_focus: usize,
     units: Vec<Unit>,
     /// An index into [`App::rows`], not into the units: the sidebar is a tree
@@ -199,11 +257,11 @@ impl App {
 
     /// Number of panes in the session, which is what the UI counts.
     pub fn pane_count(&self) -> usize {
-        self.session.panes.len()
+        sess!(self).panes.len()
     }
 
     pub fn harness_at(&self, i: usize) -> Option<&str> {
-        self.session.panes.get(i).map(|p| p.harness.as_str())
+        sess!(self).panes.get(i).map(|p| p.harness.as_str())
     }
 
     pub fn units(&self) -> &[Unit] {
@@ -233,7 +291,7 @@ impl App {
     /// The last refusal the server reported, if any. A refusal is Weft
     /// declining to type; it is never a statement about the harness.
     pub fn last_refusal(&self) -> Option<String> {
-        self.session.last_refusal.clone()
+        sess!(self).last_refusal.clone()
     }
 
     /// Whether there is a `ringframe` to read a record from. Weft still runs
@@ -245,7 +303,7 @@ impl App {
     /// The Eval record behind a check, as the daemon read it. Nothing opens a
     /// file to draw a frame.
     pub fn record(&self, eval_id: &str) -> Option<weft_core::record::Record> {
-        serde_json::from_value(self.session.records.get(eval_id)?.clone()).ok()
+        serde_json::from_value(sess!(self).records.get(eval_id)?.clone()).ok()
     }
 
     /// What this harness is short of, if anything. A harness Weft does not
@@ -254,7 +312,7 @@ impl App {
         if let Some(local) = self.readiness.get(harness) {
             return *local;
         }
-        readiness_of(self.session.readiness.get(harness).and_then(|v| v.as_str()))
+        readiness_of(sess!(self).readiness.get(harness).and_then(|v| v.as_str()))
     }
 
     /// What this project routes, for showing. Empty when it routes nothing.
@@ -284,7 +342,7 @@ impl App {
     /// Test seam: what a harness would be found to be, without asking it.
     /// Test seam: the Eval records a daemon would have read off disk.
     pub fn set_records(&mut self, records: serde_json::Value) {
-        self.session.records = records;
+        sess!(self).records = records;
     }
 
     /// Test seam: the routing a project would have read off disk.
@@ -299,7 +357,7 @@ impl App {
     /// Whether a pane looks like it is waiting for a person. Inference, and
     /// labelled as such everywhere it is shown.
     pub fn waiting(&self, pane: usize) -> Option<Evidence> {
-        let view = self.session.panes.get(pane)?;
+        let view = sess!(self).panes.get(pane)?;
         blocked::looks_blocked(&view.contents())
     }
 
@@ -319,7 +377,7 @@ impl App {
     }
 
     fn pane_facts(&self) -> Vec<PaneInfo> {
-        self.session
+        sess!(self)
             .panes
             .iter()
             .enumerate()
@@ -343,51 +401,79 @@ impl App {
 
     /// The sidebar, top to bottom, with folded levels' children left out.
     pub fn rows(&self) -> Vec<Row> {
-        let project = self.project.clone();
         let mut out = Vec::new();
-        let waiting = self.units.iter().filter(|u| u.needs_you()).count();
-        let open = self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
-        let folded = self.folded.contains(&project);
-        out.push(Row::Project { name: project.clone(), folded, open, waiting });
-        if folded {
-            return out;
-        }
-        // Harnesses in the order they first appear, so the list does not
-        // reshuffle itself as work arrives.
-        let mut seen: Vec<&str> = Vec::new();
-        for u in &self.units {
-            if !seen.contains(&u.harness.as_str()) {
-                seen.push(&u.harness);
-            }
-        }
-        for name in seen {
-            let key = format!("{project}\u{0}{name}");
-            let folded = self.folded.contains(&key);
-            let waiting = self.units.iter().filter(|u| u.harness == name && u.needs_you()).count();
-            out.push(Row::Harness {
-                project: project.clone(),
-                name: name.to_string(),
-                folded,
-                waiting,
-            });
+        for (at, p) in self.projects.iter().enumerate() {
+            let units = self.units_of(at);
+            let waiting = units.iter().filter(|u| u.needs_you()).count();
+            let open = units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
+            let folded = self.folded.contains(&p.name);
+            out.push(Row::Project { project: at, name: p.name.clone(), folded, open, waiting });
             if folded {
                 continue;
             }
-            out.extend(
-                self.units
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, u)| u.harness == name)
-                    .map(|(i, _)| Row::Action { unit: i }),
-            );
+            // Harnesses in the order they first appear, so the tree does not
+            // reshuffle itself as work arrives.
+            let mut seen: Vec<&str> = Vec::new();
+            for u in units {
+                if !seen.contains(&u.harness.as_str()) {
+                    seen.push(&u.harness);
+                }
+            }
+            for name in seen {
+                let key = format!("{at}\u{0}{name}");
+                let folded = self.folded.contains(&key);
+                let waiting = units.iter().filter(|u| u.harness == name && u.needs_you()).count();
+                out.push(Row::Harness { project: at, name: name.to_string(), folded, waiting });
+                if folded {
+                    continue;
+                }
+                out.extend(
+                    units
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, u)| u.harness == name)
+                        .map(|(i, _)| Row::Action { project: at, unit: i }),
+                );
+            }
         }
         out
+    }
+
+    /// Move the focus to the project the selected row is in. An act lands in
+    /// the project you are looking at, never in the one you were.
+    fn follow_the_selection(&mut self) {
+        let Some(at) = self.rows().get(self.selected).map(Row::project) else { return };
+        if at != self.at {
+            self.at = at;
+            self.pane_focus = 0;
+            self.take_the_board();
+        }
+    }
+
+    /// The focused project's root and name.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.projects[self.at].session
+    }
+
+    pub fn root(&self) -> &std::path::Path {
+        &self.projects[self.at].root
+    }
+
+    pub fn project_name(&self) -> &str {
+        &self.projects[self.at].name
+    }
+
+    /// The board of one project. The focused one is kept in `units` because
+    /// everything that draws a frame wants it; the rest are read from their
+    /// own connection.
+    fn units_of(&self, at: usize) -> &[Unit] {
+        if at == self.at { &self.units } else { &self.projects[at].session.units }
     }
 
     /// The unit the selected row is about, if it is about one.
     pub fn selected_index(&self) -> Option<usize> {
         match self.rows().get(self.selected) {
-            Some(Row::Action { unit }) => Some(*unit),
+            Some(Row::Action { unit, .. }) => Some(*unit),
             _ => None,
         }
     }
@@ -407,7 +493,7 @@ impl App {
     }
 
     fn pane_for(&self, harness: &str) -> Option<usize> {
-        self.session.panes.iter().position(|p| p.harness == harness)
+        sess!(self).panes.iter().position(|p| p.harness == harness)
     }
 
     /// Draw the pane at its drawn size. The emulator is the client's, so the
@@ -419,8 +505,8 @@ impl App {
         cols: u16,
         f: impl FnOnce(&vt100::Screen),
     ) {
-        let _ = self.session.resize(pane, rows, cols);
-        if let Some(p) = self.session.panes.get(pane) {
+        let _ = sess!(self).resize(pane, rows, cols);
+        if let Some(p) = sess!(self).panes.get(pane) {
             p.with_screen(f);
         }
     }
@@ -433,14 +519,9 @@ impl App {
     }
 
     pub fn with_session(root: PathBuf, toggle: Toggle, session: Session) -> Self {
-        let project = root
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "project".into());
         Self {
-            project,
-            root,
-            session,
+            projects: vec![Open::new(root, session)],
+            at: 0,
             pane_focus: 0,
             units: Vec::new(),
             selected: 0,
@@ -477,17 +558,17 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        self.session.spawn(harness, spec)?;
+        sess!(self).spawn(harness, spec)?;
         // The pane appears when the server says it has one, and what the
         // harness is short of follows a moment later — asking it costs a
         // process, so the daemon does that off its own loop.
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let before = self.session.panes.len();
+        let before = sess!(self).panes.len();
         let mut running = false;
         while std::time::Instant::now() < deadline {
-            self.session.pump();
-            running |= self.session.panes.len() > before;
-            if running && self.session.readiness.get(harness).is_some() {
+            sess!(self).pump();
+            running |= sess!(self).panes.len() > before;
+            if running && sess!(self).readiness.get(harness).is_some() {
                 self.take_the_board();
                 return Ok(());
             }
@@ -513,7 +594,7 @@ impl App {
                     _ => {}
                 }
             }
-            if self.session.pump() {
+            if sess!(self).pump() {
                 self.take_the_board();
             }
             self.notice_an_agent_that_ended();
@@ -526,7 +607,7 @@ impl App {
     /// keeping; what must not happen is keystrokes going to a dead process.
     pub fn notice_an_agent_that_ended(&mut self) {
         let Some(pane) = (0..self.pane_count())
-            .find(|i| !self.announced.contains(i) && !self.session.panes[*i].running)
+            .find(|i| !self.announced.contains(i) && !sess!(self).panes[*i].running)
         else {
             return;
         };
@@ -553,13 +634,13 @@ impl App {
     /// moves up one, so nothing may hold on to an index across this.
     fn close_pane(&mut self, pane: usize) {
         let before = self.pane_count();
-        let _ = self.session.close(pane);
+        let _ = sess!(self).close(pane);
         // Wait for the server's new numbering before anything else acts on a
         // pane index. Every pane after this one moves up, and a spawn sent
         // into the gap would be counted against the old list.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline && self.pane_count() >= before {
-            self.session.pump();
+            sess!(self).pump();
             std::thread::sleep(Duration::from_millis(10));
         }
         self.announced.clear();
@@ -593,16 +674,21 @@ impl App {
     /// Take the board the daemon read, and notice anything it implies. The
     /// record is followed once, in the daemon, and every client is told.
     fn take_the_board(&mut self) {
-        if self.units != self.session.units {
-            self.units = self.session.units.clone();
+        // Every project's connection is pumped, so a board in the background
+        // is as current as the one on screen.
+        for p in &mut self.projects {
+            p.session.pump();
+        }
+        if self.units != sess!(self).units {
+            self.units = sess!(self).units.clone();
             self.clamp_selection();
         }
-        self.routing = self.session.routing.clone();
-        self.workspace_gap = self.session.gap.clone();
+        self.routing = sess!(self).routing.clone();
+        self.workspace_gap = sess!(self).gap.clone();
         // A missing CLI is the same answer for every harness, so any one of
         // them saying so is the machine saying so.
         self.record_available =
-            !self.session.readiness.as_object().is_some_and(|m| m.values().any(|v| v == "no_cli"));
+            !sess!(self).readiness.as_object().is_some_and(|m| m.values().any(|v| v == "no_cli"));
         // A name in the routing file that is not a harness Weft knows. Said
         // once, on the way in: an act routed nowhere would otherwise just look
         // unavailable for no reason anyone could see.
@@ -620,8 +706,8 @@ impl App {
     /// The run loop does this continuously; a probe or a test does it once.
     pub fn refresh_for_test(&mut self) {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && self.session.units.is_empty() {
-            self.session.pump();
+        while std::time::Instant::now() < deadline && sess!(self).units.is_empty() {
+            sess!(self).pump();
             std::thread::sleep(Duration::from_millis(20));
         }
         self.take_the_board();
@@ -647,7 +733,7 @@ impl App {
     /// Answer a question the person was asked. The daemon does the typing,
     /// because the daemon owns the pane.
     fn do_inject(&mut self, pending: &Pending) {
-        match self.session.resolve(&pending.staged, true) {
+        match sess!(self).resolve(&pending.staged, true) {
             Ok(()) => {
                 self.modal = None;
                 self.focus = Focus::Agent;
@@ -707,18 +793,17 @@ impl App {
         let Some(unit) = self.selected_unit().cloned() else { return };
         // A part that will not come back is a fact about the record, not a
         // reason to refuse the view: the section says so and the rest opens.
-        let prompt = self
-            .session
+        let prompt = sess!(self)
             .read("wording", &unit.ask_id)
             .ok()
             .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string));
         let record = unit.check.as_ref().and_then(|c| {
-            self.session
+            sess!(self)
                 .read("judges", &c.eval_id)
                 .ok()
                 .and_then(|v| serde_json::from_value::<weft_core::record::Record>(v).ok())
         });
-        let seal = unit.seal_id.as_ref().and_then(|id| self.session.read("seal", id).ok());
+        let seal = unit.seal_id.as_ref().and_then(|id| sess!(self).read("seal", id).ok());
         self.detail = Some(Detail {
             lines: weft_core::offers::detail_read(
                 &unit,
@@ -748,10 +833,10 @@ impl App {
     }
 
     fn do_set_up(&mut self, name: &str) {
-        match self.session.set_up(name) {
+        match sess!(self).set_up(name) {
             Ok(()) => {
                 self.modal = None;
-                self.session.pump();
+                sess!(self).pump();
                 let now = self.readiness(name);
                 self.say(match now {
                     Readiness::Ready => format!("{name} is set up for RingFrame."),
@@ -784,8 +869,7 @@ impl App {
     }
 
     fn look_for_agents(&mut self) {
-        self.starts = self
-            .session
+        self.starts = sess!(self)
             .available()
             .unwrap_or_default()
             .iter()
@@ -825,7 +909,7 @@ impl App {
         match self.add(start.harness, &start.spec) {
             Ok(()) => {
                 self.modal = None;
-                self.pane_focus = self.session.panes.len().saturating_sub(1);
+                self.pane_focus = sess!(self).panes.len().saturating_sub(1);
                 self.focus = Focus::Agent;
             }
             Err(e) => self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec))),
@@ -863,10 +947,10 @@ impl App {
         pane: Option<usize>,
         text: Option<&str>,
     ) {
-        match self.session.act(act, unit, pane, text) {
+        match sess!(self).act(act, unit, pane, text) {
             Ok(id) => {
-                self.session.pump();
-                let Some(w) = self.session.waiting.iter().find(|w| w.id == id).cloned() else {
+                sess!(self).pump();
+                let Some(w) = sess!(self).waiting.iter().find(|w| w.id == id).cloned() else {
                     return;
                 };
                 self.modal = Some(Modal::Confirm(Pending {
@@ -901,6 +985,7 @@ impl App {
             return;
         }
         self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
+        self.follow_the_selection();
         // Picking a row that is scrolled away brings it back into view.
         if self.selected < self.list_offset {
             self.list_offset = self.selected;
@@ -956,15 +1041,47 @@ impl App {
         true
     }
 
+    /// Open another project beside the ones already here. A window holds as
+    /// many as the person opens; the daemon has always been able to.
+    fn open_project(&mut self, typed: &str) {
+        let root = match std::path::PathBuf::from(shellexpand(typed)).canonicalize() {
+            Ok(r) if r.is_dir() => r,
+            _ => {
+                self.say("There is no directory there.");
+                return;
+            }
+        };
+        if let Some(at) = self.projects.iter().position(|p| p.root == root) {
+            self.at = at;
+            self.take_the_board();
+            self.say("That project is already open.");
+            return;
+        }
+        match Session::open(&root, 24, 80) {
+            Ok(session) => {
+                self.projects.push(Open::new(root, session));
+                self.at = self.projects.len() - 1;
+                self.pane_focus = 0;
+                self.selected = 0;
+                self.take_the_board();
+                self.look_for_agents();
+            }
+            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+        }
+    }
+
     /// Take a project out of this window. The agents keep running and the
     /// record is untouched; Weft stops showing it. Always asks first,
     /// because it is the only thing in the sidebar that removes anything.
     fn close_project(&mut self) {
         match self.rows().get(self.selected) {
-            Some(Row::Project { name, .. }) => {
+            Some(Row::Project { name, .. }) if self.projects.len() > 1 => {
                 let name = name.clone();
                 self.modal = Some(Modal::CloseProject { name });
                 self.modal_choice = 0;
+            }
+            Some(Row::Project { .. }) => {
+                self.say("This is the only project open. [X] QUIT closes the window.")
             }
             _ => self.say("Select a project to close it."),
         }
@@ -973,7 +1090,7 @@ impl App {
     /// The pane that is running this harness, or the session the selected
     /// work was asked in when none is.
     fn go_to_harness(&mut self, harness: &str) {
-        if let Some(i) = self.session.panes.iter().position(|p| p.harness == harness) {
+        if let Some(i) = sess!(self).panes.iter().position(|p| p.harness == harness) {
             self.pane_focus = i;
             self.focus = Focus::Agent;
             return;
@@ -1077,7 +1194,9 @@ impl App {
             Act::ToggleSidebar => self.toggle_work(),
             // Opening another project is the next step's work; until then it
             // says so rather than pretending.
-            Act::OpenProject => self.say("Opening a second project is not built yet."),
+            Act::OpenProject => {
+                self.modal = Some(Modal::OpenProject { text: String::new() });
+            }
             Act::WeftMenu => {
                 self.modal = Some(Modal::Weft);
                 self.modal_choice = 0;
@@ -1133,7 +1252,7 @@ impl App {
             Action::ToggleFocus => self.toggle_focus(),
             Action::ToAgent => {
                 if let Some(bytes) = encode::encode(key) {
-                    let _ = self.session.input(self.pane_focus, &bytes);
+                    let _ = sess!(self).input(self.pane_focus, &bytes);
                 }
             }
             Action::Pick(delta) => {
@@ -1214,6 +1333,27 @@ impl App {
         let modal = self.modal.clone().expect("a modal");
 
         // Composing text is its own keyboard.
+        if let Modal::OpenProject { mut text } = modal {
+            match key.code {
+                event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
+                event::KeyCode::Enter if !text.trim().is_empty() => {
+                    self.modal = None;
+                    let typed = text.clone();
+                    self.open_project(&typed);
+                }
+                event::KeyCode::Backspace => {
+                    text.pop();
+                    self.modal = Some(Modal::OpenProject { text });
+                }
+                event::KeyCode::Char(c) => {
+                    text.push(c);
+                    self.modal = Some(Modal::OpenProject { text });
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
         if let Modal::Ask { mut text, mut target } = modal {
             match key.code {
                 // `[←] CANCEL` is what the box offers, so it cancels whether
@@ -1243,6 +1383,7 @@ impl App {
             Modal::Quit => 3,
             Modal::Weft => WEFT_MENU.len(),
             Modal::CloseProject { .. } => 2,
+            Modal::OpenProject { .. } => 1,
             Modal::StartAgent { .. } => self.starts().len().max(1),
             Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
             _ => 1,
@@ -1270,7 +1411,7 @@ impl App {
                 // daemon's queue, not left there for another client.
                 Modal::Confirm(p) => {
                     let id = p.staged.clone();
-                    let _ = self.session.resolve(&id, false);
+                    let _ = sess!(self).resolve(&id, false);
                     self.modal = None;
                 }
                 _ => self.modal = None,
@@ -1302,12 +1443,19 @@ impl App {
                     _ => self.close_pane(pane),
                 }
             }
-            Modal::CloseProject { .. } => {
-                // One project, so closing it would leave nothing. Opening a
-                // second is the next step's work.
+            // Its own keyboard, handled above.
+            Modal::OpenProject { .. } => {}
+            Modal::CloseProject { name } => {
                 self.modal = None;
-                if self.modal_choice == 0 {
-                    self.say("This is the only project open, so there is nothing to close to.");
+                if self.modal_choice == 0
+                    && let Some(at) = self.projects.iter().position(|p| p.name == *name)
+                {
+                    // The connection goes; the agents and the record do not.
+                    self.projects.remove(at);
+                    self.at = self.at.min(self.projects.len() - 1);
+                    self.pane_focus = 0;
+                    self.selected = 0;
+                    self.take_the_board();
                 }
             }
             Modal::Weft => {
@@ -1318,12 +1466,12 @@ impl App {
             Modal::Quit => match self.modal_choice {
                 0 => {
                     // Leave; the server keeps the agents working.
-                    self.session.detach();
+                    sess!(self).detach();
                     self.quit = true;
                 }
                 1 => {
                     self.stop_agents_on_quit = true;
-                    self.session.shutdown();
+                    sess!(self).shutdown();
                     self.quit = true;
                 }
                 _ => self.modal = None,
@@ -1338,7 +1486,7 @@ impl App {
             (Some(Modal::Ask { text: buf, .. }), _) => buf.push_str(text),
             (Some(_), _) => {}
             (None, Focus::Agent) => {
-                let _ = self.session.input(self.pane_focus, text.as_bytes());
+                let _ = sess!(self).input(self.pane_focus, text.as_bytes());
             }
             (None, Focus::Weft) => {}
         }
@@ -1404,7 +1552,7 @@ impl App {
             // The same click should not mean two different things.
             self.focus = match self.focus {
                 Focus::Weft => {
-                    if let Some(p) = self.session.panes.get_mut(self.pane_focus) {
+                    if let Some(p) = sess!(self).panes.get_mut(self.pane_focus) {
                         p.scroll_to_bottom();
                     }
                     Focus::Agent
@@ -1442,7 +1590,7 @@ impl App {
     /// sees a line leave; its history is behind its own key. Measured, not
     /// assumed: see `harness::Harness::transcript`.
     fn scroll_pane(&mut self, delta: i32) {
-        let Some(p) = self.session.panes.get_mut(self.pane_focus) else { return };
+        let Some(p) = sess!(self).panes.get_mut(self.pane_focus) else { return };
         let before = p.scroll_offset();
         p.scroll(delta);
         if p.scroll_offset() != before || delta < 0 {
@@ -1521,24 +1669,27 @@ impl App {
 
     /// The units the board is showing.
     pub fn set_units(&mut self, units: Vec<Unit>) {
+        // The board belongs to the project it came from, not to the window,
+        // or it would vanish the moment the focus moved elsewhere.
+        sess!(self).units = units.clone();
         self.units = units;
         self.clamp_selection();
     }
 
     pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
-        self.session.input(pane, bytes)
+        sess!(self).input(pane, bytes)
     }
 
     pub fn pump(&mut self) -> bool {
-        self.session.pump()
+        sess!(self).pump()
     }
 
     pub fn pane_text(&self, pane: usize) -> Option<String> {
-        self.session.panes.get(pane).map(|p| p.contents())
+        sess!(self).panes.get(pane).map(|p| p.contents())
     }
 
     pub fn pane_scroll_offset(&self, pane: usize) -> Option<usize> {
-        self.session.panes.get(pane).map(|p| p.scroll_offset())
+        sess!(self).panes.get(pane).map(|p| p.scroll_offset())
     }
 }
 
@@ -1666,7 +1817,7 @@ pub(crate) mod tests {
                     + "\n"
             })
             .collect();
-        let rf = app.root.join(".fab7/rf");
+        let rf = app.root().join(".fab7/rf");
         std::fs::create_dir_all(&rf).expect("rf");
         std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
     }
@@ -1698,14 +1849,14 @@ pub(crate) mod tests {
                 "data": {"confirmation": {"observed_by": "skill"}}
             }));
         }
-        let rf = a.root.join(".fab7/rf");
+        let rf = a.root().join(".fab7/rf");
         std::fs::create_dir_all(&rf).expect("rf");
         let lines: String = events.iter().map(|e| format!("{e}\n")).collect();
         std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
         // Wait for the daemon's next look, then take what it read.
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && a.session.units.is_empty() {
-            a.session.pump();
+        while std::time::Instant::now() < deadline && a.session_mut().units.is_empty() {
+            a.session_mut().pump();
             std::thread::sleep(Duration::from_millis(20));
         }
         a.take_the_board();
@@ -1803,7 +1954,7 @@ pub(crate) mod tests {
             return;
         }
         let mut a = app();
-        record_a_session(&a.root.clone(), "codex", "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
+        record_a_session(a.root(), "codex", "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
         a.input(0, &[4]).expect("end it");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline {
@@ -1885,7 +2036,7 @@ pub(crate) mod tests {
 
         // The spec the pane runs is what says so, so it holds for a pane
         // another client opened.
-        a.session.panes[0].spec = "codex resume abc123".into();
+        a.session_mut().panes[0].spec = "codex resume abc123".into();
         let said = a.unavailable(Act::GoToAgent).expect("a reason");
         assert!(said.contains("already open"), "{said}");
         assert!(said.contains("[1]"), "and says which pane: {said}");
@@ -1907,7 +2058,7 @@ pub(crate) mod tests {
             return;
         }
         let mut a = app();
-        let root = a.root.clone();
+        let root = a.root().to_path_buf();
         let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
         std::fs::create_dir_all(&dir).expect("dir");
         let line = serde_json::json!({
@@ -1954,8 +2105,8 @@ pub(crate) mod tests {
         let mut a = app();
         let acts: serde_json::Map<String, serde_json::Value> =
             pairs.iter().map(|(k, v)| ((*k).to_string(), serde_json::json!(v))).collect();
-        let text = serde_json::json!({ a.root.to_string_lossy().into_owned(): acts }).to_string();
-        a.routing = weft_core::routing::read(&text, &a.root);
+        let text = serde_json::json!({ a.root().to_string_lossy().into_owned(): acts }).to_string();
+        a.routing = weft_core::routing::read(&text, a.root());
         a.set_units(vec![unit(Sent::TakenByAgent)]);
         a
     }
@@ -2212,6 +2363,69 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn two_projects_are_two_groups_and_neither_reads_the_other() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        let (other, _) = test_session("second");
+        a.open_project(&other.to_string_lossy());
+        assert_eq!(a.rows().iter().filter(|r| matches!(r, Row::Project { .. })).count(), 2);
+
+        // The second project holds nothing, so it is a heading and no more.
+        let second = a
+            .rows()
+            .iter()
+            .position(|r| matches!(r, Row::Project { project: 1, .. }))
+            .expect("the second project");
+        a.selected = second;
+        a.follow_the_selection();
+        assert_eq!(a.at, 1);
+        assert!(a.selected_unit().is_none(), "nothing has been asked for in it");
+
+        // Selecting the first project's work moves the focus back, and an act
+        // lands where you are looking.
+        let work = a
+            .rows()
+            .iter()
+            .position(|r| matches!(r, Row::Action { project: 0, .. }))
+            .expect("the first project's work");
+        a.selected = work;
+        a.follow_the_selection();
+        assert_eq!(a.at, 0);
+        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("health endpoint".into()));
+    }
+
+    #[test]
+    fn a_project_closes_out_of_the_window_and_leaves_the_rest() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        let (other, _) = test_session("second");
+        a.open_project(&other.to_string_lossy());
+        assert_eq!(a.rows().iter().filter(|r| matches!(r, Row::Project { .. })).count(), 2);
+
+        let second = a
+            .rows()
+            .iter()
+            .position(|r| matches!(r, Row::Project { project: 1, .. }))
+            .expect("the second project");
+        a.selected = second;
+        press(&mut a, KeyCode::Backspace);
+        assert!(matches!(a.modal, Some(Modal::CloseProject { .. })), "it asks first");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(a.rows().iter().filter(|r| matches!(r, Row::Project { .. })).count(), 1);
+        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("health endpoint".into()));
+    }
+
+    #[test]
+    fn the_last_project_is_not_closed_out_from_under_you() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        a.selected = 0;
+        press(&mut a, KeyCode::Backspace);
+        assert!(a.modal.is_none(), "{:?}", a.modal);
+        assert_eq!(
+            a.hint_text(),
+            Some("This is the only project open. [X] QUIT closes the window.")
+        );
+    }
+
+    #[test]
     fn arrows_move_through_every_level_of_the_tree() {
         let mut a = app();
         let mut second = unit(Sent::NotSent);
@@ -2250,7 +2464,7 @@ pub(crate) mod tests {
             .rows()
             .iter()
             .position(
-                |r| matches!(r, Row::Action { unit } if a.units()[*unit].harness == "claude-code"),
+                |r| matches!(r, Row::Action { unit, .. } if a.units()[*unit].harness == "claude-code"),
             )
             .expect("the claude-code row");
         a.selected = claude;

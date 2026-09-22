@@ -341,6 +341,7 @@ fn action_bar(app: &App, width: u16) -> (Paragraph<'static>, Vec<(u16, u16, Act)
         Some(Modal::CloseProject { .. }) => {
             return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
         }
+        Some(Modal::OpenProject { .. }) => return plain("  [Enter] OPEN   [←] CANCEL"),
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
         Some(Modal::SetUp { gap, .. }) => {
             // Nothing to offer for a missing CLI: it is not Weft's to install.
@@ -555,7 +556,7 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
         if picked { Span::styled(s, th.selected()) } else { Span::styled(s, th.label()) }
     };
     match row {
-        Row::Project { name, folded, open, waiting } => {
+        Row::Project { name, folded, open, waiting, .. } => {
             let mut tail = if *open == 1 { "1 open".to_string() } else { format!("{open} open") };
             if *waiting > 0 {
                 tail.push_str(&format!(" · {waiting} ●"));
@@ -577,7 +578,7 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
                 Span::styled(tail, th.needs_you()),
             ])
         }
-        Row::Action { unit } => {
+        Row::Action { unit, .. } => {
             let Some(unit) = app.units().get(*unit) else { return Line::raw("") };
             let (word, waiting) = row_state(unit);
             let state = format!("{}{word}  ", if waiting { "● " } else { "" });
@@ -758,6 +759,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Quit => "QUIT WEFT?".into(),
         Modal::Weft => "WEFT".into(),
         Modal::CloseProject { .. } => "CLOSE THIS PROJECT?".into(),
+        Modal::OpenProject { .. } => "OPEN A PROJECT".into(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
@@ -776,6 +778,9 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         // The menu is its choices; there is nothing to say above them.
         Modal::Weft => Vec::new(),
+        Modal::OpenProject { text } => {
+            vec![format!("{text}█"), String::new(), "The path of a repository to open.".into()]
+        }
         Modal::CloseProject { name } => vec![
             name.clone(),
             String::new(),
@@ -894,6 +899,7 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             .map(|(key, label, _)| format!("[{key}]  {label}"))
             .collect(),
         Modal::CloseProject { .. } => vec!["Close it".into(), "Cancel".into()],
+        Modal::OpenProject { .. } => Vec::new(),
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
             "Quit and stop the agents".into(),
@@ -1045,7 +1051,7 @@ mod tests {
     fn judged() -> App {
         let mut a = app();
         let eval_id = "evl_1";
-        let dir = a.root.join(".fab7/rf/evals").join(eval_id);
+        let dir = a.root().join(".fab7/rf/evals").join(eval_id);
         std::fs::create_dir_all(&dir).expect("evals dir");
         std::fs::write(
             dir.join("record.json"),
@@ -1090,7 +1096,7 @@ mod tests {
         a.set_units(vec![u, ready]);
         // The daemon reads a record for a unit it knows; this board is
         // fabricated, so the record is handed over the same way it would be.
-        let text = std::fs::read_to_string(a.root.join(".fab7/rf/evals/evl_1/record.json"))
+        let text = std::fs::read_to_string(a.root().join(".fab7/rf/evals/evl_1/record.json"))
             .expect("record");
         let record: serde_json::Value = serde_json::from_str(&text).expect("json");
         let parsed = weft_core::record::Record::parse(&record).expect("a record");
@@ -1480,10 +1486,10 @@ mod tests {
     fn help_says_what_this_project_routes() {
         let mut a = judged();
         let text = serde_json::json!({
-            a.root.to_string_lossy().into_owned(): {"eval": "claude-code", "seal": "codex"}
+            a.root().to_string_lossy().into_owned(): {"eval": "claude-code", "seal": "codex"}
         })
         .to_string();
-        a.set_routing(crate::routing::read(&text, &a.root));
+        a.set_routing(crate::routing::read(&text, a.root()));
         press(&mut a, KeyCode::Char('h'));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("This project routes"), "{drawn}");
