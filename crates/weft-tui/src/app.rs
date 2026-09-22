@@ -2378,6 +2378,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_verb_is_live_when_there_is_a_step_and_dim_when_there_is_not() {
+        // A row with a dot can always be carried forward. A sent and unjudged
+        // row carries no dot — nothing is kept waiting by it — and can still
+        // be carried, into its Eval. A closed one cannot be carried at all.
+        let a = with_unit(Sent::ReadyToSend);
+        assert!(a.selected_unit().expect("a unit").needs_you());
+        assert_eq!(a.unavailable(Act::Proceed), None);
+
+        let a = with_unit(Sent::Arrived { exact: true });
+        assert!(!a.selected_unit().expect("a unit").needs_you());
+        assert_eq!(a.unavailable(Act::Proceed), None, "its Eval is the step");
+
+        let mut a = app();
+        let mut sealed = unit(Sent::Arrived { exact: true });
+        sealed.sealed = Some("accepted".into());
+        a.set_units(vec![sealed]);
+        assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("FOLLOW UP")));
+    }
+
+    #[test]
     fn two_projects_are_two_groups_and_neither_reads_the_other() {
         let mut a = with_unit(Sent::Arrived { exact: true });
         let (other, _) = test_session("second");
