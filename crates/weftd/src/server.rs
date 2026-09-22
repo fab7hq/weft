@@ -442,7 +442,7 @@ impl Session {
                     return Answer::No("no_unit", "that Ask is not on the board".into());
                 };
                 let skill = if act == "check" { "eval" } else { "seal" };
-                // Where it goes is the project's to say (spec/routing.md).
+                // Where it goes is the project's to say.
                 let key = if act == "check" { "eval" } else { "seal" };
                 let into = self.projects[at].routing.get(key).unwrap_or(&unit.harness).to_string();
                 let Some(pane) = self.pane_of(at, &into) else {

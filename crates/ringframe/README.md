@@ -16,12 +16,10 @@ seals the decision. Three acts over one append-only ledger in `.fab7/rf/`:
 
 ## It is not part of Weft
 
-This crate lives in Weft's repository and is not Weft's ([ADR-0013]). It ships
+This crate lives in Weft's repository and is not Weft's. It ships
 its own binary, invoked by name, and nothing in Weft depends on this crate —
 the skills call `ringframe`, and that string is the contract. Weft renders
 what RingFrame wrote and never writes `.fab7/rf/` itself.
-
-[ADR-0013]: https://github.com/fab7hq/weft
 
 ## Using it
 
@@ -49,13 +47,6 @@ The profiles, the delta catalogs and the skills are configuration, synced from
 the marketplace into `~/.fab7/rf/`. This package ships none of it: a core with
 no configuration refuses to compile an Ask rather than inventing one.
 
-## Versions
-
-The Rust era starts at 0.1.0. The Python `ringframe` 0.0.5 was the last of the
-previous one and stays where it is; it reads `ringframe.bundle/1` and refuses
-this era's configuration by name, which is the boundary working rather than a
-failure.
-
-## Licence
+## License
 
 Apache-2.0

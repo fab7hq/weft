@@ -6,7 +6,7 @@ description = "The record a coding agent's work is measured against: Ask, Eval a
 license = "Apache-2.0"
 repository = "https://github.com/fab7hq/weft"
 
-# RingFrame's core, in Weft's repository but not part of Weft (ADR-0013).
+# RingFrame's core, in Weft's repository but not part of Weft.
 # It ships its own binary, invoked by name, and nothing in Weft may depend on
 # this crate — the skills call `ringframe`, and that string is the contract.
 [lib]

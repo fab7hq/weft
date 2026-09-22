@@ -7,7 +7,7 @@ license = "Apache-2.0"
 repository = "https://github.com/fab7hq/weft"
 
 # The binary. It starts the daemon or the terminal client; the work is in the
-# crates below (ADR-0007).
+# crates below.
 [workspace]
 members = ["crates/*"]
 # Without this, a bare `cargo test` here runs the binary's own tests and none of

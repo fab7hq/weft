@@ -996,8 +996,7 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// What the frame actually drew, one line per row. The wireframes in
-    /// `spec/interface.md` are the reference; these read the same way.
+    /// What the frame actually drew, one line per row.
     fn screen(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal.draw(|frame| draw(frame, app)).expect("draw");

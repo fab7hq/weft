@@ -10,8 +10,7 @@ on:
         required: true
 
 # `install.sh` downloads what this publishes. Nothing is built on a user's
-# machine any more (ADR-0013), so a platform missing here is a platform nobody
-# can install on.
+# machine, so a platform missing here is a platform nobody can install on.
 permissions:
   contents: write
 

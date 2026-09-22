@@ -175,7 +175,7 @@ impl Pane {
     ///
     /// The bytes that reach the host are the same whichever way this goes; what
     /// changes is whether the host reads the command. Typed, it does; inside a
-    /// folded paste, it does not. See `spec/injection.md`.
+    /// folded paste, it does not.
     pub fn inject_as(
         &mut self,
         payload: &[u8],

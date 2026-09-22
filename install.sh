@@ -4,8 +4,6 @@
 #
 # There is no toolchain here. CI builds a binary per platform and publishes it
 # with a checksum; this detects the platform, downloads, verifies and installs.
-# The Python era installed with `uv tool install ringframe`; that path still
-# works for 0.0.5 and is frozen there (ADR-0013).
 set -eu
 
 REPO=fab7hq/weft

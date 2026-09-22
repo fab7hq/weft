@@ -2,9 +2,10 @@
 name = "weftd"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 # The daemon: pane processes, the record on disk, and the RingFrame CLI. One
-# per machine, holding every project anyone opens (ADR-0007).
+# per machine, holding every project anyone opens.
 [dependencies]
 anyhow = "1.0.104"
 portable-pty = "0.9.0"

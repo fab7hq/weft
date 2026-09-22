@@ -2,10 +2,11 @@
 name = "weft-tui"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 # The terminal client. It draws, and it asks the daemon for everything else.
 #
-# ADR-0007: no `weftd` here. If this could reach the CLI or the record it
+# No `weftd` here. If this could reach the CLI or the record it
 # would start re-deriving what the daemon already decided, and a second client
 # would disagree with it.
 [dependencies]

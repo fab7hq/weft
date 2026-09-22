@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// What the screen says, per `spec/interface.md` §Vocabulary. The recorded
+/// What the screen says. The recorded
 /// term travels alongside so the plain wording is a gloss, never a substitute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {

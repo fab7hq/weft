@@ -2,10 +2,11 @@
 name = "weft-core"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 # The rules, and nothing that does anything.
 #
-# ADR-0007: this crate may not reach the filesystem, a process, the network or
+# This crate may not reach the filesystem, a process, the network or
 # a terminal. Every dependency added here has to keep that true — which is why
 # there is only one, and it parses.
 [dependencies]
