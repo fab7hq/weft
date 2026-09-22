@@ -1070,7 +1070,10 @@ impl App {
             self.say("That project is already open.");
             return;
         }
-        match Session::open(&root, 24, 80) {
+        // The same daemon, not a new one: it already holds many projects,
+        // and starting a second would need the installed binary.
+        let socket = sess!(self).socket().to_path_buf();
+        match Session::connect(&socket, &root, 24, 80) {
             Ok(session) => {
                 self.projects.push(Open::new(root, session));
                 self.at = self.projects.len() - 1;

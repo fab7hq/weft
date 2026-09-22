@@ -94,6 +94,9 @@ pub struct Staged {
 }
 
 pub struct Session {
+    /// The daemon this client is attached to. A second project opens on the
+    /// same one: the daemon is per machine and already holds many.
+    socket: std::path::PathBuf,
     stream: UnixStream,
     inbox: Receiver<Line>,
     /// The next call id. Answers come back against it.
@@ -130,6 +133,12 @@ impl Session {
         Self::connect(&socket, root, rows, cols)
     }
 
+    /// The daemon this client is attached to, so another project can open on
+    /// the same one rather than starting a second.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
     /// Attach to a daemon on this socket, watching one project.
     pub fn connect(socket: &Path, root: &Path, rows: u16, cols: u16) -> Result<Self> {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -155,6 +164,7 @@ impl Session {
         });
 
         let mut session = Session {
+            socket: socket.to_path_buf(),
             stream,
             inbox,
             panes: Vec::new(),
