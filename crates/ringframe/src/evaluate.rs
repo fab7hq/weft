@@ -144,7 +144,6 @@ fn anchor_of(ws: &Workspace, asks: &[Value], explicit: Option<&str>) -> Result<V
             reason:
                 "eval.anchor_unknown: no Seal and no Ask with a base commit; pass --anchor <commit>"
                     .into(),
-            candidates: Vec::new(),
         }
         .into()),
     }

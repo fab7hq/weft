@@ -235,39 +235,6 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
     }
 }
 
-pub fn prune(ws: &Workspace, older_than: &str) -> Result<Vec<String>, String> {
-    let window = parse_duration(older_than)?;
-    let cutoff = SystemTime::now().checked_sub(window).ok_or("the window is too long")?;
-    let mut removed = Vec::new();
-    let base = ws.rf_dir().join("sessions");
-    let mut hosts: Vec<PathBuf> =
-        std::fs::read_dir(&base).into_iter().flatten().flatten().map(|e| e.path()).collect();
-    hosts.sort();
-    for host in hosts {
-        let mut kids: Vec<PathBuf> =
-            std::fs::read_dir(&host).into_iter().flatten().flatten().map(|e| e.path()).collect();
-        kids.sort();
-        for session in kids {
-            let newest = std::fs::read_dir(&session)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .filter_map(|e| e.metadata().ok()?.modified().ok())
-                .max()
-                .or_else(|| std::fs::metadata(&session).ok()?.modified().ok());
-            if newest.is_some_and(|n| n < cutoff) {
-                std::fs::remove_dir_all(&session).map_err(|e| e.to_string())?;
-                removed.push(format!(
-                    "{}/{}",
-                    host.file_name().unwrap_or_default().to_string_lossy(),
-                    session.file_name().unwrap_or_default().to_string_lossy()
-                ));
-            }
-        }
-    }
-    Ok(removed)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,41 +308,6 @@ mod tests {
         capture(&ws, "claude-code", &payload("/rf:ask fix the login bug", "sB"), None).unwrap();
         // Two sessions carry the same intent, so neither can be claimed.
         assert_eq!(resolve_session(&ws, "claude-code", b"fix the login bug", WINDOW), None);
-    }
-
-    #[test]
-    fn prune_removes_old_sessions() {
-        let repo = repo();
-        let ws = ws_for(repo.path());
-        capture(&ws, "claude-code", &payload("/rf:ask a", "old"), None).unwrap();
-        capture(&ws, "claude-code", &payload("/rf:ask b", "new"), None).unwrap();
-        let old = ws.rf_dir().join("sessions/claude-code/old");
-        let ten_days_ago = format!(
-            "{}",
-            (std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs())
-                - 10 * 86_400
-        );
-        for path in [old.join("prompts.jsonl"), old.clone()] {
-            crate::testing::run(&[
-                "touch",
-                "-t",
-                &epoch_to_touch(&ten_days_ago),
-                &path.to_string_lossy(),
-            ]);
-        }
-        assert_eq!(prune(&ws, "7d").unwrap(), ["claude-code/old"]);
-        assert!(!old.exists());
-        assert_eq!(parse_duration("36h").unwrap(), Duration::from_secs(36 * 3600));
-        assert!(parse_duration("7").is_err());
-        assert!(parse_duration("").is_err());
-    }
-
-    /// `touch -t` wants `[[CC]YY]MMDDhhmm[.ss]`.
-    fn epoch_to_touch(secs: &str) -> String {
-        let secs: i64 = secs.parse().unwrap();
-        let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-        let rem = secs.rem_euclid(86_400);
-        format!("{y:04}{m:02}{d:02}{:02}{:02}.{:02}", rem / 3600, (rem % 3600) / 60, rem % 60)
     }
 
     #[test]

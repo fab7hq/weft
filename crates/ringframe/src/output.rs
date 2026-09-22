@@ -81,23 +81,6 @@ fn profile(data: &Value) -> Value {
     out
 }
 
-fn delta_list(data: &Value) -> Value {
-    if data.get("practice").is_none() {
-        let mut out = Map::new();
-        for (key, entry) in data.as_object().into_iter().flatten() {
-            out.insert(key.clone(), pick(entry, &["id", "label", "text"]));
-        }
-        return Value::Object(out);
-    }
-    json!({
-        "host": data["host"].as_array().into_iter().flatten()
-            .map(|e| pick(e, &["id", "label", "text", "capability"])).collect::<Vec<_>>(),
-        "practice": data["practice"].as_array().into_iter().flatten()
-            .map(|e| pick(e, &["id", "label", "text"])).collect::<Vec<_>>(),
-        "concerns": data["concerns"],
-    })
-}
-
 fn eval_open(data: &Value) -> Value {
     let mut out = pick(data, &["eval_id", "brief_path", "changes"]);
     out["brief"] = pick(&data["brief"], &["sha256"]);
@@ -142,27 +125,10 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
             "domains": d["domains"].as_array().into_iter().flatten()
                 .map(|x| pick(x, &DOMAIN_KEYS)).collect::<Vec<_>>()
         }),
-        ("deltas", Some("list")) => delta_list(d),
         ("deltas", Some("render")) => d["text"].clone(),
         ("ask", Some("list")) => {
             json!({"asks": candidates(d["asks"].as_array().map_or(&[], Vec::as_slice))})
         }
-        ("ask", Some("show")) => pick(
-            d,
-            &[
-                "ask_id",
-                "title",
-                "state",
-                "capability",
-                "prompt_path",
-                "source_verified",
-                "unanswered_at",
-            ],
-        ),
-        ("ask", Some("resolve")) => json!({
-            "rule_applied": d["rule_applied"],
-            "candidates": candidates(d["candidates"].as_array().map_or(&[], Vec::as_slice)),
-        }),
         ("eval", Some("list")) => json!({
             "evals": d["evals"].as_array().into_iter().flatten()
                 .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis"]))

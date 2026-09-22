@@ -82,12 +82,11 @@ fn fill(template: &str, pairs: &[(&str, String)]) -> String {
     out
 }
 
-/// The Ask cannot go on without a person: either an authorization is missing,
-/// or a choice has to be made between candidates.
+/// The Ask cannot go on without a person: an authorization is missing, and
+/// only a person can grant one.
 #[derive(Debug)]
 pub struct NeedsInput {
     pub reason: String,
-    pub candidates: Vec<Value>,
 }
 
 impl std::fmt::Display for NeedsInput {
@@ -202,7 +201,6 @@ fn authorized(
             reason: format!(
                 "authorization required: no record at authorizations/{id}.json for {kind}:{id}"
             ),
-            candidates: Vec::new(),
         }
         .into());
     };
@@ -226,7 +224,6 @@ fn authorized(
                 "authorization does not cover {capability} with effects [{}] for {kind}:{id}",
                 shown.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(", ")
             ),
-            candidates: Vec::new(),
         }
         .into());
     }
@@ -1191,47 +1188,6 @@ fn summary(ws: &Workspace, ask_id: &str, rec: &AskRecord, sealed: &BTreeSet<Stri
     })
 }
 
-/// Ordered resolution; never picks the newest for being newest.
-pub fn resolve(
-    ws: &Workspace,
-    session: Option<&str>,
-    reference: Option<&str>,
-) -> Result<Value, AskError> {
-    let sealed = sealed_asks(ws)?;
-    let summaries: Vec<Value> = by_id(ws)?
-        .into_iter()
-        .filter(|(_, v)| v.compiled.is_some())
-        .map(|(k, v)| summary(ws, &k, &v, &sealed))
-        .collect();
-    if let Some(reference) = reference.filter(|r| !r.is_empty()) {
-        let exact: Vec<Value> =
-            summaries.iter().filter(|s| str_of(s, "ask_id") == reference).cloned().collect();
-        if !exact.is_empty() {
-            return Ok(json!({"candidates": exact, "rule_applied": "explicit_id"}));
-        }
-        let needle = reference.to_lowercase();
-        let hits: Vec<Value> = summaries
-            .iter()
-            .filter(|s| str_of(s, "title").to_lowercase().contains(&needle))
-            .cloned()
-            .collect();
-        if hits.len() == 1 {
-            return Ok(json!({"candidates": hits, "rule_applied": "explicit_title"}));
-        }
-        let candidates = if hits.is_empty() { summaries } else { hits };
-        return Ok(json!({"candidates": candidates, "rule_applied": "chooser"}));
-    }
-    if let Some(session) = session.filter(|s| !s.is_empty()) {
-        let same: Vec<Value> =
-            summaries.iter().filter(|s| str_of(s, "session_ref") == session).cloned().collect();
-        if !same.is_empty() {
-            return Ok(json!({"candidates": same, "rule_applied": "same_session"}));
-        }
-    }
-    let rule = if summaries.len() == 1 { "unique_in_workspace" } else { "chooser" };
-    Ok(json!({"candidates": summaries, "rule_applied": rule}))
-}
-
 /// Every compiled Ask in this workspace, oldest first: what Eval and a person
 /// choose from.
 pub fn list_asks(ws: &Workspace) -> Result<Vec<Value>, AskError> {
@@ -1241,23 +1197,6 @@ pub fn list_asks(ws: &Workspace) -> Result<Vec<Value>, AskError> {
         .filter(|(_, v)| v.compiled.is_some())
         .map(|(k, v)| summary(ws, &k, &v, &sealed))
         .collect())
-}
-
-pub fn show(
-    ws: &Workspace,
-    ask_id: Option<&str>,
-    session: Option<&str>,
-) -> Result<Value, AskError> {
-    let res = resolve(ws, session, ask_id)?;
-    let candidates = res["candidates"].as_array().cloned().unwrap_or_default();
-    if candidates.len() != 1 {
-        return Err(NeedsInput {
-            reason: if candidates.is_empty() { "no_record".into() } else { "chooser".into() },
-            candidates,
-        }
-        .into());
-    }
-    Ok(candidates[0].clone())
 }
 
 #[cfg(test)]
@@ -1377,6 +1316,22 @@ mod tests {
             .unwrap()
     }
 
+    /// One Ask by id, as `ask list` reports it.
+    fn ask_by_id(ws: &Workspace, id: &str) -> Value {
+        list_asks(ws)
+            .expect("list")
+            .into_iter()
+            .find(|a| str_of(a, "id") == id || str_of(a, "ask_id") == id)
+            .expect("that Ask")
+    }
+
+    /// The one Ask in a fixture workspace, as `ask list` reports it.
+    fn only_ask(ws: &Workspace) -> Value {
+        let mut asks = list_asks(ws).expect("list");
+        assert_eq!(asks.len(), 1, "this fixture holds one Ask");
+        asks.pop().expect("one")
+    }
+
     fn bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
         with_config_home(|_| {
             let repo = repo();
@@ -1405,7 +1360,7 @@ mod tests {
             assert_eq!(evs[0]["data"]["host"]["profile_id"], "claude-code");
             assert_eq!(evs[0]["data"]["host"]["workspace"]["rule"], "cwd");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            let shown = show(ws, None, None).unwrap();
+            let shown = only_ask(ws);
             assert_eq!(shown["outcome"], "compiled");
             assert_eq!(shown["submission"], "unobserved");
         });
@@ -1684,7 +1639,7 @@ mod tests {
             let id = str_of(&out, "ask_id");
             unanswered(ws, &id, Some("no answer within the chooser's limit"), None).unwrap();
 
-            let shown = show(ws, None, None).unwrap();
+            let shown = only_ask(ws);
             assert_eq!(shown["outcome"], "compiled", "not cancelled");
             assert_eq!(shown["state"], "open", "and still usable");
             assert!(
@@ -1711,7 +1666,7 @@ mod tests {
             let id = str_of(&out, "ask_id");
             unanswered(ws, &id, Some("chooser closed"), None).unwrap();
             confirm(ws, &id, None).unwrap();
-            assert_eq!(show(ws, None, None).unwrap()["outcome"], "confirmed");
+            assert_eq!(only_ask(ws)["outcome"], "confirmed");
         });
     }
 
@@ -1740,7 +1695,7 @@ mod tests {
         bench(|ws| {
             let id = str_of(&compiled(ws), "ask_id");
             cancel(ws, &id, Some("wrong route"), None, false).unwrap();
-            let shown = show(ws, None, None).unwrap();
+            let shown = only_ask(ws);
             assert_eq!(shown["outcome"], "cancelled");
             assert_eq!(shown["state"], "cancelled");
             assert!(open_asks(ws).unwrap().is_empty());
@@ -1791,7 +1746,7 @@ mod tests {
             let later = cancel(ws, &id, Some("changed my mind"), None, true).unwrap();
             assert_eq!(later["cancellation"], json!({"attributed_by": "human:local-user"}));
             assert_eq!(types(ws), ["ask.compiled", "ask.confirmed", "ask.cancelled"]);
-            assert_eq!(show(ws, None, None).unwrap()["outcome"], "cancelled");
+            assert_eq!(only_ask(ws)["outcome"], "cancelled");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
             assert_eq!(
                 ledger_error(confirm(ws, "ask_nope", None).unwrap_err()).code,
@@ -1847,10 +1802,7 @@ mod tests {
                 .unwrap();
             assert_eq!(sub2["ask_id"], other["ask_id"]);
             assert_eq!(sub2["match"], "trailing_newline_dropped");
-            assert_eq!(
-                show(ws, Some(&str_of(&other, "ask_id")), None).unwrap()["submission"],
-                "observed"
-            );
+            assert_eq!(ask_by_id(ws, &str_of(&other, "ask_id"))["submission"], "observed");
             let third = compile_with(
                 ws,
                 Args {
@@ -1863,17 +1815,11 @@ mod tests {
             )
             .unwrap();
             assert!(submission_from_capture(ws, "codex", "c1", &"f".repeat(64)).unwrap().is_none());
-            assert_eq!(
-                show(ws, Some(&str_of(&out, "ask_id")), None).unwrap()["submission"],
-                "observed"
-            );
+            assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
             let att = submitted(ws, &str_of(&third, "ask_id"), true, None).unwrap();
             assert_eq!(att["state"], "attributed");
             assert_eq!(att["as_modified"], true);
-            assert_eq!(
-                show(ws, Some(&str_of(&third, "ask_id")), None).unwrap()["submission"],
-                "attributed"
-            );
+            assert_eq!(ask_by_id(ws, &str_of(&third, "ask_id"))["submission"], "attributed");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }
@@ -2166,54 +2112,6 @@ mod tests {
     }
 
     #[test]
-    fn show_and_resolve() {
-        bench(|ws| {
-            let a = compiled(ws);
-            let a_id = str_of(&a, "ask_id");
-            confirm(ws, &a_id, None).unwrap();
-            let shown = show(ws, Some(&a_id), None).unwrap();
-            assert_eq!(shown["title"], "Login fix");
-            assert_eq!(shown["delivery"], json!(null));
-            assert!(str_of(&shown, "prompt_path").ends_with("prompt.txt"));
-            assert_eq!(show(ws, None, Some("s1")).unwrap()["ask_id"], a["ask_id"]);
-            // A unique title substring, then unique in the workspace.
-            assert_eq!(show(ws, Some("login"), None).unwrap()["ask_id"], a["ask_id"]);
-            assert_eq!(show(ws, None, None).unwrap()["ask_id"], a["ask_id"]);
-
-            let mut other = host();
-            other["session_ref"] = json!("s2");
-            let b = compile_with(
-                ws,
-                Args {
-                    staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
-                    title: "Logout".into(),
-                    capability: "native_direct".into(),
-                    host: other,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let AskError::Needs(e) = show(ws, None, None).unwrap_err() else {
-                panic!("wanted a chooser")
-            };
-            let ids: BTreeSet<String> = e.candidates.iter().map(|c| str_of(c, "id")).collect();
-            assert_eq!(ids, [str_of(&a, "ask_id"), str_of(&b, "ask_id")].into());
-            assert!(matches!(show(ws, Some("Log"), None), Err(AskError::Needs(_))));
-            let cands = resolve(ws, Some("s2"), None).unwrap();
-            assert_eq!(
-                cands["candidates"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|c| str_of(c, "id"))
-                    .collect::<Vec<_>>(),
-                [str_of(&b, "ask_id")]
-            );
-            assert_eq!(cands["rule_applied"], "same_session");
-        });
-    }
-
-    #[test]
     fn the_codex_handoff_has_a_prompt_prefix_and_a_length_policy() {
         bench(|ws| {
             let host =
@@ -2434,10 +2332,7 @@ mod tests {
                 .unwrap();
             assert_eq!(sub["ask_id"], out["ask_id"]);
             assert_eq!(sub["match"], "host_prefix_stripped");
-            assert_eq!(
-                show(ws, Some(&str_of(&out, "ask_id")), None).unwrap()["submission"],
-                "observed"
-            );
+            assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
         });
     }
 

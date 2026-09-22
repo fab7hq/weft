@@ -14,9 +14,7 @@ use serde_json::{Value, json};
 use crate::ask::{AskError, NeedsInput};
 use crate::seal::SealError;
 use crate::workspace::Workspace;
-use crate::{
-    VERSION, ask, deltas, evaluate, ids, output, profiles, seal, sessions, store, workspace,
-};
+use crate::{VERSION, ask, deltas, evaluate, output, profiles, seal, sessions, store, workspace};
 
 /// What one invocation produced. The tests drive this directly, so nothing
 /// here touches the real streams.
@@ -84,9 +82,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             s(&["--ask", "--state", "--reason"], &["--from-hook", "--handoff"], NONE, false, NONE)
         }
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
-        ("ask", Some("show")) => s(&["--ask", "--session"], NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
-        ("ask", Some("resolve")) => s(&["--session", "--kind"], NONE, NONE, true, NONE),
         ("eval", Some("open")) => {
             s(&["--anchor", "--subject-kind", "--subject-ref"], NONE, NONE, false, NONE)
         }
@@ -103,9 +99,6 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("seal", Some("check")) => s(&["--seal"], NONE, &["--seal"], true, NONE),
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
-        ("deltas", Some("list")) => {
-            s(&["--host", "--capability", "--domain"], &["--effective"], NONE, true, NONE)
-        }
         ("deltas", Some("domains")) => s(NONE, NONE, NONE, true, NONE),
         ("deltas", Some("render")) => s(
             &["--host", "--host-version", "--capability", "--classification", "--statuses"],
@@ -117,15 +110,13 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("sessions", Some("capture")) => {
             s(&["--host", "--host-version"], NONE, &["--host"], false, NONE)
         }
-        ("sessions", Some("prune")) => s(&["--older-than"], NONE, &["--older-than"], false, NONE),
-        ("export", None) => s(&["--ask", "--out"], NONE, &["--ask", "--out"], false, NONE),
         _ => None,
     }
 }
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 28] = [
+const SURFACE: [(&str, Option<&str>); 23] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -137,21 +128,16 @@ const SURFACE: [(&str, Option<&str>); 28] = [
     ("ask", Some("copy")),
     ("ask", Some("delivery")),
     ("ask", Some("list")),
-    ("ask", Some("show")),
     ("ask", Some("preflight")),
-    ("ask", Some("resolve")),
     ("eval", Some("open")),
     ("eval", Some("close")),
     ("eval", Some("list")),
     ("seal", Some("create")),
     ("seal", Some("check")),
     ("ledger", Some("verify")),
-    ("deltas", Some("list")),
     ("deltas", Some("domains")),
     ("deltas", Some("render")),
     ("sessions", Some("capture")),
-    ("sessions", Some("prune")),
-    ("export", None),
     // Listed last because they are not commands.
     ("--version", None),
     ("--help", None),
@@ -175,23 +161,18 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("ask", Some("copy")) => "the compiled prompt, verbatim; --body drops its command prefix",
         ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
         ("ask", Some("list")) => "every compiled Ask, oldest first",
-        ("ask", Some("show")) => "one Ask, resolved by id, title or session",
         ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
-        ("ask", Some("resolve")) => "the candidate Asks and the rule that chose them",
         ("eval", Some("open")) => "write the facts-only brief over every open Ask",
         ("eval", Some("close")) => "aggregate the intent and the judgements into a verdict",
         ("eval", Some("list")) => "every Eval, opened or completed",
         ("seal", Some("create")) => "record the decision that closes the open Asks",
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
-        ("deltas", Some("list")) => "the delta catalogs as installed",
         ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
         ("deltas", Some("render")) => "the directives that apply to one classification",
         ("sessions", Some("capture")) => {
             "store a hook's prompt payload; reads the payload on stdin"
         }
-        ("sessions", Some("prune")) => "remove session captures older than a duration",
-        ("export", None) => "one Ask's artifacts and ledger slice, as a tar",
         ("--version", None) => "print the version",
         ("--help", None) => "print this",
         _ => "",
@@ -249,19 +230,8 @@ fn takes_sub(cmd: &str) -> bool {
     matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "sessions")
 }
 
-const COMMANDS: [&str; 11] = [
-    "init",
-    "sync",
-    "profile",
-    "ask",
-    "eval",
-    "seal",
-    "ledger",
-    "deltas",
-    "sessions",
-    "export",
-    "--version",
-];
+const COMMANDS: [&str; 10] =
+    ["init", "sync", "profile", "ask", "eval", "seal", "ledger", "deltas", "sessions", "--version"];
 
 struct Parsed {
     cmd: String,
@@ -544,14 +514,7 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
         }
         Outcome::Text(text) => (0, Value::String(text)),
         Outcome::UsageDetail(detail) => (1, json!({"error": "usage", "detail": detail})),
-        Outcome::Needs(n) => (
-            3,
-            json!({
-                "needs_input": n.reason,
-                "candidates": if concise { output::candidates(&n.candidates) }
-                              else { json!(n.candidates) },
-            }),
-        ),
+        Outcome::Needs(n) => (3, json!({"needs_input": n.reason})),
         Outcome::Refused(codes) => (2, json!({"error": "seal.refused", "refusal_codes": codes})),
         Outcome::Error(code, detail) => (2, json!({"error": code, "detail": detail})),
     };
@@ -747,23 +710,6 @@ fn dispatch(
             out["submission"] = submission;
             (ws, Outcome::Ok(0, out))
         }
-        ("sessions", Some("prune")) => {
-            match sessions::prune(&ws, ns.one("--older-than").unwrap_or_default()) {
-                Ok(removed) => (ws, Outcome::Ok(0, json!({"removed": removed}))),
-                Err(e) => (ws, Outcome::UsageDetail(e)),
-            }
-        }
-        ("export", None) => {
-            let out = export(
-                &ws,
-                ns.one("--ask").unwrap_or_default(),
-                Path::new(ns.one("--out").unwrap_or_default()),
-            );
-            match out {
-                Ok(v) => (ws, Outcome::Ok(0, v)),
-                Err(e) => (ws, from_ask_error(e)),
-            }
-        }
         _ => (ws, Outcome::UsageDetail(format!("unknown command {}", ns.cmd))),
     }
 }
@@ -877,13 +823,11 @@ fn ask_command(
             Ok(asks) => (ws, Outcome::Ok(0, json!({"asks": asks}))),
             Err(e) => (ws, from_ask_error(e)),
         },
-        "show" => done!(ask::show(&ws, ns.one("--ask"), ns.one("--session"))),
-        _ => done!(ask::resolve(&ws, ns.one("--session"), None)),
+        other => (ws, Outcome::UsageDetail(format!("unknown ask command {other}"))),
     }
 }
 
 fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome) {
-    let domain = ns.one("--domain").unwrap_or(deltas::DEFAULT_DOMAIN).to_string();
     macro_rules! config_try {
         ($e:expr) => {
             match $e {
@@ -896,40 +840,6 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
         "domains" => {
             let listed = config_try!(deltas::domains(Some(&ws)));
             (ws, Outcome::Ok(0, json!({"domains": listed})))
-        }
-        "list" => {
-            if ns.has("--effective") {
-                let listing = config_try!(deltas::effective(Some(&ws), &domain));
-                let mut out = serde_json::Map::new();
-                for (id, entry) in listing {
-                    out.insert(id, entry);
-                }
-                return (ws, Outcome::Ok(0, Value::Object(out)));
-            }
-            let hosts = match ns.one("--host") {
-                Some(h) => vec![h.to_string()],
-                None => config_try!(deltas::host_catalog_names()),
-            };
-            let wanted = ns.one("--capability");
-            let mut entries: Vec<Value> = Vec::new();
-            for h in hosts {
-                let cat = config_try!(deltas::load_host_catalog(&h, Some(&ws)));
-                for e in cat["entries"].as_array().into_iter().flatten() {
-                    if wanted.is_none_or(|c| e["capability"] == c) {
-                        entries.push(e.clone());
-                    }
-                }
-            }
-            let catalog = config_try!(deltas::load_practice_catalog(&domain, Some(&ws)));
-            (
-                ws,
-                Outcome::Ok(
-                    0,
-                    json!({
-                        "host": entries, "practice": catalog["entries"], "concerns": catalog["concerns"]
-                    }),
-                ),
-            )
         }
         _ => {
             let host = json!({"name": ns.one("--host"),
@@ -960,61 +870,6 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
             }
         }
     }
-}
-
-/// One Ask's artifacts and its slice of the ledger, as a tar a person can send
-/// somewhere else.
-fn export(ws: &Workspace, ask_id: &str, out: &Path) -> Result<Value, AskError> {
-    let lines: Vec<u8> = store::events(ws)?
-        .iter()
-        .filter(|e| e["id"] == ask_id)
-        .flat_map(|e| {
-            let mut line = store::canonical(e);
-            line.push(b'\n');
-            line
-        })
-        .collect();
-    if lines.is_empty() {
-        return Err(AskError::Ledger(store::LedgerError::new_public("ask.not_found", ask_id)));
-    }
-    // Staged into one directory and handed to `tar`, so the archive is whatever
-    // this machine's tar writes rather than a format of our own.
-    let staging = ws.rf_dir().join("tmp").join(format!("export-{}", ids::random_hex(4)));
-    let inner = staging.join(ask_id);
-    let outcome = (|| -> Result<Value, AskError> {
-        std::fs::create_dir_all(&inner)?;
-        let mut names: Vec<String> = Vec::new();
-        let mut sources: Vec<PathBuf> = std::fs::read_dir(ws.rf_dir().join("asks").join(ask_id))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path())
-            .collect();
-        sources.sort();
-        for p in sources {
-            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-            std::fs::copy(&p, inner.join(&name))?;
-            names.push(format!("{ask_id}/{name}"));
-        }
-        std::fs::write(inner.join("ledger.jsonl"), &lines)?;
-        names.push(format!("{ask_id}/ledger.jsonl"));
-        let status = std::process::Command::new("tar")
-            .arg("-cf")
-            .arg(out)
-            .arg("-C")
-            .arg(&staging)
-            .args(&names)
-            .status()?;
-        if !status.success() {
-            return Err(AskError::Ledger(store::LedgerError::new_public(
-                "export.tar",
-                format!("tar refused to write {}", out.display()),
-            )));
-        }
-        Ok(json!({"ask_id": ask_id, "out": out.to_string_lossy(), "files": names.len()}))
-    })();
-    let _ = std::fs::remove_dir_all(&staging);
-    outcome
 }
 
 #[cfg(test)]
@@ -1168,10 +1023,10 @@ mod tests {
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], false);
 
-            let (code, out, _) = c.go(&["ask", "show", "--json"]);
+            let (code, out, _) = c.go(&["ask", "list", "--json"]);
             assert_eq!(code, 0);
-            assert_eq!(out["ask_id"], ask_id);
-            assert_eq!(out["delivery"], "native_accepted");
+            assert_eq!(out["asks"][0]["id"], ask_id);
+            assert_eq!(out["asks"][0]["delivery"], "native_accepted");
             let (code, out, _) = c.go(&["ledger", "verify", "--json"]);
             assert_eq!(code, 0);
             assert_eq!(out, json!({"findings": [], "clean": true}));
@@ -1201,27 +1056,15 @@ mod tests {
             assert_eq!(code, 2);
             assert_eq!(out["error"], "delivery.duplicate");
 
+            // Two Asks in one workspace are both listed, oldest first. There
+            // is no resolution step: a client picks from the list it holds.
             let b = c.confirm("stage-2", "Logout", "s2", "native_direct");
             let b_id = b["ask_id"].as_str().unwrap().to_string();
-            let (code, out, _) = c.go(&["ask", "show", "--json"]);
-            assert_eq!(code, 3);
-            assert_eq!(out["needs_input"], "chooser");
-            let ids: BTreeMap<String, ()> = out["candidates"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|x| (x["id"].as_str().unwrap().to_string(), ()))
-                .collect();
-            assert_eq!(ids.keys().cloned().collect::<Vec<_>>().len(), 2);
-            assert!(ids.contains_key(&a_id) && ids.contains_key(&b_id));
-
-            let (code, out, _) = c.go(&["ask", "resolve", "--session", "s2", "--json"]);
+            let (code, out, _) = c.go(&["ask", "list", "--json"]);
             assert_eq!(code, 0);
-            assert_eq!(out["rule_applied"], "same_session");
-            assert_eq!(out["candidates"][0]["id"], b_id);
-            let (code, out, _) = c.go(&["ask", "show", "--ask", "Logout", "--json"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["ask_id"], b_id);
+            let ids: Vec<&str> =
+                out["asks"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap()).collect();
+            assert_eq!(ids, [a_id.as_str(), b_id.as_str()]);
         });
     }
 
@@ -1363,9 +1206,9 @@ mod tests {
             assert_eq!(cap["captured"], true);
             assert_eq!(cap["submission"]["ask_id"], id);
             assert_eq!(cap["submission"]["state"], "observed");
-            let (_, shown, _) = c.go(&["ask", "show", "--json"]);
-            assert_eq!(shown["submission"], "observed");
-            assert_eq!(shown["outcome"], "compiled");
+            let (_, listed, _) = c.go(&["ask", "list", "--json"]);
+            assert_eq!(listed["asks"][0]["submission"], "observed");
+            assert_eq!(listed["asks"][0]["outcome"], "compiled");
         });
     }
 
@@ -1499,32 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn export_and_prune() {
-        cli(|c| {
-            let a = c.confirm("stage-1", "Login", "s1", "native_plan");
-            let dir = crate::testing::tmp_dir();
-            let out_path = dir.path().join("x.tar");
-            let (code, out, _) = c.go(&[
-                "export",
-                "--ask",
-                a["ask_id"].as_str().unwrap(),
-                "--out",
-                &out_path.to_string_lossy(),
-            ]);
-            assert_eq!(code, 0);
-            assert_eq!(out["files"], 3);
-            let listing =
-                std::process::Command::new("tar").arg("-tf").arg(&out_path).output().unwrap();
-            let names = String::from_utf8_lossy(&listing.stdout).to_string();
-            assert!(names.contains("prompt.txt"), "{names}");
-            assert!(names.contains("ledger.jsonl"), "{names}");
-            let (code, out, _) = c.go(&["sessions", "prune", "--older-than", "7d"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["removed"], json!([]));
-        });
-    }
-
-    #[test]
     fn every_command_is_listed_documented_and_reachable() {
         // The help is generated from one table and the parser reads another.
         // If they drift, a command exists that nothing can find, or the help
@@ -1596,29 +1413,6 @@ mod tests {
     #[test]
     fn deltas_commands() {
         cli(|c| {
-            let (code, out, _) = c.go(&[
-                "deltas",
-                "list",
-                "--host",
-                "codex",
-                "--capability",
-                "native_goal",
-                "--json",
-            ]);
-            assert_eq!(code, 0);
-            assert_eq!(
-                out["host"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|e| e["id"].as_str().unwrap())
-                    .collect::<Vec<_>>(),
-                ["codex.native_goal.item_loop", "codex.native_goal.terminal_condition"]
-            );
-            assert!(out["host"].as_array().unwrap().iter().all(|e| e["status"] == "candidate"));
-            let (code, out, _) = c.go(&["deltas", "list", "--effective", "--json"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["practice.kiss"]["layer"], "config");
             let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["api_surface"]}"#;
             let (code, out, _) = c.go(&[
                 "deltas",
@@ -2019,10 +1813,8 @@ mod tests {
             ]);
             assert_eq!(code, 0, "{err}");
             let text = std::fs::read_to_string(out["prompt_path"].as_str().unwrap()).unwrap();
+            // The compiled prompt is the merge: the project layer won.
             assert!(text.contains("Use the project setting."), "{text}");
-            let (code, out, _) = c.go(&["deltas", "list", "--json"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["practice"][0]["text"], "Use the project setting.");
         });
     }
 
@@ -2070,9 +1862,15 @@ mod tests {
                 "concerns: [team_boundary]\n",
             )
             .unwrap();
-            let (code, out, _) = c.go(&["deltas", "list", "--json"]);
+            let (code, out, _) = c.go(&["deltas", "domains", "--json"]);
             assert_eq!(code, 0);
-            assert_eq!(out["concerns"], json!(["team_boundary"]));
+            let base = out["domains"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["base"] == true)
+                .expect("the base domain");
+            assert_eq!(base["concerns"], json!(["team_boundary"]));
         });
     }
 }
