@@ -1,103 +1,70 @@
-# Weft
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/weft-banner-dark.svg">
+    <img alt="Weft" src="assets/weft-banner-light.svg" width="378">
+  </picture>
+</p>
 
-> **Warp and weft.** The warp is the fixed threads already on the loom, held
-> under tension — that is RingFrame, the record everything is measured
-> against. The weft is the thread carried across them, and that is this: the
-> interface you work through. Neither is cloth on its own.
+- **RingFrame** — your agentic workflow in three acts: ask, eval, seal.
+  Everything is an Ask.
+- **Weft** — RingFrame in your terminal: your agents in panes, your Asks in
+  one list.
 
-Weft keeps track of what you asked your coding agents for, and what came back.
+Named after woven cloth: RingFrame is the warp, the fixed record; Weft is the
+thread carried across it.
 
-It runs your real `claude` and `codex` sessions in panes, lets you ask for
-something once and send it to whichever agent you choose, and shows one list of
-what was asked, what came back, who independently checked it, and what you
-decided.
+## RingFrame
 
-**Weft has no LLM of its own.** Every model call happens in the agent you
-already run and configured. Weft drives the agents that think; the record is
-written by RingFrame, whose core is the `ringframe` crate in this repository
-and ships as its own binary beside `weft`.
+- **Ask** — turn what you want into a prompt, and confirm it before it runs.
+- **Eval** — check the work against what you asked.
+- **Seal** — record what you decided.
 
-## Status
+Each act is written to a ledger in your project's `.fab7/rf/`. RingFrame works
+on its own as `/rf:ask`, `/rf:eval` and `/rf:seal` inside your harness.
 
-**0.1.0.** Agents run in panes, the work list is read from the record, and
-Weft types a confirmed prompt for you after asking. One window holds as many
-projects as you open.
+## Weft
 
-The record's shape is settled; the interface is not. Expect the screens to
-move.
+Your real harness sessions side by side, with every Ask beside them showing
+how far it got. One key takes the next step. Weft has no model of its own: the
+harness does the work and RingFrame keeps the record.
 
-## Requirements
+## How they work together
 
-- macOS or Linux, and a terminal
-- at least one of `claude` or `codex`
+1. `A` — ask. You confirm the prompt; Weft types it into the agent you pick.
+2. `Ctrl+]` — step into the agent's pane while it works, and back out.
+3. `E` — eval, in the same agent or another one.
+4. `S` — seal your decision.
+
+Weft never types into an agent without asking you first.
 
 ## Install
+
+Requires macOS or Linux, and a supported harness.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
 ```
 
-This detects the platform, downloads prebuilt `weft` and `ringframe` binaries,
-verifies their checksum, and installs both to `~/.local/bin` (override with
-`WEFT_BIN_DIR`). No toolchain is needed.
+This installs prebuilt `weft` and `ringframe` binaries to `~/.local/bin`
+(override with `WEFT_BIN_DIR`), after checking their checksum. Then add the
+`rf` plugin to your harness from the
+[Fab7 marketplace](https://github.com/fab7hq/fab7), which lists the supported
+harnesses and the commands for each.
 
-Then add the RingFrame plugin to your harness. In Claude Code:
+Run `weft` in a repository, or `weft <dir>`. Weft can also set a harness up
+for you: `R` shows what it would run and asks first.
 
-```text
-/plugin marketplace add fab7hq/fab7
-/plugin install rf@fab7
-```
+Agents run in a background session, so closing Weft leaves them working.
+`weft stop` ends them.
 
-In a shell, for Codex:
+## Learn more
 
-```sh
-codex plugin marketplace add fab7hq/fab7
-codex plugin add rf@fab7
-```
-
-## The screen
-
-The sidebar is a tree: **project → harness → action**. Each action hangs under
-the harness it was asked of and shows the furthest act that has happened.
-
-```
- ▾ fab7                                         2 open · 1 ●   ⌫
-   ▾ codex                                                   1 ●
-        health endpoint                              ● EVALED
-   ▸ claude-code                                             1
- ▸ ringframe                                    2 open · 1 ●   ⌫
-```
-
-`Enter` unfolds what is closed and goes to what is open: a harness to its
-pane, an action to its detail view. The detail view is one action's whole
-story, and it blocks — `ASK [DONE]  EVAL [HAVEN'T RUN]  SEAL [HAVEN'T RUN]`,
-each section holding what happened, with `[P]ROCEED` for the next step.
-
-## Keys
-
-Weft reserves exactly one chord. Everything else belongs to the agent.
-
-| Key | Action |
-| --- | --- |
-| `Ctrl+]` | Into the agent, and back again |
-| `↑` `↓` | Move |
-| `Enter` | Unfold what is closed; open, go there |
-| `→` `←` | Unfold · fold, and back everywhere |
-| `Space` | Jump to the next thing that needs you |
-| `Tab` · `1`-`9` | Next agent · that agent |
-| `A` `E` `S` | RingFrame's three acts: ask · eval · seal |
-| `P` `F` | In the detail view: proceed · follow up |
-| `R` `Y` | Ready a harness · why a pane is waiting |
-| `O` `N` `B` | Open a project · new agent · toggle the sidebar |
-| `H` `X` | Help · quit |
-| `W` | The Weft menu, holding the operations above |
-| `⌫` | Close the selected project, after asking |
-
-Inside the agent every key goes straight through, `Esc` included.
-
-**Weft takes no mouse.** Capturing it would take every click and drag away
-from your terminal's own selection, which is how you copy text out of an
-agent. Weft is keys only, and the mouse stays where you expect it.
+- [What RingFrame is](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/product.md),
+  and what it will not tell you
+- The acts in detail: [Ask](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/ask.md),
+  [Eval](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/eval.md),
+  [Seal](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/seal.md)
+- Changes in each version: [Releases](https://github.com/fab7hq/weft/releases)
 
 ## Development
 
@@ -107,18 +74,16 @@ cargo test
 cargo run --example wireframe   # the screens, without running an agent
 ```
 
-`./bin/reinstall-local` puts this working tree in front of your hosts. It
-builds both binaries, installs them, syncs the configuration from the `fab7`
-checkout beside this one, and reinstalls the plugins. The three have to move
-together: refresh only the plugins and the skills change while the core keeps
-reading the configuration it last synced.
+`./bin/reinstall-local` builds both binaries, installs them, syncs the
+configuration from a `fab7` checkout beside this one, and reinstalls the
+plugins, so a change is tested as users will get it:
 
 ```sh
-./bin/reinstall-local           # both hosts
-./bin/reinstall-local claude    # one host (or codex)
+./bin/reinstall-local           # every harness
+./bin/reinstall-local <harness>  # one harness
 ./bin/reinstall-local none      # binaries and configuration only
 ```
 
 ## License
 
-Apache-2.0
+Apache-2.0. Part of [Fab7](https://getfab7.com).

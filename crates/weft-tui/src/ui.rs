@@ -195,7 +195,10 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
     // they are the agent's.
     let here = app.focus == Focus::Weft || app.pane_count() == 0;
     let left = vec![
-        Span::styled(" ▚▞ ", Style::default().fg(th.accent())),
+        Span::raw(" "),
+        Span::styled("╸", Style::default().fg(th.accent())),
+        Span::styled("┃", Style::default().fg(th.warp())),
+        Span::styled("╺ ", Style::default().fg(th.accent())),
         Span::styled(
             "WEFT".to_string(),
             if here {
@@ -618,11 +621,55 @@ fn detail(app: &mut App, area: Rect) -> Paragraph<'static> {
     Paragraph::new(lines)
 }
 
+/// Three warps, which are the record, and the one thread Weft carries across
+/// them, going over and under. The mask colours each cell: `b` warp, `m` the
+/// other threads, `t` the carried thread, `x` the word.
+const LOGO: [(&str, &str); 7] = [
+    ("  ┃   ╹   ┃", "  b   b   b"),
+    ("━╸┃╺━━━━━╸┃╺━    ╻   ╻  ┏━━╸  ┏━━╸  ╺┳╸", "mmbmmmmmmmbmm    x   x  xxxx  xxxx  xxx"),
+    ("  ╹   ╻   ╹      ┃   ┃  ┃     ┃      ┃", "  b   b   b      x   x  x     x      x"),
+    ("━━━━━╸┃╺━━━━━•   ┃ ╻ ┃  ┣━━   ┣━━•   ┃", "ttttttbttttttt   x x x  xtt   xttt   x"),
+    ("  ╻   ╹   ╻      ┃ ┃ ┃  ┃     ┃      ┃", "  b   b   b      x x x  x     x      x"),
+    ("━╸┃╺━━━━━╸┃╺━    ┗━┻━┛  ┗━━╸  ╹      ╹", "mmbmmmmmmmbmm    xxxxx  xxxx  x      x"),
+    ("  ┃   ╻   ┃", "  b   b   b"),
+];
+
+fn logo(th: Theme, indent: &str) -> Vec<Line<'static>> {
+    LOGO.iter()
+        .map(|(text, mask)| {
+            let mut spans = vec![Span::raw(indent.to_string())];
+            let mut run = String::new();
+            let mut kind = ' ';
+            for (ch, k) in text.chars().zip(mask.chars()) {
+                if k != kind && !run.is_empty() {
+                    spans.push(logo_span(th, kind, std::mem::take(&mut run)));
+                }
+                kind = k;
+                run.push(ch);
+            }
+            if !run.is_empty() {
+                spans.push(logo_span(th, kind, run));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+fn logo_span(th: Theme, kind: char, text: String) -> Span<'static> {
+    match kind {
+        'b' => Span::styled(text, Style::default().fg(th.warp())),
+        'm' => Span::styled(text, th.label()),
+        't' => Span::styled(text, Style::default().fg(th.accent())),
+        'x' => Span::styled(text, th.title()),
+        _ => Span::raw(text),
+    }
+}
+
 /// Screen 1: nothing is running yet, and the one thing to do about it.
-fn first_run(app: &App, _area: Rect) -> Paragraph<'static> {
+fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
     let found = app.starts().to_vec();
-    let mut lines: Vec<Line> = vec![Line::raw(""), Line::raw("")];
+    let mut lines: Vec<Line> = vec![Line::raw("")];
     for text in [
         "Weft keeps track of what you asked your coding agents",
         "for, what came back, and who checked it.",
@@ -691,6 +738,10 @@ fn first_run(app: &App, _area: Rect) -> Paragraph<'static> {
             .to_string(),
         th.label(),
     ));
+    // The picker is the point of this screen; the mark only comes when both fit.
+    if lines.len() + LOGO.len() < area.height as usize {
+        lines.splice(1..1, logo(th, "   ").into_iter().chain([Line::raw("")]));
+    }
     Paragraph::new(lines)
 }
 
@@ -1307,6 +1358,16 @@ mod tests {
         assert!(tabs.contains('│'), "a divider between the two surfaces: {tabs}");
         let Layout::Split { list, pane } = layout::for_width(120) else { panic!() };
         assert_eq!((list, pane), (39, 80), "the spec's own screen 4");
+    }
+
+    #[test]
+    fn every_cell_of_the_logo_has_a_colour_and_every_colour_a_cell() {
+        for (text, mask) in LOGO {
+            assert_eq!(text.chars().count(), mask.chars().count(), "{text}");
+            for (c, k) in text.chars().zip(mask.chars()) {
+                assert_eq!(c == ' ', k == ' ', "{text}");
+            }
+        }
     }
 
     #[test]

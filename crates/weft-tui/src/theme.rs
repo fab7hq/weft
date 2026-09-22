@@ -37,26 +37,34 @@ impl Theme {
         Self { depth: Depth::detect() }
     }
 
-    /// What is live, chosen, or waiting on you.
+    /// What is live, chosen, or waiting on you: the thread being carried.
     pub fn accent(self) -> Color {
         match self.depth {
-            Depth::True => Color::Rgb(0x10, 0xb9, 0x81),
-            Depth::Ansi => Color::Green,
+            Depth::True => Color::Rgb(0x39, 0xc5, 0xbb),
+            Depth::Ansi => Color::Cyan,
         }
     }
 
-    /// The brighter accent, for the one thing that must be seen.
+    /// The one thing that must be seen.
     pub fn accent_bright(self) -> Color {
         match self.depth {
-            Depth::True => Color::Rgb(0x34, 0xd3, 0x99),
-            Depth::Ansi => Color::LightGreen,
+            Depth::True => Color::Rgb(0xd2, 0x99, 0x22),
+            Depth::Ansi => Color::Yellow,
+        }
+    }
+
+    /// The warp in the mark: the record the thread is carried across.
+    pub fn warp(self) -> Color {
+        match self.depth {
+            Depth::True => Color::Rgb(0x58, 0xa6, 0xff),
+            Depth::Ansi => Color::Blue,
         }
     }
 
     /// The default voice: labels, statuses, hints.
     pub fn muted(self) -> Color {
         match self.depth {
-            Depth::True => Color::Rgb(0x8f, 0x92, 0x9b),
+            Depth::True => Color::Rgb(0xa2, 0xad, 0xbd),
             Depth::Ansi => Color::DarkGray,
         }
     }
@@ -64,7 +72,7 @@ impl Theme {
     /// Rules and borders. Present, not loud.
     pub fn line(self) -> Color {
         match self.depth {
-            Depth::True => Color::Rgb(0x2e, 0x32, 0x3b),
+            Depth::True => Color::Rgb(0x25, 0x35, 0x50),
             Depth::Ansi => Color::DarkGray,
         }
     }
@@ -118,14 +126,14 @@ mod tests {
     #[test]
     fn truecolor_terminals_get_the_exact_values() {
         let t = Theme { depth: Depth::True };
-        assert_eq!(t.accent(), Color::Rgb(0x10, 0xb9, 0x81));
-        assert_eq!(t.muted(), Color::Rgb(0x8f, 0x92, 0x9b));
+        assert_eq!(t.accent(), Color::Rgb(0x39, 0xc5, 0xbb));
+        assert_eq!(t.muted(), Color::Rgb(0xa2, 0xad, 0xbd));
     }
 
     #[test]
     fn everything_else_falls_back_to_the_terminals_own_sixteen() {
         let t = Theme { depth: Depth::Ansi };
-        assert_eq!(t.accent(), Color::Green);
+        assert_eq!(t.accent(), Color::Cyan);
         assert_eq!(t.muted(), Color::DarkGray);
     }
 
