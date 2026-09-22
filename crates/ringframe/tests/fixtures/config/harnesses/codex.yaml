@@ -32,7 +32,9 @@ routing:
     for it to be built. `plans` lists them; match on the subject rather than the wording, since the
     same plan is named as a path, as a slug, or in words. Classify it as task implement with result
     workspace_change and prefer the continuing objective. Plan again only when the intent asks to
-    revise that plan, or when the subject has none.
+    revise that plan, or when the subject has none. The plan holds the detail, so name it and let
+    it be read rather than restating what it already says; a route with a character budget cannot
+    carry the same constraints twice.
   - A declared capability is a RingFrame integration contract, not proof that the current host exposes
     it. Follow its delivery mode and limitations; report unavailable tools or rejected commands without
     claiming activation.

@@ -2193,6 +2193,53 @@ mod tests {
     }
 
     #[test]
+    fn a_goal_too_long_for_claude_code_is_refused_before_anybody_submits_it() {
+        // Observed on claude-code 2.1.278: a compiled goal of 5955 characters
+        // was handed off, and the host answered "Goal condition is limited to
+        // 4000 characters". The profile knows the limit, so the refusal
+        // belongs at compile, where the directives can still be cut.
+        bench(|ws| {
+            let host = json!({"name": "claude-code", "version": "2.1.278",
+                              "surface": "native-tui"});
+            let mut goal = cls();
+            goal["result"] = json!("continuing_objective");
+            goal["horizon"] = json!("persistent");
+
+            let mut long = b"/goal ".to_vec();
+            long.extend(std::iter::repeat_n(b'x', 4000));
+            long.push(b'\n');
+            let e = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, &long)),
+                    capability: "native_goal".into(),
+                    host: host.clone(),
+                    classification: goal.clone(),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            let e = ledger_error(e);
+            assert_eq!(e.code, "ask.prompt_too_long");
+            assert!(e.detail.contains("4000"), "the budget is named: {}", e.detail);
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+
+            // One that fits still compiles.
+            compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
+                    capability: "native_goal".into(),
+                    host,
+                    classification: goal,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        });
+    }
+
+    #[test]
     fn a_non_human_actor_needs_authorization_to_compile_or_confirm() {
         bench(|ws| {
             let agent = json!({"kind": "agent", "id": "ci", "authority": "preauthorized"});

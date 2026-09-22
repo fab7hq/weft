@@ -35,6 +35,7 @@ fn capability(data: &Value) -> Value {
             "continuation",
             "limitations",
             "requires_explicit_request_for_effects",
+            "max_prompt_chars",
             "prompt_prefix",
             "prompt_prefix_kind",
             "prompt_prefix_active",
