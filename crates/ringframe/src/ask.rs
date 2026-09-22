@@ -453,14 +453,31 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         g
     };
     if !gated.is_empty() && args.route.get("explicit_direct_request") != Some(&json!(true)) {
+        // The alternatives come from the profile, not from one hardcoded id.
+        // Naming `native_plan` unconditionally sent an Ask that should have
+        // been a continuing objective into planning instead, because the
+        // refusal told it to go there.
+        let free: Vec<String> = profile["capabilities"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|c| str_of(c, "id") != args.capability)
+            .filter(|c| {
+                let needs = list_of(c, "requires_explicit_request_for_effects");
+                !effects.iter().any(|e| needs.contains(e))
+            })
+            .map(|c| str_of(c, "id"))
+            .collect();
         return Err(ledger(
             "ask.route_policy",
             format!(
                 "{} with effects [{}] requires route.explicit_direct_request=true, which is only \
                  true when the source intent itself asks to skip planning or act immediately; \
-                 otherwise select native_plan",
+                 otherwise select a capability that does not require it, and use this profile's \
+                 selection guidance to choose between them: {}",
                 args.capability,
-                gated.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(", ")
+                gated.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(", "),
+                free.join(", ")
             ),
         ));
     }
@@ -1957,7 +1974,15 @@ mod tests {
                 },
             )
             .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.route_policy");
+            let e = ledger_error(e);
+            assert_eq!(e.code, "ask.route_policy");
+            // The refusal names what this profile actually offers instead of
+            // one hardcoded id. It named `native_plan` alone, so an Ask that
+            // should have been a continuing objective was sent to planning.
+            let offered = e.detail.rsplit_once(": ").expect("the alternatives").1;
+            assert!(offered.contains("native_plan"), "{offered}");
+            assert!(offered.contains("native_goal"), "the goal route is an option too: {offered}");
+            assert!(!offered.contains("native_direct"), "not the one just refused: {offered}");
             assert!(events(ws).is_empty());
             assert_eq!(std::fs::read_dir(ws.rf_dir().join("asks")).unwrap().count(), 0);
 
