@@ -13,8 +13,17 @@ use crate::{config, deltas, digest, ids, profiles, schema, sessions, store, work
 /// How far back a `PostToolUse` hook may reach for the Ask it belongs to.
 const HOOK_WINDOW_MS: i64 = 30 * 60 * 1000;
 
+/// The root is named because a handoff is submitted by hand, and nothing
+/// stops it being submitted somewhere else. The prompt's paths are relative
+/// to the workspace, so a session started one directory up writes the work
+/// outside the record that is meant to describe it — and the Eval then judges
+/// a tree where nothing happened.
 const HANDOFF: &str = "Prompt prepared for {host} ({capability}):
 {path}
+
+Submit it in this directory — the paths in the prompt are relative to it, and
+it is where this work is recorded:
+{root}
 ";
 /// What to do when the prompt is short enough to go in as it stands. A prompt
 /// that folds gets different instructions, and printing both would contradict
@@ -999,6 +1008,7 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
             ("host", host.clone()),
             ("capability", str_of(d, "selected_capability")),
             ("path", path.to_string_lossy().to_string()),
+            ("root", ws.root.to_string_lossy().to_string()),
         ],
     );
     // One instruction, never two: a prompt that folds cannot be pasted whole,
@@ -1478,6 +1488,23 @@ mod tests {
             assert_eq!(d["mode"], json!(null));
             assert_eq!(d["mode_kind"], json!(null));
             assert_eq!(d["prefix_bytes"], 0);
+        });
+    }
+
+    #[test]
+    fn the_handoff_says_which_directory_to_submit_it_in() {
+        // A handoff is submitted by hand and nothing stops it being submitted
+        // one directory up. Observed: a plan and its build both landed in the
+        // parent repository while the record sat in the workspace, so the
+        // Eval would have judged a tree where nothing had happened.
+        bench(|ws| {
+            let out = compile_with(ws, Args::default()).unwrap();
+            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
+            let (text, _) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
+            assert!(
+                text.contains(&ws.root.to_string_lossy().to_string()),
+                "the root the paths are relative to is named: {text}"
+            );
         });
     }
 
@@ -2194,10 +2221,6 @@ mod tests {
 
     #[test]
     fn a_goal_too_long_for_claude_code_is_refused_before_anybody_submits_it() {
-        // Observed on claude-code 2.1.278: a compiled goal of 5955 characters
-        // was handed off, and the host answered "Goal condition is limited to
-        // 4000 characters". The profile knows the limit, so the refusal
-        // belongs at compile, where the directives can still be cut.
         bench(|ws| {
             let host = json!({"name": "claude-code", "version": "2.1.278",
                               "surface": "native-tui"});
