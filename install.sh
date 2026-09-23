@@ -89,5 +89,5 @@ case ":$PATH:" in
 esac
 
 printf '\n%s\n' 'Now install the plugin for your harness from the Fab7 marketplace:'
-printf '%s\n' '  Claude Code:  /plugin marketplace add fab7hq/fab7 && /plugin install rf@fab7'
+printf '%s\n' '  Claude Code:  claude plugin marketplace add fab7hq/fab7 && claude plugin install rf@fab7'
 printf '%s\n' '  Codex:        codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7'
