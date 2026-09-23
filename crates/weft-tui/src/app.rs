@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind, KeyModifiers,
+    MouseEvent, MouseEventKind,
+};
 use ratatui::DefaultTerminal;
 
 use crate::blocked::{self, Evidence};
@@ -589,7 +592,20 @@ impl App {
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.take_the_board();
         self.look_for_agents();
+        // The mouse is Weft's only while an agent has the keys, so the wheel
+        // scrolls that agent; in Weft it stays the terminal's.
+        let mut captured = false;
         while !self.quit {
+            let want = self.focus == Focus::Agent;
+            if want != captured {
+                captured = want;
+                let mut out = std::io::stdout();
+                let _ = if want {
+                    crossterm::execute!(out, EnableMouseCapture)
+                } else {
+                    crossterm::execute!(out, DisableMouseCapture)
+                };
+            }
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
@@ -599,6 +615,7 @@ impl App {
                         self.on_key(key)?
                     }
                     Event::Paste(text) => self.on_paste(&text)?,
+                    Event::Mouse(m) => self.on_mouse(m),
                     _ => {}
                 }
             }
@@ -1284,6 +1301,10 @@ impl App {
             Action::ToggleFocus => self.toggle_focus(),
             Action::ToAgent => {
                 if let Some(bytes) = encode::encode(key) {
+                    // Typing goes where the agent is now, so the view follows.
+                    if let Some(p) = sess!(self).panes.get_mut(self.pane_focus) {
+                        p.scroll_to_bottom();
+                    }
                     let _ = sess!(self).input(self.pane_focus, &bytes);
                 }
             }
@@ -1335,6 +1356,32 @@ impl App {
             Action::Ignore => {}
         }
         Ok(())
+    }
+
+    /// The wheel, while an agent has the keys: its pane's scrollback.
+    pub fn on_mouse(&mut self, m: MouseEvent) {
+        let delta = match m.kind {
+            MouseEventKind::ScrollUp => 3,
+            MouseEventKind::ScrollDown => -3,
+            _ => return,
+        };
+        if self.focus != Focus::Agent {
+            return;
+        }
+        let Some(p) = sess!(self).panes.get_mut(self.pane_focus) else { return };
+        let before = p.scroll_offset();
+        p.scroll(delta);
+        if p.scroll_offset() != before || delta < 0 {
+            return;
+        }
+        // Nothing moved: say whose history it is rather than doing nothing.
+        let name = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
+        self.say(match harness::find(&name).and_then(|h| h.transcript) {
+            Some(key) => {
+                format!("{name} keeps its own history: press {key} in the agent to read it.")
+            }
+            None => format!("Nothing of {name}'s has scrolled away yet."),
+        });
     }
 
     fn toggle_focus(&mut self) {
@@ -1778,6 +1825,22 @@ pub(crate) mod tests {
             a.rows().iter().any(|r| matches!(r, Row::Harness { running: false, .. })),
             "its work stays, marked not running"
         );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_agent_only_while_it_has_the_keys() {
+        let mut a = app();
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        };
+        a.on_mouse(wheel);
+        assert!(a.hint_text().is_none(), "in Weft the wheel is the terminal's");
+        a.focus = Focus::Agent;
+        a.on_mouse(wheel);
+        assert!(a.hint_text().is_some(), "in the agent it is Weft's, and says why nothing moved");
     }
 
     #[test]

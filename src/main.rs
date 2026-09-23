@@ -125,10 +125,7 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     let mut out = std::io::stdout();
-    // Weft does not capture the mouse. With capture on, the terminal hands
-    // every click and drag to Weft instead of doing its own selection, so
-    // click-drag-copy stops working over the agent — which is the one thing
-    // a person most wants the mouse for here. Weft is keys only.
+    // The mouse is captured only while an agent has the keys; see `App::run`.
     let _ = execute!(out, EnableBracketedPaste);
 
     // Named a directory, or asked for one. Nothing is opened and no daemon
@@ -169,7 +166,7 @@ fn main() -> Result<()> {
 
     let result = started.and_then(|()| weft.run(&mut terminal));
 
-    let _ = execute!(out, DisableBracketedPaste);
+    let _ = execute!(out, DisableBracketedPaste, crossterm::event::DisableMouseCapture);
     ratatui::restore();
 
     if let Err(e) = &result {

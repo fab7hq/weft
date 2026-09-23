@@ -833,7 +833,9 @@ fn help_lines(app: &App) -> Vec<String> {
         })
         .collect();
     lines.push(String::new());
-    lines.push("In an agent every key is the agent's, Esc included. Weft takes no mouse.".into());
+    lines.push(
+        "In an agent every key is the agent's, Esc included, and the wheel scrolls it.".into(),
+    );
     lines
 }
 
