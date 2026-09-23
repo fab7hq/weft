@@ -150,6 +150,7 @@ fn main() -> Result<()> {
     let size = terminal.size().unwrap_or_default();
     let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
     let mut weft = App::with_session(root, toggle, session);
+    weft.look_for_updates();
     let newer = weft.newer.clone();
     std::thread::spawn(move || {
         if let Some(tag) = latest_release().filter(|t| is_newer(t)) {

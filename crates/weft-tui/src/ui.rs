@@ -211,7 +211,10 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
         // focus moves, and the sidebar names them where they can be acted on.
     ];
     let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
-    let mut right = vec![Span::styled("↑ update   ", lit)];
+    let mut right = Vec::new();
+    if app.sync_view().is_some_and(|v| v.needs_anything()) {
+        right.push(Span::styled("↑ [U]PDATE   ", lit));
+    }
     right.extend(match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
         // The counts keep their place whichever surface has the keys: they

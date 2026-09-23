@@ -841,9 +841,14 @@ impl App {
         }
     }
 
-    /// Open the RingFrame view, which asks the moment it opens.
+    /// Ask, off the draw loop, whether RingFrame or a harness is behind. The
+    /// answer lights `↑ [U]PDATE`.
+    pub fn look_for_updates(&mut self) {
+        let _ = sess!(self).sync_now(false);
+    }
+
+    /// Open the RingFrame view, which asks again the moment it opens.
     fn open_ringframe(&mut self) {
-        sess!(self).sync = None;
         if let Err(e) = sess!(self).sync_now(false) {
             self.modal = Some(Modal::Note(format!("Weft could not ask: {e}")));
             return;
@@ -1405,6 +1410,14 @@ impl App {
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => self.modal_choice = (self.modal_choice + 1).min(options - 1),
             event::KeyCode::Char('p' | 'P') if modal == Modal::RingFrame => self.proceed_sync(),
+            event::KeyCode::Char(c) if modal == Modal::Weft => {
+                if let Some(&(_, _, act)) =
+                    WEFT_MENU.iter().find(|(k, ..)| k.eq_ignore_ascii_case(&c))
+                {
+                    self.modal = None;
+                    self.act(act);
+                }
+            }
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
                 // The agent is gone either way, so backing out of this panel
                 // takes the pane with it rather than leaving a dead one up.
@@ -2386,6 +2399,15 @@ pub(crate) mod tests {
         assert!(a.sync_view().is_none());
         press(&mut a, KeyCode::Left);
         assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn a_key_in_the_weft_menu_does_what_it_names() {
+        let mut a = app();
+        press(&mut a, KeyCode::Char('w'));
+        assert_eq!(a.modal, Some(Modal::Weft));
+        press(&mut a, KeyCode::Char('o'));
+        assert!(matches!(a.modal, Some(Modal::OpenProject { .. })), "{:?}", a.modal);
     }
 
     #[test]

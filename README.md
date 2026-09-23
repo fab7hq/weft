@@ -51,7 +51,7 @@ This installs prebuilt `weft` and `ringframe` binaries to `~/.local/bin`
 [Fab7 marketplace](https://github.com/fab7hq/fab7), which lists the supported
 harnesses and the commands for each.
 
-Run `weft` in a repository, or `weft <dir>`. `U` (↑ update in the title bar)
+Run `weft` in a repository, or `weft <dir>`. `U` (↑ [U]PDATE in the title bar, shown when something is behind)
 syncs RingFrame: its configuration, then each harness's marketplace and
 plugin, in order, after you press `P`.
 
