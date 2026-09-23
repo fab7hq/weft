@@ -33,8 +33,7 @@ fn main() {
     ended("Screen 11 — the agent has ended", 80, 24, true);
     ended("Screen 12 — ended, nothing on record", 80, 24, false);
     unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);
-    unready("Readiness B — the CLI itself", 80, 24, &[KeyCode::Char('r')], Gap::Cli);
-    unready("Readiness C — the setup proposal", 80, 24, &[KeyCode::Char('r')], Gap::Plugin);
+    unready("Readiness B — sync RingFrame", 80, 24, &[KeyCode::Char('u')], Gap::Plugin);
 }
 
 /// The agent in the pane quit from inside. What Weft can offer depends on

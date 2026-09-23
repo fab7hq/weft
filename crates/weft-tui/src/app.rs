@@ -121,10 +121,9 @@ impl Row {
 }
 
 /// Weft's own operations, in the order the menu lists them.
-pub const WEFT_MENU: [(char, &str, Act); 6] = [
+pub const WEFT_MENU: [(char, &str, Act); 5] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
-    ('R', "RingFrame", Act::ReadyUp),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
@@ -195,6 +194,9 @@ pub struct Detail {
 }
 
 pub struct App {
+    /// A newer Weft release, once someone has looked. Set from outside,
+    /// because the client itself reaches nothing.
+    pub newer: std::sync::Arc<std::sync::OnceLock<String>>,
     /// The projects open in this window, and which one has the focus. The
     /// daemon has always been able to hold many; this is the client catching
     /// up.
@@ -233,7 +235,7 @@ pub struct App {
     /// property of the machine, not of the frame being drawn.
     record_available: bool,
     /// Why this workspace could not finish an Ask, if it could not. Asked once
-    /// for the same reason, and re-asked after a `[R]EADY UP`.
+    /// for the same reason, and re-asked after an `[U]PDATE`.
     workspace_gap: Option<String>,
     /// What each harness is short of, by the name RingFrame records. Asked
     /// when a pane starts, because that is when a person would care.
@@ -542,6 +544,7 @@ impl App {
             announced: std::collections::HashSet::new(),
             starts: Vec::new(),
             routing: Default::default(),
+            newer: Default::default(),
         }
     }
 
@@ -2376,7 +2379,7 @@ pub(crate) mod tests {
     #[test]
     fn the_ringframe_view_runs_nothing_before_proceed() {
         let mut a = app();
-        press(&mut a, KeyCode::Char('r'));
+        press(&mut a, KeyCode::Char('u'));
         assert_eq!(a.modal, Some(Modal::RingFrame));
         // Until the daemon has said what is behind, there is nothing to run.
         press(&mut a, KeyCode::Char('p'));
@@ -2391,7 +2394,7 @@ pub(crate) mod tests {
         a.set_readiness("codex", Readiness::Unknown);
         let why = a.unavailable(Act::Ask).expect("not ready");
         assert!(why.contains("could not ask"), "{why}");
-        assert!(!why.contains("[R]EADY UP"), "nothing to offer: {why}");
+        assert!(!why.contains("[U]PDATE"), "nothing to offer: {why}");
     }
 
     #[test]

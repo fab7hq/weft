@@ -187,7 +187,7 @@ impl Board<'_> {
             if !state.is_ready() {
                 let mut say = state.say(&name).unwrap_or_default();
                 if state.can_be_set_up() {
-                    say.push_str(" [R]EADY UP sets it up.");
+                    say.push_str(" [U]PDATE sets it up.");
                 }
                 return Some(say);
             }
@@ -355,7 +355,7 @@ mod tests {
         let b = board(&units, &panes, missing, &none);
         let said = b.unavailable(Act::Proceed).expect("not set up");
         assert!(said.contains("codex is not set up"), "{said}");
-        assert!(said.contains("[R]EADY UP"), "and says what fixes it: {said}");
+        assert!(said.contains("[U]PDATE"), "and says what fixes it: {said}");
     }
 
     #[test]

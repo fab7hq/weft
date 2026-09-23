@@ -210,7 +210,9 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
         // No path: with more than one project the name is wrong the moment
         // focus moves, and the sidebar names them where they can be acted on.
     ];
-    let right = match (app.pane_count(), app.focus) {
+    let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
+    let mut right = vec![Span::styled("↑ update   ", lit)];
+    right.extend(match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
         // The counts keep their place whichever surface has the keys: they
         // are facts about the work, not about where you are.
@@ -227,7 +229,7 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
             spans.push(Span::raw(" "));
             spans
         }
-    };
+    });
     Paragraph::new(spread(left, right, width))
 }
 
@@ -400,6 +402,10 @@ fn hint(app: &App) -> Paragraph<'static> {
     if let Some(refusal) = app.last_refusal() {
         return Paragraph::new(Line::styled(format!(" {}", refused(&refusal)), th.needs_you()));
     }
+    if let Some(v) = app.newer.get().filter(|_| app.modal.is_none() && !app.waiting_here()) {
+        let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
+        return Paragraph::new(Line::styled(format!(" Weft {v} is out - run weft update"), lit));
+    }
     let text = match (&app.modal, app.focus) {
         (Some(Modal::Quit), _) => {
             " Nothing you asked for is lost either way. It is all written down.".into()
@@ -433,7 +439,7 @@ fn hint(app: &App) -> Paragraph<'static> {
             let (name, state) = app.not_ready().expect("not ready");
             let mut said = state.say(&name).unwrap_or_default();
             said.push_str(if state.can_be_set_up() {
-                " [R]EADY UP sets it up."
+                " [U]PDATE sets it up."
             } else {
                 " Your agent still runs here."
             });
@@ -770,7 +776,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
-        Modal::RingFrame => "RINGFRAME".into(),
+        Modal::RingFrame => "SYNC RINGFRAME".into(),
         Modal::Ended { harness, .. } => format!("{} HAS ENDED", harness.to_uppercase()),
     }
     .to_string()
@@ -810,7 +816,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             "[Enter] unfolds what is closed; open, it goes there — a harness to".into(),
             "        its pane, an action to its detail view.  [Space] what needs you".into(),
             "[A]SK · [E]VAL · [S]EAL · in the detail view [P]ROCEED and [F]OLLOW UP".into(),
-            "[R]EADY UP · [Y] why a pane waits · [⌫] close the project, after asking".into(),
+            "[U]PDATE · [Y] why a pane waits · [⌫] close the project, after asking".into(),
             "[W]EFT: [O]pen project · [N]ew agent · [B] sidebar · [H]elp · [X] quit".into(),
             String::new(),
             format!("{} to switch between Weft and harness.", app.toggle.label()),
@@ -1465,8 +1471,7 @@ mod tests {
         let tabs = drawn.lines().nth(1).expect("a tab row");
         assert!(tabs.contains("codex ⚠"), "the tab carries it: {tabs}");
         assert!(drawn.contains("codex is not set up for RingFrame"), "{drawn}");
-        assert!(drawn.contains("[R]EADY UP"), "and the key is shown where it is offered: {drawn}");
-        assert!(drawn.contains("[R]EADY UP sets it up"), "{drawn}");
+        assert!(drawn.contains("[U]PDATE sets it up"), "{drawn}");
     }
 
     #[test]
@@ -1580,7 +1585,7 @@ mod tests {
         let a = judged();
         let available = key(&a, "[A]SK", Act::Ask);
         // Already set up, so there is nothing to ready.
-        let unavailable = key(&a, "[R]EADY UP", Act::ReadyUp);
+        let unavailable = key(&a, "[U]PDATE", Act::ReadyUp);
         assert_eq!(available.style.fg, Some(a.theme.primary()), "active reads as text");
         assert_eq!(unavailable.style.fg, Some(a.theme.muted()), "inactive reads as grey");
     }

@@ -96,6 +96,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if first.as_deref() == Some("update") {
+        return update();
+    }
+
     if matches!(first.as_deref(), Some("--help" | "-h")) {
         println!("weft {}\n", env!("CARGO_PKG_VERSION"));
         println!("weft [project-dir] [agent ...]\n");
@@ -107,7 +111,8 @@ fn main() -> Result<()> {
         println!("Weft passes them through untouched. It never chooses a model,");
         println!("and starts no agent unless you name one or press N.\n");
         println!("Agents run in a background session that outlives this window.");
-        println!("Closing Weft leaves them working; `weft stop` ends them.");
+        println!("Closing Weft leaves them working; `weft stop` ends them.\n");
+        println!("`weft update` installs the latest Weft and RingFrame.");
         return Ok(());
     }
 
@@ -145,6 +150,12 @@ fn main() -> Result<()> {
     let size = terminal.size().unwrap_or_default();
     let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
     let mut weft = App::with_session(root, toggle, session);
+    let newer = weft.newer.clone();
+    std::thread::spawn(move || {
+        if let Some(tag) = latest_release().filter(|t| is_newer(t)) {
+            let _ = newer.set(tag.trim_start_matches('v').to_string());
+        }
+    });
     let mut started = Ok(());
     for agent in &agents {
         let program = agent.split_whitespace().next().unwrap_or(agent);
@@ -164,4 +175,42 @@ fn main() -> Result<()> {
         eprintln!("weft: {e}");
     }
     result
+}
+
+const REPO: &str = "fab7hq/weft";
+
+/// The latest published release's tag, or nothing when it cannot be reached.
+fn latest_release() -> Option<String> {
+    let out = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10"])
+        .arg(format!("https://api.github.com/repos/{REPO}/releases/latest"))
+        .output()
+        .ok()?;
+    let release: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    release["tag_name"].as_str().map(str::to_string)
+}
+
+fn is_newer(tag: &str) -> bool {
+    let parts = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    parts(tag.trim_start_matches('v')) > parts(env!("CARGO_PKG_VERSION"))
+}
+
+/// Replace this Weft with the latest release. Restarting is the person's.
+fn update() -> Result<()> {
+    let now = env!("CARGO_PKG_VERSION");
+    let Some(tag) = latest_release() else {
+        anyhow::bail!("could not reach the latest release");
+    };
+    if !is_newer(&tag) {
+        println!("weft {now} is the latest");
+        return Ok(());
+    }
+    println!("weft {now} → {tag}");
+    let installer =
+        format!("curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh");
+    if !std::process::Command::new("sh").args(["-c", &installer]).status()?.success() {
+        anyhow::bail!("the installer did not finish");
+    }
+    println!("\nRestart Weft to use it: `weft stop`, then `weft`.");
+    Ok(())
 }

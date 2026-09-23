@@ -127,7 +127,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             // that view is reached, so the reading has no key of its own.
             'p' => Action::Proceed,
             'f' => Action::FollowUp,
-            'r' => Action::ReadyUp,
+            'u' => Action::ReadyUp,
             // `y` as in why: `e` is EVAL now.
             'y' => Action::Explain,
             // Weft's own operations.
@@ -194,10 +194,10 @@ mod tests {
 
     #[test]
     fn r_offers_to_set_an_agent_up_for_ringframe() {
-        assert_eq!(route(plain(Key::Char('r')), Focus::Weft, Toggle), Action::ReadyUp);
-        assert_eq!(route(plain(Key::Char('R')), Focus::Weft, Toggle), Action::ReadyUp);
+        assert_eq!(route(plain(Key::Char('u')), Focus::Weft, Toggle), Action::ReadyUp);
+        assert_eq!(route(plain(Key::Char('U')), Focus::Weft, Toggle), Action::ReadyUp);
         // and never in the agent, where r is just a letter
-        assert_eq!(route(plain(Key::Char('r')), Focus::Agent, Toggle), Action::ToAgent);
+        assert_eq!(route(plain(Key::Char('u')), Focus::Agent, Toggle), Action::ToAgent);
     }
 
     #[test]
