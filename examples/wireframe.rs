@@ -30,6 +30,7 @@ fn main() {
     show("Screen 8 — the Weft menu", 80, 24, &[KeyCode::Char('w')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
     show("Screen 10 — sidebar hidden", 120, 32, &[KeyCode::Char('b')], true);
+    show("Screen 10b — help", 80, 24, &[KeyCode::Char('h')], true);
     ended("Screen 11 — the agent has ended", 80, 24, true);
     ended("Screen 12 — ended, nothing on record", 80, 24, false);
     unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);

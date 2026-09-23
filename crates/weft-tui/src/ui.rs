@@ -814,21 +814,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             "without Weft open.".into(),
             String::new(),
         ],
-        Modal::Help => vec![
-            "[↑↓] move     [←] fold, and back everywhere     [Tab] next agent".into(),
-            "[Enter] unfolds what is closed; open, it goes there — a harness to".into(),
-            "        its pane, an action to its detail view.  [Space] what needs you".into(),
-            "[A]SK · [E]VAL · [S]EAL · in the detail view [P]ROCEED and [F]OLLOW UP".into(),
-            "[U]PDATE · [Y] why a pane waits · [⌫] close the project, after asking".into(),
-            "[W]EFT: [O]pen project · [N]ew agent · [B] sidebar · [H]elp · [X] quit".into(),
-            String::new(),
-            format!("{} to switch between Weft and harness.", app.toggle.label()),
-            "In the agent every other key goes through, Esc included.".into(),
-            "Weft takes no mouse, so click-drag-copy is the terminal's own.".into(),
-        ]
-        .into_iter()
-        .chain(routing_lines(app))
-        .collect(),
+        Modal::Help => help_lines(app).into_iter().chain(routing_lines(app)).collect(),
         Modal::Note(text) => text.lines().map(str::to_string).collect(),
         Modal::Ask { text, target } => {
             // Folded, not wrapped: `wrap` rejoins words with single spaces, so
@@ -889,6 +875,56 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         }
         Modal::RingFrame => ringframe_body(app.sync_view()),
     }
+}
+
+/// Three sections side by side, one key to a line.
+fn help_lines(app: &App) -> Vec<String> {
+    let toggle = app.toggle.label();
+    let navigation: Vec<(&str, &str)> = vec![
+        ("NAVIGATION", ""),
+        ("↑ ↓", "move"),
+        ("→ ←", "unfold · fold, back"),
+        ("Enter", "open"),
+        ("Space", "what needs you"),
+        ("Tab", "next agent"),
+        ("1-9", "that agent"),
+        (toggle, "agent, and back"),
+        ("Y", "why a pane waits"),
+        ("⌫", "close the project"),
+    ];
+    let ringframe = [("RINGFRAME", ""), ("A", "ask"), ("E", "eval"), ("S", "seal")];
+    let weft = [
+        ("WEFT", ""),
+        ("P", "proceed the action"),
+        ("F", "follow up next action"),
+        ("U", "sync RingFrame"),
+        ("O", "open a project"),
+        ("N", "new agent"),
+        ("B", "sidebar"),
+        ("W", "the Weft menu"),
+        ("H", "help"),
+        ("X", "quit"),
+    ];
+    let cell = |col: &[(&str, &str)], i: usize, key_w: usize, w: usize| match col.get(i) {
+        Some((head, "")) => format!("{head:<w$}"),
+        Some((key, what)) => format!("{key:<key_w$}{what:<0$}", w - key_w),
+        None => " ".repeat(w),
+    };
+    let rows = navigation.len().max(weft.len());
+    let mut lines: Vec<String> = (0..rows)
+        .map(|i| {
+            let line = format!(
+                "{}  {}  {}",
+                cell(&navigation, i, 9, 28),
+                cell(&ringframe, i, 3, 13),
+                cell(&weft, i, 3, 24)
+            );
+            line.trim_end().to_string()
+        })
+        .collect();
+    lines.push(String::new());
+    lines.push("In an agent every key is the agent's, Esc included. Weft takes no mouse.".into());
+    lines
 }
 
 fn ringframe_body(view: Option<&weft_core::sync::View>) -> Vec<String> {
