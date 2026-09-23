@@ -29,8 +29,6 @@ pub enum Readiness {
     Ready,
     /// A check failed, and Weft knows which.
     Missing(Gap),
-    /// The person said no. Weft does not ask again this session.
-    Declined,
     /// The harness would not answer. Weft says so and offers nothing.
     Unknown,
 }
@@ -43,7 +41,7 @@ impl Readiness {
     /// Whether offering to set this up would make sense. There is nothing to
     /// offer for a missing CLI, which is not Weft's to install.
     pub fn can_be_set_up(self) -> bool {
-        matches!(self, Readiness::Missing(Gap::Marketplace | Gap::Plugin) | Readiness::Declined)
+        matches!(self, Readiness::Missing(Gap::Marketplace | Gap::Plugin))
     }
 
     /// One sentence, in plain words, naming the harness it is about.
@@ -54,7 +52,6 @@ impl Readiness {
             Readiness::Missing(Gap::Marketplace | Gap::Plugin) => {
                 Some(format!("{harness} is not set up for RingFrame."))
             }
-            Readiness::Declined => Some(format!("You said not now for {harness}.")),
             Readiness::Unknown => {
                 Some(format!("Weft could not ask {harness} whether it is set up."))
             }
@@ -161,7 +158,6 @@ mod tests {
             Readiness::Missing(Gap::Cli).say("codex").as_deref(),
             Some("RingFrame is not installed.")
         );
-        assert!(Readiness::Declined.say("codex").unwrap().contains("not now"));
         assert!(Readiness::Unknown.say("codex").unwrap().contains("could not ask"));
     }
 
@@ -169,7 +165,6 @@ mod tests {
     fn only_what_weft_may_install_is_offered() {
         assert!(Readiness::Missing(Gap::Plugin).can_be_set_up());
         assert!(Readiness::Missing(Gap::Marketplace).can_be_set_up());
-        assert!(Readiness::Declined.can_be_set_up(), "a no can be changed");
         assert!(!Readiness::Missing(Gap::Cli).can_be_set_up(), "not Weft's to install");
         assert!(!Readiness::Unknown.can_be_set_up(), "nothing to offer for an unanswered question");
         assert!(!Readiness::Ready.can_be_set_up());

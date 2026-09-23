@@ -421,6 +421,36 @@ fn download(dest: &Path) -> Result<(String, Option<String>), WorkspaceError> {
     outcome
 }
 
+/// What `sync` would install, against what is installed. Reads, never writes.
+pub fn check_config() -> Result<Value, WorkspaceError> {
+    let latest = newest_tag()?;
+    let manifest = fetch(
+        &format!(
+            "https://raw.githubusercontent.com/{BUNDLE_REPO}/{latest}/.claude-plugin/marketplace.json"
+        ),
+        "30",
+    )?;
+    let revision = std::fs::read_to_string(crate::config::config_dir().join(".revision"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|_| "none".into());
+    Ok(freshness(&revision, &latest, &manifest))
+}
+
+/// `local` is someone's working tree, and is never behind.
+fn freshness(revision: &str, latest: &str, manifest: &[u8]) -> Value {
+    let plugin = serde_json::from_slice::<Value>(manifest).ok().and_then(|m| {
+        m["plugins"].as_array()?.iter().find(|p| p["name"] == "rf")?["version"]
+            .as_str()
+            .map(str::to_string)
+    });
+    json!({
+        "revision": revision,
+        "latest": latest,
+        "plugin": plugin,
+        "behind": revision != "local" && revision != latest,
+    })
+}
+
 /// Replace the synced config layer; create the overrides layer once and never
 /// touch it again.
 pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
@@ -564,6 +594,18 @@ mod tests {
         let repo = crate::testing::repo();
         let ws = resolve(Some(repo.path()), None).unwrap();
         assert!(require_git(&ws).is_ok());
+    }
+
+    #[test]
+    fn freshness_compares_the_installed_revision_with_the_latest_release() {
+        let manifest = br#"{"plugins": [{"name": "rf", "version": "0.1.2"}]}"#;
+        let behind = freshness("v0.1.0", "v0.1.1", manifest);
+        assert_eq!(behind["behind"], true);
+        assert_eq!(behind["plugin"], "0.1.2");
+        assert_eq!(freshness("v0.1.1", "v0.1.1", manifest)["behind"], false);
+        assert_eq!(freshness("local", "v0.1.1", manifest)["behind"], false);
+        assert_eq!(freshness("none", "v0.1.1", manifest)["behind"], true);
+        assert_eq!(freshness("v0.1.1", "v0.1.1", b"not json")["plugin"], Value::Null);
     }
 
     #[test]

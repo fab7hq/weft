@@ -144,6 +144,9 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
 fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
     Some(match (cmd, sub) {
         ("init", None) => pick(d, &["rf_dir", "config", "revision"]),
+        ("sync", None) if d.get("latest").is_some() => {
+            pick(d, &["revision", "latest", "plugin", "behind"])
+        }
         ("sync", None) => pick(d, &["config", "revision"]),
         ("ask", Some("compile")) => {
             pick(d, &["ask_id", "prompt_path", "delivery_mode", "source_verified"])

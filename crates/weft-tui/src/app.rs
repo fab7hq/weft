@@ -121,9 +121,10 @@ impl Row {
 }
 
 /// Weft's own operations, in the order the menu lists them.
-pub const WEFT_MENU: [(char, &str, Act); 5] = [
+pub const WEFT_MENU: [(char, &str, Act); 6] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
+    ('R', "RingFrame", Act::ReadyUp),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
@@ -166,13 +167,9 @@ pub enum Modal {
     StartAgent {
         choice: usize,
     },
-    /// What Weft is about to run to set an agent up, and where. Shown first,
-    /// always: installing into an agent is a larger act than typing into one.
-    SetUp {
-        harness: String,
-        commands: Vec<String>,
-        gap: Gap,
-    },
+    /// What the configuration and each harness need to reach RingFrame's
+    /// latest release. Nothing runs until `[P]ROCEED`.
+    RingFrame,
     /// The agent in this pane is gone — it was quit from inside, or it
     /// stopped. Weft never keeps a harness session of its own, so what it can
     /// offer is whichever session RingFrame has a receipt for.
@@ -841,21 +838,24 @@ impl App {
         }
     }
 
-    fn do_set_up(&mut self, name: &str) {
-        match sess!(self).set_up(name) {
-            Ok(()) => {
-                self.modal = None;
-                sess!(self).pump();
-                let now = self.readiness(name);
-                self.say(match now {
-                    Readiness::Ready => format!("{name} is set up for RingFrame."),
-                    other => other
-                        .say(name)
-                        .map(|s| format!("{s} The commands ran, so something else is wrong."))
-                        .unwrap_or_default(),
-                });
-            }
-            Err(e) => self.modal = Some(Modal::Note(format!("That did not work: {e}"))),
+    /// Open the RingFrame view, which asks the moment it opens.
+    fn open_ringframe(&mut self) {
+        sess!(self).sync = None;
+        if let Err(e) = sess!(self).sync_now(false) {
+            self.modal = Some(Modal::Note(format!("Weft could not ask: {e}")));
+            return;
+        }
+        self.modal = Some(Modal::RingFrame);
+    }
+
+    /// The RingFrame view, once the daemon has answered.
+    pub fn sync_view(&self) -> Option<&weft_core::sync::View> {
+        sess!(self).sync.as_ref()
+    }
+
+    fn proceed_sync(&mut self) {
+        if self.sync_view().is_some_and(|v| v.needs_anything() && !v.running) {
+            let _ = sess!(self).sync_now(true);
         }
     }
 
@@ -923,27 +923,6 @@ impl App {
             }
             Err(e) => self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec))),
         }
-    }
-
-    /// Show what setting this harness up would run, and run nothing yet.
-    fn start_set_up(&mut self) {
-        if !self.guard(Act::ReadyUp) {
-            return;
-        }
-        let Some(name) = self.deciding_harness(Act::ReadyUp) else { return };
-        let Some(h) = harness::find(&name) else { return };
-        let gap = match self.readiness(&name) {
-            Readiness::Missing(gap) => gap,
-            _ => Gap::Plugin,
-        };
-        self.modal = Some(Modal::SetUp { harness: name, commands: h.setup_commands(), gap });
-        self.modal_choice = 0;
-    }
-
-    fn decline_set_up(&mut self, name: &str) {
-        self.readiness.insert(name.to_string(), Readiness::Declined);
-        self.modal = None;
-        self.say(format!("Not now for {name}. Your agent still runs here."));
     }
 
     /// Ask the daemon for an act, and show whatever it puts in front of the
@@ -1221,7 +1200,7 @@ impl App {
                     self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
                 }
             }
-            Act::ReadyUp => self.start_set_up(),
+            Act::ReadyUp => self.open_ringframe(),
             Act::GoToAgent => self.open_the_agent(),
             Act::NewAgent => self.start_agent_picker(),
             Act::ToggleSidebar => self.toggle_work(),
@@ -1422,13 +1401,8 @@ impl App {
             event::KeyCode::Down if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(1),
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => self.modal_choice = (self.modal_choice + 1).min(options - 1),
-            // `←` is back everywhere, and on this one panel it is an answer:
-            // not now, remembered, rather than a question asked again.
+            event::KeyCode::Char('p' | 'P') if modal == Modal::RingFrame => self.proceed_sync(),
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
-                Modal::SetUp { harness, .. } => {
-                    let harness = harness.clone();
-                    self.decline_set_up(&harness);
-                }
                 // The agent is gone either way, so backing out of this panel
                 // takes the pane with it rather than leaving a dead one up.
                 Modal::Ended { pane, .. } => {
@@ -1459,10 +1433,7 @@ impl App {
                 self.do_inject(&pending);
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
-            Modal::SetUp { harness, .. } => {
-                let harness = harness.clone();
-                self.do_set_up(&harness);
-            }
+            Modal::RingFrame => {}
             Modal::Ended { pane, harness, session } => {
                 let (pane, harness, session) = (*pane, harness.clone(), session.clone());
                 match ended_choices(session.as_ref()).get(self.modal_choice) {
@@ -2403,48 +2374,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn nothing_is_installed_without_an_explicit_yes() {
+    fn the_ringframe_view_runs_nothing_before_proceed() {
         let mut a = app();
-        a.set_readiness("codex", Readiness::Missing(Gap::Plugin));
         press(&mut a, KeyCode::Char('r'));
-        let Some(Modal::SetUp { harness, commands, .. }) = a.modal.clone() else {
-            panic!("[R] must propose first, got {:?}", a.modal)
-        };
-        assert_eq!(harness, "codex");
-        assert_eq!(
-            commands,
-            vec![
-                "codex plugin marketplace add fab7hq/fab7".to_string(),
-                "codex plugin add rf@fab7".to_string()
-            ],
-            "what is shown is what would run"
-        );
-        // Declining runs nothing, and is remembered.
+        assert_eq!(a.modal, Some(Modal::RingFrame));
+        // Until the daemon has said what is behind, there is nothing to run.
+        press(&mut a, KeyCode::Char('p'));
+        assert!(a.sync_view().is_none());
         press(&mut a, KeyCode::Left);
         assert!(a.modal.is_none());
-        assert_eq!(a.readiness("codex"), Readiness::Declined);
-    }
-
-    #[test]
-    fn a_harness_that_said_no_is_not_asked_again_this_session() {
-        let mut a = app();
-        a.set_readiness("codex", Readiness::Declined);
-        a.add("codex", "/bin/cat").expect("spawn");
-        assert_eq!(a.readiness("codex"), Readiness::Declined, "the check does not overwrite a no");
-    }
-
-    #[test]
-    fn weft_does_not_offer_to_install_the_cli_itself() {
-        // The panel opens, because it carries the one command that fixes it —
-        // and it offers nothing to run, because a tool on the machine is
-        // RingFrame's to install, not Weft's.
-        let mut a = app();
-        a.set_readiness("codex", Readiness::Missing(Gap::Cli));
-        press(&mut a, KeyCode::Char('r'));
-        let Some(Modal::SetUp { gap, .. }) = a.modal.clone() else {
-            panic!("expected the panel, got {:?}", a.modal)
-        };
-        assert_eq!(gap, Gap::Cli);
     }
 
     #[test]
@@ -2712,7 +2650,6 @@ fn readiness_of(word: Option<&str>) -> Readiness {
         Some("no_cli") => Readiness::Missing(Gap::Cli),
         Some("no_marketplace") => Readiness::Missing(Gap::Marketplace),
         Some("no_plugin") => Readiness::Missing(Gap::Plugin),
-        Some("declined") => Readiness::Declined,
         _ => Readiness::Unknown,
     }
 }

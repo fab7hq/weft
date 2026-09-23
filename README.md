@@ -51,8 +51,9 @@ This installs prebuilt `weft` and `ringframe` binaries to `~/.local/bin`
 [Fab7 marketplace](https://github.com/fab7hq/fab7), which lists the supported
 harnesses and the commands for each.
 
-Run `weft` in a repository, or `weft <dir>`. Weft can also set a harness up
-for you: `R` shows what it would run and asks first.
+Run `weft` in a repository, or `weft <dir>`. `R`, also in the `W` menu, shows
+whether RingFrame and each harness are on the latest release, and `P` sets up
+or updates them all, in order.
 
 Agents run in a background session, so closing Weft leaves them working.
 `weft stop` ends them.

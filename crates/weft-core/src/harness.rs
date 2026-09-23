@@ -24,6 +24,10 @@ pub struct Harness {
     pub add_marketplace: &'static [&'static str],
     /// Installs the plugin itself.
     pub install_plugin: &'static [&'static str],
+    /// Refreshes this harness's copy of the marketplace.
+    pub update_marketplace: &'static [&'static str],
+    /// Moves the installed plugin to the marketplace's version.
+    pub update_plugin: &'static [&'static str],
     /// How this harness is told to pick a recorded session back up. The id is
     /// appended; `claude --resume <id>`, `codex resume <id>`.
     pub resume: &'static [&'static str],
@@ -46,6 +50,8 @@ pub const SUPPORTED: &[Harness] = &[
         list: &["plugin", "list", "--available", "--json"],
         add_marketplace: &["plugin", "marketplace", "add", "fab7hq/fab7"],
         install_plugin: &["plugin", "install", "rf@fab7", "--scope", "user"],
+        update_marketplace: &["plugin", "marketplace", "update", "fab7"],
+        update_plugin: &["plugin", "update", "rf@fab7"],
         resume: &["--resume"],
         // Claude Code prints its transcript inline and lets the terminal keep
         // it, so what Weft captured is what there is to scroll.
@@ -59,6 +65,9 @@ pub const SUPPORTED: &[Harness] = &[
         list: &["plugin", "list", "--json"],
         add_marketplace: &["plugin", "marketplace", "add", "fab7hq/fab7"],
         install_plugin: &["plugin", "add", "rf@fab7"],
+        update_marketplace: &["plugin", "marketplace", "upgrade", "fab7"],
+        // Adding again installs the version the refreshed marketplace holds.
+        update_plugin: &["plugin", "add", "rf@fab7"],
         resume: &["resume"],
         // Codex repaints its viewport rather than scrolling, so nothing ever
         // reaches Weft's scrollback. Its own transcript is behind Ctrl+T.
@@ -87,15 +96,6 @@ impl Harness {
             Some(set) if !set.is_empty() => PathBuf::from(set),
             _ => home.join(self.config_default),
         }
-    }
-
-    /// The two commands, exactly as they will be run and as they are shown.
-    /// One list, so what is displayed cannot drift from what happens.
-    pub fn setup_commands(&self) -> Vec<String> {
-        [self.add_marketplace, self.install_plugin]
-            .iter()
-            .map(|args| format!("{} {}", self.program, args.join(" ")))
-            .collect()
     }
 
     /// The command line that opens a recorded session again, exactly as a
@@ -147,26 +147,6 @@ mod tests {
                 "an empty variable is not a path"
             );
         }
-    }
-
-    #[test]
-    fn the_commands_shown_are_the_commands_run() {
-        let codex = find("codex").expect("codex");
-        assert_eq!(
-            codex.setup_commands(),
-            vec![
-                "codex plugin marketplace add fab7hq/fab7".to_string(),
-                "codex plugin add rf@fab7".to_string()
-            ]
-        );
-        let claude = find("claude-code").expect("claude");
-        assert_eq!(
-            claude.setup_commands(),
-            vec![
-                "claude plugin marketplace add fab7hq/fab7".to_string(),
-                "claude plugin install rf@fab7 --scope user".to_string()
-            ]
-        );
     }
 
     #[test]

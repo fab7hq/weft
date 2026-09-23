@@ -12,13 +12,18 @@ pub use weft_core::readiness::*;
 
 /// Ask one harness. `cli` is the global check, made once by the caller.
 pub fn check(h: &Harness, cli: bool) -> Readiness {
+    look(h, cli).0
+}
+
+/// Its readiness, and the `rf` version it has installed, from one listing.
+pub fn look(h: &Harness, cli: bool) -> (Readiness, Option<String>) {
     if !cli {
-        return Readiness::Missing(Gap::Cli);
+        return (Readiness::Missing(Gap::Cli), None);
     }
-    let Some(listing) = ask(h) else {
-        return Readiness::Unknown;
-    };
-    read(&listing)
+    match ask(h) {
+        Some(listing) => (read(&listing), weft_core::sync::installed(&listing)),
+        None => (Readiness::Unknown, None),
+    }
 }
 
 /// What the harness said, or nothing at all when it would not say.
@@ -28,29 +33,6 @@ fn ask(h: &Harness) -> Option<Value> {
         return None;
     }
     serde_json::from_slice(&out.stdout).ok()
-}
-
-/// Run the two commands, in order, and stop at the first that fails. Returns
-/// what went wrong, and never what it means: the caller re-checks rather than
-/// believing an exit code.
-pub fn set_up(h: &Harness) -> Result<(), String> {
-    for args in [h.add_marketplace, h.install_plugin] {
-        let out = Command::new(h.program)
-            .args(args)
-            .output()
-            .map_err(|e| format!("{} {}: {e}", h.program, args.join(" ")))?;
-        if !out.status.success() {
-            let said = String::from_utf8_lossy(&out.stderr);
-            let said = said.trim();
-            return Err(format!(
-                "{} {} said: {}",
-                h.program,
-                args.join(" "),
-                if said.is_empty() { "nothing" } else { said }
-            ));
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -78,6 +60,8 @@ mod tests {
             list: &["plugin", "list", "--json"],
             add_marketplace: &["x"],
             install_plugin: &["y"],
+            update_marketplace: &["z"],
+            update_plugin: &["w"],
             resume: &["resume"],
             transcript: None,
         };

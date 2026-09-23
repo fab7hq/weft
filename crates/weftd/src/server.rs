@@ -145,6 +145,11 @@ enum Wake {
         harness: String,
         state: weft_core::readiness::Readiness,
     },
+    /// The RingFrame view moved: a check came back, or a step started or ended.
+    Sync {
+        project: usize,
+        view: serde_json::Value,
+    },
 }
 
 pub struct Session {
@@ -256,7 +261,6 @@ fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> 
                     Readiness::Missing(Gap::Cli) => "no_cli",
                     Readiness::Missing(Gap::Marketplace) => "no_marketplace",
                     Readiness::Missing(Gap::Plugin) => "no_plugin",
-                    Readiness::Declined => "declined",
                     Readiness::Unknown => "unknown",
                 };
                 (k.clone(), serde_json::json!(word))
@@ -351,6 +355,9 @@ impl Session {
                         p.readiness.insert(harness, state);
                     }
                     self.tell_readiness(project);
+                }
+                Wake::Sync { project, view } => {
+                    self.clients.broadcast(project, &Out::Sync { view })
                 }
             }
         }
@@ -514,17 +521,29 @@ impl Session {
         }
     }
 
-    /// Run a harness's install commands, then ask it again rather than
-    /// believing an exit code.
-    fn set_up(&mut self, at: usize, name: &str) -> Answer {
-        let Some(h) = weft_core::harness::find(name) else {
-            return Answer::No("unknown_harness", format!("Weft does not know {name}"));
-        };
-        if let Err(why) = crate::readiness::set_up(h) {
-            return Answer::No("failed", why);
-        }
-        self.projects[at].readiness.remove(name);
-        self.look_at(at, name);
+    /// Look, and with `proceed` run what is behind and look again, off the
+    /// run loop. Every change reaches the client as it happens.
+    fn sync(&mut self, at: usize, proceed: bool) -> Answer {
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let show = |v: &weft_core::sync::View| {
+                let view = serde_json::to_value(v).unwrap_or_default();
+                let _ = tx.send(Wake::Sync { project: at, view });
+            };
+            let (mut v, _) = crate::sync::look();
+            if !proceed {
+                return show(&v);
+            }
+            crate::sync::proceed(&mut v, show);
+            if v.steps.iter().any(|s| s.mark == weft_core::sync::Mark::Failed) {
+                return;
+            }
+            let (v, states) = crate::sync::look();
+            show(&v);
+            for (harness, state) in states {
+                let _ = tx.send(Wake::Readiness { project: at, harness, state });
+            }
+        });
         Answer::nothing()
     }
 
@@ -535,9 +554,6 @@ impl Session {
     /// a `Wake` and is told to whoever is watching.
     fn look_at(&mut self, at: usize, name: &str) {
         use weft_core::readiness::Readiness;
-        if matches!(self.projects[at].readiness.get(name), Some(Readiness::Declined)) {
-            return; // a no is not re-asked this session
-        }
         let (tx, name) = (self.tx.clone(), name.to_string());
         std::thread::spawn(move || {
             let cli = crate::ringframe::installed();
@@ -733,11 +749,11 @@ impl Session {
                 };
                 return Ok(self.read(at, &what, &unit));
             }
-            Call::SetUp { harness } => {
+            Call::Sync { proceed } => {
                 let Some(at) = self.clients.watching.get(&client).copied() else {
                     return Ok(Answer::No("no_project", "open a project first".into()));
                 };
-                return Ok(self.set_up(at, &harness));
+                return Ok(self.sync(at, proceed));
             }
             Call::Available => {
                 let Some(at) = self.clients.watching.get(&client).copied() else {

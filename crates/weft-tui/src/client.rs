@@ -111,6 +111,8 @@ pub struct Session {
     pub units: Vec<weft_core::ledger::Unit>,
     /// What each harness is short of here, as the daemon found it.
     pub readiness: serde_json::Value,
+    /// The RingFrame view, as the daemon last reported it.
+    pub sync: Option<weft_core::sync::View>,
     /// The Eval record behind each check, by eval id. Read by the daemon so
     /// that drawing a frame opens no file.
     pub records: serde_json::Value,
@@ -171,6 +173,7 @@ impl Session {
             last_refusal: None,
             units: Vec::new(),
             readiness: serde_json::json!({}),
+            sync: None,
             records: serde_json::json!({}),
             routing: weft_core::routing::Routing::default(),
             gap: None,
@@ -285,6 +288,7 @@ impl Session {
                 Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
                 Event::Injected { refusal, .. } => self.last_refusal = refusal,
                 Event::Readiness { states } => self.readiness = states,
+                Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
             }
         }
         changed
@@ -357,9 +361,10 @@ impl Session {
         Ok(answer.get("starts").and_then(|v| v.as_array()).cloned().unwrap_or_default())
     }
 
-    /// Run a harness's install commands, then ask it again.
-    pub fn set_up(&mut self, harness: &str) -> Result<()> {
-        self.ask(Call::SetUp { harness: harness.to_string() }).map(|_| ())
+    /// Ask what is behind RingFrame's latest release; with `proceed`, catch
+    /// it all up. The answer arrives as events.
+    pub fn sync_now(&mut self, proceed: bool) -> Result<()> {
+        self.ask(Call::Sync { proceed }).map(|_| ())
     }
 
     /// Yes or no, by id. Whoever answers first answers for everyone.

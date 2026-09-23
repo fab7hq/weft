@@ -53,7 +53,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
     };
     match (cmd, sub) {
         ("init", None) => s(&["--from"], &["--global"], NONE, false, NONE),
-        ("sync", None) => s(&["--from"], NONE, NONE, false, NONE),
+        ("sync", None) => s(&["--from"], &["--check"], NONE, false, NONE),
         ("profile", Some("show")) => s(&["--host", "--version"], NONE, &["--host"], true, NONE),
         ("ask", Some("compile")) => s(
             &[
@@ -147,7 +147,10 @@ const SURFACE: [(&str, Option<&str>); 23] = [
 fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
     match (cmd, sub) {
         ("init", None) => "prepare this project, or with --global the configuration home",
-        ("sync", None) => "replace the synced configuration; personal overrides are untouched",
+        ("sync", None) => {
+            "replace the synced configuration; personal overrides are untouched. \
+             --check only says whether a newer release is out"
+        }
         ("profile", _) => "the host's capabilities and how each one has to be delivered",
         ("ask", Some("compile")) => {
             "persist a staged intent and its prompt; the only Ask that writes artifacts"
@@ -576,7 +579,12 @@ fn dispatch(
         }
         ("sync", None) => {
             let source = ns.one("--from").map(PathBuf::from);
-            match workspace::install_config(source.as_deref()) {
+            let done = if ns.has("--check") {
+                workspace::check_config()
+            } else {
+                workspace::install_config(source.as_deref())
+            };
+            match done {
                 Ok(v) => (ws, Outcome::Ok(0, v)),
                 Err(e) => (ws, Outcome::Error(e.code, e.detail)),
             }

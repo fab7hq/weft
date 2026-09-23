@@ -329,11 +329,10 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
         }
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
-        Some(Modal::SetUp { gap, .. }) => {
-            // Nothing to offer for a missing CLI: it is not Weft's to install.
-            return match gap {
-                crate::readiness::Gap::Cli => plain("  [←] BACK"),
-                _ => plain("  [Enter] DO IT   [←] NOT NOW"),
+        Some(Modal::RingFrame) => {
+            return match app.sync_view() {
+                Some(v) if v.needs_anything() && !v.running => plain("  [P]ROCEED   [←] BACK"),
+                _ => plain("  [←] BACK"),
             };
         }
         Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
@@ -415,12 +414,9 @@ fn hint(app: &App) -> Paragraph<'static> {
         (Some(Modal::Ended { .. }), _) => {
             " Weft keeps no session of its own. The harness owns it; the record names it.".into()
         }
-        (Some(Modal::SetUp { gap, .. }), _) => match gap {
-            crate::readiness::Gap::Cli => {
-                " Run it in a terminal, then start an agent again.".into()
-            }
-            _ => " Weft never changes an agent without asking you first.".into(),
-        },
+        (Some(Modal::RingFrame), _) => {
+            " Weft never changes an agent without asking you first.".into()
+        }
         (Some(_), _) => " [Enter] closes this.".to_string(),
         (None, Focus::Agent) => {
             format!(" {} to switch between Weft and harness.", app.toggle.label())
@@ -774,10 +770,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
-        Modal::SetUp { harness, gap, .. } => match gap {
-            crate::readiness::Gap::Cli => "RINGFRAME IS NOT INSTALLED".into(),
-            _ => format!("SET {} UP FOR RINGFRAME", harness.to_uppercase()),
-        },
+        Modal::RingFrame => "RINGFRAME".into(),
         Modal::Ended { harness, .. } => format!("{} HAS ENDED", harness.to_uppercase()),
     }
     .to_string()
@@ -885,29 +878,45 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             lines.push(String::new());
             lines
         }
-        Modal::SetUp { harness, commands, gap } => match gap {
-            crate::readiness::Gap::Cli => vec![
-                "Weft reads the record RingFrame writes. Without it there is no record.".into(),
-                String::new(),
-                "  curl -LsSf https://fab7.dev/rf/install.sh | sh".into(),
-                String::new(),
-                "Weft will not install it for you: it is a tool on your machine, not a".into(),
-                "change to one agent. Your agents still run here in the meantime.".into(),
-            ],
-            _ => {
-                let mut l = vec![
-                    format!(
-                        "Weft will run these two commands. They change {harness}, not this project."
-                    ),
-                    String::new(),
-                ];
-                l.extend(commands.iter().map(|c| format!("  {c}")));
-                l.push(String::new());
-                l.push("The ringframe CLI is already installed.".into());
-                l
-            }
-        },
+        Modal::RingFrame => ringframe_body(app.sync_view()),
     }
+}
+
+fn ringframe_body(view: Option<&weft_core::sync::View>) -> Vec<String> {
+    use weft_core::sync::Mark;
+    let Some(v) = view else { return vec!["Checking the latest release…".into()] };
+    let mut l = vec![match (&v.latest, &v.plugin) {
+        (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
+        (Some(t), None) => format!("Latest release {t}"),
+        _ => "Weft could not reach the latest release.".into(),
+    }];
+    l.push(String::new());
+    l.extend(v.rows.iter().map(|(name, now)| format!("  {name:<15} {now}")));
+    l.push(String::new());
+    if v.steps.is_empty() {
+        l.push("Everything is up to date.".into());
+        l.push("Open agents keep their skills until you restart them.".into());
+        return l;
+    }
+    let failed = v.steps.iter().any(|s| s.mark == Mark::Failed);
+    l.push(match (v.running, failed) {
+        (true, _) => "Running:".into(),
+        (_, true) => "Stopped. [P]ROCEED runs it again from the failed command:".into(),
+        _ => "[P]ROCEED will run, in order:".into(),
+    });
+    for s in &v.steps {
+        let mark = match s.mark {
+            Mark::Waiting => '·',
+            Mark::Running => '▸',
+            Mark::Done => '✓',
+            Mark::Failed => '✗',
+        };
+        l.push(format!("  {mark} {}", s.line()));
+        l.extend(s.said.lines().map(|said| format!("      {said}")));
+    }
+    l.push(String::new());
+    l.push("Your personal and project rules are not touched.".into());
+    l
 }
 
 /// The choices a panel offers, if it is the kind that picks one.
@@ -1477,23 +1486,6 @@ mod tests {
     }
 
     #[test]
-    fn setting_a_harness_up_shows_the_commands_before_running_them() {
-        let mut a = judged();
-        a.set_readiness(
-            "codex",
-            crate::readiness::Readiness::Missing(crate::readiness::Gap::Plugin),
-        );
-        press(&mut a, KeyCode::Char('r'));
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("SET CODEX UP FOR RINGFRAME"), "{drawn}");
-        assert!(drawn.contains("codex plugin marketplace add fab7hq/fab7"), "{drawn}");
-        assert!(drawn.contains("codex plugin add rf@fab7"), "{drawn}");
-        assert!(drawn.contains("[Enter] DO IT"), "{drawn}");
-        assert!(drawn.contains("[←] NOT NOW"), "{drawn}");
-        assert!(drawn.contains("not this project"), "it says what it changes: {drawn}");
-    }
-
-    #[test]
     fn an_ended_agent_names_the_session_it_could_be_opened_again_as() {
         let mut a = judged();
         a.modal = Some(Modal::Ended {
@@ -1551,18 +1543,6 @@ mod tests {
         press(&mut a, KeyCode::Char('h'));
         let drawn = screen(&mut a, 80, 24);
         assert!(!drawn.contains("This project routes"), "{drawn}");
-    }
-
-    #[test]
-    fn a_missing_cli_is_said_rather_than_offered() {
-        let mut a = judged();
-        a.set_readiness("codex", crate::readiness::Readiness::Missing(crate::readiness::Gap::Cli));
-        press(&mut a, KeyCode::Char('r'));
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("RINGFRAME IS NOT INSTALLED"), "{drawn}");
-        assert!(drawn.contains("install.sh"), "it carries the command: {drawn}");
-        assert!(!drawn.contains("[Enter] DO IT"), "and offers to run nothing: {drawn}");
-        assert!(drawn.contains("[←] BACK"), "{drawn}");
     }
 
     #[test]

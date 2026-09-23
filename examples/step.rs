@@ -158,7 +158,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Confirm(_) => "Confirm",
         Note(_) => "Note",
         StartAgent { .. } => "StartAgent",
-        SetUp { .. } => "SetUp",
+        RingFrame => "RingFrame",
         Ended { .. } => "Ended",
     }
 }

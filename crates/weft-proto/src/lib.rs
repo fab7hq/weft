@@ -86,9 +86,11 @@ pub enum Call {
         what: String,
         unit: String,
     },
-    /// Run the install commands for a harness, then ask it again.
-    SetUp {
-        harness: String,
+    /// Ask what the configuration and each harness need to reach the latest
+    /// RingFrame release, and with `proceed`, run it all in order. Answered by
+    /// `Event::Sync`, again at every step.
+    Sync {
+        proceed: bool,
     },
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
@@ -154,6 +156,10 @@ pub enum Event {
     /// What each harness is short of here, by the name RingFrame records.
     Readiness {
         states: Value,
+    },
+    /// The RingFrame view, as it stands.
+    Sync {
+        view: Value,
     },
 }
 
@@ -270,7 +276,7 @@ impl Call {
             }
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit } => ("read", json!({"what": what, "unit": unit})),
-            Call::SetUp { harness } => ("readiness.setup", json!({"harness": harness})),
+            Call::Sync { proceed } => ("sync", json!({"proceed": proceed})),
             Call::Available => ("agents.available", json!({})),
             Call::Resolve { pending, yes, force } => {
                 ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
@@ -312,7 +318,7 @@ impl Call {
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read { what: s("what")?, unit: s("unit")? },
-            "readiness.setup" => Call::SetUp { harness: s("harness")? },
+            "sync" => Call::Sync { proceed: p.get("proceed")?.as_bool()? },
             "agents.available" => Call::Available,
             "pending.resolve" => {
                 Call::Resolve {
@@ -353,6 +359,7 @@ impl Event {
                 ("injected", json!({"pane": pane, "refusal": refusal}))
             }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
+            Event::Sync { view } => ("sync", json!({"view": view})),
         }
     }
 
@@ -381,6 +388,7 @@ impl Event {
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
+            "sync" => Event::Sync { view: p.get("view")?.clone() },
             "injected" => Event::Injected {
                 pane: n("pane")? as u32,
                 refusal: p.get("refusal")?.as_str().map(str::to_string),
@@ -613,7 +621,7 @@ mod tests {
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read { what: "judges".into(), unit: "ask_1".into() },
-            Call::SetUp { harness: "codex".into() },
+            Call::Sync { proceed: true },
             Call::Available,
             Call::Detach,
             Call::Shutdown,
@@ -668,6 +676,7 @@ mod tests {
             Event::Injected { pane: 0, refusal: Some("PaneBlocked".into()) },
             Event::Injected { pane: 0, refusal: None },
             Event::Readiness { states: json!({"codex": "ready"}) },
+            Event::Sync { view: json!({"rows": []}) },
         ] {
             roundtrip(Line::Event(event));
         }
