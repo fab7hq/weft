@@ -1263,7 +1263,12 @@ impl App {
         }
         self.hint = None;
         let chord = chord_of(key);
-        match keys::route(chord, self.focus, self.toggle) {
+        // Esc is the agent's, except where a view of Weft's own is open.
+        let closing =
+            key.code == event::KeyCode::Esc && self.focus == Focus::Weft && self.detail().is_some();
+        let action =
+            if closing { Action::Back } else { keys::route(chord, self.focus, self.toggle) };
+        match action {
             Action::ToggleFocus => self.toggle_focus(),
             Action::ToAgent => {
                 if let Some(bytes) = encode::encode(key) {

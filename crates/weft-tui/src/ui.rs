@@ -319,34 +319,34 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     let th = app.theme;
     let plain = |text: &str| Paragraph::new(Line::styled(text.to_string(), th.label()));
     if app.focus == Focus::Agent {
-        // While you are in the agent, Weft has no keys to offer.
-        return Paragraph::new("");
+        // One key is Weft's in the agent: the way back.
+        return plain(&format!("  {}  BACK TO WEFT", app.toggle.label()));
     }
     match &app.modal {
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
-        Some(Modal::Weft) => return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE"),
+        Some(Modal::Weft) => return plain("  [↑↓] PICK   [Enter] OPEN   [ESC] CLOSE"),
         Some(Modal::CloseProject { .. }) => {
-            return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
+            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
         }
         Some(Modal::OpenProject { .. }) => return plain("  [Enter] OPEN   [←] CANCEL"),
         Some(Modal::SendAnyway { .. }) => {
-            return plain("  [↑↓] pick   [Enter] DO IT   [←] CANCEL");
+            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
         }
         Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
         Some(Modal::RingFrame) => {
             return match app.sync_view() {
-                Some(v) if v.needs_anything() && !v.running => plain("  [P]ROCEED   [←] BACK"),
-                _ => plain("  [←] BACK"),
+                Some(v) if v.needs_anything() && !v.running => plain("  [P]ROCEED   [ESC] CLOSE"),
+                _ => plain("  [ESC] CLOSE"),
             };
         }
         Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
         // No cancel: the agent has already gone, so the only question left is
         // what to put in its place.
         Some(Modal::Ended { .. }) => {
-            return plain("  [↑↓] pick   [Enter] DO IT   [←] CLOSE THE PANE");
+            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CLOSE THE PANE");
         }
-        Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [Enter] CLOSE"),
+        Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [ESC] CLOSE"),
         None => {}
     }
     if app.pane_count() == 0 {
@@ -364,8 +364,8 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             left.push(key(app, label, act));
             left.push(Span::raw("   "));
         }
-        left.pop();
-        return Paragraph::new(spread(left, vec![Span::styled("[←] CANCEL ", th.label())], width));
+        left.push(Span::styled("[↑↓] SCROLL", th.label()));
+        return Paragraph::new(spread(left, vec![Span::styled("[ESC] CLOSE ", th.label())], width));
     }
 
     // RingFrame's three acts, in the order they happen. Weft's own operations
@@ -426,18 +426,14 @@ fn hint(app: &App) -> Paragraph<'static> {
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }
-        (Some(_), _) => " [Enter] closes this.".to_string(),
-        (None, Focus::Agent) => {
-            format!(" {} to switch between Weft and harness.", app.toggle.label())
-        }
+        (Some(_), _) => String::new(),
+        (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
         (None, Focus::Weft) if app.pane_count() == 0 => " Nothing is running yet.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(
             " {} needs your answer (from the screen). Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")
         ),
-        (None, Focus::Weft) if app.detail().is_some() => {
-            " [↑↓] or the wheel to scroll · [←] back to the agent".into()
-        }
+        (None, Focus::Weft) if app.detail().is_some() => String::new(),
         (None, Focus::Weft) if app.not_ready().is_some() => {
             let (name, state) = app.not_ready().expect("not ready");
             let mut said = state.say(&name).unwrap_or_default();
@@ -449,11 +445,9 @@ fn hint(app: &App) -> Paragraph<'static> {
             format!(" {said}")
         }
         (None, Focus::Weft) if !app.show_work() => {
-            " [B] brings the list back · [Space] still jumps to what needs you".into()
+            " The list is hidden. [B] brings it back.".into()
         }
-        (None, Focus::Weft) => {
-            " [↑↓] pick · [Enter] open · [Space] next needs-you · [←] back".into()
-        }
+        (None, Focus::Weft) => " [H]ELP lists every key.".into(),
     };
     Paragraph::new(Line::styled(text, th.label()))
 }
@@ -506,8 +500,10 @@ fn work_list(app: &mut App, area: Rect) -> Paragraph<'static> {
     if offset > 0 {
         lines.push(Line::styled(format!("   ↑ {offset} above"), th.label()));
     }
+    let room = area.height as usize;
     for (i, row) in all.iter().enumerate().skip(offset) {
-        if lines.len() + 1 > area.height as usize {
+        // The last line says what is below, when anything is.
+        if lines.len() + 1 >= room && i + 1 < all.len() {
             lines.push(Line::styled(format!("   ↓ {} more", all.len() - i), th.label()));
             break;
         }
@@ -1303,15 +1299,14 @@ mod tests {
         a.focus = Focus::Agent;
         let drawn = screen(&mut a, 80, 24);
         let lines: Vec<&str> = drawn.lines().collect();
-        assert_eq!(lines[22].trim(), "", "the action bar is empty in the agent");
-        assert!(lines[23].trim().starts_with("Ctrl+]"), "{}", lines[23]);
-        assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
-        assert!(lines[0].contains("NEEDS YOU"), "the counts keep their place: {}", lines[0]);
+        assert_eq!(lines[22].trim(), "Ctrl+]  BACK TO WEFT", "the one key Weft keeps");
         assert!(
-            lines[23].contains("Ctrl+] to switch between Weft and harness"),
-            "said once, in full: {}",
+            !lines[23].contains("Ctrl"),
+            "and the line below does not repeat it: {}",
             lines[23]
         );
+        assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
+        assert!(lines[0].contains("NEEDS YOU"), "the counts keep their place: {}", lines[0]);
     }
 
     #[test]
@@ -1322,7 +1317,7 @@ mod tests {
         assert!(!drawn.contains("health endpoint"), "the list is away: {drawn}");
         let tabs = drawn.lines().nth(1).expect("a tab row");
         assert!(!tabs.contains('│'), "and nothing is left behind: {tabs}");
-        assert!(drawn.contains("[B] brings the list back"), "the way back is said: {drawn}");
+        assert!(drawn.contains("[B] brings it back"), "the way back is said: {drawn}");
     }
 
     #[test]
@@ -1344,7 +1339,7 @@ mod tests {
         assert!(drawn.contains("ASK"), "and the top of it is on the screen:\n{drawn}");
         assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
         assert!(drawn.contains("[P]ROCEED"), "{drawn}");
-        assert!(drawn.contains("[←] CANCEL"), "{drawn}");
+        assert!(drawn.contains("[ESC] CLOSE"), "{drawn}");
     }
 
     #[test]
