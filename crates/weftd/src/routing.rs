@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub use weft_core::routing::*;
 
-/// `~/.weft/routing.json`: every project Weft routes, keyed by its path.
+/// `~/.fab7/weft/routing.json`: every project Weft routes, keyed by its path.
 ///
 /// ```json
 /// { "/home/me/work/thing": { "eval": "claude-code" } }
@@ -18,7 +18,7 @@ pub use weft_core::routing::*;
 /// routing, which is exactly how Weft behaved before this existed.
 pub fn file() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".weft").join("routing.json")
+    home.join(".fab7").join("weft").join("routing.json")
 }
 
 pub fn for_project(root: &Path) -> Routing {
