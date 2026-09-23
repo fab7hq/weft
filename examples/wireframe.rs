@@ -31,24 +31,25 @@ fn main() {
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
     show("Screen 10 — sidebar hidden", 120, 32, &[KeyCode::Char('b')], true);
     show("Screen 10b — help", 80, 24, &[KeyCode::Char('h')], true);
-    ended("Screen 11 — the agent has ended", 80, 24, true);
-    ended("Screen 12 — ended, nothing on record", 80, 24, false);
+    show("Screen 11 — no agent running", 120, 32, &[], false);
+    pick_up("Screen 12 — picking the work back up", 80, 24, true);
+    pick_up("Screen 12b — nothing on record to resume", 80, 24, false);
     unready("Readiness A — something is missing", 80, 24, &[], Gap::Plugin);
     unready("Readiness B — sync RingFrame", 80, 24, &[KeyCode::Char('u')], Gap::Plugin);
 }
 
-/// The agent in the pane quit from inside. What Weft can offer depends on
-/// whether the record names a session, so both are drawn.
-fn ended(name: &str, width: u16, height: u16, on_record: bool) {
-    let mut app = fixture(name, true);
-    app.modal = Some(weft::app::Modal::Ended {
-        pane: 0,
+/// Work whose agent is not running. What Weft can offer depends on whether
+/// the record names a session, so both are drawn.
+fn pick_up(name: &str, width: u16, height: u16, on_record: bool) {
+    let mut app = fixture(name, false);
+    app.modal = Some(weft::app::Modal::PickUp {
         harness: "codex".into(),
         session: on_record.then(|| weft::sessions::Recorded {
             id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
             at: "2026-09-20T07:27:14.769Z".into(),
-            last: "$rf:ask research crypto trading".into(),
+            last: "research crypto trading".into(),
         }),
+        then: None,
     });
     draw_it(name, width, height, &[], &mut app);
 }

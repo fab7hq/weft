@@ -159,7 +159,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Note(_) => "Note",
         StartAgent { .. } => "StartAgent",
         RingFrame => "RingFrame",
-        Ended { .. } => "Ended",
+        PickUp { .. } => "PickUp",
     }
 }
 
@@ -199,7 +199,7 @@ fn unescape(text: &str) -> Vec<u8> {
 }
 
 fn attach(root: &std::path::Path) -> anyhow::Result<Session> {
-    let socket = weft::protocol::private_socket("weft-step");
+    let socket = weft::protocol::socket_path();
     if !weft::protocol::is_live(&socket) {
         weft::protocol::clear_dead(&socket);
         std::process::Command::new(concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/weft"))

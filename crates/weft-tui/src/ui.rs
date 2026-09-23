@@ -34,11 +34,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // live at the same time.
         let para = detail(app, geo.content);
         frame.render_widget(para, geo.content);
-    } else if app.pane_count() == 0 {
-        frame.render_widget(first_run(app, geo.content), geo.content);
     } else {
         if let Some(list) = geo.list {
-            let drawn = work_list(app, list);
+            let drawn = work_list(app, list, geo.right.is_some());
             frame.render_widget(drawn, list);
         }
         if let Some(divider) = geo.divider_area {
@@ -134,7 +132,7 @@ fn geometry(app: &App, area: Rect) -> Geo {
 
     // The detail view blocks, so it takes the whole body: no split, no
     // divider, and no junction in the rule above it.
-    if app.pane_count() == 0 || app.detail().is_some() {
+    if app.detail().is_some() {
         return geo;
     }
 
@@ -341,16 +339,9 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             };
         }
         Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
-        // No cancel: the agent has already gone, so the only question left is
-        // what to put in its place.
-        Some(Modal::Ended { .. }) => {
-            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CLOSE THE PANE");
-        }
+        Some(Modal::PickUp { .. }) => return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [ESC] CLOSE"),
         None => {}
-    }
-    if app.pane_count() == 0 {
-        return plain("  [↑↓] PICK   [Enter] START   [H]ELP   [X] QUIT");
     }
     if app.waiting_here() {
         return plain("  [Enter] ANSWER IT   [Y] WHY WEFT THINKS SO");
@@ -420,15 +411,12 @@ fn hint(app: &App) -> Paragraph<'static> {
             " The agent will ask you which approach to take, in its own pane.".into()
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
-        (Some(Modal::Ended { .. }), _) => {
-            " Weft keeps no session of its own. The harness owns it; the record names it.".into()
-        }
+        (Some(Modal::PickUp { .. }), _) => " Your work is in the record either way.".into(),
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }
         (Some(_), _) => String::new(),
         (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
-        (None, Focus::Weft) if app.pane_count() == 0 => " Nothing is running yet.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(
             " {} needs your answer (from the screen). Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")
@@ -456,7 +444,7 @@ fn hint(app: &App) -> Paragraph<'static> {
 
 /// One row per unit of work: what you asked for, and where it stands. The
 /// selected row expands in place.
-fn work_list(app: &mut App, area: Rect) -> Paragraph<'static> {
+fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragraph<'static> {
     let th = app.theme;
     let width = area.width as usize;
     let mut lines: Vec<Line> = Vec::new();
@@ -479,7 +467,13 @@ fn work_list(app: &mut App, area: Rect) -> Paragraph<'static> {
             ));
             return Paragraph::new(lines);
         }
-        let (said, next) = if app.record_available() {
+        let (said, next) = if app.record_available() && app.pane_count() == 0 {
+            // When the agent area is beside the list, it says how to start one.
+            (
+                "Nothing asked for yet.",
+                if beside_agent { "" } else { "[N] starts an agent to ask." },
+            )
+        } else if app.record_available() {
             ("Nothing asked for yet.", "[A]SK for something and Weft writes it down.")
         } else {
             // RingFrame owns the record. Without it there is nothing to read,
@@ -490,8 +484,10 @@ fn work_list(app: &mut App, area: Rect) -> Paragraph<'static> {
             )
         };
         lines.push(Line::styled(format!(" {said}"), th.label()));
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(format!(" {next}"), th.label()));
+        if !next.is_empty() {
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(format!(" {next}"), th.label()));
+        }
         return Paragraph::new(lines);
     }
 
@@ -535,9 +531,10 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
                 Span::styled("⌫".to_string(), th.label()),
             ])
         }
-        Row::Harness { name, folded, waiting, .. } => {
+        Row::Harness { name, folded, waiting, running, .. } => {
             let tail = if *waiting > 0 { format!("{waiting} ●  ") } else { "   ".into() };
-            let head = format!("   {} {name}", if *folded { "▸" } else { "▾" });
+            let gone = if *running { "" } else { " · not running" };
+            let head = format!("   {} {name}{gone}", if *folded { "▸" } else { "▾" });
             let room = width.saturating_sub(tail.chars().count() + 1);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
@@ -582,6 +579,10 @@ fn row_state(unit: &Unit) -> (String, bool) {
 // --- the pane, the drawer, and first run --------------------------------------
 
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.pane_count() == 0 {
+        frame.render_widget(no_agent(app, area), area);
+        return;
+    }
     let focus = app.pane_focus;
     app.with_pane_screen(focus, area.height, area.width, |screen| {
         frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
@@ -666,82 +667,20 @@ fn logo_span(th: Theme, kind: char, text: String) -> Span<'static> {
     }
 }
 
-/// Screen 1: nothing is running yet, and the one thing to do about it.
-fn first_run(app: &App, area: Rect) -> Paragraph<'static> {
+/// No agent is running: the mark, and the two ways in.
+fn no_agent(app: &App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
-    let found = app.starts().to_vec();
-    let mut lines: Vec<Line> = vec![Line::raw("")];
-    for text in [
-        "Weft keeps track of what you asked your coding agents",
-        "for, what came back, and who checked it.",
-        "",
-        "You work in the agent as usual. Weft writes it down.",
-        "",
-    ] {
-        lines.push(Line::styled(format!("   {text}"), th.label()));
+    let mut lines = vec![Line::raw("")];
+    if LOGO.len() + 5 <= area.height as usize {
+        lines.extend(logo(th, "   "));
+        lines.push(Line::raw(""));
     }
-    lines.push(Line::styled(
-        "   ┌──────────────────────────────────────────────────┐".to_string(),
-        th.rule(),
-    ));
-    lines.push(Line::from(vec![
-        Span::styled("   │  ".to_string(), th.rule()),
-        Span::styled(padded("START AN AGENT", 48), th.title()),
-        Span::styled("│".to_string(), th.rule()),
-    ]));
-    lines.push(Line::styled(
-        "   │                                                  │".to_string(),
-        th.rule(),
-    ));
-    if found.is_empty() {
-        lines.push(Line::from(vec![
-            Span::styled("   │  ".to_string(), th.rule()),
-            Span::styled(padded("no coding agent found on PATH", 48), th.label()),
-            Span::styled("│".to_string(), th.rule()),
-        ]));
-    }
-    for (i, agent) in found.iter().enumerate() {
-        let picked = i == app.modal_choice;
-        lines.push(Line::from(vec![
-            Span::styled("   │  ".to_string(), th.rule()),
-            Span::styled(
-                padded(
-                    &clip(&format!(" {} {}", if picked { "▸" } else { " " }, agent.label), 48),
-                    48,
-                ),
-                if picked { th.selected() } else { th.label() },
-            ),
-            Span::styled("│".to_string(), th.rule()),
-        ]));
-    }
-    lines.push(Line::styled(
-        "   │                                                  │".to_string(),
-        th.rule(),
-    ));
-    // The footer says what the picked choice would actually do: for a session
-    // being picked up, which one, by what was last asked in it.
-    let footer = match found.get(app.modal_choice).and_then(|c| c.session.as_ref()) {
-        Some(s) => format!("{} · {}", crate::sessions::clock(&s.at), s.last),
-        None => "it runs here, with your own settings".to_string(),
-    };
-    lines.push(Line::from(vec![
-        Span::styled("   │  ".to_string(), th.rule()),
-        Span::styled(padded(&clip(&footer, 48), 48), th.label()),
-        Span::styled("│".to_string(), th.rule()),
-    ]));
-    lines.push(Line::styled(
-        "   └──────────────────────────────────────────────────┘".to_string(),
-        th.rule(),
-    ));
-    lines.push(Line::raw(""));
-    lines.push(Line::styled(
-        "   Arrows and Enter move. Weft takes no mouse, so selection is the terminal's."
-            .to_string(),
-        th.label(),
-    ));
-    // The picker is the point of this screen; the mark only comes when both fit.
-    if lines.len() + LOGO.len() < area.height as usize {
-        lines.splice(1..1, logo(th, "   ").into_iter().chain([Line::raw("")]));
+    lines.push(Line::styled("   [N] starts an agent.".to_string(), th.label()));
+    if !app.units().is_empty() {
+        lines.push(Line::styled(
+            "   [Enter] on your work picks up the session it was asked in.".to_string(),
+            th.label(),
+        ));
     }
     Paragraph::new(lines)
 }
@@ -776,7 +715,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
         Modal::RingFrame => "SYNC RINGFRAME".into(),
-        Modal::Ended { harness, .. } => format!("{} HAS ENDED", harness.to_uppercase()),
+        Modal::PickUp { harness, .. } => format!("{} IS NOT RUNNING", harness.to_uppercase()),
     }
     .to_string()
 }
@@ -844,31 +783,7 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         Modal::StartAgent { .. } => {
             vec!["It runs here, with your own settings.".into(), String::new()]
         }
-        Modal::Ended { harness, session, .. } => {
-            let mut lines = vec!["Nothing is running in this pane any more.".to_string()];
-            match session {
-                // The id comes from the receipt RingFrame's hook wrote, so
-                // what is named here is a session that really happened.
-                Some(s) => {
-                    lines.push(String::new());
-                    lines.push(format!(
-                        "{harness} last wrote to session {} at {}:",
-                        short_id(&s.id),
-                        crate::sessions::clock(&s.at)
-                    ));
-                    lines.push(format!("  {}", clip(&s.last, 68)));
-                }
-                None => {
-                    lines.push(String::new());
-                    lines.push(format!(
-                        "RingFrame has no record of a session for {harness} here, so"
-                    ));
-                    lines.push("there is none Weft can name to open again.".into());
-                }
-            }
-            lines.push(String::new());
-            lines
-        }
+        Modal::PickUp { .. } => Vec::new(),
         Modal::RingFrame => ringframe_body(app.sync_view()),
     }
 }
@@ -976,13 +891,19 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             "Quit and stop the agents".into(),
             "Cancel".into(),
         ],
-        Modal::StartAgent { .. } => app.starts().iter().map(|c| c.label.clone()).collect(),
-        Modal::Ended { harness, session, .. } => crate::app::ended_choices(session.as_ref())
+        Modal::StartAgent { .. } => app.fresh_starts().iter().map(|c| c.label.clone()).collect(),
+        Modal::PickUp { harness, session, .. } => crate::app::pick_up_choices(session.as_ref())
             .into_iter()
-            .map(|c| match c {
-                crate::app::Ended::Resume => "Pick it up where it left off".to_string(),
-                crate::app::Ended::Fresh => format!("Start a fresh {harness}"),
-                crate::app::Ended::Close => "Close this pane".to_string(),
+            .map(|c| match (c, session) {
+                (crate::app::PickUp::Resume, Some(s)) => clip(
+                    &format!(
+                        "Resume the session this was asked in · {} · {}",
+                        crate::sessions::clock(&s.at),
+                        s.last
+                    ),
+                    72,
+                ),
+                _ => format!("Start a fresh {harness}"),
             })
             .collect(),
         _ => Vec::new(),
@@ -1037,12 +958,6 @@ fn routing_lines(app: &App) -> Vec<String> {
     }
     let said: Vec<String> = routed.iter().map(|(act, h)| format!("{act} → {h}")).collect();
     vec![String::new(), format!("This project routes  {}", said.join("   "))]
-}
-
-/// An id is too long to read and too long to fit. Its head is enough to tell
-/// two sessions apart, and the whole of it is in the record.
-fn short_id(id: &str) -> String {
-    id.chars().take(8).collect()
 }
 
 fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Line<'static> {
@@ -1419,45 +1334,6 @@ mod tests {
     }
 
     #[test]
-    fn first_run_offers_the_one_thing_there_is_to_do() {
-        let (root, session) = crate::app::tests::test_session("first-run");
-        let mut a = App::with_session(root, crate::keys::Toggle, session);
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("NO AGENT RUNNING"), "{drawn}");
-        assert!(drawn.contains("START AN AGENT"), "{drawn}");
-        assert!(drawn.contains("Weft writes it down"), "{drawn}");
-        assert!(drawn.contains("[Enter] START"), "{drawn}");
-        assert!(drawn.contains("Nothing is running yet."), "{drawn}");
-    }
-
-    #[test]
-    fn reopening_a_workspace_with_history_offers_to_pick_it_up() {
-        let (root, session) = crate::app::tests::test_session("reopen");
-        if !crate::app::tests::codex_on_path() {
-            eprintln!("skipped: codex is not on PATH");
-            return;
-        }
-        let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
-        std::fs::create_dir_all(&dir).expect("dir");
-        let line = serde_json::json!({
-            "session_id": "01a0bdb6", "time": "2026-09-20T07:27:14.769Z",
-            "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
-        });
-        std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
-
-        let mut a = App::with_session(root, crate::keys::Toggle, session);
-        a.refresh_for_test();
-        let picked = a.starts().iter().position(|c| c.session.is_some()).expect("one to pick up");
-        a.modal_choice = picked;
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("codex · pick up where you left off"), "{drawn}");
-        assert!(drawn.contains("codex · start fresh"), "{drawn}");
-        // The footer says which session, by what was last asked in it.
-        assert!(drawn.contains("07:27"), "{drawn}");
-        assert!(drawn.contains("research crypto trading"), "{drawn}");
-    }
-
-    #[test]
     fn a_list_longer_than_the_screen_says_what_is_above_and_below() {
         let mut a = app();
         let many: Vec<_> = (0..20)
@@ -1521,43 +1397,6 @@ mod tests {
         for key in ["[A]SK", "[E]VAL", "[S]EAL", "[W]EFT"] {
             assert!(drawn.contains(key), "{key} fell off the bar: {drawn}");
         }
-    }
-
-    #[test]
-    fn an_ended_agent_names_the_session_it_could_be_opened_again_as() {
-        let mut a = judged();
-        a.modal = Some(Modal::Ended {
-            pane: 0,
-            harness: "codex".into(),
-            session: Some(crate::sessions::Recorded {
-                id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
-                at: "2026-09-20T07:27:14.769Z".into(),
-                last: "$rf:ask research crypto trading".into(),
-            }),
-        });
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("CODEX HAS ENDED"), "{drawn}");
-        assert!(drawn.contains("01a0bdb6"), "names the recorded session: {drawn}");
-        assert!(drawn.contains("07:27"), "and when it was last used: {drawn}");
-        assert!(drawn.contains("research crypto trading"), "and what it was: {drawn}");
-        assert!(drawn.contains("Pick it up where it left off"), "{drawn}");
-        assert!(drawn.contains("Start a fresh codex"), "{drawn}");
-        assert!(drawn.contains("Close this pane"), "{drawn}");
-    }
-
-    #[test]
-    fn an_ended_agent_with_no_record_offers_no_session_to_resume() {
-        // Weft keeps no session of its own, so with nothing in the record
-        // there is nothing it can name — and it says that rather than
-        // offering a resume that would have to guess at an id.
-        let mut a = judged();
-        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("CODEX HAS ENDED"), "{drawn}");
-        assert!(drawn.contains("no record of a session"), "{drawn}");
-        assert!(!drawn.contains("Pick it up where it left off"), "{drawn}");
-        assert!(drawn.contains("Start a fresh codex"), "{drawn}");
-        assert!(drawn.contains("Close this pane"), "{drawn}");
     }
 
     #[test]

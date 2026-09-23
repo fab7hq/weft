@@ -167,6 +167,18 @@ impl Board<'_> {
         }
     }
 
+    /// The harness this act has to happen in, when no pane of it is open.
+    /// That is not a refusal: the work can be picked back up there.
+    pub fn missing_agent(&self, act: Act) -> Option<String> {
+        let u = self.selected_unit()?;
+        let name = match (act, next_step(u)) {
+            (Act::Proceed, Some(Next::Send | Next::Confirm)) => u.harness.clone(),
+            (Act::Proceed, Some(_)) | (Act::Eval | Act::Seal, _) => self.deciding_harness(act)?,
+            _ => return None,
+        };
+        self.pane_for(&name).is_none().then_some(name)
+    }
+
     /// Why an action is not available now, as one sentence. `None` means it is.
     pub fn unavailable(&self, act: Act) -> Option<String> {
         let no_pane =

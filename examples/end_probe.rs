@@ -1,17 +1,15 @@
-//! A real harness quits from inside. Does Weft notice, and can it name the
-//! session to open again?
+//! A real harness quits from inside. Does Weft notice and close its pane?
 //!
 //!   cargo run --example end_probe -- codex /path/to/a/workspace
 //!
 //! Run by hand: no model call is made and nothing about the model is
-//! claimed. What is under test is Weft's own mechanism — exit detection, the
-//! receipt read, and the command it would run — against the harness a person
-//! actually has installed.
+//! claimed. What is under test is Weft's own exit detection against the harness
+//! a person actually has installed.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use weft::app::{App, Modal};
+use weft::app::App;
 use weft::client::Session;
 use weft::keys::Toggle;
 use weft::protocol;
@@ -39,25 +37,15 @@ fn main() -> anyhow::Result<()> {
     for quit in [&b"/quit\r"[..], &[3][..], &[4][..]] {
         app.input(0, quit)?;
         settle(&mut app, Duration::from_secs(3));
-        if app.modal.is_some() {
+        if app.pane_count() == 0 {
             break;
         }
     }
 
-    match app.modal.clone() {
-        Some(Modal::Ended { harness, session, .. }) => {
-            println!("noticed: {harness} has ended");
-            match session {
-                Some(s) => println!(
-                    "would run: {}\n  (last prompt {} at {})",
-                    h.resume_spec(&s.id),
-                    s.last,
-                    s.at
-                ),
-                None => println!("no session on record here, so nothing is offered to resume"),
-            }
-        }
-        other => println!("NOT noticed within the budget; modal was {other:?}"),
+    if app.pane_count() == 0 {
+        println!("noticed: {name} has ended and its pane is closed");
+    } else {
+        println!("NOT noticed within the budget");
     }
     Ok(())
 }
@@ -68,7 +56,7 @@ fn settle(app: &mut App, budget: Duration) {
     while Instant::now() < deadline {
         app.pump();
         app.notice_an_agent_that_ended();
-        if app.modal.is_some() {
+        if app.pane_count() == 0 {
             return;
         }
         std::thread::sleep(Duration::from_millis(50));

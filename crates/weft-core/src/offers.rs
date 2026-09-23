@@ -6,14 +6,13 @@
 use crate::inject::Handoff;
 use crate::sessions::Recorded;
 
-/// What the panel for an ended agent offers, in the order it offers it.
-/// Resuming is first when there is a session on record, because picking up
-/// where you were is what you almost always want.
+/// What picking work back up offers when its agent is not running. Resuming
+/// is first when there is a session on record, because picking up where you
+/// were is what you almost always want.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Ended {
+pub enum PickUp {
     Resume,
     Fresh,
-    Close,
 }
 
 /// One sentence about a handoff that is not a plain paste, for the panel that
@@ -33,12 +32,12 @@ pub fn say_handoff(how: &Handoff, harness: &str) -> Option<String> {
     }
 }
 
-pub fn ended_choices(session: Option<&Recorded>) -> Vec<Ended> {
+pub fn pick_up_choices(session: Option<&Recorded>) -> Vec<PickUp> {
     match session {
-        Some(_) => vec![Ended::Resume, Ended::Fresh, Ended::Close],
+        Some(_) => vec![PickUp::Resume, PickUp::Fresh],
         // Nothing to resume is not the same as resuming nothing. Weft offers
         // only what it can name from the record.
-        None => vec![Ended::Fresh, Ended::Close],
+        None => vec![PickUp::Fresh],
     }
 }
 

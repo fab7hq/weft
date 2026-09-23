@@ -20,7 +20,7 @@ use crate::theme::Theme;
 pub use weft_core::board::Act;
 use weft_core::board::{Board, Next, PaneInfo};
 use weft_core::harness;
-pub use weft_core::offers::{Ended, ended_choices, say_handoff};
+pub use weft_core::offers::{PickUp, pick_up_choices, say_handoff};
 use weft_core::readiness::{Gap, Readiness};
 use weft_core::sessions::Recorded;
 
@@ -85,7 +85,7 @@ fn shellexpand(typed: &str) -> String {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
     Project { project: usize, name: String, folded: bool, open: usize, waiting: usize },
-    Harness { project: usize, name: String, folded: bool, waiting: usize },
+    Harness { project: usize, name: String, folded: bool, waiting: usize, running: bool },
     Action { project: usize, unit: usize },
 }
 
@@ -169,13 +169,12 @@ pub enum Modal {
     /// What the configuration and each harness need to reach RingFrame's
     /// latest release. Nothing runs until `[P]ROCEED`.
     RingFrame,
-    /// The agent in this pane is gone — it was quit from inside, or it
-    /// stopped. Weft never keeps a harness session of its own, so what it can
-    /// offer is whichever session RingFrame has a receipt for.
-    Ended {
-        pane: usize,
+    /// Work whose agent is not running: resume the session it was asked in,
+    /// or start fresh, then carry on with `then`.
+    PickUp {
         harness: String,
         session: Option<Recorded>,
+        then: Option<Act>,
     },
 }
 
@@ -390,6 +389,10 @@ impl App {
     }
 
     /// Why an action is not available now, as one sentence. `None` means it is.
+    pub fn missing_agent(&self, act: Act) -> Option<String> {
+        self.with_board(|b| b.missing_agent(act))
+    }
+
     pub fn unavailable(&self, act: Act) -> Option<String> {
         self.with_board(|b| b.unavailable(act))
     }
@@ -419,10 +422,23 @@ impl App {
                 }
             }
             for name in seen {
+                let running = p.session.panes.iter().any(|pane| pane.harness == name);
+                let open =
+                    units.iter().any(|u| u.harness == name && u.sealed.is_none() && !u.cancelled);
+                // Nothing to go back to: no agent, and nothing left open.
+                if !running && !open {
+                    continue;
+                }
                 let key = format!("{at}\u{0}{name}");
                 let folded = self.folded.contains(&key);
                 let waiting = units.iter().filter(|u| u.harness == name && u.needs_you()).count();
-                out.push(Row::Harness { project: at, name: name.to_string(), folded, waiting });
+                out.push(Row::Harness {
+                    project: at,
+                    name: name.to_string(),
+                    folded,
+                    waiting,
+                    running,
+                });
                 if folded {
                     continue;
                 }
@@ -606,21 +622,11 @@ impl App {
         };
         self.announced.insert(pane);
         let harness = self.harness_at(pane).unwrap_or("the agent").to_string();
-        // Focus leaves a pane nothing is listening to, whatever else happens.
-        self.focus = Focus::Weft;
-        if self.modal.is_some() {
-            return;
-        }
-        // The session to offer is whichever this harness last used here, which
-        // the daemon reads out of RingFrame's receipts.
-        self.look_for_agents();
-        let session = self
-            .starts
-            .iter()
-            .find(|s| s.harness == harness && s.session.is_some())
-            .and_then(|s| s.session.clone());
-        self.modal_choice = 0;
-        self.modal = Some(Modal::Ended { pane, harness, session });
+        // The work is in the record, so the pane goes and the row says so.
+        let modal = self.modal.take();
+        self.close_pane(pane);
+        self.modal = modal;
+        self.say(format!("{harness} has ended. Its work is still on the list."));
     }
 
     /// Take a pane away and forget what was said about it. Every pane after it
@@ -644,10 +650,26 @@ impl App {
         self.focus = Focus::Weft;
     }
 
-    /// Close the ended pane and start the harness again, either where it left
-    /// off or fresh. Weft runs the command a person would type, and does not
-    /// claim the session came back: the harness says that, in its own pane.
-    fn start_again(&mut self, pane: usize, harness: &str, session: Option<&Recorded>) {
+    /// Offer to start the harness this work needs: the session the selected
+    /// Ask was asked in, else the harness's latest on record, else fresh.
+    fn offer_pick_up(&mut self, harness: String, then: Option<Act>) {
+        self.look_for_agents();
+        let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
+            let id = u.session_ref.clone()?;
+            Some(Recorded { id, at: u.asked_at.clone(), last: u.title.clone() })
+        });
+        let session = own.or_else(|| {
+            self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.clone())
+        });
+        self.modal_choice = 0;
+        self.modal = Some(Modal::PickUp { harness, session, then });
+    }
+
+    /// Start the harness where it left off or fresh, then carry on. Weft runs
+    /// the command a person would type, and does not claim the session came
+    /// back: the harness says that, in its own pane.
+    fn pick_up(&mut self, harness: &str, session: Option<&Recorded>, then: Option<Act>) {
+        self.modal = None;
         let Some(h) = harness::find(harness) else {
             self.modal = Some(Modal::Note(format!("Weft does not know how to start {harness}.")));
             return;
@@ -656,11 +678,14 @@ impl App {
             Some(s) => h.resume_spec(&s.id),
             None => h.spec(),
         };
-        self.close_pane(pane);
         if let Err(e) = self.add(harness, &spec) {
             self.modal = Some(Modal::Note(format!("Could not start {spec}: {e}")));
-        } else {
-            self.pane_focus = self.pane_count().saturating_sub(1);
+            return;
+        }
+        self.pane_focus = self.pane_count().saturating_sub(1);
+        match then {
+            Some(act) => self.act(act),
+            None => self.focus = Focus::Agent,
         }
     }
 
@@ -907,10 +932,15 @@ impl App {
             .collect();
     }
 
+    /// What `[N]` offers: each harness fresh. Picking a session back up is
+    /// done from the work, which knows which session it was.
+    pub fn fresh_starts(&self) -> Vec<Start> {
+        self.starts.iter().filter(|s| s.session.is_none()).cloned().collect()
+    }
+
     fn start_agent_picker(&mut self) {
         self.look_for_agents();
-        let found = self.starts();
-        if found.is_empty() {
+        if self.fresh_starts().is_empty() {
             self.say("No coding agent found. Install claude or codex first.");
             return;
         }
@@ -919,10 +949,7 @@ impl App {
     }
 
     pub fn start_chosen_agent(&mut self, choice: usize) {
-        if self.starts.is_empty() {
-            self.look_for_agents();
-        }
-        let Some(start) = self.starts.get(choice).cloned() else { return };
+        let Some(start) = self.fresh_starts().get(choice).cloned() else { return };
         match self.add(start.harness, &start.spec) {
             Ok(()) => {
                 self.modal = None;
@@ -996,7 +1023,7 @@ impl App {
     /// Move through the agents the first-run picker offers. It wraps, like the
     /// work list, because a three-item list that stops is a list you fight.
     fn pick_agent(&mut self, delta: i8) {
-        let n = self.starts().len();
+        let n = self.fresh_starts().len();
         if n == 0 {
             return;
         }
@@ -1017,7 +1044,17 @@ impl App {
             Row::Project { .. } => self.set_fold(&row, !row.folded()),
             Row::Harness { ref name, .. } if row.folded() => self.set_fold(&row, false),
             Row::Harness { ref name, .. } => self.go_to_harness(name),
-            Row::Action { .. } => self.act(Act::Detail),
+            Row::Action { .. } => match self.selected_unit() {
+                Some(u)
+                    if u.sealed.is_none()
+                        && !u.cancelled
+                        && self.pane_for(&u.harness).is_none() =>
+                {
+                    let harness = u.harness.clone();
+                    self.offer_pick_up(harness, None)
+                }
+                _ => self.act(Act::Detail),
+            },
         }
     }
 
@@ -1198,6 +1235,10 @@ impl App {
     pub fn act(&mut self, act: Act) {
         match act {
             Act::Ask => self.start_ask(),
+            Act::Proceed | Act::Eval | Act::Seal if self.missing_agent(act).is_some() => {
+                let harness = self.missing_agent(act).unwrap_or_default();
+                self.offer_pick_up(harness, Some(act));
+            }
             Act::Proceed => self.proceed(),
             Act::Detail => self.open_detail(),
             Act::Eval => self.start_skill("eval"),
@@ -1276,20 +1317,14 @@ impl App {
                 }
             }
             Action::Pick(delta) => {
-                if self.pane_count() == 0 {
-                    // First run: the picker is the surface, and it is drawn in
-                    // the body rather than as a modal, so it owns the arrows.
-                    self.pick_agent(delta);
-                } else if self.detail.is_some() {
+                if self.detail.is_some() {
                     self.scroll_detail(delta as i32);
                 } else {
                     self.pick(delta);
                 }
             }
             Action::Open => {
-                if self.pane_count() == 0 {
-                    self.start_chosen_agent(self.modal_choice);
-                } else if self.waiting_here() {
+                if self.waiting_here() {
                     // [Enter] ANSWER IT: the person answers, never Weft.
                     self.focus = Focus::Agent;
                 } else if self.detail.is_none() {
@@ -1404,8 +1439,8 @@ impl App {
             Modal::CloseProject { .. } => 2,
             Modal::SendAnyway { .. } => 2,
             Modal::OpenProject { .. } => 1,
-            Modal::StartAgent { .. } => self.starts().len().max(1),
-            Modal::Ended { session, .. } => ended_choices(session.as_ref()).len(),
+            Modal::StartAgent { .. } => self.fresh_starts().len().max(1),
+            Modal::PickUp { session, .. } => pick_up_choices(session.as_ref()).len(),
             _ => 1,
         };
         match key.code {
@@ -1424,12 +1459,6 @@ impl App {
                 }
             }
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
-                // The agent is gone either way, so backing out of this panel
-                // takes the pane with it rather than leaving a dead one up.
-                Modal::Ended { pane, .. } => {
-                    let pane = *pane;
-                    self.close_pane(pane);
-                }
                 // A question nobody is going to answer is taken off the
                 // daemon's queue, not left there for another client.
                 Modal::Confirm(p) => {
@@ -1455,12 +1484,11 @@ impl App {
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             Modal::RingFrame => {}
-            Modal::Ended { pane, harness, session } => {
-                let (pane, harness, session) = (*pane, harness.clone(), session.clone());
-                match ended_choices(session.as_ref()).get(self.modal_choice) {
-                    Some(Ended::Resume) => self.start_again(pane, &harness, session.as_ref()),
-                    Some(Ended::Fresh) => self.start_again(pane, &harness, None),
-                    _ => self.close_pane(pane),
+            Modal::PickUp { harness, session, then } => {
+                let (harness, session, then) = (harness.clone(), session.clone(), *then);
+                match pick_up_choices(session.as_ref()).get(self.modal_choice) {
+                    Some(PickUp::Resume) => self.pick_up(&harness, session.as_ref(), then),
+                    _ => self.pick_up(&harness, None, then),
                 }
             }
             // Its own keyboard, handled above.
@@ -1760,118 +1788,61 @@ pub(crate) mod tests {
         a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)).expect("key");
     }
 
-    /// Write the receipt RingFrame's hook would have written, so the panel has
-    /// a session to name. Weft only ever reads this.
-    fn record_a_session(root: &std::path::Path, harness: &str, id: &str) {
-        let dir = root.join(".fab7/rf/sessions").join(harness).join(id);
-        std::fs::create_dir_all(&dir).expect("session dir");
-        let line = serde_json::json!({
-            "session_id": id, "time": "2026-09-20T07:27:14.769Z",
-            "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
-        });
-        std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
-    }
-
     #[test]
-    fn an_agent_that_quits_is_said_once_and_focus_leaves_its_pane() {
-        let mut a = app();
+    fn an_agent_that_quits_closes_its_pane_and_keeps_its_work() {
+        let mut a = with_unit(Sent::TakenByAgent);
         a.focus = Focus::Agent;
         a.input(0, &[4]).expect("Ctrl+D ends /bin/cat");
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
+        while std::time::Instant::now() < deadline && a.pane_count() > 0 {
             a.pump();
             a.notice_an_agent_that_ended();
-            if a.modal.is_some() {
-                break;
-            }
             std::thread::sleep(Duration::from_millis(20));
         }
-        let Some(Modal::Ended { pane, harness, .. }) = a.modal.clone() else {
-            panic!("the panel says the agent has gone: {:?}", a.modal)
-        };
-        assert_eq!((pane, harness.as_str()), (0, "codex"));
+        assert_eq!(a.pane_count(), 0, "the pane is gone, not left dead on screen");
+        assert!(a.modal.is_none(), "no panel: the row says it");
         assert_eq!(a.focus, Focus::Weft, "keystrokes never go to a dead process");
-
-        // Said once. A pane that is gone stays gone.
-        a.modal = None;
-        a.notice_an_agent_that_ended();
-        assert!(a.modal.is_none(), "not raised again every tick");
+        assert!(a.hint_text().is_some_and(|h| h.contains("still on the list")));
+        assert!(
+            a.rows().iter().any(|r| matches!(r, Row::Harness { running: false, .. })),
+            "its work stays, marked not running"
+        );
     }
 
     #[test]
     fn resuming_is_offered_only_when_the_record_names_a_session() {
-        assert_eq!(ended_choices(None), vec![Ended::Fresh, Ended::Close]);
-        let known = Recorded {
-            id: "01a0bdb6".into(),
-            at: "2026-09-20T07:27:14.769Z".into(),
-            last: "$rf:ask research crypto trading".into(),
-        };
-        assert_eq!(
-            ended_choices(Some(&known)),
-            vec![Ended::Resume, Ended::Fresh, Ended::Close],
-            "picking up where you were comes first"
-        );
+        assert_eq!(pick_up_choices(None), vec![PickUp::Fresh]);
+        let known = Recorded { id: "01a0bdb6".into(), at: String::new(), last: String::new() };
+        assert_eq!(pick_up_choices(Some(&known)), vec![PickUp::Resume, PickUp::Fresh]);
     }
 
     #[test]
-    fn the_session_offered_is_the_one_the_hook_wrote_down() {
-        // `starts()` only offers a harness that is on this machine, so this
-        // is about what Weft does when one is. A runner has no Codex.
-        if !codex_on_path() {
-            eprintln!("skipped: codex is not on PATH");
-            return;
-        }
+    fn open_work_with_no_agent_offers_the_session_it_was_asked_in() {
         let mut a = app();
-        record_a_session(a.root(), "codex", "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
-        a.input(0, &[4]).expect("end it");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            a.pump();
-            a.notice_an_agent_that_ended();
-            if a.modal.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let Some(Modal::Ended { session: Some(s), .. }) = a.modal.clone() else {
-            panic!("a recorded session is offered: {:?}", a.modal)
-        };
-        assert_eq!(s.id, "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0");
-        assert_eq!(
-            harness::find("codex").expect("codex").resume_spec(&s.id),
-            "codex resume 01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"
-        );
-    }
-
-    #[test]
-    fn closing_an_ended_pane_takes_it_away() {
-        let mut a = app();
-        assert_eq!(a.pane_count(), 1);
-        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
-        a.modal_choice =
-            ended_choices(None).iter().position(|c| *c == Ended::Close).expect("close");
+        let mut u = unit(Sent::TakenByAgent);
+        u.harness = "claude-code".into();
+        u.session_ref = Some("dfffa9be".into());
+        a.set_units(vec![u]);
+        a.selected = a.rows().iter().position(|r| matches!(r, Row::Action { .. })).expect("row");
         press(&mut a, KeyCode::Enter);
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && a.pane_count() > 0 {
-            a.pump();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(a.pane_count(), 0, "the pane is gone, not left dead on screen");
-        assert!(a.modal.is_none());
+        let Some(Modal::PickUp { harness, session: Some(s), then: None }) = a.modal.clone() else {
+            panic!("the choice, naming its own session: {:?}", a.modal)
+        };
+        assert_eq!((harness.as_str(), s.id.as_str()), ("claude-code", "dfffa9be"));
     }
 
     #[test]
-    fn backing_out_of_the_ended_panel_closes_the_pane_too() {
-        // There is nothing to go back to: the agent has already gone.
+    fn a_harness_with_nothing_open_and_no_agent_is_not_listed() {
         let mut a = app();
-        a.modal = Some(Modal::Ended { pane: 0, harness: "codex".into(), session: None });
-        press(&mut a, KeyCode::Left);
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && a.pane_count() > 0 {
-            a.pump();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert_eq!(a.pane_count(), 0);
+        let mut u = unit(Sent::TakenByAgent);
+        u.harness = "claude-code".into();
+        u.sealed = Some("accepted".into());
+        a.set_units(vec![u]);
+        assert!(
+            !a.rows()
+                .iter()
+                .any(|r| matches!(r, Row::Harness { name, .. } if name == "claude-code"))
+        );
     }
 
     #[test]
@@ -1918,7 +1889,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_picker_offers_a_recorded_session_before_a_fresh_agent() {
+    fn the_latest_recorded_session_is_found_for_picking_up() {
         // `starts()` only offers a harness that is on this machine, so this
         // is about what Weft does when one is. A runner has no Codex.
         if !codex_on_path() {
@@ -2216,8 +2187,10 @@ pub(crate) mod tests {
         u.harness = "claude-code".into();
         a.set_units(vec![u]);
         press(&mut a, KeyCode::Char('e'));
-        let hint = a.hint_text().expect("a sentence");
-        assert!(hint.contains("claude-code"), "names the missing agent: {hint}");
+        let Some(Modal::PickUp { harness, then, .. }) = a.modal.clone() else {
+            panic!("the missing agent is offered, not refused: {:?}", a.modal)
+        };
+        assert_eq!((harness.as_str(), then), ("claude-code", Some(Act::Eval)));
     }
 
     #[test]
@@ -2629,36 +2602,15 @@ mod start_tests {
 }
 
 #[cfg(test)]
-mod first_run_tests {
-    use super::tests::{press, test_session};
+mod picker_tests {
+    use super::tests::press;
     use super::*;
     use crossterm::event::KeyCode;
 
     #[test]
-    fn the_first_run_picker_moves_and_starts() {
-        let (root, session) = test_session("first-run-keys");
-        let mut a = App::with_session(root, Toggle, session);
-        a.refresh_for_test();
-        assert_eq!(a.pane_count(), 0, "first run: the picker is the whole screen");
-        let choices = a.starts().len();
-        if choices < 2 {
-            eprintln!("skipped: needs two agents installed");
-            return;
-        }
-        press(&mut a, KeyCode::Down);
-        assert_eq!(a.modal_choice, 1, "the arrows move the picker");
-        press(&mut a, KeyCode::Up);
-        assert_eq!(a.modal_choice, 0);
-        press(&mut a, KeyCode::Up);
-        assert_eq!(a.modal_choice, choices - 1, "and it wraps, like the work list");
-    }
-
-    #[test]
-    fn the_picker_behaves_the_same_wherever_it_is_drawn() {
-        // On first run it is the body; pressing N over a running agent draws
-        // it as a modal. A person should not have to know the difference.
+    fn the_agent_picker_moves_and_wraps() {
         let mut a = super::tests::app();
-        let choices = a.starts().len();
+        let choices = a.fresh_starts().len();
         if choices < 2 {
             eprintln!("skipped: needs two agents installed");
             return;
