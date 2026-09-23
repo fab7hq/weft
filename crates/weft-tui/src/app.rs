@@ -1964,7 +1964,7 @@ pub(crate) mod tests {
         u.confirmed = false;
         u.unanswered = true;
         a.set_units(vec![u]);
-        assert_eq!(a.unavailable(Act::Proceed), None, "[S]END is the person's yes");
+        assert_eq!(a.unavailable(Act::Proceed), None, "proceeding is the person's yes");
     }
 
     /// A project that routes its acts. Weft reads the file once, so this sets

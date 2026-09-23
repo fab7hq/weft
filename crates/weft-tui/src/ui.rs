@@ -324,8 +324,8 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     }
     match &app.modal {
         Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
-        Some(Modal::Quit) => return plain("  [Enter] CONFIRM   [←] CANCEL"),
-        Some(Modal::Weft) => return plain("  [↑↓] PICK   [Enter] OPEN   [ESC] CLOSE"),
+        Some(Modal::Quit) => return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL"),
+        Some(Modal::Weft) => return plain("  [↑↓] PICK   [Enter] DO IT   [ESC] CLOSE"),
         Some(Modal::CloseProject { .. }) => {
             return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
         }
@@ -333,7 +333,7 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         Some(Modal::SendAnyway { .. }) => {
             return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
         }
-        Some(Modal::StartAgent { .. }) => return plain("  [Enter] START   [←] CANCEL"),
+        Some(Modal::StartAgent { .. }) => return plain("  [↑↓] PICK   [Enter] START   [←] CANCEL"),
         Some(Modal::RingFrame) => {
             return match app.sync_view() {
                 Some(v) if v.needs_anything() && !v.running => plain("  [P]ROCEED   [ESC] CLOSE"),
@@ -350,10 +350,10 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         None => {}
     }
     if app.pane_count() == 0 {
-        return plain("  [Enter] START   [H]ELP   [X] QUIT");
+        return plain("  [↑↓] PICK   [Enter] START   [H]ELP   [X] QUIT");
     }
     if app.waiting_here() {
-        return plain("  [Enter] ANSWER IT   [E]XPLAIN WHY IT SAYS THAT");
+        return plain("  [Enter] ANSWER IT   [Y] WHY WEFT THINKS SO");
     }
     if app.detail().is_some() {
         // Three keys, the same three on every state of the view. `[P]ROCEED`
@@ -885,7 +885,6 @@ fn help_lines(app: &App) -> Vec<String> {
         ("Tab", "next agent"),
         ("1-9", "that agent"),
         (toggle, "agent, and back"),
-        ("Y", "why a pane waits"),
         ("⌫", "close the project"),
     ];
     let ringframe = [("RINGFRAME", ""), ("A", "ask"), ("E", "eval"), ("S", "seal")];
@@ -1391,7 +1390,7 @@ mod tests {
         let row = lines.iter().position(|l| l.contains("readme fix")).expect("the row");
         let panel = lines
             .iter()
-            .position(|l| l.contains("CHECK THIS WORK"))
+            .position(|l| l.contains("EVAL THIS WORK"))
             .unwrap_or_else(|| panic!("the panel:\n{drawn}"));
         assert!(row < panel, "the row it is about stays above it:\n{drawn}");
         assert!(lines[22].contains("[Enter] DO IT"), "{}", lines[22]);
@@ -1658,7 +1657,7 @@ mod tests {
         press(&mut a, KeyCode::Char(' '));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("[Enter] ANSWER IT"), "{drawn}");
-        assert!(drawn.contains("[E]XPLAIN WHY IT SAYS THAT"), "{drawn}");
+        assert!(drawn.contains("[Y] WHY WEFT THINKS SO"), "{drawn}");
         assert!(drawn.contains("(from the screen)"), "the inference is labelled: {drawn}");
         assert!(drawn.contains("Weft never answers for you"), "{drawn}");
     }

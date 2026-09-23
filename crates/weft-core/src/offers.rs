@@ -105,11 +105,7 @@ pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Askin
         why.push(format!("{into} did not do this work. Both acts read the record."));
     }
     Asking {
-        what: if skill == "eval" {
-            "Check this work?".into()
-        } else {
-            "Decide on this work?".into()
-        },
+        what: if skill == "eval" { "Eval this work?".into() } else { "Seal this work?".into() },
         why,
     }
 }
@@ -183,13 +179,13 @@ pub fn seal_read(unit: &crate::ledger::Unit, checked: &serde_json::Value) -> Vec
             let verdict = e.get("verdict").and_then(serde_json::Value::as_str).unwrap_or("?");
             let confidence = e.get("confidence").and_then(serde_json::Value::as_f64);
             lines.push(match confidence {
-                Some(c) => format!("ON THE CHECK  recorded as {verdict}, {c:.2} agreed"),
-                None => format!("ON THE CHECK  recorded as {verdict}"),
+                Some(c) => format!("ON THE EVAL   recorded as {verdict}, {c:.2} agreed"),
+                None => format!("ON THE EVAL   recorded as {verdict}"),
             });
         }
         // A Seal may close work no judge looked at. That is allowed, and
         // saying so is the point of reading the receipt.
-        _ => lines.push("ON THE CHECK  none — this was sealed without an Eval".into()),
+        _ => lines.push("ON THE EVAL   none — this was sealed without an Eval".into()),
     }
     if let Some(id) = str_at("seal_id") {
         lines.push(format!("RECEIPT       {id}"));
