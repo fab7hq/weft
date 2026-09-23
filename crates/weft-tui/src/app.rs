@@ -407,7 +407,7 @@ impl App {
         for (at, p) in self.projects.iter().enumerate() {
             let units = self.units_of(at);
             let waiting = units.iter().filter(|u| u.needs_you()).count();
-            let open = units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count();
+            let open = units.iter().filter(|u| u.is_open()).count();
             let folded = self.folded.contains(&p.name);
             out.push(Row::Project { project: at, name: p.name.clone(), folded, open, waiting });
             if folded {
@@ -423,8 +423,7 @@ impl App {
             }
             for name in seen {
                 let running = p.session.panes.iter().any(|pane| pane.harness == name);
-                let open =
-                    units.iter().any(|u| u.harness == name && u.sealed.is_none() && !u.cancelled);
+                let open = units.iter().any(|u| u.harness == name && u.is_open());
                 // Nothing to go back to: no agent, and nothing left open.
                 if !running && !open {
                     continue;
@@ -623,9 +622,7 @@ impl App {
         self.announced.insert(pane);
         let harness = self.harness_at(pane).unwrap_or("the agent").to_string();
         // The work is in the record, so the pane goes and the row says so.
-        let modal = self.modal.take();
         self.close_pane(pane);
-        self.modal = modal;
         self.say(format!("{harness} has ended. Its work is still on the list."));
     }
 
@@ -646,7 +643,6 @@ impl App {
         if self.pane_focus >= pane && self.pane_focus > 0 {
             self.pane_focus -= 1;
         }
-        self.modal = None;
         self.focus = Focus::Weft;
     }
 
@@ -1020,7 +1016,7 @@ impl App {
         }
     }
 
-    /// Move through the agents the first-run picker offers. It wraps, like the
+    /// Move through the agents the `[N]` picker offers. It wraps, like the
     /// work list, because a three-item list that stops is a list you fight.
     fn pick_agent(&mut self, delta: i8) {
         let n = self.fresh_starts().len();
@@ -1045,11 +1041,7 @@ impl App {
             Row::Harness { ref name, .. } if row.folded() => self.set_fold(&row, false),
             Row::Harness { ref name, .. } => self.go_to_harness(name),
             Row::Action { .. } => match self.selected_unit() {
-                Some(u)
-                    if u.sealed.is_none()
-                        && !u.cancelled
-                        && self.pane_for(&u.harness).is_none() =>
-                {
+                Some(u) if u.is_open() && self.pane_for(&u.harness).is_none() => {
                     let harness = u.harness.clone();
                     self.offer_pick_up(harness, None)
                 }
@@ -1128,15 +1120,14 @@ impl App {
         }
     }
 
-    /// The pane that is running this harness, or the session the selected
-    /// work was asked in when none is.
+    /// The pane that is running this harness, or the offer to pick it up.
     fn go_to_harness(&mut self, harness: &str) {
         if let Some(i) = sess!(self).panes.iter().position(|p| p.harness == harness) {
             self.pane_focus = i;
             self.focus = Focus::Agent;
             return;
         }
-        self.open_the_agent();
+        self.offer_pick_up(harness.to_string(), None);
     }
 
     /// `←` is back everywhere in Weft: it closes the drawer, then collapses the
@@ -1233,12 +1224,14 @@ impl App {
     /// What an action does, wherever it was asked for. The bar shows a key for
     /// every one of these and each is also a click, so they meet here.
     pub fn act(&mut self, act: Act) {
+        // Work whose agent is not running is picked back up, not refused.
+        if matches!(act, Act::Proceed | Act::Eval | Act::Seal)
+            && let Some(harness) = self.missing_agent(act)
+        {
+            return self.offer_pick_up(harness, Some(act));
+        }
         match act {
             Act::Ask => self.start_ask(),
-            Act::Proceed | Act::Eval | Act::Seal if self.missing_agent(act).is_some() => {
-                let harness = self.missing_agent(act).unwrap_or_default();
-                self.offer_pick_up(harness, Some(act));
-            }
             Act::Proceed => self.proceed(),
             Act::Detail => self.open_detail(),
             Act::Eval => self.start_skill("eval"),
@@ -1250,7 +1243,6 @@ impl App {
                 }
             }
             Act::ReadyUp => self.open_ringframe(),
-            Act::GoToAgent => self.open_the_agent(),
             Act::NewAgent => self.start_agent_picker(),
             Act::ToggleSidebar => self.toggle_work(),
             // Opening another project is the next step's work; until then it
@@ -1270,27 +1262,6 @@ impl App {
                 self.modal = Some(Modal::Quit);
                 self.modal_choice = 0;
             }
-        }
-    }
-
-    /// Open the agent that has the selected work, in the session it was asked
-    /// in. The command is the one a person would type; Weft claims nothing
-    /// about what comes back, which the harness shows in its own pane.
-    pub(crate) fn open_the_agent(&mut self) {
-        if !self.guard(Act::GoToAgent) {
-            return;
-        }
-        let Some(u) = self.selected_unit() else { return };
-        let (harness, id) = (u.harness.clone(), u.session_ref.clone().unwrap_or_default());
-        let Some(h) = harness::find(&harness) else { return };
-        let spec = h.resume_spec(&id);
-        match self.add(&harness, &spec) {
-            Ok(()) => {
-                self.pane_focus = self.pane_count().saturating_sub(1);
-                self.show_work = false;
-                self.focus = Focus::Agent;
-            }
-            Err(e) => self.modal = Some(Modal::Note(format!("Could not run {spec}: {e}"))),
         }
     }
 
@@ -1843,49 +1814,6 @@ pub(crate) mod tests {
                 .iter()
                 .any(|r| matches!(r, Row::Harness { name, .. } if name == "claude-code"))
         );
-    }
-
-    #[test]
-    fn a_row_of_work_leads_back_to_the_agent_that_has_it() {
-        // The complaint this answers: reopening Weft showed rows of previous
-        // work with no next action on any of them.
-        let a = with_unit(Sent::TakenByAgent);
-        assert_eq!(a.unavailable(Act::GoToAgent), None, "the record names the session");
-    }
-
-    #[test]
-    fn a_unit_whose_record_names_no_session_offers_nothing_to_open() {
-        let mut a = app();
-        let mut u = unit(Sent::TakenByAgent);
-        u.session_ref = None;
-        a.set_units(vec![u]);
-        let said = a.unavailable(Act::GoToAgent).expect("a reason");
-        assert!(said.contains("does not name"), "{said}");
-        assert!(said.contains("codex"), "and names the harness: {said}");
-    }
-
-    #[test]
-    fn a_session_already_open_is_pointed_at_rather_than_opened_twice() {
-        // Two processes on one session would be two writers on one record.
-        let mut a = app();
-        let mut u = unit(Sent::TakenByAgent);
-        u.session_ref = Some("abc123".into());
-        a.set_units(vec![u]);
-        assert_eq!(a.unavailable(Act::GoToAgent), None, "nothing is running it yet");
-
-        // The spec the pane runs is what says so, so it holds for a pane
-        // another client opened.
-        a.session_mut().panes[0].spec = "codex resume abc123".into();
-        let said = a.unavailable(Act::GoToAgent).expect("a reason");
-        assert!(said.contains("already open"), "{said}");
-        assert!(said.contains("[1]"), "and says which pane: {said}");
-    }
-
-    #[test]
-    fn nothing_asked_for_yet_means_nothing_to_open() {
-        let mut a = app();
-        a.set_units(Vec::new());
-        assert!(a.unavailable(Act::GoToAgent).is_some());
     }
 
     #[test]

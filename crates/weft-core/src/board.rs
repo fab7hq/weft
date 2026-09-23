@@ -28,10 +28,6 @@ pub enum Act {
     FollowUp,
     /// Set the agent that owns the work up for RingFrame.
     ReadyUp,
-    /// Open the agent that has this work, in the session it was asked in.
-    /// No key of its own: `[Enter]` on a harness in the sidebar is how it is
-    /// reached, because going to an agent is navigation rather than an act.
-    GoToAgent,
     NewAgent,
     OpenProject,
     ToggleSidebar,
@@ -115,19 +111,9 @@ impl Board<'_> {
         self.panes.iter().position(|p| p.harness == harness)
     }
 
-    /// Whether some pane is already running the session this unit was asked
-    /// in. Compared against the command line the pane was started with, which
-    /// the server reports, so it holds for a pane another client opened.
-    fn pane_running(&self, unit: &Unit) -> Option<usize> {
-        let id = unit.session_ref.as_deref()?;
-        self.panes
-            .iter()
-            .position(|p| p.running && p.harness == unit.harness && p.spec.contains(id))
-    }
-
     /// Open units, as the title bar counts them.
     pub fn open_count(&self) -> usize {
-        self.units.iter().filter(|u| u.sealed.is_none() && !u.cancelled).count()
+        self.units.iter().filter(|u| u.is_open()).count()
     }
 
     /// Units waiting on a decision only the person can make. Panes waiting for
@@ -248,22 +234,6 @@ impl Board<'_> {
                         self.pane_for(&name).is_none().then(|| no_pane(&name))
                     }
                 },
-            },
-            Act::GoToAgent => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                // Only what the record names. An Ask compiled before RingFrame
-                // captured the host's session carries none, and Weft will not
-                // invent one to fill the gap.
-                Some(u) if u.session_ref.is_none() => Some(format!(
-                    "The record does not name the {} session this was asked in.",
-                    u.harness
-                )),
-                Some(u) if !crate::harness::SUPPORTED.iter().any(|h| h.name == u.harness) => {
-                    Some(format!("Weft does not know how to open {}.", u.harness))
-                }
-                Some(u) => self
-                    .pane_running(u)
-                    .map(|i| format!("That session is already open — [{}] is its pane.", i + 1)),
             },
             Act::Detail => self
                 .selected_unit()

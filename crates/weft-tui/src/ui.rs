@@ -576,7 +576,7 @@ fn row_state(unit: &Unit) -> (String, bool) {
     (word.into(), unit.needs_you())
 }
 
-// --- the pane, the drawer, and first run --------------------------------------
+// --- the pane, the drawer, and no agent ---------------------------------------
 
 fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.pane_count() == 0 {

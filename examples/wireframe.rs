@@ -19,7 +19,7 @@ use weft::readiness::{Gap, Readiness};
 use weft::server;
 
 fn main() {
-    show("Screen 1 — first run", 80, 24, &[], false);
+    show("Screen 1 — a project opened, no agent", 80, 24, &[], false);
     show("Screen 2 — the sidebar", 80, 24, &[], true);
     show("Screen 2b — a project folded", 80, 24, &[KeyCode::Up, KeyCode::Up, KeyCode::Enter], true);
     show("Screen 3 — in the agent", 80, 24, &[KeyCode::Char(']')], true);

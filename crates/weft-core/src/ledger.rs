@@ -238,6 +238,11 @@ impl Unit {
     ///
     /// A route the agent took for itself asks nothing, so it never counts —
     /// otherwise the count stops meaning "act now".
+    /// Not sealed and not cancelled: what `OPEN` counts.
+    pub fn is_open(&self) -> bool {
+        self.sealed.is_none() && !self.cancelled
+    }
+
     pub fn needs_you(&self) -> bool {
         if self.cancelled || self.sealed.is_some() {
             return false;
