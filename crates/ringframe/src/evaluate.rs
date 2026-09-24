@@ -508,12 +508,12 @@ fn check_judge(j: &Value, code: &str, where_: &str) -> Result<(), EvalError> {
     need(
         j.get("host").is_some_and(Value::is_string) && j.get("angle").is_some_and(Value::is_string),
         code,
-        format!("{where_}.judge needs host and angle"),
+        format!("{where_}: judge needs host and angle"),
     )?;
     need(
         INDEPENDENCE.contains(&str_of(j, "independence").as_str()),
         code,
-        format!("{where_}.judge.independence must be one of {}", tuple_of(&INDEPENDENCE)),
+        format!("{where_}: judge.independence must be one of {}", tuple_of(&INDEPENDENCE)),
     )
 }
 
@@ -609,29 +609,35 @@ pub fn validate_judgement(
         .map(|it| str_of(it, "id"))
         .collect();
     let votes = j.get("votes").and_then(Value::as_array);
-    need(votes.is_some(), code, format!("{where_}.votes must be a list"))?;
+    need(votes.is_some(), code, format!("{where_}: votes must be a list"))?;
     let mut voted: BTreeSet<String> = BTreeSet::new();
     for (i, v) in votes.expect("checked").iter().enumerate() {
         need(
             v.is_object() && all.contains(&str_of(v, "item")),
             code,
-            format!("{where_}.votes[{i}].item is not an intent item"),
+            format!(
+                "{where_}: votes[{i}].item {:?} is not an intent item; use one of {}",
+                str_of(v, "item"),
+                all.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
         )?;
         need(
             VOTES.contains(&str_of(v, "vote").as_str()),
             code,
-            format!("{where_}.votes[{i}].vote must be one of {}", tuple_of(&VOTES)),
+            format!("{where_}: votes[{i}].vote must be one of {}", tuple_of(&VOTES)),
         )?;
         need(
             v.get("facts_cited").is_none_or(Value::is_array),
             code,
-            format!("{where_}.votes[{i}].facts_cited must be a list"),
+            format!("{where_}: votes[{i}].facts_cited must be a list"),
         )?;
         for id in array_of(v, "facts_cited").iter().map(str_of_value) {
             need(
                 fact_ids.contains(&id),
                 "eval.fact_unknown",
-                format!("{where_}.votes[{i}] cites {id}, which is not a fact in this Eval's brief"),
+                format!(
+                    "{where_}: votes[{i}] cites {id}, which is not a fact in this Eval's brief"
+                ),
             )?;
         }
         voted.insert(str_of(v, "item"));
@@ -644,12 +650,12 @@ pub fn validate_judgement(
     )?;
     let mut classified: BTreeSet<String> = BTreeSet::new();
     for (i, d) in array_of(j, "drift").iter().enumerate() {
-        need(!str_of(d, "path").is_empty(), code, format!("{where_}.drift[{i}].path missing"))?;
+        need(!str_of(d, "path").is_empty(), code, format!("{where_}: drift[{i}].path missing"))?;
         need(
             CLASSIFICATIONS.contains(&str_of(d, "classification").as_str()),
             code,
             format!(
-                "{where_}.drift[{i}].classification must be one of {}",
+                "{where_}: drift[{i}].classification must be one of {}",
                 tuple_of(&CLASSIFICATIONS)
             ),
         )?;
@@ -663,7 +669,7 @@ pub fn validate_judgement(
         format!("{where_}: no drift classification for changed paths {}", list_of(&missing)),
     )?;
     for k in ["basis_notes", "commands_run"] {
-        need(j.get(k).is_none_or(Value::is_array), code, format!("{where_}.{k} must be a list"))?;
+        need(j.get(k).is_none_or(Value::is_array), code, format!("{where_}: {k} must be a list"))?;
     }
     Ok(())
 }
@@ -1076,7 +1082,7 @@ pub fn close_eval(
             &brief_sha,
             &intent_sha,
             items,
-            &format!("judgement[{}]", n + 1),
+            &format!("the {} judgement (--judgement {})", str_of(&j["judge"], "angle"), n + 1),
             &changed_paths,
             &fact_ids,
         )?;
@@ -2386,6 +2392,30 @@ mod tests {
                 array_of(item, "votes").iter().map(|v| str_of(v, "counted_as")).collect();
             assert_eq!(counted, ["no", "no", "unknown"]);
             assert_eq!(item["majority"], "no");
+        });
+    }
+
+    /// A coordinator told `judgement[1]` corrected the wrong file twice in
+    /// G8: a refusal names the judgement by its angle and its place among the
+    /// `--judgement` flags, and says what the vote named and what it may name.
+    #[test]
+    fn a_refused_judgement_is_named_by_its_angle_and_flag() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let mut js: Vec<Value> =
+                angles().iter().map(|a| judgement(&o.brief_sha, a, &[("i1", "yes")])).collect();
+            js[1]["votes"][0] = json!({"id": "i1", "vote": "yes", "reason": "r"});
+            let e = close(
+                ws,
+                str_of(&o.out, "eval_id").as_str(),
+                &intent_doc(&o.brief_sha, one_item(&o.a)),
+                &js,
+            )
+            .unwrap_err();
+            refused(
+                e,
+                "the drift judgement (--judgement 2): votes[0].item \"\" is not an intent item; use one of i1",
+            );
         });
     }
 
