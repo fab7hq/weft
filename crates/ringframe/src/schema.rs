@@ -14,6 +14,7 @@ fn enum_values(key: &str) -> &'static [&'static str] {
     match key {
         "actor.kind" => &["agent", "human", "policy"],
         "links[].rel" => &["evaluates", "follows", "remediates", "revises", "seals", "supersedes"],
+        "fact.outcome" => &["failed", "succeeded"],
         "classification.task[]" => &[
             "clarify",
             "diagnose",
@@ -100,6 +101,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
             ]);
         }
         "eval.opened" => return Some(vec!["brief", "basis", "anchor", "subject"]),
+        "tool.fact" => return Some(vec!["command", "outcome", "subject", "host", "session_ref"]),
         "eval.completed" => {
             return Some(vec![
                 "basis",
@@ -132,7 +134,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
 
 /// Every event type the record can hold. A type with no required-key list is
 /// not a type this release writes or reads.
-pub const EVENT_TYPES: [&str; 10] = [
+pub const EVENT_TYPES: [&str; 11] = [
     "ask.compiled",
     "ask.confirmed",
     "ask.cancelled",
@@ -143,6 +145,7 @@ pub const EVENT_TYPES: [&str; 10] = [
     "eval.completed",
     "seal.created",
     "seal.refused",
+    "tool.fact",
 ];
 
 fn fail(path: &str, why: &str) -> LedgerError {
@@ -269,6 +272,7 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
             }
         }
         "eval.opened" => check_ref("data.brief", &data["brief"])?,
+        "tool.fact" => check_enum("data.outcome", "fact.outcome", &data["outcome"])?,
         "eval.completed" => {
             check_enum("data.verdict", "data.verdict", &data["verdict"])?;
             let ok = data["confidence"].as_f64().is_some_and(|c| (0.0..=1.0).contains(&c));

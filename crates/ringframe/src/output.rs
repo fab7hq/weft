@@ -168,6 +168,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("eval", Some("close")) => eval_close(d),
         ("seal", Some("create")) => seal_view(d),
         ("sessions", Some("capture")) => capture(d),
+        ("fact", None) => pick(d, &["recorded", "fact_id", "outcome"]),
         ("sessions", Some("prune")) => pick(d, &["removed"]),
         ("export", None) => pick(d, &["ask_id", "out", "files"]),
         _ => return None,

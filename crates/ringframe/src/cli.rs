@@ -110,13 +110,14 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("sessions", Some("capture")) => {
             s(&["--host", "--host-version"], NONE, &["--host"], false, NONE)
         }
+        ("fact", None) => s(&["--host"], &["--from-hook"], &["--host"], false, NONE),
         _ => None,
     }
 }
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 23] = [
+const SURFACE: [(&str, Option<&str>); 24] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -138,6 +139,7 @@ const SURFACE: [(&str, Option<&str>); 23] = [
     ("deltas", Some("domains")),
     ("deltas", Some("render")),
     ("sessions", Some("capture")),
+    ("fact", None),
     // Listed last because they are not commands.
     ("--version", None),
     ("--help", None),
@@ -175,6 +177,10 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("deltas", Some("render")) => "the directives that apply to one classification",
         ("sessions", Some("capture")) => {
             "store a hook's prompt payload; reads the payload on stdin"
+        }
+        ("fact", None) => {
+            "--from-hook: record whether the agent's shell command succeeded, against the \
+             subject; reads a post-tool hook payload on stdin and never its output"
         }
         ("--version", None) => "print the version",
         ("--help", None) => "print this",
@@ -240,8 +246,19 @@ fn takes_sub(cmd: &str) -> bool {
     matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "sessions")
 }
 
-const COMMANDS: [&str; 10] =
-    ["init", "sync", "profile", "ask", "eval", "seal", "ledger", "deltas", "sessions", "--version"];
+const COMMANDS: [&str; 11] = [
+    "init",
+    "sync",
+    "profile",
+    "ask",
+    "eval",
+    "seal",
+    "ledger",
+    "deltas",
+    "sessions",
+    "fact",
+    "--version",
+];
 
 struct Parsed {
     cmd: String,
@@ -723,6 +740,33 @@ fn dispatch(
             }
             out["submission"] = submission;
             (ws, Outcome::Ok(0, out))
+        }
+        ("fact", None) => {
+            if !ns.has("--from-hook") {
+                bail!(Outcome::UsageDetail(
+                    "a fact is only recorded from a hook: --from-hook".into()
+                ));
+            }
+            let payload: Value = match serde_json::from_str(&read_stdin()) {
+                Ok(v) => v,
+                Err(e) => bail!(Outcome::UsageDetail(e.to_string())),
+            };
+            let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
+                Ok(w) => w,
+                Err(e) => {
+                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
+                }
+            };
+            let host = ns.one("--host").unwrap_or_default();
+            match evaluate::record_fact(&ws, host, &payload) {
+                Ok(Some(ev)) => {
+                    let out = json!({"recorded": true, "fact_id": ev["id"],
+                                     "outcome": ev["data"]["outcome"]});
+                    (ws, Outcome::Ok(0, out))
+                }
+                Ok(None) => (ws, Outcome::Ok(0, json!({"recorded": false}))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
         }
         _ => (ws, Outcome::UsageDetail(format!("unknown command {}", ns.cmd))),
     }
@@ -1223,6 +1267,28 @@ mod tests {
             let (_, listed, _) = c.go(&["ask", "list", "--json"]);
             assert_eq!(listed["asks"][0]["submission"], "observed");
             assert_eq!(listed["asks"][0]["outcome"], "compiled");
+        });
+    }
+
+    #[test]
+    fn a_hook_records_a_shell_command_as_a_fact() {
+        eval_bench(|ws| {
+            let c = Cli { root: ws.root.clone() };
+            two_asks_and_work(ws);
+            let payload = format!(
+                r#"{{"hook_event_name":"PostToolUse","session_id":"s9","tool_name":"Bash","tool_input":{{"command":"npm test"}},"tool_response":{{"stdout":"ok"}},"tool_use_id":"t1","cwd":"{}"}}"#,
+                c.root.display()
+            );
+            let (code, out, _) =
+                c.piped(&["fact", "--from-hook", "--host", "claude-code"], &payload);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["recorded"], true);
+            assert_eq!(out["outcome"], "succeeded");
+            let skipped = payload.replace("npm test", "ringframe ask list");
+            let (code, out, _) =
+                c.piped(&["fact", "--from-hook", "--host", "claude-code"], &skipped);
+            assert_eq!(code, 0);
+            assert_eq!(out["recorded"], false);
         });
     }
 
