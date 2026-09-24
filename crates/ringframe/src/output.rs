@@ -131,7 +131,7 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         }
         ("eval", Some("list")) => json!({
             "evals": d["evals"].as_array().into_iter().flatten()
-                .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis"]))
+                .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis", "brief", "gathered"]))
                 .collect::<Vec<_>>()
         }),
         ("seal", Some("check")) => pick(d, &["seal_id", "fresh", "subject_matches", "codes"]),

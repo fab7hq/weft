@@ -1354,16 +1354,16 @@ pub fn load_record(ws: &Workspace, eval_id: &str) -> Result<Option<Value>, EvalE
 /// Every Eval in this workspace, opened or completed, oldest first.
 pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
     let base = ws.rf_dir().join("evals");
-    let mut briefs: Vec<(String, Value)> = Vec::new();
+    let mut briefs: Vec<(String, Value, Vec<u8>)> = Vec::new();
     for entry in std::fs::read_dir(&base).into_iter().flatten().flatten() {
         let p = entry.path().join("brief.json");
         let Ok(bytes) = std::fs::read(&p) else { continue };
         let Ok(brief) = serde_json::from_slice::<Value>(&bytes) else { continue };
-        briefs.push((str_of(&brief, "time"), brief));
+        briefs.push((str_of(&brief, "time"), brief, bytes));
     }
     briefs.sort_by(|a, b| a.0.cmp(&b.0));
     let mut out = Vec::new();
-    for (_, brief) in briefs {
+    for (_, brief, bytes) in briefs {
         let eval_id = str_of(&brief, "eval_id");
         let rec = load_record(ws, &eval_id)?;
         let field = |key: &str| rec.as_ref().map_or(Value::Null, |r| r[key].clone());
@@ -1375,6 +1375,8 @@ pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
             "anchor": brief["anchor"], "subject": brief["subject"],
             "verdict": field("verdict"), "confidence": field("confidence"),
             "completed_at": field("time"),
+            "brief": {"path": format!("evals/{eval_id}/brief.json"), "sha256": digest::sha256_bytes(&bytes)},
+            "gathered": ws.rf_dir().join(format!("evals/{eval_id}/context.md")).exists(),
             "path": if rec.is_some() {
                 format!("evals/{eval_id}/record.json")
             } else {
@@ -1556,6 +1558,10 @@ mod tests {
             assert_eq!(listed.len(), 1);
             assert_eq!(listed[0]["state"], "opened");
             assert_eq!(listed[0]["verdict"], json!(null));
+            // A debate in another harness has only this to go on.
+            assert_eq!(listed[0]["brief"]["sha256"], out["brief"]["sha256"]);
+            assert_eq!(listed[0]["brief"]["path"], out["brief"]["path"]);
+            assert_eq!(listed[0]["gathered"], false);
         });
     }
 
