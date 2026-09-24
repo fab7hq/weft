@@ -51,6 +51,13 @@ pub enum Next {
     Seal,
 }
 
+/// What a follow-up carries: the Eval that judged this work when there is one,
+/// else the Ask that started it. RingFrame's Ask reads the rest from the
+/// record by that id, so any harness can take the follow-up.
+pub fn follow_up_of(unit: &Unit) -> &str {
+    unit.check.as_ref().map_or(unit.ask_id.as_str(), |c| c.eval_id.as_str())
+}
+
 /// `None` when the unit is closed, cancelled, or waiting on someone else —
 /// which is exactly when the row carries no dot.
 pub fn next_step(unit: &Unit) -> Option<Next> {
@@ -281,6 +288,19 @@ mod tests {
             seal_id: None,
             sealed_at: None,
         }
+    }
+
+    #[test]
+    fn a_follow_up_carries_the_eval_when_there_is_one_and_the_ask_when_not() {
+        let mut u = unit("codex", Sent::TakenByAgent);
+        assert_eq!(follow_up_of(&u), "ask_1");
+        u.check = Some(crate::ledger::Check {
+            eval_id: "evl_1".into(),
+            verdict: crate::ledger::Verdict::DoesntMatch,
+            agreement: 0.67,
+            judged_by: None,
+        });
+        assert_eq!(follow_up_of(&u), "evl_1");
     }
 
     /// Everything a second client would have to assemble. That it is this

@@ -415,7 +415,7 @@ impl Session {
         let unit = unit_id
             .and_then(|id| self.projects[at].ledger.units().into_iter().find(|u| u.ask_id == id));
         let built = match act {
-            "ask" => {
+            "ask" | "follow_up" => {
                 let Some(pane) = pane else {
                     return Answer::No("no_pane", "an Ask needs a pane to go into".into());
                 };
@@ -424,12 +424,16 @@ impl Session {
                 else {
                     return Answer::No("no_pane", format!("there is no pane {pane} here"));
                 };
-                let built = crate::acts::ask(
-                    &root,
-                    &harness,
-                    text.unwrap_or_default(),
-                    &mut self.projects[at].folds,
-                );
+                let mut text = text.unwrap_or_default().to_string();
+                // A follow-up is an Ask about this work: it carries one id, and
+                // RingFrame's Ask reads what that id points at.
+                if act == "follow_up" {
+                    let Some(unit) = &unit else {
+                        return Answer::No("no_unit", "that Ask is not on the board".into());
+                    };
+                    text = format!("[follow-up {}] {text}", weft_core::board::follow_up_of(unit));
+                }
+                let built = crate::acts::ask(&root, &harness, &text, &mut self.projects[at].folds);
                 (built, pane)
             }
             "send" => {

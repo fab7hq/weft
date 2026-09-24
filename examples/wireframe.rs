@@ -26,6 +26,7 @@ fn main() {
     show("Screen 4 — side by side", 120, 32, &[], true);
     show("Screen 5 — the detail view", 120, 32, &[KeyCode::Enter], true);
     show("Screen 6 — ask", 120, 32, &[KeyCode::Char('a')], true);
+    follow_up("Screen 6b — follow up", 120, 32);
     show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Char('e')], true);
     show("Screen 8 — the Weft menu", 80, 24, &[KeyCode::Char('w')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
@@ -50,6 +51,21 @@ fn pick_up(name: &str, width: u16, height: u16, on_record: bool) {
             last: "research crypto trading".into(),
         }),
         then: None,
+    });
+    draw_it(name, width, height, &[], &mut app);
+}
+
+/// A new Ask about work already on the board: it carries that work's id.
+fn follow_up(name: &str, width: u16, height: u16) {
+    let mut app = fixture(name, true);
+    app.modal = Some(weft::app::Modal::Ask {
+        text: "read the build number from package.json".into(),
+        target: 0,
+        follows: Some(weft::app::Follows {
+            ask_id: "ask_1".into(),
+            title: "health endpoint".into(),
+            carries: "evl_1".into(),
+        }),
     });
     draw_it(name, width, height, &[], &mut app);
 }

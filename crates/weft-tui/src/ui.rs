@@ -751,11 +751,18 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         ],
         Modal::Help => help_lines(app).into_iter().chain(routing_lines(app)).collect(),
         Modal::Note(text) => text.lines().map(str::to_string).collect(),
-        Modal::Ask { text, target } => {
+        Modal::Ask { text, target, follows } => {
+            let mut lines = Vec::new();
+            if let Some(f) = follows {
+                lines.push(format!("FOLLOW UP  {} · {}", f.title, f.carries));
+                lines.push(String::new());
+            }
             // Folded, not wrapped: `wrap` rejoins words with single spaces, so
             // a run of spaces vanished on screen and then reappeared in the
             // confirmation. An input shows what was typed.
-            let mut lines = if text.is_empty() { Vec::new() } else { fold(text, 72) };
+            if !text.is_empty() {
+                lines.extend(fold(text, 72));
+            }
             match lines.last_mut() {
                 Some(last) => last.push('_'),
                 None => lines.push("_".into()),
@@ -1028,6 +1035,18 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn a_follow_up_says_what_it_follows() {
+        let mut a = app();
+        a.set_units(vec![unit(Sent::TakenByAgent)]);
+        press(&mut a, KeyCode::Char('f'));
+        let drawn = screen(&mut a, 120, 32);
+        assert!(drawn.contains("FOLLOW UP  health endpoint · ask_1"), "{drawn}");
+        press(&mut a, KeyCode::Esc);
+        press(&mut a, KeyCode::Char('a'));
+        assert!(!screen(&mut a, 120, 32).contains("FOLLOW UP"), "a plain Ask follows nothing");
     }
 
     /// An Ask that has been judged, with the record the judges wrote on disk.

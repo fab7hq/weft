@@ -132,6 +132,15 @@ pub const WEFT_MENU: [(char, &str, Act); 5] = [
     ('X', "Quit", Act::Quit),
 ];
 
+/// The work a follow-up is about: the unit it was asked from, and the one id
+/// it carries (that unit's Eval, else its Ask).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Follows {
+    pub ask_id: String,
+    pub title: String,
+    pub carries: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     Quit,
@@ -156,10 +165,11 @@ pub enum Modal {
     /// Weft's own operations, gathered out of the bar. Every one of them also
     /// has its own key; this is for finding them, not for reaching them.
     Weft,
-    /// Composing an intent.
+    /// Composing an intent; a follow-up also says what work it is about.
     Ask {
         text: String,
         target: usize,
+        follows: Option<Follows>,
     },
     /// Weft is about to type something. Always shown first.
     Confirm(Pending),
@@ -823,8 +833,11 @@ impl App {
         self.ask_first(if skill == "eval" { "check" } else { "decide" }, Some(&id), None, None);
     }
 
-    fn send_ask(&mut self, text: String, target: usize) {
-        self.ask_first("ask", None, Some(target), Some(&text));
+    fn send_ask(&mut self, text: String, target: usize, follows: Option<Follows>) {
+        match follows {
+            Some(f) => self.ask_first("follow_up", Some(&f.ask_id), Some(target), Some(&text)),
+            None => self.ask_first("ask", None, Some(target), Some(&text)),
+        }
     }
 
     /// One unit's whole story, in one blocking view: the Ask that started it,
@@ -905,16 +918,13 @@ impl App {
         }
     }
 
-    fn start_ask(&mut self) {
-        if !self.guard(Act::Ask) {
-            return;
-        }
+    fn start_ask(&mut self, follows: Option<Follows>) {
         // The compose box opens on the harness this project asks in, when it
         // says. The person can still pick another before sending — routing is
         // where Weft starts, not somewhere it holds them.
         let target =
             self.routing.get("ask").and_then(|name| self.pane_for(name)).unwrap_or(self.pane_focus);
-        self.modal = Some(Modal::Ask { text: String::new(), target });
+        self.modal = Some(Modal::Ask { text: String::new(), target, follows });
     }
 
     /// What starting an agent could mean here. Asked when the picker opens,
@@ -1248,7 +1258,11 @@ impl App {
             return self.offer_pick_up(harness, Some(act));
         }
         match act {
-            Act::Ask => self.start_ask(),
+            Act::Ask => {
+                if self.guard(Act::Ask) {
+                    self.start_ask(None);
+                }
+            }
             Act::Proceed => self.proceed(),
             Act::Detail => self.open_detail(),
             Act::Eval => self.start_skill("eval"),
@@ -1256,7 +1270,12 @@ impl App {
             Act::FollowUp => {
                 if self.guard(Act::FollowUp) {
                     self.detail = None;
-                    self.modal = Some(Modal::Ask { text: String::new(), target: self.pane_focus });
+                    let follows = self.selected_unit().map(|u| Follows {
+                        ask_id: u.ask_id.clone(),
+                        title: u.title.clone(),
+                        carries: weft_core::board::follow_up_of(u).to_string(),
+                    });
+                    self.start_ask(follows);
                 }
             }
             Act::ReadyUp => self.open_ringframe(),
@@ -1426,25 +1445,27 @@ impl App {
             return Ok(());
         }
 
-        if let Modal::Ask { mut text, mut target } = modal {
+        if let Modal::Ask { mut text, mut target, follows } = modal {
             match key.code {
                 // `[←] CANCEL` is what the box offers, so it cancels whether
                 // or not anything has been typed.
                 event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
-                event::KeyCode::Enter if !text.trim().is_empty() => self.send_ask(text, target),
+                event::KeyCode::Enter if !text.trim().is_empty() => {
+                    self.send_ask(text, target, follows)
+                }
                 event::KeyCode::Backspace => {
                     text.pop();
-                    self.modal = Some(Modal::Ask { text, target });
+                    self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 event::KeyCode::Tab => {
                     if self.pane_count() > 0 {
                         target = (target + 1) % self.pane_count();
                     }
-                    self.modal = Some(Modal::Ask { text, target });
+                    self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 event::KeyCode::Char(c) => {
                     text.push(c);
-                    self.modal = Some(Modal::Ask { text, target });
+                    self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 _ => {}
             }
@@ -2066,6 +2087,66 @@ pub(crate) mod tests {
         let text = String::from_utf8(p.payload).unwrap();
         assert!(text.ends_with("ask fix the build"), "got {text:?}");
         assert!(text.contains("rf:"), "the profile's prefix is used: {text:?}");
+    }
+
+    /// `recorded`, plus an Eval over that Ask, once the daemon has read both.
+    fn recorded_and_evaluated() -> App {
+        let mut a = recorded(Sent::TakenByAgent);
+        let rf = a.root().join(".fab7/rf/ledger.jsonl");
+        let mut ledger = std::fs::read_to_string(&rf).expect("ledger");
+        ledger.push_str(
+            &(serde_json::json!({
+                "schema": "ringframe.ledger/1", "event_id": "evt_9", "type": "eval.completed",
+                "time": "2026-09-19T15:00:00Z", "id": "evl_1",
+                "actor": {"kind": "human", "id": "local-user"}, "links": [],
+                "data": {"verdict": "drifted", "confidence": 0.67, "basis": {"asks": ["ask_1"]}}
+            })
+            .to_string()
+                + "\n"),
+        );
+        std::fs::write(&rf, ledger).expect("ledger");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && a.session_mut().units.first().is_none_or(|u| u.check.is_none())
+        {
+            a.session_mut().pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        a.take_the_board();
+        a
+    }
+
+    fn follow_up_payload(mut a: App, intent: &str) -> String {
+        press(&mut a, KeyCode::Char('f'));
+        for c in intent.chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        let Some(Modal::Confirm(p)) = a.modal.clone() else {
+            panic!("expected a confirmation, got {:?}", a.modal)
+        };
+        String::from_utf8(p.payload).unwrap()
+    }
+
+    #[test]
+    fn a_follow_up_carries_the_ask_or_the_eval_it_follows() {
+        let text = follow_up_payload(recorded(Sent::TakenByAgent), "add a retry");
+        assert!(text.ends_with("ask [follow-up ask_1] add a retry"), "got {text:?}");
+        let text = follow_up_payload(recorded_and_evaluated(), "fix what it found");
+        assert!(text.ends_with("ask [follow-up evl_1] fix what it found"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_plain_ask_carries_no_marker() {
+        let mut a = recorded(Sent::TakenByAgent);
+        press(&mut a, KeyCode::Char('a'));
+        for c in "new thing".chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        let Some(Modal::Confirm(p)) = a.modal.clone() else { panic!("{:?}", a.modal) };
+        let text = String::from_utf8(p.payload).unwrap();
+        assert!(!text.contains("[follow-up"), "got {text:?}");
     }
 
     #[test]
