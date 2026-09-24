@@ -9,6 +9,8 @@
 #   the configuration  from the fab7 checkout, into ~/.fab7/rf/config
 #   the plugins        from the fab7 checkout, into each host's cache
 #
+# It then restarts the Weft daemon, which ends the agents running in it.
+#
 # Miss the middle one and the skills change while the core keeps reading the
 # configuration it last synced from the marketplace, which is a confusing way
 # to spend an afternoon.
@@ -64,6 +66,12 @@ elif [ -n "$fab7" ] && [ -x "$fab7/bin/reinstall-local" ]; then
 else
     printf '  plugin  skipped: no %s/bin/reinstall-local\n' "${fab7:-../fab7}"
 fi
+
+# A running daemon is still the old binary, and only a starting one writes
+# ~/.fab7/weft/config.toml. Stopping it ends the agents in its panes.
+"$bin_dir/weft" stop | sed 's/^weft: /  weft    /'
+nohup "$bin_dir/weft" --serve </dev/null >/dev/null 2>&1 &
+printf '  weft    started the new daemon\n'
 
 case ":$PATH:" in
     *":$bin_dir:"*) ;;
