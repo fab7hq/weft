@@ -11,10 +11,10 @@
 //! It was generated once and is the reference — nothing here gets to decide
 //! what canonical means.
 //!
-//! It holds `store::canonical` for JSON, and `config::load_yaml_text` for the
-//! config documents whose *parsed* form is digested into `profile_sha256`. If
-//! either drifts, this says so here rather than in a digest mismatch on
-//! someone's ledger.
+//! It holds `store::canonical` for JSON. If it drifts, this says so here
+//! rather than in a digest mismatch on someone's ledger. The config samples
+//! are YAML, which this release no longer reads: they sit out the first test,
+//! and the other two still hold their canonical forms.
 
 use std::path::PathBuf;
 
@@ -65,23 +65,15 @@ fn canonical(value: &Value) -> String {
 fn every_sample_canonicalises_the_way_python_did() {
     let mut wrong = Vec::new();
     for s in corpus() {
-        // Config arrives as YAML, and what gets digested is its *parsed* form,
-        // so the YAML reader is inside this gate rather than beside it.
-        let parsed: Value = match s.kind.as_str() {
-            "yaml" => match ringframe::config::load_yaml_text(&s.input, &s.name, true) {
-                Ok(v) => v,
-                Err(e) => {
-                    wrong.push(format!("{}: YAML does not parse: {e}", s.name));
-                    continue;
-                }
-            },
-            _ => match serde_json::from_str(&s.input) {
-                Ok(v) => v,
-                Err(e) => {
-                    wrong.push(format!("{}: input does not parse: {e}", s.name));
-                    continue;
-                }
-            },
+        if s.kind == "yaml" {
+            continue;
+        }
+        let parsed: Value = match serde_json::from_str(&s.input) {
+            Ok(v) => v,
+            Err(e) => {
+                wrong.push(format!("{}: input does not parse: {e}", s.name));
+                continue;
+            }
         };
         let got = canonical(&parsed);
         if got != s.canonical {

@@ -1,0 +1,24 @@
+# RingFrame host profile: unknown (authored configuration; identity = sha256 of canonical JSON)
+schema = "ringframe.profile/1"
+profile_id = "unknown"
+invocation_prefix = "/rf:"
+fallback = "human_handoff"
+
+[routing]
+precedence = ["human_handoff"]
+guidance = [
+  "No host integration is known; offer manual handoff without inventing native capabilities.",
+]
+
+[[capabilities]]
+id = "human_handoff"
+selection = "Use only as the fallback for an unrecognized host."
+purpose = "unrecognized host; no native capability selected; the person submits the prompt"
+activation = {}
+confirmation = {}
+continuation = "manual"
+effects = []
+permission_owner = "host"
+delivery_mode = "human_handoff"
+qualification = {}
+limitations = ["host name is not recognized"]

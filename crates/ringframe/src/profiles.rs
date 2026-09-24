@@ -12,14 +12,15 @@ fn dir() -> Result<PathBuf, ConfigError> {
 }
 
 pub fn load(name: &str) -> Result<Value, ConfigError> {
-    let path = dir()?.join(format!("{name}.yaml"));
+    let path = dir()?.join(format!("{name}.toml"));
+    config::refuse_yaml(&path)?;
     let text = std::fs::read_to_string(&path)
-        .map_err(|e| ConfigError(format!("harnesses/{name}.yaml: {e}")))?;
-    let doc = config::load_yaml_text(&text, &format!("harnesses/{name}.yaml"), false)?;
+        .map_err(|e| ConfigError(format!("harnesses/{name}.toml: {e}")))?;
+    let doc = config::load_toml_text(&text, &format!("harnesses/{name}.toml"))?;
     let found = doc.get("schema").and_then(Value::as_str);
     if found != Some(PROFILE_SCHEMA) {
         return Err(ConfigError(format!(
-            "harnesses/{name}.yaml declares {}; this release reads '{PROFILE_SCHEMA}'",
+            "harnesses/{name}.toml declares {}; this release reads '{PROFILE_SCHEMA}'",
             found.map_or("None".to_string(), |s| format!("'{s}'"))
         )));
     }
@@ -31,16 +32,7 @@ pub fn sha256(name: &str) -> Result<String, ConfigError> {
 }
 
 pub fn names() -> Result<Vec<String>, ConfigError> {
-    let mut out: Vec<String> = std::fs::read_dir(dir()?)
-        .map_err(|e| ConfigError(format!("harnesses: {e}")))?
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().to_string();
-            name.strip_suffix(".yaml").map(str::to_string)
-        })
-        .collect();
-    out.sort();
-    Ok(out)
+    Ok(config::stems(&dir()?))
 }
 
 /// Select integration rules by host identity; versions are provenance only.
@@ -139,10 +131,7 @@ mod tests {
         with_config_home(|_| {
             let p = load("codex").unwrap();
             assert_eq!(p["profile_id"], "codex");
-            assert_eq!(
-                p["confirmation"],
-                json!({"tool": "request_user_input", "requires_feature": null})
-            );
+            assert_eq!(p["confirmation"], json!({"tool": "request_user_input"}));
             let ids: std::collections::BTreeSet<&str> = p["capabilities"]
                 .as_array()
                 .unwrap()

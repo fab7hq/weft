@@ -958,9 +958,14 @@ fn append_delivery(
             .to_string(),
     ];
     all.extend(limitations);
+    // A profile leaves out an id it does not have; the record always names one.
+    let mut qualification = cap.get("qualification").cloned().unwrap_or_else(|| json!({}));
+    if qualification.get("id").is_none() {
+        qualification["id"] = Value::Null;
+    }
     let data = json!({
         "mode": mode, "mechanism": mechanism, "state": state,
-        "qualification": cap.get("qualification").cloned().unwrap_or_else(|| json!({"id": null})),
+        "qualification": qualification,
         "receipt": receipt,
         "submission": if mode == "human_handoff" { "unobserved" } else { "not_applicable" },
         "limitations": all,

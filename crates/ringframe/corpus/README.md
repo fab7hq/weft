@@ -27,8 +27,9 @@ one sample is one line for every reader, including the samples carrying U+2028.
 - **artifact**, **event** — real output from this machine, a few of each schema
   RingFrame writes, plus any sample that makes the serialiser choose something
   the edge cases did not.
-- **config** — YAML, whose *parsed* form is what gets digested into
-  `profile_sha256`.
+- **config** — YAML, whose *parsed* form was digested into `profile_sha256`
+  while configuration was YAML. It is TOML now, and these rows are kept as
+  canonical forms.
 
 Samples are kept for coverage, not volume: the generator drops anything that
 renders nothing new.
@@ -39,9 +40,8 @@ renders nothing new.
 
 Three tests. Every JSON sample must canonicalise to the reference bytes; every
 digest must be of the bytes beside it; canonicalising a canonical form must
-change nothing. The YAML rows sit out the first test until the port chooses a
-YAML reader — that half of the gate is theirs to pass, and the other two tests
-hold those rows meanwhile.
+change nothing. The YAML rows sit out the first test: this release reads no
+YAML, and the other two tests hold those rows.
 
 ## Regenerating
 

@@ -75,66 +75,9 @@ pub fn with_config_home<T>(body: impl FnOnce(&Path) -> T) -> T {
     out.unwrap()
 }
 
-/// A YAML document from a JSON one, for tests that rewrite a catalog with
-/// every string quoted.
-///
-/// Quoting every string keeps the output clear of the 1.1/1.2 ambiguities the
-/// lint refuses.
-pub fn to_yaml(value: &serde_json::Value) -> String {
-    let mut out = String::new();
-    write_yaml(value, 0, &mut out);
-    out
-}
-
-fn write_yaml(value: &serde_json::Value, indent: usize, out: &mut String) {
-    use serde_json::Value;
-    let pad = "  ".repeat(indent);
-    match value {
-        Value::Object(map) if map.is_empty() => out.push_str("{}\n"),
-        Value::Object(map) => {
-            for (k, v) in map {
-                out.push_str(&format!("{pad}{}:", yaml_scalar(&Value::String(k.clone()))));
-                write_child(v, indent, out);
-            }
-        }
-        Value::Array(items) if items.is_empty() => out.push_str("[]\n"),
-        Value::Array(items) => {
-            for item in items {
-                out.push_str(&format!("{pad}-"));
-                write_child(item, indent, out);
-            }
-        }
-        scalar => out.push_str(&format!("{}\n", yaml_scalar(scalar))),
-    }
-}
-
-fn write_child(v: &serde_json::Value, indent: usize, out: &mut String) {
-    use serde_json::Value;
-    match v {
-        Value::Object(m) if !m.is_empty() => {
-            out.push('\n');
-            write_yaml(v, indent + 1, out);
-        }
-        Value::Array(a) if !a.is_empty() => {
-            out.push('\n');
-            write_yaml(v, indent + 1, out);
-        }
-        other => {
-            out.push(' ');
-            write_yaml(other, 0, out);
-        }
-    }
-}
-
-fn yaml_scalar(v: &serde_json::Value) -> String {
-    use serde_json::Value;
-    match v {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
-        other => serde_json::to_string(other).expect("a scalar"),
-    }
+/// A TOML document from a JSON one, for tests that rewrite a catalog.
+pub fn to_toml(value: &serde_json::Value) -> String {
+    toml::to_string(value).expect("a catalog TOML can hold")
 }
 
 // ---- Eval and Seal fixtures -------------------------------------------------

@@ -1,7 +1,7 @@
 //! Delta catalogs: host deltas keyed by (host, capability); practice deltas
 //! keyed by classification.
 //!
-//! The CLI selects YAML rules; the model adapts them to the task. Deltas guide
+//! The CLI selects TOML rules; the model adapts them to the task. Deltas guide
 //! the work but do not run checks.
 
 use std::collections::BTreeSet;
@@ -23,7 +23,7 @@ pub const DEFAULT_DOMAIN: &str = "software-development";
 pub fn initialize(root: &Path) -> std::io::Result<Vec<String>> {
     std::fs::create_dir_all(root)?;
     crate::workspace::set_private(root)?;
-    let target = root.join("deltas").join("practices").join(format!("{DEFAULT_DOMAIN}.yaml"));
+    let target = root.join("deltas").join("practices").join(format!("{DEFAULT_DOMAIN}.toml"));
     std::fs::create_dir_all(target.parent().expect("a practices directory"))?;
     // Create it only if it is not there; an existing file is the person's.
     let _ = std::fs::OpenOptions::new().write(true).create_new(true).open(&target);
@@ -42,19 +42,8 @@ fn dir() -> Result<PathBuf, ConfigError> {
     Ok(config::require_config()?.join("deltas"))
 }
 
-fn yaml_stems(dir: &Path) -> Vec<String> {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".yaml").map(str::to_string))
-        .collect()
-}
-
 pub fn host_catalog_names() -> Result<Vec<String>, ConfigError> {
-    let mut out = yaml_stems(&dir()?);
-    out.sort();
-    Ok(out)
+    Ok(config::stems(&dir()?))
 }
 
 /// Domains from the synced mirror and from personal overrides; a project file
@@ -63,7 +52,7 @@ pub fn domain_names() -> Result<Vec<String>, ConfigError> {
     let roots = [dir()?.join("practices"), config::overrides_dir().join("deltas/practices")];
     let mut seen: BTreeSet<String> = BTreeSet::new();
     for root in roots {
-        seen.extend(yaml_stems(&root));
+        seen.extend(config::stems(&root));
     }
     Ok(seen.into_iter().collect())
 }
@@ -94,10 +83,10 @@ fn layers(ws: Option<&Workspace>, relative: &str) -> Result<Vec<Layer>, ConfigEr
     }
     let mut out = Vec::new();
     for (root, path) in locations {
-        if !path.exists() {
+        if !path.exists() && !path.with_extension("yaml").exists() {
             continue;
         }
-        let doc = config::load_yaml(&path, true)?;
+        let doc = config::load_toml(&path)?;
         // An empty override inherits; only a document with content is a layer.
         if doc.as_object().is_some_and(|m| !m.is_empty()) {
             out.push(Layer { root, sha256: config::sha256_of(&doc), path, document: doc });
@@ -123,12 +112,12 @@ fn text_of(v: &Value, key: &str) -> String {
 }
 
 pub fn load_host_catalog(host: &str, ws: Option<&Workspace>) -> Result<Value, ConfigError> {
-    let cat = catalog(&format!("{host}.yaml"), ws)?;
+    let cat = catalog(&format!("{host}.toml"), ws)?;
     check(
         cat.get("schema").and_then(Value::as_str) == Some(SCHEMA)
             && cat.get("scope").and_then(Value::as_str) == Some("host")
             && cat.get("host").and_then(Value::as_str) == Some(host),
-        format!("deltas/{host}.yaml: not a host catalog"),
+        format!("deltas/{host}.toml: not a host catalog"),
     )?;
     for e in entries(&cat) {
         let id = e.get("id").and_then(Value::as_str).unwrap_or("None");
@@ -136,23 +125,23 @@ pub fn load_host_catalog(host: &str, ws: Option<&Workspace>) -> Result<Value, Co
             ["id", "capability", "text", "matrix_ref", "status"]
                 .iter()
                 .all(|k| e.get(*k).is_some()),
-            format!("deltas/{host}.yaml: entry {id} incomplete"),
+            format!("deltas/{host}.toml: entry {id} incomplete"),
         )?;
         let status = text_of(e, "status");
         check(
             HOST_STATUS.contains(&status.as_str()),
-            format!("deltas/{host}.yaml: {id} status '{status}'"),
+            format!("deltas/{host}.toml: {id} status '{status}'"),
         )?;
     }
     Ok(cat)
 }
 
 pub fn load_practice_catalog(domain: &str, ws: Option<&Workspace>) -> Result<Value, ConfigError> {
-    let mut cat = catalog(&format!("practices/{domain}.yaml"), ws)?;
+    let mut cat = catalog(&format!("practices/{domain}.toml"), ws)?;
     check(
         cat.get("schema").and_then(Value::as_str) == Some(SCHEMA)
             && cat.get("scope").and_then(Value::as_str) == Some("practice"),
-        format!("deltas/practices/{domain}.yaml: not a practice catalog"),
+        format!("deltas/practices/{domain}.toml: not a practice catalog"),
     )?;
     let map = cat.as_object_mut().expect("a catalog is a mapping");
     let render = map.entry("render").or_insert_with(|| json!({}));
@@ -190,7 +179,7 @@ pub fn effective(
             (text_of(&e, "id"), e)
         })
         .collect();
-    for layer in layers(ws, &format!("practices/{domain}.yaml"))? {
+    for layer in layers(ws, &format!("practices/{domain}.toml"))? {
         for entry in entries(&layer.document) {
             let id = text_of(entry, "id");
             if let Some((_, e)) = merged.iter_mut().find(|(k, _)| *k == id) {
@@ -285,7 +274,7 @@ pub fn domains(ws: Option<&Workspace>) -> Result<Vec<Value>, ConfigError> {
     let mut out = Vec::new();
     for name in domain_names()? {
         let cat = load_practice_catalog(&name, ws)?;
-        let project = ws.map(|w| w.rf_dir().join("deltas/practices").join(format!("{name}.yaml")));
+        let project = ws.map(|w| w.rf_dir().join("deltas/practices").join(format!("{name}.toml")));
         let opted_in = project.is_some_and(|p| {
             std::fs::read(&p).is_ok_and(|b| !b.iter().all(u8::is_ascii_whitespace))
         });
@@ -545,14 +534,13 @@ fn practice(
         }
     }
 
-    let catalog_layers = layers(ws, &format!("practices/{domain}.yaml"))?;
-    let shipped = dir()?.join("practices").join(format!("{domain}.yaml"));
+    let catalog_layers = layers(ws, &format!("practices/{domain}.toml"))?;
+    let shipped = dir()?.join("practices").join(format!("{domain}.toml"));
     // None when no synced file shipped this domain: it is the user's own.
     let shipped_sha256 = match std::fs::read_to_string(&shipped) {
-        Ok(text) => Value::String(config::sha256_of(&config::load_yaml_text(
+        Ok(text) => Value::String(config::sha256_of(&config::load_toml_text(
             &text,
             &shipped.display().to_string(),
-            false,
         )?)),
         Err(_) => Value::Null,
     };
@@ -809,7 +797,7 @@ pub fn audit_composed(
 mod tests {
     use super::*;
     use crate::profiles;
-    use crate::testing::{TempDir, repo, to_yaml, with_config_home, ws_for};
+    use crate::testing::{TempDir, repo, to_toml, with_config_home, ws_for};
 
     const QUALIFIED: [&str; 1] = ["qualified"];
 
@@ -993,11 +981,10 @@ mod tests {
     fn user_and_workspace_layers_override_by_id() {
         bench(|ws, _| {
             let catalog =
-                config::overrides_dir().join("deltas/practices/software-development.yaml");
+                config::overrides_dir().join("deltas/practices/software-development.toml");
             std::fs::create_dir_all(catalog.parent().unwrap()).unwrap();
-            let mut doc = config::load_yaml(
-                &config::config_dir().join("deltas/practices/software-development.yaml"),
-                false,
+            let mut doc = config::load_toml(
+                &config::config_dir().join("deltas/practices/software-development.toml"),
             )
             .unwrap();
             let list = doc["entries"].as_array_mut().unwrap();
@@ -1012,10 +999,11 @@ mod tests {
                 "applies_to": {"task": ["implement"]},
                 "text": "One commit per item, message names the item."
             }));
-            std::fs::write(&catalog, to_yaml(&doc)).unwrap();
+            std::fs::write(&catalog, to_toml(&doc)).unwrap();
             std::fs::write(
-                ws.rf_dir().join("deltas/practices/software-development.yaml"),
-                "schema: ringframe.deltas/1\nscope: practice\nentries:\n  - id: practice.yagni\n    enabled: false\n",
+                ws.rf_dir().join("deltas/practices/software-development.toml"),
+                "schema = \"ringframe.deltas/1\"\nscope = \"practice\"\n\n\
+                 [[entries]]\nid = \"practice.yagni\"\nenabled = false\n",
             )
             .unwrap();
 
@@ -1028,7 +1016,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .map(|l| {
-                    (text_of(l, "root"), text_of(l, "path").ends_with("software-development.yaml"))
+                    (text_of(l, "root"), text_of(l, "path").ends_with("software-development.toml"))
                 })
                 .collect();
             assert_eq!(
@@ -1203,30 +1191,34 @@ mod tests {
     // ---- additive specialist domains ---------------------------------------
 
     fn second_domain() -> &'static str {
-        "schema: ringframe.deltas/1\n\
-         scope: practice\n\
-         domain: fixture-domain\n\
-         description: An invented domain used only by tests.\n\
-         render: {heading: 'Rules:', core_cap: 2}\n\
-         concerns: [widgets, api_surface]\n\
-         entries:\n  \
-         - id: practice.widget_first\n    \
-           label: Widget First\n    \
-           tier: core\n    \
-           applies_to: {task: [implement]}\n    \
-           text: Build the widget before the housing.\n  \
-         - id: practice.widget_check\n    \
-           label: Widget Check\n    \
-           applies_to: {task: [implement]}\n    \
-           concerns: [widgets]\n    \
-           text: Measure the widget after fitting it.\n"
+        r#"schema = "ringframe.deltas/1"
+scope = "practice"
+domain = "fixture-domain"
+description = "An invented domain used only by tests."
+render = { heading = "Rules:", core_cap = 2 }
+concerns = ["widgets", "api_surface"]
+
+[[entries]]
+id = "practice.widget_first"
+label = "Widget First"
+tier = "core"
+applies_to = { task = ["implement"] }
+text = "Build the widget before the housing."
+
+[[entries]]
+id = "practice.widget_check"
+label = "Widget Check"
+applies_to = { task = ["implement"] }
+concerns = ["widgets"]
+text = "Measure the widget after fitting it."
+"#
     }
 
     /// A tiny specialist catalog installed beside the base one.
     fn two_domains<T>(body: impl FnOnce(&Workspace) -> T) -> T {
         bench(|ws, _| {
             std::fs::write(
-                config::config_dir().join("deltas/practices/fixture-domain.yaml"),
+                config::config_dir().join("deltas/practices/fixture-domain.toml"),
                 second_domain(),
             )
             .unwrap();
@@ -1338,11 +1330,11 @@ mod tests {
             assert!(ids(&fixture["concerns"]).contains(&"widgets".to_string()));
             assert_eq!(fixture["project_opted_in"], false);
 
-            let opt_in = ws.rf_dir().join("deltas/practices/fixture-domain.yaml");
+            let opt_in = ws.rf_dir().join("deltas/practices/fixture-domain.toml");
             std::fs::create_dir_all(opt_in.parent().unwrap()).unwrap();
             std::fs::write(
                 &opt_in,
-                "schema: ringframe.deltas/1\nscope: practice\ndomain: fixture-domain\n",
+                "schema = \"ringframe.deltas/1\"\nscope = \"practice\"\ndomain = \"fixture-domain\"\n",
             )
             .unwrap();
             let again = domains(Some(ws)).unwrap();
@@ -1360,7 +1352,7 @@ mod tests {
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
             seeded.sort();
-            assert_eq!(seeded, ["software-development.yaml"]);
+            assert_eq!(seeded, ["software-development.toml"]);
         });
     }
 
@@ -1368,7 +1360,7 @@ mod tests {
     fn a_domain_can_be_added_through_personal_overrides() {
         // delta.md offers a domain file "in the marketplace or in your overrides".
         bench(|ws, _| {
-            let mine = config::overrides_dir().join("deltas/practices/fixture-domain.yaml");
+            let mine = config::overrides_dir().join("deltas/practices/fixture-domain.toml");
             std::fs::create_dir_all(mine.parent().unwrap()).unwrap();
             std::fs::write(&mine, second_domain()).unwrap();
             let listed = domains(Some(ws)).unwrap();

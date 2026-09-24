@@ -226,15 +226,19 @@ pub fn latest_tag<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a st
 }
 
 /// The manifest the marketplace keeps beside `config/`, or inside it if
-/// someone puts it there.
-fn bundle_manifest(source: &Path) -> Option<String> {
-    let beside = source.parent().map(|p| p.join("bundle.yaml"));
-    let inside = source.join("bundle.yaml");
-    beside
-        .into_iter()
-        .chain(std::iter::once(inside))
-        .find(|c| c.is_file())
-        .and_then(|c| std::fs::read_to_string(c).ok())
+/// someone puts it there. A `bundle.yaml` in its place is refused by name.
+fn bundle_manifest(source: &Path) -> Result<Option<String>, WorkspaceError> {
+    let beside = source.parent().map(|p| p.join("bundle.toml"));
+    let inside = source.join("bundle.toml");
+    for c in beside.into_iter().chain(std::iter::once(inside)) {
+        if let Some(detail) = crate::config::yaml_left(&c) {
+            return Err(WorkspaceError::new("config.yaml_found", detail));
+        }
+        if c.is_file() {
+            return Ok(std::fs::read_to_string(c).ok());
+        }
+    }
+    Ok(None)
 }
 
 /// Every file must name a schema this release reads, before anything is
@@ -251,28 +255,32 @@ fn validate(staged: &Path, bundle: Option<&str>) -> Result<(), WorkspaceError> {
         }
     }
     if let Some(text) = bundle {
-        let doc = config::load_yaml_text(text, "bundle.yaml", false)
+        let doc = config::load_toml_text(text, "bundle.toml")
             .map_err(|e| WorkspaceError::new("config.unreadable", e.to_string()))?;
         let found = doc.get("schema").and_then(serde_json::Value::as_str);
         if found != Some(BUNDLE_SCHEMA) {
-            return Err(schema_refusal("bundle.yaml", found, BUNDLE_SCHEMA));
+            return Err(schema_refusal("bundle.toml", found, BUNDLE_SCHEMA));
         }
     }
     let mut expected: Vec<(PathBuf, &str)> = Vec::new();
-    expected.extend(yaml_in(&staged.join("harnesses")).into_iter().map(|p| (p, PROFILE_SCHEMA)));
-    expected.extend(yaml_in(&staged.join("deltas")).into_iter().map(|p| (p, DELTAS_SCHEMA)));
-    expected
-        .extend(yaml_in(&staged.join("deltas/practices")).into_iter().map(|p| (p, DELTAS_SCHEMA)));
+    for (rel, schema) in [
+        ("harnesses", PROFILE_SCHEMA),
+        ("deltas", DELTAS_SCHEMA),
+        ("deltas/practices", DELTAS_SCHEMA),
+    ] {
+        for stem in config::stems(&staged.join(rel)) {
+            expected.push((staged.join(rel).join(format!("{stem}.toml")), schema));
+        }
+    }
     for (path, schema) in expected {
         let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+        if let Some(detail) = config::yaml_left(&path) {
+            return Err(WorkspaceError::new("config.yaml_found", detail));
+        }
         let text = std::fs::read_to_string(&path)
             .map_err(|e| WorkspaceError::new("config.unreadable", format!("{name}: {e}")))?;
-        // The 1.1 lint runs here, where a bad document can still be refused
-        // without anything having been replaced.
-        config::lint_yaml_11(&text, &name)
+        let doc = config::load_toml_text(&text, &name)
             .map_err(|e| WorkspaceError::new("config.unreadable", e.to_string()))?;
-        let doc = config::load_yaml_text(&text, &name, true)
-            .map_err(|e| WorkspaceError::new("config.unreadable", format!("{name}: {e}")))?;
         let found = doc.get("schema").and_then(serde_json::Value::as_str);
         if found != Some(schema) {
             return Err(schema_refusal(&name, found, schema));
@@ -294,18 +302,6 @@ fn schema_refusal(name: &str, found: Option<&str>, want: &str) -> WorkspaceError
     )
 }
 
-fn yaml_in(dir: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "yaml"))
-        .collect();
-    out.sort();
-    out
-}
-
 /// Swap in the staged tree, putting the previous one back if the swap fails.
 fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
     let previous =
@@ -325,7 +321,7 @@ fn replace(staged: &Path, target: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(to)?;
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
@@ -415,7 +411,7 @@ fn download(dest: &Path) -> Result<(String, Option<String>), WorkspaceError> {
         copy_tree(&config, dest).map_err(io("config.bundle"))?;
         // The manifest sits beside config/, so it is read but never mirrored:
         // the installed tree stays exactly the config/ tree.
-        Ok((tag.clone(), std::fs::read_to_string(product.join("bundle.yaml")).ok()))
+        Ok((tag.clone(), bundle_manifest(&config)?))
     })();
     let _ = std::fs::remove_dir_all(&work);
     outcome
@@ -451,8 +447,7 @@ fn freshness(revision: &str, latest: &str, manifest: &[u8]) -> Value {
     })
 }
 
-/// Replace the synced config layer; create the overrides layer once and never
-/// touch it again.
+/// Replace the synced config layer.
 pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
     use crate::config;
 
@@ -472,7 +467,7 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
                     ));
                 }
                 copy_tree(&src, &staged).map_err(io("config.source"))?;
-                ("local".to_string(), bundle_manifest(&src))
+                ("local".to_string(), bundle_manifest(&src)?)
             }
             None => download(&staged)?,
         };
@@ -484,12 +479,9 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
     })();
     let _ = std::fs::remove_dir_all(&staged);
     let revision = outcome?;
-    let overrides = config::overrides_dir().join("deltas").join("practices");
-    std::fs::create_dir_all(&overrides).map_err(io("config.source"))?;
     Ok(json!({
         "rf_dir": home_dir.to_string_lossy(),
         "config": config::config_dir().to_string_lossy(),
-        "overrides": config::overrides_dir().to_string_lossy(),
         "revision": revision,
     }))
 }

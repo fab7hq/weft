@@ -1677,7 +1677,7 @@ mod tests {
     }
 
     #[test]
-    fn global_init_mirrors_the_bundle_and_leaves_overrides_alone() {
+    fn global_init_mirrors_the_bundle_and_creates_no_overrides() {
         with_config_home(|home| {
             let repo = crate::testing::repo();
             let c = Cli { root: repo.path().to_path_buf() };
@@ -1692,11 +1692,11 @@ mod tests {
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
             held.sort();
-            assert_eq!(held, ["config", "overrides"]);
+            assert_eq!(held, ["config"]);
             for rel in [
-                "deltas/codex.yaml",
-                "deltas/claude-code.yaml",
-                "deltas/practices/software-development.yaml",
+                "deltas/codex.toml",
+                "deltas/claude-code.toml",
+                "deltas/practices/software-development.toml",
             ] {
                 assert_eq!(
                     std::fs::read(root.join("config").join(rel)).unwrap(),
@@ -1704,22 +1704,57 @@ mod tests {
                     "{rel}"
                 );
             }
-            // A personal override survives a sync; an edit to the mirror does not.
-            let mine = root.join("overrides/deltas/practices/software-development.yaml");
-            std::fs::create_dir_all(mine.parent().unwrap()).unwrap();
-            std::fs::write(&mine, "entries: [{id: practice.kiss, text: Mine.}]\n").unwrap();
-            let edited = root.join("config/deltas/codex.yaml");
+            // An edit to the mirror does not survive a sync.
+            let edited = root.join("config/deltas/codex.toml");
             let before = std::fs::read_to_string(&edited).unwrap();
             std::fs::write(&edited, format!("{before}\n# scribbled on the mirror\n")).unwrap();
             let (code, _, err) = c.go(&["sync", "--from", &fixture.to_string_lossy()]);
             assert_eq!(code, 0, "{err}");
             assert_eq!(
-                std::fs::read_to_string(&mine).unwrap(),
-                "entries: [{id: practice.kiss, text: Mine.}]\n"
-            );
-            assert_eq!(
                 std::fs::read(&edited).unwrap(),
-                std::fs::read(fixture.join("deltas/codex.yaml")).unwrap()
+                std::fs::read(fixture.join("deltas/codex.toml")).unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn sync_refuses_a_yaml_bundle_or_file_by_name_and_mirrors_toml() {
+        with_config_home(|home| {
+            let repo = crate::testing::repo();
+            let c = Cli { root: repo.path().to_path_buf() };
+            let product = crate::testing::tmp_dir();
+            let source = product.path().join("config");
+            crate::workspace::copy_tree(&crate::testing::fixture_config(), &source).unwrap();
+            let from = source.to_string_lossy().to_string();
+            let manifest = product.path().join("bundle.yaml");
+            std::fs::write(&manifest, "schema: ringframe.bundle/2\n").unwrap();
+            let (code, out, _) = c.go(&["sync", "--from", &from]);
+            assert_eq!((code, out["error"].as_str()), (2, Some("config.yaml_found")), "{out}");
+            let beside = product.path().canonicalize().unwrap();
+            let want = format!(
+                "{} is YAML; this release reads {}",
+                beside.join("bundle.yaml").display(),
+                beside.join("bundle.toml").display()
+            );
+            assert_eq!(out["detail"], want);
+
+            std::fs::remove_file(&manifest).unwrap();
+            std::fs::write(product.path().join("bundle.toml"), "schema = \"ringframe.bundle/2\"\n")
+                .unwrap();
+            let host = source.join("deltas/codex.toml");
+            std::fs::rename(&host, host.with_extension("yaml")).unwrap();
+            let (code, out, _) = c.go(&["sync", "--from", &from]);
+            assert_eq!((code, out["error"].as_str()), (2, Some("config.yaml_found")), "{out}");
+            assert!(out["detail"].as_str().unwrap().contains("deltas/codex.yaml is YAML"), "{out}");
+
+            std::fs::rename(host.with_extension("yaml"), &host).unwrap();
+            std::fs::write(&host, format!("{}# synced\n", std::fs::read_to_string(&host).unwrap()))
+                .unwrap();
+            let (code, _, err) = c.go(&["sync", "--from", &from]);
+            assert_eq!(code, 0, "{err}");
+            assert_eq!(
+                std::fs::read(home.join(".fab7/rf/config/deltas/codex.toml")).unwrap(),
+                std::fs::read(&host).unwrap()
             );
         });
     }
@@ -1936,8 +1971,9 @@ mod tests {
             let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
             ws.ensure().unwrap();
             std::fs::write(
-                ws.rf_dir().join("deltas/practices/software-development.yaml"),
-                "concerns: [project_special]\nrender: {core_cap: 1}\nentries: [{id: practice.kiss, text: Use the project setting.}]\n",
+                ws.rf_dir().join("deltas/practices/software-development.toml"),
+                "concerns = [\"project_special\"]\nrender = { core_cap = 1 }\n\
+                 entries = [{ id = \"practice.kiss\", text = \"Use the project setting.\" }]\n",
             )
             .unwrap();
             let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["project_special"]}"#;
@@ -2009,8 +2045,8 @@ mod tests {
             let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
             ws.ensure().unwrap();
             std::fs::write(
-                ws.rf_dir().join("deltas/practices/software-development.yaml"),
-                "concerns: [team_boundary]\n",
+                ws.rf_dir().join("deltas/practices/software-development.toml"),
+                "concerns = [\"team_boundary\"]\n",
             )
             .unwrap();
             let (code, out, _) = c.go(&["deltas", "domains", "--json"]);

@@ -1,4 +1,4 @@
-//! Authored configuration is YAML; evidence is canonical JSON.
+//! Authored configuration is TOML; evidence is canonical JSON.
 //!
 //! Identities of configuration documents are digests of the parsed document's
 //! canonical JSON, so comments and formatting never change a profile or
@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use saphyr::{LoadableYamlNode, Scalar, ScalarStyle, Yaml, YamlLoader};
 use serde_json::{Map, Value};
 
 use crate::digest;
@@ -53,74 +52,75 @@ pub fn require_config() -> Result<PathBuf, ConfigError> {
     Ok(d)
 }
 
-pub fn load_yaml_text(text: &str, where_: &str, allow_empty: bool) -> Result<Value, ConfigError> {
-    let docs = Yaml::load_from_str(text).map_err(|e| ConfigError(format!("{where_}: {e}")))?;
-    let doc = match docs.first() {
-        None => {
-            return if allow_empty {
-                Ok(Value::Object(Map::new()))
-            } else {
-                Err(ConfigError(format!("{where_}: top level must be a mapping")))
-            };
-        }
-        Some(d) => to_json(d).map_err(|e| ConfigError(format!("{where_}: {e}")))?,
-    };
-    match doc {
-        Value::Null if allow_empty => Ok(Value::Object(Map::new())),
-        Value::Object(_) => Ok(doc),
-        _ => Err(ConfigError(format!("{where_}: top level must be a mapping"))),
-    }
+/// A TOML document as the JSON value the rest of the crate reads.
+///
+/// TOML has no null: a key the document leaves out is absent, which every
+/// reader here treats as null. A date or time has no JSON form and is refused
+/// rather than guessed at.
+pub fn load_toml_text(text: &str, where_: &str) -> Result<Value, ConfigError> {
+    let doc: toml::Table = text.parse().map_err(|e| ConfigError(format!("{where_}: {e}")))?;
+    to_json(toml::Value::Table(doc)).map_err(|e| ConfigError(format!("{where_}: {e}")))
 }
 
-pub fn load_yaml(path: &Path, allow_empty: bool) -> Result<Value, ConfigError> {
+/// Read `path`, refusing when the YAML file it replaced is still beside it.
+pub fn load_toml(path: &Path) -> Result<Value, ConfigError> {
+    refuse_yaml(path)?;
     let text = std::fs::read_to_string(path)
         .map_err(|e| ConfigError(format!("{}: {e}", path.display())))?;
-    load_yaml_text(&text, &path.display().to_string(), allow_empty)
+    load_toml_text(&text, &path.display().to_string())
 }
 
-/// YAML's value model onto JSON's.
-///
-/// Anything the safe subset does not cover is refused rather than guessed at:
-/// PyYAML's `safe_load` would refuse the same documents, and a configuration
-/// file is not a place to be generous.
-fn to_json(node: &Yaml) -> Result<Value, String> {
-    Ok(match node {
-        Yaml::Value(scalar) => match scalar {
-            Scalar::Null => Value::Null,
-            Scalar::Boolean(b) => Value::Bool(*b),
-            Scalar::Integer(i) => Value::Number((*i).into()),
-            Scalar::FloatingPoint(f) => serde_json::Number::from_f64(f.into_inner())
-                .map(Value::Number)
-                .ok_or_else(|| format!("{} is not a finite number", f.into_inner()))?,
-            Scalar::String(s) => Value::String(s.to_string()),
-        },
-        Yaml::Sequence(items) => Value::Array(items.iter().map(to_json).collect::<Result<_, _>>()?),
-        Yaml::Mapping(map) => {
-            let mut out = Map::new();
-            for (key, value) in map {
-                out.insert(mapping_key(key)?, to_json(value)?);
-            }
-            Value::Object(out)
-        }
-        Yaml::Tagged(tag, _) => {
-            return Err(format!("unsupported tag !{}{}", tag.handle, tag.suffix));
-        }
-        Yaml::Alias(_) => return Err("unsupported alias".into()),
-        Yaml::Representation(..) => return Err("unresolved scalar".into()),
-        Yaml::BadValue => return Err("could not be parsed".into()),
-    })
-}
-
-/// JSON has only string keys. YAML's other scalar keys become the text JSON
-/// would give them, and a collection key is refused.
-fn mapping_key(key: &Yaml) -> Result<String, String> {
-    match to_json(key)? {
-        Value::String(s) => Ok(s),
-        Value::Null => Ok("null".into()),
-        Value::Bool(b) => Ok(b.to_string()),
-        Value::Number(n) => Ok(n.to_string()),
-        _ => Err("a mapping key must be a scalar".into()),
+/// Configuration is TOML; a `.yaml` where a `.toml` is read is named, never
+/// read or converted.
+pub fn refuse_yaml(toml_path: &Path) -> Result<(), ConfigError> {
+    match yaml_left(toml_path) {
+        Some(detail) => Err(ConfigError(format!("config.yaml_found: {detail}"))),
+        None => Ok(()),
     }
+}
+
+/// What is wrong when the YAML file `toml_path` replaced is still there.
+pub fn yaml_left(toml_path: &Path) -> Option<String> {
+    let yaml = toml_path.with_extension("yaml");
+    yaml.is_file()
+        .then(|| format!("{} is YAML; this release reads {}", yaml.display(), toml_path.display()))
+}
+
+/// The stems of the configuration files in `dir`, sorted. A `.yaml` one is
+/// listed too, so that reading it refuses by name rather than skipping it.
+pub fn stems(dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            name.strip_suffix(".toml").or_else(|| name.strip_suffix(".yaml")).map(str::to_string)
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn to_json(node: toml::Value) -> Result<Value, String> {
+    Ok(match node {
+        toml::Value::String(s) => Value::String(s),
+        toml::Value::Integer(i) => Value::Number(i.into()),
+        toml::Value::Float(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .ok_or_else(|| format!("{f} is not a finite number"))?,
+        toml::Value::Boolean(b) => Value::Bool(b),
+        toml::Value::Datetime(d) => return Err(format!("unsupported date-time {d}")),
+        toml::Value::Array(items) => {
+            Value::Array(items.into_iter().map(to_json).collect::<Result<_, _>>()?)
+        }
+        toml::Value::Table(map) => Value::Object(
+            map.into_iter()
+                .map(|(k, v)| Ok((k, to_json(v)?)))
+                .collect::<Result<Map<_, _>, String>>()?,
+        ),
+    })
 }
 
 pub fn sha256_of(doc: &Value) -> String {
@@ -166,92 +166,21 @@ pub fn merge(base: &Value, override_: &Value) -> Value {
     override_.clone()
 }
 
-/// Refuse a document that leans on a scalar YAML 1.1 and 1.2 disagree about.
-///
-/// YAML 1.1 reads `yes` as a boolean and `0777` as octal; YAML 1.2 reads the
-/// first as a string and the second as seven hundred and seventy-seven. The
-/// shipped configuration has none of these, and this is what keeps it that
-/// way.
-///
-/// Only *plain* scalars are at issue, so this asks the parser for the style
-/// rather than guessing from the text: `no` is refused and `"no"` is fine,
-/// which is exactly what the message tells the person to do.
-pub fn lint_yaml_11(text: &str, where_: &str) -> Result<(), ConfigError> {
-    let mut loader: YamlLoader<Yaml> = YamlLoader::default();
-    loader.early_parse(false);
-    let mut parser = saphyr_parser::Parser::new_from_str(text);
-    parser.load(&mut loader, true).map_err(|e| ConfigError(format!("{where_}: {e}")))?;
-    let mut found = Vec::new();
-    for doc in loader.into_documents() {
-        walk_plain(&doc, &mut found);
-    }
-    match found.first() {
-        None => Ok(()),
-        Some((raw, why)) => Err(ConfigError(format!(
-            "config.yaml_11: {where_}: `{raw}` is {why}, which this release reads differently \
-             from the Python one. Quote it."
-        ))),
-    }
-}
-
-fn walk_plain(node: &Yaml, found: &mut Vec<(String, &'static str)>) {
-    match node {
-        Yaml::Representation(raw, ScalarStyle::Plain, _) => {
-            if let Some(why) = nineteen_eleven_scalar(raw) {
-                found.push((raw.to_string(), why));
-            }
-        }
-        Yaml::Sequence(items) => items.iter().for_each(|i| walk_plain(i, found)),
-        Yaml::Mapping(map) => {
-            for (k, v) in map {
-                walk_plain(k, found);
-                walk_plain(v, found);
-            }
-        }
-        Yaml::Tagged(_, inner) => walk_plain(inner, found),
-        _ => {}
-    }
-}
-
-/// The text of a plain scalar the two YAML versions do not agree on.
-fn nineteen_eleven_scalar(text: &str) -> Option<&'static str> {
-    const BOOLEANS: [&str; 8] = ["yes", "no", "on", "off", "y", "n", "true", "false"];
-    let lower = text.to_ascii_lowercase();
-    if BOOLEANS.contains(&lower.as_str()) && !matches!(text, "true" | "false") {
-        return Some("a YAML 1.1 boolean");
-    }
-    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if digits.len() > 1
-        && digits.starts_with('0')
-        && digits[1..].bytes().all(|b| b.is_ascii_digit())
-    {
-        return Some("a YAML 1.1 octal integer");
-    }
-    if digits.contains('_') && digits.replace('_', "").bytes().all(|b| b.is_ascii_digit()) {
-        return Some("a YAML 1.1 underscored integer");
-    }
-    if digits.contains(':')
-        && digits.split(':').all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
-    {
-        return Some("a YAML 1.1 sexagesimal number");
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
     fn parse(text: &str) -> Value {
-        load_yaml_text(text, "t.yaml", false).unwrap()
+        load_toml_text(text, "t.toml").unwrap()
     }
 
     #[test]
-    fn yaml_identity_ignores_comments_and_formatting() {
-        let a = parse("schema: x/1\nname: demo   # a comment\nitems:\n  - one\n  - two\n");
+    fn toml_identity_ignores_comments_and_formatting() {
+        let a =
+            parse("schema = \"x/1\"\nname = \"demo\"   # a comment\nitems = [\"one\", \"two\"]\n");
         let b = parse(
-            "# different layout, same document\nitems: [one, two]\nschema: x/1\nname: demo\n",
+            "# different layout, same document\nitems = [\n  \"one\",\n  \"two\",\n]\nname = 'demo'\nschema = \"x/1\"\n",
         );
         let want = json!({"schema": "x/1", "name": "demo", "items": ["one", "two"]});
         assert_eq!(a, want);
@@ -260,19 +189,132 @@ mod tests {
     }
 
     #[test]
-    fn the_loader_is_safe_and_requires_a_mapping() {
-        let e =
-            load_yaml_text("!!python/object/apply:os.system ['echo pwned']\n", "bad.yaml", false)
-                .unwrap_err();
-        assert!(e.0.contains("bad.yaml"), "{e}");
-        let e = load_yaml_text("- just\n- a list\n", "list.yaml", false).unwrap_err();
-        assert!(e.0.contains("mapping"), "{e}");
+    fn the_loader_refuses_what_json_cannot_hold_and_an_empty_file_is_empty() {
+        let e = load_toml_text("at = 1979-05-27T07:32:00Z\n", "bad.toml").unwrap_err();
+        assert!(e.0.starts_with("bad.toml: unsupported date-time"), "{e}");
+        let e = load_toml_text("schema: x/1\n", "yaml.toml").unwrap_err();
+        assert!(e.0.starts_with("yaml.toml:"), "{e}");
+        assert_eq!(load_toml_text("# only a comment\n", "t.toml").unwrap(), json!({}));
     }
 
     #[test]
-    fn an_empty_document_is_a_document_only_when_allowed() {
-        assert_eq!(load_yaml_text("# only a comment\n", "t.yaml", true).unwrap(), json!({}));
-        assert!(load_yaml_text("# only a comment\n", "t.yaml", false).is_err());
+    fn a_yaml_file_where_toml_is_read_is_refused_naming_both() {
+        let dir = crate::testing::tmp_dir();
+        let toml_path = dir.path().join("codex.toml");
+        std::fs::write(&toml_path, "schema = \"x/1\"\n").unwrap();
+        assert_eq!(load_toml(&toml_path).unwrap(), json!({"schema": "x/1"}));
+        std::fs::write(dir.path().join("codex.yaml"), "schema: x/1\n").unwrap();
+        std::fs::write(dir.path().join("other.yaml"), "schema: x/1\n").unwrap();
+        assert_eq!(stems(dir.path()), ["codex", "other"]);
+        for path in [toml_path.clone(), dir.path().join("other.toml")] {
+            let e = load_toml(&path).unwrap_err();
+            let yaml = path.with_extension("yaml");
+            assert!(e.0.starts_with("config.yaml_found: "), "{e}");
+            assert!(e.0.contains(&yaml.display().to_string()), "{e}");
+            assert!(e.0.contains(&path.display().to_string()), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_yaml_file_left_in_the_synced_mirror_is_refused() {
+        use crate::testing::with_config_home;
+        with_config_home(|_| {
+            let toml_path = config_dir().join("harnesses/codex.toml");
+            std::fs::rename(&toml_path, toml_path.with_extension("yaml")).unwrap();
+            let e = crate::profiles::load("codex").unwrap_err();
+            assert!(e.0.starts_with("config.yaml_found: "), "{e}");
+            assert!(e.0.contains("harnesses/codex.yaml"), "{e}");
+            assert!(e.0.contains("harnesses/codex.toml"), "{e}");
+            let host = config_dir().join("deltas/claude-code.toml");
+            std::fs::rename(&host, host.with_extension("yaml")).unwrap();
+            let e = crate::deltas::load_host_catalog("claude-code", None).unwrap_err();
+            assert!(e.0.contains("deltas/claude-code.yaml"), "{e}");
+        });
+    }
+
+    /// The conversion's check, made once against the values: each TOML file
+    /// digests to what its YAML parsed to, less the nulls TOML cannot hold. A
+    /// deliberate change to a file's content changes its line here.
+    #[test]
+    fn every_shipped_toml_file_holds_what_its_yaml_held() {
+        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let shipped = here.join("../../../fab7/products/ringframe");
+        let fixture = here.join("tests/fixtures/config");
+        let mut roots = vec![(
+            fixture,
+            vec![
+                (
+                    "deltas/claude-code.toml",
+                    "8e8df4d73344e3797e984a9a484e1da9fb5dee0e9337cfee701b49cb8027b630",
+                ),
+                (
+                    "deltas/codex.toml",
+                    "ad74ec85c229d37b4336518796f070320b62ddf2be302b36406ccf5272a1ed00",
+                ),
+                (
+                    "deltas/practices/software-development.toml",
+                    "8c7d2406cc02eb257f1d6c90d3d7ec1baaa7468d20bbd9f599c1353bd1ee1496",
+                ),
+                (
+                    "harnesses/claude-code.toml",
+                    "0a2545c1a1c24a3b8c03c976251adc8e12e2676a06d917a087f6856f06e4b069",
+                ),
+                (
+                    "harnesses/codex.toml",
+                    "e050482ebfd4aba59b688f57f2ca5d0a1d6cbbee03e70bcaca1eb249290ced6b",
+                ),
+                (
+                    "harnesses/unknown.toml",
+                    "dfedc7b4b74791f7e91d747c54fecf12e1b3bc8bf5d1186b2d72d6cb20673bfc",
+                ),
+            ],
+        )];
+        // The marketplace is checked too when it happens to be beside us.
+        if shipped.is_dir() {
+            roots.push((
+                shipped,
+                vec![
+                    (
+                        "bundle.toml",
+                        "5d0f73340532af8dbe0205ce6c0465b223219dd0cdc1fe05bc59139d78df128c",
+                    ),
+                    (
+                        "config/deltas/claude-code.toml",
+                        "ef50e33661581006d879be728b3c089653d9b85d2ae07780327628e5d64231fb",
+                    ),
+                    (
+                        "config/deltas/codex.toml",
+                        "449f3a3c7045aee262bf130965c513b698e3fb49c4c44d30588cd53c5dd75480",
+                    ),
+                    (
+                        "config/deltas/practices/autonomous-trading.toml",
+                        "39466af5142c804275669dd55d036e6464d863a3b581bbacfa1ed71b57c2c2a3",
+                    ),
+                    (
+                        "config/deltas/practices/software-development.toml",
+                        "8c7d2406cc02eb257f1d6c90d3d7ec1baaa7468d20bbd9f599c1353bd1ee1496",
+                    ),
+                    (
+                        "config/harnesses/claude-code.toml",
+                        "0a2545c1a1c24a3b8c03c976251adc8e12e2676a06d917a087f6856f06e4b069",
+                    ),
+                    (
+                        "config/harnesses/codex.toml",
+                        "e050482ebfd4aba59b688f57f2ca5d0a1d6cbbee03e70bcaca1eb249290ced6b",
+                    ),
+                    (
+                        "config/harnesses/unknown.toml",
+                        "dfedc7b4b74791f7e91d747c54fecf12e1b3bc8bf5d1186b2d72d6cb20673bfc",
+                    ),
+                ],
+            ));
+        }
+        for (root, files) in roots {
+            for (rel, want) in files {
+                let doc = load_toml(&root.join(rel)).unwrap_or_else(|e| panic!("{e}"));
+                assert_eq!(sha256_of(&doc), want, "{}", root.join(rel).display());
+            }
+        }
     }
 
     #[test]
@@ -299,36 +341,6 @@ mod tests {
     }
 
     #[test]
-    fn the_lint_refuses_plain_one_one_scalars_and_allows_quoted_ones() {
-        for bad in [
-            "project_opted_in: yes\n",
-            "enabled: No\n",
-            "flag: on\n",
-            "mode: OFF\n",
-            "mask: 0777\n",
-            "count: 1_000\n",
-            "at: 1:30\n",
-            "items:\n  - yes\n",
-        ] {
-            let e = lint_yaml_11(bad, "p.yaml").unwrap_err();
-            assert!(e.0.starts_with("config.yaml_11: p.yaml:"), "{bad:?} gave {e}");
-            assert!(e.0.contains("Quote it."), "{e}");
-        }
-        for good in [
-            "project_opted_in: false\n",
-            "project_opted_in: true\n",
-            "answer: \"no\"\n",
-            "answer: 'yes'\n",
-            "mask: \"0777\"\n",
-            "count: 1000\n",
-            "text: |\n  yes\n",
-            "note: says yes to it\n",
-        ] {
-            assert!(lint_yaml_11(good, "p.yaml").is_ok(), "{good:?} was refused");
-        }
-    }
-
-    #[test]
     fn global_and_project_configuration_share_rf_without_creating_rt() {
         use crate::{
             deltas, profiles,
@@ -350,16 +362,16 @@ mod tests {
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
             seeded.sort();
-            assert_eq!(seeded, ["software-development.yaml"]);
-            assert_eq!(std::fs::read(practices.join("software-development.yaml")).unwrap(), b"");
-            // The home holds the synced mirror and an empty overrides tree, nothing else.
+            assert_eq!(seeded, ["software-development.toml"]);
+            assert_eq!(std::fs::read(practices.join("software-development.toml")).unwrap(), b"");
+            // The home holds the synced mirror, nothing else.
             let mut held: Vec<String> = std::fs::read_dir(home.join(".fab7/rf"))
                 .unwrap()
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
             held.sort();
-            assert_eq!(held, ["config", "overrides"]);
+            assert_eq!(held, ["config"]);
             assert_eq!(
                 std::fs::read_to_string(config_dir().join(".revision")).unwrap().trim(),
                 "local"
@@ -374,28 +386,30 @@ mod tests {
     fn scoped_delta_catalogs_apply_project_conflicts_and_render_settings() {
         use crate::{
             deltas, profiles,
-            testing::{repo, to_yaml, with_config_home, ws_for},
+            testing::{repo, to_toml, with_config_home, ws_for},
         };
         with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let global = overrides_dir().join("deltas/practices/software-development.yaml");
+            let global = overrides_dir().join("deltas/practices/software-development.toml");
             std::fs::create_dir_all(global.parent().unwrap()).unwrap();
             let mut doc =
-                load_yaml(&config_dir().join("deltas/practices/software-development.yaml"), false)
+                load_toml(&config_dir().join("deltas/practices/software-development.toml"))
                     .unwrap();
             doc["render"]["core_cap"] = json!(1);
             doc["entries"][0]["text"] = json!("Global rule.");
-            std::fs::write(&global, to_yaml(&doc)).unwrap();
+            std::fs::write(&global, to_toml(&doc)).unwrap();
             std::fs::write(
-                ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
-                "render: {core_cap: 2}\nentries: [{id: practice.kiss, text: Project rule.}]\n",
+                ws.root.join(".fab7/rf/deltas/practices/software-development.toml"),
+                "render = { core_cap = 2 }\nentries = [{ id = \"practice.kiss\", text = \"Project rule.\" }]\n",
             )
             .unwrap();
             std::fs::write(
-                ws.root.join(".fab7/rf/deltas/codex.yaml"),
-                "entries: [{id: codex.native_plan.hand_back, status: qualified, text: Project host rule.}]\n",
-            ).unwrap();
+                ws.root.join(".fab7/rf/deltas/codex.toml"),
+                "[[entries]]\nid = \"codex.native_plan.hand_back\"\nstatus = \"qualified\"\n\
+                 text = \"Project host rule.\"\n",
+            )
+            .unwrap();
             let result = deltas::render(
                 Some(&ws),
                 &profiles::load("codex").unwrap(),
@@ -427,9 +441,9 @@ mod tests {
             let ws = ws_for(repo.path());
             let original = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
             assert!(original.iter().any(|(k, _)| k == "practice.kiss"));
-            let local = ws.root.join(".fab7/rf/deltas/practices/software-development.yaml");
+            let local = ws.root.join(".fab7/rf/deltas/practices/software-development.toml");
             assert_eq!(std::fs::read(&local).unwrap(), b"");
-            std::fs::write(&local, "entries: []\n").unwrap();
+            std::fs::write(&local, "entries = []\n").unwrap();
             assert!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap().is_empty());
             std::fs::write(&local, "# Only a comment\n").unwrap();
             assert_eq!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap(), original);
@@ -440,22 +454,23 @@ mod tests {
     fn delta_merge_preserves_global_nested_fields_and_project_list_values() {
         use crate::{
             deltas,
-            testing::{repo, to_yaml, with_config_home, ws_for},
+            testing::{repo, to_toml, with_config_home, ws_for},
         };
         with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let global = overrides_dir().join("deltas/practices/software-development.yaml");
+            let global = overrides_dir().join("deltas/practices/software-development.toml");
             std::fs::create_dir_all(global.parent().unwrap()).unwrap();
             let mut doc =
-                load_yaml(&config_dir().join("deltas/practices/software-development.yaml"), false)
+                load_toml(&config_dir().join("deltas/practices/software-development.toml"))
                     .unwrap();
             doc["entries"][0]["applies_to"] =
                 json!({"task": ["implement"], "result": ["workspace_change"]});
-            std::fs::write(&global, to_yaml(&doc)).unwrap();
+            std::fs::write(&global, to_toml(&doc)).unwrap();
             std::fs::write(
-                ws.root.join(".fab7/rf/deltas/practices/software-development.yaml"),
-                "entries: [{id: practice.kiss, applies_to: {task: [plan]}, why: null}]\n",
+                ws.root.join(".fab7/rf/deltas/practices/software-development.toml"),
+                "[[entries]]\nid = \"practice.kiss\"\nwhy = \"Project why.\"\n\
+                 applies_to = { task = [\"plan\"] }\n",
             )
             .unwrap();
             let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
@@ -464,42 +479,8 @@ mod tests {
                 merged["applies_to"],
                 json!({"task": ["plan"], "result": ["workspace_change"]})
             );
-            assert_eq!(merged["why"], json!(null));
-            assert_eq!(load_yaml(&global, false).unwrap(), doc);
+            assert_eq!(merged["why"], "Project why.");
+            assert_eq!(load_toml(&global).unwrap(), doc);
         });
-    }
-
-    #[test]
-    fn the_shipped_configuration_passes_the_lint() {
-        // The fixture travels with this repository so the check means
-        // something in CI; the marketplace itself is checked too when it
-        // happens to be beside us.
-        let here = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut roots = vec![here.join("tests/fixtures/config")];
-        if let Ok(market) = here.join("../../../fab7/products/ringframe").canonicalize() {
-            roots.push(market);
-        }
-        for root in roots {
-            lint_every_yaml_under(&root);
-        }
-    }
-
-    fn lint_every_yaml_under(root: &std::path::Path) {
-        let mut checked = 0;
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else if path.extension().is_some_and(|e| e == "yaml") {
-                    let text = std::fs::read_to_string(&path).unwrap();
-                    let name = path.strip_prefix(root).unwrap().to_string_lossy().to_string();
-                    lint_yaml_11(&text, &name).unwrap_or_else(|e| panic!("{e}"));
-                    checked += 1;
-                }
-            }
-        }
-        assert!(checked > 5, "{}: only {checked} config files were checked", root.display());
     }
 }
