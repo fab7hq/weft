@@ -259,15 +259,11 @@ impl Board<'_> {
                 .selected_unit()
                 .is_none()
                 .then(|| "Nothing has been asked for yet.".to_string()),
-            Act::Eval | Act::Seal => match self.selected_unit() {
-                None => Some("Nothing to work on yet.".into()),
-                // Where it goes is the project's to say. Routed elsewhere, it
-                // is that harness that needs a pane, not the one that worked.
-                Some(_) => {
-                    let name = self.deciding_harness(act)?;
-                    self.pane_for(&name).is_none().then(|| no_pane(&name))
-                }
-            },
+            // Where it goes is the project's to say, and it needs no pane there:
+            // the daemon types into an idle one of that harness, or starts one.
+            Act::Eval | Act::Seal => {
+                self.selected_unit().is_none().then(|| "Nothing to work on yet.".into())
+            }
         }
     }
 }
@@ -356,8 +352,13 @@ mod tests {
             .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
-        let said = b.unavailable(Act::Eval).expect("no claude-code pane is open");
-        assert!(said.contains("claude-code"), "{said}");
+        assert_eq!(b.unavailable(Act::Eval), None, "no claude-code pane: the daemon starts one");
+        let unset: &dyn Fn(&str) -> Readiness = &|h| {
+            if h == "claude-code" { Readiness::Missing(Gap::Plugin) } else { Readiness::Ready }
+        };
+        let said =
+            board(&units, &panes, unset, &routing).unavailable(Act::Eval).expect("not set up");
+        assert!(said.contains("claude-code"), "readiness is the routed harness's: {said}");
         // Seal was not routed, so it still follows the work.
         assert_eq!(b.deciding_harness(Act::Seal).as_deref(), Some("codex"));
     }

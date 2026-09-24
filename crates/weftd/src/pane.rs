@@ -209,6 +209,28 @@ impl Pane {
         self.write_and_submit(body, blocked, typed.is_some())
     }
 
+    /// Wait until the pane has drawn something and then left it alone for
+    /// `still`, or `timeout` passes. Whether it settled is returned; what is
+    /// typed next checks the screen again either way.
+    pub fn wait_until_quiet(
+        &self,
+        still: std::time::Duration,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        let mut last = (std::time::Instant::now(), String::new());
+        while std::time::Instant::now() < deadline {
+            let screen = self.with_screen(|s| s.contents());
+            if screen != last.1 {
+                last = (std::time::Instant::now(), screen);
+            } else if !screen.trim().is_empty() && last.0.elapsed() >= still {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
     /// Wait for the host to show something, rather than assuming it did.
     fn wait_for(&self, needle: &str, timeout: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;

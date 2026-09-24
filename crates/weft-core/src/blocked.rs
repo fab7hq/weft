@@ -41,22 +41,42 @@ const RULES: &[(&str, &str)] = &[
 const TAIL_LINES: usize = 14;
 const TAIL_SHARE: usize = 3; // three quarters of what is on screen
 
-pub fn looks_blocked(screen: &str) -> Option<Evidence> {
+/// The bottom of the screen, where a prompt or a footer is drawn.
+fn tail(screen: &str) -> impl Iterator<Item = &str> {
     let lines: Vec<&str> = screen.lines().collect();
     let window = TAIL_LINES.max(lines.len() * TAIL_SHARE / 4);
     let start = lines.len().saturating_sub(window);
-    for line in &lines[start..] {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+    lines.into_iter().skip(start).map(str::trim).filter(|l| !l.is_empty())
+}
+
+pub fn looks_blocked(screen: &str) -> Option<Evidence> {
+    for line in tail(screen) {
         for (rule, needle) in RULES {
-            if trimmed.contains(needle) {
-                return Some(Evidence { rule, line: trimmed.to_string() });
+            if line.contains(needle) {
+                return Some(Evidence { rule, line: line.to_string() });
             }
         }
     }
     None
+}
+
+/// Whether a pane is taken: waiting on its person, or mid-turn. Both harnesses
+/// draw "esc to interrupt" while they work.
+pub fn looks_busy(screen: &str) -> bool {
+    looks_blocked(screen).is_some()
+        || tail(screen).any(|l| l.to_lowercase().contains("esc to interrupt"))
+}
+
+/// Where an act for `harness` goes: the first of its panes that is running and
+/// not busy, given `(harness, running, screen)` per pane in order. `None` means
+/// start a new one.
+pub fn idle_pane<'a>(
+    panes: impl IntoIterator<Item = (&'a str, bool, &'a str)>,
+    harness: &str,
+) -> Option<usize> {
+    panes
+        .into_iter()
+        .position(|(h, running, screen)| h == harness && running && !looks_busy(screen))
 }
 
 #[cfg(test)]
@@ -209,5 +229,38 @@ How should I proceed with the health() version-reporting fix?
     fn the_evidence_names_the_line_it_matched() {
         let e = looks_blocked(CODEX_UPDATE).expect("blocked");
         assert!(e.line.contains("Update available"), "got {:?}", e.line);
+    }
+
+    const CODEX_WORKING: &str = "\
+ • Working (12s • esc to interrupt)
+
+ › ";
+
+    const IDLE: &str = "\
+ I added the endpoint.
+
+ ❯
+ ⏵⏵ auto mode on (shift+tab to cycle)";
+
+    #[test]
+    fn a_pane_mid_turn_or_waiting_on_its_person_is_busy() {
+        assert!(looks_busy(WORKING), "Claude Code at work");
+        assert!(looks_busy(CODEX_WORKING), "Codex at work");
+        assert!(looks_busy(CLAUDE_TRUST), "waiting on its person");
+        assert!(!looks_busy(IDLE));
+    }
+
+    #[test]
+    fn an_act_goes_to_an_idle_pane_of_its_harness_or_to_a_new_one() {
+        let panes = [
+            ("claude-code", true, IDLE),
+            ("codex", true, CODEX_WORKING),
+            ("codex", false, IDLE),
+            ("codex", true, IDLE),
+        ];
+        assert_eq!(idle_pane(panes, "codex"), Some(3), "not busy, not ended");
+        assert_eq!(idle_pane(panes, "claude-code"), Some(0));
+        assert_eq!(idle_pane(panes[..3].iter().copied(), "codex"), None, "none idle: start one");
+        assert_eq!(idle_pane([], "codex"), None, "none open: start one");
     }
 }

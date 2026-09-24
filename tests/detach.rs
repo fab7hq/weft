@@ -349,3 +349,61 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// Delegation goes to a pane of the act's harness that is free, and when none
+/// is, the daemon starts one there on the same command line.
+#[test]
+fn an_eval_goes_to_an_idle_pane_of_its_harness_or_starts_one() {
+    let socket = protocol::private_socket("weft-delegate");
+    let root = project("delegate");
+    std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
+    let compiled = serde_json::json!({
+        "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.compiled",
+        "time": "2026-09-19T14:02:00Z", "id": "ask_1",
+        "actor": {"kind": "human", "id": "me"}, "links": [],
+        "data": {"title": "Ship it", "selected_capability": "native_plan",
+                 "delivery_mode": "human_handoff", "host": {"name": "sh"},
+                 "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
+                 "classification": {}, "route_explanation": {}}
+    });
+    std::fs::write(root.join(".fab7/rf/ledger.jsonl"), format!("{compiled}\n")).expect("ledger");
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
+    });
+
+    let mut c = Client::attach(&socket, &root);
+    c.hello();
+    c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into() });
+    assert_eq!(c.wait_for_added(), (0, "sh".to_string()));
+    let check =
+        || Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None };
+    let pending_pane = |c: &mut Client| {
+        c.wait_until(|e| match e {
+            Event::Pending { pane, why, .. } => Some((pane, why)),
+            _ => None,
+        })
+    };
+
+    // Idle: it goes to the pane that is there.
+    // Sent rather than answered: the Pending event comes before the answer.
+    c.send(check());
+    let (pane, why) = pending_pane(&mut c);
+    assert_eq!(pane, 0);
+    assert!(!why.contains("started one"), "{why}");
+
+    // Busy, as a harness at work draws it: a new pane on the same command line.
+    c.send(Call::Input { pane: 0, bytes: b"working... esc to interrupt\n".to_vec() });
+    c.wait_for("esc to interrupt", 5);
+    c.send(check());
+    assert_eq!(c.wait_for_added(), (1, "sh".to_string()));
+    let (pane, why) = pending_pane(&mut c);
+    assert_eq!(pane, 1);
+    assert!(why.contains("No sh agent here was free, so Weft started one."), "{why}");
+
+    let mut stop = Client::attach(&socket, &root);
+    let panes = stop.hello();
+    assert_eq!(panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(), ["/bin/cat", "/bin/cat"]);
+    stop.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}

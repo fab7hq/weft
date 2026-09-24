@@ -2002,14 +2002,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_routed_act_with_no_pane_says_which_harness_is_missing() {
-        // Readiness is answered first — that ordering is deliberate — so make
-        // the routed harness ready and leave it without a pane.
+    fn a_routed_act_with_no_pane_is_still_offered() {
+        // The daemon starts a pane of the routed harness when none is free.
         let mut a = routed(&[("eval", "claude-code")]);
         a.set_readiness("claude-code", Readiness::Ready);
-        let said = a.unavailable(Act::Eval).expect("a reason");
-        assert!(said.contains("claude-code"), "{said}");
-        assert!(said.contains("nowhere to send"), "{said}");
+        assert_eq!(a.unavailable(Act::Eval), None);
     }
 
     #[test]

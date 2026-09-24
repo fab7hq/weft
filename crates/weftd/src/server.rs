@@ -62,7 +62,14 @@ struct Waiting {
     /// The Ask whose yes has to be recorded before anything is typed, when the
     /// harness's own chooser never got one.
     confirm: Option<String>,
+    /// The pane was started for this, and may still be starting up.
+    fresh: bool,
 }
+
+/// How long a pane Weft started for an act must be still before it is typed
+/// into, and how long Weft waits for that.
+const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
+const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// One project's panes. Panes are numbered within it, so a client counts from
 /// one whatever else the daemon is holding.
@@ -400,6 +407,10 @@ impl Session {
     fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
         let refusal = match self.projects[project].panes.get_mut(w.pane as usize) {
             Some(slot) => {
+                if w.fresh {
+                    // A harness draws its composer a moment after it starts.
+                    slot.pane.wait_until_quiet(STARTED_QUIET, STARTED_TIMEOUT);
+                }
                 let screen = slot.pane.with_screen(|s| s.contents());
                 // Whether the pane looks busy is Weft's inference. When the
                 // person has seen what it read and said to type anyway, the
@@ -486,11 +497,17 @@ impl Session {
                     let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
                     ("seal", into, String::new())
                 };
-                let Some(pane) = self.pane_of(at, &into) else {
-                    return Answer::No("no_pane", format!("no {into} pane is open here"));
+                let (pane, fresh) = match self.idle_pane_of(at, &into) {
+                    Some(pane) => (pane, false),
+                    None => match self.start_for(at, &into) {
+                        Some(pane) => (pane, true),
+                        None => {
+                            return Answer::No("no_pane", format!("Weft could not start {into}"));
+                        }
+                    },
                 };
                 let project = &mut self.projects[at];
-                let built = crate::acts::skill(
+                let mut built = crate::acts::skill(
                     &root,
                     skill,
                     &into,
@@ -499,12 +516,46 @@ impl Session {
                     project.ringframe.as_deref(),
                     &mut project.folds,
                 );
-                (built, pane)
+                if fresh {
+                    built
+                        .asking
+                        .why
+                        .push(format!("No {into} agent here was free, so Weft started one."));
+                }
+                return self.stage(at, pane, built, fresh);
             }
             other => return Answer::No("unknown_act", format!("there is no act {other}")),
         };
         let (built, pane) = built;
-        self.stage(at, pane, built)
+        self.stage(at, pane, built, false)
+    }
+
+    /// The first of this harness's panes that is running and not busy.
+    fn idle_pane_of(&mut self, at: usize, harness: &str) -> Option<u32> {
+        let panes: Vec<(String, bool, String)> = self.projects[at]
+            .panes
+            .iter_mut()
+            .map(|s| (s.harness.clone(), s.pane.running(), s.pane.with_screen(|v| v.contents())))
+            .collect();
+        let each = panes.iter().map(|(h, running, screen)| (h.as_str(), *running, screen.as_str()));
+        weft_core::blocked::idle_pane(each, harness).map(|i| i as u32)
+    }
+
+    /// Start a pane of this harness for an act, on the command line one of its
+    /// panes here was started with, else its plain program.
+    fn start_for(&mut self, at: usize, harness: &str) -> Option<u32> {
+        let spec = self.projects[at]
+            .panes
+            .iter()
+            .find(|s| s.harness == harness)
+            .map(|s| s.spec.clone())
+            .or_else(|| weft_core::harness::find(harness).map(|h| h.program.to_string()))?;
+        let before = self.projects[at].panes.len();
+        self.spawn(at, harness, &spec);
+        (self.projects[at].panes.len() > before).then(|| {
+            self.look_at(at, harness);
+            before as u32
+        })
     }
 
     fn pane_of(&self, at: usize, harness: &str) -> Option<u32> {
@@ -512,7 +563,7 @@ impl Session {
     }
 
     /// Put a built prompt in front of everyone watching, and answer with its id.
-    fn stage(&mut self, at: usize, pane: u32, built: crate::acts::Built) -> Answer {
+    fn stage(&mut self, at: usize, pane: u32, built: crate::acts::Built, fresh: bool) -> Answer {
         let id = format!("pnd_{}", self.next_pending);
         self.next_pending += 1;
         let message = Out::Pending {
@@ -528,6 +579,7 @@ impl Session {
             payload: built.payload,
             how: built.how,
             confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
+            fresh,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))
@@ -788,6 +840,7 @@ impl Session {
                     payload: bytes,
                     how,
                     confirm: None,
+                    fresh: false,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
