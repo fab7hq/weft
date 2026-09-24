@@ -412,9 +412,46 @@ pub struct Compile<'a> {
     pub actor: Option<Value>,
 }
 
+/// Every link names something this workspace has, of the kind the link means:
+/// a revision names an Ask, a follow-up an Ask or an Eval, a remedy a
+/// completed Eval. A link to nothing would read as history that never happened.
+fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
+    let events = store::events(ws)?;
+    for l in links {
+        let (rel, id) = (str_of(l, "rel"), str_of(l, "id"));
+        let (kind, types): (&str, &[&str]) = match rel.as_str() {
+            "revises" => ("an Ask", &["ask.compiled"]),
+            "follows" => ("an Ask or an Eval", &["ask.compiled", "eval.opened"]),
+            "remediates" => ("a completed Eval", &["eval.completed"]),
+            _ => {
+                return Err(ledger(
+                    "ask.link_rel_unknown",
+                    format!(
+                        "'{rel}' is not a link an Ask carries; use follows, remediates or revises"
+                    ),
+                ));
+            }
+        };
+        let have: Vec<String> = events
+            .iter()
+            .filter(|e| types.contains(&str_of(e, "type").as_str()))
+            .map(|e| str_of(e, "id"))
+            .collect();
+        if !have.contains(&id) {
+            let listed = if have.is_empty() { "none".to_string() } else { have.join(", ") };
+            return Err(ledger(
+                "ask.link_unknown",
+                format!("{rel}:{id} is not {kind} in this workspace; it has: {listed}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The only Ask operation that writes artifacts. Appends `ask.compiled`.
 pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
+    check_links(ws, &args.links)?;
     // Staging is read and then deleted, so it has to be inside the directory
     // RingFrame was opened in. The skill already stages under `.fab7/rf/tmp/`.
     let staged = workspace::within(ws, args.staged)?;
@@ -489,9 +526,8 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         prompt = rendered;
         compiler = prov;
     }
-    let text = String::from_utf8_lossy(&prompt).to_string();
     let prefix = str_of(&cap, "prompt_prefix");
-    if !prefix.is_empty() && !text.starts_with(&prefix) {
+    if !prefix.is_empty() && !prompt.starts_with(prefix.as_bytes()) {
         return Err(ledger(
             "ask.prompt_prefix",
             format!(
@@ -501,6 +537,17 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
             ),
         ));
     }
+    // A remedy starts from what was found, whichever harness runs it. The line
+    // is the CLI's, so it does not depend on a model remembering the path, and
+    // it goes after the command so a `/goal` still reads as one.
+    if let Some(l) = args.links.iter().find(|l| str_of(l, "rel") == "remediates") {
+        let line = format!(
+            "Read .fab7/rf/evals/{}/eval.md first: it lists what the last Eval found.\n",
+            str_of(l, "id")
+        );
+        prompt.splice(prefix.len()..prefix.len(), line.into_bytes());
+    }
+    let text = String::from_utf8_lossy(&prompt).to_string();
     if let Some(max) = cap.get("max_prompt_chars").and_then(Value::as_u64)
         && text.trim_end_matches('\n').chars().count() as u64 > max
     {
@@ -1250,6 +1297,7 @@ mod tests {
         classification: Value,
         route: Value,
         host: Value,
+        links: Vec<Value>,
         actor: Option<Value>,
     }
 
@@ -1262,6 +1310,7 @@ mod tests {
                 classification: cls(),
                 route: route(),
                 host: host(),
+                links: Vec::new(),
                 actor: None,
             }
         }
@@ -1278,11 +1327,111 @@ mod tests {
                 classification: args.classification,
                 route: args.route,
                 host: args.host,
-                links: Vec::new(),
+                links: args.links,
                 limitations: Vec::new(),
                 actor: args.actor,
             },
         )
+    }
+
+    fn link(rel: &str, id: &str) -> Vec<Value> {
+        vec![json!({"rel": rel, "id": id})]
+    }
+
+    /// An Eval over the bench's two open Asks, opened and closed.
+    fn completed_eval(ws: &Workspace) -> String {
+        let o = crate::testing::opened(ws);
+        let eval_id = str_of(&o.out, "eval_id");
+        let items = json!([{"id": "i1", "text": "Fix it", "ask_id": o.a, "status": "active"}]);
+        let js: Vec<Value> = ["coverage", "drift", "adversary"]
+            .iter()
+            .map(|a| crate::testing::judgement(&o.brief_sha, a, &[("i1", "no")]))
+            .collect();
+        let intent = crate::testing::intent_doc(&o.brief_sha, items);
+        crate::evaluate::close_eval(ws, &eval_id, &intent, &js, None).unwrap();
+        eval_id
+    }
+
+    fn prompt_of(ws: &Workspace, out: &Value) -> String {
+        let path = format!("asks/{}/prompt.txt", str_of(out, "ask_id"));
+        std::fs::read_to_string(ws.rf_dir().join(path)).unwrap()
+    }
+
+    #[test]
+    fn a_link_must_name_something_this_workspace_has() {
+        bench(|ws| {
+            let first = str_of(&compiled(ws), "ask_id");
+            let open_eval = str_of(
+                &crate::evaluate::open_eval(ws, crate::evaluate::Open::default()).unwrap(),
+                "eval_id",
+            );
+            let before = events(ws).len();
+            let refused = |links: Vec<Value>, code: &str| {
+                let e = ledger_error(
+                    compile_with(ws, Args { links, ..Default::default() }).unwrap_err(),
+                );
+                assert_eq!(e.code, code, "{e}");
+                e.to_string()
+            };
+            refused(link("blocks", &first), "ask.link_rel_unknown");
+            refused(link("seals", &first), "ask.link_rel_unknown");
+            assert!(refused(link("revises", "ask_gone"), "ask.link_unknown").contains("ask_gone"));
+            refused(link("follows", "evl_gone"), "ask.link_unknown");
+            refused(link("remediates", &first), "ask.link_unknown");
+            let unfinished = refused(link("remediates", &open_eval), "ask.link_unknown");
+            assert!(unfinished.contains(&open_eval), "{unfinished}");
+            assert_eq!(events(ws).len(), before, "a refused link writes nothing");
+
+            compile_with(ws, Args { links: link("revises", &first), ..Default::default() })
+                .unwrap();
+            compile_with(ws, Args { links: link("follows", &first), ..Default::default() })
+                .unwrap();
+            compile_with(ws, Args { links: link("follows", &open_eval), ..Default::default() })
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn a_fix_is_told_to_read_the_eval_it_fixes_first() {
+        bench(|ws| {
+            let eval_id = completed_eval(ws);
+            let read_first = format!(
+                "Read .fab7/rf/evals/{eval_id}/eval.md first: it lists what the last Eval found.\n"
+            );
+            let fix = compile_with(
+                ws,
+                Args { links: link("remediates", &eval_id), ..Default::default() },
+            )
+            .unwrap();
+            assert_eq!(prompt_of(ws, &fix), format!("{read_first}Fix the login bug.\n"));
+
+            let follow =
+                compile_with(ws, Args { links: link("follows", &eval_id), ..Default::default() })
+                    .unwrap();
+            assert_eq!(prompt_of(ws, &follow), "Fix the login bug.\n");
+            assert_ne!(fix["prompt"]["sha256"], follow["prompt"]["sha256"]);
+
+            let mut r = route();
+            r["explicit_direct_request"] = json!(true);
+            let goal = compile_with(
+                ws,
+                Args {
+                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
+                    capability: "native_goal".into(),
+                    host: codex(),
+                    classification: goal_cls(),
+                    route: r,
+                    links: link("remediates", &eval_id),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                prompt_of(ws, &goal),
+                format!("/goal {read_first}Keep the suite green.\n"),
+                "the line goes inside the goal, after its command"
+            );
+        });
     }
 
     fn compiled(ws: &Workspace) -> Value {

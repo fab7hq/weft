@@ -225,6 +225,13 @@ fn command_help(cmd: &str, sub: Option<&str>, spec: &Spec) -> String {
     if spec.fetch {
         out.push_str("  --json | --minimal\n");
     }
+    if (cmd, sub) == ("ask", Some("compile")) {
+        out.push_str(
+            "\n  --link is revises:<ask_id>, follows:<ask_id|evl_id> or remediates:<evl_id>.\n  \
+             A remedy's prompt starts by pointing at that Eval's eval.md. Any other link is\n  \
+             refused (ask.link_rel_unknown), and so is one to nothing here (ask.link_unknown).\n",
+        );
+    }
     out
 }
 
@@ -1392,6 +1399,16 @@ mod tests {
         assert_eq!(one.code, 0);
         assert!(one.out.contains("usage: ringframe eval close"), "{}", one.out);
         assert!(one.out.contains("--judgement VALUE (required) (repeatable)"), "{}", one.out);
+        let compile =
+            super::run(&["ask".to_string(), "compile".into(), "--help".into()], &mut none);
+        for said in [
+            "remediates:<evl_id>",
+            "follows:<ask_id|evl_id>",
+            "ask.link_unknown",
+            "ask.link_rel_unknown",
+        ] {
+            assert!(compile.out.contains(said), "{said} missing from:\n{}", compile.out);
+        }
         // `profile show --version` names a host version, not this binary's.
         let host = super::run(
             &[

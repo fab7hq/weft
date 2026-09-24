@@ -13,7 +13,7 @@ const TOP: [&str; 8] = ["schema", "event_id", "type", "time", "id", "actor", "li
 fn enum_values(key: &str) -> &'static [&'static str] {
     match key {
         "actor.kind" => &["agent", "human", "policy"],
-        "links[].rel" => &["evaluates", "remediates", "revises", "seals", "supersedes"],
+        "links[].rel" => &["evaluates", "follows", "remediates", "revises", "seals", "supersedes"],
         "classification.task[]" => &[
             "clarify",
             "diagnose",
