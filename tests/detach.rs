@@ -161,7 +161,7 @@ fn session(name: &str) -> (PathBuf, PathBuf) {
     let _ = std::fs::remove_file(&socket);
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
     (root, socket)
 }
@@ -246,7 +246,7 @@ fn a_socket_left_behind_by_a_dead_server_does_not_block_a_new_one() {
 
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
     let mut c = Client::attach(&socket, &root);
     assert!(c.hello().is_empty(), "a fresh session starts with no panes");
@@ -264,7 +264,7 @@ fn two_projects_share_a_daemon_and_see_none_of_each_others_panes() {
     let b = project("two-b");
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
 
     let mut one = Client::attach(&socket, &a);
@@ -304,7 +304,7 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     let root = project("pending");
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
 
     let mut one = Client::attach(&socket, &root);

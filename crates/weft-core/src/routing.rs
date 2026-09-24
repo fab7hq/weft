@@ -72,8 +72,38 @@ impl Routing {
         self.by_act.is_empty()
     }
 
+    /// Every harness an act or an Eval stage is routed to, once each, sorted.
+    pub fn harnesses(&self) -> Vec<String> {
+        let stages = self.eval_stages.iter().flat_map(|s| s.as_object().into_iter().flatten());
+        let mut out: Vec<String> = self
+            .by_act
+            .values()
+            .cloned()
+            .chain(stages.filter_map(|(_, st)| Some(st.get("harness")?.as_str()?.to_string())))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// What this project routes, in a fixed order, for showing.
     pub fn each(&self) -> Vec<(&'static str, &str)> {
         ACTS.iter().filter_map(|a| self.get(a).map(|h| (*a, h))).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_harnesses_routing_names_include_each_eval_stages() {
+        let r = crate::config::read(
+            "[routing]\nask = \"claude-code\"\n\n[eval.gather]\nharness = \"codex\"\n\n\
+             [eval.debate]\nharness = \"claude-code\"\n",
+        )
+        .routing(std::path::Path::new("/p"));
+        assert_eq!(r.harnesses(), ["claude-code", "codex"]);
+        assert!(Routing::default().harnesses().is_empty());
     }
 }

@@ -159,6 +159,8 @@ pub struct Session {
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
+    /// Weft's `config.toml`, read each time a project opens.
+    config: PathBuf,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -294,7 +296,10 @@ fn withheld(a: &crate::pane::Attempt) -> String {
 
 impl Session {
     /// Serve until told to shut down. The socket is removed on the way out.
-    pub fn serve(socket: &Path) -> Result<()> {
+    /// Serve on `socket`, reading Weft's configuration from `config`. `weft
+    /// --serve` passes `~/.fab7/weft/config.toml`; a test passes a path of its
+    /// own, so nothing it does depends on the person's file.
+    pub fn serve(socket: &Path, config: &Path) -> Result<()> {
         if let Some(dir) = socket.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -321,8 +326,13 @@ impl Session {
             }
         });
 
-        let mut session =
-            Session { projects: Vec::new(), clients: Clients::default(), tx, next_pending: 1 };
+        let mut session = Session {
+            projects: Vec::new(),
+            clients: Clients::default(),
+            tx,
+            next_pending: 1,
+            config: config.to_path_buf(),
+        };
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
         outcome
@@ -557,7 +567,12 @@ impl Session {
                 let view = serde_json::to_value(v).unwrap_or_default();
                 let _ = tx.send(Wake::Sync { project: at, view });
             };
-            let (mut v, _) = crate::sync::look();
+            let (mut v, states) = crate::sync::look();
+            // Looking is asking each harness again, so what it said replaces
+            // an older answer — a stale "could not tell" included.
+            for (harness, state) in states {
+                let _ = tx.send(Wake::Readiness { project: at, harness, state });
+            }
             if !proceed {
                 return show(&v);
             }
@@ -584,10 +599,24 @@ impl Session {
         let (tx, name) = (self.tx.clone(), name.to_string());
         std::thread::spawn(move || {
             let cli = crate::ringframe::installed();
-            let state = match weft_core::harness::find(&name) {
-                Some(h) => crate::readiness::check(h, cli),
-                None => Readiness::Unknown,
+            let Some(h) = weft_core::harness::find(&name) else {
+                let _ = tx.send(Wake::Readiness {
+                    project: at,
+                    harness: name,
+                    state: Readiness::Unknown,
+                });
+                return;
             };
+            // A harness that is starting up can fail to answer once; ask again
+            // before settling on "could not tell".
+            let mut state = crate::readiness::check(h, cli);
+            for _ in 0..2 {
+                if state != Readiness::Unknown {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                state = crate::readiness::check(h, cli);
+            }
             let _ = tx.send(Wake::Readiness { project: at, harness: name, state });
         });
     }
@@ -651,7 +680,7 @@ impl Session {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let config = crate::routing::read_at(&crate::routing::file());
+                let config = crate::routing::read_at(&self.config);
                 self.projects.push(Project {
                     routing: config.routing(&root),
                     ringframe: config.ringframe_override(&root),
@@ -684,6 +713,14 @@ impl Session {
             Call::Open { rows, cols, path: project } => {
                 let at = self.project_at(PathBuf::from(project));
                 self.clients.watching.insert(client, at);
+                // An act routed to a harness with no pane yet still needs its
+                // readiness, or it reads as "could not ask" rather than as a
+                // missing pane.
+                for harness in self.projects[at].routing.harnesses() {
+                    if !self.projects[at].readiness.contains_key(&harness) {
+                        self.look_at(at, &harness);
+                    }
+                }
                 for slot in &mut self.projects[at].panes {
                     let _ = slot.pane.resize(rows, cols);
                 }

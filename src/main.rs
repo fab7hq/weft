@@ -85,7 +85,7 @@ fn main() -> Result<()> {
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
         write_config_if_absent(&weft::routing::file());
-        return server::Session::serve(&protocol::socket_path());
+        return server::Session::serve(&protocol::socket_path(), &weft::routing::file());
     }
 
     if first.as_deref() == Some("stop") {

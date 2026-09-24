@@ -26,7 +26,7 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
     let _ = std::fs::remove_file(&socket);
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
     let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);

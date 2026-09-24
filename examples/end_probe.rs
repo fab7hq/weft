@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     let _ = std::fs::remove_file(&socket);
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening);
+        let _ = server::Session::serve(&listening, &weft::routing::file());
     });
     let session = Session::connect(&socket, &root, 40, 120)?;
     let mut app = App::with_session(root.clone(), Toggle, session);

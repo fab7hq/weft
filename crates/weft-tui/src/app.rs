@@ -1716,7 +1716,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(&socket);
         let listening = socket.clone();
         std::thread::spawn(move || {
-            let _ = weftd::server::Session::serve(&listening);
+            let _ = weftd::server::Session::serve(
+                &listening,
+                &listening.with_extension("no-config.toml"),
+            );
         });
         let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
         (root, session)
@@ -2638,7 +2641,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(&socket);
         let listening = socket.clone();
         std::thread::spawn(move || {
-            let _ = weftd::server::Session::serve(&listening);
+            let _ = weftd::server::Session::serve(
+                &listening,
+                &listening.with_extension("no-config.toml"),
+            );
         });
         let session = crate::client::Session::connect(&socket, &dir, 24, 80).expect("connect");
         let mut a = App::with_session(dir.clone(), Toggle, session);
