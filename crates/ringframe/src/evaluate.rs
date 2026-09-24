@@ -821,6 +821,104 @@ fn delta(current: &Value, previous: Option<&Value>) -> Value {
     })
 }
 
+/// Coverage, drift, adversary, then any other angle, so every item reads alike.
+fn angle_rank(angle: &str) -> usize {
+    ["coverage", "drift", "adversary"].iter().position(|a| *a == angle).unwrap_or(3)
+}
+
+/// What an Eval found, for a harness that never saw it. A view of the record,
+/// never a second source: rendered only from the published record and brief,
+/// so the same record always reads the same.
+pub fn render_eval_md(record: &Value, brief: &Value) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let subject = &record["subject"];
+    let sha = str_of(subject, "sha256");
+    let _ = writeln!(
+        out,
+        "# Eval {}: {}, {} agreed\n",
+        str_of(record, "eval_id"),
+        str_of(record, "verdict"),
+        record["confidence"]
+    );
+    let _ = writeln!(
+        out,
+        "Subject: {} {} · {}",
+        str_of(subject, "kind"),
+        &sha[..sha.len().min(12)],
+        str_of(record, "time")
+    );
+    let asks = array_of(&record["basis"], "asks");
+    let _ =
+        writeln!(out, "Judged: {} open Ask{}", asks.len(), if asks.len() == 1 { "" } else { "s" });
+    for id in asks {
+        let id = str_of_value(id);
+        let title = array_of(brief, "asks")
+            .iter()
+            .find(|a| str_of(a, "ask_id") == id)
+            .map(|a| str_of(a, "title"))
+            .unwrap_or_default();
+        let _ = writeln!(out, "- {id} {title} — .fab7/rf/asks/{id}/prompt.txt");
+    }
+    for (heading, majority) in [("Not met", "no"), ("Unresolved", "unknown")] {
+        let items: Vec<&Value> =
+            array_of(record, "items").iter().filter(|it| it["majority"] == majority).collect();
+        if items.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "\n## {heading}");
+        for it in items {
+            let _ = writeln!(
+                out,
+                "- {} {} (from {})",
+                str_of(it, "id"),
+                str_of(it, "text"),
+                str_of(it, "ask_id")
+            );
+            let mut votes: Vec<&Value> = array_of(it, "votes").iter().collect();
+            votes.sort_by_key(|v| angle_rank(&str_of(v, "angle")));
+            for v in votes {
+                let counted = str_of(v, "counted_as");
+                let cast = str_of(v, "vote");
+                let note = if cast == counted {
+                    String::new()
+                } else {
+                    format!(" (cast {cast}, uncited)")
+                };
+                let _ = writeln!(
+                    out,
+                    "  - {} {counted}{note}: {}",
+                    str_of(v, "angle"),
+                    str_of(v, "reason")
+                );
+            }
+        }
+    }
+    let unexplained: Vec<&Value> = array_of(&record["drift"], "paths")
+        .iter()
+        .filter(|p| p["classification"] == "unexplained")
+        .collect();
+    if !unexplained.is_empty() {
+        let _ = writeln!(out, "\n## Changed with no Ask to explain it");
+        for p in unexplained {
+            let _ = writeln!(out, "- {}", str_of(p, "path"));
+            let mut findings: Vec<&Value> = array_of(p, "findings").iter().collect();
+            findings.sort_by_key(|f| angle_rank(&str_of(f, "angle")));
+            for f in findings {
+                let _ = writeln!(out, "  - {}: {}", str_of(f, "angle"), str_of(f, "finding"));
+            }
+        }
+    }
+    let limitations = array_of(record, "limitations");
+    if !limitations.is_empty() {
+        let _ = writeln!(out, "\n## Limitations");
+        for l in limitations {
+            let _ = writeln!(out, "- {}", str_of_value(l));
+        }
+    }
+    out
+}
+
 /// Validate the intent and the judgements, aggregate, append `eval.completed`.
 pub fn close_eval(
     ws: &Workspace,
@@ -937,6 +1035,12 @@ pub fn close_eval(
     bytes.push(b'\n');
     let reference =
         store::publish(ws, &format!("evals/{eval_id}/record.json"), &bytes, "eval_record")?;
+    let eval_md = store::publish(
+        ws,
+        &format!("evals/{eval_id}/eval.md"),
+        render_eval_md(&record, &brief).as_bytes(),
+        "eval_md",
+    )?;
     let data = json!({
         "basis": record["basis"], "subject": record["subject"], "verdict": record["verdict"],
         "confidence": record["confidence"],
@@ -948,7 +1052,7 @@ pub fn close_eval(
         "commission": array_of(&agg["drift"], "commission").iter()
             .map(|c| c["path"].clone()).collect::<Vec<_>>(),
         "judges": judgements.iter().map(|j| j["judge"].clone()).collect::<Vec<_>>(),
-        "intent": intent_ref, "judgements": j_refs, "artifact": reference,
+        "intent": intent_ref, "judgements": j_refs, "artifact": reference, "eval_md": eval_md,
         "limitations": limitations,
     });
     let mut links: Vec<Value> = record["basis"]["asks"]
@@ -1969,5 +2073,135 @@ mod tests {
         assert_eq!(rename_target("src/{old.rs => new.rs}"), "src/new.rs");
         assert_eq!(rename_target("old.rs => new.rs"), "new.rs");
         assert_eq!(rename_target("plain.rs"), "plain.rs");
+    }
+
+    #[test]
+    fn eval_md_lists_what_did_not_pass_and_nothing_that_did() {
+        let vote = |angle: &str, cast: &str, counted: &str, reason: &str| {
+            let mut v =
+                json!({"angle": angle, "vote": cast, "counted_as": counted, "reason": reason});
+            if cast != counted {
+                v["uncited"] = json!(true);
+            }
+            v
+        };
+        let record = json!({
+            "eval_id": "evl_1", "verdict": "drifted", "confidence": 0.67,
+            "time": "2026-09-24T00:00:00Z",
+            "subject": {"kind": "worktree", "ref": "/w", "sha256": "aab05fddc1129999"},
+            "basis": {"asks": ["ask_1"]},
+            "items": [
+                {"id": "i1", "text": "Build it", "ask_id": "ask_1", "majority": "yes",
+                 "votes": [vote("coverage", "yes", "yes", "done")]},
+                {"id": "i2", "text": "Test it", "ask_id": "ask_1", "majority": "no",
+                 "votes": [vote("adversary", "no", "no", "r3"), vote("coverage", "no", "no", "r1"),
+                           vote("drift", "yes", "unknown", "r2")]},
+                {"id": "i3", "text": "Document it", "ask_id": "ask_1", "majority": "unknown",
+                 "votes": [vote("coverage", "unknown", "unknown", "cannot see")]},
+            ],
+            "drift": {"paths": [
+                {"path": "a.md", "classification": "unexplained", "findings": [
+                    {"angle": "drift", "classification": "unexplained", "finding": "nobody asked"},
+                    {"angle": "coverage", "classification": "unexplained", "finding": "no Ask"}]},
+                {"path": "b.rs", "classification": "required", "findings": []},
+            ]},
+            "limitations": ["first", "second"],
+        });
+        let brief = json!({"asks": [
+            {"ask_id": "ask_1", "title": "Build the thing", "prompt_path": "asks/ask_1/prompt.txt"}
+        ]});
+        assert_eq!(
+            render_eval_md(&record, &brief),
+            "# Eval evl_1: drifted, 0.67 agreed\n\
+             \n\
+             Subject: worktree aab05fddc112 · 2026-09-24T00:00:00Z\n\
+             Judged: 1 open Ask\n\
+             - ask_1 Build the thing — .fab7/rf/asks/ask_1/prompt.txt\n\
+             \n\
+             ## Not met\n\
+             - i2 Test it (from ask_1)\n\
+             \x20 - coverage no: r1\n\
+             \x20 - drift unknown (cast yes, uncited): r2\n\
+             \x20 - adversary no: r3\n\
+             \n\
+             ## Unresolved\n\
+             - i3 Document it (from ask_1)\n\
+             \x20 - coverage unknown: cannot see\n\
+             \n\
+             ## Changed with no Ask to explain it\n\
+             - a.md\n\
+             \x20 - coverage: no Ask\n\
+             \x20 - drift: nobody asked\n\
+             \n\
+             ## Limitations\n\
+             - first\n\
+             - second\n"
+        );
+    }
+
+    #[test]
+    fn the_demo_record_renders_to_its_golden_file() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/eval-md");
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        let record: Value = serde_json::from_str(&read("record.json")).unwrap();
+        let brief: Value = serde_json::from_str(&read("brief.json")).unwrap();
+        let once = render_eval_md(&record, &brief);
+        assert_eq!(once, render_eval_md(&record, &brief), "the same record renders the same bytes");
+        assert_eq!(once, read("eval.md"));
+    }
+
+    fn files_under(root: &std::path::Path) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    out.insert(path.strip_prefix(root).unwrap().to_string_lossy().into_owned());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn close_writes_eval_md_beside_the_record_and_nowhere_else() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let eval_id = str_of(&o.out, "eval_id");
+            let js: Vec<Value> =
+                angles().iter().map(|a| judgement(&o.brief_sha, a, &[("i1", "no")])).collect();
+            let root = ws.root.to_string_lossy().into_owned();
+            let subject_before = subject_digest(ws, "worktree", &root).unwrap();
+            let files_before = files_under(&ws.root);
+            let rec = close(ws, &eval_id, &intent_doc(&o.brief_sha, one_item(&o.a)), &js).unwrap();
+
+            let md_path = ws.rf_dir().join(format!("evals/{eval_id}/eval.md"));
+            let md = std::fs::read_to_string(&md_path).unwrap();
+            assert_eq!(md, render_eval_md(&rec, &brief_of(ws, &o.out)));
+            let completed = store::events(ws)
+                .unwrap()
+                .into_iter()
+                .find(|e| e["type"] == "eval.completed")
+                .unwrap();
+            assert_eq!(
+                completed["data"]["eval_md"]["path"],
+                json!(format!("evals/{eval_id}/eval.md"))
+            );
+            assert_eq!(
+                str_of(&completed["data"]["eval_md"], "sha256"),
+                digest::sha256_file(&md_path).unwrap()
+            );
+
+            assert_eq!(subject_digest(ws, "worktree", &root).unwrap(), subject_before);
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new(), "eval.md is referenced");
+            let rf = ws.rf_dir().strip_prefix(&ws.root).unwrap().to_string_lossy().into_owned();
+            let own = format!("{rf}/evals/{eval_id}/");
+            for added in files_under(&ws.root).difference(&files_before) {
+                assert!(added.starts_with(&own), "{added} was written outside {own}");
+            }
+        });
     }
 }
