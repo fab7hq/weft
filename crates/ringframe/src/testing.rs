@@ -75,11 +75,6 @@ pub fn with_config_home<T>(body: impl FnOnce(&Path) -> T) -> T {
     out.unwrap()
 }
 
-/// A TOML document from a JSON one, for tests that rewrite a catalog.
-pub fn to_toml(value: &serde_json::Value) -> String {
-    toml::to_string(value).expect("a catalog TOML can hold")
-}
-
 // ---- Eval and Seal fixtures -------------------------------------------------
 //
 // Shared here so both modules' tests can reach them.
@@ -153,6 +148,7 @@ pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) ->
             links: Vec::new(),
             limitations: Vec::new(),
             actor: None,
+            overrides: &crate::config::Overrides::default(),
         },
     )
     .unwrap();

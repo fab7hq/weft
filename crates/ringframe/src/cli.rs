@@ -54,7 +54,9 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
     match (cmd, sub) {
         ("init", None) => s(&["--from"], &["--global"], NONE, false, NONE),
         ("sync", None) => s(&["--from"], &["--check"], NONE, false, NONE),
-        ("profile", Some("show")) => s(&["--host", "--version"], NONE, &["--host"], true, NONE),
+        ("profile", Some("show")) => {
+            s(&["--host", "--version", "--override"], NONE, &["--host"], true, NONE)
+        }
         ("ask", Some("compile")) => s(
             &[
                 "--staged",
@@ -65,6 +67,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
                 "--host",
                 "--link",
                 "--limitation",
+                "--override",
             ],
             NONE,
             &["--staged", "--title", "--capability", "--classification", "--route", "--host"],
@@ -83,9 +86,13 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
-        ("eval", Some("open")) => {
-            s(&["--anchor", "--subject-kind", "--subject-ref", "--agents"], NONE, NONE, false, NONE)
-        }
+        ("eval", Some("open")) => s(
+            &["--anchor", "--subject-kind", "--subject-ref", "--agents", "--override"],
+            NONE,
+            NONE,
+            false,
+            NONE,
+        ),
         ("eval", Some("close")) => s(
             &["--eval", "--intent", "--judgement", "--agents"],
             NONE,
@@ -102,9 +109,16 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("seal", Some("check")) => s(&["--seal"], NONE, &["--seal"], true, NONE),
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
-        ("deltas", Some("domains")) => s(NONE, NONE, NONE, true, NONE),
+        ("deltas", Some("domains")) => s(&["--override"], NONE, NONE, true, NONE),
         ("deltas", Some("render")) => s(
-            &["--host", "--host-version", "--capability", "--classification", "--statuses"],
+            &[
+                "--host",
+                "--host-version",
+                "--capability",
+                "--classification",
+                "--statuses",
+                "--override",
+            ],
             NONE,
             &["--host", "--capability", "--classification"],
             true,
@@ -154,7 +168,7 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
     match (cmd, sub) {
         ("init", None) => "prepare this project, or with --global the configuration home",
         ("sync", None) => {
-            "replace the synced configuration; personal overrides are untouched. \
+            "replace the synced configuration; overrides arrive with --override. \
              --check only says whether a newer release is out"
         }
         ("profile", _) => "the host's capabilities and how each one has to be delivered",
@@ -277,6 +291,7 @@ struct Parsed {
     workspace: Option<PathBuf>,
     actor: Option<String>,
     authority: String,
+    overrides: crate::config::Overrides,
 }
 
 impl Parsed {
@@ -308,6 +323,7 @@ fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         workspace: None,
         actor: None,
         authority: "interactive".into(),
+        overrides: crate::config::Overrides::default(),
     };
     let mut i = 0;
     while i < argv.len() {
@@ -519,7 +535,7 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
         };
         return Run { code: 0, out: text, err: String::new() };
     }
-    let ns = match parse(argv) {
+    let mut ns = match parse(argv) {
         Ok(ns) => ns,
         Err(Usage(message)) => {
             return Run { code: 1, out: String::new(), err: format!("{message}\n") };
@@ -533,6 +549,26 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
     };
     let sub = ns.sub.clone();
     let concise = ns.minimal || output::is_action(&ns.cmd, sub.as_deref());
+    let mut err = String::new();
+    if READS_CONFIG.contains(&(ns.cmd.as_str(), sub.as_deref())) {
+        if let Some(text) = ns.one("--override") {
+            match crate::config::Overrides::parse(text) {
+                Ok(o) => ns.overrides = o,
+                Err(e) => {
+                    let body = json!({"error": "config.override", "detail": e.0});
+                    return Run { code: 2, out: emit(&body, ns.json, concise), err };
+                }
+            }
+        }
+        let left = crate::config::leftover_folders(&ws);
+        if !left.is_empty() {
+            err = format!(
+                "ringframe: limitation: override folders are not read; move them into Weft's \
+                 config.toml [ringframe]: {}\n",
+                left.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
+            );
+        }
+    }
     let (ws, outcome) = dispatch(&ns, ws, read_stdin);
     let (code, body) = match outcome {
         Outcome::Ok(code, result) => {
@@ -551,8 +587,17 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
         Outcome::Refused(codes) => (2, json!({"error": "seal.refused", "refusal_codes": codes})),
         Outcome::Error(code, detail) => (2, json!({"error": code, "detail": detail})),
     };
-    Run { code, out: emit(&body, ns.json, concise), err: String::new() }
+    Run { code, out: emit(&body, ns.json, concise), err }
 }
+
+/// The commands that read configuration, and so take `--override`.
+const READS_CONFIG: [(&str, Option<&str>); 5] = [
+    ("profile", Some("show")),
+    ("deltas", Some("domains")),
+    ("deltas", Some("render")),
+    ("ask", Some("compile")),
+    ("eval", Some("open")),
+];
 
 fn emit(obj: &Value, as_json: bool, minimal: bool) -> String {
     let newline = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
@@ -853,6 +898,7 @@ fn ask_command(
                     links: links_of(&ns.all("--link")),
                     limitations: ns.all("--limitation"),
                     actor: Some(actor),
+                    overrides: &ns.overrides,
                 }
             ))
         }
@@ -934,7 +980,7 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
     }
     match what {
         "domains" => {
-            let listed = config_try!(deltas::domains(Some(&ws)));
+            let listed = config_try!(deltas::domains(&ns.overrides));
             (ws, Outcome::Ok(0, json!({"domains": listed})))
         }
         _ => {
@@ -952,7 +998,7 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
                 .map(str::to_string)
                 .collect();
             let rendered = config_try!(deltas::render(
-                Some(&ws),
+                &ns.overrides,
                 &profile,
                 ns.one("--capability").unwrap_or_default(),
                 &classification,
@@ -1968,14 +2014,14 @@ mod tests {
     #[test]
     fn compile_reads_the_merged_ledger_delta_files() {
         cli(|c| {
-            let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
-            ws.ensure().unwrap();
-            std::fs::write(
-                ws.rf_dir().join("deltas/practices/software-development.toml"),
-                "concerns = [\"project_special\"]\nrender = { core_cap = 1 }\n\
-                 entries = [{ id = \"practice.kiss\", text = \"Use the project setting.\" }]\n",
-            )
-            .unwrap();
+            let over = json!([
+                {"layer": "weft", "ringframe": {"deltas": {"practices/software-development":
+                    {"concerns": ["project_special"], "render": {"core_cap": 1},
+                     "entries": [{"id": "practice.kiss", "text": "Use the machine setting."}]}}}},
+                {"layer": "weft-project", "ringframe": {"deltas": {"practices/software-development":
+                    {"entries": [{"id": "practice.kiss", "text": "Use the project setting."}]}}}},
+            ])
+            .to_string();
             let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["project_special"]}"#;
             let stage = c.root.join("stage");
             std::fs::create_dir_all(&stage).unwrap();
@@ -1997,10 +2043,12 @@ mod tests {
                 ROUTE,
                 "--host",
                 &host,
+                "--override",
+                &over,
             ]);
             assert_eq!(code, 0, "{err}");
             let text = std::fs::read_to_string(out["prompt_path"].as_str().unwrap()).unwrap();
-            // The compiled prompt is the merge: the project layer won.
+            // The compiled prompt is the merge: the later layer won.
             assert!(text.contains("Use the project setting."), "{text}");
         });
     }
@@ -2042,15 +2090,10 @@ mod tests {
     #[test]
     fn a_delta_listing_exposes_the_merged_concern_vocabulary() {
         cli(|c| {
-            let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
-            ws.ensure().unwrap();
-            std::fs::write(
-                ws.rf_dir().join("deltas/practices/software-development.toml"),
-                "concerns = [\"team_boundary\"]\n",
-            )
-            .unwrap();
-            let (code, out, _) = c.go(&["deltas", "domains", "--json"]);
+            let over = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"concerns":["team_boundary"]}}}}]"#;
+            let (code, out, err) = c.go(&["deltas", "domains", "--json", "--override", over]);
             assert_eq!(code, 0);
+            assert_eq!(err, "", "no folder, nothing to report");
             let base = out["domains"]
                 .as_array()
                 .unwrap()
@@ -2058,6 +2101,85 @@ mod tests {
                 .find(|d| d["base"] == true)
                 .expect("the base domain");
             assert_eq!(base["concerns"], json!(["team_boundary"]));
+        });
+    }
+
+    #[test]
+    fn a_malformed_override_is_refused_by_every_command_that_reads_configuration() {
+        cli(|c| {
+            for cmd in [
+                &["profile", "show", "--host", "codex"][..],
+                &["deltas", "domains"],
+                &[
+                    "deltas",
+                    "render",
+                    "--host",
+                    "codex",
+                    "--capability",
+                    "native_plan",
+                    "--classification",
+                    "{}",
+                ],
+                &[
+                    "ask",
+                    "compile",
+                    "--staged",
+                    "x",
+                    "--title",
+                    "t",
+                    "--capability",
+                    "native_plan",
+                    "--classification",
+                    "{}",
+                    "--route",
+                    "{}",
+                    "--host",
+                    "{}",
+                ],
+                &["eval", "open"],
+            ] {
+                let mut args = cmd.to_vec();
+                args.extend(["--override", r#"[{"layer":"weft"}]"#]);
+                let (code, out, _) = c.go(&args);
+                assert_eq!(code, 2, "{cmd:?}: {out}");
+                assert_eq!(out["error"], "config.override", "{cmd:?}");
+                assert!(out["detail"].as_str().unwrap().contains("needs a \"ringframe\""), "{out}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_leftover_override_folder_is_reported_once_and_not_read() {
+        cli(|c| {
+            let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
+            ws.ensure().unwrap();
+            let project = ws.rf_dir().join("deltas");
+            std::fs::create_dir_all(project.join("practices")).unwrap();
+            std::fs::write(
+                project.join("practices/software-development.toml"),
+                "concerns = [\"team_boundary\"]\n",
+            )
+            .unwrap();
+            let personal = crate::config::home().join("overrides");
+            std::fs::create_dir_all(&personal).unwrap();
+            let (code, out, err) = c.go(&["deltas", "domains", "--json"]);
+            assert_eq!(code, 0);
+            assert_eq!(
+                err,
+                format!(
+                    "ringframe: limitation: override folders are not read; move them into \
+                     Weft's config.toml [ringframe]: {}, {}\n",
+                    personal.display(),
+                    project.display()
+                )
+            );
+            let base = out["domains"].as_array().unwrap().iter().find(|d| d["base"] == true);
+            assert!(
+                !base.unwrap()["concerns"].as_array().unwrap().contains(&json!("team_boundary"))
+            );
+            // Only the commands that read configuration say so.
+            let (_, _, err) = c.go(&["ask", "list"]);
+            assert_eq!(err, "");
         });
     }
 }

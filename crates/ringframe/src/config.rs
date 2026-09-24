@@ -35,12 +35,6 @@ pub fn config_dir() -> PathBuf {
     home().join("config")
 }
 
-/// Personal deltas, merged over `config_dir()` by id. `sync` never touches
-/// them.
-pub fn overrides_dir() -> PathBuf {
-    home().join("overrides")
-}
-
 pub fn require_config() -> Result<PathBuf, ConfigError> {
     let d = config_dir();
     if !d.join("harnesses").is_dir() {
@@ -121,6 +115,69 @@ fn to_json(node: toml::Value) -> Result<Value, String> {
                 .collect::<Result<Map<_, _>, String>>()?,
         ),
     })
+}
+
+/// The layers `--override` supplies, applied in order over the synced
+/// bundle and merged by id. Each is a name, which is its provenance, and the
+/// delta documents it overrides, keyed by their path under `deltas/` without
+/// the extension.
+#[derive(Debug, Default)]
+pub struct Overrides(Vec<(String, Map<String, Value>)>);
+
+impl Overrides {
+    /// `[{"layer": "<name>", "ringframe": {"deltas": {"<path>": {…}}}}, …]`.
+    pub fn parse(text: &str) -> Result<Self, ConfigError> {
+        let bad = |what: String| ConfigError(format!("--override {what}"));
+        let value: Value =
+            serde_json::from_str(text).map_err(|e| bad(format!("is not JSON: {e}")))?;
+        let Value::Array(items) = value else {
+            return Err(bad("must be a list of layers".into()));
+        };
+        let mut layers = Vec::new();
+        for (i, item) in items.into_iter().enumerate() {
+            let Value::Object(mut layer) = item else {
+                return Err(bad(format!("layer {i} must be an object")));
+            };
+            let name = match layer.remove("layer") {
+                Some(Value::String(s)) if !s.is_empty() => s,
+                _ => return Err(bad(format!("layer {i} needs a \"layer\" name"))),
+            };
+            let Some(Value::Object(mut ringframe)) = layer.remove("ringframe") else {
+                return Err(bad(format!("layer {name} needs a \"ringframe\" object")));
+            };
+            let deltas = match ringframe.remove("deltas") {
+                None => Map::new(),
+                Some(Value::Object(d)) => d,
+                Some(_) => return Err(bad(format!("layer {name}: deltas must be an object"))),
+            };
+            if let Some(key) = layer.keys().chain(ringframe.keys()).next() {
+                return Err(bad(format!("layer {name}: unknown key \"{key}\"")));
+            }
+            if let Some((path, _)) = deltas.iter().find(|(_, d)| !d.is_object()) {
+                return Err(bad(format!("layer {name}: deltas.\"{path}\" must be an object")));
+            }
+            layers.push((name, deltas));
+        }
+        Ok(Overrides(layers))
+    }
+
+    /// Each layer's document for `path`, in order.
+    pub fn documents<'a>(&'a self, path: &'a str) -> impl Iterator<Item = (&'a str, &'a Value)> {
+        self.0.iter().filter_map(move |(name, deltas)| Some((name.as_str(), deltas.get(path)?)))
+    }
+
+    /// The practice domains any layer names.
+    pub fn domains(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().flat_map(|(_, d)| d.keys()).filter_map(|k| k.strip_prefix("practices/"))
+    }
+}
+
+/// The override folders this release no longer reads, where they still exist.
+pub fn leftover_folders(ws: &crate::workspace::Workspace) -> Vec<PathBuf> {
+    [home().join("overrides"), ws.rf_dir().join("deltas")]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect()
 }
 
 pub fn sha256_of(doc: &Value) -> String {
@@ -227,7 +284,8 @@ mod tests {
             assert!(e.0.contains("harnesses/codex.toml"), "{e}");
             let host = config_dir().join("deltas/claude-code.toml");
             std::fs::rename(&host, host.with_extension("yaml")).unwrap();
-            let e = crate::deltas::load_host_catalog("claude-code", None).unwrap_err();
+            let e =
+                crate::deltas::load_host_catalog("claude-code", &Overrides::default()).unwrap_err();
             assert!(e.0.contains("deltas/claude-code.yaml"), "{e}");
         });
     }
@@ -354,17 +412,8 @@ mod tests {
                 profiles::load("codex").unwrap()["confirmation"]["tool"],
                 "request_user_input"
             );
-            // The project seeds only the base domain's empty override file.
-            let practices = ws.rf_dir().join("deltas/practices");
-            let mut seeded: Vec<String> = std::fs::read_dir(&practices)
-                .unwrap()
-                .flatten()
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
-            seeded.sort();
-            assert_eq!(seeded, ["software-development.toml"]);
-            assert_eq!(std::fs::read(practices.join("software-development.toml")).unwrap(), b"");
-            // The home holds the synced mirror, nothing else.
+            // The project holds no configuration, and the home only the mirror.
+            assert!(!ws.rf_dir().join("deltas").exists());
             let mut held: Vec<String> = std::fs::read_dir(home.join(".fab7/rf"))
                 .unwrap()
                 .flatten()
@@ -382,36 +431,29 @@ mod tests {
         });
     }
 
+    fn over(layers: Value) -> Overrides {
+        Overrides::parse(&layers.to_string()).unwrap()
+    }
+
     #[test]
-    fn scoped_delta_catalogs_apply_project_conflicts_and_render_settings() {
-        use crate::{
-            deltas, profiles,
-            testing::{repo, to_toml, with_config_home, ws_for},
-        };
+    fn a_later_override_layer_wins_by_id_and_each_is_named() {
+        use crate::{deltas, profiles, testing::with_config_home};
         with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let global = overrides_dir().join("deltas/practices/software-development.toml");
-            std::fs::create_dir_all(global.parent().unwrap()).unwrap();
             let mut doc =
                 load_toml(&config_dir().join("deltas/practices/software-development.toml"))
                     .unwrap();
             doc["render"]["core_cap"] = json!(1);
-            doc["entries"][0]["text"] = json!("Global rule.");
-            std::fs::write(&global, to_toml(&doc)).unwrap();
-            std::fs::write(
-                ws.root.join(".fab7/rf/deltas/practices/software-development.toml"),
-                "render = { core_cap = 2 }\nentries = [{ id = \"practice.kiss\", text = \"Project rule.\" }]\n",
-            )
-            .unwrap();
-            std::fs::write(
-                ws.root.join(".fab7/rf/deltas/codex.toml"),
-                "[[entries]]\nid = \"codex.native_plan.hand_back\"\nstatus = \"qualified\"\n\
-                 text = \"Project host rule.\"\n",
-            )
-            .unwrap();
+            doc["entries"][0]["text"] = json!("Machine rule.");
+            let layers = over(json!([
+                {"layer": "weft", "ringframe": {"deltas": {"practices/software-development": doc}}},
+                {"layer": "weft-project", "ringframe": {"deltas": {
+                    "practices/software-development": {"render": {"core_cap": 2},
+                        "entries": [{"id": "practice.kiss", "text": "Project rule."}]},
+                    "codex": {"entries": [{"id": "codex.native_plan.hand_back",
+                        "status": "qualified", "text": "Project host rule."}]}}}},
+            ]));
             let result = deltas::render(
-                Some(&ws),
+                &layers,
                 &profiles::load("codex").unwrap(),
                 "native_plan",
                 &json!({"task": ["implement"]}),
@@ -422,65 +464,83 @@ mod tests {
             assert_eq!(result["practice"]["selected"], json!(["practice.kiss", "practice.yagni"]));
             let text = result["text"].as_str().unwrap();
             assert!(text.contains("Project rule."), "{text}");
-            assert!(!text.contains("Global rule."));
+            assert!(!text.contains("Machine rule."));
             assert!(text.contains("Project host rule."));
-            let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            let roots: Vec<&Value> = result["practice"]["layers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| &l["root"])
+                .collect();
+            assert_eq!(roots, ["config", "weft", "weft-project"]);
+            let listing = deltas::effective(&layers, deltas::DEFAULT_DOMAIN).unwrap();
             let kiss = &listing.iter().find(|(k, _)| k == "practice.kiss").unwrap().1;
-            assert_eq!(kiss["layer"], "workspace");
+            assert_eq!(kiss["layer"], "weft-project");
         });
     }
 
     #[test]
-    fn an_empty_project_override_inherits_and_the_project_can_clear_entries() {
-        use crate::{
-            deltas,
-            testing::{repo, with_config_home, ws_for},
-        };
+    fn an_empty_override_inherits_and_an_override_can_clear_entries() {
+        use crate::{deltas, testing::with_config_home};
         with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let original = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            let layer = |doc: Value| {
+                over(json!([{"layer": "weft", "ringframe": {"deltas": {
+                    "practices/software-development": doc}}}]))
+            };
+            let original =
+                deltas::effective(&Overrides::default(), deltas::DEFAULT_DOMAIN).unwrap();
             assert!(original.iter().any(|(k, _)| k == "practice.kiss"));
-            let local = ws.root.join(".fab7/rf/deltas/practices/software-development.toml");
-            assert_eq!(std::fs::read(&local).unwrap(), b"");
-            std::fs::write(&local, "entries = []\n").unwrap();
-            assert!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap().is_empty());
-            std::fs::write(&local, "# Only a comment\n").unwrap();
-            assert_eq!(deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap(), original);
+            let cleared = layer(json!({"entries": []}));
+            assert!(deltas::effective(&cleared, deltas::DEFAULT_DOMAIN).unwrap().is_empty());
+            let empty = layer(json!({}));
+            assert_eq!(deltas::effective(&empty, deltas::DEFAULT_DOMAIN).unwrap(), original);
         });
     }
 
     #[test]
-    fn delta_merge_preserves_global_nested_fields_and_project_list_values() {
-        use crate::{
-            deltas,
-            testing::{repo, to_toml, with_config_home, ws_for},
-        };
+    fn delta_merge_preserves_earlier_nested_fields_and_later_list_values() {
+        use crate::{deltas, testing::with_config_home};
         with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let global = overrides_dir().join("deltas/practices/software-development.toml");
-            std::fs::create_dir_all(global.parent().unwrap()).unwrap();
-            let mut doc =
-                load_toml(&config_dir().join("deltas/practices/software-development.toml"))
-                    .unwrap();
-            doc["entries"][0]["applies_to"] =
-                json!({"task": ["implement"], "result": ["workspace_change"]});
-            std::fs::write(&global, to_toml(&doc)).unwrap();
-            std::fs::write(
-                ws.root.join(".fab7/rf/deltas/practices/software-development.toml"),
-                "[[entries]]\nid = \"practice.kiss\"\nwhy = \"Project why.\"\n\
-                 applies_to = { task = [\"plan\"] }\n",
-            )
-            .unwrap();
-            let listing = deltas::effective(Some(&ws), deltas::DEFAULT_DOMAIN).unwrap();
+            let layers = over(json!([
+                {"layer": "weft", "ringframe": {"deltas": {"practices/software-development":
+                    {"entries": [{"id": "practice.kiss",
+                        "applies_to": {"task": ["implement"], "result": ["workspace_change"]}}]}}}},
+                {"layer": "weft-project", "ringframe": {"deltas": {"practices/software-development":
+                    {"entries": [{"id": "practice.kiss", "applies_to": {"task": ["plan"]},
+                        "why": null}]}}}},
+            ]));
+            let listing = deltas::effective(&layers, deltas::DEFAULT_DOMAIN).unwrap();
             let merged = &listing.iter().find(|(k, _)| k == "practice.kiss").unwrap().1;
             assert_eq!(
                 merged["applies_to"],
                 json!({"task": ["plan"], "result": ["workspace_change"]})
             );
-            assert_eq!(merged["why"], "Project why.");
-            assert_eq!(load_toml(&global).unwrap(), doc);
+            assert_eq!(merged["why"], json!(null));
         });
+    }
+
+    #[test]
+    fn a_malformed_override_is_refused_naming_what_is_wrong() {
+        for (text, says) in [
+            ("{", "--override is not JSON"),
+            (r#"{"layer": "weft"}"#, "--override must be a list of layers"),
+            ("[1]", "--override layer 0 must be an object"),
+            (r#"[{"ringframe": {}}]"#, r#"--override layer 0 needs a "layer" name"#),
+            (r#"[{"layer": "weft"}]"#, r#"--override layer weft needs a "ringframe" object"#),
+            (r#"[{"layer": "weft", "ringframe": {"deltas": []}}]"#, "deltas must be an object"),
+            (r#"[{"layer": "weft", "ringframe": {"routing": {}}}]"#, r#"unknown key "routing""#),
+            (
+                r#"[{"layer": "w", "ringframe": {}, "x": 1}]"#,
+                r#"--override layer w: unknown key "x""#,
+            ),
+            (
+                r#"[{"layer": "weft", "ringframe": {"deltas": {"codex": []}}}]"#,
+                r#"deltas."codex" must be an object"#,
+            ),
+        ] {
+            let e = Overrides::parse(text).unwrap_err();
+            assert!(e.0.contains(says), "{text}: {e}");
+        }
+        assert!(Overrides::parse("[]").is_ok());
     }
 }

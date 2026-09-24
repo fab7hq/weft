@@ -318,7 +318,7 @@ fn without(block: &Value, drop: &[&str]) -> Value {
 /// `body`). The selection is always the CLI's; a composed prompt records what
 /// was supplied, recomputed from the classification.
 fn render_prompt(
-    ws: &Workspace,
+    over: &crate::config::Overrides,
     profile: &Value,
     cap: &Value,
     capability: &str,
@@ -327,7 +327,7 @@ fn render_prompt(
     form: &str,
 ) -> Result<(Vec<u8>, Value), AskError> {
     let rendered = deltas::render(
-        Some(ws),
+        over,
         profile,
         capability,
         classification,
@@ -410,6 +410,7 @@ pub struct Compile<'a> {
     pub links: Vec<Value>,
     pub limitations: Vec<String>,
     pub actor: Option<Value>,
+    pub overrides: &'a crate::config::Overrides,
 }
 
 /// Every link names something this workspace has, of the kind the link means:
@@ -515,14 +516,21 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
             ),
         ));
     }
-    let domains = deltas::selected_domains(&classification, Some(ws))
+    let domains = deltas::selected_domains(&classification, args.overrides)
         .map_err(|e| ledger("ask.classification", e.0))?;
-    deltas::validate_concerns(&list_of(&classification, "concerns"), &domains, Some(ws))
+    deltas::validate_concerns(&list_of(&classification, "concerns"), &domains, args.overrides)
         .map_err(|e| ledger("ask.classification", e.0))?;
     let mut compiler = json!({"source": "prompt"});
     if form != "prompt" {
-        let (rendered, prov) =
-            render_prompt(ws, &profile, &cap, args.capability, &classification, &prompt, form)?;
+        let (rendered, prov) = render_prompt(
+            args.overrides,
+            &profile,
+            &cap,
+            args.capability,
+            &classification,
+            &prompt,
+            form,
+        )?;
         prompt = rendered;
         compiler = prov;
     }
@@ -1335,6 +1343,7 @@ mod tests {
                 links: args.links,
                 limitations: Vec::new(),
                 actor: args.actor,
+                overrides: &crate::config::Overrides::default(),
             },
         )
     }

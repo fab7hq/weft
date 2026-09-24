@@ -63,7 +63,6 @@ impl Workspace {
         for sub in ["tmp", "asks", "evals", "seals", "sessions"] {
             std::fs::create_dir_all(rf.join(sub))?;
         }
-        crate::deltas::initialize(&rf)?;
         Ok(self)
     }
 
