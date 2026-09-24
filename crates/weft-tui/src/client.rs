@@ -205,6 +205,7 @@ impl Session {
             session.routing = weft_core::routing::Routing::of(
                 r.get("acts").cloned().unwrap_or_default(),
                 r.get("unknown").cloned().unwrap_or_default(),
+                r.get("ignored").cloned().unwrap_or_default(),
             );
         }
         for chunk in opened.get("replay").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {

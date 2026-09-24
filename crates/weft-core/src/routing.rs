@@ -26,22 +26,29 @@ pub struct Routing {
     /// A name in the file that is not a harness Weft knows. Kept so it can be
     /// said once rather than silently ignored.
     pub unknown: Vec<String>,
+    /// A name in `eval.json` Weft does not know, said once the same way.
+    pub ignored: Vec<String>,
 }
 
 impl Routing {
     /// From what a daemon reports, rather than from the file.
-    pub fn of(acts: serde_json::Value, unknown: serde_json::Value) -> Self {
+    pub fn of(
+        acts: serde_json::Value,
+        unknown: serde_json::Value,
+        ignored: serde_json::Value,
+    ) -> Self {
         let by_act = acts
             .as_object()
             .map(|m| {
                 m.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
             })
             .unwrap_or_default();
-        let unknown = unknown
-            .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
-            .unwrap_or_default();
-        Routing { by_act, unknown }
+        let names = |v: serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_default()
+        };
+        Routing { by_act, unknown: names(unknown), ignored: names(ignored) }
     }
 
     /// The harness this act goes to, if the project named one.

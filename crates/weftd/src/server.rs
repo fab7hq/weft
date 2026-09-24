@@ -234,6 +234,7 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
             .map(|(a, h)| (a.to_string(), serde_json::json!(h)))
             .collect::<serde_json::Map<_, _>>(),
         "unknown": routing.unknown,
+        "ignored": routing.ignored,
     })
 }
 
@@ -628,7 +629,8 @@ impl Session {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let routing = crate::routing::for_project(&root);
+                let mut routing = crate::routing::for_project(&root);
+                routing.ignored = crate::routing::tiers_at(&crate::routing::eval_file()).unknown;
                 self.projects.push(Project {
                     root,
                     panes: Vec::new(),

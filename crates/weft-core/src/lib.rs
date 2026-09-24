@@ -10,6 +10,7 @@
 
 pub mod blocked;
 pub mod board;
+pub mod eval_stages;
 pub mod harness;
 pub mod inject;
 pub mod ledger;

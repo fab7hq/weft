@@ -739,6 +739,12 @@ impl App {
                 "Routing names a harness Weft does not know ({said}). That act is not routed."
             ));
         }
+        if !self.routing.ignored.is_empty() && self.hint.is_none() {
+            let said = self.routing.ignored.join(", ");
+            self.say(format!(
+                "eval.json names something Weft does not know ({said}). It is ignored."
+            ));
+        }
     }
 
     /// Fold whatever the ledger has now. The run loop does this each tick;
@@ -2458,6 +2464,17 @@ pub(crate) mod tests {
         assert_eq!(a.modal, Some(Modal::Weft));
         press(&mut a, KeyCode::Char('o'));
         assert!(matches!(a.modal, Some(Modal::OpenProject { .. })), "{:?}", a.modal);
+    }
+
+    #[test]
+    fn a_name_eval_json_does_not_know_is_said_once() {
+        let mut a = app();
+        a.session_mut().routing.ignored = vec!["codex.judge".into()];
+        a.take_the_board();
+        assert_eq!(
+            a.hint_text(),
+            Some("eval.json names something Weft does not know (codex.judge). It is ignored.")
+        );
     }
 
     #[test]
