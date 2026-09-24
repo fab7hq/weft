@@ -73,6 +73,13 @@ pub struct Check {
     pub judged_by: Option<String>,
 }
 
+/// An Eval's first stage, recorded: which Eval, and the harness that mapped it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Gathered {
+    pub eval_id: String,
+    pub by: String,
+}
+
 /// The command a prompt carries, and what that command is.
 ///
 /// Both hosts fold a paste past a size and stop reading a folded paste for
@@ -141,6 +148,10 @@ pub struct Unit {
     pub unanswered: bool,
     pub sent: Sent,
     pub check: Option<Check>,
+    /// An open Eval over this work whose change map is published and whose
+    /// debate has not run: the next `[E]VAL` sends the debate.
+    #[serde(default)]
+    pub gathered: Option<Gathered>,
     pub sealed: Option<String>,
     /// The Seal that closed this, when one has. `sealed` is its disposition;
     /// these are the record it came from, so a row can lead to the receipt.
@@ -278,6 +289,10 @@ fn s<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
 pub fn project(events: &[Value]) -> Vec<Unit> {
     let mut units: Vec<Unit> = Vec::new();
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    // `eval.gathered` names only its Eval, so each Eval's Asks are kept from
+    // `eval.opened`.
+    let mut opened: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
 
     for e in events {
         let kind = s(e, &["type"]).unwrap_or_default();
@@ -310,6 +325,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     unanswered: false,
                     sent,
                     check: None,
+                    gathered: None,
                     sealed: None,
                     seal_id: None,
                     sealed_at: None,
@@ -350,7 +366,26 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     u.sent = Sent::Arrived { exact };
                 }
             }
+            "eval.opened" => {
+                opened.insert(id, basis_asks(&data));
+            }
+            "eval.gathered" => {
+                let gathered =
+                    Gathered { eval_id: id.clone(), by: s(&data, &["host"]).unwrap_or("?").into() };
+                for ask in opened.get(&id).into_iter().flatten() {
+                    if let Some(u) = index.get(ask).and_then(|i| units.get_mut(*i)) {
+                        u.gathered = Some(gathered.clone());
+                    }
+                }
+            }
             "eval.completed" => {
+                for ask in basis_asks(&data) {
+                    if let Some(u) = index.get(&ask).and_then(|i| units.get_mut(*i))
+                        && u.gathered.as_ref().is_some_and(|g| g.eval_id == id)
+                    {
+                        u.gathered = None;
+                    }
+                }
                 let Some(verdict) = s(&data, &["verdict"]).and_then(Verdict::from_recorded) else {
                     continue;
                 };
@@ -413,6 +448,28 @@ mod tests {
                 "classification": {}, "route_explanation": {}
             }
         })
+    }
+
+    #[test]
+    fn a_gathered_eval_marks_its_work_until_the_debate_closes_it() {
+        let opened = ev("eval.opened", "evl_1", json!({"brief": {}, "basis": {"asks": ["ask_1"]}}));
+        let gathered = ev(
+            "eval.gathered",
+            "evl_1",
+            json!({"eval_id": "evl_1", "host": "codex", "context_map": {}}),
+        );
+        let mut events =
+            vec![compiled("ask_1", "t", "claude-code", "native_dispatch"), opened, gathered];
+        let u = &project(&events)[0];
+        assert_eq!(u.gathered, Some(Gathered { eval_id: "evl_1".into(), by: "codex".into() }));
+        events.push(ev(
+            "eval.completed",
+            "evl_1",
+            json!({"verdict": "aligned", "confidence": 1.0, "basis": {"asks": ["ask_1"]}}),
+        ));
+        let u = &project(&events)[0];
+        assert_eq!(u.gathered, None);
+        assert!(u.check.is_some());
     }
 
     fn ev(kind: &str, id: &str, data: Value) -> Value {

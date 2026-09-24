@@ -284,6 +284,7 @@ mod tests {
             confirmed: true,
             sent,
             check: None,
+            gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,

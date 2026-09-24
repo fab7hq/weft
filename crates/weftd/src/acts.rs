@@ -43,9 +43,18 @@ pub fn send(root: &Path, unit: &Unit) -> Result<Built, String> {
 }
 
 /// Run Check or Decide in the harness this project routes it to.
-pub fn skill(root: &Path, skill: &str, into: &str, worked_in: &str, folds: &mut Folds) -> Built {
+/// A skill with nothing more than its words: `/rf:eval gather context=…`, or
+/// `/rf:seal ` and nothing after it.
+pub fn skill(
+    root: &Path,
+    skill: &str,
+    into: &str,
+    worked_in: &str,
+    args: &str,
+    folds: &mut Folds,
+) -> Built {
     let command = ringframe::skill_command(&folds.prefix(root, into), skill);
-    let payload = command.clone().into_bytes();
+    let payload = format!("{command}{args}").into_bytes();
     Built {
         how: folds.how(root, into, &payload, &command),
         asking: weft_core::offers::running(skill, &command, into, worked_in),
@@ -106,5 +115,33 @@ impl Folds {
             }
             _ => Handoff::Whole,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn eval_carries_its_words_after_the_skill_on_either_harness() {
+        let mut folds = Folds::default();
+        folds.prefixes.insert("claude-code".into(), "/rf:".into());
+        folds.prefixes.insert("codex".into(), "$rf:".into());
+        folds.at.insert("claude-code".into(), None);
+        folds.at.insert("codex".into(), None);
+        let root = Path::new("/nowhere");
+        let sent = |into: &str, args: &str, folds: &mut Folds| {
+            String::from_utf8(skill(root, "eval", into, "claude-code", args, folds).payload)
+                .unwrap()
+        };
+        assert_eq!(
+            sent("codex", "gather context=gpt-6-luna/low", &mut folds),
+            "$rf:eval gather context=gpt-6-luna/low"
+        );
+        assert_eq!(
+            sent("claude-code", "debate evl_1 drift=/high", &mut folds),
+            "/rf:eval debate evl_1 drift=/high"
+        );
+        assert_eq!(sent("claude-code", "", &mut folds), "/rf:eval ");
     }
 }

@@ -30,16 +30,21 @@ pub fn eval_file() -> PathBuf {
     file().with_file_name("eval.json")
 }
 
-/// The tiers, after writing the shipped ones if there is no file yet. The file
-/// is the person's from then on: Weft never writes it again.
+/// The tiers in the file, or the shipped ones while there is none.
 pub fn tiers_at(path: &Path) -> weft_core::eval_stages::Tiers {
+    let text = std::fs::read_to_string(path);
+    weft_core::eval_stages::tiers(text.as_deref().unwrap_or(weft_core::eval_stages::DEFAULTS))
+}
+
+/// Put the shipped tiers where the person can see and change them, once. The
+/// daemon itself never writes: `weft --serve` calls this before it starts.
+pub fn write_tiers_if_absent(path: &Path) {
     if !path.exists() {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
         let _ = std::fs::write(path, weft_core::eval_stages::DEFAULTS);
     }
-    weft_core::eval_stages::tiers(&std::fs::read_to_string(path).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -50,10 +55,15 @@ mod tests {
     fn the_shipped_tiers_are_written_once_and_then_left_alone() {
         let dir = std::env::temp_dir().join(format!("weft-eval-json-{}", std::process::id()));
         let path = dir.join("weft").join("eval.json");
-        let first = tiers_at(&path);
+        assert_eq!(
+            tiers_at(&path),
+            weft_core::eval_stages::tiers(weft_core::eval_stages::DEFAULTS)
+        );
+        assert!(!path.exists(), "reading writes nothing");
+        write_tiers_if_absent(&path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), weft_core::eval_stages::DEFAULTS);
-        assert!(first.unknown.is_empty());
         std::fs::write(&path, r#"{"codex": {"drift": {"effort": "max"}}}"#).unwrap();
+        write_tiers_if_absent(&path);
         let mine = tiers_at(&path);
         assert_eq!(mine.by_harness["codex"]["drift"]["effort"], "max");
         assert!(

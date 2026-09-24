@@ -333,6 +333,7 @@ mod tests {
             confirmed: true,
             sent: Sent::Arrived { exact: true },
             check: None,
+            gathered: None,
             sealed: Some(disposition.into()),
             seal_id: Some("sel_1".into()),
             sealed_at: Some("2026-09-19T16:40:00Z".into()),

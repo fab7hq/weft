@@ -76,6 +76,8 @@ struct Project {
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
     routing: weft_core::routing::Routing,
+    /// The model and effort per Eval role, per harness: `eval.json`.
+    tiers: weft_core::eval_stages::Tiers,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
     folds: crate::acts::Folds,
 }
@@ -453,10 +455,28 @@ impl Session {
                 let Some(unit) = unit else {
                     return Answer::No("no_unit", "that Ask is not on the board".into());
                 };
-                let skill = if act == "check" { "eval" } else { "seal" };
-                // Where it goes is the project's to say.
-                let key = if act == "check" { "eval" } else { "seal" };
-                let into = self.projects[at].routing.get(key).unwrap_or(&unit.harness).to_string();
+                // Where it goes is the project's to say. An Eval also says
+                // which of its stages runs next, and on what.
+                let project = &self.projects[at];
+                let (skill, into, args) = if act == "check" {
+                    let route = project
+                        .routing
+                        .eval_stages
+                        .clone()
+                        .or_else(|| project.routing.get("eval").map(|h| serde_json::json!(h)));
+                    let (gather, debate) = weft_core::eval_stages::resolve(
+                        &project.tiers,
+                        route.as_ref(),
+                        &unit.harness,
+                    );
+                    let gathered = unit.gathered.as_ref().map(|g| g.eval_id.as_str());
+                    let (into, args) =
+                        weft_core::eval_stages::next_send(&gather, &debate, gathered);
+                    ("eval", into, args)
+                } else {
+                    let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
+                    ("seal", into, String::new())
+                };
                 let Some(pane) = self.pane_of(at, &into) else {
                     return Answer::No("no_pane", format!("no {into} pane is open here"));
                 };
@@ -465,6 +485,7 @@ impl Session {
                     skill,
                     &into,
                     &unit.harness,
+                    &args,
                     &mut self.projects[at].folds,
                 );
                 (built, pane)
@@ -630,13 +651,15 @@ impl Session {
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
                 let mut routing = crate::routing::for_project(&root);
-                routing.ignored = crate::routing::tiers_at(&crate::routing::eval_file()).unknown;
+                let tiers = crate::routing::tiers_at(&crate::routing::eval_file());
+                routing.ignored = tiers.unknown.clone();
                 self.projects.push(Project {
                     root,
                     panes: Vec::new(),
                     ledger,
                     waiting: Vec::new(),
                     routing,
+                    tiers,
                     readiness: HashMap::new(),
                     folds: crate::acts::Folds::default(),
                 });

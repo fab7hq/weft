@@ -116,6 +116,36 @@ pub fn resolve(tiers: &Tiers, eval: Option<&Value>, fallback: &str) -> (Stage, S
     (stage("gather", &GATHER_ROLES), stage("debate", &DEBATE_ROLES))
 }
 
+/// `role=model/effort` for each role that has a setting, a side left empty
+/// when only the other is set.
+fn words(stage: &Stage) -> Vec<String> {
+    stage
+        .roles
+        .iter()
+        .map(|(role, model, effort)| {
+            format!(
+                "{role}={}/{}",
+                model.as_deref().unwrap_or_default(),
+                effort.as_deref().unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+/// Where `[E]VAL` types next and what follows `/rf:eval `: the debate for an
+/// Eval already gathered; else both stages at once when they share a harness;
+/// else the gather.
+pub fn next_send(gather: &Stage, debate: &Stage, gathered: Option<&str>) -> (String, String) {
+    if let Some(eval_id) = gathered {
+        let args = [vec!["debate".to_string(), eval_id.to_string()], words(debate)].concat();
+        return (debate.harness.clone(), args.join(" "));
+    }
+    if gather.harness == debate.harness {
+        return (gather.harness.clone(), [words(gather), words(debate)].concat().join(" "));
+    }
+    (gather.harness.clone(), [vec!["gather".to_string()], words(gather)].concat().join(" "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +220,44 @@ mod tests {
     fn a_role_with_nothing_set_is_left_to_the_harness() {
         let (gather, debate) = resolve(&Tiers::default(), Some(&json!("codex")), "codex");
         assert!(gather.roles.is_empty() && debate.roles.is_empty());
+    }
+
+    #[test]
+    fn what_eval_sends_depends_on_the_harnesses_and_the_record() {
+        let t = tiers(DEFAULTS);
+        let (g, d) = resolve(&t, None, "claude-code");
+        assert_eq!(
+            next_send(&g, &d, None),
+            (
+                "claude-code".into(),
+                "context=claude-sonnet-5/low intent=claude-sonnet-5/medium \
+                 coverage=claude-sonnet-5/medium drift=claude-sonnet-5/high \
+                 adversary=claude-opus-5-5/high"
+                    .into()
+            )
+        );
+        let split = json!({"gather": {"harness": "codex"}, "debate": {"harness": "claude-code",
+                                                                     "drift": {"model": null}}});
+        let (g, d) = resolve(&t, Some(&split), "claude-code");
+        assert_eq!(
+            next_send(&g, &d, None),
+            ("codex".into(), "gather context=gpt-6-luna/low".into())
+        );
+        assert_eq!(
+            next_send(&g, &d, Some("evl_1")),
+            (
+                "claude-code".into(),
+                "debate evl_1 intent=claude-sonnet-5/medium coverage=claude-sonnet-5/medium \
+                 drift=/high adversary=claude-opus-5-5/high"
+                    .into()
+            )
+        );
+        let (g, d) = resolve(&Tiers::default(), Some(&json!("codex")), "codex");
+        assert_eq!(
+            next_send(&g, &d, None),
+            ("codex".into(), String::new()),
+            "no roles: a bare eval"
+        );
     }
 
     #[test]

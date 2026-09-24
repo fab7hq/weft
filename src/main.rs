@@ -73,6 +73,7 @@ fn main() -> Result<()> {
     // Started by a client to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
+        weft::routing::write_tiers_if_absent(&weft::routing::eval_file());
         return server::Session::serve(&protocol::socket_path());
     }
 

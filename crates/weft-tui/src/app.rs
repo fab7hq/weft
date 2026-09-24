@@ -1819,6 +1819,7 @@ pub(crate) mod tests {
             confirmed: true,
             sent,
             check: None,
+            gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,
@@ -2176,8 +2177,9 @@ pub(crate) mod tests {
                 panic!("{key} must confirm first, got {:?}", a.modal)
             };
             let text = String::from_utf8(p.payload).unwrap();
-            assert!(text.trim_end().ends_with(expect), "got {text:?}");
-            assert!(text.ends_with(' '), "the token is closed so Enter means send: {text:?}");
+            // Whatever words follow, the command token is closed, so Enter
+            // means send rather than pick a completion.
+            assert!(text.starts_with(&format!("$rf:{expect} ")), "got {text:?}");
         }
     }
 
@@ -2678,6 +2680,7 @@ mod start_tests {
             confirmed: true,
             sent: Sent::ReadyToSend,
             check: None,
+            gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,
