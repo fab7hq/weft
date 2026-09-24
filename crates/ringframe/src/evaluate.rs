@@ -114,6 +114,11 @@ pub fn subject_digest(ws: &Workspace, kind: &str, reference: &str) -> Result<Str
     }
 }
 
+/// The worktree's files as they are, whatever the subject's kind.
+fn worktree_content(ws: &Workspace) -> Result<String, EvalError> {
+    subject_digest(ws, "worktree", &ws.root.to_string_lossy())
+}
+
 /// The current commit when the tree is clean, else the worktree.
 pub fn default_subject(ws: &Workspace) -> Result<(String, String), EvalError> {
     if !git(&ws.root, &["status", "--porcelain", "--", "."])?.trim().is_empty() {
@@ -422,7 +427,16 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         limitations.push("subject is the uncommitted worktree".into());
     }
     // What the harness saw the agent run, in order. Only a fact about this
-    // exact subject can say anything about the work being judged.
+    // exact subject can say anything about the work being judged. A fact
+    // records the worktree's content, and a clean commit at HEAD holds exactly
+    // that, so tests run before the commit still describe it.
+    let content = match kind.as_str() {
+        "worktree" => Some(str_of(&subject, "sha256")),
+        "git_commit" if default_subject(ws)? == (kind.clone(), reference.clone()) => {
+            Some(worktree_content(ws)?)
+        }
+        _ => None,
+    };
     let since = anchor_time(ws, &anchor);
     let facts: Vec<Value> = store::events(ws)?
         .iter()
@@ -433,7 +447,8 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             json!({
                 "id": e["id"], "command": e["data"]["command"], "outcome": e["data"]["outcome"],
                 "time": e["time"],
-                "fresh": about["kind"] == subject["kind"] && about["sha256"] == subject["sha256"],
+                "fresh": (about["kind"] == subject["kind"] && about["sha256"] == subject["sha256"])
+                    || content.as_deref().is_some_and(|c| about["content"] == c),
             })
         })
         .collect();
@@ -907,7 +922,8 @@ pub fn record_fact(
     let sha = subject_digest(ws, &kind, &reference)?;
     let data = json!({
         "command": command, "outcome": outcome,
-        "subject": {"kind": kind, "ref": reference, "sha256": sha},
+        "subject": {"kind": kind, "ref": reference, "sha256": sha,
+                    "content": worktree_content(ws)?},
         "host": host, "session_ref": str_of(payload, "session_id"),
         "tool_use_id": str_of(payload, "tool_use_id"),
     });
@@ -2197,7 +2213,8 @@ mod tests {
             assert_eq!(
                 ok["data"],
                 json!({"command": "npm test", "outcome": "succeeded",
-                       "subject": {"kind": kind, "ref": reference, "sha256": sha},
+                       "subject": {"kind": kind, "ref": reference, "sha256": sha,
+                                   "content": worktree_content(ws).unwrap()},
                        "host": "claude-code", "session_ref": "s1", "tool_use_id": "toolu_1"})
             );
             let failed =
@@ -2285,6 +2302,30 @@ mod tests {
                 == "no tool facts were recorded; the result of a command cannot be judged"));
             assert_eq!(brief_of(ws, &o.out)["facts"], json!([]));
         });
+    }
+
+    /// Tests pass, then the agent commits exactly what it tested: the fact
+    /// still describes the subject. Committing something else makes it stale.
+    #[test]
+    fn a_fact_stays_fresh_when_the_tested_work_is_committed_unchanged() {
+        let fresh_after = |extra: &[(&str, Option<&str>)]| {
+            eval_bench(|ws| {
+                two_asks_and_work(ws);
+                std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
+                    .unwrap();
+                let tested =
+                    record_fact(ws, "claude-code", &hook("PostToolUse", "Bash", "npm test"))
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(tested["data"]["subject"]["kind"], "worktree");
+                commit(&ws.root, extra, "tested work");
+                let out = open_eval(ws, Open::default()).unwrap();
+                assert_eq!(out["subject"]["kind"], "git_commit");
+                brief_of(ws, &out)["facts"][0]["fresh"].clone()
+            })
+        };
+        assert_eq!(fresh_after(&[]), json!(true));
+        assert_eq!(fresh_after(&[("src/uptime.js", Some("changed after\n"))]), json!(false));
     }
 
     #[test]
