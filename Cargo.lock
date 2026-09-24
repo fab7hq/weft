@@ -1144,7 +1144,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "ringframe"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "serde_json",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "weft"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -1778,7 +1778,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1787,7 +1787,7 @@ dependencies = [
 
 [[package]]
 name = "weft-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde_json",
  "weft-core",
@@ -1795,7 +1795,7 @@ dependencies = [
 
 [[package]]
 name = "weft-tui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -1810,7 +1810,7 @@ dependencies = [
 
 [[package]]
 name = "weftd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "portable-pty",

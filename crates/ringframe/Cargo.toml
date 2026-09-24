@@ -1,6 +1,6 @@
 [package]
 name = "ringframe"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "The record a coding agent's work is measured against: Ask, Eval and Seal over an append-only ledger"
 license = "Apache-2.0"
