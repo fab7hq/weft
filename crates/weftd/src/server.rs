@@ -76,8 +76,6 @@ struct Project {
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
     routing: weft_core::routing::Routing,
-    /// The model and effort per Eval role, per harness: `eval.json`.
-    tiers: weft_core::eval_stages::Tiers,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
     folds: crate::acts::Folds,
 }
@@ -237,6 +235,7 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
             .collect::<serde_json::Map<_, _>>(),
         "unknown": routing.unknown,
         "ignored": routing.ignored,
+        "leftover": routing.leftover,
         "eval_stages": routing.eval_stages,
     })
 }
@@ -460,14 +459,9 @@ impl Session {
                 // which of its stages runs next, and on what.
                 let project = &self.projects[at];
                 let (skill, into, args) = if act == "check" {
-                    let route = project
-                        .routing
-                        .eval_stages
-                        .clone()
-                        .or_else(|| project.routing.get("eval").map(|h| serde_json::json!(h)));
                     let (gather, debate) = weft_core::eval_stages::resolve(
-                        &project.tiers,
-                        route.as_ref(),
+                        project.routing.eval_stages.as_ref(),
+                        project.routing.get("eval"),
                         &unit.harness,
                     );
                     let gathered = unit.gathered.as_ref().map(|g| g.eval_id.as_str());
@@ -651,16 +645,13 @@ impl Session {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let mut routing = crate::routing::for_project(&root);
-                let tiers = crate::routing::tiers_at(&crate::routing::eval_file());
-                routing.ignored = tiers.unknown.clone();
+                let config = crate::routing::read_at(&crate::routing::file());
                 self.projects.push(Project {
+                    routing: config.routing(&root),
                     root,
                     panes: Vec::new(),
                     ledger,
                     waiting: Vec::new(),
-                    routing,
-                    tiers,
                     readiness: HashMap::new(),
                     folds: crate::acts::Folds::default(),
                 });

@@ -742,7 +742,13 @@ impl App {
         if !self.routing.ignored.is_empty() && self.hint.is_none() {
             let said = self.routing.ignored.join(", ");
             self.say(format!(
-                "eval.json names something Weft does not know ({said}). It is ignored."
+                "config.toml names something Weft does not know ({said}). It is ignored."
+            ));
+        }
+        if !self.routing.leftover.is_empty() && self.hint.is_none() {
+            let said = self.routing.leftover.join(", ");
+            self.say(format!(
+                "Weft no longer reads {said}; move what it holds into ~/.fab7/weft/config.toml."
             ));
         }
     }
@@ -1962,10 +1968,8 @@ pub(crate) mod tests {
     /// the routing directly rather than going through a temporary HOME.
     fn routed(pairs: &[(&str, &str)]) -> App {
         let mut a = app();
-        let acts: serde_json::Map<String, serde_json::Value> =
-            pairs.iter().map(|(k, v)| ((*k).to_string(), serde_json::json!(v))).collect();
-        let text = serde_json::json!({ a.root().to_string_lossy().into_owned(): acts }).to_string();
-        a.routing = weft_core::routing::read(&text, a.root());
+        let acts: String = pairs.iter().map(|(k, v)| format!("{k} = \"{v}\"\n")).collect();
+        a.routing = weft_core::config::read(&format!("[routing]\n{acts}")).routing(a.root());
         a.set_units(vec![unit(Sent::TakenByAgent)]);
         a
     }
@@ -2470,13 +2474,29 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_name_eval_json_does_not_know_is_said_once() {
+    fn a_name_config_toml_does_not_know_is_said_once() {
         let mut a = app();
-        a.session_mut().routing.ignored = vec!["codex.judge".into()];
+        a.session_mut().routing.ignored = vec!["eval.debate.judge".into()];
         a.take_the_board();
         assert_eq!(
             a.hint_text(),
-            Some("eval.json names something Weft does not know (codex.judge). It is ignored.")
+            Some(
+                "config.toml names something Weft does not know (eval.debate.judge). It is ignored."
+            )
+        );
+    }
+
+    #[test]
+    fn a_leftover_json_file_is_said_once() {
+        let mut a = app();
+        a.session_mut().routing.leftover = vec!["routing.json".into(), "eval.json".into()];
+        a.take_the_board();
+        assert_eq!(
+            a.hint_text(),
+            Some(
+                "Weft no longer reads routing.json, eval.json; move what it holds into \
+                 ~/.fab7/weft/config.toml."
+            )
         );
     }
 

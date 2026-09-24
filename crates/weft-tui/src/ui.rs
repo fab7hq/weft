@@ -1423,11 +1423,8 @@ mod tests {
     #[test]
     fn help_says_what_this_project_routes() {
         let mut a = judged();
-        let text = serde_json::json!({
-            a.root().to_string_lossy().into_owned(): {"eval": "claude-code", "seal": "codex"}
-        })
-        .to_string();
-        a.set_routing(crate::routing::read(&text, a.root()));
+        let text = "[routing]\neval = \"claude-code\"\nseal = \"codex\"\n";
+        a.set_routing(weft_core::config::read(text).routing(a.root()));
         press(&mut a, KeyCode::Char('h'));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("This project routes"), "{drawn}");

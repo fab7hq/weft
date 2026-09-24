@@ -1,50 +1,33 @@
-//! Where this project's routing policy is kept.
+//! Where Weft's configuration is kept.
 //!
-//! The policy itself, and what it means, live in [`weft_core::routing`].
-//! Finding and reading the file is here.
+//! What the file means lives in [`weft_core::config`]. Finding and reading it
+//! is here; this reads and never writes. `weft --serve` writes the starting
+//! file before the daemon starts.
 
 use std::path::{Path, PathBuf};
 
+pub use weft_core::config::{Config, STARTING};
 pub use weft_core::routing::*;
 
-/// `~/.fab7/weft/routing.json`: every project Weft routes, keyed by its path.
-///
-/// ```json
-/// { "/home/me/work/thing": { "eval": "claude-code" } }
-/// ```
-///
-/// One file rather than a tree, because a person edits this by hand and wants
-/// to see the whole of it at once. Absent, unreadable or empty means no
-/// routing, which is exactly how Weft behaved before this existed.
+/// `~/.fab7/weft/config.toml`. Absent, unreadable or empty sets nothing,
+/// which is how Weft behaves without one.
 pub fn file() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"));
-    home.join(".fab7").join("weft").join("routing.json")
+    home.join(".fab7").join("weft").join("config.toml")
 }
 
-pub fn for_project(root: &Path) -> Routing {
-    read(&std::fs::read_to_string(file()).unwrap_or_default(), root)
-}
+/// The files `config.toml` replaced. One found beside it is named, not read.
+const REPLACED: [&str; 2] = ["routing.json", "eval.json"];
 
-/// `~/.fab7/weft/eval.json`: the model and effort per Eval role, per harness.
-pub fn eval_file() -> PathBuf {
-    file().with_file_name("eval.json")
-}
-
-/// The tiers in the file, or the shipped ones while there is none.
-pub fn tiers_at(path: &Path) -> weft_core::eval_stages::Tiers {
-    let text = std::fs::read_to_string(path);
-    weft_core::eval_stages::tiers(text.as_deref().unwrap_or(weft_core::eval_stages::DEFAULTS))
-}
-
-/// Put the shipped tiers where the person can see and change them, once. The
-/// daemon itself never writes: `weft --serve` calls this before it starts.
-pub fn write_tiers_if_absent(path: &Path) {
-    if !path.exists() {
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(path, weft_core::eval_stages::DEFAULTS);
-    }
+/// The configuration at `path`, with any file it replaced reported.
+pub fn read_at(path: &Path) -> Config {
+    let mut config = weft_core::config::read(&std::fs::read_to_string(path).unwrap_or_default());
+    config.leftover = REPLACED
+        .iter()
+        .filter(|f| path.with_file_name(f).exists())
+        .map(|f| f.to_string())
+        .collect();
+    config
 }
 
 #[cfg(test)]
@@ -52,24 +35,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_tiers_are_written_once_and_then_left_alone() {
-        let dir = std::env::temp_dir().join(format!("weft-eval-json-{}", std::process::id()));
-        let path = dir.join("weft").join("eval.json");
-        assert_eq!(
-            tiers_at(&path),
-            weft_core::eval_stages::tiers(weft_core::eval_stages::DEFAULTS)
-        );
-        assert!(!path.exists(), "reading writes nothing");
-        write_tiers_if_absent(&path);
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), weft_core::eval_stages::DEFAULTS);
-        std::fs::write(&path, r#"{"codex": {"drift": {"effort": "max"}}}"#).unwrap();
-        write_tiers_if_absent(&path);
-        let mine = tiers_at(&path);
-        assert_eq!(mine.by_harness["codex"]["drift"]["effort"], "max");
-        assert!(
-            mine.by_harness.get("claude-code").is_none(),
-            "the person's file, not the defaults"
-        );
+    fn a_leftover_json_file_is_named_and_not_read() {
+        let dir = std::env::temp_dir().join(format!("weft-config-toml-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        assert_eq!(read_at(&path), Config::default(), "no file sets nothing");
+        std::fs::write(dir.join("routing.json"), r#"{"/p": {"eval": "codex"}}"#).unwrap();
+        std::fs::write(dir.join("eval.json"), "{}").unwrap();
+        std::fs::write(&path, "[routing]\nask = \"codex\"\n").unwrap();
+        let config = read_at(&path);
+        assert_eq!(config.leftover, ["routing.json", "eval.json"]);
+        let routing = config.routing(Path::new("/p"));
+        assert_eq!(routing.each(), vec![("ask", "codex")], "routing.json is not read");
+        assert_eq!(routing.leftover, ["routing.json", "eval.json"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

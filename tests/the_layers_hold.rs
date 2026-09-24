@@ -12,7 +12,7 @@ use std::path::Path;
 
 /// What each crate may depend on, and the plain reason.
 const ALLOWED: &[(&str, &[&str], &str)] = &[
-    ("weft-core", &["serde", "serde_json"], "the rules parse and decide; they do not do"),
+    ("weft-core", &["serde", "serde_json", "toml"], "the rules parse and decide; they do not do"),
     (
         "weft-proto",
         &["serde_json", "weft-core"],

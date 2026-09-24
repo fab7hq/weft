@@ -80,10 +80,12 @@ fn gathered(name: &str, width: u16, height: u16) {
     units[0].gathered =
         Some(weft::ledger::Gathered { eval_id: "evl_2".into(), by: "codex".into() });
     app.set_units(units);
-    app.set_routing(weft::routing::read(
-        r#"{"/p": {"eval": {"gather": {"harness": "codex"}, "debate": {"harness": "claude-code"}}}}"#,
-        Path::new("/p"),
-    ));
+    app.set_routing(
+        weft_core::config::read(
+            "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\nharness = \"claude-code\"\n",
+        )
+        .routing(Path::new("/p")),
+    );
     draw_it(name, width, height, &[KeyCode::Enter], &mut app);
 }
 

@@ -61,7 +61,7 @@ fn the_rules_reach_nothing() {
 }
 
 #[test]
-fn the_rules_depend_on_one_thing_that_parses() {
+fn the_rules_depend_only_on_things_that_parse() {
     // Every dependency added here has to keep the invariant true, so there
     // should be almost none, and a reader should be able to see that at once.
     let manifest = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
@@ -76,7 +76,7 @@ fn the_rules_depend_on_one_thing_that_parses() {
         .collect();
     assert_eq!(
         deps,
-        vec!["serde", "serde_json"],
-        "a new dependency has to earn its place here, and both of these only parse"
+        vec!["serde", "serde_json", "toml"],
+        "a new dependency has to earn its place here, and each of these only parses"
     );
 }

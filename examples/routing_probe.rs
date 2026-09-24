@@ -10,8 +10,8 @@ use weft::server;
 fn main() -> anyhow::Result<()> {
     let root = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| ".".into()))
         .canonicalize()?;
-    println!("policy file: {}", weft::routing::file().display());
-    let r = weft::routing::for_project(&root);
+    println!("config file: {}", weft::routing::file().display());
+    let r = weft::routing::read_at(&weft::routing::file()).routing(&root);
     println!("routes: {:?}  unknown: {:?}", r.each(), r.unknown);
 
     let socket = protocol::private_socket("weft-routing");

@@ -8,8 +8,9 @@ license = "Apache-2.0"
 #
 # This crate may not reach the filesystem, a process, the network or
 # a terminal. Every dependency added here has to keep that true — which is why
-# there is only one, and it parses.
+# every one of them parses.
 [dependencies]
-# Both parse. Nothing here reaches anything, which is the rule this list keeps.
+# All three parse. Nothing here reaches anything, which is the rule this list keeps.
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.151"
+toml = "1.1.6"

@@ -150,11 +150,8 @@ impl Board<'_> {
                 .selected_unit()
                 .map(|u| u.harness.clone())
                 .or_else(|| self.panes.get(self.focused).map(|p| p.harness.clone()))?;
-            let (gather, debate) = crate::eval_stages::resolve(
-                &crate::eval_stages::Tiers::default(),
-                Some(stages),
-                &fallback,
-            );
+            let (gather, debate) =
+                crate::eval_stages::resolve(Some(stages), self.routing.get("eval"), &fallback);
             let gathered = self.selected_unit().is_some_and(|u| u.gathered.is_some());
             return Some(if gathered { debate.harness } else { gather.harness });
         }
@@ -355,8 +352,8 @@ mod tests {
     fn a_routed_act_is_about_the_harness_it_goes_to() {
         let units = [unit("codex", Sent::ReadyToSend)];
         let panes = [pane("codex")];
-        let routing =
-            crate::routing::read(r#"{"/p": {"eval": "claude-code"}}"#, std::path::Path::new("/p"));
+        let routing = crate::config::read("[routing]\neval = \"claude-code\"\n")
+            .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
         let said = b.unavailable(Act::Eval).expect("no claude-code pane is open");
@@ -369,10 +366,10 @@ mod tests {
     fn an_eval_routed_per_stage_is_about_the_harness_its_next_stage_runs_in() {
         let mut units = [unit("claude-code", Sent::TakenByAgent)];
         let panes = [pane("claude-code")];
-        let routing = crate::routing::read(
-            r#"{"/p": {"eval": {"gather": {"harness": "codex"}, "debate": {"harness": "claude-code"}}}}"#,
-            std::path::Path::new("/p"),
-        );
+        let routing = crate::config::read(
+            "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\nharness = \"claude-code\"\n",
+        )
+        .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("codex"));
         units[0].gathered =

@@ -66,6 +66,17 @@ fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std:
     }
 }
 
+/// Put the starting `config.toml` where the person can see and change it,
+/// once. The daemon only reads it; this runs before it starts.
+fn write_config_if_absent(path: &std::path::Path) {
+    if !path.exists() {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, weft::routing::STARTING);
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
@@ -73,7 +84,7 @@ fn main() -> Result<()> {
     // Started by a client to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
-        weft::routing::write_tiers_if_absent(&weft::routing::eval_file());
+        write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&protocol::socket_path());
     }
 
@@ -212,4 +223,21 @@ fn update() -> Result<()> {
     }
     println!("\nRestart Weft to use it: `weft stop`, then `weft`.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_starting_config_is_written_once_and_then_left_alone() {
+        let dir = std::env::temp_dir().join(format!("weft-starting-config-{}", std::process::id()));
+        let path = dir.join("weft").join("config.toml");
+        write_config_if_absent(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), weft::routing::STARTING);
+        std::fs::write(&path, "[routing]\nask = \"codex\"\n").unwrap();
+        write_config_if_absent(&path);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[routing]\nask = \"codex\"\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
