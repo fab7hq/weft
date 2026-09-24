@@ -28,6 +28,8 @@ pub struct Routing {
     pub unknown: Vec<String>,
     /// A name in `eval.json` Weft does not know, said once the same way.
     pub ignored: Vec<String>,
+    /// `eval` given per stage rather than as one harness name.
+    pub eval_stages: Option<Value>,
 }
 
 impl Routing {
@@ -48,7 +50,7 @@ impl Routing {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default()
         };
-        Routing { by_act, unknown: names(unknown), ignored: names(ignored) }
+        Routing { by_act, unknown: names(unknown), ignored: names(ignored), eval_stages: None }
     }
 
     /// The harness this act goes to, if the project named one.
@@ -73,6 +75,10 @@ pub fn read(text: &str, root: &Path) -> Routing {
         return Routing::default();
     };
     let mut routing = Routing::default();
+    if let Some(stages) = mine.get("eval").filter(|v| v.is_object()) {
+        routing.unknown.extend(unknown_in_stages(stages));
+        routing.eval_stages = Some(stages.clone());
+    }
     for act in ACTS {
         let Some(name) = mine.get(act).and_then(Value::as_str) else { continue };
         // Only a harness Weft supports. An unknown name is reported rather
@@ -84,6 +90,39 @@ pub fn read(text: &str, root: &Path) -> Routing {
         }
     }
     routing
+}
+
+/// What an `eval` object names that Weft does not know: a stage, a harness, a
+/// role outside its stage, or a key other than a role's `model` and `effort`.
+fn unknown_in_stages(stages: &Value) -> Vec<String> {
+    use crate::eval_stages::{DEBATE_ROLES, GATHER_ROLES};
+    let mut out = Vec::new();
+    for (stage, body) in stages.as_object().into_iter().flatten() {
+        let roles: &[&str] = match stage.as_str() {
+            "gather" => &GATHER_ROLES,
+            "debate" => &DEBATE_ROLES,
+            _ => {
+                out.push(format!("eval.{stage}"));
+                continue;
+            }
+        };
+        for (key, value) in body.as_object().into_iter().flatten() {
+            if key == "harness" {
+                if value.as_str().is_none_or(|h| crate::harness::find(h).is_none()) {
+                    out.push(format!("eval.{stage}: {}", value.as_str().unwrap_or("?")));
+                }
+            } else if !roles.contains(&key.as_str()) {
+                out.push(format!("eval.{stage}.{key}"));
+            } else {
+                for k in value.as_object().into_iter().flatten().map(|(k, _)| k) {
+                    if k != "model" && k != "effort" {
+                        out.push(format!("eval.{stage}.{key}.{k}"));
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -103,6 +142,25 @@ mod tests {
         assert_eq!(r.get("eval"), Some("claude-code"));
         assert_eq!(r.get("seal"), None, "an act the project did not name");
         assert_eq!(r.each(), vec![("ask", "codex"), ("eval", "claude-code")]);
+    }
+
+    #[test]
+    fn eval_per_stage_is_kept_and_what_it_names_wrongly_is_reported() {
+        let r = at(r#"{"/work/thing": {"eval": {
+            "gather": {"harness": "codex"},
+            "debate": {"harness": "aider", "judge": {}, "drift": {"effort": "high", "temperature": 1}},
+            "review": {}}}}"#);
+        assert_eq!(r.get("eval"), None, "not one harness");
+        assert_eq!(r.eval_stages.as_ref().unwrap()["gather"]["harness"], "codex");
+        assert_eq!(
+            r.unknown,
+            [
+                "eval.debate.drift.temperature",
+                "eval.debate: aider",
+                "eval.debate.judge",
+                "eval.review"
+            ]
+        );
     }
 
     #[test]

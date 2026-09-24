@@ -76,6 +76,46 @@ pub fn tiers(text: &str) -> Tiers {
     out
 }
 
+/// One stage of an Eval, resolved: where it runs, and what each role that has
+/// a setting was asked to run on. A role with neither is left out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Stage {
+    pub harness: String,
+    pub roles: Vec<(String, Option<String>, Option<String>)>,
+}
+
+/// Gather and debate for this project: its `eval` route (a harness name, or an
+/// object per stage) over the tiers, falling back to `fallback` for a stage
+/// that names no harness.
+pub fn resolve(tiers: &Tiers, eval: Option<&Value>, fallback: &str) -> (Stage, Stage) {
+    let stage = |name: &str, roles: &[&str]| {
+        let route = eval.and_then(|e| e.get(name));
+        let harness = route
+            .and_then(|r| r.get("harness"))
+            .and_then(Value::as_str)
+            .filter(|h| crate::harness::find(h).is_some())
+            .or_else(|| eval.and_then(Value::as_str))
+            .unwrap_or(fallback)
+            .to_string();
+        let resolved = roles
+            .iter()
+            .filter_map(|role| {
+                let base = tiers.by_harness.get(&harness).and_then(|h| h.get(*role));
+                let over = route.and_then(|r| r.get(*role));
+                let pick = |key: &str| match over.and_then(|o| o.get(key)) {
+                    Some(Value::Null) => None,
+                    Some(Value::String(v)) if !v.is_empty() => Some(v.clone()),
+                    _ => base.and_then(|b| b.get(key)).and_then(Value::as_str).map(str::to_string),
+                };
+                let (model, effort) = (pick("model"), pick("effort"));
+                (model.is_some() || effort.is_some()).then(|| (role.to_string(), model, effort))
+            })
+            .collect();
+        Stage { harness, roles: resolved }
+    };
+    (stage("gather", &GATHER_ROLES), stage("debate", &DEBATE_ROLES))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +148,48 @@ mod tests {
         );
         assert_eq!(t.unknown, ["aider", "codex.drift.temperature", "codex.judge"]);
         assert_eq!(t.by_harness["codex"], json!({"drift": {"model": "gpt-6-sol"}}));
+    }
+
+    fn role(stage: &Stage, name: &str) -> Option<(Option<String>, Option<String>)> {
+        stage.roles.iter().find(|r| r.0 == name).map(|r| (r.1.clone(), r.2.clone()))
+    }
+
+    fn some(model: &str, effort: &str) -> Option<(Option<String>, Option<String>)> {
+        Some((Some(model.into()), Some(effort.into())))
+    }
+
+    #[test]
+    fn a_harness_name_sends_both_stages_there_on_its_tiers() {
+        let (gather, debate) = resolve(&tiers(DEFAULTS), Some(&json!("codex")), "claude-code");
+        assert_eq!((gather.harness.as_str(), debate.harness.as_str()), ("codex", "codex"));
+        assert_eq!(role(&gather, "context"), some("gpt-6-luna", "low"));
+        assert_eq!(role(&debate, "adversary"), some("gpt-6-sol", "xhigh"));
+        let (gather, _) = resolve(&tiers(DEFAULTS), None, "claude-code");
+        assert_eq!(gather.harness, "claude-code", "no route: the fallback");
+    }
+
+    #[test]
+    fn a_stage_names_its_harness_and_a_project_key_overrides_one_role() {
+        let route = json!({"gather": {"harness": "codex"},
+                           "debate": {"harness": "claude-code",
+                                      "adversary": {"effort": "xhigh"}, "drift": {"model": null}}});
+        let (gather, debate) = resolve(&tiers(DEFAULTS), Some(&route), "claude-code");
+        assert_eq!(gather.harness, "codex");
+        assert_eq!(role(&gather, "context"), some("gpt-6-luna", "low"));
+        assert_eq!(debate.harness, "claude-code");
+        assert_eq!(role(&debate, "adversary"), some("claude-opus-5-5", "xhigh"));
+        assert_eq!(
+            role(&debate, "drift"),
+            Some((None, Some("high".into()))),
+            "null drops the model"
+        );
+        assert_eq!(role(&debate, "intent"), some("claude-sonnet-5", "medium"));
+    }
+
+    #[test]
+    fn a_role_with_nothing_set_is_left_to_the_harness() {
+        let (gather, debate) = resolve(&Tiers::default(), Some(&json!("codex")), "codex");
+        assert!(gather.roles.is_empty() && debate.roles.is_empty());
     }
 
     #[test]
