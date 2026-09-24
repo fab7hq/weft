@@ -82,7 +82,7 @@ fn profile(data: &Value) -> Value {
 }
 
 fn eval_open(data: &Value) -> Value {
-    let mut out = pick(data, &["eval_id", "brief_path", "changes"]);
+    let mut out = pick(data, &["eval_id", "brief_path", "changes_patch", "agents", "changes"]);
     out["brief"] = pick(&data["brief"], &["sha256"]);
     out["anchor"] = data["anchor"]["ref"].clone();
     out["subject"] = data["subject"]["kind"].clone();

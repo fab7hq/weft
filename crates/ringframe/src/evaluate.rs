@@ -63,19 +63,25 @@ fn round2(x: f64) -> f64 {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, EvalError> {
+    Ok(String::from_utf8_lossy(&git_bytes(root, args, &[0])?).to_string())
+}
+
+/// Git's output as it printed it. `ok` lists the exit codes that are not
+/// failures: `diff --no-index` exits 1 when the files differ.
+fn git_bytes(root: &Path, args: &[&str], ok: &[i32]) -> Result<Vec<u8>, EvalError> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
         .args(args)
         .output()
         .map_err(|e| ledger("eval.no_git", format!("git: {e}")))?;
-    if !out.status.success() {
+    if !out.status.code().is_some_and(|c| ok.contains(&c)) {
         return Err(ledger(
             "eval.git",
             format!("git {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr).trim()),
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    Ok(out.stdout)
 }
 
 pub fn subject_digest(ws: &Workspace, kind: &str, reference: &str) -> Result<String, EvalError> {
@@ -237,6 +243,74 @@ fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalE
     Ok(json!({"files": ordered, "total_added": sum("added"), "total_removed": sum("removed")}))
 }
 
+const PATCH_LIMIT: usize = 1 << 20;
+
+/// The exact anchor-to-subject diff, untracked files as new-file hunks, and
+/// whether it had to be cut to stay under the limit.
+fn patch(anchor: &str, subject: &Value, ws: &Workspace) -> Result<(Vec<u8>, bool), EvalError> {
+    let kind = str_of(subject, "kind");
+    let reference = str_of(subject, "ref");
+    let root = if kind == "git_commit" { ws.root.clone() } else { PathBuf::from(&reference) };
+    let mut args = vec!["diff", "--relative", "--binary", anchor];
+    if kind == "git_commit" {
+        args.push(&reference);
+    }
+    args.extend(["--", "."]);
+    let mut out = git_bytes(&root, &args, &[0])?;
+    if kind == "worktree" {
+        for name in git(&root, &["ls-files", "--others", "--exclude-standard", "-z"])?.split('\0') {
+            if !name.is_empty() {
+                out.extend(git_bytes(
+                    &root,
+                    &["diff", "--no-index", "--binary", "/dev/null", name],
+                    &[0, 1],
+                )?);
+            }
+        }
+    }
+    if out.len() <= PATCH_LIMIT {
+        return Ok((out, false));
+    }
+    // Cut at the last whole file hunk that ends within the limit.
+    let starts: Vec<usize> = (0..out.len())
+        .filter(|&i| out[i..].starts_with(b"diff --git ") && (i == 0 || out[i - 1] == b'\n'))
+        .collect();
+    let end = starts.iter().copied().filter(|&i| i <= PATCH_LIMIT).max().unwrap_or(0);
+    out.truncate(end);
+    Ok((out, true))
+}
+
+const ROLES: [&str; 5] = ["context", "intent", "coverage", "drift", "adversary"];
+
+/// What the caller asked each role to run on: its shape, never a catalogue.
+fn validate_agents(agents: &Value) -> Result<(), EvalError> {
+    let code = "eval.agents";
+    let map = agents.as_object().ok_or_else(|| ledger(code, "agents must be an object"))?;
+    for (role, keys) in map {
+        need(
+            ROLES.contains(&role.as_str()),
+            code,
+            format!("agents.{role} is not a role; use one of {}", ROLES.join(", ")),
+        )?;
+        let keys = keys
+            .as_object()
+            .ok_or_else(|| ledger(code, format!("agents.{role} must be an object")))?;
+        for (key, value) in keys {
+            need(
+                key == "model" || key == "effort",
+                code,
+                format!("agents.{role}.{key} is not model or effort"),
+            )?;
+            need(
+                value.as_str().is_some_and(|v| !v.is_empty()),
+                code,
+                format!("agents.{role}.{key} must be a non-empty string"),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// How many prompts that were neither `/rf:` invocations nor observed Ask
 /// submissions bear on this Eval.
 ///
@@ -348,10 +422,15 @@ pub struct Open<'a> {
     pub subject_kind: Option<&'a str>,
     pub subject_ref: Option<&'a str>,
     pub actor: Option<Value>,
+    /// Model and effort per role, as the caller asked; recorded, never checked
+    /// against a harness.
+    pub agents: Option<Value>,
 }
 
 /// Write the facts-only brief over every open Ask and append `eval.opened`.
 pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
+    let agents = args.agents.clone().unwrap_or_else(|| json!({}));
+    validate_agents(&agents)?;
     // `ask` does not import `evaluate`.
     let asks = crate::ask::open_asks(ws)?;
     need(
@@ -456,6 +535,16 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         limitations
             .push("no tool facts were recorded; the result of a command cannot be judged".into());
     }
+    let (patch_bytes, cut) = patch(&anchor_ref, &subject, ws)?;
+    if cut {
+        limitations.push("the patch is cut at 1 MiB; read the remaining paths with git".into());
+    }
+    let changes_patch = store::publish(
+        ws,
+        &format!("evals/{eval_id}/changes.patch"),
+        &patch_bytes,
+        "changes_patch",
+    )?;
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "workspace": ws.describe(), "anchor": anchor, "subject": subject,
@@ -468,13 +557,14 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "changes": changes(ws, &anchor_ref, &subject)?,
         "unrecorded_prompts_before": before,
         "previous_evals": previous, "facts": facts, "limitations": limitations,
+        "agents": agents, "changes_patch": changes_patch,
     });
     let mut bytes = store::canonical(&brief);
     bytes.push(b'\n');
     let reference =
         store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
     let data = json!({
-        "brief": reference, "anchor": anchor, "subject": subject,
+        "brief": reference, "changes_patch": changes_patch, "anchor": anchor, "subject": subject,
         "basis": {
             "asks": ask_ids,
             "unrecorded_prompts": before + counts.iter().sum::<usize>(),
@@ -487,6 +577,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let mut out = json!({
         "eval_id": eval_id,
         "brief_path": ws.rf_dir().join(str_of(&reference, "path")).to_string_lossy(),
+        "agents": agents,
         "changes": {
             "files": array_of(&brief["changes"], "files").len(),
             "added": brief["changes"]["total_added"], "removed": brief["changes"]["total_removed"],
@@ -495,6 +586,8 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     for (k, v) in data.as_object().into_iter().flatten() {
         out[k] = v.clone();
     }
+    out["changes_patch"] =
+        json!(ws.rf_dir().join(str_of(&changes_patch, "path")).to_string_lossy());
     Ok(out)
 }
 
@@ -2392,6 +2485,95 @@ mod tests {
                 array_of(item, "votes").iter().map(|v| str_of(v, "counted_as")).collect();
             assert_eq!(counted, ["no", "no", "unknown"]);
             assert_eq!(item["majority"], "no");
+        });
+    }
+
+    fn agents(v: Value) -> Open<'static> {
+        Open { agents: Some(v), ..Open::default() }
+    }
+
+    #[test]
+    fn open_records_the_agents_it_was_asked_for_and_refuses_what_is_not_a_role() {
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            let asked = json!({"context": {"model": "claude-sonnet-5", "effort": "low"},
+                               "adversary": {"effort": "high"}});
+            let out = open_eval(ws, agents(asked.clone())).unwrap();
+            assert_eq!(out["agents"], asked);
+            assert_eq!(brief_of(ws, &out)["agents"], asked);
+        });
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            let out = open_eval(ws, Open::default()).unwrap();
+            assert_eq!(brief_of(ws, &out)["agents"], json!({}));
+        });
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            refused(
+                open_eval(ws, agents(json!({"judge": {"model": "m"}}))).unwrap_err(),
+                "eval.agents",
+            );
+            refused(
+                open_eval(ws, agents(json!({"drift": {"temperature": "1"}}))).unwrap_err(),
+                "eval.agents",
+            );
+            refused(
+                open_eval(ws, agents(json!({"drift": {"model": ""}}))).unwrap_err(),
+                "eval.agents",
+            );
+        });
+    }
+
+    fn patch_of(ws: &Workspace, out: &Value) -> (Value, Vec<u8>) {
+        let reference = brief_of(ws, out)["changes_patch"].clone();
+        let bytes = std::fs::read(ws.rf_dir().join(str_of(&reference, "path"))).unwrap();
+        (reference, bytes)
+    }
+
+    #[test]
+    fn open_writes_the_exact_diff_beside_the_brief() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let (reference, bytes) = patch_of(ws, &o.out);
+            assert_eq!(reference["role"], "changes_patch");
+            assert_eq!(str_of(&reference, "sha256"), crate::digest::sha256_bytes(&bytes));
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("diff --git a/src/uptime.js b/src/uptime.js"), "{text}");
+            assert!(text.contains("+export const uptime = () => 1;"), "{text}");
+            assert_eq!(
+                o.out["changes_patch"],
+                json!(ws.rf_dir().join(str_of(&reference, "path")).to_string_lossy())
+            );
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+        });
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
+                .unwrap();
+            std::fs::write(ws.root.join("fresh.txt"), "new file\n").unwrap();
+            let out = open_eval(ws, Open::default()).unwrap();
+            assert_eq!(out["subject"]["kind"], "worktree");
+            let text = String::from_utf8(patch_of(ws, &out).1).unwrap();
+            assert!(text.contains("+export const uptime = () => 2;"), "{text}");
+            assert!(text.contains("b/fresh.txt") && text.contains("+new file"), "{text}");
+        });
+    }
+
+    #[test]
+    fn a_patch_over_the_limit_is_cut_on_a_whole_file() {
+        eval_bench(|ws| {
+            crate::testing::confirm_ask(ws, "big", b"s\n", b"p\n");
+            let big = "x".repeat(80) + "\n";
+            commit(
+                &ws.root,
+                &[("a.txt", Some("small\n")), ("b.txt", Some(&big.repeat(14_000)))],
+                "big",
+            );
+            let out = open_eval(ws, Open::default()).unwrap();
+            let text = String::from_utf8(patch_of(ws, &out).1).unwrap();
+            assert!(text.contains("b/a.txt") && !text.contains("b/b.txt"), "cut before b.txt");
+            assert!(array_of(&brief_of(ws, &out), "limitations").iter().any(|l| str_of_value(l)
+                == "the patch is cut at 1 MiB; read the remaining paths with git"));
         });
     }
 

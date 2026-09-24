@@ -84,7 +84,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => {
-            s(&["--anchor", "--subject-kind", "--subject-ref"], NONE, NONE, false, NONE)
+            s(&["--anchor", "--subject-kind", "--subject-ref", "--agents"], NONE, NONE, false, NONE)
         }
         ("eval", Some("close")) => s(
             &["--eval", "--intent", "--judgement"],
@@ -639,6 +639,10 @@ fn dispatch(
             Err(e) => (ws, from_ask_error(e)),
         },
         ("eval", Some("open")) => {
+            let agents = match ns.one("--agents").map(json_arg).transpose() {
+                Ok(v) => v,
+                Err(e) => return (ws, Outcome::UsageDetail(e)),
+            };
             let out = evaluate::open_eval(
                 &ws,
                 evaluate::Open {
@@ -646,6 +650,7 @@ fn dispatch(
                     subject_kind: ns.one("--subject-kind"),
                     subject_ref: ns.one("--subject-ref"),
                     actor: Some(actor),
+                    agents,
                 },
             );
             match out {
@@ -1297,10 +1302,13 @@ mod tests {
         eval_bench(|ws| {
             let c = Cli { root: ws.root.clone() };
             let (a, b, sha) = two_asks_and_work(ws);
-            let (code, out, _) = c.go(&["eval", "open"]);
+            let (code, out, _) =
+                c.go(&["eval", "open", "--agents", r#"{"drift":{"effort":"high"}}"#]);
             assert_eq!(code, 0);
             assert_eq!(out["subject"], "git_commit");
             assert!(out["brief_path"].as_str().unwrap().ends_with("brief.json"));
+            assert!(out["changes_patch"].as_str().unwrap().ends_with("changes.patch"));
+            assert_eq!(out["agents"], json!({"drift": {"effort": "high"}}));
             let eval_id = out["eval_id"].as_str().unwrap().to_string();
             let brief: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/brief.json"))).unwrap(),
