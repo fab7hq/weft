@@ -421,6 +421,26 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     if kind == "worktree" {
         limitations.push("subject is the uncommitted worktree".into());
     }
+    // What the harness saw the agent run, in order. Only a fact about this
+    // exact subject can say anything about the work being judged.
+    let since = anchor_time(ws, &anchor);
+    let facts: Vec<Value> = store::events(ws)?
+        .iter()
+        .filter(|e| e["type"] == "tool.fact")
+        .filter(|e| since.as_deref().is_none_or(|t| str_of(e, "time").as_str() >= t))
+        .map(|e| {
+            let about = &e["data"]["subject"];
+            json!({
+                "id": e["id"], "command": e["data"]["command"], "outcome": e["data"]["outcome"],
+                "time": e["time"],
+                "fresh": about["kind"] == subject["kind"] && about["sha256"] == subject["sha256"],
+            })
+        })
+        .collect();
+    if facts.is_empty() {
+        limitations
+            .push("no tool facts were recorded; the result of a command cannot be judged".into());
+    }
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
         "workspace": ws.describe(), "anchor": anchor, "subject": subject,
@@ -432,7 +452,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         })).collect::<Vec<_>>(),
         "changes": changes(ws, &anchor_ref, &subject)?,
         "unrecorded_prompts_before": before,
-        "previous_evals": previous, "limitations": limitations,
+        "previous_evals": previous, "facts": facts, "limitations": limitations,
     });
     let mut bytes = store::canonical(&brief);
     bytes.push(b'\n');
@@ -531,6 +551,11 @@ pub fn validate_intent(
             code,
             format!("items[{i}].status must be one of {}", tuple_of(&ITEM_STATUS)),
         )?;
+        need(
+            it.get("check").is_none_or(|c| c.as_str().is_some_and(|c| !c.trim().is_empty())),
+            code,
+            format!("items[{i}].check must name the command whose result the item is about"),
+        )?;
     }
     Ok(())
 }
@@ -542,6 +567,7 @@ pub fn validate_judgement(
     items: &[Value],
     where_: &str,
     changed_paths: &[String],
+    fact_ids: &[String],
 ) -> Result<(), EvalError> {
     let code = "eval.judgement";
     need(
@@ -581,6 +607,18 @@ pub fn validate_judgement(
             code,
             format!("{where_}.votes[{i}].vote must be one of {}", tuple_of(&VOTES)),
         )?;
+        need(
+            v.get("facts_cited").is_none_or(Value::is_array),
+            code,
+            format!("{where_}.votes[{i}].facts_cited must be a list"),
+        )?;
+        for id in array_of(v, "facts_cited").iter().map(str_of_value) {
+            need(
+                fact_ids.contains(&id),
+                "eval.fact_unknown",
+                format!("{where_}.votes[{i}] cites {id}, which is not a fact in this Eval's brief"),
+            )?;
+        }
         voted.insert(str_of(v, "item"));
     }
     let unvoted: Vec<String> = active.difference(&voted).cloned().collect();
@@ -615,19 +653,34 @@ pub fn validate_judgement(
     Ok(())
 }
 
+/// The facts a vote cites that describe the subject being judged.
+fn fresh_cited<'a>(vote: &Value, facts: &'a [Value]) -> impl Iterator<Item = &'a Value> {
+    let ids: Vec<String> = array_of(vote, "facts_cited").iter().map(str_of_value).collect();
+    facts.iter().filter(move |f| f["fresh"] == true && ids.contains(&str_of(f, "id")))
+}
+
 /// Whether a vote rests on something a reader can go and check.
 ///
 /// A command the judge ran or a basis note it recorded counts for every vote
-/// it cast; naming one of the changed paths counts for that vote alone.
-/// Anything else is an assertion.
-fn cited(judgement: &Value, vote: &Value, changed_paths: &[String]) -> bool {
+/// it cast; naming one of the changed paths, or citing a fact about this
+/// subject, counts for that vote alone. Anything else is an assertion.
+fn cited(judgement: &Value, vote: &Value, changed_paths: &[String], facts: &[Value]) -> bool {
     if !array_of(judgement, "commands_run").is_empty()
         || !array_of(judgement, "basis_notes").is_empty()
+        || fresh_cited(vote, facts).next().is_some()
     {
         return true;
     }
     let reason = str_of(vote, "reason");
     changed_paths.iter().any(|p| !p.is_empty() && reason.contains(p.as_str()))
+}
+
+/// A `yes` on an item about a command's result stands only on the harness's
+/// own record of that command succeeding on this subject — never on a judge
+/// saying it read or traced the code.
+fn backed_by_fact(vote: &Value, check: &str, facts: &[Value]) -> bool {
+    fresh_cited(vote, facts)
+        .any(|f| f["outcome"] == "succeeded" && str_of(f, "command").contains(check))
 }
 
 fn majority(values: &[String], tie: &str) -> (String, f64) {
@@ -642,7 +695,12 @@ fn majority(values: &[String], tie: &str) -> (String, f64) {
     (name, best as f64 / values.len() as f64)
 }
 
-fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) -> Value {
+fn aggregate(
+    items: &[Value],
+    judgements: &[Value],
+    changed_paths: &[String],
+    facts: &[Value],
+) -> Value {
     let active: Vec<&Value> = items.iter().filter(|it| str_of(it, "status") == "active").collect();
     let mut table: Vec<Value> = Vec::new();
     for it in &active {
@@ -653,11 +711,12 @@ fn aggregate(items: &[Value], judgements: &[Value], changed_paths: &[String]) ->
                 .find(|v| str_of(v, "item") == str_of(it, "id"))
                 .expect("every active item is voted on");
             let as_cast = str_of(cast, "vote");
-            let counted = if as_cast != "yes" || cited(j, cast, changed_paths) {
-                as_cast.clone()
-            } else {
-                "unknown".to_string()
+            let stands = match it.get("check").and_then(Value::as_str) {
+                Some(check) => backed_by_fact(cast, check, facts),
+                None => cited(j, cast, changed_paths, facts),
             };
+            let counted =
+                if as_cast != "yes" || stands { as_cast.clone() } else { "unknown".to_string() };
             let mut row = json!({
                 "angle": j["judge"]["angle"], "vote": as_cast,
                 "reason": cast.get("reason").cloned().unwrap_or_else(|| json!("")),
@@ -993,6 +1052,8 @@ pub fn close_eval(
     let changed_paths: Vec<String> =
         array_of(&brief["changes"], "files").iter().map(|f| str_of(f, "path")).collect();
     let items = array_of(intent, "items");
+    let facts = array_of(&brief, "facts");
+    let fact_ids: Vec<String> = facts.iter().map(|f| str_of(f, "id")).collect();
     for (n, j) in judgements.iter().enumerate() {
         validate_judgement(
             j,
@@ -1001,6 +1062,7 @@ pub fn close_eval(
             items,
             &format!("judgement[{}]", n + 1),
             &changed_paths,
+            &fact_ids,
         )?;
     }
     let subject = brief["subject"].clone();
@@ -1012,7 +1074,7 @@ pub fn close_eval(
         ),
         "RingFrame ran none of the project's commands; commands_run in a judgement is that judge's own report".to_string(),
     ];
-    let mut agg = aggregate(items, judgements, &changed_paths);
+    let mut agg = aggregate(items, judgements, &changed_paths, facts);
     if now_digest != str_of(&subject, "sha256") {
         agg["verdict"] = json!("incomplete");
         limitations.push("subject.changed: the subject changed between open and close".into());
@@ -2149,6 +2211,165 @@ mod tests {
                 store::events(ws).unwrap().iter().filter(|e| e["type"] == "tool.fact").count();
             assert_eq!(facts, 2);
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+        });
+    }
+
+    struct Facts {
+        eval_id: String,
+        brief_sha: String,
+        fresh: String,
+        stale: String,
+        a: String,
+    }
+
+    /// Work, an `npm test` that succeeded on it, then an edit and a second
+    /// `npm test` (of `outcome`) on the edited tree, then an open Eval.
+    fn with_facts(ws: &Workspace, outcome: &str) -> Facts {
+        let (a, _, _) = two_asks_and_work(ws);
+        let stale = record_fact(ws, "claude-code", &hook("PostToolUse", "Bash", "npm test"))
+            .unwrap()
+            .unwrap();
+        std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n").unwrap();
+        let hook_name = if outcome == "succeeded" { "PostToolUse" } else { "PostToolUseFailure" };
+        let fresh =
+            record_fact(ws, "claude-code", &hook(hook_name, "Bash", "npm test")).unwrap().unwrap();
+        let out = open_eval(ws, Open::default()).unwrap();
+        Facts {
+            eval_id: str_of(&out, "eval_id"),
+            brief_sha: str_of(&out["brief"], "sha256"),
+            fresh: str_of(&fresh, "id"),
+            stale: str_of(&stale, "id"),
+            a,
+        }
+    }
+
+    fn citing(brief_sha: &str, angle: &str, votes: &[(&str, &str)], facts: Value) -> Value {
+        let mut j = judgement(brief_sha, angle, votes);
+        j["votes"][0]["facts_cited"] = facts;
+        j
+    }
+
+    #[test]
+    fn the_brief_lists_each_fact_and_whether_it_describes_the_subject() {
+        eval_bench(|ws| {
+            let f = with_facts(ws, "failed");
+            let brief: Value = serde_json::from_slice(
+                &std::fs::read(ws.rf_dir().join(format!("evals/{}/brief.json", f.eval_id)))
+                    .unwrap(),
+            )
+            .unwrap();
+            let facts: Vec<(String, String, Value)> = array_of(&brief, "facts")
+                .iter()
+                .map(|x| (str_of(x, "id"), str_of(x, "outcome"), x["fresh"].clone()))
+                .collect();
+            assert_eq!(
+                facts,
+                [
+                    (f.stale.clone(), "succeeded".to_string(), json!(false)),
+                    (f.fresh.clone(), "failed".to_string(), json!(true)),
+                ]
+            );
+            assert_eq!(array_of(&brief, "facts")[0]["command"], "npm test");
+            assert!(array_of(&brief, "facts")[0]["time"].is_string());
+            let says = |b: &Value| {
+                array_of(b, "limitations").iter().any(|l| {
+                    str_of_value(l)
+                        == "no tool facts were recorded; the result of a command cannot be judged"
+                })
+            };
+            assert!(!says(&brief));
+        });
+        eval_bench(|ws| {
+            let o = opened(ws);
+            assert!(array_of(&brief_of(ws, &o.out), "limitations").iter().any(|l| str_of_value(l)
+                == "no tool facts were recorded; the result of a command cannot be judged"));
+            assert_eq!(brief_of(ws, &o.out)["facts"], json!([]));
+        });
+    }
+
+    #[test]
+    fn a_command_obligation_is_met_only_by_a_fresh_succeeded_fact_for_it() {
+        eval_bench(|ws| {
+            let f = with_facts(ws, "succeeded");
+            let items = json!([
+                {"id": "i1", "text": "npm test passes", "ask_id": f.a, "status": "active",
+                 "check": "npm test"},
+                {"id": "i2", "text": "cargo test passes", "ask_id": f.a, "status": "active",
+                 "check": "cargo test"},
+                {"id": "i3", "text": "Expose an uptime endpoint", "ask_id": f.a, "status": "active"},
+            ]);
+            let votes = [("i1", "yes"), ("i2", "yes"), ("i3", "yes")];
+            let mut coverage = citing(&f.brief_sha, "coverage", &votes, json!([f.fresh]));
+            coverage["votes"][1]["facts_cited"] = json!([f.fresh]);
+            let js = vec![
+                coverage,
+                citing(&f.brief_sha, "drift", &votes, json!([f.stale])),
+                citing(&f.brief_sha, "adversary", &votes, json!([])),
+            ];
+            let rec = close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items), &js).unwrap();
+            let counted = |n: usize| -> Vec<String> {
+                array_of(&array_of(&rec, "items")[n], "votes")
+                    .iter()
+                    .map(|v| str_of(v, "counted_as"))
+                    .collect()
+            };
+            assert_eq!(
+                counted(0),
+                ["yes", "unknown", "unknown"],
+                "fresh counts; stale and uncited do not"
+            );
+            assert_eq!(counted(1), ["unknown", "unknown", "unknown"], "a fact for another command");
+            assert_eq!(
+                counted(2),
+                ["yes", "yes", "yes"],
+                "an item without a check keeps today's rule"
+            );
+            assert_eq!(array_of(&rec, "items")[0]["votes"][1]["uncited"], true);
+        });
+    }
+
+    #[test]
+    fn a_failed_fact_supports_a_no_and_a_no_is_never_downgraded() {
+        eval_bench(|ws| {
+            let f = with_facts(ws, "failed");
+            let items = json!([{"id": "i1", "text": "npm test passes", "ask_id": f.a,
+                                "status": "active", "check": "npm test"}]);
+            let js = vec![
+                citing(&f.brief_sha, "coverage", &[("i1", "no")], json!([f.fresh])),
+                citing(&f.brief_sha, "drift", &[("i1", "no")], json!([])),
+                citing(&f.brief_sha, "adversary", &[("i1", "yes")], json!([f.fresh])),
+            ];
+            let rec = close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items), &js).unwrap();
+            let item = &array_of(&rec, "items")[0];
+            let counted: Vec<String> =
+                array_of(item, "votes").iter().map(|v| str_of(v, "counted_as")).collect();
+            assert_eq!(counted, ["no", "no", "unknown"]);
+            assert_eq!(item["majority"], "no");
+        });
+    }
+
+    #[test]
+    fn a_cited_fact_must_be_in_the_brief_and_a_check_must_name_a_command() {
+        eval_bench(|ws| {
+            let f = with_facts(ws, "succeeded");
+            let items = json!([{"id": "i1", "text": "npm test passes", "ask_id": f.a,
+                                "status": "active", "check": "npm test"}]);
+            let good: Vec<Value> = angles()
+                .iter()
+                .map(|a| citing(&f.brief_sha, a, &[("i1", "yes")], json!([f.fresh])))
+                .collect();
+            let mut bad = good.clone();
+            bad[2]["votes"][0]["facts_cited"] = json!(["fct_nowhere"]);
+            refused(
+                close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items.clone()), &bad).unwrap_err(),
+                "eval.fact_unknown",
+            );
+            let mut blank = items;
+            blank[0]["check"] = json!("");
+            refused(
+                close(ws, &f.eval_id, &intent_doc(&f.brief_sha, blank), &good).unwrap_err(),
+                "eval.intent",
+            );
         });
     }
 
