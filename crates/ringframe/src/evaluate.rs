@@ -1131,6 +1131,42 @@ pub fn render_eval_md(record: &Value, brief: &Value) -> String {
 }
 
 /// Validate the intent and the judgements, aggregate, append `eval.completed`.
+/// Publish the change map a context agent wrote, so a debate in any harness
+/// reads it by Eval id.
+pub fn gather(
+    ws: &Workspace,
+    eval_id: &str,
+    map: &[u8],
+    host: &str,
+    actor: Option<&Value>,
+) -> Result<Value, EvalError> {
+    let events = store::events(ws)?;
+    let has = |t: &str| events.iter().any(|e| e["type"] == t && str_of(e, "id") == eval_id);
+    need(
+        has("eval.opened") && !has("eval.completed"),
+        "eval.not_open",
+        format!("{eval_id} is not an open Eval"),
+    )?;
+    need(
+        !has("eval.gathered"),
+        "eval.already_gathered",
+        format!("{eval_id} already has a change map"),
+    )?;
+    need(
+        std::str::from_utf8(map).is_ok_and(|t| !t.trim().is_empty()),
+        "eval.context",
+        "the change map must be non-empty UTF-8",
+    )?;
+    let context_map =
+        store::publish(ws, &format!("evals/{eval_id}/context.md"), map, "context_map")?;
+    let data = json!({"eval_id": eval_id, "context_map": context_map, "host": host});
+    store::append(ws, &event("eval.gathered", eval_id, actor, data, Vec::new())?)?;
+    Ok(json!({
+        "eval_id": eval_id,
+        "context_map": ws.rf_dir().join(str_of(&context_map, "path")).to_string_lossy(),
+    }))
+}
+
 pub fn close_eval(
     ws: &Workspace,
     eval_id: &str,
@@ -1227,6 +1263,9 @@ pub fn close_eval(
         )?);
     }
     let previous = previous_record(ws, eval_id, &ask_ids)?;
+    let gathered = store::events(ws)?
+        .into_iter()
+        .find(|e| e["type"] == "eval.gathered" && str_of(e, "id") == eval_id);
     let mut subject_at_close = subject.clone();
     subject_at_close["sha256_at_close"] = json!(now_digest);
     let record = json!({
@@ -1245,6 +1284,10 @@ pub fn close_eval(
         "follows": previous.as_ref().map_or(Value::Null, |p| p["eval_id"].clone()),
         "delta": delta(&agg, previous.as_ref()), "limitations": limitations,
     });
+    let mut record = record;
+    if let Some(g) = gathered {
+        record["context_map"] = g["data"]["context_map"].clone();
+    }
     let mut bytes = store::canonical(&record);
     bytes.push(b'\n');
     let reference =
@@ -2574,6 +2617,57 @@ mod tests {
             assert!(text.contains("b/a.txt") && !text.contains("b/b.txt"), "cut before b.txt");
             assert!(array_of(&brief_of(ws, &out), "limitations").iter().any(|l| str_of_value(l)
                 == "the patch is cut at 1 MiB; read the remaining paths with git"));
+        });
+    }
+
+    /// A close over every changed path, all yes: enough to finish an Eval.
+    fn close_all_yes(ws: &Workspace, o: &crate::testing::Opened) -> Result<Value, EvalError> {
+        let js: Vec<Value> = angles()
+            .iter()
+            .map(|a| judgement_over(&o.brief_sha, a, &[("i1", "yes")], &[], &CHANGED))
+            .collect();
+        close(
+            ws,
+            str_of(&o.out, "eval_id").as_str(),
+            &intent_doc(&o.brief_sha, one_item(&o.a)),
+            &js,
+        )
+    }
+
+    #[test]
+    fn a_change_map_is_published_once_for_an_open_eval_and_carried_into_the_record() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let eid = str_of(&o.out, "eval_id");
+            let out =
+                gather(ws, &eid, b"## src/uptime.js\nAdds uptime().\n", "codex", None).unwrap();
+            assert_eq!(out["eval_id"], eid.as_str());
+            let map = ws.rf_dir().join(format!("evals/{eid}/context.md"));
+            assert_eq!(std::fs::read(&map).unwrap(), b"## src/uptime.js\nAdds uptime().\n");
+            let ev = store::events(ws)
+                .unwrap()
+                .into_iter()
+                .find(|e| e["type"] == "eval.gathered")
+                .unwrap();
+            assert_eq!(ev["data"]["eval_id"], eid.as_str());
+            assert_eq!(ev["data"]["host"], "codex");
+            assert_eq!(ev["data"]["context_map"]["role"], "context_map");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+            refused(
+                gather(ws, &eid, b"again", "codex", None).unwrap_err(),
+                "eval.already_gathered",
+            );
+            let rec = close_all_yes(ws, &o).unwrap();
+            assert_eq!(rec["context_map"], ev["data"]["context_map"]);
+            refused(gather(ws, "evl_nowhere", b"m", "codex", None).unwrap_err(), "eval.not_open");
+        });
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let eid = str_of(&o.out, "eval_id");
+            refused(gather(ws, &eid, b"  \n", "codex", None).unwrap_err(), "eval.context");
+            let rec = close_all_yes(ws, &o).unwrap();
+            assert!(rec.get("context_map").is_none(), "no map, no ref");
+            refused(gather(ws, &eid, b"late", "codex", None).unwrap_err(), "eval.not_open");
         });
     }
 

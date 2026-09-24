@@ -93,6 +93,9 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             false,
             &["--judgement"],
         ),
+        ("eval", Some("context")) => {
+            s(&["--eval", "--map", "--host"], NONE, &["--eval", "--map", "--host"], false, NONE)
+        }
         ("eval", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("seal", Some("create")) => {
             s(&["--disposition", "--eval", "--note"], NONE, &["--disposition"], false, NONE)
@@ -117,7 +120,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 24] = [
+const SURFACE: [(&str, Option<&str>); 25] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -131,6 +134,7 @@ const SURFACE: [(&str, Option<&str>); 24] = [
     ("ask", Some("list")),
     ("ask", Some("preflight")),
     ("eval", Some("open")),
+    ("eval", Some("context")),
     ("eval", Some("close")),
     ("eval", Some("list")),
     ("seal", Some("create")),
@@ -168,6 +172,9 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("ask", Some("list")) => "every compiled Ask, oldest first",
         ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
         ("eval", Some("open")) => "write the facts-only brief over every open Ask",
+        ("eval", Some("context")) => {
+            "publish the change map (--map @file) for an open Eval, so a debate in any harness reads it"
+        }
         ("eval", Some("close")) => "aggregate the intent and the judgements into a verdict",
         ("eval", Some("list")) => "every Eval, opened or completed",
         ("seal", Some("create")) => "record the decision that closes the open Asks",
@@ -652,6 +659,27 @@ fn dispatch(
                     actor: Some(actor),
                     agents,
                 },
+            );
+            match out {
+                Ok(v) => (ws, Outcome::Ok(0, v)),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("context")) => {
+            let raw = ns.one("--map").unwrap_or_default();
+            let map = match raw.strip_prefix('@') {
+                Some(path) => match std::fs::read(path) {
+                    Ok(b) => b,
+                    Err(e) => bail!(Outcome::UsageDetail(format!("{path}: {e}"))),
+                },
+                None => raw.as_bytes().to_vec(),
+            };
+            let out = evaluate::gather(
+                &ws,
+                ns.one("--eval").unwrap_or_default(),
+                &map,
+                ns.one("--host").unwrap_or_default(),
+                Some(&actor),
             );
             match out {
                 Ok(v) => (ws, Outcome::Ok(0, v)),
@@ -1310,6 +1338,17 @@ mod tests {
             assert!(out["changes_patch"].as_str().unwrap().ends_with("changes.patch"));
             assert_eq!(out["agents"], json!({"drift": {"effort": "high"}}));
             let eval_id = out["eval_id"].as_str().unwrap().to_string();
+            let map = ws.root.join("map.md");
+            std::fs::write(&map, "## src/uptime.js\nAdds uptime().\n").unwrap();
+            let at = format!("@{}", map.to_string_lossy());
+            let context = ["eval", "context", "--eval", &eval_id, "--map", &at, "--host", "codex"];
+            let (code, gathered, _) = c.go(&context);
+            assert_eq!(code, 0);
+            assert!(gathered["context_map"].as_str().unwrap().ends_with("context.md"));
+            let (code, again, _) = c.go(&context);
+            assert_ne!(code, 0);
+            assert_eq!(again["error"], "eval.already_gathered");
+            std::fs::remove_file(&map).unwrap();
             let brief: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/brief.json"))).unwrap(),
             )

@@ -101,6 +101,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
             ]);
         }
         "eval.opened" => return Some(vec!["brief", "basis", "anchor", "subject"]),
+        "eval.gathered" => return Some(vec!["eval_id", "context_map", "host"]),
         "tool.fact" => return Some(vec!["command", "outcome", "subject", "host", "session_ref"]),
         "eval.completed" => {
             return Some(vec![
@@ -134,7 +135,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
 
 /// Every event type the record can hold. A type with no required-key list is
 /// not a type this release writes or reads.
-pub const EVENT_TYPES: [&str; 11] = [
+pub const EVENT_TYPES: [&str; 12] = [
     "ask.compiled",
     "ask.confirmed",
     "ask.cancelled",
@@ -142,6 +143,7 @@ pub const EVENT_TYPES: [&str; 11] = [
     "ask.submission",
     "ask.delivery",
     "eval.opened",
+    "eval.gathered",
     "eval.completed",
     "seal.created",
     "seal.refused",
@@ -272,6 +274,7 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
             }
         }
         "eval.opened" => check_ref("data.brief", &data["brief"])?,
+        "eval.gathered" => check_ref("data.context_map", &data["context_map"])?,
         "tool.fact" => check_enum("data.outcome", "fact.outcome", &data["outcome"])?,
         "eval.completed" => {
             check_enum("data.verdict", "data.verdict", &data["verdict"])?;

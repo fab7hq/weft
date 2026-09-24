@@ -165,6 +165,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
             }
         }
         ("eval", Some("open")) => eval_open(d),
+        ("eval", Some("context")) => pick(d, &["eval_id", "context_map"]),
         ("eval", Some("close")) => eval_close(d),
         ("seal", Some("create")) => seal_view(d),
         ("sessions", Some("capture")) => capture(d),
