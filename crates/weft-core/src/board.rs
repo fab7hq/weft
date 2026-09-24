@@ -142,6 +142,22 @@ impl Board<'_> {
     /// `Send` is not routed. It is the delivery of an Ask already compiled, so
     /// it follows that Ask's own record rather than a preference.
     pub fn deciding_harness(&self, act: Act) -> Option<String> {
+        // An Eval routed per stage goes where its next stage runs.
+        if act == Act::Eval
+            && let Some(stages) = &self.routing.eval_stages
+        {
+            let fallback = self
+                .selected_unit()
+                .map(|u| u.harness.clone())
+                .or_else(|| self.panes.get(self.focused).map(|p| p.harness.clone()))?;
+            let (gather, debate) = crate::eval_stages::resolve(
+                &crate::eval_stages::Tiers::default(),
+                Some(stages),
+                &fallback,
+            );
+            let gathered = self.selected_unit().is_some_and(|u| u.gathered.is_some());
+            return Some(if gathered { debate.harness } else { gather.harness });
+        }
         if let Some(routed) = Self::act_key(act).and_then(|k| self.routing.get(k)) {
             return Some(routed.to_string());
         }
@@ -347,6 +363,22 @@ mod tests {
         assert!(said.contains("claude-code"), "{said}");
         // Seal was not routed, so it still follows the work.
         assert_eq!(b.deciding_harness(Act::Seal).as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn an_eval_routed_per_stage_is_about_the_harness_its_next_stage_runs_in() {
+        let mut units = [unit("claude-code", Sent::TakenByAgent)];
+        let panes = [pane("claude-code")];
+        let routing = crate::routing::read(
+            r#"{"/p": {"eval": {"gather": {"harness": "codex"}, "debate": {"harness": "claude-code"}}}}"#,
+            std::path::Path::new("/p"),
+        );
+        let b = board(&units, &panes, READY, &routing);
+        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("codex"));
+        units[0].gathered =
+            Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "codex".into() });
+        let b = board(&units, &panes, READY, &routing);
+        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
     }
 
     #[test]

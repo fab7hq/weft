@@ -38,6 +38,7 @@ impl Routing {
         acts: serde_json::Value,
         unknown: serde_json::Value,
         ignored: serde_json::Value,
+        eval_stages: serde_json::Value,
     ) -> Self {
         let by_act = acts
             .as_object()
@@ -50,7 +51,8 @@ impl Routing {
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
                 .unwrap_or_default()
         };
-        Routing { by_act, unknown: names(unknown), ignored: names(ignored), eval_stages: None }
+        let eval_stages = eval_stages.is_object().then_some(eval_stages);
+        Routing { by_act, unknown: names(unknown), ignored: names(ignored), eval_stages }
     }
 
     /// The harness this act goes to, if the project named one.

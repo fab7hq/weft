@@ -237,6 +237,7 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
             .collect::<serde_json::Map<_, _>>(),
         "unknown": routing.unknown,
         "ignored": routing.ignored,
+        "eval_stages": routing.eval_stages,
     })
 }
 

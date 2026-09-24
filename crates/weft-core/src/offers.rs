@@ -230,9 +230,19 @@ pub fn detail_headline(unit: &crate::ledger::Unit) -> String {
     format!(
         "{dot}ASK {}   EVAL {}   SEAL {}",
         act_state(true),
-        act_state(unit.check.is_some()),
+        eval_state(unit),
         act_state(unit.sealed.is_some())
     )
+}
+
+/// An Eval in two stages has a state between the two: its change map is
+/// published and its debate has not run.
+fn eval_state(unit: &crate::ledger::Unit) -> &'static str {
+    if unit.check.is_none() && unit.gathered.is_some() {
+        "[GATHERED]"
+    } else {
+        act_state(unit.check.is_some())
+    }
 }
 
 /// One pair of words for every act, in the headline and on its section, so a
@@ -253,6 +263,7 @@ pub fn detail_read(
     prompt: Option<&str>,
     record: Option<&crate::record::Record>,
     seal: Option<&serde_json::Value>,
+    debate_in: Option<&str>,
 ) -> Vec<String> {
     let mut out = vec![detail_headline(unit), format!("  {}", provenance(unit)), String::new()];
 
@@ -278,7 +289,17 @@ pub fn detail_read(
                 None => out.push("  that check's record is not on disk".into()),
             }
         }
-        None => out.push(format!("EVAL {}", act_state(false))),
+        None => match &unit.gathered {
+            Some(g) => {
+                out.push(format!("EVAL {}", eval_state(unit)));
+                out.push(format!("  change map by {}", g.by));
+                out.push(format!(
+                    "  [E]VAL  debate in {}",
+                    debate_in.unwrap_or("the routed harness")
+                ));
+            }
+            None => out.push(format!("EVAL {}", act_state(false))),
+        },
     }
 
     out.push(String::new());
@@ -338,6 +359,19 @@ mod tests {
             seal_id: Some("sel_1".into()),
             sealed_at: Some("2026-09-19T16:40:00Z".into()),
         }
+    }
+
+    #[test]
+    fn a_gathered_eval_says_who_mapped_it_and_where_the_debate_goes() {
+        let mut u = sealed("accepted");
+        u.sealed = None;
+        u.seal_id = None;
+        u.gathered = Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "codex".into() });
+        let lines = super::detail_read(&u, None, None, None, Some("claude-code"));
+        assert!(lines[0].contains("EVAL [GATHERED]"), "{lines:?}");
+        let at = lines.iter().position(|l| l == "EVAL [GATHERED]").expect("the section");
+        assert_eq!(lines[at + 1], "  change map by codex");
+        assert_eq!(lines[at + 2], "  [E]VAL  debate in claude-code");
     }
 
     #[test]

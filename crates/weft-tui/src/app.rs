@@ -876,6 +876,7 @@ impl App {
                 prompt.as_deref(),
                 record.as_ref(),
                 seal.as_ref(),
+                self.deciding_harness(Act::Eval).as_deref(),
             ),
             title: unit.title.clone(),
             harness: unit.harness.clone(),

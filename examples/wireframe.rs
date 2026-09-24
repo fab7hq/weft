@@ -27,6 +27,7 @@ fn main() {
     show("Screen 5 — the detail view", 120, 32, &[KeyCode::Enter], true);
     show("Screen 6 — ask", 120, 32, &[KeyCode::Char('a')], true);
     follow_up("Screen 6b — follow up", 120, 32);
+    gathered("Screen 5b — an Eval gathered, its debate next", 120, 32);
     show("Screen 7 — before Weft types", 80, 24, &[KeyCode::Char('e')], true);
     show("Screen 8 — the Weft menu", 80, 24, &[KeyCode::Char('w')], true);
     show("Screen 9 — quit", 80, 24, &[KeyCode::Char('x')], true);
@@ -68,6 +69,22 @@ fn follow_up(name: &str, width: u16, height: u16) {
         }),
     });
     draw_it(name, width, height, &[], &mut app);
+}
+
+/// An Eval split across harnesses, after its first stage: Codex mapped the
+/// change, and the debate goes to Claude Code.
+fn gathered(name: &str, width: u16, height: u16) {
+    let mut app = fixture(name, true);
+    let mut units = units();
+    units[0].check = None;
+    units[0].gathered =
+        Some(weft::ledger::Gathered { eval_id: "evl_2".into(), by: "codex".into() });
+    app.set_units(units);
+    app.set_routing(weft::routing::read(
+        r#"{"/p": {"eval": {"gather": {"harness": "codex"}, "debate": {"harness": "claude-code"}}}}"#,
+        Path::new("/p"),
+    ));
+    draw_it(name, width, height, &[KeyCode::Enter], &mut app);
 }
 
 /// The same screens with the agent not set up for RingFrame.
@@ -190,6 +207,7 @@ fn units() -> Vec<Unit> {
         confirmed: true,
         sent,
         check: None,
+        gathered: None,
         sealed: None,
         seal_id: None,
         sealed_at: None,
