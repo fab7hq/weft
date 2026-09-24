@@ -1172,8 +1172,11 @@ pub fn close_eval(
     eval_id: &str,
     intent: &Value,
     judgements: &[Value],
+    agents: Option<&Value>,
     actor: Option<&Value>,
 ) -> Result<Value, EvalError> {
+    let agents = agents.cloned().unwrap_or_else(|| json!({}));
+    validate_agents(&agents)?;
     let brief_path = ws.rf_dir().join(format!("evals/{eval_id}/brief.json"));
     let opened =
         store::events(ws)?.iter().any(|e| e["type"] == "eval.opened" && str_of(e, "id") == eval_id);
@@ -1225,6 +1228,18 @@ pub fn close_eval(
         ),
         "RingFrame ran none of the project's commands; commands_run in a judgement is that judge's own report".to_string(),
     ];
+    // The harness owns the fallback; the record says where a judge ran on
+    // something other than what its role asked for.
+    let judges = std::iter::once(&intent["judge"]).chain(judgements.iter().map(|j| &j["judge"]));
+    for judge in judges {
+        let angle = str_of(judge, "angle");
+        let asked = str_of(&agents[angle.as_str()], "model");
+        let reported = str_of(judge, "model");
+        if !asked.is_empty() && !reported.to_lowercase().contains(&asked.to_lowercase()) {
+            limitations
+                .push(format!("the {angle} judge reported {reported}; its role asked for {asked}"));
+        }
+    }
     let mut agg = aggregate(items, judgements, &changed_paths, facts);
     if now_digest != str_of(&subject, "sha256") {
         agg["verdict"] = json!("incomplete");
@@ -1283,6 +1298,7 @@ pub fn close_eval(
         "items": agg["items"], "drift": agg["drift"],
         "follows": previous.as_ref().map_or(Value::Null, |p| p["eval_id"].clone()),
         "delta": delta(&agg, previous.as_ref()), "limitations": limitations,
+        "agents": agents,
     });
     let mut record = record;
     if let Some(g) = gathered {
@@ -1395,7 +1411,7 @@ mod tests {
         intent: &Value,
         js: &[Value],
     ) -> Result<Value, EvalError> {
-        close_eval(ws, eval_id, intent, js, None)
+        close_eval(ws, eval_id, intent, js, None, None)
     }
 
     fn angles() -> [&'static str; 3] {
@@ -2668,6 +2684,48 @@ mod tests {
             let rec = close_all_yes(ws, &o).unwrap();
             assert!(rec.get("context_map").is_none(), "no map, no ref");
             refused(gather(ws, &eid, b"late", "codex", None).unwrap_err(), "eval.not_open");
+        });
+    }
+
+    #[test]
+    fn close_records_the_debate_agents_and_says_where_a_judge_ran_on_another_model() {
+        let says = |rec: &Value| -> Vec<String> {
+            array_of(rec, "limitations")
+                .iter()
+                .map(str_of_value)
+                .filter(|l| l.contains("its role asked for"))
+                .collect()
+        };
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let js: Vec<Value> = angles()
+                .iter()
+                .map(|a| judgement_over(&o.brief_sha, a, &[("i1", "yes")], &[], &CHANGED))
+                .collect();
+            let asked = json!({"intent": {"model": "claude-opus-5-5", "effort": "high"},
+                               "coverage": {"model": "CLAUDE-SONNET-5"},
+                               "adversary": {"model": "claude-opus-5-5"}, "drift": {"effort": "high"}});
+            let intent = intent_doc(&o.brief_sha, one_item(&o.a));
+            let eid = str_of(&o.out, "eval_id");
+            let bad = json!({"judge": {"model": "m"}});
+            refused(
+                close_eval(ws, &eid, &intent, &js, Some(&bad), None).unwrap_err(),
+                "eval.agents",
+            );
+            let rec = close_eval(ws, &eid, &intent, &js, Some(&asked), None).unwrap();
+            assert_eq!(rec["agents"], asked);
+            assert_eq!(
+                says(&rec),
+                [
+                    "the intent judge reported claude-sonnet-5; its role asked for claude-opus-5-5",
+                    "the adversary judge reported claude-sonnet-5; its role asked for claude-opus-5-5",
+                ]
+            );
+        });
+        eval_bench(|ws| {
+            let rec = close_all_yes(ws, &opened(ws)).unwrap();
+            assert_eq!(rec["agents"], json!({}));
+            assert!(says(&rec).is_empty());
         });
     }
 

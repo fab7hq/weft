@@ -87,7 +87,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             s(&["--anchor", "--subject-kind", "--subject-ref", "--agents"], NONE, NONE, false, NONE)
         }
         ("eval", Some("close")) => s(
-            &["--eval", "--intent", "--judgement"],
+            &["--eval", "--intent", "--judgement", "--agents"],
             NONE,
             &["--eval", "--intent", "--judgement"],
             false,
@@ -695,11 +695,16 @@ fn dispatch(
                     Err(e) => bail!(Outcome::UsageDetail(e)),
                 }
             }
+            let agents = match ns.one("--agents").map(json_arg).transpose() {
+                Ok(v) => v,
+                Err(e) => bail!(Outcome::UsageDetail(e)),
+            };
             let out = evaluate::close_eval(
                 &ws,
                 ns.one("--eval").unwrap_or_default(),
                 &intent,
                 &judgements,
+                agents.as_ref(),
                 Some(&actor),
             );
             match out {
@@ -1399,10 +1404,19 @@ mod tests {
             assert_eq!(code, 2);
             assert_eq!(out["error"], "eval.too_few_judges");
 
-            let all: Vec<&str> =
-                base.iter().copied().chain(judgement_args.iter().map(String::as_str)).collect();
+            let all: Vec<&str> = base
+                .iter()
+                .copied()
+                .chain(judgement_args.iter().map(String::as_str))
+                .chain(["--agents", r#"{"drift":{"effort":"high"}}"#])
+                .collect();
             let (code, rec, _) = c.go(&all);
             assert_eq!(code, 0);
+            let record: Value = serde_json::from_slice(
+                &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/record.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(record["agents"], json!({"drift": {"effort": "high"}}));
             assert_eq!(rec["verdict"], "drifted");
             assert_eq!(rec["confidence"], 1.0);
             assert_eq!(rec["drift"]["commission"][0]["path"], "docs/notes.md");

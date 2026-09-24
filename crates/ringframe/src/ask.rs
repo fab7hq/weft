@@ -1348,7 +1348,7 @@ mod tests {
             .map(|a| crate::testing::judgement(&o.brief_sha, a, &[("i1", "no")]))
             .collect();
         let intent = crate::testing::intent_doc(&o.brief_sha, items);
-        crate::evaluate::close_eval(ws, &eval_id, &intent, &js, None).unwrap();
+        crate::evaluate::close_eval(ws, &eval_id, &intent, &js, None, None).unwrap();
         eval_id
     }
 

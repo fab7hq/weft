@@ -319,6 +319,7 @@ mod tests {
             &intent_doc(&o.brief_sha, items),
             &js,
             None,
+            None,
         )
         .unwrap();
         (o.a, o.b, rec)
