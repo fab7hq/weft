@@ -76,6 +76,8 @@ struct Project {
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
     routing: weft_core::routing::Routing,
+    /// The `--override` every `/rf:` command carries here, if any.
+    ringframe: Option<String>,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
     folds: crate::acts::Folds,
 }
@@ -436,7 +438,9 @@ impl Session {
                     };
                     text = format!("[follow-up {}] {text}", weft_core::board::follow_up_of(unit));
                 }
-                let built = crate::acts::ask(&root, &harness, &text, &mut self.projects[at].folds);
+                let project = &mut self.projects[at];
+                let over = project.ringframe.as_deref();
+                let built = crate::acts::ask(&root, &harness, &text, over, &mut project.folds);
                 (built, pane)
             }
             "send" => {
@@ -475,13 +479,15 @@ impl Session {
                 let Some(pane) = self.pane_of(at, &into) else {
                     return Answer::No("no_pane", format!("no {into} pane is open here"));
                 };
+                let project = &mut self.projects[at];
                 let built = crate::acts::skill(
                     &root,
                     skill,
                     &into,
                     &unit.harness,
                     &args,
-                    &mut self.projects[at].folds,
+                    project.ringframe.as_deref(),
+                    &mut project.folds,
                 );
                 (built, pane)
             }
@@ -648,6 +654,7 @@ impl Session {
                 let config = crate::routing::read_at(&crate::routing::file());
                 self.projects.push(Project {
                     routing: config.routing(&root),
+                    ringframe: config.ringframe_override(&root),
                     root,
                     panes: Vec::new(),
                     ledger,

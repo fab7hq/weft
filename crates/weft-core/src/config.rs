@@ -195,6 +195,23 @@ impl Config {
             eval_stages: (!eval.is_empty()).then_some(Value::Object(eval)),
         }
     }
+
+    /// The `--override` value every `/rf:` command carries here, or `None`
+    /// when neither layer overrides anything: the machine's `[ringframe]`,
+    /// then the project's, each as it stands. A `'` is written as JSON's
+    /// `\u0027`, so the value is always one single-quoted shell word.
+    pub fn ringframe_override(&self, root: &Path) -> Option<String> {
+        let project = self.project(root).map(|p| &p.ringframe);
+        let layers: Vec<Value> =
+            [("weft", Some(&self.machine.ringframe)), ("weft-project", project)]
+                .into_iter()
+                .filter_map(|(name, r)| {
+                    r.filter(|r| !r.is_empty())
+                        .map(|r| serde_json::json!({"layer": name, "ringframe": r}))
+                })
+                .collect();
+        (!layers.is_empty()).then(|| Value::Array(layers).to_string().replace('\'', "\\u0027"))
+    }
 }
 
 /// `over`'s keys over `base`'s, table by table.
@@ -223,6 +240,7 @@ mod tests {
     #[test]
     fn the_starting_file_sets_nothing() {
         assert_eq!(read(STARTING), Config::default());
+        assert_eq!(read(STARTING).ringframe_override(Path::new(HERE)), None);
     }
 
     #[test]
@@ -330,6 +348,37 @@ eval = "cursor"
         for text in ["", "not toml", "routing = \"codex\"", "[[routing]]\nask = \"codex\"\n"] {
             let c = read(text);
             assert!(c.routing(Path::new(HERE)).is_empty(), "{text:?}");
+            assert_eq!(c.ringframe_override(Path::new(HERE)), None, "{text:?}");
         }
+    }
+
+    const KISS: &str = r#"
+[ringframe.deltas."practices/software-development"]
+entries = [{ id = "practice.kiss", text = "Keep it plain." }]
+"#;
+    const MINE: &str = r#"
+[projects."/work/thing".ringframe.deltas.codex]
+entries = [{ id = "codex.native_plan.hand_back", status = "qualified" }]
+"#;
+
+    #[test]
+    fn the_override_is_the_machine_layer_then_the_project_layer_byte_for_byte() {
+        let machine = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"entries":[{"id":"practice.kiss","text":"Keep it plain."}]}}}}]"#;
+        let project = r#"[{"layer":"weft-project","ringframe":{"deltas":{"codex":{"entries":[{"id":"codex.native_plan.hand_back","status":"qualified"}]}}}}]"#;
+        let here = Path::new(HERE);
+        assert_eq!(read(KISS).ringframe_override(here).as_deref(), Some(machine));
+        assert_eq!(read(MINE).ringframe_override(here).as_deref(), Some(project));
+        let both = format!("{},{}", &machine[..machine.len() - 1], &project[1..]);
+        assert_eq!(read(&format!("{KISS}{MINE}")).ringframe_override(here), Some(both));
+        assert_eq!(read(MINE).ringframe_override(Path::new("/work/other")), None);
+    }
+
+    #[test]
+    fn a_quote_in_an_override_cannot_end_the_shell_word() {
+        let c = read("[ringframe.deltas.codex]\nwhy = \"it's\"\n");
+        let typed = c.ringframe_override(Path::new(HERE)).unwrap();
+        assert!(!typed.contains('\''), "{typed}");
+        let back: Value = serde_json::from_str(&typed).unwrap();
+        assert_eq!(back[0]["ringframe"]["deltas"]["codex"]["why"], "it's");
     }
 }

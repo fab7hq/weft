@@ -51,10 +51,11 @@ pub fn skill(
     into: &str,
     worked_in: &str,
     args: &str,
+    over: Option<&str>,
     folds: &mut Folds,
 ) -> Built {
     let command = ringframe::skill_command(&folds.prefix(root, into), skill);
-    let payload = format!("{command}{args}").into_bytes();
+    let payload = typed(&command, over, args);
     Built {
         how: folds.how(root, into, &payload, &command),
         asking: weft_core::offers::running(skill, &command, into, worked_in),
@@ -65,9 +66,9 @@ pub fn skill(
 }
 
 /// Ask for something new, in the harness the person is asking in.
-pub fn ask(root: &Path, harness: &str, text: &str, folds: &mut Folds) -> Built {
+pub fn ask(root: &Path, harness: &str, text: &str, over: Option<&str>, folds: &mut Folds) -> Built {
     let command = ringframe::skill_command(&folds.prefix(root, harness), "ask");
-    let payload = format!("{command}{text}").into_bytes();
+    let payload = typed(&command, over, text);
     Built {
         how: folds.how(root, harness, &payload, &command),
         asking: weft_core::offers::asking(&command, harness),
@@ -75,6 +76,17 @@ pub fn ask(root: &Path, harness: &str, text: &str, folds: &mut Folds) -> Built {
         confirm_first: false,
         ask_id: None,
     }
+}
+
+/// The skill, then RingFrame's overrides when there are any, then its words.
+/// The overrides are one single-quoted shell word, which the skill passes on
+/// unchanged to every `ringframe` command it runs.
+fn typed(command: &str, over: Option<&str>, words: &str) -> Vec<u8> {
+    match over {
+        Some(over) => format!("{command}--override '{over}' {words}"),
+        None => format!("{command}{words}"),
+    }
+    .into_bytes()
 }
 
 /// What each harness answers about itself, asked once and kept.
@@ -131,7 +143,7 @@ mod tests {
         folds.at.insert("codex".into(), None);
         let root = Path::new("/nowhere");
         let sent = |into: &str, args: &str, folds: &mut Folds| {
-            String::from_utf8(skill(root, "eval", into, "claude-code", args, folds).payload)
+            String::from_utf8(skill(root, "eval", into, "claude-code", args, None, folds).payload)
                 .unwrap()
         };
         assert_eq!(
@@ -143,5 +155,36 @@ mod tests {
             "/rf:eval debate evl_1 drift=/high"
         );
         assert_eq!(sent("claude-code", "", &mut folds), "/rf:eval ");
+    }
+
+    #[test]
+    fn every_rf_command_carries_the_override_right_after_the_skill() {
+        let mut folds = Folds::default();
+        folds.prefixes.insert("claude-code".into(), "/rf:".into());
+        folds.prefixes.insert("codex".into(), "$rf:".into());
+        folds.at.insert("claude-code".into(), None);
+        folds.at.insert("codex".into(), None);
+        let root = Path::new("/nowhere");
+        let over = r#"[{"layer":"weft","ringframe":{"deltas":{}}}]"#;
+        let text = |b: Built| String::from_utf8(b.payload).unwrap();
+        for (harness, prefix) in [("claude-code", "/rf:"), ("codex", "$rf:")] {
+            assert_eq!(
+                text(skill(root, "eval", harness, harness, "gather", Some(over), &mut folds)),
+                format!("{prefix}eval --override '{over}' gather")
+            );
+            assert_eq!(
+                text(skill(root, "seal", harness, harness, "", Some(over), &mut folds)),
+                format!("{prefix}seal --override '{over}' ")
+            );
+            assert_eq!(
+                text(ask(root, harness, "[follow-up evl_1] fix it", Some(over), &mut folds)),
+                format!("{prefix}ask --override '{over}' [follow-up evl_1] fix it")
+            );
+            assert_eq!(
+                text(ask(root, harness, "fix it", None, &mut folds)),
+                format!("{prefix}ask fix it"),
+                "no overrides: nothing typed"
+            );
+        }
     }
 }
