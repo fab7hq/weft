@@ -338,11 +338,11 @@ mod tests {
                     ),
                     (
                         "config/deltas/claude-code.toml",
-                        "ef50e33661581006d879be728b3c089653d9b85d2ae07780327628e5d64231fb",
+                        "c465ced1c3b8ec55105cc22678b7b53764065ce518ee1f627a4265e0d07abe76",
                     ),
                     (
                         "config/deltas/codex.toml",
-                        "449f3a3c7045aee262bf130965c513b698e3fb49c4c44d30588cd53c5dd75480",
+                        "76b00bc12f0aac0ef787e9a377b51144ab26aefc35f2cafa74db3ba954e83e63",
                     ),
                     (
                         "config/deltas/practices/autonomous-trading.toml",

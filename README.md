@@ -13,72 +13,28 @@
 Named after woven cloth: RingFrame is the warp, the fixed record; Weft is the
 thread carried across it.
 
-## RingFrame
-
-- **Ask** — turn what you want into a prompt, and confirm it before it runs.
-- **Eval** — check the work against what you asked.
-- **Seal** — record what you decided.
-
-Each act is written to a ledger in your project's `.fab7/rf/`. RingFrame works
-on its own as `/rf:ask`, `/rf:eval` and `/rf:seal` inside your harness.
-
-## Weft
-
-Your real harness sessions side by side, with every Ask beside them showing
-how far it got. One key takes the next step. Weft has no model of its own: the
-harness does the work and RingFrame keeps the record.
-
-## How they work together
-
-1. `A` — ask. You confirm the prompt; Weft types it into the agent you pick.
-2. `Ctrl+]` — step into the agent's pane while it works, and back out.
-3. `E` — eval, in the same agent or another one.
-4. `S` — seal your decision.
-
-Weft never types into an agent without asking you first.
-
 ## Install
-
-Requires macOS or Linux, and a supported harness.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
 ```
 
-This installs prebuilt `weft` and `ringframe` binaries to `~/.local/bin`
-(override with `WEFT_BIN_DIR`), after checking their checksum. Then add the
-`rf` plugin to your harness from the
-[Fab7 marketplace](https://github.com/fab7hq/fab7), which lists the supported
-harnesses and the commands for each.
-
-Run `weft` in a repository, or `weft <dir>`. `N` starts an agent, and `Enter`
-on work whose agent is not running picks up the session it was asked in.
-
-`↑ [U]PDATE` appears in the title bar when RingFrame or a harness's plugin is
-behind the latest release. `U` shows what, and `P` syncs it all in order.
-
-`weft update` installs the latest Weft and RingFrame programs. Weft says at the
-bottom of the screen when a newer one is out; restarting is yours.
-
-Agents run in a background session, so closing Weft leaves them working.
-`weft stop` ends them.
-
-## Learn more
-
-- [What RingFrame is](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/product.md),
-  and what it will not tell you
-- The acts in detail: [Ask](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/ask.md),
-  [Eval](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/eval.md),
-  [Seal](https://github.com/fab7hq/fab7/blob/main/products/ringframe/docs/commands/seal.md)
-- Changes in each version: [Releases](https://github.com/fab7hq/weft/releases)
+Then run `weft` in a repository. Everything else, from setting up your harness
+to the whole loop from Ask to Seal, is in the docs at
+**[docs.getfab7.com](https://docs.getfab7.com)**. Changes in each version are
+in [Releases](https://github.com/fab7hq/weft/releases).
 
 ## Development
 
 ```sh
 cargo build
 cargo test
-cargo run --example wireframe   # the screens, without running an agent
 ```
+
+The docs, and the scenarios that draw Weft's screens for them, live in
+[fab7hq/docs](https://github.com/fab7hq/docs), pinned to a Weft release: a
+change to what Weft draws shows up there when the pin moves. `examples/` holds
+probes that check one mechanism against a real harness, by hand.
 
 `./bin/reinstall-local` builds both binaries, installs them, syncs the
 configuration from a `fab7` checkout beside this one, and reinstalls the
