@@ -5,6 +5,13 @@
   </picture>
 </p>
 
+<p align="center">
+  <img alt="Weft's walkthrough of one change: each one-line request becomes the prompt RingFrame prepared from it, a Plan, a /goal and a fix, Eval checks the work against the Asks, and Seal records the decision." src="assets/weft-sdlc.gif" width="880">
+</p>
+<p align="center"><sub>Weft's own screens, drawn from one recorded session; no agent runs.
+<a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
+<a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
+
 - **RingFrame** — your agentic workflow in three acts: ask, eval, seal.
   Everything is an Ask.
 - **Weft** — RingFrame in your terminal: your agents in panes, your Asks in
