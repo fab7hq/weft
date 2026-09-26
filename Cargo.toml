@@ -1,6 +1,6 @@
 [package]
 name = "weft"
-version = "0.1.3"
+version = "0.1.2"
 edition = "2024"
 description = "The interface for RingFrame: your coding agents in panes, and one list of what was asked, checked and decided"
 license = "Apache-2.0"
