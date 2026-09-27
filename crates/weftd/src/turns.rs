@@ -17,11 +17,11 @@ pub struct Turns {
 }
 
 impl Turns {
-    /// Look again. True when anything changed.
-    pub fn refresh(&mut self, root: &Path) -> bool {
+    /// Look again, and answer every session whose latest receipt is new.
+    pub fn refresh(&mut self, root: &Path) -> Vec<Session> {
         let base = root.join(".fab7").join("rf").join("sessions");
         let mut found = HashMap::new();
-        let mut changed = false;
+        let mut heard = Vec::new();
         for harness in std::fs::read_dir(&base).into_iter().flatten().flatten() {
             let h = harness.file_name().to_string_lossy().into_owned();
             for session in std::fs::read_dir(harness.path()).into_iter().flatten().flatten() {
@@ -30,19 +30,23 @@ impl Turns {
                 let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
                 let entry = match self.seen.remove(&path) {
                     Some(old) if (old.0, old.1) == stamp => old,
-                    _ => {
-                        changed = true;
+                    old => {
                         let id = session.file_name().to_string_lossy().into_owned();
                         let text = std::fs::read_to_string(&path).unwrap_or_default();
-                        (stamp.0, stamp.1, read(&h, &id, &text))
+                        let now = read(&h, &id, &text);
+                        let before = old.and_then(|o| o.2).map(|s| (s.latest, s.at));
+                        if let Some(s) = now.as_ref().filter(|s| Some((s.latest, s.at)) != before) {
+                            heard.push(s.clone());
+                        }
+                        (stamp.0, stamp.1, now)
                     }
                 };
                 found.insert(path, entry);
             }
         }
-        changed |= !self.seen.is_empty();
         self.seen = found;
-        changed
+        heard.sort_by_key(|s| s.at);
+        heard
     }
 
     pub fn sessions(&self) -> Vec<Session> {
@@ -74,8 +78,8 @@ mod tests {
         std::fs::write(dir.join("turns.jsonl"), line("ready", "2026-09-27T10:00:00.000Z"))
             .expect("write");
         let mut turns = Turns::default();
-        assert!(turns.refresh(&root), "first sight");
-        assert!(!turns.refresh(&root), "nothing moved");
+        assert_eq!(turns.refresh(&root).len(), 1, "first sight");
+        assert!(turns.refresh(&root).is_empty(), "nothing moved");
         assert_eq!(turns.sessions()[0].latest, Turn::Ready);
         let more = [
             line("ready", "2026-09-27T10:00:00.000Z"),
@@ -83,10 +87,10 @@ mod tests {
         ]
         .concat();
         std::fs::write(dir.join("turns.jsonl"), more).expect("write");
-        assert!(turns.refresh(&root));
+        assert_eq!(turns.refresh(&root)[0].latest, Turn::Working, "the new receipt");
         assert_eq!(turns.sessions()[0].latest, Turn::Working);
         std::fs::remove_dir_all(&root).ok();
-        assert!(turns.refresh(&root), "gone is a change");
+        assert!(turns.refresh(&root).is_empty(), "nothing new was said");
         assert!(turns.sessions().is_empty());
     }
 }

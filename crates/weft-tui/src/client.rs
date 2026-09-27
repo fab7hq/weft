@@ -389,8 +389,10 @@ impl Session {
         changed
     }
 
-    pub fn spawn(&mut self, harness: &str, spec: &str) -> Result<()> {
-        self.tell(Call::StartAgent { harness: harness.into(), spec: spec.into() }).map(|_| ())
+    /// Start an agent; `session` is the one it resumes, when it resumes one.
+    pub fn spawn(&mut self, harness: &str, spec: &str, session: Option<&str>) -> Result<()> {
+        let (harness, spec, session) = (harness.into(), spec.into(), session.map(str::to_string));
+        self.tell(Call::StartAgent { harness, spec, session }).map(|_| ())
     }
 
     pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
@@ -601,8 +603,8 @@ mod tests {
     #[test]
     fn a_pane_keeps_its_id_when_one_before_it_closes() {
         let (_root, mut s) = crate::app::tests::test_session("ids");
-        s.spawn("codex", "/bin/cat").expect("first");
-        s.spawn("codex", "/bin/cat").expect("second");
+        s.spawn("codex", "/bin/cat", None).expect("first");
+        s.spawn("codex", "/bin/cat", None).expect("second");
         until(&mut s, |s| s.panes.len() == 2);
         let second = s.panes[1].id;
         assert_ne!(s.panes[0].id, second);

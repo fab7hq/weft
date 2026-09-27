@@ -40,10 +40,12 @@ pub enum Call {
         rows: u16,
         cols: u16,
     },
-    /// Start a harness, fresh or resuming a recorded session.
+    /// Start a harness, fresh or resuming a recorded session. A resumed
+    /// agent names its session, so the daemon knows it from the start.
     StartAgent {
         harness: String,
         spec: String,
+        session: Option<String>,
     },
     /// Stop an agent and take its pane away.
     CloseAgent {
@@ -273,8 +275,8 @@ impl Call {
             Call::Open { path, rows, cols } => {
                 ("project.open", json!({"path": path, "rows": rows, "cols": cols}))
             }
-            Call::StartAgent { harness, spec } => {
-                ("agent.start", json!({"harness": harness, "spec": spec}))
+            Call::StartAgent { harness, spec, session } => {
+                ("agent.start", json!({"harness": harness, "spec": spec, "session": session}))
             }
             Call::CloseAgent { pane } => ("agent.close", json!({"pane": pane})),
             Call::Input { pane, bytes } => {
@@ -313,7 +315,9 @@ impl Call {
             "project.open" => {
                 Call::Open { path: s("path")?, rows: n("rows")? as u16, cols: n("cols")? as u16 }
             }
-            "agent.start" => Call::StartAgent { harness: s("harness")?, spec: s("spec")? },
+            "agent.start" => {
+                Call::StartAgent { harness: s("harness")?, spec: s("spec")?, session: s("session") }
+            }
             "agent.close" => Call::CloseAgent { pane: n("pane")? as u32 },
             "pane.input" => Call::Input { pane: n("pane")? as u32, bytes: bytes("bytes")? },
             "pane.resize" => Call::Resize {
@@ -647,7 +651,12 @@ mod tests {
         for call in [
             Call::Hello { client: "weft-tui/0.1".into(), protocol: PROTOCOL },
             Call::Open { path: "/home/me/work/a thing".into(), rows: 40, cols: 120 },
-            Call::StartAgent { harness: "codex".into(), spec: "codex resume 01a0".into() },
+            Call::StartAgent {
+                harness: "codex".into(),
+                spec: "codex resume 01a0".into(),
+                session: Some("01a0".into()),
+            },
+            Call::StartAgent { harness: "codex".into(), spec: "codex".into(), session: None },
             Call::CloseAgent { pane: 3 },
             // Arbitrary bytes, including what JSON cannot hold as text.
             Call::Input { pane: 2, bytes: vec![0x00, 0x1b, 0xff, b'a'] },

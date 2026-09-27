@@ -11,13 +11,18 @@ use weft::protocol::{Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 use weft::turns::Turn;
 
-/// A hook's receipt, where RingFrame's plugin writes it. Dated ahead, so it
-/// always comes after the pane it belongs to started.
+/// Now, as a receipt writes it.
+fn now() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time");
+    weft::turns::stamp(ms.as_millis() as i64)
+}
+
+/// A hook's receipt, where RingFrame's plugin writes it, written now.
 fn agent_says(root: &Path, harness: &str, session: &str, event: &str) {
     let dir = root.join(".fab7/rf/sessions").join(harness).join(session);
     std::fs::create_dir_all(&dir).expect("session dir");
     let line = serde_json::json!({"event": event, "session_id": session,
-                                  "time": "2099-01-01T00:00:00.000Z"});
+                                  "time": now()});
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -204,7 +209,7 @@ fn an_agent_keeps_working_while_no_client_is_attached() {
     // A client starts an agent and gives it something slow to do.
     let mut first = Client::attach(&socket, &root);
     first.hello();
-    first.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into() });
+    first.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
     first.send(Call::Input { pane: 0, bytes: b"printf 'before-the-client-left\\n'\n".to_vec() });
     assert!(
         first.wait_for("before-the-client-left", 5).contains("before-the-client-left"),
@@ -246,7 +251,7 @@ fn two_clients_see_the_same_session_at_once() {
 
     let mut a = Client::attach(&socket, &root);
     a.hello();
-    a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into() });
+    a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
     std::thread::sleep(Duration::from_millis(300));
 
     let mut b = Client::attach(&socket, &root);
@@ -302,8 +307,12 @@ fn two_projects_share_a_daemon_and_see_none_of_each_others_panes() {
     let mut two = Client::attach(&socket, &b);
     one.hello();
     two.hello();
-    one.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into() });
-    two.send(Call::StartAgent { harness: "claude-code".into(), spec: "/bin/cat".into() });
+    one.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
+    two.send(Call::StartAgent {
+        harness: "claude-code".into(),
+        spec: "/bin/cat".into(),
+        session: None,
+    });
 
     // Each is told about its own, numbered from one within its project.
     let added_a = one.wait_for_added();
@@ -345,7 +354,7 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     // second attach and that client would never hear about the pane.
     one.hello();
     two.hello();
-    one.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into() });
+    one.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
     one.wait_for_added();
     two.wait_for_added();
     agent_says(&root, "codex", "s1", "ready");
@@ -409,7 +418,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
 
     let mut c = Client::attach(&socket, &root);
     c.hello();
-    c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into() });
+    c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into(), session: None });
     assert_eq!(c.wait_for_added(), (0, "sh".to_string()));
     agent_says(&root, "sh", "s1", "ready");
     c.wait_for_state(Some(Turn::Ready));
@@ -487,8 +496,10 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
     });
 
     let mut a = Client::attach(&socket, &root);
-    a.send(Call::StartAgent { harness: "cat-agent".into(), spec: "cat".into() });
+    a.send(Call::StartAgent { harness: "cat-agent".into(), spec: "cat".into(), session: None });
     a.wait_for_added();
+    agent_says(&root, "cat-agent", "busy", "ready");
+    a.wait_for_state(Some(Turn::Ready));
     agent_says(&root, "cat-agent", "busy", "working");
     a.wait_for_state(Some(Turn::Working));
     // Nothing is free, so the daemon starts an agent for the Eval, which will
@@ -506,8 +517,45 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
     assert!(began.elapsed() < Duration::from_secs(2), "another window waited on the send");
     b.send(Call::Input { pane: 0, bytes: b"still-moving\n".to_vec() });
     assert!(b.wait_for("still-moving", 2).contains("still-moving"), "output stopped arriving");
+    // And once the new agent says it is ready, the send goes.
+    agent_says(&root, "cat-agent", "fresh", "ready");
+    assert_eq!(b.wait_for_refusal(), None, "typed once it said it was ready");
 
     b.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Weft's own pane map: which pane runs which session, decided once, kept by
+/// the daemon, and written to `.fab7/weft/panes.json` with how it was bound.
+/// A client leaving changes none of it.
+#[test]
+fn the_pane_map_is_the_daemons_and_outlives_a_client() {
+    let (root, socket) = session("map");
+    let mut a = Client::attach(&socket, &root);
+    a.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
+    a.wait_for_added();
+    agent_says(&root, "codex", "s1", "ready");
+    a.wait_for_state(Some(Turn::Ready));
+    a.send(Call::Detach);
+    drop(a);
+
+    let b = Client::attach(&socket, &root);
+    assert_eq!(b.opened["agents"]["panes"], serde_json::json!(["ready"]), "still bound");
+    let dir = root.join(".fab7/weft");
+    let map: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(dir.join("panes.json")).expect("the map"))
+            .expect("json");
+    let pane = &map["panes"][0];
+    assert_eq!(
+        (pane["harness"].as_str(), pane["spec"].as_str()),
+        (Some("codex"), Some("/bin/cat"))
+    );
+    assert_eq!(pane["session"], serde_json::json!({"session": "s1", "how": "after_start"}));
+    assert!(pane["at"].as_i64().is_some_and(|t| t > 0), "{pane}");
+    assert_eq!(std::fs::read_to_string(dir.join(".gitignore")).expect("ignored"), "*\n");
+
+    let mut stop = b;
+    stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -541,7 +589,7 @@ fn a_second_window_resizes_nothing_and_the_pane_follows_whoever_types() {
     let (root, socket) = session("sizes");
     let mut big = Client::attach(&socket, &root);
     big.hello();
-    big.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into() });
+    big.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
     big.wait_for_added();
     big.send(Call::Resize { pane: 0, rows: 40, cols: 120 });
     assert_eq!(size_seen(&mut big, "one"), "40 120", "the first window's size");
@@ -572,7 +620,7 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     let (root, socket) = session("ready");
     let mut c = Client::attach(&socket, &root);
     c.hello();
-    c.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into() });
+    c.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
     c.wait_for_added();
     let stage = |c: &mut Client, text: &str| {
         c.answer(Call::Stage {
@@ -592,6 +640,9 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     c.send(Call::Resolve { pending: id, yes: true, force: false });
     assert_eq!(c.wait_for_refusal().as_deref(), Some("Weft can't tell whether the agent is ready"));
 
+    // The person presses Enter in it, and its hook says it is working.
+    c.send(Call::Input { pane: 0, bytes: b"\r".to_vec() });
+    std::thread::sleep(Duration::from_millis(50));
     agent_says(&root, "codex", "c1", "working");
     c.wait_for_state(Some(Turn::Working));
     let id = stage(&mut c, "still-not");
@@ -649,7 +700,11 @@ fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
     for (root, want, turbo) in [(&on, "hello TURBO-FLAG", true), (&off, "hello", false)] {
         let mut c = Client::attach(&socket, &root.canonicalize().unwrap());
         c.hello();
-        c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo hello".into() });
+        c.send(Call::StartAgent {
+            harness: "echo-agent".into(),
+            spec: "echo hello".into(),
+            session: None,
+        });
         c.wait_for_added();
         // The whole line: under load its end can arrive in a later read.
         let seen = c.wait_for(want, 5);
@@ -693,10 +748,18 @@ fn turbo_can_be_switched_and_the_next_agent_follows_it() {
     assert_eq!(c.opened.get("turbo"), Some(&serde_json::json!(false)), "off unless configured");
     let answer = c.answer(Call::Turbo { on: true }).expect("switched on");
     assert_eq!(answer.get("turbo"), Some(&serde_json::json!(true)));
-    c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo one".into() });
+    c.send(Call::StartAgent {
+        harness: "echo-agent".into(),
+        spec: "echo one".into(),
+        session: None,
+    });
     c.wait_for_added();
     c.answer(Call::Turbo { on: false }).expect("switched off");
-    c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo two".into() });
+    c.send(Call::StartAgent {
+        harness: "echo-agent".into(),
+        spec: "echo two".into(),
+        session: None,
+    });
     c.wait_for_added();
     let mut look = Client::attach(&socket, &root.canonicalize().unwrap());
     assert_eq!(look.opened.get("turbo"), Some(&serde_json::json!(false)), "as last switched");

@@ -686,7 +686,12 @@ impl App {
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        sess!(self).spawn(harness, spec)?;
+        self.start(harness, spec, None)
+    }
+
+    /// Start an agent, resuming `session` when it names one.
+    fn start(&mut self, harness: &str, spec: &str, session: Option<&str>) -> Result<()> {
+        sess!(self).spawn(harness, spec, session)?;
         // The pane appears when the server says it has one, and what the
         // harness is short of follows a moment later — asking it costs a
         // process, so the daemon does that off its own loop.
@@ -837,7 +842,7 @@ impl App {
             Some(s) => h.resume_spec(&s.id),
             None => h.spec(),
         };
-        if let Err(e) = self.add(harness, &spec) {
+        if let Err(e) = self.start(harness, &spec, session.map(|s| s.id.as_str())) {
             self.modal = Some(Modal::Note(format!("Could not start {spec}: {e}")));
             return;
         }
@@ -1921,9 +1926,14 @@ pub(crate) mod tests {
         a
     }
 
-    /// A hook's receipt, written where RingFrame's plugin writes it, and
-    /// waited for until the daemon has read it. Dated ahead so it always
-    /// comes after the pane started.
+    /// Now, as a receipt writes it.
+    fn now() -> String {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("t");
+        weft_core::turns::stamp(ms.as_millis() as i64)
+    }
+
+    /// A hook's receipt, written where RingFrame's plugin writes it, now, and
+    /// waited for until the daemon has read it.
     pub(crate) fn agent_says(a: &mut App, harness: &str, session: &str, event: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline && a.session_mut().panes.is_empty() {
@@ -1933,7 +1943,7 @@ pub(crate) mod tests {
         let dir = a.root().join(".fab7/rf/sessions").join(harness).join(session);
         std::fs::create_dir_all(&dir).expect("session dir");
         let line = serde_json::json!({"event": event, "session_id": session,
-                                      "time": "2099-01-01T00:00:00.000Z"});
+                                      "time": now()});
         std::fs::write(dir.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
         let want = weft_core::turns::Turn::recorded(event);
         while std::time::Instant::now() < deadline && a.pane_turn(0) != want {
