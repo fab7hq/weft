@@ -424,7 +424,7 @@ impl App {
     /// Whether a pane's agent is asking its person something, as its hooks
     /// reported it. Weft reads nothing off the screen (ADR-0013).
     pub fn waiting(&self, pane: usize) -> bool {
-        self.pane_turn(pane) == Some(weft_core::turns::Turn::Waiting)
+        weft_core::turns::is_asking(self.pane_turn(pane))
     }
 
     /// The harness a command line's program starts, by its profile.
@@ -501,21 +501,14 @@ impl App {
     /// A project's agents asking their person for input, of one harness or
     /// of all of them. This is NEEDS YOU, and nothing else is.
     pub fn agents_waiting(&self, project: usize, harness: Option<&str>) -> usize {
-        let s = &self.projects[project].session;
-        s.panes
-            .iter()
-            .filter(|p| {
-                p.turn == Some(weft_core::turns::Turn::Waiting)
-                    && harness.is_none_or(|h| p.harness == h)
-            })
-            .count()
+        let (panes, states) = facts_of(&self.projects[project].session);
+        weft_core::turns::asking(&panes, &states, harness)
     }
 
     /// The facts a decision reads, borrowed from the state that holds them.
     /// The decision itself is `weft_core::board`.
     fn with_board<T>(&self, f: impl FnOnce(Board<'_>) -> T) -> T {
-        let panes = self.pane_facts();
-        let agents: Vec<_> = sess!(self).panes.iter().map(|p| p.turn).collect();
+        let (panes, agents) = facts_of(&sess!(self));
         f(Board {
             units: &self.units,
             selected: self.selected_index().unwrap_or(usize::MAX),
@@ -526,20 +519,6 @@ impl App {
             workspace_gap: self.workspace_gap.as_deref(),
             agents: &agents,
         })
-    }
-
-    fn pane_facts(&self) -> Vec<PaneInfo> {
-        sess!(self)
-            .panes
-            .iter()
-            .map(|p| PaneInfo {
-                pane: p.id,
-                harness: p.harness.clone(),
-                spec: p.spec.clone(),
-                running: p.running,
-                turbo: p.turbo,
-            })
-            .collect()
     }
 
     /// Why an action is not available now, as one sentence. `None` means it is.
@@ -575,7 +554,7 @@ impl App {
             let units = self.units_of(at);
             let waiting = self.agents_waiting(at, None);
             // The agents running, as the title bar counts them.
-            let open = p.session.panes.iter().filter(|pane| pane.running).count();
+            let open = weft_core::turns::open(&facts_of(&p.session).0);
             let folded = self.folded.contains(&p.name);
             out.push(Row::Project { project: at, name: p.name.clone(), folded, open, waiting });
             if folded {
@@ -918,7 +897,7 @@ impl App {
     /// The agent in front is never announced, and nothing is said with
     /// `notify = false`.
     pub fn notices(&mut self) -> Vec<String> {
-        use weft_core::turns::Turn;
+        use weft_core::turns;
         let mut out = Vec::new();
         let (at, focus) = (self.at, self.pane_focus);
         for (i, p) in self.projects.iter_mut().enumerate() {
@@ -932,7 +911,7 @@ impl App {
                 // person's workflow, not an alarm. A pane that just opened
                 // was asking nothing before.
                 let was = before.get(&v.id).copied().flatten();
-                if v.turn != Some(Turn::Waiting) || was == v.turn || (i == at && pane == focus) {
+                if !turns::is_asking(v.turn) || was == v.turn || (i == at && pane == focus) {
                     continue;
                 }
                 out.push(format!("{} in {}: needs your input", v.harness, p.name));
@@ -1565,7 +1544,7 @@ impl App {
         let n = self.projects.len();
         let elsewhere = (1..n).map(|step| (self.at + step) % n).find_map(|at| {
             let s = &self.projects[at].session;
-            let pane = s.panes.iter().position(|p| p.turn == Some(weft_core::turns::Turn::Waiting));
+            let pane = s.panes.iter().position(|p| weft_core::turns::is_asking(p.turn));
             pane.map(|pane| (at, pane))
         });
         let Some((at, pane)) = elsewhere else {
@@ -3760,6 +3739,22 @@ mod picker_tests {
         press(&mut a, KeyCode::Up);
         assert_eq!(a.modal_choice, choices - 1, "the same wrap");
     }
+}
+
+/// A project's panes as the rules read them, and each one's agent state.
+fn facts_of(s: &Session) -> (Vec<PaneInfo>, Vec<Option<weft_core::turns::Turn>>) {
+    let panes = s
+        .panes
+        .iter()
+        .map(|p| PaneInfo {
+            pane: p.id,
+            harness: p.harness.clone(),
+            spec: p.spec.clone(),
+            running: p.running,
+            turbo: p.turbo,
+        })
+        .collect();
+    (panes, s.panes.iter().map(|p| p.turn).collect())
 }
 
 /// Readiness as the daemon words it.

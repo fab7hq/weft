@@ -198,3 +198,16 @@ fn nothing_in_the_client_sleeps() {
         .collect();
     assert!(sleeping.is_empty(), "the client sleeps:\n{}", sleeping.join("\n"));
 }
+
+/// NEEDS YOU is counted in `weft_core::turns` only: the client asks it,
+/// and compares no agent's state to `waiting` itself.
+#[test]
+fn the_client_counts_nothing_that_needs_you_itself() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/weft-tui/src");
+    let found: Vec<_> = non_test_lines(&src)
+        .into_iter()
+        .filter(|(_, l)| l.contains("Turn::Waiting"))
+        .map(|(p, l)| format!("{p}: {}", l.trim()))
+        .collect();
+    assert!(found.is_empty(), "the client decides NEEDS YOU:\n{}", found.join("\n"));
+}

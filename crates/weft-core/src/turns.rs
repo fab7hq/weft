@@ -94,6 +94,34 @@ pub fn read(harness: &str, id: &str, text: &str) -> Option<Session> {
     out
 }
 
+/// Whether an agent in this state is asking its person for input: a
+/// question, a choice, a permission. This is NEEDS YOU, and nothing else is:
+/// work waiting on its next step is the person's to pick up when they
+/// choose, and a finished turn says nothing about whether the work is done.
+pub fn is_asking(state: Option<Turn>) -> bool {
+    state == Some(Turn::Waiting)
+}
+
+/// NEEDS YOU: how many of these panes' agents are asking their person, of
+/// one harness or of all. `states` is one per pane, in the same order.
+pub fn asking(
+    panes: &[crate::board::PaneInfo],
+    states: &[Option<Turn>],
+    harness: Option<&str>,
+) -> usize {
+    panes
+        .iter()
+        .zip(states)
+        .filter(|(p, s)| is_asking(**s) && harness.is_none_or(|h| p.harness == h))
+        .count()
+}
+
+/// OPEN: the agents running, which is the harnesses the person has open,
+/// not the Asks on the record.
+pub fn open(panes: &[crate::board::PaneInfo]) -> usize {
+    panes.iter().filter(|p| p.running).count()
+}
+
 /// Why Weft will not type into an agent on its own. The person may still say
 /// to type anyway.
 pub const WORKING: &str = "the agent is working";
@@ -481,6 +509,30 @@ mod tests {
         let a = receipt("a", Turn::Ready, 12);
         assert!(!heard(&mut panes, &a));
         assert_eq!(pane_states(&panes, &[a]), vec![None]);
+    }
+
+    #[test]
+    fn needs_you_is_an_agent_asking_and_open_is_an_agent_running() {
+        let pane = |harness: &str, running| crate::board::PaneInfo {
+            pane: 0,
+            harness: harness.into(),
+            spec: String::new(),
+            running,
+            turbo: false,
+        };
+        let panes = [pane("codex", true), pane("claude-code", true), pane("codex", false)];
+        let states = [Some(Turn::Waiting), Some(Turn::TurnEnded), Some(Turn::Waiting)];
+        assert_eq!(asking(&panes, &states, None), 2);
+        assert_eq!(asking(&panes, &states, Some("codex")), 2);
+        assert_eq!(
+            asking(&panes, &states, Some("claude-code")),
+            0,
+            "a turn that ended asks nothing"
+        );
+        assert_eq!(open(&panes), 2);
+        assert!(
+            is_asking(Some(Turn::Waiting)) && !is_asking(None) && !is_asking(Some(Turn::Ready))
+        );
     }
 
     #[test]

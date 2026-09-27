@@ -129,7 +129,7 @@ impl Board<'_> {
     /// Agents running in this project, as the title bar counts them: OPEN
     /// is the harnesses the person has open, not the Asks on the record.
     pub fn open_count(&self) -> usize {
-        self.panes.iter().filter(|p| p.running).count()
+        crate::turns::open(self.panes)
     }
 
     /// Agents asking their person for input: a question, a choice, a
@@ -137,7 +137,7 @@ impl Board<'_> {
     /// is the person's to pick up when they choose, and a finished turn
     /// says nothing about whether the work is done.
     pub fn needs_you(&self) -> usize {
-        self.agents.iter().filter(|a| **a == Some(crate::turns::Turn::Waiting)).count()
+        crate::turns::asking(self.panes, self.agents, None)
     }
 
     /// The harness whose readiness decides what the person can do now: the one
