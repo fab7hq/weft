@@ -94,6 +94,16 @@ impl PaneView {
     }
 }
 
+/// What a window's one loop wakes for: the person at the terminal, or a
+/// daemon connection with something to take in.
+pub enum Wake {
+    Terminal(crossterm::event::Event),
+    Daemon,
+}
+
+/// Where a connection says it has something, once a window listens.
+type Nudge = std::sync::Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<Wake>>>>;
+
 /// A staged prompt, as a client sees one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Staged {
@@ -111,6 +121,7 @@ pub struct Session {
     socket: std::path::PathBuf,
     stream: UnixStream,
     inbox: Receiver<Line>,
+    nudge: Nudge,
     /// The next call id. Answers come back against it.
     next_call: u64,
     /// Answers the daemon has sent, by call id.
@@ -186,11 +197,16 @@ impl Session {
 
         let reading = stream.try_clone()?;
         let (tx, inbox) = channel();
+        let nudge: Nudge = Default::default();
+        let nudging = nudge.clone();
         std::thread::spawn(move || {
             let mut lines = Lines::new(reading);
             while let Ok(Some(line)) = lines.next() {
                 if tx.send(line).is_err() {
                     return;
+                }
+                if let Some(w) = nudging.lock().ok().as_deref().and_then(Option::as_ref) {
+                    let _ = w.send(Wake::Daemon);
                 }
             }
         });
@@ -199,6 +215,7 @@ impl Session {
             socket: socket.to_path_buf(),
             stream,
             inbox,
+            nudge,
             panes: Vec::new(),
             last_refusal: None,
             unrecorded: None,
@@ -271,6 +288,13 @@ impl Session {
         self.set_turns(serde_json::from_value(field("panes")).unwrap_or_default());
         self.pane_sessions = serde_json::from_value(field("bound")).unwrap_or_default();
         self.turns = serde_json::from_value(field("sessions")).unwrap_or_default();
+    }
+
+    /// Wake this window's loop whenever the daemon sends something.
+    pub fn wake(&mut self, loop_: std::sync::mpsc::Sender<Wake>) {
+        if let Ok(mut n) = self.nudge.lock() {
+            *n = Some(loop_);
+        }
     }
 
     /// Each pane's agent state, one per pane in the daemon's order, which is

@@ -232,6 +232,9 @@ pub struct Detail {
     pub offset: usize,
 }
 
+/// How long the loop waits when nothing wakes it.
+pub const TICK: Duration = Duration::from_millis(250);
+
 pub struct App {
     /// A newer Weft release, once someone has looked. Set from outside,
     /// because the client itself reaches nothing.
@@ -290,6 +293,10 @@ pub struct App {
     /// Which harness takes which act here. Read once: a person edits the file
     /// by hand, and a restart is a fair price for that.
     routing: weft_core::routing::Routing,
+    /// The one channel the loop waits on: the terminal and every project's
+    /// connection send into it.
+    wakes: std::sync::mpsc::Sender<crate::client::Wake>,
+    woken: std::sync::mpsc::Receiver<crate::client::Wake>,
 }
 
 impl App {
@@ -657,8 +664,12 @@ impl App {
         Self::with_session(root, toggle, session)
     }
 
-    pub fn with_session(root: PathBuf, toggle: Toggle, session: Session) -> Self {
+    pub fn with_session(root: PathBuf, toggle: Toggle, mut session: Session) -> Self {
+        let (wakes, woken) = std::sync::mpsc::channel();
+        session.wake(wakes.clone());
         Self {
+            wakes,
+            woken,
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
@@ -723,36 +734,54 @@ impl App {
         // The mouse is Weft's: a click selects a row or goes to an agent,
         // and while an agent has the keys the wheel scrolls that agent. A click never reaches an agent.
         let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
+        // The terminal is read on its own thread, into the one channel.
+        let keys = self.wakes.clone();
+        std::thread::spawn(move || {
+            while let Ok(e) = event::read() {
+                if keys.send(crate::client::Wake::Terminal(e)).is_err() {
+                    return;
+                }
+            }
+        });
         while !self.quit {
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
-            if event::poll(Duration::from_millis(50))? {
-                match event::read()? {
-                    Event::Key(key)
-                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
-                    {
-                        self.on_key(key)?
-                    }
-                    Event::Paste(text) => self.on_paste(&text)?,
-                    Event::Mouse(m) => self.on_mouse(m),
-                    _ => {}
-                }
-            }
-            if self.pump_all() {
-                self.take_the_board();
-            }
-            self.notice_an_agent_that_ended();
-            let told = self.notices();
-            if !told.is_empty() {
-                use std::io::Write as _;
-                let program = std::env::var("TERM_PROGRAM").ok();
-                let mut out = std::io::stdout();
-                for said in told {
-                    let _ = out.write_all(&notification(program.as_deref(), &said));
-                }
-                let _ = out.flush();
-            }
+            self.turn(TICK)?;
         }
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+        Ok(())
+    }
+
+    /// One turn of the loop: wait up to `tick` for something to wake it,
+    /// then take in that and everything that arrived behind it.
+    pub fn turn(&mut self, tick: Duration) -> Result<()> {
+        let mut woke: Vec<_> = self.woken.recv_timeout(tick).into_iter().collect();
+        woke.extend(self.woken.try_iter());
+        for wake in woke {
+            match wake {
+                crate::client::Wake::Terminal(Event::Key(key))
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
+                    self.on_key(key)?
+                }
+                crate::client::Wake::Terminal(Event::Paste(text)) => self.on_paste(&text)?,
+                crate::client::Wake::Terminal(Event::Mouse(m)) => self.on_mouse(m),
+                _ => {}
+            }
+        }
+        if self.pump_all() {
+            self.take_the_board();
+        }
+        self.notice_an_agent_that_ended();
+        let told = self.notices();
+        if !told.is_empty() {
+            use std::io::Write as _;
+            let program = std::env::var("TERM_PROGRAM").ok();
+            let mut out = std::io::stdout();
+            for said in told {
+                let _ = out.write_all(&notification(program.as_deref(), &said));
+            }
+            let _ = out.flush();
+        }
         Ok(())
     }
 
@@ -1300,7 +1329,8 @@ impl App {
         // and starting a second would need the installed binary.
         let socket = sess!(self).socket().to_path_buf();
         match Session::connect(&socket, &root, 24, 80) {
-            Ok(session) => {
+            Ok(mut session) => {
+                session.wake(self.wakes.clone());
                 self.projects.push(Open::new(root, session));
                 self.at = self.projects.len() - 1;
                 self.pane_focus = 0;
@@ -2101,6 +2131,27 @@ pub(crate) mod tests {
             a.rows().iter().any(|r| matches!(r, Row::Harness { running: false, .. })),
             "its work stays, marked not running"
         );
+    }
+
+    /// The loop blocks on one channel that the terminal and the daemon both
+    /// send into, so a key is handled the moment it arrives, not at the
+    /// next look.
+    #[test]
+    fn a_key_reaches_the_agent_as_soon_as_it_is_pressed() {
+        let mut a = app();
+        a.focus = Focus::Agent;
+        let key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        let began = std::time::Instant::now();
+        a.wakes.send(crate::client::Wake::Terminal(Event::Key(key))).expect("sent");
+        a.turn(Duration::from_secs(5)).expect("a turn");
+        assert!(began.elapsed() < TICK / 5, "waited {:?}", began.elapsed());
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline
+            && !a.pane_text(0).unwrap_or_default().contains('q')
+        {
+            a.turn(Duration::from_millis(50)).expect("a turn");
+        }
+        assert!(a.pane_text(0).unwrap_or_default().contains('q'), "the agent got it");
     }
 
     #[test]
