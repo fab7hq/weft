@@ -57,8 +57,9 @@ pub fn notification(term_program: Option<&str>, message: &str) -> Vec<u8> {
 /// and each agent tab's columns. Written by `ui::draw`, read by `on_mouse`.
 #[derive(Debug, Clone, Default)]
 pub struct Hits {
-    /// `(y, row)`: the screen line a row of `rows()` was drawn on.
-    pub rows: Vec<(u16, usize)>,
+    /// Where a row of `rows()` was drawn: its line across the list, and no
+    /// wider, since the agent shares those lines.
+    pub rows: Vec<(ratatui::layout::Rect, usize)>,
     /// `(y, from, to, pane)`: the columns an agent's tab covers.
     pub tabs: Vec<(u16, u16, u16, usize)>,
     /// `(y, from, to)`: where the turbo switch is in the title bar.
@@ -1596,7 +1597,12 @@ impl App {
         }
         if self.hits.turbo.is_some_and(|(y, from, to)| y == line && (from..to).contains(&column)) {
             self.toggle_turbo();
-        } else if let Some(&(_, row)) = self.hits.rows.iter().find(|(y, _)| *y == line) {
+        } else if let Some(&(_, row)) = self
+            .hits
+            .rows
+            .iter()
+            .find(|(r, _)| r.contains(ratatui::layout::Position { x: column, y: line }))
+        {
             self.focus = Focus::Weft;
             self.select_row(row);
         } else if let Some(&(.., pane)) = self
@@ -2725,6 +2731,24 @@ pub(crate) mod tests {
         std::thread::sleep(Duration::from_millis(200));
         a.pump();
         assert_eq!(a.pane_text(0), before, "a click never types into an agent");
+    }
+
+    /// A click in the agent, on the line a list row is drawn on, is the
+    /// agent's: it selects nothing and the keys stay where they were.
+    #[test]
+    fn a_click_in_the_agent_beside_a_row_selects_nothing() {
+        let mut a = app();
+        let mut second = unit(Sent::Arrived { exact: true });
+        second.ask_id = "ask_2".into();
+        second.title = "the second one".into();
+        a.set_units(vec![unit(Sent::Arrived { exact: true }), second]);
+        let screen = drawn(&mut a);
+        let y = screen.lines().position(|l| l.contains("the second one")).expect("drawn");
+        let before = a.selected;
+        a.focus = Focus::Agent;
+        click(&mut a, 100, y as u16);
+        assert_eq!(a.selected, before, "no row was selected");
+        assert_eq!(a.focus, Focus::Agent, "the keys stay with the agent");
     }
 
     /// And a click on an agent's tab goes to that agent, as its number would.

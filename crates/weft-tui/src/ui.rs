@@ -537,7 +537,8 @@ fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragraph<'static
             lines.push(Line::styled(format!("   ↓ {} more", all.len() - i), th.label()));
             break;
         }
-        app.hits.rows.push((area.y + lines.len() as u16, i));
+        let at = Rect { y: area.y + lines.len() as u16, height: 1, ..area };
+        app.hits.rows.push((at, i));
         lines.push(sidebar_row(app, row, i == app.selected, width));
     }
     // An agent open and nothing asked yet: say what comes next under it.
