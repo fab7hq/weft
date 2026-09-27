@@ -57,7 +57,6 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("profile", Some("show")) => {
             s(&["--host", "--version", "--override"], NONE, &["--host"], true, NONE)
         }
-        ("profile", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("compile")) => s(
             &[
                 "--staged",
@@ -147,11 +146,10 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 28] = [
+const SURFACE: [(&str, Option<&str>); 27] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
-    ("profile", Some("list")),
     ("ask", Some("request")),
     ("ask", Some("compile")),
     ("ask", Some("confirm")),
@@ -186,9 +184,6 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("sync", None) => {
             "replace the synced configuration; overrides arrive with --override. \
              --check only says whether a newer release is out"
-        }
-        ("profile", Some("list")) => {
-            "every harness a profile defines: how to start, set up and resume it"
         }
         ("profile", _) => "the host's capabilities and how each one has to be delivered",
         ("ask", Some("compile")) => {
@@ -729,10 +724,6 @@ fn dispatch(
             out["plans"] = json!(workspace::plans(&ws));
             (ws, Outcome::Ok(0, out))
         }
-        ("profile", Some("list")) => match profiles::harnesses() {
-            Ok(p) => (ws, Outcome::Ok(0, json!({"profiles": p}))),
-            Err(e) => (ws, from_config_error(e)),
-        },
         ("ask", Some(what)) => ask_command(ns, ws, actor, what, read_stdin),
         ("deltas", Some(what)) => deltas_command(ns, ws, what),
         ("eval", Some("list")) => match evaluate::list_records(&ws) {
@@ -2069,20 +2060,12 @@ mod tests {
         });
     }
 
-    /// Slice 9 S9.2 (ADR-0018): the profile carries every harness fact both
-    /// programs read, `profile show --json` returns them, and `unknown`
-    /// carries none of them; `profile list` names the harnesses that have them.
+    /// A profile carries the harness facts the CLI reads, `profile show
+    /// --json` returns them, and `unknown` carries none. How a harness is
+    /// started, resumed and set up is not RingFrame's.
     #[test]
     fn a_profile_carries_the_harness_and_unknown_carries_none() {
-        const FACTS: [&str; 7] = [
-            "title",
-            "program",
-            "session_field",
-            "resume",
-            "config",
-            "plugin",
-            "invocation_prefix",
-        ];
+        const FACTS: [&str; 3] = ["title", "session_field", "invocation_prefix"];
         cli(|c| {
             for host in ["claude-code", "codex"] {
                 let (code, out, _) = c.go(&["profile", "show", "--host", host, "--json"]);
@@ -2090,23 +2073,16 @@ mod tests {
                 for k in FACTS {
                     assert!(!out[k].is_null(), "{host} has no {k}");
                 }
-                assert!(out["plugin"]["list"].is_array() && out["config"]["env"].is_string());
+                for k in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
+                    assert!(out[k].is_null(), "{host} carries {k}");
+                }
             }
-            let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--json"]);
-            assert_eq!(out["transcript"], "Ctrl+T");
             let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
-            for k in &FACTS[..6] {
+            for k in &FACTS[..2] {
                 assert!(out[k].is_null(), "unknown carries {k}");
             }
-            let (code, out, _) = c.go(&["profile", "list", "--json"]);
-            assert_eq!(code, 0);
-            let hosts: Vec<&str> = out["profiles"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|p| p["host"].as_str())
-                .collect();
-            assert_eq!(hosts, ["claude-code", "codex"], "unknown is never offered");
+            let (code, _, _) = c.go(&["profile", "list", "--json"]);
+            assert_ne!(code, 0, "no command lists harnesses for another program");
         });
     }
 
@@ -2124,20 +2100,7 @@ surface = "native-tui"
 invocation_prefix = "@rf:"
 fallback = "human_handoff"
 title = "Zed Agent"
-program = "zed-agent"
 session_field = "threadId"
-resume = ["--thread"]
-
-[config]
-env = "ZED_AGENT_HOME"
-default = ".zed-agent"
-
-[plugin]
-list = ["plugins", "--json"]
-add_marketplace = ["plugins", "add-source", "fab7hq/fab7"]
-install = ["plugins", "install", "rf@fab7"]
-update_marketplace = ["plugins", "refresh", "fab7"]
-update = ["plugins", "install", "rf@fab7"]
 
 [routing]
 precedence = ["native_direct"]
@@ -2157,14 +2120,6 @@ qualification = {}
 limitations = []
 "#;
             std::fs::write(home.join(".fab7/rf/config/harnesses/zed-agent.toml"), zed).unwrap();
-            let (_, out, _) = c.go(&["profile", "list", "--json"]);
-            let hosts: Vec<&str> = out["profiles"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter_map(|p| p["host"].as_str())
-                .collect();
-            assert!(hosts.contains(&"zed-agent"), "{hosts:?}");
 
             let payload = format!(r#"{{"threadId":"z1","cwd":"{}"}}"#, c.root.display());
             let turn =

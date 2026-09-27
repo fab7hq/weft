@@ -8,30 +8,14 @@ paste_fold_chars = 512
 subagents = true
 fallback = "human_handoff"
 
-# Everything else Weft and the ringframe CLI need to know about this harness,
-# and the only place either reads it (RingFrame ADR-0018). No text to match on
-# its screen: an agent's state comes from the plugin's hooks.
+# What the ringframe CLI reads about this harness. How to start it, resume it and
+# set its plugin up is not RingFrame's: those are in the harness's own file for
+# the tool that runs it. No text to match on its screen: an agent's state comes
+# from the plugin's hooks.
+# The name a person reads, in the handoff the CLI writes.
 title = "Claude Code"
-program = "claude"
 # The hook payload's session id.
 session_field = "session_id"
-# How a recorded session is opened again; the id is appended.
-resume = ["--resume"]
-# No `transcript`: it prints inline, so the terminal keeps its history.
-# Turbo mode, when Weft's config.toml turns it on: every permission granted and no
-# question asked, for a person who wants the agent to run on its own.
-turbo = ["--dangerously-skip-permissions"]
-
-[config]   # where it keeps its configuration
-env = "CLAUDE_CONFIG_DIR"
-default = ".claude"
-
-[plugin]   # the argv for each, as Weft's readiness and sync views run them
-list = ["plugin", "list", "--available", "--json"]
-add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
-install = ["plugin", "install", "rf@fab7", "--scope", "user"]
-update_marketplace = ["plugin", "marketplace", "update", "fab7"]
-update = ["plugin", "update", "rf@fab7"]
 
 [routing]
 precedence = ["native_goal", "native_plan", "native_direct"]

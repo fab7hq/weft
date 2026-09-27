@@ -187,9 +187,9 @@ mod tests {
     /// cannot work.
     #[test]
     fn a_harness_with_no_plugin_command_gets_no_step_it_cannot_run() {
-        let mut p = crate::harness::fixture::profile("codex");
+        let mut p = crate::harness::fixture::file("codex");
         p["plugin"] = json!({"list": ["plugin", "list"]});
-        let bare = crate::harness::Harness::from_profile(&p).expect("still a harness");
+        let bare = crate::harness::Harness::of("codex", &p).expect("still a harness");
         let check =
             json!({"revision": "v0.1.1", "latest": "v0.1.1", "plugin": "0.1.2", "behind": false});
         let v = view(

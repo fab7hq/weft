@@ -1,0 +1,24 @@
+# Weft harness file: Claude Code. What Weft needs to start this harness, pick a
+# session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
+# own facts about it are in its profile. Shipped by fab7; `install.sh` and
+# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# Never edit the copy.
+title = "Claude Code"
+program = "claude"
+# How a recorded session is opened again; the id is appended.
+resume = ["--resume"]
+# No `transcript`: it prints inline, so the terminal keeps its history.
+# Turbo mode, when Weft's config.toml turns it on: every permission granted and no
+# question asked, for a person who wants the agent to run on its own.
+turbo = ["--dangerously-skip-permissions"]
+
+[config]   # where it keeps its configuration
+env = "CLAUDE_CONFIG_DIR"
+default = ".claude"
+
+[plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
+list = ["plugin", "list", "--available", "--json"]
+add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
+install = ["plugin", "install", "rf@fab7", "--scope", "user"]
+update_marketplace = ["plugin", "marketplace", "update", "fab7"]
+update = ["plugin", "update", "rf@fab7"]

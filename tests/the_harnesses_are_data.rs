@@ -46,14 +46,17 @@ const SCREEN: &[&str] = &[
     "idle_pane",
 ];
 
-/// Every harness a fixture profile defines: its id, title, program and
-/// configuration, each as a quoted literal, plus the one the plan adds next.
+/// Every harness a Weft fixture harness file defines: its id, title,
+/// program and configuration, each as a quoted literal.
 fn harness_names() -> Vec<String> {
-    let dir = root().join("crates/ringframe/tests/fixtures/config/harnesses");
-    let mut out = vec!["\"agy\"".to_string(), "\"Antigravity\"".to_string()];
-    for entry in std::fs::read_dir(dir).expect("fixture profiles").flatten() {
-        let text = std::fs::read_to_string(entry.path()).expect("profile");
-        for key in ["host", "title", "program", "env", "default"] {
+    let dir = root().join("crates/weft-core/tests/fixtures/harnesses");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("fixture harness files").flatten() {
+        let path = entry.path();
+        let id = path.file_stem().and_then(|s| s.to_str()).expect("an id").to_string();
+        out.push(format!("\"{id}\""));
+        let text = std::fs::read_to_string(&path).expect("harness file");
+        for key in ["title", "program", "env", "default"] {
             for line in text.lines().filter(|l| l.starts_with(&format!("{key} = "))) {
                 if let Some(value) = line.split('"').nth(1) {
                     out.push(format!("\"{value}\""));
@@ -61,7 +64,7 @@ fn harness_names() -> Vec<String> {
             }
         }
     }
-    assert!(out.len() > 8, "the profiles named too few harnesses: {out:?}");
+    assert!(out.len() > 8, "the fixture files named too few harnesses: {out:?}");
     out
 }
 

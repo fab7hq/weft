@@ -11,7 +11,7 @@ fn main() -> anyhow::Result<()> {
     let root = std::path::PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| ".".into()))
         .canonicalize()?;
     println!("config file: {}", weft::routing::file().display());
-    let known = weft::ringframe::harnesses(&root);
+    let known = weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0;
     let r = weft::routing::read_at(&weft::routing::file(), &known).routing(&root);
     println!("routes: {:?}  unknown: {:?}", r.each(), r.unknown);
 
@@ -29,7 +29,7 @@ fn main() -> anyhow::Result<()> {
     app.refresh_for_test();
     // Readiness is normally asked when a pane starts; this probe starts none.
     let cli = weft::ringframe::installed();
-    for h in weft::ringframe::harnesses(std::path::Path::new(".")).iter() {
+    for h in weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0.iter() {
         app.set_readiness(&h.name, weft::readiness::check(h, cli));
     }
     for act in [Act::Ask, Act::Eval, Act::Seal, Act::Proceed] {

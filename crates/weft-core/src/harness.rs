@@ -1,10 +1,12 @@
 //! The harnesses Weft can run, and how to find and prepare one.
 //!
 //! Weft names no harness (ADR-0015). Everything it knows about one comes from
-//! RingFrame's harness profile, read through `ringframe profile list --json`
-//! by the daemon and handed to every client: the name a person reads, the
-//! program, where it keeps its configuration, the plugin commands, and how to
-//! resume a session. A harness with no profile is not offered. Weft asks a
+//! that harness's Weft harness file, `~/.fab7/weft/harnesses/<id>.toml`,
+//! shipped by fab7, read by the daemon and handed to every client: the name a
+//! person reads, the program, where it keeps its configuration, the plugin
+//! commands, and how to resume a session. A harness with no file is not
+//! offered. RingFrame's own facts about a harness, such as how its skills are
+//! typed, stay in RingFrame's profile and are asked of RingFrame. Weft asks a
 //! harness through its own documented commands and never reads its
 //! configuration files.
 
@@ -15,7 +17,8 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Harness {
-    /// The name RingFrame records, which is what everything else keys on.
+    /// The name RingFrame records, which is what everything else keys on:
+    /// its harness file's name.
     pub name: String,
     /// The name a person reads.
     pub title: String,
@@ -46,7 +49,7 @@ pub struct Harness {
     pub transcript: Option<String>,
     /// Turbo mode: the flags that grant this harness every permission and
     /// skip its questions, added to every agent Weft starts when Weft's
-    /// `config.toml` turns turbo on. Empty when the profile names none.
+    /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
 }
@@ -56,17 +59,16 @@ pub const MARKETPLACE: &str = "fab7";
 pub const PLUGIN: &str = "rf@fab7";
 
 impl Harness {
-    /// One harness from its profile, as `ringframe profile show --json`
-    /// returns it. A profile that does not define a harness — `unknown`, or
-    /// one missing a field Weft needs — defines none.
-    pub fn from_profile(p: &Value) -> Option<Self> {
+    /// One harness from its Weft harness file, `<id>.toml`, as a table. A
+    /// file missing a field Weft needs defines none.
+    pub fn of(id: &str, p: &Value) -> Option<Self> {
         let text = |v: &Value| v.as_str().filter(|s| !s.is_empty()).map(str::to_string);
         let argv = |v: &Value| -> Option<Vec<String>> {
             v.as_array()?.iter().map(|a| a.as_str().map(str::to_string)).collect()
         };
         let plugin = &p["plugin"];
         Some(Harness {
-            name: text(&p["host"])?,
+            name: Some(id).filter(|id| !id.is_empty())?.to_string(),
             title: text(&p["title"])?,
             program: text(&p["program"])?,
             config_env: text(&p["config"]["env"]),
@@ -117,25 +119,27 @@ pub fn with_turbo(spec: &str, flags: &[String]) -> Vec<String> {
     words
 }
 
-/// Every harness the profiles define, in the order RingFrame lists them.
+/// Every harness Weft has a file for, in the order of their names.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Harnesses(pub Vec<Harness>);
 
 impl Harnesses {
-    /// From what `ringframe profile list --json` answers, keeping each profile
-    /// that defines a harness.
-    pub fn of(listing: &Value) -> Self {
-        Harnesses(
-            listing["profiles"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Harness::from_profile)
-                .collect(),
-        )
+    /// Every harness file, by id and text. One that does not parse, or is
+    /// missing a field Weft needs, defines no harness and is named in what
+    /// comes back second, so that it can be said once.
+    pub fn read(files: Vec<(String, String)>) -> (Self, Vec<String>) {
+        let (mut read, mut unread) = (Vec::new(), Vec::new());
+        for (id, text) in files {
+            let table = text.parse::<toml::Table>().ok().and_then(|t| serde_json::to_value(t).ok());
+            match table.and_then(|t| Harness::of(&id, &t)) {
+                Some(h) => read.push(h),
+                None => unread.push(id),
+            }
+        }
+        (Harnesses(read), unread)
     }
 
-    /// The harness RingFrame records under this name, if a profile defines it.
+    /// The harness RingFrame records under this name, if Weft has its file.
     pub fn find(&self, name: &str) -> Option<&Harness> {
         self.0.iter().find(|h| h.name == name)
     }
@@ -155,56 +159,56 @@ impl Harnesses {
     pub fn titles(&self) -> String {
         let t: Vec<&str> = self.0.iter().map(|h| h.title.as_str()).collect();
         match t.as_slice() {
-            [] => "a harness RingFrame has a profile for".into(),
+            [] => "a harness Weft has a harness file for".into(),
             [one] => (*one).into(),
             [rest @ .., last] => format!("{} or {last}", rest.join(", ")),
         }
     }
 }
 
-/// Test fixtures: RingFrame's own fixture profiles, read the way the daemon
-/// reads `profile list`, so every harness test runs on profile-loaded data.
-/// Built only for tests, and for the crates above that ask for `fixtures`.
+/// Test fixtures: Weft's own fixture harness files, read the way the daemon
+/// reads `~/.fab7/weft/harnesses/`, so every harness test runs on file-loaded
+/// data. Built only for tests, and for the crates above that ask for
+/// `fixtures`.
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixture {
     use super::*;
 
-    pub fn profile(name: &str) -> Value {
-        let text = match name {
-            "claude-code" => {
-                include_str!("../../ringframe/tests/fixtures/config/harnesses/claude-code.toml")
-            }
-            "codex" => include_str!("../../ringframe/tests/fixtures/config/harnesses/codex.toml"),
-            "unknown" => {
-                include_str!("../../ringframe/tests/fixtures/config/harnesses/unknown.toml")
-            }
-            other => panic!("no fixture profile {other}"),
-        };
-        serde_json::to_value(text.parse::<toml::Table>().expect("toml")).expect("json")
+    /// The text of a fixture harness file: `claude-code`, `codex` or `agy`.
+    pub fn text(name: &str) -> &'static str {
+        match name {
+            "claude-code" => include_str!("../tests/fixtures/harnesses/claude-code.toml"),
+            "codex" => include_str!("../tests/fixtures/harnesses/codex.toml"),
+            "agy" => include_str!("../tests/fixtures/harnesses/agy.toml"),
+            other => panic!("no fixture harness file {other}"),
+        }
     }
 
-    /// The profiles RingFrame ships, and `unknown`, as `profile list` would
-    /// answer: `unknown` defines no harness and is left out by `of`.
+    /// One fixture harness file, as a table to change and read with `of`.
+    pub fn file(name: &str) -> Value {
+        serde_json::to_value(text(name).parse::<toml::Table>().expect("toml")).expect("json")
+    }
+
+    /// Claude Code and Codex, as the daemon would read them.
     pub fn harnesses() -> Harnesses {
-        Harnesses::of(&serde_json::json!({"profiles": [
-            profile("claude-code"), profile("codex"), profile("unknown")
-        ]}))
+        let files = ["claude-code", "codex"].map(|n| (n.to_string(), text(n).to_string()));
+        Harnesses::read(files.to_vec()).0
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fixture::{harnesses, profile};
+    use super::fixture::{file, harnesses, text};
     use super::*;
 
     #[test]
     fn the_harnesses_are_the_ones_the_profiles_define() {
         let all = harnesses();
         let names: Vec<_> = all.iter().map(|h| h.name.as_str()).collect();
-        assert_eq!(names, vec!["claude-code", "codex"], "unknown defines none");
+        assert_eq!(names, vec!["claude-code", "codex"]);
         assert_eq!(all.find("claude-code").map(|h| h.program.as_str()), Some("claude"));
         assert_eq!(all.find("codex").map(|h| h.title.as_str()), Some("Codex"));
-        assert!(all.find("aider").is_none(), "nothing without a profile");
+        assert!(all.find("aider").is_none(), "nothing without a file");
         assert_eq!(all.titles(), "Claude Code or Codex");
     }
 
@@ -281,10 +285,10 @@ mod tests {
             all.find("codex").expect("codex").turbo,
             ["--dangerously-bypass-approvals-and-sandbox"]
         );
-        let mut p = profile("codex");
+        let mut p = file("codex");
         p["turbo"] = Value::Null;
         assert!(
-            Harness::from_profile(&p).expect("a harness").turbo.is_empty(),
+            Harness::of("codex", &p).expect("a harness").turbo.is_empty(),
             "no turbo, no flags"
         );
     }
@@ -294,11 +298,11 @@ mod tests {
     /// only what is true of it, and Weft asks nothing it has no command for.
     #[test]
     fn a_harness_may_have_no_configuration_variable_and_no_marketplace_commands() {
-        let mut p = profile("codex");
+        let mut p = file("codex");
         p["config"] = serde_json::json!({"default": ".elsewhere/agent"});
         p["plugin"]["add_marketplace"] = Value::Null;
         p["plugin"]["update_marketplace"] = Value::Null;
-        let h = Harness::from_profile(&p).expect("still a harness");
+        let h = Harness::of("codex", &p).expect("still a harness");
         assert_eq!(h.config_env, None);
         let home = PathBuf::from("/home/someone");
         assert_eq!(
@@ -333,22 +337,43 @@ mod tests {
         assert_eq!(with_turbo("claude", &[]), ["claude"]);
     }
 
-    /// harness-profile.md §5.3: a made-up third harness is read and offered
-    /// from its profile alone.
+    /// A made-up harness, from its file alone, is read and offered.
     #[test]
-    fn a_made_up_third_harness_is_read_from_its_profile_alone() {
-        let mut zed = profile("codex");
-        zed["host"] = "zed-agent".into();
-        zed["title"] = "Zed Agent".into();
-        zed["program"] = "zed-agent".into();
-        zed["resume"] = serde_json::json!(["--thread"]);
-        zed["transcript"] = Value::Null;
-        let all = Harnesses::of(&serde_json::json!({"profiles": [profile("claude-code"), zed]}));
+    fn a_made_up_harness_is_read_from_its_file_alone() {
+        let zed = text("codex")
+            .replace("program = \"codex\"", "program = \"zed-agent\"")
+            .replace("title = \"Codex\"", "title = \"Zed Agent\"")
+            .replace("resume = [\"resume\"]", "resume = [\"--thread\"]");
+        let files = vec![
+            ("claude-code".to_string(), text("claude-code").to_string()),
+            ("zed-agent".to_string(), zed),
+        ];
+        let (all, unread) = Harnesses::read(files);
+        assert!(unread.is_empty());
         let h = all.for_program("zed-agent").expect("offered");
+        assert_eq!(h.name, "zed-agent", "named by its file");
         assert_eq!(h.resume_spec("t1"), "zed-agent --thread t1");
         assert_eq!(all.titles(), "Claude Code or Zed Agent");
-        let mut broken = profile("codex");
+    }
+
+    /// A harness file that is missing, broken or short of a field leaves the
+    /// others offered, and is named so it can be said.
+    #[test]
+    fn a_broken_harness_file_leaves_the_others_offered() {
+        let files = vec![
+            ("broken".to_string(), "title = [not toml".to_string()),
+            ("claude-code".to_string(), text("claude-code").to_string()),
+            ("half".to_string(), "title = \"Half\"\nprogram = \"half\"\n".to_string()),
+        ];
+        let (all, unread) = Harnesses::read(files);
+        assert_eq!(all.iter().map(|h| h.name.as_str()).collect::<Vec<_>>(), ["claude-code"]);
+        assert_eq!(unread, ["broken", "half"]);
+        let mut broken = file("codex");
         broken["plugin"] = Value::Null;
-        assert_eq!(Harness::from_profile(&broken), None, "a profile missing a field defines none");
+        assert_eq!(Harness::of("codex", &broken), None, "a file missing a field defines none");
+        assert!(
+            Harness::of("agy", &file("agy")).is_some(),
+            "no marketplace, no install: still one"
+        );
     }
 }

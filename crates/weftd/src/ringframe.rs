@@ -106,14 +106,6 @@ pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
         .ok_or(Error::Refused { code: 4, message: "the profile names no invocation prefix".into() })
 }
 
-/// Every harness a profile defines, as RingFrame lists them. Weft keeps no
-/// list of its own (ADR-0015): no answer is no harness to offer.
-pub fn harnesses(project: &Path) -> weft_core::harness::Harnesses {
-    json(project, &["profile", "list", "--json"])
-        .map(|v| weft_core::harness::Harnesses::of(&v))
-        .unwrap_or_default()
-}
-
 /// The size at which this host's composer folds a paste into a placeholder,
 /// as the profile declares it.
 ///

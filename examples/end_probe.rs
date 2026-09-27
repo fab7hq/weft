@@ -19,8 +19,8 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let name = args.next().unwrap_or_else(|| "codex".into());
     let root = PathBuf::from(args.next().unwrap_or_else(|| ".".into())).canonicalize()?;
-    let all = weft::ringframe::harnesses(&root);
-    let h = all.find(&name).expect("a harness RingFrame has a profile for").clone();
+    let all = weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0;
+    let h = all.find(&name).expect("a harness Weft has a file for").clone();
 
     let socket = protocol::private_socket("weft-end");
     let _ = std::fs::remove_file(&socket);

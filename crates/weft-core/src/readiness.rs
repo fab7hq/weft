@@ -108,9 +108,9 @@ mod tests {
     }
 
     fn without() -> crate::harness::Harness {
-        let mut p = crate::harness::fixture::profile("codex");
+        let mut p = crate::harness::fixture::file("codex");
         p["plugin"]["add_marketplace"] = Value::Null;
-        crate::harness::Harness::from_profile(&p).expect("a harness")
+        crate::harness::Harness::of("codex", &p).expect("a harness")
     }
 
     /// Captured from `claude plugin list --available --json`.

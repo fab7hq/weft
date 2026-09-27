@@ -83,6 +83,26 @@ if ! "$BIN_DIR/ringframe" init --global; then
     printf '%s\n' "Run \`$BIN_DIR/ringframe init --global\` again once that is sorted."
 fi
 
+# Weft's harness files say how to start, resume and set up each harness. They
+# come with fab7 at the tag the configuration above came from, and replace
+# whatever was there: they are never edited.
+harnesses="$HOME/.fab7/weft/harnesses"
+revision=$(cat "$HOME/.fab7/rf/config/.revision" 2>/dev/null || true)
+if [ -n "$revision" ] && [ "$revision" != local ] &&
+    curl -fsSL -o "$work/fab7.tar.gz" "https://codeload.github.com/fab7hq/fab7/tar.gz/refs/tags/$revision" &&
+    mkdir -p "$work/fab7" && tar -xzf "$work/fab7.tar.gz" -C "$work/fab7" &&
+    [ -d "$work"/fab7/*/products/weft/harnesses ]; then
+    mkdir -p "$HOME/.fab7/weft"
+    rm -rf "$harnesses.new"
+    cp -R "$work"/fab7/*/products/weft/harnesses "$harnesses.new"
+    rm -rf "$harnesses"
+    mv "$harnesses.new" "$harnesses"
+    printf 'Installed the harness files of fab7 %s to %s\n' "$revision" "$harnesses"
+else
+    printf '\n%s\n' "Weft's harness files could not be installed, so Weft offers no harness yet."
+    printf '%s\n' 'Run `weft update` again once the configuration is in place.'
+fi
+
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) printf '\n%s\n' "Add $BIN_DIR to your PATH." ;;

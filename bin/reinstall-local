@@ -3,10 +3,11 @@
 # hosts, for testing an edit before it is released.
 #
 # `install.sh` fetches a published build; this installs what you just wrote.
-# Three things have to move together and they live in two repositories:
+# Four things have to move together and they live in two repositories:
 #
 #   the binaries       built here, into ~/.local/bin
 #   the configuration  from the fab7 checkout, into ~/.fab7/rf/config
+#   the harness files  from the fab7 checkout, into ~/.fab7/weft/harnesses
 #   the plugins        from the fab7 checkout, into each host's cache
 #
 # It then restarts the Weft daemon, which ends the agents running in it.
@@ -56,6 +57,19 @@ if [ -n "$fab7" ] && [ -d "$fab7/products/ringframe/config" ]; then
 else
     printf '  config  skipped: no marketplace checkout at %s\n' "${fab7:-../fab7}"
     printf '          set FAB7_DIR if it lives somewhere else\n'
+fi
+
+if [ -n "$fab7" ] && [ -d "$fab7/products/weft/harnesses" ]; then
+    # Weft's harness files, replaced whole, as `install.sh` does.
+    harnesses="$HOME/.fab7/weft/harnesses"
+    mkdir -p "$HOME/.fab7/weft"
+    rm -rf "$harnesses.new"
+    cp -R "$fab7/products/weft/harnesses" "$harnesses.new"
+    rm -rf "$harnesses"
+    mv "$harnesses.new" "$harnesses"
+    printf '  harness %s\n' "$(ls "$harnesses" | sed 's/\.toml$//' | tr '\n' ' ')"
+else
+    printf '  harness skipped: no %s/products/weft/harnesses\n' "${fab7:-../fab7}"
 fi
 
 if [ "$want" = none ]; then

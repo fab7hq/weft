@@ -158,8 +158,10 @@ pub struct Session {
     pub notify: bool,
     /// Whether agents started here from now on run in turbo mode.
     pub turbo: bool,
-    /// The harnesses RingFrame's profiles define, as the daemon read them.
+    /// The harnesses Weft has a file for, as the daemon read them, and the
+    /// files it could not read.
     pub harnesses: weft_core::harness::Harnesses,
+    pub unread: Vec<String>,
 }
 
 impl Session {
@@ -220,6 +222,7 @@ impl Session {
             notify: true,
             turbo: false,
             harnesses: Default::default(),
+            unread: Vec::new(),
             answers: std::collections::HashMap::new(),
         };
         // The handshake first: a daemon that speaks another protocol says so
@@ -248,6 +251,10 @@ impl Session {
         }
         session.harnesses = opened
             .get("harnesses")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        session.unread = opened
+            .get("unread")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
         session.notify = opened.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);

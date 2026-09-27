@@ -1,0 +1,27 @@
+# Weft harness file: Codex. What Weft needs to start this harness, pick a
+# session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
+# own facts about it are in its profile. Shipped by fab7; `install.sh` and
+# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# Never edit the copy.
+title = "Codex"
+program = "codex"
+# How a recorded session is opened again; the id is appended.
+resume = ["resume"]
+# It repaints its viewport rather than scrolling, so its history is behind this.
+transcript = "Ctrl+T"
+# Turbo mode, when Weft's config.toml turns it on: every approval skipped. Codex has
+# no flag that skips its questions and keeps its sandbox, so this also runs commands
+# unsandboxed.
+turbo = ["--dangerously-bypass-approvals-and-sandbox"]
+
+[config]   # where it keeps its configuration
+env = "CODEX_HOME"
+default = ".codex"
+
+[plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
+list = ["plugin", "list", "--json"]
+add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
+install = ["plugin", "add", "rf@fab7"]
+update_marketplace = ["plugin", "marketplace", "upgrade", "fab7"]
+# Adding again installs the version the refreshed marketplace holds.
+update = ["plugin", "add", "rf@fab7"]

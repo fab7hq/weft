@@ -986,6 +986,13 @@ impl App {
                 "config.toml names something Weft does not know ({said}). It is ignored."
             ));
         }
+        if !sess!(self).unread.is_empty() && self.hint.is_none() {
+            let said = sess!(self).unread.join(", ");
+            self.say(format!(
+                "Weft could not read the harness file of {said} in ~/.fab7/weft/harnesses/; \
+                 it is not offered."
+            ));
+        }
         if !self.routing.leftover.is_empty() && self.hint.is_none() {
             let said = self.routing.leftover.join(", ");
             self.say(format!(

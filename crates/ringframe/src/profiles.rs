@@ -70,12 +70,6 @@ pub fn of(host: &str) -> Result<Value, ConfigError> {
     for_host(&serde_json::json!({"name": host}))
 }
 
-/// Every profile that defines a harness: one with a `program` to start.
-/// `unknown` defines none, so it is never offered (ADR-0018).
-pub fn harnesses() -> Result<Vec<Value>, ConfigError> {
-    Ok(loaded()?.into_iter().filter(|p| p["program"].is_string()).collect())
-}
-
 /// One of a host's facts, read from its profile: `title`, `session_field`,
 /// `invocation_prefix`. None when it names none, or there is no profile to
 /// read.
@@ -110,13 +104,26 @@ mod tests {
             std::fs::write(dir.join("aaa-broken.toml"), "schema = [not toml").unwrap();
             std::fs::write(dir.join("zzz-old.toml"), "schema = \"ringframe.profile/0\"\n").unwrap();
             let hosts: Vec<Value> =
-                harnesses().unwrap().into_iter().map(|p| p["host"].clone()).collect();
+                loaded().unwrap().into_iter().map(|p| p["host"].clone()).collect();
             assert!(
                 hosts.contains(&json!("codex")) && hosts.contains(&json!("claude-code")),
                 "{hosts:?}"
             );
             assert_eq!(of("codex").unwrap()["profile_id"], "codex");
             assert_eq!(of("nobody").unwrap()["profile_id"], "unknown");
+        });
+    }
+
+    /// A profile holds what the CLI reads. How to start a harness, resume
+    /// it and set its plugin up belongs to the tool that runs it.
+    #[test]
+    fn no_profile_carries_a_field_only_a_harness_runner_reads() {
+        with_config_home(|_| {
+            for p in loaded().unwrap() {
+                for key in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
+                    assert!(p.get(key).is_none(), "{} carries {key}", p["profile_id"]);
+                }
+            }
         });
     }
 

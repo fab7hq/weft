@@ -9,7 +9,7 @@ use weft::readiness;
 fn main() {
     let cli = weft::ringframe::installed();
     println!("ringframe CLI installed: {cli}");
-    for h in weft::ringframe::harnesses(std::path::Path::new(".")).iter() {
+    for h in weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0.iter() {
         let found = h.on_path();
         let state = readiness::check(h, cli);
         println!(

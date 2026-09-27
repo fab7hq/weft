@@ -25,7 +25,13 @@ impl Release {
         std::fs::create_dir_all(&staged).unwrap();
         for name in ["weft", "ringframe"] {
             let p = staged.join(name);
-            std::fs::write(&p, format!("#!/bin/sh\necho \"{name} {tag}\"\n")).unwrap();
+            // `ringframe init --global` records the fab7 tag it installed, as
+            // the real one does.
+            let init = format!(
+                "if [ \"${{1:-}}\" = init ]; then mkdir -p \"$HOME/.fab7/rf/config\" && \
+                 echo {tag} > \"$HOME/.fab7/rf/config/.revision\"; fi\n"
+            );
+            std::fs::write(&p, format!("#!/bin/sh\n{init}echo \"{name} {tag}\"\n")).unwrap();
             make_executable(&p);
         }
         run(&[
@@ -44,6 +50,21 @@ impl Release {
             .unwrap();
         std::fs::write(serve.join("releases-latest"), format!("{{\"tag_name\": \"{tag}\"}}\n"))
             .unwrap();
+
+        // fab7 at that tag, as GitHub serves it: one directory, holding
+        // Weft's harness files.
+        let fab7 = dir.path().join("fab7");
+        let harnesses = fab7.join(format!("fab7-{tag}/products/weft/harnesses"));
+        std::fs::create_dir_all(&harnesses).unwrap();
+        std::fs::write(harnesses.join("zed-agent.toml"), "title = \"Zed Agent\"\n").unwrap();
+        run(&[
+            "tar",
+            "-czf",
+            &serve.join(tag).to_string_lossy(),
+            "-C",
+            &fab7.to_string_lossy(),
+            &format!("fab7-{tag}"),
+        ]);
 
         // A `curl -fsSL [-o OUT] URL` that reads from `serve/` by the last
         // path segment, and fails on anything it was not given.
@@ -148,6 +169,21 @@ fn it_downloads_verifies_and_installs_both_binaries() {
         );
     }
     assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
+}
+
+/// Weft's harness files come with fab7 at the tag RingFrame's configuration
+/// came from, and replace whatever was there: they are never edited.
+#[test]
+fn the_harness_files_are_installed_from_the_same_fab7_and_replace_the_old() {
+    let release = Release::make("v0.1.0", false);
+    let installed = release.dir.path().join("home/.fab7/weft/harnesses");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("gone.toml"), "title = \"Gone\"\n").unwrap();
+    let out = release.install("v0.1.0");
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(installed.join("zed-agent.toml").is_file(), "{text}");
+    assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
 }
 
 #[test]

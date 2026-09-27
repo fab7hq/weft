@@ -1,0 +1,21 @@
+# Weft harness file: Antigravity. What Weft needs to start this harness, pick a
+# session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
+# own facts about it are in its profile. Shipped by fab7; `install.sh` and
+# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# Never edit the copy.
+title = "Antigravity"
+program = "agy"
+# How a recorded conversation is opened again; the id is appended.
+resume = ["--conversation"]
+# No `transcript` key is documented for the TUI.
+# Turbo mode, when Weft's config.toml turns it on: every tool permission approved
+# without asking.
+turbo = ["--dangerously-skip-permissions"]
+
+[config]   # no variable moves it (none documented); where it keeps its configuration
+default = ".gemini/antigravity-cli"
+
+[plugin]   # argv, as Weft's readiness and RingFrame views run them; it has no marketplace commands
+list = ["plugin", "list"]
+# No install or update: `plugin install rf@fab7` is known not to work, and there is
+# no source to install from yet. The plugin is put in place by hand until there is.

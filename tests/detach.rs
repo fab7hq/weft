@@ -456,10 +456,9 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
 
 /// A harness of this name that runs `program`, from a fixture profile.
 fn harness_running(name: &str, program: &str) -> weft::harness_table::Harness {
-    let mut p = weft::harness_table::fixture::profile("codex");
-    p["host"] = name.into();
+    let mut p = weft::harness_table::fixture::file("codex");
     p["program"] = program.into();
-    weft::harness_table::Harness::from_profile(&p).expect("a harness")
+    weft::harness_table::Harness::of(name, &p).expect("a harness")
 }
 
 /// One Ask on this project's ledger, asked of `host`.
@@ -776,12 +775,11 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
 /// starts agents without them.
 #[test]
 fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
-    let mut echo = weft::harness_table::fixture::profile("codex");
-    echo["host"] = "echo-agent".into();
+    let mut echo = weft::harness_table::fixture::file("codex");
     echo["program"] = "echo".into();
     echo["turbo"] = serde_json::json!(["TURBO-FLAG"]);
     let harnesses = weft::harness_table::Harnesses(vec![
-        weft::harness_table::Harness::from_profile(&echo).expect("a harness"),
+        weft::harness_table::Harness::of("echo-agent", &echo).expect("a harness"),
     ]);
     let on = project("turbo-on");
     let off = project("turbo-off");
@@ -830,12 +828,11 @@ fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
 /// already running keeps the mode it was started in.
 #[test]
 fn turbo_can_be_switched_and_the_next_agent_follows_it() {
-    let mut echo = weft::harness_table::fixture::profile("codex");
-    echo["host"] = "echo-agent".into();
+    let mut echo = weft::harness_table::fixture::file("codex");
     echo["program"] = "echo".into();
     echo["turbo"] = serde_json::json!(["TURBO-FLAG"]);
     let harnesses = weft::harness_table::Harnesses(vec![
-        weft::harness_table::Harness::from_profile(&echo).expect("a harness"),
+        weft::harness_table::Harness::of("echo-agent", &echo).expect("a harness"),
     ]);
     let root = project("turbo-switch");
     let socket = protocol::private_socket("weft-turbo-switch");

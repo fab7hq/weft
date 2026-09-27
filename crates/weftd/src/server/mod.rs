@@ -124,9 +124,10 @@ struct Project {
     /// on each tick rather than waited on, so nothing else stops meanwhile.
     starting: Vec<Starting>,
     folds: crate::acts::Folds,
-    /// The harnesses RingFrame's profiles define, read when the project
-    /// opened. Weft keeps no list of its own.
+    /// The harnesses Weft has a file for, read when the project opened, and
+    /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
+    unread: Vec<String>,
     /// Each agent's state, from its hooks' receipts, and what clients were
     /// last told of it.
     turns: crate::turns::Turns,
@@ -227,8 +228,8 @@ pub struct Session {
     next_pending: u64,
     /// Weft's `config.toml`, read each time a project opens.
     config: PathBuf,
-    /// The harnesses to use instead of asking RingFrame, for a test that
-    /// must not depend on the machine's profiles.
+    /// The harnesses to use instead of the files beside `config`, for a test
+    /// that must not depend on the machine's.
     harnesses: Option<weft_core::harness::Harnesses>,
 }
 
@@ -358,8 +359,8 @@ impl Session {
         Self::serve_with(socket, config, None)
     }
 
-    /// Serve with these harnesses rather than the ones RingFrame's profiles
-    /// define on this machine. For tests; `weft --serve` asks RingFrame.
+    /// Serve with these harnesses rather than the harness files beside
+    /// `config`. For tests; `weft --serve` reads the files.
     pub fn serve_with(
         socket: &Path,
         config: &Path,
@@ -749,8 +750,10 @@ impl Session {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let harnesses =
-                    self.harnesses.clone().unwrap_or_else(|| crate::ringframe::harnesses(&root));
+                let (harnesses, unread) = match &self.harnesses {
+                    Some(h) => (h.clone(), Vec::new()),
+                    None => crate::harness::installed(&self.config.with_file_name("harnesses")),
+                };
                 let config = crate::routing::read_at(&self.config, &harnesses);
                 self.projects.push(Project {
                     opened: crate::turns::now_millis(),
@@ -768,6 +771,7 @@ impl Session {
                     folds: crate::acts::Folds::default(),
                     turns: crate::turns::Turns::default(),
                     harnesses,
+                    unread,
                     agents: None,
                 });
                 let at = self.projects.len() - 1;
@@ -833,6 +837,8 @@ impl Session {
                     "notify": self.projects[at].notify,
                     "turbo": self.projects[at].turbo,
                     "harnesses": &self.projects[at].harnesses,
+                    // Harness files that would not read, to be said once.
+                    "unread": &self.projects[at].unread,
                     // Why this workspace could not finish an Ask, if it could not.
                     "gap": workspace_gap(&self.projects[at].root),
                 })));

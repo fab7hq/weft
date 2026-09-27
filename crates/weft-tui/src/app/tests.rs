@@ -260,8 +260,15 @@ fn frames_are_drawn_for_what_changed_and_no_more() {
     let mut a = app();
     let mut t =
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("terminal");
-    // Whatever the start-up still has to say, said.
-    while a.frame(&mut t, Duration::from_millis(500)).expect("a frame") {}
+    // Whatever the start-up still has to say, said: the harness's readiness
+    // comes from asking it, which can take seconds on a busy machine.
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < deadline
+        && (a.session_mut().readiness.get("codex").is_none()
+            || a.frame(&mut t, Duration::from_millis(500)).expect("a frame"))
+    {
+        a.frame(&mut t, Duration::from_millis(50)).expect("a frame");
+    }
     let (mut idle, end) = (0, std::time::Instant::now() + Duration::from_secs(1));
     while std::time::Instant::now() < end {
         idle += a.frame(&mut t, TICK).expect("a frame") as usize;
@@ -367,26 +374,22 @@ fn a_harness_with_no_receipt_here_is_offered_fresh_only() {
     }
 }
 
-/// harness-profile.md §5.3: a made-up third harness, defined by a profile
-/// alone, is offered with no change to Weft.
+/// A made-up harness, added as nothing but a Weft harness file beside the
+/// daemon's `config.toml`, is offered with no change to Weft.
 #[test]
-fn a_made_up_third_harness_is_offered_from_its_profile_alone() {
-    let mut zed = weft_core::harness::fixture::profile("codex");
-    zed["host"] = "zed-agent".into();
-    zed["title"] = "Zed Agent".into();
-    zed["program"] = "cat".into(); // on every machine's PATH
-    let mut all = weft_core::harness::fixture::harnesses();
-    all.0.push(weft_core::harness::Harness::from_profile(&zed).expect("a harness"));
+fn a_made_up_harness_is_offered_from_its_harness_file_alone() {
     let (root, _) = test_session("zed");
+    let home = root.join("machine");
+    std::fs::create_dir_all(home.join("harnesses")).expect("harnesses");
+    let zed = weft_core::harness::fixture::text("codex")
+        .replace("title = \"Codex\"", "title = \"Zed Agent\"")
+        .replace("program = \"codex\"", "program = \"cat\""); // on every machine's PATH
+    std::fs::write(home.join("harnesses/zed-agent.toml"), zed).expect("its file");
     let socket = weft_proto::private_socket("weft-app-zed");
     let _ = std::fs::remove_file(&socket);
-    let listening = socket.clone();
+    let (listening, config) = (socket.clone(), home.join("config.toml"));
     std::thread::spawn(move || {
-        let _ = weftd::server::Session::serve_with(
-            &listening,
-            &listening.with_extension("no-config.toml"),
-            Some(all),
-        );
+        let _ = weftd::server::Session::serve(&listening, &config);
     });
     let session = connect_when_listening(&socket, &root);
     let mut a = App::with_session(root, Toggle, session);
