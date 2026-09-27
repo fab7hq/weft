@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{Act, App, Modal};
+use crate::app::{Act, App, Modal, Target};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::ledger::Unit;
@@ -27,15 +27,20 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let geo = geometry(app, area);
     let th = app.theme;
-    app.hits = Default::default();
+    app.hits.clear();
 
     let (title, turbo) = title_bar(app, geo.title.width);
-    app.hits.turbo = turbo.map(|(from, to)| (geo.title.y, geo.title.x + from, geo.title.x + to));
+    if let Some((from, to)) = turbo {
+        let at = Rect { x: geo.title.x + from, width: to - from, ..geo.title };
+        app.hits.push((at, Target::Turbo));
+    }
     frame.render_widget(title, geo.title);
     if geo.tabs.height > 0 {
         let (line, tabs) = tab_row(app, &geo);
-        app.hits.tabs =
-            tabs.into_iter().map(|(from, to, pane)| (geo.tabs.y, from, to, pane)).collect();
+        for (from, to, pane) in tabs {
+            let at = Rect { x: from, width: to - from, ..geo.tabs };
+            app.hits.push((at, Target::Tab(pane)));
+        }
         frame.render_widget(Paragraph::new(line), geo.tabs);
     }
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
@@ -228,13 +233,11 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
     }
     // The turbo switch: always there, because it matters most before the
     // first agent starts. It decides how the next agents start.
-    let before: usize = right.iter().map(Span::width).sum();
-    let switch = Span::styled(
+    let switch = right.len();
+    right.push(Span::styled(
         if app.turbo() { "⚡ [T]URBO ON" } else { "[T]URBO OFF" },
         if app.turbo() { lit } else { th.label() },
-    );
-    let switch_len = switch.width();
-    right.push(switch);
+    ));
     right.push(Span::raw("   "));
     right.extend(match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
@@ -254,11 +257,13 @@ fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) 
             spans
         }
     });
-    let width_of = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
-    let (l, r) = (width_of(&left), width_of(&right));
-    let from = (l + (width as usize).saturating_sub(l + r).max(1) + before) as u16;
-    let hit = (from + switch_len as u16 <= width).then_some((from, from + switch_len as u16));
-    (Paragraph::new(spread(left, right, width)), hit)
+    // Where the switch is, read off the line as it is drawn: what comes
+    // before it on the left, the gap, and on the right.
+    let at = left.len() + 1 + switch;
+    let line = spread(left, right, width);
+    let from = line.spans[..at].iter().map(Span::width).sum::<usize>() as u16;
+    let to = from + line.spans[at].width() as u16;
+    (Paragraph::new(line), (to <= width).then_some((from, to)))
 }
 
 /// Agents are tabs over the pane. The focused surface's header is the accent.
@@ -544,7 +549,7 @@ fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragraph<'static
             break;
         }
         let at = Rect { y: area.y + lines.len() as u16, height: 1, ..area };
-        app.hits.rows.push((at, i));
+        app.hits.push((at, Target::Row(i)));
         lines.push(sidebar_row(app, row, i == app.selected, width));
     }
     // An agent open and nothing asked yet: say what comes next under it.

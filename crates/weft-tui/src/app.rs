@@ -49,18 +49,20 @@ pub fn notification(term_program: Option<&str>, message: &str) -> Vec<u8> {
     format!("\x1b]9;{text}\x07").into_bytes()
 }
 
-/// Where the last frame drew what a click can land on: each list row's line,
-/// and each agent tab's columns. Written by `ui::draw`, read by `on_mouse`.
-#[derive(Debug, Clone, Default)]
-pub struct Hits {
-    /// Where a row of `rows()` was drawn: its line across the list, and no
-    /// wider, since the agent shares those lines.
-    pub rows: Vec<(ratatui::layout::Rect, usize)>,
-    /// `(y, from, to, pane)`: the columns an agent's tab covers.
-    pub tabs: Vec<(u16, u16, u16, usize)>,
-    /// `(y, from, to)`: where the turbo switch is in the title bar.
-    pub turbo: Option<(u16, u16, u16)>,
+/// What a click can land on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// A row of `rows()`.
+    Row(usize),
+    /// An agent's tab, by pane.
+    Tab(usize),
+    /// The turbo switch in the title bar.
+    Turbo,
 }
+
+/// Where the last frame drew each thing a click can land on, as the area it
+/// covers. Written by `ui::draw` where it draws them, read by `on_mouse`.
+pub type Hits = Vec<(ratatui::layout::Rect, Target)>;
 
 /// One project open in this window: its name, its root, and the client
 /// connection that watches it. The daemon gives a connection one project to
@@ -1796,23 +1798,17 @@ impl App {
         if self.modal.is_some() || self.detail.is_some() {
             return;
         }
-        if self.hits.turbo.is_some_and(|(y, from, to)| y == line && (from..to).contains(&column)) {
-            self.toggle_turbo();
-        } else if let Some(&(_, row)) = self
-            .hits
-            .rows
-            .iter()
-            .find(|(r, _)| r.contains(ratatui::layout::Position { x: column, y: line }))
-        {
-            self.focus = Focus::Weft;
-            self.select_row(row);
-        } else if let Some(&(.., pane)) = self
-            .hits
-            .tabs
-            .iter()
-            .find(|(y, from, to, _)| *y == line && (*from..*to).contains(&column))
-        {
-            self.pane_focus = pane;
+        let at = ratatui::layout::Position { x: column, y: line };
+        let Some(&(_, target)) = self.hits.iter().find(|(area, _)| area.contains(at)) else {
+            return;
+        };
+        match target {
+            Target::Turbo => self.toggle_turbo(),
+            Target::Row(row) => {
+                self.focus = Focus::Weft;
+                self.select_row(row);
+            }
+            Target::Tab(pane) => self.pane_focus = pane,
         }
     }
 
