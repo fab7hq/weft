@@ -35,10 +35,29 @@ pub fn names() -> Result<Vec<String>, ConfigError> {
     Ok(config::stems(&dir()?))
 }
 
+/// Every profile that loads. One that does not is skipped, with one warning
+/// per profile, so it hides no other harness.
+fn loaded() -> Result<Vec<Value>, ConfigError> {
+    static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut out = Vec::new();
+    for name in names()? {
+        match load(&name) {
+            Ok(p) => out.push(p),
+            Err(e) => {
+                let mut warned = WARNED.lock().unwrap_or_else(|e| e.into_inner());
+                if !warned.contains(&name) {
+                    warned.push(name);
+                    eprintln!("ringframe: skipping a profile that does not load: {e}");
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Select integration rules by host identity; versions are provenance only.
 pub fn for_host(host: &Value) -> Result<Value, ConfigError> {
-    for name in names()? {
-        let p = load(&name)?;
+    for p in loaded()? {
         if !p["host"].is_null() && p["host"] == host["name"] {
             return Ok(p);
         }
@@ -54,14 +73,7 @@ pub fn of(host: &str) -> Result<Value, ConfigError> {
 /// Every profile that defines a harness: one with a `program` to start.
 /// `unknown` defines none, so it is never offered (ADR-0018).
 pub fn harnesses() -> Result<Vec<Value>, ConfigError> {
-    let mut out = Vec::new();
-    for name in names()? {
-        let p = load(&name)?;
-        if p["program"].is_string() {
-            out.push(p);
-        }
-    }
-    Ok(out)
+    Ok(loaded()?.into_iter().filter(|p| p["program"].is_string()).collect())
 }
 
 /// A host's facts, read from its profile. None when it names none, or
@@ -101,6 +113,25 @@ mod tests {
     use super::*;
     use crate::testing::with_config_home;
     use serde_json::json;
+
+    /// One profile that will not load is skipped, and the others still
+    /// define their harnesses and answer for their hosts.
+    #[test]
+    fn a_broken_profile_is_skipped_and_hides_no_other() {
+        with_config_home(|_| {
+            let dir = config::config_dir().join("harnesses");
+            std::fs::write(dir.join("aaa-broken.toml"), "schema = [not toml").unwrap();
+            std::fs::write(dir.join("zzz-old.toml"), "schema = \"ringframe.profile/0\"\n").unwrap();
+            let hosts: Vec<Value> =
+                harnesses().unwrap().into_iter().map(|p| p["host"].clone()).collect();
+            assert!(
+                hosts.contains(&json!("codex")) && hosts.contains(&json!("claude-code")),
+                "{hosts:?}"
+            );
+            assert_eq!(of("codex").unwrap()["profile_id"], "codex");
+            assert_eq!(of("nobody").unwrap()["profile_id"], "unknown");
+        });
+    }
 
     #[test]
     fn claude_profile_loads_and_digests() {
