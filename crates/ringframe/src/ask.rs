@@ -534,7 +534,7 @@ pub fn request_staged(ws: &Workspace, staged: &Path, host: &Value) -> Result<Val
     if source.is_empty() || String::from_utf8(source.clone()).is_err() {
         return Err(ledger("ask.staged_file", "source.txt must be non-empty UTF-8"));
     }
-    let name = host.as_str().map(str::to_string).unwrap_or_else(|| str_of(host, "name"));
+    let name = str_of(host, "name");
     let session = host.get("session_ref").and_then(Value::as_str);
     request(ws, &name, session, &source, "skill")
 }
@@ -1198,7 +1198,8 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
     let d = &compiled["data"];
     let path = ws.rf_dir().join(str_of(&d["prompt"], "path"));
     let host = str_of(&d["host"], "name");
-    let title = profiles::title(&host);
+    // The name a person reads; the host's id when its profile gives none.
+    let title = profiles::fact(&host, "title").unwrap_or_else(|| host.clone());
     let mut text = fill(
         HANDOFF,
         &[

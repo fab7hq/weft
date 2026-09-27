@@ -59,17 +59,13 @@ impl Readiness {
     }
 }
 
-/// Both harnesses answer with `installed` and `available` lists. They name a
-/// plugin differently — `id` against `pluginId` — and that is the whole of the
-/// difference, so one reader handles both.
-pub fn read(listing: &Value) -> Readiness {
-    read_with(listing, true)
-}
-
-/// The same, for a harness that has marketplaces or has none. One with none
-/// (Antigravity) lists what it has as `imports`, by `name`, so its plugin is
-/// there when `rf` is, and there is no marketplace to have added.
-pub fn read_with(listing: &Value, marketplaces: bool) -> Readiness {
+/// What a harness's plugin listing says. Harnesses with marketplaces answer
+/// with `installed` and `available` lists and name a plugin by `id` or
+/// `pluginId`. One with none (Antigravity) lists what it has as `imports`, by
+/// `name`, so its plugin is there when `rf` is, and there is no marketplace
+/// to have added.
+pub fn read(h: &crate::harness::Harness, listing: &Value) -> Readiness {
+    let marketplaces = h.add_marketplace.is_some();
     let rows = |key: &str| listing.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
     let installed: Vec<Value> = rows("installed").into_iter().chain(rows("imports")).collect();
     let known: Vec<Value> = installed.iter().cloned().chain(rows("available")).collect();
@@ -106,6 +102,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A harness with marketplaces, and one with none.
+    fn with() -> crate::harness::Harness {
+        crate::harness::fixture::harnesses().find("claude-code").cloned().expect("claude")
+    }
+
+    fn without() -> crate::harness::Harness {
+        let mut p = crate::harness::fixture::profile("codex");
+        p["plugin"]["add_marketplace"] = Value::Null;
+        crate::harness::Harness::from_profile(&p).expect("a harness")
+    }
+
     /// Captured from `claude plugin list --available --json`.
     fn claude(enabled: bool) -> Value {
         json!({
@@ -130,20 +137,20 @@ mod tests {
 
     #[test]
     fn both_harnesses_are_read_by_one_reader() {
-        assert_eq!(read(&claude(true)), Readiness::Ready);
-        assert_eq!(read(&codex(true)), Readiness::Ready);
+        assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
+        assert_eq!(read(&with(), &codex(true)), Readiness::Ready);
     }
 
     #[test]
     fn a_plugin_that_is_present_but_disabled_is_not_ready() {
-        assert_eq!(read(&claude(false)), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&with(), &claude(false)), Readiness::Missing(Gap::Plugin));
     }
 
     #[test]
     fn a_marketplace_that_was_never_added_reads_as_the_marketplace_missing() {
         let bare =
             json!({"installed": [{"id": "feature-dev@claude-plugins-official"}], "available": []});
-        assert_eq!(read(&bare), Readiness::Missing(Gap::Marketplace));
+        assert_eq!(read(&with(), &bare), Readiness::Missing(Gap::Marketplace));
     }
 
     #[test]
@@ -153,7 +160,7 @@ mod tests {
             "installed": [],
             "available": [{"pluginId": "rf@fab7", "marketplaceName": "fab7", "installed": false}]
         });
-        assert_eq!(read(&available), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&with(), &available), Readiness::Missing(Gap::Plugin));
     }
 
     /// Captured from `agy plugin list` (Antigravity 1.2.12) once `rf` is
@@ -170,12 +177,12 @@ mod tests {
     /// A harness with no marketplace to add has its plugin by name alone.
     #[test]
     fn a_harness_with_no_marketplaces_is_ready_when_it_has_the_plugin() {
-        assert_eq!(read_with(&agy(&["rf"]), false), Readiness::Ready);
-        assert_eq!(read_with(&agy(&["other"]), false), Readiness::Missing(Gap::Plugin));
-        assert_eq!(read_with(&json!({"imports": []}), false), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&without(), &agy(&["rf"])), Readiness::Ready);
+        assert_eq!(read(&without(), &agy(&["other"])), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&without(), &json!({"imports": []})), Readiness::Missing(Gap::Plugin));
         // And the two with marketplaces read exactly as before.
-        assert_eq!(read_with(&claude(true), true), Readiness::Ready);
-        assert_eq!(read_with(&agy(&["rf"]), true), Readiness::Missing(Gap::Marketplace));
+        assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
+        assert_eq!(read(&with(), &agy(&["rf"])), Readiness::Missing(Gap::Marketplace));
     }
 
     #[test]

@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The tiers Phase 3.14 shipped for Claude Code, now set in `config.toml`.
+    /// The tiers Weft once shipped for Claude Code, now set in `config.toml`.
     fn claude_tiers(harness: &str) -> Value {
         json!({
             "gather": {"harness": harness, "context": {"model": "claude-sonnet-5", "effort": "low"}},

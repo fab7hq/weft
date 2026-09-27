@@ -68,23 +68,21 @@ pub struct Config {
     pub leftover: Vec<String>,
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
-    /// The harnesses the profiles define, while the file is read.
-    known: Vec<String>,
 }
 
 /// Parse the file. Nothing readable is nothing set, which is how Weft behaves
 /// without one.
 pub fn read(text: &str, known: &crate::harness::Harnesses) -> Config {
-    let mut c =
-        Config { known: known.iter().map(|h| h.name.clone()).collect(), ..Config::default() };
+    let known: Vec<&str> = known.iter().map(|h| h.name.as_str()).collect();
+    let mut c = Config::default();
     let parsed = text.parse::<toml::Table>().ok().and_then(|t| serde_json::to_value(t).ok());
     let Some(Value::Object(file)) = parsed else { return c };
-    c.machine = c.tables(&file, "");
+    c.machine = c.tables(&file, "", &known);
     for (path, t) in file.get("projects").and_then(Value::as_object).into_iter().flatten() {
         let at = format!("projects.\"{path}\".");
         match t.as_object() {
             Some(t) => {
-                let tables = c.tables(t, &at);
+                let tables = c.tables(t, &at, &known);
                 c.projects.insert(path.clone(), tables);
             }
             None => c.ignored.push(at.trim_end_matches('.').to_string()),
@@ -92,14 +90,13 @@ pub fn read(text: &str, known: &crate::harness::Harnesses) -> Config {
     }
     c.unknown.sort();
     c.ignored.sort();
-    c.known.clear();
     c
 }
 
 /// A harness Weft supports, or the name reported as unknown.
-fn harness<'a>(name: &'a Value, at: &str, c: &mut Config) -> Option<&'a str> {
+fn harness<'a>(name: &'a Value, at: &str, known: &[&str], c: &mut Config) -> Option<&'a str> {
     match name.as_str() {
-        Some(h) if c.known.iter().any(|k| k == h) => Some(h),
+        Some(h) if known.contains(&h) => Some(h),
         Some(h) => {
             c.unknown.push(format!("{at}: {h}"));
             None
@@ -125,7 +122,7 @@ impl Config {
     }
 
     /// One scope's tables, keeping what Weft knows and reporting the rest.
-    fn tables(&mut self, t: &Map<String, Value>, at: &str) -> Tables {
+    fn tables(&mut self, t: &Map<String, Value>, at: &str, known: &[&str]) -> Tables {
         let mut out = Tables::default();
         for (key, value) in t {
             let here = format!("{at}{key}");
@@ -135,7 +132,7 @@ impl Config {
                         let path = format!("{here}.{act}");
                         if !ACTS.contains(&act.as_str()) {
                             self.ignored.push(path);
-                        } else if let Some(h) = harness(name, &path, self) {
+                        } else if let Some(h) = harness(name, &path, known, self) {
                             out.routing.insert(act.clone(), Value::from(h));
                         }
                     }
@@ -151,7 +148,7 @@ impl Config {
                                 continue;
                             }
                         };
-                        let kept = self.stage(body, roles, &path);
+                        let kept = self.stage(body, roles, &path, known);
                         if !kept.is_empty() {
                             out.eval.insert(stage.clone(), Value::Object(kept));
                         }
@@ -168,7 +165,13 @@ impl Config {
     }
 
     /// A stage's `harness` and each of its roles' `model` and `effort`.
-    fn stage(&mut self, body: &Value, roles: &[&str], at: &str) -> Map<String, Value> {
+    fn stage(
+        &mut self,
+        body: &Value,
+        roles: &[&str],
+        at: &str,
+        known: &[&str],
+    ) -> Map<String, Value> {
         let mut kept = Map::new();
         let Some(body) = body.as_object() else {
             self.ignored.push(at.to_string());
@@ -177,7 +180,7 @@ impl Config {
         for (key, value) in body {
             let path = format!("{at}.{key}");
             if key == "harness" {
-                if let Some(h) = harness(value, &path, self) {
+                if let Some(h) = harness(value, &path, known, self) {
                     kept.insert(key.clone(), Value::from(h));
                 }
             } else if !roles.contains(&key.as_str()) || !value.is_object() {

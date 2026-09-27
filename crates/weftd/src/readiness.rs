@@ -21,9 +21,7 @@ pub fn look(h: &Harness, cli: bool) -> (Readiness, Option<String>) {
         return (Readiness::Missing(Gap::Cli), None);
     }
     match ask(h) {
-        Some(listing) => {
-            (read_with(&listing, h.add_marketplace.is_some()), weft_core::sync::installed(&listing))
-        }
+        Some(listing) => (read(h, &listing), weft_core::sync::installed(&listing)),
         None => (Readiness::Unknown, None),
     }
 }
@@ -71,7 +69,10 @@ mod tests {
     fn a_harness_that_will_not_answer_is_unknown_rather_than_missing() {
         // `read` never sees the output, because there was none. The distinction
         // matters: Missing can be fixed by installing, Unknown cannot.
-        assert_eq!(read(&json!("not a listing at all")), Readiness::Missing(Gap::Marketplace));
+        assert_eq!(
+            read(&absent(), &json!("not a listing at all")),
+            Readiness::Missing(Gap::Marketplace)
+        );
         assert_eq!(check(&absent(), true), Readiness::Unknown);
     }
 }

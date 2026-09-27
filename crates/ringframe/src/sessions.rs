@@ -143,7 +143,7 @@ pub fn capture(
         "permission_mode": payload.get("permission_mode").cloned().unwrap_or(Value::Null),
         "host_version": version.map_or(Value::Null, |v| Value::String(v.to_string())),
     });
-    let prefix = crate::profiles::invocation_prefix(host);
+    let prefix = crate::profiles::fact(host, "invocation_prefix");
     if prefix.as_ref().is_some_and(|p| prompt.starts_with(p)) {
         rec["prompt"] = Value::String(prompt.to_string());
     }
@@ -195,7 +195,7 @@ pub fn source_verified(
         return ("unverified".into(), Some("no_capture".into()));
     };
     let want = String::from_utf8_lossy(source).trim_end_matches('\n').to_string();
-    let prefix = crate::profiles::invocation_prefix(host).unwrap_or_default();
+    let prefix = crate::profiles::fact(host, "invocation_prefix").unwrap_or_default();
     for line in raw.lines() {
         let rec: Value = serde_json::from_str(line).unwrap_or(Value::Null);
         if matches(&prefix, rec.get("prompt").and_then(Value::as_str).unwrap_or_default(), &want) {
@@ -231,7 +231,7 @@ pub fn resolve_session(
     let base = ws.rf_dir().join("sessions").join(host);
     let want = String::from_utf8_lossy(source).trim_end_matches('\n').to_string();
     let cutoff = SystemTime::now().checked_sub(window)?;
-    let prefix = crate::profiles::invocation_prefix(host)?;
+    let prefix = crate::profiles::fact(host, "invocation_prefix")?;
     let mut sessions: Vec<PathBuf> =
         std::fs::read_dir(&base).into_iter().flatten().flatten().map(|e| e.path()).collect();
     sessions.sort();

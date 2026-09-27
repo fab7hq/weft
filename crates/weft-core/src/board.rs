@@ -318,7 +318,6 @@ mod tests {
             sent,
             check: None,
             arrived: None,
-            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,

@@ -101,11 +101,6 @@ impl Harness {
         words.push(session.to_string());
         words.join(" ")
     }
-
-    /// The command line that starts a fresh one.
-    pub fn spec(&self) -> String {
-        self.program.clone()
-    }
 }
 
 /// The words a command line runs as, with turbo mode's flags after the

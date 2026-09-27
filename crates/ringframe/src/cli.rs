@@ -979,9 +979,10 @@ fn ask_command(
             ))
         }
         "request" => {
-            // A bare name is a host too, as a person would type it.
-            let raw = ns.one("--host").unwrap_or_default();
-            let host = json_arg(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+            let host = match json_arg(ns.one("--host").unwrap_or_default()) {
+                Ok(v) => v,
+                Err(e) => return (ws, Outcome::UsageDetail(e)),
+            };
             let staged = PathBuf::from(ns.one("--staged").unwrap_or_default());
             done!(ask::request_staged(&ws, &staged, &host))
         }
@@ -1344,12 +1345,13 @@ mod tests {
     fn ask_request_records_the_staged_intent_and_compile_keeps_its_id() {
         cli(|c| {
             let staged = c.staged("stage-1");
-            let (code, out, _) =
-                c.go(&["ask", "request", "--staged", &staged, "--host", "claude-code"]);
+            let host = r#"{"name":"claude-code","surface":"native-tui"}"#;
+            let bare = c.go(&["ask", "request", "--staged", &staged, "--host", "claude-code"]);
+            assert_ne!(bare.0, 0, "a bare name is not a host");
+            let (code, out, _) = c.go(&["ask", "request", "--staged", &staged, "--host", host]);
             assert_eq!(code, 0, "{out}");
             assert_eq!(out["recorded"], true);
             let id = out["ask_id"].as_str().unwrap().to_string();
-            let host = r#"{"name":"claude-code","surface":"native-tui"}"#;
             let (code, out, _) = c.go(&[
                 "ask",
                 "compile",

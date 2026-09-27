@@ -76,30 +76,16 @@ pub fn harnesses() -> Result<Vec<Value>, ConfigError> {
     Ok(loaded()?.into_iter().filter(|p| p["program"].is_string()).collect())
 }
 
-/// A host's facts, read from its profile. None when it names none, or
-/// there is no profile to read.
-fn fact(host: &str, key: &str) -> Option<String> {
+/// One of a host's facts, read from its profile: `title`, `session_field`,
+/// `invocation_prefix`. None when it names none, or there is no profile to
+/// read.
+pub fn fact(host: &str, key: &str) -> Option<String> {
     of(host).ok()?.get(key)?.as_str().map(str::to_string)
-}
-
-/// The name a person reads; the host's id when its profile gives none.
-pub fn title(host: &str) -> String {
-    fact(host, "title").unwrap_or_else(|| host.to_string())
-}
-
-/// The hook payload's session id field, from the host's profile.
-pub fn session_field(host: &str) -> Option<String> {
-    fact(host, "session_field")
-}
-
-/// The prefix a RingFrame skill is invoked with on this host.
-pub fn invocation_prefix(host: &str) -> Option<String> {
-    fact(host, "invocation_prefix")
 }
 
 /// The session a hook payload names, by the field the host's profile says.
 pub fn session_of(host: &str, payload: &Value) -> String {
-    session_field(host)
+    fact(host, "session_field")
         .and_then(|f| payload.get(f)?.as_str().map(str::to_string))
         .unwrap_or_default()
 }

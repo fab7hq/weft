@@ -974,7 +974,7 @@ impl App {
         };
         let spec = match session {
             Some(s) => h.resume_spec(&s.id),
-            None => h.spec(),
+            None => h.program.clone(),
         };
         let resumes = session.map(|s| s.id.as_str());
         if let Err(e) = self.start(harness, &spec, resumes, Then::Started { go: true, then }) {
@@ -2290,7 +2290,6 @@ pub(crate) mod tests {
             sent,
             check: None,
             arrived: None,
-            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,
@@ -3231,8 +3230,7 @@ pub(crate) mod tests {
     #[test]
     fn a_sent_ask_is_never_sent_again_by_proceed() {
         let mut a = app();
-        let mut u = unit(Sent::Unconfirmed);
-        u.attributed_at = Some("2026-09-27T10:01:00.000Z".into());
+        let u = unit(Sent::Unconfirmed);
         a.set_units(vec![u]);
         agent_says(&mut a, "codex", "fixture", "turn_ended");
         assert_eq!(a.needs_you(), 0, "a finished turn asks nothing");
@@ -3701,7 +3699,6 @@ mod start_tests {
             sent: Sent::ReadyToSend,
             check: None,
             arrived: None,
-            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,

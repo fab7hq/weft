@@ -385,7 +385,6 @@ mod tests {
             sent: Sent::Arrived { exact: true },
             check: None,
             arrived: None,
-            attributed_at: None,
             gathered: None,
             sealed: Some(disposition.into()),
             seal_id: Some("sel_1".into()),

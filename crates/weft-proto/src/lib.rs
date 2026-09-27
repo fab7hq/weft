@@ -182,8 +182,6 @@ pub enum Event {
     /// and the latest event of every session this project has receipts for.
     Agents {
         panes: Vec<Option<Turn>>,
-        /// The session each pane runs, when Weft can tell.
-        bound: Vec<Option<String>>,
         sessions: Vec<Session>,
     },
 }
@@ -390,8 +388,8 @@ impl Event {
             }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Sync { view } => ("sync", json!({"view": view})),
-            Event::Agents { panes, bound, sessions } => {
-                ("agents", json!({"panes": panes, "bound": bound, "sessions": sessions}))
+            Event::Agents { panes, sessions } => {
+                ("agents", json!({"panes": panes, "sessions": sessions}))
             }
         }
     }
@@ -427,10 +425,6 @@ impl Event {
             "sync" => Event::Sync { view: p.get("view")?.clone() },
             "agents" => Event::Agents {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
-                bound: p
-                    .get("bound")
-                    .and_then(|b| serde_json::from_value(b.clone()).ok())
-                    .unwrap_or_default(),
                 sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
             },
             "injected" => Event::Injected {
@@ -732,13 +726,12 @@ mod tests {
                 payload: b"/plan ship it".to_vec(),
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
-            Event::Injected { pane: 0, refusal: Some("PaneBlocked".into()), unrecorded: None },
+            Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },
             Event::Sync { view: json!({"rows": []}) },
             Event::Agents {
                 panes: vec![Some(Turn::TurnEnded), None],
-                bound: vec![Some("s1".into()), None],
                 sessions: vec![Session {
                     harness: "claude-code".into(),
                     id: "s1".into(),

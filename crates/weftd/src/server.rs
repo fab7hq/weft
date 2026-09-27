@@ -22,9 +22,8 @@ use anyhow::Result;
 use crate::pane::Pane;
 use crate::turns::Turn;
 
-/// Each pane's agent state, the session each pane runs, and every session's
-/// latest event.
-type Agents = (Vec<Option<Turn>>, Vec<Option<String>>, Vec<crate::turns::Session>);
+/// Each pane's agent state, and every session's latest event.
+type Agents = (Vec<Option<Turn>>, Vec<crate::turns::Session>);
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
 /// Everything a pane has printed since it started, so a late client can be
@@ -302,7 +301,7 @@ fn starts(root: &Path, harnesses: &weft_core::harness::Harnesses) -> serde_json:
         out.push(serde_json::json!({
             "harness": h.name,
             "label": format!("{} · start fresh", h.name),
-            "spec": h.spec(),
+            "spec": h.program,
             "session": serde_json::Value::Null,
         }));
     }
@@ -704,7 +703,7 @@ impl Session {
     /// Start a pane of this harness for an act, on its own command: never
     /// another pane's, which may be resuming someone else's session.
     fn start_for(&mut self, client: u64, at: usize, harness: &str) -> Option<u32> {
-        let spec = self.projects[at].harnesses.find(harness)?.spec();
+        let spec = self.projects[at].harnesses.find(harness)?.program.clone();
         let id = self.spawn(client, at, harness, &spec, None)?;
         self.look_at(at, harness);
         Some(id)
@@ -879,8 +878,8 @@ impl Session {
             let agents = self.agents_of(at);
             if self.projects[at].agents.as_ref() != Some(&agents) {
                 self.projects[at].agents = Some(agents.clone());
-                let (panes, bound, sessions) = agents;
-                self.clients.broadcast(at, &Out::Agents { panes, bound, sessions });
+                let (panes, sessions) = agents;
+                self.clients.broadcast(at, &Out::Agents { panes, sessions });
             }
         }
     }
@@ -911,12 +910,7 @@ impl Session {
         let p = &self.projects[at];
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-        let states = crate::turns::pane_states(&map, &sessions);
-        let bound = map
-            .iter()
-            .map(|m| m.session.as_ref().filter(|_| m.running).map(|b| b.session.clone()))
-            .collect();
-        (states, bound, sessions)
+        (crate::turns::pane_states(&map, &sessions), sessions)
     }
 
     /// The projects open here, beside `config.toml`, for a window's picker.
@@ -1048,7 +1042,7 @@ impl Session {
                 self.projects[at].ledger.refresh();
                 let Out::Units { units, records } = self.board_of(at) else { unreachable!() };
                 let panes = self.pane_infos(at);
-                let (agent_panes, bound, sessions) = self.agents_of(at);
+                let (agent_panes, sessions) = self.agents_of(at);
                 // Everything comes back in the answer — the board, the panes,
                 // and a replay of what each has printed — rather than as
                 // events sent before it. A client that waits for its answer
@@ -1067,7 +1061,7 @@ impl Session {
                     "replay": replay,
                     "readiness": readiness_json(&self.projects[at].readiness),
                     "routing": routing_json(&self.projects[at].routing),
-                    "agents": {"panes": agent_panes, "bound": bound, "sessions": sessions},
+                    "agents": {"panes": agent_panes, "sessions": sessions},
                     "notify": self.projects[at].notify,
                     "turbo": self.projects[at].turbo,
                     "harnesses": &self.projects[at].harnesses,

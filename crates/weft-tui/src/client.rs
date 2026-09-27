@@ -151,9 +151,7 @@ pub struct Session {
     /// Told once per change, since telling is focusing: the agent takes the
     /// size of the window that last focused it or typed into it.
     told: Option<(u32, u16, u16)>,
-    /// The session each pane runs, when the daemon can tell, and every
-    /// session's latest event, as the daemon read them from the receipts.
-    pub pane_sessions: Vec<Option<String>>,
+    /// Every session's latest event, as the daemon read the receipts.
     pub turns: Vec<weft_core::turns::Session>,
     /// Whether to tell the person when an agent needs them, from Weft's
     /// `config.toml` as the daemon read it.
@@ -218,7 +216,6 @@ impl Session {
             gap: None,
             waiting: Vec::new(),
             told: None,
-            pane_sessions: Vec::new(),
             turns: Vec::new(),
             notify: true,
             turbo: false,
@@ -278,7 +275,6 @@ impl Session {
     fn take_agents(&mut self, agents: &serde_json::Value) {
         let field = |k: &str| agents.get(k).cloned().unwrap_or_default();
         self.set_turns(serde_json::from_value(field("panes")).unwrap_or_default());
-        self.pane_sessions = serde_json::from_value(field("bound")).unwrap_or_default();
         self.turns = serde_json::from_value(field("sessions")).unwrap_or_default();
     }
 
@@ -416,9 +412,8 @@ impl Session {
                 }
                 Event::Readiness { states } => self.readiness = states,
                 Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
-                Event::Agents { panes, bound, sessions } => {
+                Event::Agents { panes, sessions } => {
                     self.set_turns(panes);
-                    self.pane_sessions = bound;
                     self.turns = sessions;
                 }
             }

@@ -78,7 +78,6 @@ pub struct Check {
 pub struct Arrival {
     pub host: String,
     pub session: String,
-    pub at: String,
 }
 
 /// An Eval's first stage, recorded: which Eval, and the harness that mapped it.
@@ -159,10 +158,6 @@ pub struct Unit {
     /// goes on in that session, which may not be the one it was asked in.
     #[serde(default)]
     pub arrived: Option<Arrival>,
-    /// When the person attested they submitted it — Weft typing it on their
-    /// yes — where no hook observed it arrive (`ask.submission` attributed).
-    #[serde(default)]
-    pub attributed_at: Option<String>,
     pub check: Option<Check>,
     /// An open Eval over this work whose change map is published and whose
     /// debate has not run: the next `[E]VAL` sends the debate.
@@ -310,7 +305,6 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     unanswered: false,
                     sent: Sent::NotSent,
                     arrived: None,
-                    attributed_at: None,
                     check: None,
                     gathered: None,
                     sealed: None,
@@ -348,7 +342,6 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     unanswered: false,
                     sent,
                     arrived: None,
-                    attributed_at: None,
                     check: None,
                     gathered: None,
                     sealed: None,
@@ -398,7 +391,6 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         // The person's word that it was sent: it went, but no
                         // hook saw it arrive, so a receipt, in either order,
                         // outranks it.
-                        u.attributed_at = s(e, &["time"]).map(str::to_string);
                         if !matches!(u.sent, Sent::Arrived { .. }) {
                             u.sent = Sent::Unconfirmed;
                         }
@@ -409,11 +401,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         && let (Some(host), Some(session)) =
                             (s(&data, &["host", "name"]), s(&data, &["host", "session_ref"]))
                     {
-                        u.arrived = Some(Arrival {
-                            host: host.into(),
-                            session: session.into(),
-                            at: s(e, &["time"]).unwrap_or_default().into(),
-                        });
+                        u.arrived = Some(Arrival { host: host.into(), session: session.into() });
                     }
                 }
             }
@@ -895,7 +883,6 @@ mod tests {
         attributed.push(at("ask.submission", "attributed", "2026-09-19T14:04:00Z"));
         let u = &project(&attributed)[0];
         assert_eq!(u.sent, Sent::Unconfirmed);
-        assert_eq!(u.attributed_at.as_deref(), Some("2026-09-19T14:04:00Z"));
         assert_eq!(u.sent_phrase(), "sent, unconfirmed");
         let mut then_observed = attributed.clone();
         then_observed.push(at("ask.submission", "observed", "2026-09-19T14:04:01Z"));
