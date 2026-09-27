@@ -493,7 +493,7 @@ fn links_of(items: &[String]) -> Vec<Value> {
 /// `--from-hook` command starts. What is wrong is said with the workspace
 /// to say it in.
 fn hook_input(
-    explicit: Option<&PathBuf>,
+    ns: &Parsed,
     ws: Workspace,
     read_stdin: &mut dyn FnMut() -> String,
 ) -> Result<(Workspace, Value), (Workspace, String)> {
@@ -501,7 +501,8 @@ fn hook_input(
         Ok(v) => v,
         Err(e) => return Err((ws, e.to_string())),
     };
-    match hook_workspace(explicit, ws, &payload) {
+    let host = ns.one("--host").unwrap_or_default();
+    match hook_workspace(ns.workspace.as_ref(), ws, host, &payload) {
         Ok(ws) => Ok((ws, payload)),
         Err(e) => Err((workspace::resolve(None, None).expect("cwd"), e)),
     }
@@ -510,9 +511,17 @@ fn hook_input(
 fn hook_workspace(
     explicit: Option<&PathBuf>,
     ws: Workspace,
+    host: &str,
     payload: &Value,
 ) -> Result<Workspace, String> {
-    let cwd = payload.get("cwd").and_then(Value::as_str).unwrap_or_default();
+    // Where the payload names its workspace is the host's profile's to say:
+    // `cwd` unless it says otherwise, and the first of a list.
+    let field = profiles::fact(host, "workspace_field").unwrap_or_else(|| "cwd".into());
+    let named = match &payload[field.as_str()] {
+        Value::Array(all) => all.first().and_then(Value::as_str),
+        other => other.as_str(),
+    };
+    let cwd = named.unwrap_or_default();
     if explicit.is_none() && !cwd.is_empty() {
         let path = Path::new(cwd);
         if !path.is_absolute() || !path.is_dir() {
@@ -831,7 +840,7 @@ fn dispatch(
             Err(e) => (ws, Outcome::Error(e.code, e.detail)),
         },
         ("sessions", Some("capture")) => {
-            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
@@ -876,7 +885,7 @@ fn dispatch(
                     sessions::TURN_EVENTS.join(", ")
                 )));
             }
-            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
@@ -898,7 +907,7 @@ fn dispatch(
                     "a fact is only recorded from a hook: --from-hook".into()
                 ));
             }
-            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
@@ -1004,7 +1013,7 @@ fn ask_command(
                 let unrecorded = |ws, error: String| {
                     (ws, Outcome::Ok(0, json!({"recorded": false, "error": error})))
                 };
-                let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+                let (ws, payload) = match hook_input(ns, ws, read_stdin) {
                     Ok(read) => read,
                     Err((ws, e)) => return unrecorded(ws, e),
                 };
@@ -2101,6 +2110,7 @@ invocation_prefix = "@rf:"
 fallback = "human_handoff"
 title = "Zed Agent"
 session_field = "threadId"
+workspace_field = "workspaceRoots"
 
 [routing]
 precedence = ["native_direct"]
@@ -2152,6 +2162,18 @@ limitations = []
             let wrong = format!(r#"{{"session_id":"z2","cwd":"{}"}}"#, c.root.display());
             let (_, out, _) = c.piped(&turn, &wrong);
             assert_eq!(out["recorded"], false);
+            // And its workspace is where its profile's field says, the first
+            // of a list, as a hook run from anywhere reports it.
+            let argv: Vec<String> = turn.iter().map(|a| a.to_string()).collect();
+            let rooted =
+                format!(r#"{{"threadId":"z3","workspaceRoots":["{}"]}}"#, c.root.display());
+            let run = super::run(&argv, &mut || rooted.clone());
+            assert_eq!(run.code, 0, "{} {}", run.out, run.err);
+            assert!(
+                c.root.join(".fab7/rf/sessions/zed-agent/z3/turns.jsonl").is_file(),
+                "{}",
+                run.out
+            );
         });
     }
 
