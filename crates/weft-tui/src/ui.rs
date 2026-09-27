@@ -970,7 +970,7 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
                 (crate::app::PickUp::Resume, Some(s)) => {
                     let mut said = format!(
                         "Resume the session this was asked in · {}",
-                        crate::sessions::clock(&s.at)
+                        crate::sessions::clock(s.at)
                     );
                     // A harness with no prompt hook has no last prompt to show.
                     if !s.last.is_empty() {

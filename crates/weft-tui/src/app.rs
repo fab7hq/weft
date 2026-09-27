@@ -826,7 +826,8 @@ impl App {
         self.look_for_agents();
         let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
             let id = u.session_ref.clone()?;
-            Some(Recorded { id, at: u.asked_at.clone(), last: u.title.clone() })
+            let at = weft_core::turns::millis(&u.asked_at).unwrap_or_default();
+            Some(Recorded { id, at, last: u.title.clone() })
         });
         let session = own.or_else(|| {
             self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.clone())
@@ -1120,7 +1121,7 @@ impl App {
                     session: v.get("session").and_then(|s| {
                         Some(Recorded {
                             id: s.get("id")?.as_str()?.to_string(),
-                            at: s.get("at")?.as_str()?.to_string(),
+                            at: s.get("at")?.as_i64()?,
                             last: s.get("last")?.as_str()?.to_string(),
                         })
                     }),
@@ -2113,7 +2114,7 @@ pub(crate) mod tests {
     #[test]
     fn resuming_is_offered_only_when_the_record_names_a_session() {
         assert_eq!(pick_up_choices(None), vec![PickUp::Fresh]);
-        let known = Recorded { id: "01a0bdb6".into(), at: String::new(), last: String::new() };
+        let known = Recorded { id: "01a0bdb6".into(), at: 0, last: String::new() };
         assert_eq!(pick_up_choices(Some(&known)), vec![PickUp::Resume, PickUp::Fresh]);
     }
 

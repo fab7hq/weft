@@ -12,8 +12,8 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
     pub id: String,
-    /// The last prompt's timestamp, exactly as the receipt spells it.
-    pub at: String,
+    /// When it was last used, in milliseconds since the epoch.
+    pub at: i64,
     /// The first line of that prompt, so the person can see what they would be
     /// reopening rather than being shown an opaque id.
     pub last: String,
@@ -23,8 +23,10 @@ pub fn first_line(prompt: &str) -> String {
     prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
 
-/// `2026-09-20T07:27:14.769Z` reads as `07:27`. The date is not shown: a
-/// session you would reopen is one you remember starting.
-pub fn clock(at: &str) -> String {
-    at.split('T').nth(1).map(|t| t.chars().take(5).collect()).unwrap_or_default()
+/// A time reads as its hour and minute, as the receipts count them (UTC).
+/// The date is not shown: a session you would reopen is one you remember
+/// starting.
+pub fn clock(at: i64) -> String {
+    let minutes = at.div_euclid(60_000).rem_euclid(24 * 60);
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }

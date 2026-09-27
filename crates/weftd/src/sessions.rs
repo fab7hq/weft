@@ -13,8 +13,8 @@ pub fn latest(root: &Path, harness: &str) -> Option<Recorded> {
     std::fs::read_dir(dir)
         .ok()?
         .flatten()
-        .filter_map(|e| read(&e.path()))
-        .max_by(|a, b| a.at.cmp(&b.at))
+        .filter_map(|e| read(harness, &e.path()))
+        .max_by_key(|r| r.at)
 }
 
 /// One session directory: when it was last used and its last prompt, from
@@ -22,23 +22,18 @@ pub fn latest(root: &Path, harness: &str) -> Option<Recorded> {
 /// turns, and a session in which a turn ran is still one to pick up. One that
 /// only said it was `ready` never held a conversation, so there is nothing
 /// to resume.
-fn read(dir: &Path) -> Option<Recorded> {
+fn read(harness: &str, dir: &Path) -> Option<Recorded> {
     // The id is the directory's, not the receipt's: the directory is what the
     // hook keyed on, and a receipt that disagreed with it would be the bug.
     let id = dir.file_name()?.to_str()?.to_string();
-    let prompts = receipts(&dir.join("prompts.jsonl"));
-    let turns = receipts(&dir.join("turns.jsonl"));
-    let used =
-        !prompts.is_empty() || turns.iter().any(|t| t.get("event").is_some_and(|e| e != "ready"));
-    if !used {
-        return None;
-    }
-    let at = [prompts.last(), turns.last()]
-        .into_iter()
-        .filter_map(|r| r?.get("time")?.as_str())
-        .max()?
-        .to_string();
-    let said = prompts.last().and_then(|r| r.get("prompt")?.as_str()).unwrap_or("");
+    let turns = std::fs::read_to_string(dir.join("turns.jsonl")).unwrap_or_default();
+    let turned = weft_core::turns::read(harness, &id, &turns)
+        .filter(|t| t.latest != weft_core::turns::Turn::Ready || t.first < t.at)
+        .map(|t| t.at);
+    let prompt = receipts(&dir.join("prompts.jsonl")).pop();
+    let prompted = prompt.as_ref().and_then(|r| weft_core::turns::millis(r.get("time")?.as_str()?));
+    let at = prompted.max(turned)?;
+    let said = prompt.as_ref().and_then(|r| r.get("prompt")?.as_str()).unwrap_or("");
     Some(Recorded { id, at, last: first_line(said) })
 }
 
@@ -84,7 +79,7 @@ mod tests {
         let found = latest(&tmp, "codex").expect("a session");
         assert_eq!(found.id, "newer");
         assert_eq!(found.last, "$rf:ask two");
-        assert_eq!(clock(&found.at), "09:30");
+        assert_eq!(clock(found.at), "09:30");
     }
 
     #[test]
@@ -122,14 +117,12 @@ mod tests {
         std::fs::write(dir.join("turns.jsonl"), turns.join("\n") + "\n").expect("turns");
         let found = latest(&tmp, "agy").expect("a session");
         assert_eq!((found.id.as_str(), found.last.as_str()), ("c1", ""));
-        assert_eq!(found.at, "2026-09-27T09:34:06.392Z");
+        let at = |t| weft_core::turns::millis(t).expect("a time");
+        assert_eq!(found.at, at("2026-09-27T09:34:06.392Z"));
         // Where both are kept, the later of the two says when it was used.
         receipt(&tmp, "agy", "c1", "2026-09-27T09:32:00.000Z", "/plan it");
         let found = latest(&tmp, "agy").expect("a session");
-        assert_eq!(
-            (found.at.as_str(), found.last.as_str()),
-            ("2026-09-27T09:34:06.392Z", "/plan it")
-        );
+        assert_eq!((found.at, found.last.as_str()), (at("2026-09-27T09:34:06.392Z"), "/plan it"));
     }
 
     #[test]
@@ -140,6 +133,23 @@ mod tests {
         let ready = r#"{"event":"ready","session_id":"s1","time":"2026-09-27T09:33:00.000Z"}"#;
         std::fs::write(dir.join("turns.jsonl"), format!("{ready}\n")).expect("turns");
         assert_eq!(latest(&tmp, "claude-code"), None);
+    }
+
+    /// RingFrame writes a time with or without its milliseconds. As text,
+    /// `…06Z` sorts after `…06.392Z`; as times, it is before.
+    #[test]
+    fn receipt_times_are_compared_as_times_whatever_their_shape() {
+        let tmp = workspace("shapes");
+        receipt(&tmp, "codex", "whole", "2026-09-27T09:34:06Z", "$rf:ask one");
+        receipt(&tmp, "codex", "later", "2026-09-27T09:34:06.392Z", "$rf:ask two");
+        assert_eq!(latest(&tmp, "codex").map(|s| s.id), Some("later".into()));
+        // Within one session too: a turn after its last prompt.
+        let dir = tmp.join(".fab7/rf/sessions/codex/whole");
+        let ended = r#"{"event":"turn_ended","session_id":"whole","time":"2026-09-27T09:34:07Z"}"#;
+        std::fs::write(dir.join("turns.jsonl"), format!("{ended}\n")).expect("turns");
+        let found = latest(&tmp, "codex").expect("a session");
+        let at = weft_core::turns::millis("2026-09-27T09:34:07Z");
+        assert_eq!((found.id.as_str(), Some(found.at)), ("whole", at));
     }
 
     #[test]
