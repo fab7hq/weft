@@ -216,10 +216,11 @@ fn main() -> Result<()> {
     let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
     let mut weft = App::with_session(root, toggle, session);
     weft.look_for_updates();
-    let newer = weft.newer.clone();
+    let (newer, wake) = (weft.newer.clone(), weft.waker());
     std::thread::spawn(move || {
         if let Some(tag) = latest_release().filter(|t| is_newer(t)) {
             let _ = newer.set(tag.trim_start_matches('v').to_string());
+            let _ = wake.send(weft::client::Wake::Arrived);
         }
     });
     let mut started = Ok(());

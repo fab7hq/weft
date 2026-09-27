@@ -235,6 +235,9 @@ pub struct Detail {
 /// How long the loop waits when nothing wakes it.
 pub const TICK: Duration = Duration::from_millis(250);
 
+/// The shortest time between two frames: at most 60 a second.
+pub const FRAME: Duration = Duration::from_micros(16_667);
+
 pub struct App {
     /// A newer Weft release, once someone has looked. Set from outside,
     /// because the client itself reaches nothing.
@@ -297,6 +300,8 @@ pub struct App {
     /// connection send into it.
     wakes: std::sync::mpsc::Sender<crate::client::Wake>,
     woken: std::sync::mpsc::Receiver<crate::client::Wake>,
+    /// When the last frame was drawn.
+    drawn: std::time::Instant,
 }
 
 impl App {
@@ -670,6 +675,7 @@ impl App {
         Self {
             wakes,
             woken,
+            drawn: std::time::Instant::now(),
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
@@ -743,19 +749,51 @@ impl App {
                 }
             }
         });
+        terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
         while !self.quit {
-            terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
-            self.turn(TICK)?;
+            self.frame(terminal, TICK)?;
         }
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         Ok(())
     }
 
+    /// A way to wake this window's loop, for news from outside it.
+    pub fn waker(&self) -> std::sync::mpsc::Sender<crate::client::Wake> {
+        self.wakes.clone()
+    }
+
+    /// Wait up to `within` for something to change; when it does, take in
+    /// everything that arrives before the next frame is due, and draw that
+    /// frame. True when one was drawn.
+    pub fn frame<B: ratatui::backend::Backend>(
+        &mut self,
+        terminal: &mut ratatui::Terminal<B>,
+        within: Duration,
+    ) -> Result<bool>
+    where
+        B::Error: Send + Sync + 'static,
+    {
+        if !self.turn(within)? {
+            return Ok(false);
+        }
+        let due = self.drawn + FRAME;
+        while let Some(left) = due.checked_duration_since(std::time::Instant::now())
+            && !self.quit
+        {
+            self.turn(left)?;
+        }
+        terminal.draw(|frame| crate::ui::draw(frame, self))?;
+        self.drawn = std::time::Instant::now();
+        Ok(true)
+    }
+
     /// One turn of the loop: wait up to `tick` for something to wake it,
-    /// then take in that and everything that arrived behind it.
-    pub fn turn(&mut self, tick: Duration) -> Result<()> {
+    /// then take in that and everything that arrived behind it. True when
+    /// anything did.
+    pub fn turn(&mut self, tick: Duration) -> Result<bool> {
         let mut woke: Vec<_> = self.woken.recv_timeout(tick).into_iter().collect();
         woke.extend(self.woken.try_iter());
+        let changed = !woke.is_empty();
         for wake in woke {
             match wake {
                 crate::client::Wake::Terminal(Event::Key(key))
@@ -782,7 +820,7 @@ impl App {
             }
             let _ = out.flush();
         }
-        Ok(())
+        Ok(changed)
     }
 
     /// What to tell the person, once per change: an agent they are not
@@ -2152,6 +2190,32 @@ pub(crate) mod tests {
             a.turn(Duration::from_millis(50)).expect("a turn");
         }
         assert!(a.pane_text(0).unwrap_or_default().contains('q'), "the agent got it");
+    }
+
+    /// A frame is drawn only when something changed: none while nothing
+    /// happens, and one for a burst of output that arrived before it.
+    #[test]
+    fn frames_are_drawn_for_what_changed_and_no_more() {
+        let mut a = app();
+        let mut t =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("terminal");
+        // Whatever the start-up still has to say, said.
+        while a.frame(&mut t, Duration::from_millis(500)).expect("a frame") {}
+        let (mut idle, end) = (0, std::time::Instant::now() + Duration::from_secs(1));
+        while std::time::Instant::now() < end {
+            idle += a.frame(&mut t, TICK).expect("a frame") as usize;
+        }
+        assert_eq!(idle, 0, "frames drawn over an idle second");
+
+        let burst: String = (0..200).map(|i| format!("burst line {i}\n")).collect();
+        a.input(0, burst.as_bytes()).expect("typed");
+        std::thread::sleep(Duration::from_millis(400));
+        let mut frames = 0;
+        while a.frame(&mut t, TICK).expect("a frame") {
+            frames += 1;
+        }
+        assert_eq!(frames, 1, "one frame for everything that had arrived");
+        assert!(a.pane_text(0).unwrap_or_default().contains("burst line 199"));
     }
 
     #[test]

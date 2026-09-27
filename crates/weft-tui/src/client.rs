@@ -94,11 +94,12 @@ impl PaneView {
     }
 }
 
-/// What a window's one loop wakes for: the person at the terminal, or a
-/// daemon connection with something to take in.
+/// What a window's one loop wakes for: the person at the terminal, or
+/// something that arrived for it to take in (a daemon connection's lines,
+/// a newer release).
 pub enum Wake {
     Terminal(crossterm::event::Event),
-    Daemon,
+    Arrived,
 }
 
 /// Where a connection says it has something, once a window listens.
@@ -206,7 +207,7 @@ impl Session {
                     return;
                 }
                 if let Some(w) = nudging.lock().ok().as_deref().and_then(Option::as_ref) {
-                    let _ = w.send(Wake::Daemon);
+                    let _ = w.send(Wake::Arrived);
                 }
             }
         });
