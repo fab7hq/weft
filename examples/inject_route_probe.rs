@@ -140,7 +140,8 @@ fn main() -> anyhow::Result<()> {
 /// the production topology — a separate server process owning the PTY — and
 /// not a library shortcut around it.
 fn attach(root: &std::path::Path) -> anyhow::Result<Session> {
-    let socket = weft::protocol::private_socket("weft-inject");
+    // The daemon's own socket: `weft --serve` listens there and nowhere else.
+    let socket = weft::protocol::socket_path();
     if !weft::protocol::is_live(&socket) {
         weft::protocol::clear_dead(&socket);
         let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/weft");
