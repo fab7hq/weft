@@ -44,6 +44,7 @@ pub enum Call {
     },
     /// Start a harness, fresh or resuming a recorded session. A resumed
     /// agent names its session, so the daemon knows it from the start.
+    /// Answers with `{"pane": id}`.
     StartAgent {
         harness: String,
         spec: String,

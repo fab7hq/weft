@@ -74,6 +74,7 @@ fn each_field_appears_only_once_its_own_event_is_written() {
         // `[Enter]` on an action opens its detail view; there is no key for
         // the reading, because the sidebar is how it is reached.
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).expect("detail");
+        app.settle();
         let opened = screen(&mut app, 100, 30);
         let read = app.detail().map(|d| d.lines.join("\n")).unwrap_or_default();
         let seen = format!("{row}\n{opened}\n{read}");
@@ -169,9 +170,14 @@ fn board(events: &[Value]) -> (PathBuf, App) {
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !protocol::is_live(&socket) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);
     app.add("codex", "/bin/cat").expect("a pane");
+    app.settle();
     app.refresh_for_test();
     (root, app)
 }

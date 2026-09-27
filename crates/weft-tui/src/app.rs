@@ -288,7 +288,7 @@ pub struct App {
     /// The panes whose agent Weft has already said had ended. Said once: a
     /// pane that is gone stays gone, and repeating it would take the screen
     /// back every tick.
-    announced: std::collections::HashSet<usize>,
+    announced: std::collections::HashSet<u32>,
     /// What a click can land on, as the last frame drew it.
     pub hits: Hits,
     /// What could be started here, as of the last time anyone asked.
@@ -302,6 +302,10 @@ pub struct App {
     woken: std::sync::mpsc::Receiver<crate::client::Wake>,
     /// When the last frame was drawn.
     drawn: std::time::Instant,
+    /// The calls whose answers are awaited, by call id, and what each is for.
+    asked: std::collections::HashMap<u64, Then>,
+    /// The detail view being read, until every part is in.
+    reading: Option<Reading>,
 }
 
 impl App {
@@ -433,10 +437,23 @@ impl App {
     /// only when it starts.
     fn toggle_turbo(&mut self) {
         let on = !self.turbo();
-        if let Err(e) = sess!(self).set_turbo(on) {
-            self.say(format!("Weft could not switch turbo mode: {e}"));
-            return;
+        match sess!(self).set_turbo(on) {
+            Ok(id) => self.await_answer(id, Then::Turbo),
+            Err(e) => self.say(format!("Weft could not switch turbo mode: {e}")),
         }
+    }
+
+    /// Turbo mode switched, as the daemon answered.
+    fn turbo_switched(
+        &mut self,
+        at: usize,
+        answer: std::result::Result<serde_json::Value, String>,
+    ) {
+        let on = match answer {
+            Ok(v) => v.get("turbo").and_then(|t| t.as_bool()).unwrap_or(false),
+            Err(e) => return self.say(format!("Weft could not switch turbo mode: {}", said(&e))),
+        };
+        self.projects[at].session.turbo = on;
         self.say(if on {
             "Turbo mode on: the next agents you start get every permission and ask nothing. \
              Agents already running keep their mode."
@@ -676,6 +693,8 @@ impl App {
             wakes,
             woken,
             drawn: std::time::Instant::now(),
+            asked: Default::default(),
+            reading: None,
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
@@ -709,34 +728,86 @@ impl App {
     /// `spec` is the command line the person would have typed, e.g.
     /// `claude --model sonnet --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
+    ///
+    /// The pane appears when the daemon says it has one, and what the harness
+    /// is short of a moment later: asking it costs a process, so the daemon
+    /// does that off its own loop.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        self.start(harness, spec, None)
+        self.start(harness, spec, None, Then::Started { go: false, then: None })
     }
 
-    /// Start an agent, resuming `session` when it names one.
-    fn start(&mut self, harness: &str, spec: &str, session: Option<&str>) -> Result<()> {
-        sess!(self).spawn(harness, spec, session)?;
-        // The pane appears when the server says it has one, and what the
-        // harness is short of follows a moment later — asking it costs a
-        // process, so the daemon does that off its own loop.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let before = sess!(self).panes.len();
-        let mut running = false;
-        while std::time::Instant::now() < deadline {
-            sess!(self).pump();
-            running |= sess!(self).panes.len() > before;
-            if running && sess!(self).readiness.get(harness).is_some() {
-                self.take_the_board();
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+    /// Start an agent, resuming `session` when it names one, and do `then`
+    /// once the daemon says it has.
+    fn start(
+        &mut self,
+        harness: &str,
+        spec: &str,
+        session: Option<&str>,
+        then: Then,
+    ) -> Result<()> {
+        let id = sess!(self).spawn(harness, spec, session)?;
+        self.await_answer(id, then);
         Ok(())
+    }
+
+    fn await_answer(&mut self, call: u64, then: Then) {
+        self.asked.insert(call, then);
+    }
+
+    /// Take in answers until none is awaited, for a probe or a test that
+    /// drives the keys itself. The loop never does this: it acts on each
+    /// answer as it arrives.
+    pub fn settle(&mut self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !self.asked.is_empty() && std::time::Instant::now() < deadline {
+            let _ = self.turn(Duration::from_millis(20));
+        }
+    }
+
+    /// Do what an answer was awaited for.
+    fn answered(
+        &mut self,
+        at: usize,
+        then: Then,
+        answer: std::result::Result<serde_json::Value, String>,
+    ) {
+        match then {
+            Then::Confirm => self.confirm_staged(at, answer),
+            Then::Read(part) => self.read_part(part, answer),
+            Then::Turbo => self.turbo_switched(at, answer),
+            Then::Starts(opening) => {
+                self.take_starts(answer.ok());
+                match opening {
+                    Opening::Nothing => {}
+                    Opening::Picker => self.open_agent_picker(),
+                    Opening::PickUp { harness, then } => self.show_pick_up(harness, then),
+                }
+            }
+            Then::Started { go, then } => match answer {
+                Err(e) => {
+                    self.modal = Some(Modal::Note(format!("Could not start it: {}", said(&e))))
+                }
+                Ok(v) => {
+                    self.take_the_board();
+                    let pane = v.get("pane").and_then(|p| p.as_u64()).map(|p| p as u32);
+                    let Some(i) = pane.and_then(|id| self.projects[at].session.index_of(id)) else {
+                        return;
+                    };
+                    if go && at == self.at {
+                        self.pane_focus = i;
+                        match then {
+                            Some(act) => self.act(act),
+                            None => self.focus = Focus::Agent,
+                        }
+                    }
+                }
+            },
+        }
     }
 
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.take_the_board();
-        self.look_for_agents();
+        self.look_for_agents(Opening::Nothing);
         // The mouse is Weft's: a click selects a row or goes to an agent,
         // and while an agent has the keys the wheel scrolls that agent. A click never reaches an agent.
         let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
@@ -855,42 +926,33 @@ impl App {
     /// The pane is still on screen showing its last frame, which is worth
     /// keeping; what must not happen is keystrokes going to a dead process.
     pub fn notice_an_agent_that_ended(&mut self) {
-        let Some(pane) = (0..self.pane_count())
-            .find(|i| !self.announced.contains(i) && !sess!(self).panes[*i].running)
+        let panes = &sess!(self).panes;
+        let Some(pane) = panes.iter().position(|p| !p.running && !self.announced.contains(&p.id))
         else {
             return;
         };
-        self.announced.insert(pane);
+        self.announced.insert(panes[pane].id);
         let harness = self.harness_at(pane).unwrap_or("the agent").to_string();
         // The work is in the record, so the pane goes and the row says so.
         self.close_pane(pane);
         self.say(format!("{harness} has ended. Its work is still on the list."));
     }
 
-    /// Take a pane away and forget what was said about it. Every pane after it
-    /// moves up one, so nothing may hold on to an index across this.
+    /// Take a pane away. Every other pane keeps its id, so nothing waits for
+    /// the daemon's new list; the keys come back to Weft.
     fn close_pane(&mut self, pane: usize) {
-        let before = self.pane_count();
         let _ = sess!(self).close(pane);
-        // Wait for the server's new numbering before anything else acts on a
-        // pane index. Every pane after this one moves up, and a spawn sent
-        // into the gap would be counted against the old list.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while std::time::Instant::now() < deadline && self.pane_count() >= before {
-            sess!(self).pump();
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        self.announced.clear();
-        if self.pane_focus >= pane && self.pane_focus > 0 {
-            self.pane_focus -= 1;
-        }
         self.focus = Focus::Weft;
     }
 
     /// Offer to start the harness this work needs: the session the selected
     /// Ask was asked in, else the harness's latest on record, else fresh.
+    /// Offered once the daemon has said what could be started.
     fn offer_pick_up(&mut self, harness: String, then: Option<Act>) {
-        self.look_for_agents();
+        self.look_for_agents(Opening::PickUp { harness, then });
+    }
+
+    fn show_pick_up(&mut self, harness: String, then: Option<Act>) {
         let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
             let id = u.session_ref.clone()?;
             let at = weft_core::turns::millis(&u.asked_at).unwrap_or_default();
@@ -916,14 +978,9 @@ impl App {
             Some(s) => h.resume_spec(&s.id),
             None => h.spec(),
         };
-        if let Err(e) = self.start(harness, &spec, session.map(|s| s.id.as_str())) {
+        let resumes = session.map(|s| s.id.as_str());
+        if let Err(e) = self.start(harness, &spec, resumes, Then::Started { go: true, then }) {
             self.modal = Some(Modal::Note(format!("Could not start {spec}: {e}")));
-            return;
-        }
-        self.pane_focus = self.pane_count().saturating_sub(1);
-        match then {
-            Some(act) => self.act(act),
-            None => self.focus = Focus::Agent,
         }
     }
 
@@ -932,14 +989,23 @@ impl App {
     /// Take in what every project's connection has sent, so a board in the
     /// background is as current as the one on screen. The agent in front
     /// stays in front when one before it closes.
+    /// Every answer that arrived is acted on here.
     fn pump_all(&mut self) -> bool {
         let focused = sess!(self).panes.get(self.pane_focus).map(|p| p.id);
         let mut changed = false;
-        for p in &mut self.projects {
+        let mut answers = Vec::new();
+        for (at, p) in self.projects.iter_mut().enumerate() {
             changed |= p.session.pump();
+            answers.extend(p.session.answers().into_iter().map(|(id, a)| (at, id, a)));
         }
-        if let Some(i) = focused.and_then(|id| sess!(self).index_of(id)) {
-            self.pane_focus = i;
+        match focused.and_then(|id| sess!(self).index_of(id)) {
+            Some(i) => self.pane_focus = i,
+            None => self.pane_focus = self.pane_focus.min(self.pane_count().saturating_sub(1)),
+        }
+        for (at, id, answer) in answers {
+            if let Some(then) = self.asked.remove(&id) {
+                self.answered(at, then, answer);
+            }
         }
         changed
     }
@@ -979,18 +1045,17 @@ impl App {
         }
     }
 
-    /// Fold whatever the ledger has now. The run loop does this each tick;
-    /// a probe or a test does it once.
-    /// Pump until the daemon has said what the record holds, then take it.
-    /// The run loop does this continuously; a probe or a test does it once.
+    /// Take in what the daemon says until it has said what the record holds,
+    /// and what could be started here. The run loop takes it in as it
+    /// arrives; a probe or a test does this once.
     pub fn refresh_for_test(&mut self) {
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while std::time::Instant::now() < deadline && sess!(self).units.is_empty() {
-            sess!(self).pump();
-            std::thread::sleep(Duration::from_millis(20));
+            let _ = self.turn(Duration::from_millis(20));
         }
         self.take_the_board();
-        self.look_for_agents();
+        self.look_for_agents(Opening::Nothing);
+        self.settle();
     }
 
     fn clamp_selection(&mut self) {
@@ -1035,7 +1100,7 @@ impl App {
                 self.focus = Focus::Agent;
                 self.pane_focus = pending.pane;
             }
-            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+            Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
     }
 
@@ -1094,27 +1159,57 @@ impl App {
         // reason to refuse the view: the section says so and the rest opens.
         // Asked and not composed yet: what the person asked is what there is.
         let part = if unit.requested_only { "source" } else { "wording" };
-        let prompt = sess!(self)
-            .read(part, &unit.ask_id)
-            .ok()
-            .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string));
-        let record = unit.check.as_ref().and_then(|c| {
-            sess!(self)
-                .read("judges", &c.eval_id)
-                .ok()
-                .and_then(|v| serde_json::from_value::<weft_core::record::Record>(v).ok())
-        });
-        let seal = unit.seal_id.as_ref().and_then(|id| sess!(self).read("seal", id).ok());
+        let mut reads = vec![(Part::Prompt, part, unit.ask_id.clone())];
+        if let Some(c) = &unit.check {
+            reads.push((Part::Record, "judges", c.eval_id.clone()));
+        }
+        if let Some(id) = &unit.seal_id {
+            reads.push((Part::Seal, "seal", id.clone()));
+        }
+        let mut left = 0;
+        for (which, what, id) in reads {
+            if let Ok(call) = sess!(self).read(what, &id) {
+                self.await_answer(call, Then::Read(which));
+                left += 1;
+            }
+        }
+        self.reading = Some(Reading { unit, prompt: None, record: None, seal: None, left });
+        if left == 0 {
+            self.finish_reading();
+        }
+    }
+
+    /// One part of the detail view, read; once every part is in, the view
+    /// opens. A part that did not come back is said in its section.
+    fn read_part(&mut self, part: Part, answer: std::result::Result<serde_json::Value, String>) {
+        let Some(r) = self.reading.as_mut() else { return };
+        r.left = r.left.saturating_sub(1);
+        if let Ok(v) = answer {
+            match part {
+                Part::Prompt => {
+                    r.prompt = v.get("text").and_then(|t| t.as_str()).map(str::to_string)
+                }
+                Part::Record => r.record = serde_json::from_value(v).ok(),
+                Part::Seal => r.seal = Some(v),
+            }
+        }
+        if r.left == 0 {
+            self.finish_reading();
+        }
+    }
+
+    fn finish_reading(&mut self) {
+        let Some(r) = self.reading.take() else { return };
         self.detail = Some(Detail {
             lines: weft_core::offers::detail_read(
-                &unit,
-                prompt.as_deref(),
-                record.as_ref(),
-                seal.as_ref(),
+                &r.unit,
+                r.prompt.as_deref(),
+                r.record.as_ref(),
+                r.seal.as_ref(),
                 self.deciding_harness(Act::Eval).as_deref(),
             ),
-            title: unit.title.clone(),
-            harness: unit.harness.clone(),
+            title: r.unit.title.clone(),
+            harness: r.unit.harness.clone(),
             offset: 0,
         });
     }
@@ -1175,9 +1270,17 @@ impl App {
         &self.starts
     }
 
-    fn look_for_agents(&mut self) {
-        self.starts = sess!(self)
-            .available()
+    /// Ask what could be started here, then open what was waiting on it.
+    fn look_for_agents(&mut self, then: Opening) {
+        match sess!(self).available() {
+            Ok(call) => self.await_answer(call, Then::Starts(then)),
+            Err(_) => self.answered(self.at, Then::Starts(then), Err(String::new())),
+        }
+    }
+
+    fn take_starts(&mut self, answer: Option<serde_json::Value>) {
+        let listed = answer.and_then(|a| a.get("starts").and_then(|v| v.as_array()).cloned());
+        self.starts = listed
             .unwrap_or_default()
             .iter()
             .filter_map(|v| {
@@ -1204,7 +1307,10 @@ impl App {
     }
 
     fn start_agent_picker(&mut self) {
-        self.look_for_agents();
+        self.look_for_agents(Opening::Picker);
+    }
+
+    fn open_agent_picker(&mut self) {
         if self.fresh_starts().is_empty() {
             let titles = sess!(self).harnesses.titles();
             self.say(format!("No coding agent found. Install {titles} first."));
@@ -1216,13 +1322,10 @@ impl App {
 
     pub fn start_chosen_agent(&mut self, choice: usize) {
         let Some(start) = self.fresh_starts().get(choice).cloned() else { return };
-        match self.add(&start.harness, &start.spec) {
-            Ok(()) => {
-                self.modal = None;
-                self.pane_focus = sess!(self).panes.len().saturating_sub(1);
-                self.focus = Focus::Agent;
-            }
-            Err(e) => self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec))),
+        self.modal = None;
+        let then = Then::Started { go: true, then: None };
+        if let Err(e) = self.start(&start.harness, &start.spec, None, then) {
+            self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec)));
         }
     }
 
@@ -1237,23 +1340,34 @@ impl App {
         text: Option<&str>,
     ) {
         match sess!(self).act(act, unit, pane, text) {
-            Ok(id) => {
-                sess!(self).pump();
-                let Some(w) = sess!(self).waiting.iter().find(|w| w.id == id).cloned() else {
-                    return;
-                };
-                let Some(pane) = sess!(self).index_of(w.pane) else { return };
-                self.modal = Some(Modal::Confirm(Pending {
-                    staged: w.id,
-                    pane,
-                    payload: w.payload,
-                    what: w.what,
-                    why: w.why.lines().map(str::to_string).collect(),
-                }));
-                self.modal_choice = 0;
-            }
-            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+            Ok(call) => self.await_answer(call, Then::Confirm),
+            Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
+    }
+
+    /// What an act staged, in front of the person, once the daemon says so.
+    fn confirm_staged(
+        &mut self,
+        at: usize,
+        answer: std::result::Result<serde_json::Value, String>,
+    ) {
+        let staged = match answer {
+            Ok(v) => v.get("pending").and_then(|p| p.as_str()).map(str::to_string),
+            Err(e) => return self.modal = Some(Modal::Note(said(&e))),
+        };
+        let s = &self.projects[at].session;
+        let Some(w) = s.waiting.iter().find(|w| Some(&w.id) == staged.as_ref()).cloned() else {
+            return;
+        };
+        let Some(pane) = s.index_of(w.pane) else { return };
+        self.modal = Some(Modal::Confirm(Pending {
+            staged: w.id,
+            pane,
+            payload: w.payload,
+            what: w.what,
+            why: w.why.lines().map(str::to_string).collect(),
+        }));
+        self.modal_choice = 0;
     }
 
     // --- the drawer ----------------------------------------------------------
@@ -1374,9 +1488,9 @@ impl App {
                 self.pane_focus = 0;
                 self.selected = 0;
                 self.take_the_board();
-                self.look_for_agents();
+                self.look_for_agents(Opening::Nothing);
             }
-            Err(e) => self.modal = Some(Modal::Note(said(&e))),
+            Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
     }
 
@@ -1910,6 +2024,44 @@ impl App {
     }
 }
 
+/// What to do with a call's answer, when it arrives.
+enum Then {
+    /// Put what the act staged in front of the person.
+    Confirm,
+    /// One part of the detail view being read.
+    Read(Part),
+    /// Turbo mode was switched.
+    Turbo,
+    /// What could be started here is known: open what was waiting on it.
+    Starts(Opening),
+    /// An agent started: go to it, when asked to, then carry on.
+    Started { go: bool, then: Option<Act> },
+}
+
+/// A part of the detail view.
+#[derive(Clone, Copy)]
+enum Part {
+    Prompt,
+    Record,
+    Seal,
+}
+
+/// What was waiting on the list of agents that could be started.
+enum Opening {
+    Nothing,
+    Picker,
+    PickUp { harness: String, then: Option<Act> },
+}
+
+/// The detail view, while its parts are read.
+struct Reading {
+    unit: Unit,
+    prompt: Option<String>,
+    record: Option<weft_core::record::Record>,
+    seal: Option<serde_json::Value>,
+    left: usize,
+}
+
 /// One way to start an agent: a harness, and the command line that does it.
 /// The command is shown before it runs and is the one a person would type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1997,8 +2149,20 @@ pub(crate) mod tests {
                 Some(weft_core::harness::fixture::harnesses()),
             );
         });
-        let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
+        let session = connect_when_listening(&socket, &root);
         (root, session)
+    }
+
+    /// A daemon started on a thread listens a moment later.
+    pub(crate) fn connect_when_listening(
+        socket: &std::path::Path,
+        root: &std::path::Path,
+    ) -> crate::client::Session {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !weft_proto::is_live(socket) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        crate::client::Session::connect(socket, root, 24, 80).expect("connect")
     }
 
     pub(crate) fn app() -> App {
@@ -2142,12 +2306,15 @@ pub(crate) mod tests {
         }
     }
 
+    /// A key, and whatever answers it brings.
     pub(crate) fn press(a: &mut App, code: KeyCode) {
         a.on_key(KeyEvent::new(code, KeyModifiers::NONE)).expect("key");
+        a.settle();
     }
 
     fn ctrl(a: &mut App, c: char) {
         a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)).expect("key");
+        a.settle();
     }
 
     #[test]
@@ -2329,9 +2496,10 @@ pub(crate) mod tests {
                 Some(all),
             );
         });
-        let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
+        let session = connect_when_listening(&socket, &root);
         let mut a = App::with_session(root, Toggle, session);
-        a.look_for_agents();
+        a.look_for_agents(Opening::Nothing);
+        a.settle();
         let zed: Vec<_> = a.starts().iter().filter(|s| s.harness == "zed-agent").collect();
         assert_eq!(zed.len(), 1, "offered fresh: {:?}", a.starts());
         assert_eq!(zed[0].spec, "cat");
@@ -2869,6 +3037,7 @@ pub(crate) mod tests {
             row,
             modifiers: KeyModifiers::NONE,
         });
+        a.settle();
     }
 
     /// A click on a row selects it, as the arrows would,
@@ -3474,7 +3643,7 @@ pub(crate) mod tests {
                 &listening.with_extension("no-config.toml"),
             );
         });
-        let session = crate::client::Session::connect(&socket, &dir, 24, 80).expect("connect");
+        let session = connect_when_listening(&socket, &dir);
         let mut a = App::with_session(dir.clone(), Toggle, session);
         a.refresh_for_test();
         assert_eq!(a.units().len(), 1);
@@ -3505,6 +3674,7 @@ mod start_tests {
     fn n_offers_the_agents_that_are_installed() {
         let mut a = bare();
         a.on_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)).expect("key");
+        a.settle();
         match a.modal {
             Some(Modal::StartAgent { .. }) => {}
             None => assert!(
@@ -3544,6 +3714,7 @@ mod start_tests {
             requested_only: false,
         }]);
         a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)).expect("key");
+        a.settle();
         assert!(
             a.modal.is_some() || a.hint_text().is_some(),
             "S must do something when the bar offers it"
@@ -3587,7 +3758,7 @@ fn readiness_of(word: Option<&str>) -> Readiness {
 }
 
 /// A refusal from the daemon, as one sentence for the person.
-fn said(e: &anyhow::Error) -> String {
+fn said(e: &str) -> String {
     let text = e.to_string();
     text.split_once(": ").map(|(_, rest)| rest.to_string()).unwrap_or(text)
 }

@@ -28,9 +28,13 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &weft::routing::file());
     });
+    while !protocol::is_live(&socket) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let session = Session::connect(&socket, &root, 40, 120)?;
     let mut app = App::with_session(root.clone(), Toggle, session);
     app.add(&name, &h.program)?;
+    app.settle();
     println!("started {name}: {} pane(s)", app.pane_count());
 
     // Let it come up, then quit it the way a person would.

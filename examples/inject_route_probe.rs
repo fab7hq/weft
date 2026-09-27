@@ -38,6 +38,8 @@ fn main() -> anyhow::Result<()> {
     let mut steps: Vec<Value> = Vec::new();
 
     app.add(&harness, &spec)?;
+
+    app.settle();
     steps.push(
         json!({"step": "spawn", "harness": harness, "spec": spec, "panes": app.pane_count()}),
     );
@@ -167,6 +169,7 @@ fn done(observation: Value) -> anyhow::Result<()> {
 
 fn press(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE)).expect("key");
+    app.settle();
     app.pump();
     std::thread::sleep(Duration::from_millis(300));
 }

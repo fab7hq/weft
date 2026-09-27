@@ -65,6 +65,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(spec) = &spawn {
         let (harness, command) = spec.split_once(' ').unwrap_or((spec.as_str(), spec.as_str()));
         app.add(harness, command)?;
+        app.settle();
         println!("spawned {harness}: {command}");
     }
     if let Some(bytes) = &pane {
@@ -75,6 +76,7 @@ fn main() -> anyhow::Result<()> {
     let press = |app: &mut App, list: &str| -> anyhow::Result<()> {
         for name in list.split(',') {
             app.on_key(KeyEvent::new(key_of(name), KeyModifiers::NONE))?;
+            app.settle();
             app.pump();
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -87,6 +89,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(text) = &typed {
         for c in text.chars() {
             app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))?;
+            app.settle();
         }
         app.pump();
         println!("typed into Weft: {text:?}");
@@ -134,8 +137,11 @@ fn main() -> anyhow::Result<()> {
 
     if stop {
         app.on_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE))?;
+        app.settle();
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))?;
+        app.settle();
         app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))?;
+        app.settle();
         println!("\nthe session and its agents are stopped");
     }
     Ok(())

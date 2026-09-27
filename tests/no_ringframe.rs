@@ -28,10 +28,20 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
     });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !protocol::is_live(&socket) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let session = Session::connect(&socket, &root, 24, 80).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);
 
     app.add("codex", "/bin/cat").expect("a pane still runs");
+    app.settle();
+    // What the harness is short of follows a moment after its pane.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while app.record_available() && std::time::Instant::now() < deadline {
+        app.turn(std::time::Duration::from_millis(20)).expect("a turn");
+    }
     assert_eq!(app.pane_count(), 1, "the runtime does not depend on the CLI");
     // Whether the CLI is there is the daemon's answer, and it asks when a pane
     // starts — because asking costs a process, and opening a project must not.

@@ -22,6 +22,9 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &weft::routing::file());
     });
+    while !protocol::is_live(&socket) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let session = Session::connect(&socket, &root, 24, 80)?;
     let mut app = App::with_session(root, Toggle, session);
     app.refresh_for_test();
@@ -33,6 +36,7 @@ fn main() -> anyhow::Result<()> {
             other => KeyCode::Char(other),
         };
         app.on_key(KeyEvent::new(code, KeyModifiers::NONE))?;
+        app.settle();
     }
     let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
     terminal.draw(|f| weft::ui::draw(f, &mut app))?;

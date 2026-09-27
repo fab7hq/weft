@@ -123,8 +123,6 @@ pub struct Session {
     stream: UnixStream,
     inbox: Receiver<Line>,
     nudge: Nudge,
-    /// The next call id. Answers come back against it.
-    next_call: u64,
     /// Answers the daemon has sent, by call id.
     answers: std::collections::HashMap<u64, std::result::Result<serde_json::Value, String>>,
     pub panes: Vec<PaneView>,
@@ -183,18 +181,10 @@ impl Session {
         &self.socket
     }
 
-    /// Attach to a daemon on this socket, watching one project.
+    /// Attach to a daemon listening on this socket, watching one project.
     pub fn connect(socket: &Path, root: &Path, rows: u16, cols: u16) -> Result<Self> {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let stream = loop {
-            match UnixStream::connect(socket) {
-                Ok(s) => break s,
-                Err(e) if Instant::now() >= deadline => {
-                    return Err(anyhow!("no session at {}: {e}", socket.display()));
-                }
-                Err(_) => std::thread::sleep(Duration::from_millis(25)),
-            }
-        };
+        let stream = UnixStream::connect(socket)
+            .map_err(|e| anyhow!("no session at {}: {e}", socket.display()))?;
 
         let reading = stream.try_clone()?;
         let (tx, inbox) = channel();
@@ -233,19 +223,20 @@ impl Session {
             notify: true,
             turbo: false,
             harnesses: Default::default(),
-            next_call: 1,
             answers: std::collections::HashMap::new(),
         };
         // The handshake first: a daemon that speaks another protocol says so
         // with a number rather than leaving the client to guess.
-        session.ask(Call::Hello {
+        let hello = session.tell(Call::Hello {
             client: concat!("weft/", env!("CARGO_PKG_VERSION")).to_string(),
             protocol: PROTOCOL,
         })?;
+        session.answered(hello)?;
         // The state comes back in the answer, so nothing is missed between
         // opening a project and the first pump.
-        let opened =
-            session.ask(Call::Open { rows, cols, path: root.to_string_lossy().into_owned() })?;
+        let open =
+            session.tell(Call::Open { rows, cols, path: root.to_string_lossy().into_owned() })?;
+        let opened = session.answered(open)?;
         if let Some(panes) = opened.get("panes").and_then(weft_proto::panes_of) {
             session.panes = panes.into_iter().map(PaneView::of).collect();
         }
@@ -319,29 +310,35 @@ impl Session {
         self.panes.iter_mut().find(|p| p.id == id)
     }
 
-    /// Make a call. The answer arrives on the same socket, against this id.
-    fn tell(&mut self, call: Call) -> Result<u64> {
-        let id = self.next_call;
-        self.next_call += 1;
+    /// Make a call. The answer arrives on the same socket, against this id,
+    /// which no other connection in this process uses.
+    pub fn tell(&mut self, call: Call) -> Result<u64> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
         self.stream.write_all(&Line::Call { id, call }.encode())?;
         self.stream.flush()?;
         Ok(id)
     }
 
-    /// Make a call and wait for its answer.
-    fn ask(&mut self, call: Call) -> Result<serde_json::Value> {
-        let id = self.tell(call)?;
+    /// The answer to a call made while connecting, before any window waits
+    /// on this connection: the one wait there is, on the socket itself.
+    fn answered(&mut self, id: u64) -> Result<serde_json::Value> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            self.pump();
             if let Some(answer) = self.answers.remove(&id) {
                 return answer.map_err(|e| anyhow!(e));
             }
-            if Instant::now() >= deadline {
-                return Err(anyhow!("the session did not answer"));
-            }
-            std::thread::sleep(Duration::from_millis(5));
+            let left = deadline.saturating_duration_since(Instant::now());
+            let line =
+                self.inbox.recv_timeout(left).map_err(|_| anyhow!("the session did not answer"))?;
+            self.take(line);
         }
+    }
+
+    /// Every answer that has arrived, by call id, taken.
+    pub fn answers(&mut self) -> Vec<(u64, std::result::Result<serde_json::Value, String>)> {
+        self.answers.drain().collect()
     }
 
     /// Take in whatever has arrived. Returns true when anything changed.
@@ -349,17 +346,25 @@ impl Session {
         let mut changed = false;
         while let Ok(line) = self.inbox.try_recv() {
             changed = true;
+            self.take(line);
+        }
+        changed
+    }
+
+    /// One line from the daemon: an answer, kept by call id, or an event.
+    fn take(&mut self, line: Line) {
+        {
             let event = match line {
                 Line::Event(e) => e,
                 Line::Result { id, result } => {
                     self.answers.insert(id, Ok(result));
-                    continue;
+                    return;
                 }
                 Line::Error { id, code, message } => {
                     self.answers.insert(id, Err(format!("{code}: {message}")));
-                    continue;
+                    return;
                 }
-                Line::Call { .. } => continue,
+                Line::Call { .. } => return,
             };
             match event {
                 Event::Panes { panes } => {
@@ -418,13 +423,13 @@ impl Session {
                 }
             }
         }
-        changed
     }
 
     /// Start an agent; `session` is the one it resumes, when it resumes one.
-    pub fn spawn(&mut self, harness: &str, spec: &str, session: Option<&str>) -> Result<()> {
+    /// Answered with its pane's id.
+    pub fn spawn(&mut self, harness: &str, spec: &str, session: Option<&str>) -> Result<u64> {
         let (harness, spec, session) = (harness.into(), spec.into(), session.map(str::to_string));
-        self.tell(Call::StartAgent { harness, spec, session }).map(|_| ())
+        self.tell(Call::StartAgent { harness, spec, session })
     }
 
     pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
@@ -441,70 +446,59 @@ impl Session {
         how: weft_core::inject::Handoff,
         what: &str,
         why: &str,
-    ) -> Result<String> {
+    ) -> Result<u64> {
         self.last_refusal = None;
         self.unrecorded = None;
-        let answer = self.ask(Call::Stage {
+        self.tell(Call::Stage {
             pane: self.id_at(pane)?,
             bytes: bytes.to_vec(),
             how,
             what: what.to_string(),
             why: why.to_string(),
-        })?;
-        answer
-            .get("pending")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("the session staged nothing"))
+        })
     }
 
     /// One of RingFrame's three acts, by name. The daemon works out what to
-    /// type and where it goes; this only says which act.
+    /// type and where it goes; this only says which act. Answered with the
+    /// pending it staged.
     pub fn act(
         &mut self,
         act: &str,
         unit: Option<&str>,
         pane: Option<usize>,
         text: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<u64> {
         self.last_refusal = None;
         self.unrecorded = None;
         let pane = pane.map(|p| self.id_at(p)).transpose()?;
-        let answer = self.ask(Call::Act {
+        self.tell(Call::Act {
             act: act.to_string(),
             unit: unit.map(str::to_string),
             pane,
             text: text.map(str::to_string),
-        })?;
-        answer
-            .get("pending")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("the session staged nothing"))
+        })
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them.
-    pub fn read(&mut self, what: &str, unit: &str) -> Result<serde_json::Value> {
-        self.ask(Call::Read { what: what.to_string(), unit: unit.to_string() })
+    pub fn read(&mut self, what: &str, unit: &str) -> Result<u64> {
+        self.tell(Call::Read { what: what.to_string(), unit: unit.to_string() })
     }
 
     /// Turn turbo mode on or off for the agents started here from now on.
-    pub fn set_turbo(&mut self, on: bool) -> Result<()> {
-        let answer = self.ask(Call::Turbo { on })?;
-        self.turbo = answer.get("turbo").and_then(|v| v.as_bool()).unwrap_or(on);
-        Ok(())
+    /// Answered with `{"turbo": bool}`.
+    pub fn set_turbo(&mut self, on: bool) -> Result<u64> {
+        self.tell(Call::Turbo { on })
     }
 
-    /// The agents that could be started here.
-    pub fn available(&mut self) -> Result<Vec<serde_json::Value>> {
-        let answer = self.ask(Call::Available)?;
-        Ok(answer.get("starts").and_then(|v| v.as_array()).cloned().unwrap_or_default())
+    /// The agents that could be started here. Answered with `{"starts": …}`.
+    pub fn available(&mut self) -> Result<u64> {
+        self.tell(Call::Available)
     }
 
     /// Ask what is behind RingFrame's latest release; with `proceed`, catch
     /// it all up. The answer arrives as events.
     pub fn sync_now(&mut self, proceed: bool) -> Result<()> {
-        self.ask(Call::Sync { proceed }).map(|_| ())
+        self.tell(Call::Sync { proceed }).map(|_| ())
     }
 
     /// Yes or no, by id. Whoever answers first answers for everyone.
@@ -550,7 +544,7 @@ fn start_server() -> Result<()> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--serve")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     // Its own session, so closing the terminal does not take the agents with it.
     unsafe {
@@ -559,17 +553,19 @@ fn start_server() -> Result<()> {
             Ok(())
         });
     }
-    cmd.spawn()?;
-
-    let socket = socket_path();
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if is_live(&socket) {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(25));
+    let mut child = cmd.spawn()?;
+    // It says one line once it listens; that line is waited for, not polled.
+    let out = child.stdout.take().ok_or_else(|| anyhow!("the session server said nothing"))?;
+    let (said, heard) = channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line);
+        let _ = said.send(line);
+    });
+    match heard.recv_timeout(Duration::from_secs(5)) {
+        Ok(line) if line.contains("listening") => Ok(()),
+        _ => Err(anyhow!("the session server did not come up")),
     }
-    Err(anyhow!("the session server did not come up"))
 }
 
 fn libc_setsid() {

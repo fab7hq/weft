@@ -407,6 +407,14 @@ impl Session {
         // A socket left by a server that died is not a live server.
         let _ = std::fs::remove_file(socket);
         let listener = UnixListener::bind(socket)?;
+        // Whoever started this daemon waits for this line rather than
+        // polling the socket.
+        {
+            use std::io::Write as _;
+            let mut out = std::io::stdout();
+            let _ = writeln!(out, "weft: listening on {}", socket.display());
+            let _ = out.flush();
+        }
 
         let (tx, rx) = channel();
         // The record changes on disk without telling anyone, so it is polled.
@@ -1076,12 +1084,17 @@ impl Session {
                 }
             }
             Call::StartAgent { harness, spec, session } => {
-                if let Some(at) = self.clients.watching.get(&client).copied() {
-                    let _ = self.spawn(client, at, &harness, &spec, session);
-                    // Asked when a pane starts, because that is when a person
-                    // would care.
-                    self.look_at(at, &harness);
-                }
+                let Some(at) = self.clients.watching.get(&client).copied() else {
+                    return Ok(Answer::No("no_project", "open a project first".into()));
+                };
+                let started = self.spawn(client, at, &harness, &spec, session);
+                // Asked when a pane starts, because that is when a person
+                // would care.
+                self.look_at(at, &harness);
+                return Ok(match started {
+                    Some(pane) => Answer::Ok(serde_json::json!({"pane": pane})),
+                    None => Answer::No("not_started", format!("{spec} did not start")),
+                });
             }
             Call::CloseAgent { pane } => {
                 if let Some(at) = self.clients.watching.get(&client).copied() {

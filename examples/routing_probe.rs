@@ -21,6 +21,9 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &weft::routing::file());
     });
+    while !protocol::is_live(&socket) {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let session = Session::connect(&socket, &root, 24, 80)?;
     let mut app = App::with_session(root, Toggle, session);
     app.refresh_for_test();

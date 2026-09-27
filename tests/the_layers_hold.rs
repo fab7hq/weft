@@ -147,3 +147,51 @@ fn the_client_cannot_reach_the_daemon() {
         "weft-tui depends on weftd: the interface would stop being replaceable"
     );
 }
+
+/// Each line of a crate's non-test Rust source: `#[cfg(test)]` items and
+/// comments left out.
+fn non_test_lines(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("src").flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("read");
+        let (mut depth, mut skipping, mut pending) = (0i64, false, false);
+        for line in text.lines() {
+            let t = line.trim_start();
+            if skipping || pending {
+                depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+                if pending && line.contains('{') {
+                    (pending, skipping) = (false, true);
+                }
+                if skipping && depth <= 0 {
+                    (skipping, depth) = (false, 0);
+                }
+                continue;
+            }
+            if t.starts_with("#[cfg(test)]") {
+                (pending, depth) = (true, 0);
+            } else if !t.starts_with("//") {
+                out.push((path.display().to_string(), line.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// The client never waits in a loop: it sends a call and acts on the answer
+/// when the one channel it waits on brings it.
+#[test]
+fn nothing_in_the_client_sleeps() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/weft-tui/src");
+    let lines = non_test_lines(&src);
+    assert!(lines.len() > 1000, "found too little code to check");
+    let sleeping: Vec<_> = lines
+        .iter()
+        .filter(|(_, l)| l.contains("thread::sleep"))
+        .map(|(p, l)| format!("{p}: {}", l.trim()))
+        .collect();
+    assert!(sleeping.is_empty(), "the client sleeps:\n{}", sleeping.join("\n"));
+}

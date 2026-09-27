@@ -50,6 +50,8 @@ fn main() -> anyhow::Result<()> {
     let mut steps: Vec<Value> = Vec::new();
 
     app.add(&harness, &spec)?;
+
+    app.settle();
     steps.push(json!({"step": "spawn", "at": now(), "harness": harness, "spec": spec}));
 
     // Startup questions belong to the agent and are answered there, the way a
@@ -233,6 +235,7 @@ fn done(observation: Value) -> anyhow::Result<()> {
 
 fn press(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE)).expect("key");
+    app.settle();
     app.pump();
     std::thread::sleep(Duration::from_millis(300));
 }
