@@ -23,5 +23,7 @@ weft-proto = { path = "../weft-proto" }
 # not in the graph of anything that ships this crate, which is the whole point
 # of the split.
 [dev-dependencies]
+# Whole-screen tests read the screen they expect from a snapshot.
+insta = { version = "1", features = ["filters"] }
 weft-core = { path = "../weft-core", features = ["fixtures"] }
 weftd = { path = "../weftd" }

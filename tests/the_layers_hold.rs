@@ -84,6 +84,9 @@ fn the_client_runs_nothing_but_the_daemon() {
     let mut broken = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("weft-tui/src").flatten() {
         let path = entry.path();
+        if path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
         let text = std::fs::read_to_string(&path).expect("read");
         // Test modules sit at the end of a file and may do as they like: a
         // fixture that makes a Git repository is not the client deciding.

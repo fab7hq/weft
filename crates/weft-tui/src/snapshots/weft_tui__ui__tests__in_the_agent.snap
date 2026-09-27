@@ -1,0 +1,28 @@
+---
+source: crates/weft-tui/src/ui.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                 [T]URBO OFF   OPEN  1
+ ▸ 1 codex    +
+────────────────────────────────────────────────────────────────────────────────
+█
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+  Ctrl+]  BACK TO WEFT
+ Every other key goes to the agent, Esc included.

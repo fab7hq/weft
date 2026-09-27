@@ -1,0 +1,28 @@
+---
+source: crates/weft-tui/src/ui.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                 [T]URBO OFF   OPEN  1
+ ▸ 1 codex    +
+────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫
+   ▾ codex
+      health endpoint                                                  EVALED
+      readme fix                                                        ASKED
+ ▾ [project] 1 open  ⌫
+   ▾ codex
+      unit 0                                                            ASKED
+      unit 1                                                            ASKED
+      unit 2                                                            ASKED
+      unit 3                                                            ASKED
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────
+  [A]SK   [E]VAL   [S]EAL                                              [W]EFT ⌄
+ [H]ELP lists every key.

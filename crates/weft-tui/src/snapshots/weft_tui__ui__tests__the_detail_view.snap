@@ -1,0 +1,35 @@
+---
+source: crates/weft-tui/src/ui.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+ health endpoint                                                                                                  codex
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ASK [DONE]   EVAL [DONE]   SEAL [HAVEN'T RUN]
+   asked 2026-09-19T14:02:00Z · sent · word for word · judged by codex
+
+ ASK [DONE]
+   the prompt is not on disk
+
+ EVAL [DONE]   doesn't match what you asked, 0.67 agreed
+   judged by codex · recorded as drifted, 0.67
+   3 judges checked the work · none of them did it
+
+   JUDGE      coverage · codex · gpt-5.6-luna
+   JUDGE      drift · codex · gpt-5.6-luna
+   JUDGE      adversary · codex · gpt-5.6-luna
+
+   ✗ returns the real build number
+     no · all 1 judges agreed
+     it still reads a literal "dev" at line 41
+
+   ✓ the endpoint responds at /health
+     yes · all 3 judges agreed
+
+   CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT YOU ASKED
+     README.md
+
+   A check is a judgement, not a guarantee.
+ … 1 more lines · [↓]
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [F] FOLLOW UP   [↑↓] SCROLL                                                                               [ESC] CLOSE

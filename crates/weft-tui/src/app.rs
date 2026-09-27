@@ -2182,6 +2182,7 @@ pub(crate) mod tests {
         let (root, session) = test_session("codex");
         let mut a = App::with_session(root, Toggle, session);
         a.add("codex", "/bin/cat").expect("spawn");
+        a.settle();
         // Say what this fixture's readiness is instead of inheriting the
         // machine's. Otherwise these tests pass on a laptop with Codex and the
         // plugin installed and fail everywhere else, which is not a fact about
@@ -3473,6 +3474,7 @@ pub(crate) mod tests {
         // and not the other, because the plugin is installed per harness.
         let mut a = app();
         a.add("claude-code", "/bin/cat").expect("a second pane");
+        a.settle();
         a.set_readiness("codex", Readiness::Missing(Gap::Plugin));
         a.set_readiness("claude-code", Readiness::Ready);
         let mut codex_row = unit(Sent::Arrived { exact: true });
@@ -3704,6 +3706,7 @@ mod start_tests {
         // The action bar advertised [S]end it while nothing was wired to it.
         let mut a = bare();
         a.add("codex", "/bin/cat").expect("spawn");
+        a.settle();
         a.set_units(vec![Unit {
             ask_id: "ask_1".into(),
             title: "t".into(),

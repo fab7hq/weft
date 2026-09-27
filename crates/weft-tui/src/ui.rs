@@ -1132,6 +1132,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    /// The whole screen against the one it should be, kept in
+    /// `snapshots/`. A project is named after its scratch directory, which
+    /// differs on every run, so it reads as `[project]`.
+    fn expect_screen(name: &str, drawn: &str) {
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(r"weft-app-[a-z]+-\d+-\d+ *", "[project] ");
+        settings.bind(|| insta::assert_snapshot!(name, drawn));
+    }
+
     /// What the frame actually drew, one line per row.
     fn screen(app: &mut App, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
@@ -1263,6 +1272,7 @@ mod tests {
         let (other, _) = crate::app::tests::test_session("second");
         a.open_project(&other.to_string_lossy());
         a.add("codex", "/bin/cat").expect("an agent in the second project");
+        a.settle();
         let mut more: Vec<crate::ledger::Unit> = Vec::new();
         for i in 0..4 {
             let mut u = crate::app::tests::unit(crate::ledger::Sent::ReadyToSend);
@@ -1271,19 +1281,11 @@ mod tests {
             more.push(u);
         }
         a.set_units(more);
-        let drawn = screen(&mut a, 80, 24);
         // Two project rows, two harness rows, six units: ten lines in a body
         // with room for twenty, and none of them elided. The old row was four
         // to five lines per unit, which did not fit at two units.
         assert_eq!(a.rows().len(), 10, "{:?}", a.rows());
-        assert!(!drawn.contains("more"), "something was elided:\n{drawn}");
-        assert!(!drawn.contains("above"), "something scrolled away:\n{drawn}");
-        for row in a.rows().iter() {
-            if let crate::app::Row::Action { project, unit } = *row {
-                let title = a.units_of(project)[unit].title.clone();
-                assert!(drawn.contains(&title), "{title} is missing:\n{drawn}");
-            }
-        }
+        expect_screen("six_units_in_two_projects", &screen(&mut a, 80, 24));
     }
 
     #[test]
@@ -1364,40 +1366,28 @@ mod tests {
 
     #[test]
     fn in_the_agent_weft_offers_no_keys_at_all() {
+        // One key is Weft's, on the bar, and said nowhere else; the counts
+        // keep their place.
         let mut a = judged();
         a.focus = Focus::Agent;
-        let drawn = screen(&mut a, 80, 24);
-        let lines: Vec<&str> = drawn.lines().collect();
-        assert_eq!(lines[22].trim(), "Ctrl+]  BACK TO WEFT", "the one key Weft keeps");
-        assert!(
-            !lines[23].contains("Ctrl"),
-            "and the line below does not repeat it: {}",
-            lines[23]
-        );
-        assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
-        assert!(lines[0].contains("OPEN"), "the counts keep their place: {}", lines[0]);
+        expect_screen("in_the_agent", &screen(&mut a, 80, 24));
     }
 
     #[test]
     fn hiding_the_work_list_gives_the_agent_the_whole_width() {
+        // The list is away, nothing is left behind, and the way back is said.
         let mut a = judged();
         press(&mut a, KeyCode::Char('b'));
-        let drawn = screen(&mut a, 120, 32);
-        assert!(!drawn.contains("health endpoint"), "the list is away: {drawn}");
-        let tabs = drawn.lines().nth(1).expect("a tab row");
-        assert!(!tabs.contains('│'), "and nothing is left behind: {tabs}");
-        assert!(drawn.contains("[B] brings it back"), "the way back is said: {drawn}");
+        expect_screen("the_list_hidden", &screen(&mut a, 120, 32));
     }
 
     #[test]
     fn the_detail_view_blocks_and_holds_all_three_acts() {
-        let mut a = judged();
-        press(&mut a, KeyCode::Enter);
-        let drawn = screen(&mut a, 120, 32);
-        assert!(drawn.contains("health endpoint"), "{drawn}");
         // One unit and one decision. Nothing behind it is reachable, which is
         // what keeps the bar's acts and `[P]ROCEED` from both being live.
-        assert!(!drawn.contains("readme fix"), "the list is not behind it:\n{drawn}");
+        // Judged, it has nothing to send: [F] FOLLOW UP is the one way on.
+        let mut a = judged();
+        press(&mut a, KeyCode::Enter);
         let lines = &a.detail().expect("the view").lines;
         for section in ["ASK", "EVAL", "SEAL"] {
             assert!(
@@ -1405,12 +1395,7 @@ mod tests {
                 "{section} is missing from the view"
             );
         }
-        assert!(drawn.contains("ASK"), "and the top of it is on the screen:\n{drawn}");
-        assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
-        // Judged, it has nothing to send: [F] FOLLOW UP is the one way on.
-        assert!(!drawn.contains("[P]ROCEED"), "{drawn}");
-        assert!(drawn.contains("[F] FOLLOW UP"), "{drawn}");
-        assert!(drawn.contains("[ESC] CLOSE"), "{drawn}");
+        expect_screen("the_detail_view", &screen(&mut a, 120, 32));
     }
 
     #[test]
@@ -1473,9 +1458,7 @@ mod tests {
     #[test]
     fn side_by_side_puts_the_list_left_and_never_squeezes_the_pane() {
         let mut a = judged();
-        let drawn = screen(&mut a, 120, 32);
-        let tabs = drawn.lines().nth(1).expect("a tab row");
-        assert!(tabs.contains('│'), "a divider between the two surfaces: {tabs}");
+        expect_screen("side_by_side", &screen(&mut a, 120, 32));
         let Layout::Split { list, pane } = layout::for_width(120) else { panic!() };
         assert_eq!((list, pane), (39, 80), "the spec's own screen 4");
     }
@@ -1502,16 +1485,13 @@ mod tests {
             })
             .collect();
         a.set_units(many);
-        let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("↓"), "there is more below: {drawn}");
+        expect_screen("a_long_list", &screen(&mut a, 80, 24));
         // Down to the last row, which the arrows have to scroll to now that
         // there is no wheel.
         while a.selected + 1 < a.rows().len() {
             press(&mut a, KeyCode::Down);
         }
-        let scrolled = screen(&mut a, 80, 24);
-        assert!(scrolled.contains("above"), "and above, once scrolled: {scrolled}");
-        assert!(!scrolled.contains("unit 0"), "the first row scrolled away: {scrolled}");
+        expect_screen("a_long_list_scrolled", &screen(&mut a, 80, 24));
     }
 
     #[test]
