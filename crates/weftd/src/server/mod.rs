@@ -22,6 +22,11 @@ use anyhow::Result;
 use crate::pane::Pane;
 use crate::turns::Turn;
 
+mod agents;
+mod typing;
+
+use typing::*;
+
 /// Each pane's agent state, and every session's latest event.
 type Agents = (Vec<Option<Turn>>, Vec<crate::turns::Session>);
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
@@ -90,21 +95,6 @@ struct Waiting {
     fresh: bool,
     /// The Ask whose prompt this sends, recorded as submitted once it is.
     sends: Option<String>,
-}
-
-/// How long a pane Weft started for an act must be still before it is typed
-/// into, and how long Weft waits for that.
-const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
-const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// A send into an agent that is still starting, until it may be typed or its
-/// deadline passes.
-struct Starting {
-    w: Waiting,
-    force: bool,
-    until: std::time::Instant,
-    /// The screen when it last changed, for a send the person forced.
-    screen: (std::time::Instant, String),
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -274,17 +264,6 @@ impl Answer {
     }
 }
 
-/// The person's yes, on record before anything is typed.
-///
-/// The order is the point: if the record cannot be written there is no
-/// confirmed Ask, and typing the prompt anyway would be a send with nothing
-/// behind it. An Ask that was already confirmed has nothing to write.
-fn recorded_first(root: &Path, confirm: Option<&str>) -> Result<(), String> {
-    let Some(ask_id) = confirm else { return Ok(()) };
-    crate::ringframe::ask_confirm(root, ask_id)
-        .map_err(|e| format!("RingFrame would not record your yes: {e:?}. Nothing was typed."))
-}
-
 /// What starting an agent could mean here, in the order it is offered.
 ///
 /// Picking a session up comes before a fresh one, because a workspace with
@@ -367,24 +346,6 @@ fn write_whole(path: &Path, text: String) {
     }
     if std::fs::write(&part, text).is_ok() {
         let _ = std::fs::rename(&part, path);
-    }
-}
-
-/// Why Enter was withheld. Written once here because it is the daemon that
-/// knows, and the person has to be told the text is sitting in their agent.
-fn withheld(a: &crate::pane::Attempt) -> String {
-    match &a.folded_command {
-        // The prompt is all there, but folded into a placeholder, and a folded
-        // paste is not read for commands. Sending it would ask for an ordinary
-        // answer instead of the mode.
-        Some(command) => format!(
-            "the agent folded the paste, so {command} would not run — it would be taken as \
-             ordinary text. The prompt is in its composer; type {command} there yourself, or \
-             press Enter to send it without the mode."
-        ),
-        None => "the agent did not show the whole prompt, so it was not sent. The text is in \
-                 its composer."
-            .to_string(),
     }
 }
 
@@ -506,89 +467,6 @@ impl Session {
         });
     }
 
-    /// Type a prompt that was said yes to. The refusal, if there is one, is
-    /// the person's to see: it says what is sitting unsent in their agent.
-    ///
-    /// An agent Weft just started is not ready until it says so, and one that
-    /// never will still draws its composer a moment after it starts. Either
-    /// is waited for on the tick, never here.
-    fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
-        if w.fresh {
-            let now = std::time::Instant::now();
-            let screen = (now, String::new());
-            let until = now + STARTED_TIMEOUT;
-            self.projects[project].starting.push(Starting { w, force, until, screen });
-            return;
-        }
-        self.type_now(project, w, force);
-    }
-
-    /// Type each send whose agent is ready now, or whose wait is over.
-    fn type_what_started(&mut self, project: usize) {
-        let waiting = std::mem::take(&mut self.projects[project].starting);
-        let now = std::time::Instant::now();
-        for mut s in waiting {
-            let go = now >= s.until
-                || if s.force {
-                    // The words on it are not read, only whether it has gone
-                    // still.
-                    match self.projects[project].slot(s.w.pane) {
-                        Some(slot) => slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET),
-                        None => true,
-                    }
-                } else {
-                    crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok()
-                };
-            if go {
-                self.type_now(project, s.w, s.force);
-            } else {
-                self.projects[project].starting.push(s);
-            }
-        }
-    }
-
-    fn type_now(&mut self, project: usize, w: Waiting, force: bool) {
-        // Weft types on its own only into an agent that reported it is ready
-        // (ADR-0013). When the person has been told and said to type anyway,
-        // the decision is theirs.
-        let not_ready =
-            if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
-        let mut unrecorded = None;
-        let refusal = match self.projects[project].slot(w.pane) {
-            Some(slot) => match not_ready {
-                Err(why) if slot.pane.running() => Some(why.to_string()),
-                _ => match slot.pane.inject_as(&w.payload, &w.how) {
-                    Err(r) => Some(format!("{r:?}")),
-                    Ok(a) if !a.submitted => Some(withheld(&a)),
-                    Ok(_) => {
-                        slot.map.enter(crate::turns::now_millis());
-                        // Sent on the person's yes: their submission, on
-                        // record, so the Ask moves on to its Eval even
-                        // where no hook sees it arrive. When RingFrame will
-                        // not record it, the person is told: the row would
-                        // otherwise offer the send again.
-                        if let Some(ask) = &w.sends {
-                            let root = self.projects[project].root.clone();
-                            unrecorded = crate::ringframe::ask_submitted(&root, ask).err().map(
-                                |e| match e {
-                                    crate::ringframe::Error::NotInstalled => {
-                                        "ringframe is not installed".to_string()
-                                    }
-                                    crate::ringframe::Error::Refused { message, .. } => {
-                                        weft_core::offers::first_line(&message).to_string()
-                                    }
-                                },
-                            );
-                        }
-                        None
-                    }
-                },
-            },
-            None => Some("NoProcess".to_string()),
-        };
-        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded });
-    }
-
     /// One of RingFrame's three acts. The daemon works out what to type and
     /// where it goes; a client only names the act.
     fn act(
@@ -690,55 +568,6 @@ impl Session {
         };
         let (built, pane) = built;
         self.stage(at, pane, built, false)
-    }
-
-    /// The first of this harness's agents that is free for new work: one
-    /// whose latest event is `ready` or `turn_ended` (turn-state.md §4).
-    fn free_pane_of(&mut self, at: usize, harness: &str) -> Option<u32> {
-        let states = self.agents_of(at).0;
-        self.projects[at]
-            .panes
-            .iter()
-            .zip(states)
-            .find(|(s, state)| s.map.harness == harness && crate::turns::may_type(*state).is_ok())
-            .map(|(s, _)| s.map.pane)
-    }
-
-    /// Start a pane of this harness for an act, on its own command: never
-    /// another pane's, which may be resuming someone else's session.
-    fn start_for(&mut self, client: u64, at: usize, harness: &str) -> Option<u32> {
-        let spec = self.projects[at].harnesses.find(harness)?.program.clone();
-        let id = self.spawn(client, at, harness, &spec, None)?;
-        self.look_at(at, harness);
-        Some(id)
-    }
-
-    fn pane_of(&self, at: usize, harness: &str) -> Option<u32> {
-        self.projects[at].panes.iter().find(|s| s.map.harness == harness).map(|s| s.map.pane)
-    }
-
-    /// Put a built prompt in front of everyone watching, and answer with its id.
-    fn stage(&mut self, at: usize, pane: u32, built: crate::acts::Built, fresh: bool) -> Answer {
-        let id = format!("pnd_{}", self.next_pending);
-        self.next_pending += 1;
-        let message = Out::Pending {
-            id: id.clone(),
-            pane,
-            what: built.asking.what,
-            why: built.asking.why.join("\n"),
-            payload: built.payload.clone(),
-        };
-        self.projects[at].waiting.push(Waiting {
-            id: id.clone(),
-            pane,
-            payload: built.payload,
-            how: built.how,
-            confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
-            fresh,
-            sends: built.ask_id.clone(),
-        });
-        self.clients.broadcast(at, &message);
-        Answer::Ok(serde_json::json!({"pending": id}))
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them.
@@ -855,21 +684,6 @@ impl Session {
         self.clients.broadcast(at, &Out::Readiness { states });
     }
 
-    /// This project's panes, as everything outside the daemon sees them.
-    fn pane_infos(&mut self, project: usize) -> Vec<PaneInfo> {
-        let Some(p) = self.projects.get_mut(project) else { return Vec::new() };
-        p.panes
-            .iter_mut()
-            .map(|s| PaneInfo {
-                pane: s.map.pane,
-                harness: s.map.harness.clone(),
-                spec: s.map.spec.clone(),
-                running: s.pane.running(),
-                turbo: s.turbo,
-            })
-            .collect()
-    }
-
     /// Tell each project's clients when its record has moved, or an agent's
     /// state has.
     fn follow_the_record(&mut self) {
@@ -888,35 +702,6 @@ impl Session {
         }
     }
 
-    /// Each pane's state and every session's latest event, re-read from the
-    /// receipts. A new receipt may bind its session to a pane, once.
-    fn agents_of(&mut self, at: usize) -> Agents {
-        let p = &mut self.projects[at];
-        let heard = p.turns.refresh(&p.root);
-        let mut map: Vec<crate::turns::Started> = p
-            .panes
-            .iter_mut()
-            .map(|slot| {
-                slot.map.running = slot.pane.running();
-                slot.map.clone()
-            })
-            .collect();
-        let mut moved = false;
-        for s in &heard {
-            moved |= crate::turns::heard(&mut map, s);
-        }
-        for (slot, m) in p.panes.iter_mut().zip(map) {
-            slot.map = m;
-        }
-        if moved {
-            self.write_map(at);
-        }
-        let p = &self.projects[at];
-        let sessions = p.turns.sessions();
-        let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-        (crate::turns::pane_states(&map, &sessions), sessions)
-    }
-
     /// The projects open here, beside `config.toml`, for a window's picker.
     fn write_projects(&self) {
         let open: Vec<_> = self
@@ -928,32 +713,6 @@ impl Session {
             &self.config.with_file_name("projects.json"),
             weft_core::projects::write(&open),
         );
-    }
-
-    /// Weft's own pane map, `<project>/.fab7/weft/panes.json`: which pane
-    /// runs which harness and session, and how Weft knows. RingFrame never
-    /// reads it; nothing in `.fab7/rf/` names a pane.
-    fn write_map(&self, at: usize) {
-        let p = &self.projects[at];
-        let dir = p.root.join(".fab7").join("weft");
-        if std::fs::create_dir_all(&dir).is_err() {
-            return;
-        }
-        let ignore = dir.join(".gitignore");
-        if !ignore.exists() {
-            let _ = std::fs::write(&ignore, "*\n");
-        }
-        let panes: Vec<_> = p.panes.iter().map(|s| &s.map).collect();
-        let mut text =
-            serde_json::to_string_pretty(&serde_json::json!({"panes": panes})).unwrap_or_default();
-        text.push('\n');
-        write_whole(&dir.join("panes.json"), text);
-    }
-
-    /// One pane's state, read now.
-    fn pane_state(&mut self, at: usize, pane: u32) -> Option<Turn> {
-        let i = self.projects[at].index_of(pane)?;
-        self.agents_of(at).0.get(i).copied().flatten()
     }
 
     /// The board and the records behind it. Read here so that nothing opens a
@@ -1188,87 +947,6 @@ impl Session {
             Call::Shutdown => return Ok(Answer::Done),
         }
         Ok(Answer::nothing())
-    }
-
-    /// Take a pane away. The agent is stopped if it is somehow still running:
-    /// closing is the person saying they are done with it, and a pane nobody
-    /// can see is a process nobody can stop. Every other pane keeps its id,
-    /// so the list is all a client needs to be told.
-    fn close(&mut self, project: usize, pane: u32) {
-        let Some(p) = self.projects.get_mut(project) else { return };
-        let Some(index) = p.index_of(pane) else { return };
-        let mut slot = p.panes.remove(index);
-        slot.pane.stop();
-        self.write_map(project);
-        let panes = self.pane_infos(project);
-        self.clients.broadcast(project, &Out::Panes { panes });
-    }
-
-    /// Start an agent at the size of the window that asked, and answer with
-    /// its pane's id.
-    fn spawn(
-        &mut self,
-        client: u64,
-        project: usize,
-        harness: &str,
-        spec: &str,
-        resumed: Option<String>,
-    ) -> Option<u32> {
-        let p = self.projects.get_mut(project)?;
-        let cwd = p.root.to_string_lossy().into_owned();
-        // Turbo mode, when this project's config turns it on: the harness's
-        // own flags, after the person's own.
-        let flags = if p.turbo {
-            p.harnesses.find(harness).map(|h| h.turbo.clone()).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let turbo = !flags.is_empty();
-        let words = weft_core::harness::with_turbo(spec, &flags);
-        let program = words.first().cloned().unwrap_or_default();
-        let argv: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
-
-        let id = p.next_pane;
-        p.next_pane += 1;
-        let (tx, harness_name) = (self.tx.clone(), harness.to_string());
-        let size = self.clients.sizes.get(&client).copied().unwrap_or((24, 80));
-        match Pane::spawn_args(harness, &program, &argv, &cwd, size.0, size.1) {
-            Ok(mut pane) => {
-                // Every byte a pane prints goes to the session, which records
-                // it for replay and forwards it to whoever is attached.
-                let sink = pane.stream_output();
-                std::thread::spawn(move || {
-                    while let Ok(bytes) = sink.recv() {
-                        if tx.send(Wake::Output { project, pane: id, bytes }).is_err() {
-                            return;
-                        }
-                    }
-                    let _ = tx.send(Wake::Exited { project, pane: id });
-                });
-                let now = crate::turns::now_millis();
-                self.projects[project].panes.push(Slot {
-                    map: crate::turns::Started::new(id, harness, spec, now, resumed),
-                    pane,
-                    replay: Vec::new(),
-                    size,
-                    wants: HashMap::from([(client, size)]),
-                    turbo,
-                });
-                self.write_map(project);
-                self.clients.broadcast(
-                    project,
-                    &Out::Added { pane: id, harness: harness_name, spec: spec.to_string(), turbo },
-                );
-                Some(id)
-            }
-            Err(e) => {
-                self.clients.broadcast(
-                    project,
-                    &Out::Injected { pane: id, refusal: Some(e.to_string()), unrecorded: None },
-                );
-                None
-            }
-        }
     }
 }
 

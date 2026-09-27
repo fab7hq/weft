@@ -87,8 +87,9 @@ fn code(dirs: &[&str]) -> Vec<(String, usize, String)> {
     }
     let mut out = Vec::new();
     for path in files {
-        // The CLI's shared test fixtures are a test module of their own.
-        if path.ends_with("ringframe/src/testing.rs") {
+        // The CLI's shared test fixtures are a test module of their own, and
+        // so is any `tests.rs`, declared under `#[cfg(test)]`.
+        if path.ends_with("ringframe/src/testing.rs") || path.ends_with("tests.rs") {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("read");

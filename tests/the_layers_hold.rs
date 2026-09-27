@@ -82,11 +82,7 @@ fn each_crate_reaches_only_what_its_layer_may() {
 fn the_client_runs_nothing_but_the_daemon() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/weft-tui/src");
     let mut broken = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("weft-tui/src").flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
+    for path in sources(&dir) {
         let text = std::fs::read_to_string(&path).expect("read");
         // Test modules sit at the end of a file and may do as they like: a
         // fixture that makes a Git repository is not the client deciding.
@@ -151,15 +147,26 @@ fn the_client_cannot_reach_the_daemon() {
     );
 }
 
+/// Every Rust file under a directory, but a `tests.rs`, which is a test
+/// module by its declaration.
+fn sources(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("src").flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            out.extend(sources(&path));
+        } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests.rs") {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Each line of a crate's non-test Rust source: `#[cfg(test)]` items and
 /// comments left out.
 fn non_test_lines(dir: &Path) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir).expect("src").flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "rs") {
-            continue;
-        }
+    for path in sources(dir) {
         let text = std::fs::read_to_string(&path).expect("read");
         let (mut depth, mut skipping, mut pending) = (0i64, false, false);
         for line in text.lines() {
