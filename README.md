@@ -43,9 +43,10 @@ The docs, and the scenarios that draw Weft's screens for them, live in
 change to what Weft draws shows up there when the pin moves. `examples/` holds
 probes that check one mechanism against a real harness, by hand.
 
-`./bin/reinstall-local` builds both binaries, installs them, syncs the
-configuration from a `fab7` checkout beside this one, and reinstalls the
-plugins, so a change is tested as users will get it:
+`./bin/reinstall-local` builds both binaries, installs them, syncs RingFrame's
+configuration and Weft's harness files (`~/.fab7/weft/harnesses/`) from a `fab7`
+checkout beside this one, and reinstalls the plugins, so a change is tested as
+users will get it:
 
 ```sh
 ./bin/reinstall-local           # every harness
