@@ -16,11 +16,9 @@
 # configuration it last synced from the marketplace, which is a confusing way
 # to spend an afternoon.
 #
-#   ./bin/reinstall-local            every host (`both` still means that)
-#   ./bin/reinstall-local claude     one host
-#   ./bin/reinstall-local codex
-#   ./bin/reinstall-local agy
-#   ./bin/reinstall-local none       binaries and configuration only
+#   ./bin/reinstall-local            every host
+#   ./bin/reinstall-local <host>     one host, as fab7's own reinstall-local names it
+#   ./bin/reinstall-local none       binaries, configuration and harness files only
 #
 # FAB7_DIR overrides where the marketplace checkout is (default: ../fab7).
 # WEFT_BIN_DIR overrides where the binaries go (default: ~/.local/bin), the
@@ -32,10 +30,6 @@ fab7=${FAB7_DIR:-$(CDPATH= cd -- "$root/../fab7" 2>/dev/null && pwd || true)}
 bin_dir=${WEFT_BIN_DIR:-$HOME/.local/bin}
 want=${1:-all}
 
-case $want in
-    claude | codex | agy | all | both | none) ;;
-    *) printf '%s\n' "usage: reinstall-local [claude|codex|agy|all|none]" >&2; exit 1 ;;
-esac
 
 printf 'Building from %s\n' "$root"
 ( cd "$root" && cargo build --release --locked --bin weft --bin ringframe )

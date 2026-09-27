@@ -165,7 +165,7 @@ fn main() -> Result<()> {
         println!("weft {}\n", env!("CARGO_PKG_VERSION"));
         println!("weft [project-dir] [agent ...]\n");
         println!("  project-dir   the repository to work in (default: .)");
-        println!("  agent         a harness's program, as its RingFrame profile names it;");
+        println!("  agent         a harness's program, as its harness file names it;");
         println!("                optional, for scripts and probes\n");
         println!("An agent may carry its own arguments, quoted as one word:\n");
         println!("  weft . \"<program> --its --own --arguments\"\n");

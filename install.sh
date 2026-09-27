@@ -108,6 +108,24 @@ case ":$PATH:" in
     *) printf '\n%s\n' "Add $BIN_DIR to your PATH." ;;
 esac
 
-printf '\n%s\n' 'Now install the plugin for your harness from the Fab7 marketplace:'
-printf '%s\n' '  Claude Code:  claude plugin marketplace add fab7hq/fab7 && claude plugin install rf@fab7'
-printf '%s\n' '  Codex:        codex plugin marketplace add fab7hq/fab7 && codex plugin add rf@fab7'
+# How each harness's plugin is set up is its harness file's to say: its
+# program, then the commands that add the marketplace and install the plugin.
+# One with no install command is set up by hand.
+field() { sed -n "s/^$1 = //p" "$2" | head -n 1; }
+words() { printf '%s' "$1" | tr -d '[]",'; }
+said=''
+for file in "$harnesses"/*.toml; do
+    [ -f "$file" ] || continue
+    install=$(field install "$file")
+    [ -n "$install" ] || continue
+    title=$(field title "$file" | tr -d '"')
+    program=$(field program "$file" | tr -d '"')
+    add=$(field add_marketplace "$file")
+    [ -n "$said" ] || printf '\n%s\n' 'Now install the plugin for your harness:'
+    said=yes
+    if [ -n "$add" ]; then
+        printf '  %s:  %s %s && %s %s\n' "$title" "$program" "$(words "$add")" "$program" "$(words "$install")"
+    else
+        printf '  %s:  %s %s\n' "$title" "$program" "$(words "$install")"
+    fi
+done

@@ -1,13 +1,13 @@
 //! How long after a paste must Enter wait before a harness submits it?
 //!
-//!   cargo run --example enter_probe -- "codex -m gpt-5.6-luna" /path/to/project
+//!   cargo run --example enter_probe -- "<program> <its flags>" /path/to/project
 
 use std::time::Duration;
 use weft::pane::Pane;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let spec = args.next().unwrap_or_else(|| "codex".into());
+    let spec = args.next().expect("an agent command line");
     let cwd = args.next().unwrap_or_else(|| ".".into());
 
     let mut parts = spec.split_whitespace();

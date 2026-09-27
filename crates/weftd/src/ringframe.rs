@@ -152,7 +152,7 @@ pub fn seal_check(project: &Path, seal_id: &str) -> Result<Freshness, Error> {
 ///
 /// A harness offers completions while a skill token is still being typed, and
 /// the first Enter after a bare token is taken by that chooser rather than
-/// submitting: `$rf:eval` sat in Codex's composer, unsent, and Weft had no way
+/// submitting: `$rf:eval` sat in a harness's composer, unsent, and Weft had no way
 /// to tell. The trailing space ends the token, so Enter means send. Weft never
 /// presses Enter twice to find out.
 pub fn skill_command(prefix: &str, skill: &str) -> String {

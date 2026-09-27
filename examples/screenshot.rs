@@ -2,8 +2,8 @@
 //!
 //! Verification aid for gate W2. The program may carry its own arguments,
 //! quoted as one word, exactly as Weft passes a spec through:
-//!   cargo run --example screenshot -- claude /path/to/repo 12
-//!   cargo run --example screenshot -- "codex resume 01a0bdb6-…" /path 20
+//!   cargo run --example screenshot -- <program> /path/to/repo 12
+//!   cargo run --example screenshot -- "<program> <its resume flags> 01a0bdb6-…" /path 20
 
 use weft::pane::Pane;
 

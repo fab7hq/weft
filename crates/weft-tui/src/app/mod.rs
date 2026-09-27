@@ -422,7 +422,7 @@ impl App {
         weft_core::turns::is_asking(self.pane_turn(pane))
     }
 
-    /// The harness a command line's program starts, by its profile.
+    /// The harness a command line's program starts, by its harness file.
     pub fn harness_for_program(&self, program: &str) -> Option<String> {
         sess!(self).harnesses.for_program(program).map(|h| h.name.clone())
     }
@@ -719,7 +719,7 @@ impl App {
     }
 
     /// `spec` is the command line the person would have typed, e.g.
-    /// `claude --model sonnet --effort medium`. Weft never chooses the model:
+    /// `<program> --model <model> --effort medium`. Weft never chooses the model:
     /// that is the harness's configuration and the person's decision.
     ///
     /// The pane appears when the daemon says it has one, and what the harness

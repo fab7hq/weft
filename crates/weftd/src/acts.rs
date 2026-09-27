@@ -111,7 +111,7 @@ impl Folds {
     }
 
     /// How a prompt Weft composed has to be typed. Its command is the skill
-    /// invocation, which on Claude Code is `/rf:` — a real slash command, and
+    /// invocation, which on a harness whose prefix is `/rf:` is a real slash command, and
     /// so subject to the same fold as any other.
     fn how(&mut self, root: &Path, harness: &str, payload: &[u8], command: &str) -> Handoff {
         let Some(command) = inject::leading_command(command.as_bytes()) else {

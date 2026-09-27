@@ -22,10 +22,10 @@ pub const COMPOSER_SETTLE: Duration = Duration::from_millis(400);
 
 /// How long to leave a composer alone before pressing Enter on it.
 ///
-/// Codex suppresses Enter for 120ms after a burst of input, treating it as a
-/// newline instead of a submission, so a command and its Enter written together
-/// never submit at all. Longer than that window, and long enough for Claude
-/// Code's composer too.
+/// A harness may suppress Enter for a moment after a burst of input (one was
+/// measured at 120ms), treating it as a newline instead of a submission, so a
+/// command and its Enter written together never submit at all. Longer than
+/// that window, and long enough for every composer measured.
 pub const SUBMIT_SETTLE: Duration = Duration::from_millis(300);
 
 /// How long to wait for a host to show that a mode is on. Entering one is
@@ -147,15 +147,14 @@ pub fn echo_tail(payload: &[u8]) -> Option<String> {
     Some(tail)
 }
 
-/// A harness may collapse a multi-line paste rather than show it: Claude Code
-/// draws `[Pasted text #1 +13 lines]` and the prompt itself never appears. The
-/// composer is saying it took the paste, and that is as much as a screen can
-/// say about a prompt it has folded away.
-/// How each host writes a paste it folded away, measured against the installed
-/// versions: Codex 0.155.1 says `[Pasted Content 1206 chars]`, Claude Code
-/// 2.1.278 says `[Pasted text #1]`. The earlier reader wanted `[Pasted text`
-/// *and* `lines]`, which by then matched neither, so every long prompt failed
-/// echo verification and sat in the composer unsent.
+/// A harness may collapse a multi-line paste rather than show it: it draws a
+/// placeholder such as `[Pasted text #1 +13 lines]` and the prompt itself
+/// never appears. The composer is saying it took the paste, and that is as
+/// much as a screen can say about a prompt it has folded away.
+/// How the measured hosts write a paste they folded away: one says `[Pasted
+/// Content 1206 chars]`, another `[Pasted text #1]`. An earlier reader wanted
+/// `[Pasted text` *and* `lines]`, which by then matched neither, so every long
+/// prompt failed echo verification and sat in the composer unsent.
 const FOLDED: &[&str] = &["[Pasted Content", "[Pasted text"];
 
 pub fn collapsed_paste(screen: &str) -> bool {
@@ -164,9 +163,10 @@ pub fn collapsed_paste(screen: &str) -> bool {
 
 /// The same, but checked against how much was written, where the host says.
 ///
-/// Codex names the size — `[Pasted Content 1400 chars]` — so a placeholder
-/// left over from something else does not pass for this paste. Claude Code
-/// numbers its pastes instead, and there the marker is all there is to go on.
+/// A host that names the size — `[Pasted Content 1400 chars]` — lets a
+/// placeholder left over from something else fail to pass for this paste. A
+/// host that numbers its pastes instead leaves the marker all there is to go
+/// on.
 pub fn collapsed_paste_of(screen: &str, bytes: usize) -> bool {
     if let Some(at) = screen.find("[Pasted Content ") {
         let rest = &screen[at + "[Pasted Content ".len()..];

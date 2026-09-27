@@ -2,7 +2,7 @@
 use weft::pane::Pane;
 fn main() -> anyhow::Result<()> {
     let mut a = std::env::args().skip(1);
-    let spec = a.next().unwrap_or_else(|| "codex".into());
+    let spec = a.next().expect("an agent command line");
     let cwd = a.next().unwrap_or_else(|| ".".into());
     let mut parts = spec.split_whitespace();
     let prog = parts.next().unwrap().to_string();

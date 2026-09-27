@@ -1,6 +1,6 @@
 //! The recorded mode, the chosen handoff, and the host's answer.
 //!
-//!   cargo run --example handoff_live -- <cwd> <codex|claude> <mode|inline>
+//!   cargo run --example handoff_live -- <cwd> <program> <mode|inline>
 //!
 //! Run by hand: one model call per run, and what is claimed is Weft's own
 //! mechanism, not anything about the model.
@@ -11,7 +11,7 @@ use weft::pane::Pane;
 fn main() -> anyhow::Result<()> {
     let mut a = std::env::args().skip(1);
     let cwd = a.next().unwrap_or_else(|| ".".into());
-    let prog = a.next().unwrap_or_else(|| "codex".into());
+    let prog = a.next().expect("the harness's program");
     let which = a.next().unwrap_or_else(|| "mode".into());
 
     // Exactly what RingFrame now records for such a prompt.

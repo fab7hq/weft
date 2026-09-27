@@ -1,7 +1,7 @@
 //! Type a prompt into a real harness on the person's behalf, then show the screen.
 //!
 //! Verification aid for gates W2 and W3:
-//!   cargo run --example inject_probe -- claude /path/to/repo "some prompt"
+//!   cargo run --example inject_probe -- <program> /path/to/repo "some prompt"
 
 use std::time::Duration;
 use weft::pane::Pane;

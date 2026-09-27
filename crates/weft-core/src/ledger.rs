@@ -138,7 +138,7 @@ pub struct Unit {
     pub title: String,
     pub harness: String,
     /// The harness's own session, as RingFrame captured it when the Ask was
-    /// compiled. This is what `claude --resume` and `codex resume` take, so a
+    /// compiled. This is what a harness's own resume command takes, so a
     /// row of work can lead back to the agent that has it. Read, never
     /// invented: a unit whose event carries none offers nothing.
     pub session_ref: Option<String>,

@@ -18,7 +18,7 @@ pub fn latest(root: &Path, harness: &str) -> Option<Recorded> {
 }
 
 /// One session directory: when it was last used and its last prompt, from
-/// its receipts. A harness with no prompt hook (Antigravity) records only its
+/// its receipts. A harness with no prompt hook records only its
 /// turns, and a session in which a turn ran is still one to pick up. One that
 /// only said it was `ready` never held a conversation, so there is nothing
 /// to resume.

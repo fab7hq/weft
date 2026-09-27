@@ -3,19 +3,11 @@
 //! Verification aid for gate W4. It types the way a person would and reads the
 //! screen to decide when to move on. The ledger is the ground truth.
 //!
-//!   cargo run --example loop_drive -- /path/to/project claude
+//!   cargo run --example loop_drive -- /path/to/project "<program> <its test settings>"
 
 use std::process::Command;
 use std::time::{Duration, Instant};
 use weft::pane::Pane;
-
-/// The agent configurations this probe runs against. **Test settings only.**
-/// Weft chooses no model and carries no default: in the product the person's
-/// own harness configuration decides, and Weft passes their arguments through
-/// untouched.
-const CLAUDE_UNDER_TEST: &str = "claude --model sonnet --effort medium";
-#[allow(dead_code)]
-const CODEX_UNDER_TEST: &str = "codex -m gpt-5.6-luna -c model_reasoning_effort=medium";
 
 const TOGGLE: &[u8] = &[0x1d]; // Ctrl+], what a bare PTY negotiates down to
 const ENTER: &[u8] = b"\r";
@@ -133,7 +125,11 @@ impl Drive {
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let project = args.next().expect("a project directory");
-    let harness = args.next().unwrap_or_else(|| CLAUDE_UNDER_TEST.into());
+    // The agent configuration this probe runs against: test settings only.
+    // Weft chooses no model and carries no default: in the product the
+    // person's own harness configuration decides, and Weft passes their
+    // arguments through untouched.
+    let harness = args.next().expect("the agent command line under test");
     let intent = args.next().unwrap_or_else(|| {
         "make health() report the real package version instead of the literal \"dev\"".into()
     });
@@ -154,7 +150,7 @@ fn main() -> anyhow::Result<()> {
         d.send(ENTER);
         std::thread::sleep(Duration::from_secs(2));
     }
-    // Codex shows a hooks panel at startup. RingFrame's prompt capture is
+    // A harness may show a hooks panel at startup. RingFrame's prompt capture is
     // already trusted; an unrelated user hook may still want review, and the
     // panel holds focus until it is closed.
     if d.wait_screen("Press t to trust", 25) {
@@ -172,7 +168,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(2));
     }
     if d.wait_screen("trust", 25) {
-        // Claude Code defaults to "No, exit"; Codex defaults to "Yes, continue".
+        // One harness defaults to "No, exit", another to "Yes, continue".
         if d.screen().contains("No, exit") {
             d.send(b"\x1b[B");
         }

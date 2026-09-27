@@ -182,10 +182,10 @@ fn press(app: &mut App, code: KeyCode) {
 const STARTUP: &[(&str, &str, &[u8])] = &[
     ("update", "Update available", b"\x1b[B\r"),
     ("hook-trust", "Press t to trust", b"t"),
-    // Claude Code, which defaults to "No, exit", so the choice moves down.
+    // Asked with "No, exit" as the default, so the choice moves down.
     ("folder-trust", "Is this a project you created", b"\x1b[B\r"),
     ("folder-trust", "trust this folder", b"\x1b[B\r"),
-    // Codex, which defaults to "1. Yes, continue".
+    // Asked with "1. Yes, continue" as the default.
     ("folder-trust", "Do you trust the contents of this directory", b"\r"),
     // A project may offer an MCP server, and may ask about imports. Both
     // default to the careful answer, which is the one a person would take for

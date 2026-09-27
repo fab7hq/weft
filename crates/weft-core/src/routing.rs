@@ -1,6 +1,6 @@
 //! Which harness takes which of RingFrame's three acts, in this project.
 //!
-//! > Codex asks, Claude implements, Codex evaluates.
+//! > One harness asks, another implements, the first evaluates.
 //!
 //! All three acts are host-agnostic on disk — `eval open` briefs over *every*
 //! open Ask, `seal` names no host, and a single Ask is always addressed by id —

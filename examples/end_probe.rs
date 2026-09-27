@@ -1,6 +1,6 @@
 //! A real harness quits from inside. Does Weft notice and close its pane?
 //!
-//!   cargo run --example end_probe -- codex /path/to/a/workspace
+//!   cargo run --example end_probe -- <harness> /path/to/a/workspace
 //!
 //! Run by hand: no model call is made and nothing about the model is
 //! claimed. What is under test is Weft's own exit detection against the harness
@@ -17,7 +17,7 @@ use weft::server;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
-    let name = args.next().unwrap_or_else(|| "codex".into());
+    let name = args.next().expect("a harness, by its harness file's name");
     let root = PathBuf::from(args.next().unwrap_or_else(|| ".".into())).canonicalize()?;
     let all = weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0;
     let h = all.find(&name).expect("a harness Weft has a file for").clone();

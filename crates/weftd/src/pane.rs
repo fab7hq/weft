@@ -120,14 +120,14 @@ impl Pane {
 
     /// Move back through what the pane has already printed.
     ///
-    /// Neither supported harness asks for mouse reporting or uses the
-    /// alternate screen, so Weft — which has no terminal behind it to keep a
-    /// scrollback — keeps one itself and moves through it here.
+    /// A harness that asks for no mouse reporting and no alternate screen
+    /// leaves Weft — which has no terminal behind it to keep a scrollback —
+    /// to keep one itself and move through it here.
     ///
-    /// That only reaches what the harness let scroll off. Claude Code prints
-    /// inline, so this is its whole history. Codex repaints its viewport
-    /// instead, so nothing ever arrives here and this moves nothing: its
-    /// history lives inside Codex, behind the key `Harness::transcript` names.
+    /// That only reaches what the harness let scroll off. One that prints
+    /// inline has its whole history here. One that repaints its viewport
+    /// instead sends nothing here, so this moves nothing: its history lives
+    /// inside it, behind the key its harness file names (`transcript`).
     pub fn scroll(&mut self, delta: i32) {
         let mut parser = self.parser.lock().expect("pane parser");
         let screen = parser.screen_mut();
@@ -305,10 +305,11 @@ impl Pane {
     /// The command this payload opens with, when the pane has folded the paste
     /// away so that the host will never see it as a command.
     ///
-    /// Measured: Codex 0.155.1 folds a paste from 1000 characters, Claude Code
-    /// 2.1.278 from somewhere between 500 and 800. A folded paste submits as
-    /// ordinary text — the model does not even change — so a prompt carrying
-    /// `/plan` gets an ordinary answer.
+    /// Measured: one host folds a paste from 1000 characters, another from
+    /// somewhere between 500 and 800 (RingFrame's profile keeps each as
+    /// `paste_fold_chars`). A folded paste submits as ordinary text — the
+    /// model does not even change — so a prompt carrying `/plan` gets an
+    /// ordinary answer.
     fn folded_command(&self, payload: &[u8]) -> Option<String> {
         let command = inject::leading_command(payload)?;
         let screen = self.with_screen(|s| s.contents());

@@ -145,7 +145,7 @@ impl Board<'_> {
     /// The harness an act goes to, and so the harness its readiness is about.
     ///
     /// A project may route each of RingFrame's three acts to a harness of its
-    /// own — *Codex asks, Claude implements, Codex evaluates*. Absent,
+    /// own — *one harness asks, another implements, the first evaluates*. Absent,
     /// everything falls back to what it did before: the harness that owns the
     /// work, or the pane in front of you.
     ///
@@ -207,7 +207,7 @@ impl Board<'_> {
             return Some(gap.to_string());
         }
         // Everything RingFrame owns waits on the harness that owns the work.
-        // Readiness is per harness: Claude Code may be ready while Codex is not.
+        // Readiness is per harness: one may be ready while another is not.
         if matches!(act, Act::Ask | Act::Proceed | Act::Eval | Act::Seal | Act::FollowUp)
             && let Some(name) = self.deciding_harness(act)
         {

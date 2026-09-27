@@ -246,18 +246,18 @@ fn press(app: &mut App, code: KeyCode) {
 /// record and nothing else is.
 const STARTUP: &[(&str, &str, &[u8])] = &[
     ("update", "Update available", b"\x1b[B\r"),
-    // Antigravity, which defaults to "Yes, I trust this folder". First, since
-    // that choice's own words contain Claude Code's question below.
+    // Asked with "Yes, I trust this folder" as the default. First, since that
+    // choice's own words contain another harness's question below.
     ("folder-trust", "Do you trust the contents of this project?", b"\r"),
     ("hook-trust", "Press t to trust", b"t"),
-    // Codex 0.156 asks it as a menu; the second choice trusts them and goes on.
+    // Asked as a menu; the second choice trusts them and goes on.
     ("hook-trust", "Hooks need review", b"\x1b[B\r"),
-    // Claude Code, which defaults to "No, exit", so the choice moves down.
+    // Asked with "No, exit" as the default, so the choice moves down.
     ("folder-trust", "Is this a project you created", b"\x1b[B\r"),
     ("folder-trust", "trust this folder", b"\x1b[B\r"),
-    // Codex, which defaults to "1. Yes, continue".
+    // Asked with "1. Yes, continue" as the default.
     ("folder-trust", "Do you trust the contents of this directory", b"\r"),
-    // Codex 0.156, which words it anew and defaults to "1. Trust and continue".
+    // The same question worded anew, with "1. Trust and continue" as the default.
     ("folder-trust", "Trust this folder?", b"\r"),
     ("mcp-offer", "New MCP server found", b"\r"),
     ("imports", "disable external imports", b"\r"),
@@ -266,7 +266,7 @@ const STARTUP: &[(&str, &str, &[u8])] = &[
 /// Questions a harness asks its person mid-turn without any hook, as the
 /// person reads them, and the key that takes its first choice.
 const UNREPORTED: &[(&str, &str, &[u8])] = &[
-    // Antigravity, before a command it may not run on its own.
+    // Asked before a command the harness may not run on its own.
     ("run-command", "Run this command?", b"\r"),
 ];
 

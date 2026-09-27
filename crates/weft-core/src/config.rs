@@ -22,10 +22,10 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # notify = false               # no terminal notification when an agent needs you
 # turbo = true                 # agents run with every permission granted and no
 #                              # question asked: each harness's `turbo` flag, from
-#                              # its RingFrame profile. Codex's also drops its sandbox.
+#                              # its Weft harness file, which says what else it drops.
 
 [routing]                      # every project; each act optional
-# ask  = "<harness>"          # a harness as its RingFrame profile names it
+# ask  = "<harness>"          # a harness, as its harness file is named
 # eval = "<harness>"
 # seal = "<harness>"
 
