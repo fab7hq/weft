@@ -18,6 +18,12 @@ use crate::ledger::Unit;
 use crate::theme::{Theme, pair};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.hold_rows(true);
+    draw_frame(frame, app);
+    app.hold_rows(false);
+}
+
+fn draw_frame(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let geo = geometry(app, area);
     let th = app.theme;
@@ -1144,7 +1150,7 @@ mod tests {
     fn a_turbo_rows_badge_is_right_aligned() {
         let mut a = app();
         crate::app::tests::agent_says(&mut a, "codex", "fixture", "waiting");
-        let row = a.rows().into_iter().find(|r| matches!(r, crate::app::Row::Harness { .. }));
+        let row = a.rows().iter().find(|r| matches!(r, crate::app::Row::Harness { .. })).cloned();
         let row = row.expect("the harness row");
         let plain = sidebar_row(&a, &row, false, 40).width();
         a.session_mut().panes[0].turbo = true;
@@ -1267,8 +1273,8 @@ mod tests {
         assert_eq!(a.rows().len(), 10, "{:?}", a.rows());
         assert!(!drawn.contains("more"), "something was elided:\n{drawn}");
         assert!(!drawn.contains("above"), "something scrolled away:\n{drawn}");
-        for row in a.rows() {
-            if let crate::app::Row::Action { project, unit } = row {
+        for row in a.rows().iter() {
+            if let crate::app::Row::Action { project, unit } = *row {
                 let title = a.units_of(project)[unit].title.clone();
                 assert!(drawn.contains(&title), "{title} is missing:\n{drawn}");
             }

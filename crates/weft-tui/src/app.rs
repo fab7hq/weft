@@ -306,6 +306,9 @@ pub struct App {
     asked: std::collections::HashMap<u64, Then>,
     /// The detail view being read, until every part is in.
     reading: Option<Reading>,
+    /// The sidebar's rows, built once for the frame being drawn: nothing a
+    /// frame draws changes what they are built from.
+    listed: std::cell::RefCell<Option<std::rc::Rc<Vec<Row>>>>,
 }
 
 impl App {
@@ -551,7 +554,20 @@ impl App {
     }
 
     /// The sidebar, top to bottom, with folded levels' children left out.
-    pub fn rows(&self) -> Vec<Row> {
+    /// While a frame is drawn, the ones built for it.
+    pub fn rows(&self) -> std::rc::Rc<Vec<Row>> {
+        if let Some(rows) = self.listed.borrow().as_ref() {
+            return rows.clone();
+        }
+        std::rc::Rc::new(self.list())
+    }
+
+    /// Build the rows once for a frame, or let them go after it.
+    pub fn hold_rows(&self, holding: bool) {
+        *self.listed.borrow_mut() = holding.then(|| std::rc::Rc::new(self.list()));
+    }
+
+    fn list(&self) -> Vec<Row> {
         let mut out = Vec::new();
         for (at, p) in self.projects.iter().enumerate() {
             let units = self.units_of(at);
@@ -695,6 +711,7 @@ impl App {
             drawn: std::time::Instant::now(),
             asked: Default::default(),
             reading: None,
+            listed: Default::default(),
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
