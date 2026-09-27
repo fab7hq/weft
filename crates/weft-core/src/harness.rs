@@ -31,12 +31,12 @@ pub struct Harness {
     /// Adds the marketplace the `rf` plugin is published in, when the
     /// harness has marketplaces to add.
     pub add_marketplace: Option<Vec<String>>,
-    /// Installs the plugin itself.
-    pub install_plugin: Vec<String>,
+    /// Installs the plugin itself, when there is a source to install it from.
+    pub install_plugin: Option<Vec<String>>,
     /// Refreshes this harness's copy of the marketplace, when it keeps one.
     pub update_marketplace: Option<Vec<String>>,
-    /// Moves the installed plugin to the marketplace's version.
-    pub update_plugin: Vec<String>,
+    /// Moves the installed plugin to the marketplace's version, when it can.
+    pub update_plugin: Option<Vec<String>>,
     /// How this harness is told to pick a recorded session back up. The id is
     /// appended.
     pub resume: Vec<String>,
@@ -73,9 +73,9 @@ impl Harness {
             config_default: text(&p["config"]["default"])?,
             list: argv(&plugin["list"])?,
             add_marketplace: argv(&plugin["add_marketplace"]),
-            install_plugin: argv(&plugin["install"])?,
+            install_plugin: argv(&plugin["install"]),
             update_marketplace: argv(&plugin["update_marketplace"]),
-            update_plugin: argv(&plugin["update"])?,
+            update_plugin: argv(&plugin["update"]),
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
