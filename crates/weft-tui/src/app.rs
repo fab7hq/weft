@@ -445,9 +445,9 @@ impl App {
             .any(|p| p.running && p.turbo && p.harness == harness)
     }
 
-    /// Whether a pane's agent was started in turbo mode.
+    /// Whether a pane's agent is running in turbo mode.
     pub fn pane_turbo(&self, pane: usize) -> bool {
-        sess!(self).panes.get(pane).is_some_and(|p| p.turbo)
+        sess!(self).panes.get(pane).is_some_and(|p| p.running && p.turbo)
     }
 
     /// A pane's agent state, as its hooks reported it. None is not ready.
@@ -548,7 +548,8 @@ impl App {
                 }
             }
             for name in seen {
-                let running = p.session.panes.iter().any(|pane| pane.harness == name);
+                let running =
+                    p.session.panes.iter().any(|pane| pane.running && pane.harness == name);
                 let open = units.iter().any(|u| u.harness == name && u.is_open());
                 // Nothing to go back to: no agent, and nothing left open.
                 if !running && !open {
@@ -2930,6 +2931,19 @@ pub(crate) mod tests {
         assert!(!tabs(&mut a).contains('⚡'), "{}", tabs(&mut a));
         a.session_mut().panes[0].turbo = true;
         assert!(tabs(&mut a).contains("1 codex ⚡"), "{}", tabs(&mut a));
+    }
+
+    /// An agent that has exited carries no badge: no `⚡` on its tab, and
+    /// its harness's row says it is not running.
+    #[test]
+    fn an_agent_that_exited_carries_no_running_badge() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        a.session_mut().panes[0].turbo = true;
+        a.session_mut().panes[0].running = false;
+        let tabs = drawn(&mut a).lines().nth(1).unwrap_or("").to_string();
+        assert!(!tabs.contains('⚡'), "{tabs}");
+        let rows = crate::ui::sidebar_text(&a);
+        assert!(rows.lines().any(|l| l.contains("codex") && l.contains("not running")), "{rows}");
     }
 
     /// The owner's case: an Ask sent through Weft, which no hook saw arrive.
