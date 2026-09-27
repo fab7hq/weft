@@ -1382,6 +1382,8 @@ impl App {
     fn go_to_pane(&mut self, pane: usize) {
         if let Some(name) = self.harness_at(pane).map(str::to_string) {
             let at = self.at;
+            // Folded away, the row would not be there to pick: open to it.
+            self.folded.remove(&self.projects[at].name);
             let row = self.rows().iter().position(
                 |r| matches!(r, Row::Harness { project, name: n, .. } if *project == at && *n == name),
             );
@@ -2559,6 +2561,27 @@ pub(crate) mod tests {
         press(&mut a, KeyCode::Char(' '));
         assert_eq!(a.pane_focus, 0);
         assert!(!a.show_work && a.detail().is_none(), "Space shows the agent asking");
+    }
+
+    /// Space into a folded project opens it to the harness row of the agent
+    /// asking, so that row is picked and an arrow moves on from it.
+    #[test]
+    fn space_into_a_folded_project_opens_it_to_the_agent_asking() {
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        agent_says(&mut a, "codex", "fixture", "waiting");
+        a.selected = 0;
+        press(&mut a, KeyCode::Enter);
+        assert!(a.rows()[0].folded(), "folded");
+        press(&mut a, KeyCode::Char(' '));
+        let rows = a.rows();
+        assert!(
+            matches!(&rows[a.selected], Row::Harness { name, .. } if name == "codex"),
+            "{:?} at {}",
+            rows,
+            a.selected
+        );
+        press(&mut a, KeyCode::Down);
+        assert!(matches!(a.rows()[a.selected], Row::Action { .. }), "the arrow moved on from it");
     }
 
     /// The list shows an agent the moment it is opened, before anything is
