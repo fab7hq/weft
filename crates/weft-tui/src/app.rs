@@ -2772,6 +2772,41 @@ pub(crate) mod tests {
         assert_eq!(a.pane_focus, 1, "a click elsewhere goes nowhere");
     }
 
+    /// Where `needle` starts on the screen, in cells: a wide character such
+    /// as `⚡` takes two.
+    fn cell_of(a: &mut App, needle: &str) -> (u16, u16) {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|frame| crate::ui::draw(frame, a)).expect("draw");
+        let b = terminal.backend().buffer().clone();
+        for y in 0..30 {
+            for x in 0..120 {
+                let from: String = (x..120).map(|x| b[(x, y)].symbol()).collect();
+                if from.starts_with(needle) {
+                    return (x, y);
+                }
+            }
+        }
+        panic!("{needle} is not on the screen")
+    }
+
+    /// `⚡` is two cells wide, and a tab after a turbo tab is where it is drawn.
+    #[test]
+    fn a_click_on_the_tab_after_a_turbo_tab_goes_to_it() {
+        let mut a = app();
+        a.add("codex", "/bin/cat").expect("a second agent");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() < 2 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        a.session_mut().panes[0].turbo = true;
+        a.pane_focus = 0;
+        let (x, y) = cell_of(&mut a, "2 codex");
+        click(&mut a, x + "2 codex".len() as u16 - 1, y);
+        assert_eq!(a.pane_focus, 1, "its last cell is its own");
+    }
+
     /// A send made from the detail view closes it, so the person lands in the
     /// agent the keys went to rather than on a view that blocks the screen.
     #[test]

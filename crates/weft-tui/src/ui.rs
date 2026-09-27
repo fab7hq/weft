@@ -263,7 +263,7 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, usize)>) {
     let mut spans: Vec<Span> = Vec::new();
     let mut col = 0u16;
     let push = |spans: &mut Vec<Span<'static>>, col: &mut u16, text: String, style: Style| {
-        *col += text.chars().count() as u16;
+        *col += cells(&text) as u16;
         spans.push(Span::styled(text, style));
     };
 
@@ -281,11 +281,11 @@ fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, usize)>) {
     if let Some(d) = app.detail() {
         let width = geo.tabs.width.saturating_sub(col);
         let back = format!("{} ", d.harness);
-        let title = clip(&d.title, width.saturating_sub(back.chars().count() as u16 + 1) as usize);
+        let title = clip(&d.title, width.saturating_sub(cells(&back) as u16 + 1) as usize);
         push(
             &mut spans,
             &mut col,
-            padded(&title, (width as usize).saturating_sub(back.chars().count())),
+            padded(&title, (width as usize).saturating_sub(cells(&back))),
             th.title(),
         );
         push(&mut spans, &mut col, back, th.label());
@@ -577,7 +577,7 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
                 tail.push_str(&format!(" · {waiting} ●"));
             }
             let head = format!(" {} {name}", if *folded { "▸" } else { "▾" });
-            let room = width.saturating_sub(tail.chars().count() + 4);
+            let room = width.saturating_sub(cells(&tail) + 4);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
                 Span::styled(format!("{tail}  "), th.label()),
@@ -595,7 +595,7 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
             // ⚡: an agent of it runs in turbo mode, as its tab says too.
             let turbo = if app.harness_turbo(*project, name) { " ⚡" } else { "" };
             let head = format!("   {} {name}{turbo}{gone}", if *folded { "▸" } else { "▾" });
-            let room = width.saturating_sub(tail.chars().count() + 1);
+            let room = width.saturating_sub(cells(&tail) + 1);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
                 Span::styled(tail, th.needs_you()),
@@ -613,7 +613,7 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
             let agent = app.unit_turn(*project, unit).map(|t| format!("{} · ", t.plain()));
             let state = format!("{}{word}  ", agent.unwrap_or_default());
             let head = format!("      {}", unit.title);
-            let room = width.saturating_sub(state.chars().count() + 1);
+            let room = width.saturating_sub(cells(&state) + 1);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
                 Span::styled(state, th.label()),
@@ -1046,19 +1046,34 @@ fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Li
     Line::from(spans)
 }
 
+/// How many cells a text takes on screen: `⚡` takes two.
+fn cells(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
 fn padded(s: &str, n: usize) -> String {
-    let len = s.chars().count();
+    let len = cells(s);
     if len >= n { s.to_string() } else { format!("{s}{}", " ".repeat(n - len)) }
 }
 
+/// At most `n` cells of it, ending in `…` when it had to be cut.
 fn clip(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else if n == 0 {
-        String::new()
-    } else {
-        s.chars().take(n.saturating_sub(1)).chain(['…']).collect()
+    if cells(s) <= n {
+        return s.to_string();
     }
+    let mut out = String::new();
+    for c in s.chars() {
+        let mut next = out.clone();
+        next.push(c);
+        if cells(&next) + 1 > n {
+            break;
+        }
+        out = next;
+    }
+    if n > 0 {
+        out.push('…');
+    }
+    out
 }
 
 /// Break a line to a width without touching what it contains. Prefers the
@@ -1116,6 +1131,21 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Every column is measured in cells, so a row carrying `⚡` ends where
+    /// every other row does and its badge stays on the right.
+    #[test]
+    fn a_turbo_rows_badge_is_right_aligned() {
+        let mut a = app();
+        crate::app::tests::agent_says(&mut a, "codex", "fixture", "waiting");
+        let row = a.rows().into_iter().find(|r| matches!(r, crate::app::Row::Harness { .. }));
+        let row = row.expect("the harness row");
+        let plain = sidebar_row(&a, &row, false, 40).width();
+        a.session_mut().panes[0].turbo = true;
+        let turbo = sidebar_row(&a, &row, false, 40);
+        assert!(turbo.spans.iter().any(|s| s.content.contains('⚡')), "{turbo:?}");
+        assert_eq!(turbo.width(), plain, "the badge ends where it did");
     }
 
     #[test]
