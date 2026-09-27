@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste};
 use crossterm::execute;
 
 use weft::app::App;
@@ -110,6 +110,11 @@ fn picker_lines(
     lines
 }
 
+/// Stop capturing the mouse and pastes, which `ratatui::restore` leaves on.
+fn release(out: &mut impl std::io::Write) {
+    let _ = execute!(out, DisableBracketedPaste, DisableMouseCapture);
+}
+
 /// Put the starting `config.toml` where the person can see and change it,
 /// once. The daemon only reads it; this runs before it starts.
 fn write_config_if_absent(path: &std::path::Path) {
@@ -180,6 +185,13 @@ fn main() -> Result<()> {
     let toggle = keys::Toggle;
 
     let mut terminal = ratatui::init();
+    // A panic lets go of the mouse and pastes too, then restores as ratatui's
+    // own hook does.
+    let restore = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        release(&mut std::io::stdout());
+        restore(info);
+    }));
     let mut out = std::io::stdout();
     // The mouse is captured while Weft runs; see `App::run`.
     let _ = execute!(out, EnableBracketedPaste);
@@ -195,7 +207,7 @@ fn main() -> Result<()> {
         None => choose_project(&mut terminal)?,
     };
     let Some(root) = root else {
-        let _ = execute!(out, DisableBracketedPaste);
+        release(&mut out);
         ratatui::restore();
         return Ok(());
     };
@@ -223,7 +235,7 @@ fn main() -> Result<()> {
 
     let result = started.and_then(|()| weft.run(&mut terminal));
 
-    let _ = execute!(out, DisableBracketedPaste, crossterm::event::DisableMouseCapture);
+    release(&mut out);
     ratatui::restore();
 
     if let Err(e) = &result {
@@ -273,6 +285,17 @@ fn update() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the panic hook writes before the terminal is restored: mouse
+    /// capture and bracketed paste off, which `ratatui::restore` leaves on.
+    #[test]
+    fn letting_go_of_the_terminal_turns_off_the_mouse_and_pastes() {
+        let mut out = Vec::new();
+        release(&mut out);
+        let said = String::from_utf8(out).expect("escapes");
+        assert!(said.contains("\x1b[?1000l"), "mouse capture: {said:?}");
+        assert!(said.contains("\x1b[?2004l"), "bracketed paste: {said:?}");
+    }
 
     #[test]
     fn the_picker_offers_the_projects_open_in_weft() {
