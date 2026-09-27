@@ -27,12 +27,10 @@ fn read(harness: &str, dir: &Path) -> Option<Recorded> {
     // hook keyed on, and a receipt that disagreed with it would be the bug.
     let id = dir.file_name()?.to_str()?.to_string();
     let turns = std::fs::read_to_string(dir.join("turns.jsonl")).unwrap_or_default();
-    let turned = weft_core::turns::read(harness, &id, &turns)
-        .filter(|t| t.latest != weft_core::turns::Turn::Ready || t.first < t.at)
-        .map(|t| t.at);
+    let turns = weft_core::turns::read(harness, &id, &turns);
     let prompt = receipts(&dir.join("prompts.jsonl")).pop();
     let prompted = prompt.as_ref().and_then(|r| weft_core::turns::millis(r.get("time")?.as_str()?));
-    let at = prompted.max(turned)?;
+    let at = last_used(turns.as_ref(), prompted)?;
     let said = prompt.as_ref().and_then(|r| r.get("prompt")?.as_str()).unwrap_or("");
     Some(Recorded { id, at, last: first_line(said) })
 }

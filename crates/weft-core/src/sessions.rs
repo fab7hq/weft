@@ -23,10 +23,38 @@ pub fn first_line(prompt: &str) -> String {
     prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
 }
 
+/// When a session was last used, from its turn receipts and its last
+/// prompt's time: `None` when it never held a conversation (it only said it
+/// was `ready`), so there is nothing to resume.
+pub fn last_used(turns: Option<&crate::turns::Session>, prompted: Option<i64>) -> Option<i64> {
+    let turned =
+        turns.filter(|t| t.latest != crate::turns::Turn::Ready || t.first < t.at).map(|t| t.at);
+    prompted.max(turned)
+}
+
 /// A time reads as its hour and minute, as the receipts count them (UTC).
 /// The date is not shown: a session you would reopen is one you remember
 /// starting.
 pub fn clock(at: i64) -> String {
     let minutes = at.div_euclid(60_000).rem_euclid(24 * 60);
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::turns::{Session, Turn};
+
+    fn turns(first: i64, latest: Turn, at: i64) -> Session {
+        Session { harness: "codex".into(), id: "s".into(), first, latest, at }
+    }
+
+    #[test]
+    fn a_session_was_used_once_it_held_a_conversation() {
+        assert_eq!(last_used(None, None), None);
+        assert_eq!(last_used(Some(&turns(5, Turn::Ready, 5)), None), None, "only ready");
+        assert_eq!(last_used(Some(&turns(5, Turn::TurnEnded, 9)), None), Some(9));
+        assert_eq!(last_used(Some(&turns(5, Turn::Ready, 5)), Some(7)), Some(7), "a prompt");
+        assert_eq!(last_used(Some(&turns(5, Turn::Working, 6)), Some(7)), Some(7), "the later");
+    }
 }

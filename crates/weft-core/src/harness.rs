@@ -108,6 +108,20 @@ impl Harness {
     }
 }
 
+/// The words a command line runs as, with turbo mode's flags after the
+/// person's own: each flag once, and a flag of more than one word only when
+/// it is not already there whole.
+pub fn with_turbo(spec: &str, flags: &[String]) -> Vec<String> {
+    let mut words: Vec<String> = spec.split_whitespace().map(str::to_string).collect();
+    for flag in flags {
+        let flag: Vec<String> = flag.split_whitespace().map(str::to_string).collect();
+        if !flag.is_empty() && !words.windows(flag.len()).any(|w| w == flag.as_slice()) {
+            words.extend(flag);
+        }
+    }
+    words
+}
+
 /// Every harness the profiles define, in the order RingFrame lists them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Harnesses(pub Vec<Harness>);
@@ -299,6 +313,29 @@ mod tests {
         );
         assert_eq!(h.add_marketplace, None);
         assert_eq!(h.update_marketplace, None);
+    }
+
+    /// Turbo mode's flags go after the person's own, each once, and a flag
+    /// of more than one word goes whole, and only when it is not there whole.
+    #[test]
+    fn turbo_adds_each_flag_once_after_the_command_line_as_typed() {
+        let flags = |f: &[&str]| f.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            with_turbo("codex --model x", &flags(&["--yolo"])),
+            ["codex", "--model", "x", "--yolo"]
+        );
+        assert_eq!(with_turbo("codex --yolo", &flags(&["--yolo"])), ["codex", "--yolo"], "once");
+        let two = flags(&["-c approval_policy=never"]);
+        assert_eq!(
+            with_turbo("codex -c model=x", &two),
+            ["codex", "-c", "model=x", "-c", "approval_policy=never"],
+            "a word it shares with another flag is not the flag"
+        );
+        assert_eq!(
+            with_turbo("codex -c approval_policy=never", &two),
+            ["codex", "-c", "approval_policy=never"]
+        );
+        assert_eq!(with_turbo("claude", &[]), ["claude"]);
     }
 
     /// harness-profile.md §5.3: a made-up third harness is read and offered

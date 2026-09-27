@@ -1225,23 +1225,17 @@ impl Session {
     ) -> Option<u32> {
         let p = self.projects.get_mut(project)?;
         let cwd = p.root.to_string_lossy().into_owned();
-        let mut parts = spec.split_whitespace();
-        let program = parts.next().unwrap_or(spec).to_string();
-        let mut args: Vec<String> = parts.map(str::to_string).collect();
         // Turbo mode, when this project's config turns it on: the harness's
-        // own flags from its profile, each once, after the person's own.
+        // own flags, after the person's own.
         let flags = if p.turbo {
             p.harnesses.find(harness).map(|h| h.turbo.clone()).unwrap_or_default()
         } else {
             Vec::new()
         };
-        for flag in &flags {
-            if !args.contains(flag) {
-                args.push(flag.clone());
-            }
-        }
         let turbo = !flags.is_empty();
-        let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+        let words = weft_core::harness::with_turbo(spec, &flags);
+        let program = words.first().cloned().unwrap_or_default();
+        let argv: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();
 
         let id = p.next_pane;
         p.next_pane += 1;
