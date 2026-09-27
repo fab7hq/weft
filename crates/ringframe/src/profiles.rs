@@ -83,9 +83,10 @@ pub fn fact(host: &str, key: &str) -> Option<String> {
     of(host).ok()?.get(key)?.as_str().map(str::to_string)
 }
 
-/// The session a hook payload names, by the field the host's profile says.
-pub fn session_of(host: &str, payload: &Value) -> String {
-    fact(host, "session_field")
+/// The session a hook payload names, by the field its host's profile says.
+pub fn session_of(profile: &Value, payload: &Value) -> String {
+    profile["session_field"]
+        .as_str()
         .and_then(|f| payload.get(f)?.as_str().map(str::to_string))
         .unwrap_or_default()
 }

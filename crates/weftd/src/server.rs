@@ -257,6 +257,10 @@ impl Answer {
         Answer::Ok(serde_json::json!({}))
     }
 
+    fn no_project() -> Self {
+        Answer::No("no_project", "open a project first".into())
+    }
+
     fn failed(e: anyhow::Error) -> Self {
         Answer::No("failed", e.to_string())
     }
@@ -969,9 +973,14 @@ impl Session {
         Out::Units { units, records: serde_json::Value::Object(records) }
     }
 
+    /// The project this client is watching, if it has opened one.
+    fn project_of(&self, client: u64) -> Option<usize> {
+        self.clients.watching.get(&client).copied()
+    }
+
     /// The project this client is watching, and its panes.
     fn watched(&mut self, client: u64) -> Option<(usize, &mut Project)> {
-        let at = *self.clients.watching.get(&client)?;
+        let at = self.project_of(client)?;
         self.projects.get_mut(at).map(|p| (at, p))
     }
 
@@ -1078,9 +1087,7 @@ impl Session {
                 }
             }
             Call::StartAgent { harness, spec, session } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let started = self.spawn(client, at, &harness, &spec, session);
                 // Asked when a pane starts, because that is when a person
                 // would care.
@@ -1091,7 +1098,7 @@ impl Session {
                 });
             }
             Call::CloseAgent { pane } => {
-                if let Some(at) = self.clients.watching.get(&client).copied() {
+                if let Some(at) = self.project_of(client) {
                     self.close(at, pane);
                 }
             }
@@ -1103,9 +1110,7 @@ impl Session {
                 }
             }
             Call::Stage { pane, bytes, how, what, why } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let id = format!("pnd_{}", self.next_pending);
                 self.next_pending += 1;
                 let message =
@@ -1123,15 +1128,11 @@ impl Session {
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
             }
             Call::Act { act, unit, pane, text } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(self.act(client, at, &act, unit.as_deref(), pane, text.as_deref()));
             }
             Call::ConfirmAsk { unit } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let root = self.projects[at].root.clone();
                 return Ok(match crate::ringframe::ask_confirm(&root, &unit) {
                     Ok(()) => Answer::nothing(),
@@ -1139,37 +1140,27 @@ impl Session {
                 });
             }
             Call::Read { what, unit } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(self.read(at, &what, &unit));
             }
             Call::Sync { proceed } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(self.sync(at, proceed));
             }
             Call::Available => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let root = self.projects[at].root.clone();
                 let found = &self.projects[at].harnesses;
                 return Ok(Answer::Ok(serde_json::json!({"starts": starts(&root, found)})));
             }
             Call::Turbo { on } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // Held while the daemon runs; `config.toml` says where it starts.
                 self.projects[at].turbo = on;
                 return Ok(Answer::Ok(serde_json::json!({"turbo": on})));
             }
             Call::Resolve { pending, yes, force } => {
-                let Some(at) = self.clients.watching.get(&client).copied() else {
-                    return Ok(Answer::No("no_project", "open a project first".into()));
-                };
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // Taken, not read: whoever answers first answers for everyone,
                 // and a second answer finds nothing to answer.
                 let Some(i) = self.projects[at].waiting.iter().position(|w| w.id == pending) else {
@@ -1187,7 +1178,13 @@ impl Session {
                 self.type_it(at, w, force);
             }
             // A client leaving is not the session ending. That is the point.
-            Call::Detach => {}
+            // Only the sizes its window drew its agents at are forgotten.
+            Call::Detach => {
+                self.clients.sizes.remove(&client);
+                for slot in self.projects.iter_mut().flat_map(|p| &mut p.panes) {
+                    slot.wants.remove(&client);
+                }
+            }
             Call::Shutdown => return Ok(Answer::Done),
         }
         Ok(Answer::nothing())

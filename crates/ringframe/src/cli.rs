@@ -494,6 +494,24 @@ fn links_of(items: &[String]) -> Vec<Value> {
 /// A hook payload names the project it fired in; without an explicit
 /// `--workspace` that is the workspace, not wherever the hook process happens
 /// to be.
+/// A hook's payload, from stdin, and the workspace it names: how every
+/// `--from-hook` command starts. What is wrong is said with the workspace
+/// to say it in.
+fn hook_input(
+    explicit: Option<&PathBuf>,
+    ws: Workspace,
+    read_stdin: &mut dyn FnMut() -> String,
+) -> Result<(Workspace, Value), (Workspace, String)> {
+    let payload: Value = match serde_json::from_str(&read_stdin()) {
+        Ok(v) => v,
+        Err(e) => return Err((ws, e.to_string())),
+    };
+    match hook_workspace(explicit, ws, &payload) {
+        Ok(ws) => Ok((ws, payload)),
+        Err(e) => Err((workspace::resolve(None, None).expect("cwd"), e)),
+    }
+}
+
 fn hook_workspace(
     explicit: Option<&PathBuf>,
     ws: Workspace,
@@ -822,15 +840,9 @@ fn dispatch(
             Err(e) => (ws, Outcome::Error(e.code, e.detail)),
         },
         ("sessions", Some("capture")) => {
-            let payload: Value = match serde_json::from_str(&read_stdin()) {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e.to_string())),
-            };
-            let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
-                Ok(w) => w,
-                Err(e) => {
-                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
-                }
+            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+                Ok(read) => read,
+                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
             let host = ns.one("--host").unwrap_or_default();
             let rec = match sessions::capture(&ws, host, &payload, ns.one("--host-version")) {
@@ -873,15 +885,9 @@ fn dispatch(
                     sessions::TURN_EVENTS.join(", ")
                 )));
             }
-            let payload: Value = match serde_json::from_str(&read_stdin()) {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e.to_string())),
-            };
-            let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
-                Ok(w) => w,
-                Err(e) => {
-                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
-                }
+            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+                Ok(read) => read,
+                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
             let host = ns.one("--host").unwrap_or_default();
             match sessions::turn(&ws, host, &payload, event) {
@@ -901,15 +907,9 @@ fn dispatch(
                     "a fact is only recorded from a hook: --from-hook".into()
                 ));
             }
-            let payload: Value = match serde_json::from_str(&read_stdin()) {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e.to_string())),
-            };
-            let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
-                Ok(w) => w,
-                Err(e) => {
-                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
-                }
+            let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+                Ok(read) => read,
+                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
             let host = ns.one("--host").unwrap_or_default();
             match evaluate::record_fact(
@@ -1010,27 +1010,23 @@ fn ask_command(
         "delivery" => {
             if ns.has("--from-hook") {
                 // A hook must never fail the host turn.
-                let recorded = (|| -> Result<(Workspace, Option<Value>), String> {
-                    let payload: Value =
-                        serde_json::from_str(&read_stdin()).map_err(|e| e.to_string())?;
-                    let ws = hook_workspace(ns.workspace.as_ref(), ws, &payload)?;
-                    let host = ns.one("--host").unwrap_or_default();
-                    let rec =
-                        ask::delivery_from_hook(&ws, host, &payload).map_err(|e| e.to_string())?;
-                    Ok((ws, rec))
-                })();
-                return match recorded {
-                    Ok((ws, rec)) => {
+                let unrecorded = |ws, error: String| {
+                    (ws, Outcome::Ok(0, json!({"recorded": false, "error": error})))
+                };
+                let (ws, payload) = match hook_input(ns.workspace.as_ref(), ws, read_stdin) {
+                    Ok(read) => read,
+                    Err((ws, e)) => return unrecorded(ws, e),
+                };
+                let host = ns.one("--host").unwrap_or_default();
+                return match ask::delivery_from_hook(&ws, host, &payload) {
+                    Ok(rec) => {
                         let mut out = json!({"recorded": rec.is_some()});
                         for (k, v) in rec.iter().flat_map(|r| r.as_object().into_iter().flatten()) {
                             out[k] = v.clone();
                         }
                         (ws, Outcome::Ok(0, out))
                     }
-                    Err(error) => (
-                        workspace::resolve(None, ns.workspace.as_deref()).expect("a workspace"),
-                        Outcome::Ok(0, json!({"recorded": false, "error": error})),
-                    ),
+                    Err(e) => unrecorded(ws, e.to_string()),
                 };
             }
             if id.is_empty() {

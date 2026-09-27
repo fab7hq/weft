@@ -374,22 +374,15 @@ mod tests {
             ask_id: "ask_1".into(),
             title: "health endpoint".into(),
             harness: "codex".into(),
-            session_ref: None,
-            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "2026-09-19T14:02:00Z".into(),
             delivery_mode: "human_handoff".into(),
-            cancelled: false,
-            unanswered: false,
             confirmed: true,
             sent: Sent::Arrived { exact: true },
-            check: None,
-            arrived: None,
-            gathered: None,
             sealed: Some(disposition.into()),
             seal_id: Some("sel_1".into()),
             sealed_at: Some("2026-09-19T16:40:00Z".into()),
-            requested_only: false,
+            ..Default::default()
         }
     }
 

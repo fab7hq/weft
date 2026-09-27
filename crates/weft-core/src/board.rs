@@ -307,22 +307,12 @@ mod tests {
             ask_id: "ask_1".into(),
             title: "health endpoint".into(),
             harness: harness.into(),
-            session_ref: None,
-            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "2026-09-19T14:02:00Z".into(),
             delivery_mode: "human_handoff".into(),
-            cancelled: false,
-            unanswered: false,
             confirmed: true,
             sent,
-            check: None,
-            arrived: None,
-            gathered: None,
-            sealed: None,
-            seal_id: None,
-            sealed_at: None,
-            requested_only: false,
+            ..Default::default()
         }
     }
 

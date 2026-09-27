@@ -1025,7 +1025,10 @@ pub fn record_fact(
         "command": command, "outcome": outcome,
         "subject": {"kind": kind, "ref": reference, "sha256": sha,
                     "content": worktree_content(ws)?},
-        "host": host, "session_ref": crate::profiles::session_of(host, payload),
+        "host": host, "session_ref": crate::profiles::session_of(
+            &crate::profiles::of(host).unwrap_or_default(),
+            payload,
+        ),
         "tool_use_id": str_of(payload, "tool_use_id"),
     });
     let actor = json!({"kind": "agent", "id": host});

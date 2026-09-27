@@ -128,7 +128,9 @@ pub fn capture(
     host_version: Option<&str>,
 ) -> std::io::Result<Option<Value>> {
     let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or_default();
-    let session = crate::profiles::session_of(host, payload);
+    // Read once: the session field and the skill prefix are both its.
+    let profile = crate::profiles::of(host).unwrap_or_default();
+    let session = crate::profiles::session_of(&profile, payload);
     let session = session.as_str();
     if prompt.is_empty() || session.is_empty() {
         return Ok(None);
@@ -143,7 +145,7 @@ pub fn capture(
         "permission_mode": payload.get("permission_mode").cloned().unwrap_or(Value::Null),
         "host_version": version.map_or(Value::Null, |v| Value::String(v.to_string())),
     });
-    let prefix = crate::profiles::fact(host, "invocation_prefix");
+    let prefix = profile["invocation_prefix"].as_str().map(str::to_string);
     if prefix.as_ref().is_some_and(|p| prompt.starts_with(p)) {
         rec["prompt"] = Value::String(prompt.to_string());
     }
@@ -169,7 +171,8 @@ pub fn turn(
     payload: &Value,
     event: &str,
 ) -> std::io::Result<Option<Value>> {
-    let session = crate::profiles::session_of(host, payload);
+    let profile = crate::profiles::of(host).unwrap_or_default();
+    let session = crate::profiles::session_of(&profile, payload);
     let session = session.as_str();
     if session.is_empty() || !TURN_EVENTS.contains(&event) {
         return Ok(None);

@@ -49,9 +49,10 @@ impl Verdict {
 /// A route the harness takes for itself and a route the person has to type are
 /// different situations that want opposite things: one needs nothing, the
 /// other is waiting on you. They are not one state with a missing receipt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sent {
     /// Compiled on a handoff route, not yet confirmed.
+    #[default]
     NotSent,
     /// Confirmed on a handoff route, waiting to be typed. Needs you.
     ReadyToSend,
@@ -131,7 +132,7 @@ fn delivery_of(data: &Value) -> Delivery {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Unit {
     pub ask_id: String,
     pub title: String,
@@ -294,23 +295,11 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     ask_id: id,
                     title: s(&data, &["title"]).unwrap_or("untitled").to_string(),
                     harness: s(&data, &["host", "name"]).unwrap_or("unknown").to_string(),
-                    delivery: Delivery::default(),
                     // Captured by the prompt hook, from the host itself.
                     session_ref: s(&data, &["host", "session_ref"]).map(str::to_string),
-                    route: String::new(),
                     asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
-                    delivery_mode: String::new(),
-                    cancelled: false,
-                    confirmed: false,
-                    unanswered: false,
-                    sent: Sent::NotSent,
-                    arrived: None,
-                    check: None,
-                    gathered: None,
-                    sealed: None,
-                    seal_id: None,
-                    sealed_at: None,
                     requested_only: true,
+                    ..Default::default()
                 });
             }
             "ask.compiled" => {
@@ -337,17 +326,8 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     asked_at: asked
                         .unwrap_or_else(|| s(e, &["time"]).unwrap_or_default().to_string()),
                     delivery_mode: mode,
-                    cancelled: false,
-                    confirmed: false,
-                    unanswered: false,
                     sent,
-                    arrived: None,
-                    check: None,
-                    gathered: None,
-                    sealed: None,
-                    seal_id: None,
-                    sealed_at: None,
-                    requested_only: false,
+                    ..Default::default()
                 };
                 if at == units.len() {
                     units.push(unit);

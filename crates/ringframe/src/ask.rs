@@ -1112,7 +1112,7 @@ pub fn delivery_from_hook(
     host: &str,
     payload: &Value,
 ) -> Result<Option<Value>, AskError> {
-    let session = profiles::session_of(host, payload);
+    let session = profiles::session_of(&profiles::of(host).unwrap_or_default(), payload);
     if session.is_empty() {
         return Ok(None);
     }

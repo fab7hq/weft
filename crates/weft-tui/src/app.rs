@@ -2280,21 +2280,12 @@ pub(crate) mod tests {
             title: "health endpoint".into(),
             harness: "codex".into(),
             session_ref: Some("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into()),
-            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "2026-09-19T14:02:00Z".into(),
             delivery_mode: "human_handoff".into(),
-            cancelled: false,
-            unanswered: false,
             confirmed: true,
             sent,
-            check: None,
-            arrived: None,
-            gathered: None,
-            sealed: None,
-            seal_id: None,
-            sealed_at: None,
-            requested_only: false,
+            ..Default::default()
         }
     }
 
@@ -3689,21 +3680,12 @@ mod start_tests {
             title: "t".into(),
             harness: "codex".into(),
             session_ref: Some("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into()),
-            delivery: Default::default(),
             route: "native_plan".into(),
             asked_at: "now".into(),
             delivery_mode: "human_handoff".into(),
-            cancelled: false,
-            unanswered: false,
             confirmed: true,
             sent: Sent::ReadyToSend,
-            check: None,
-            arrived: None,
-            gathered: None,
-            sealed: None,
-            seal_id: None,
-            sealed_at: None,
-            requested_only: false,
+            ..Default::default()
         }]);
         a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)).expect("key");
         a.settle();
