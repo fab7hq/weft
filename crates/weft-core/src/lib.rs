@@ -15,6 +15,7 @@ pub mod harness;
 pub mod inject;
 pub mod ledger;
 pub mod offers;
+pub mod projects;
 pub mod readiness;
 pub mod record;
 pub mod routing;

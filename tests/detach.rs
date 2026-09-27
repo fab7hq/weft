@@ -559,6 +559,33 @@ fn the_pane_map_is_the_daemons_and_outlives_a_client() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// Weft's machine data: the projects open in the daemon, beside its
+/// `config.toml`, for a second window's picker to offer.
+#[test]
+fn a_second_window_is_offered_the_projects_the_first_opened() {
+    let home = project("machine");
+    let config = home.join("config.toml");
+    let socket = protocol::private_socket("weft-projects");
+    let listening = socket.clone();
+    let serving = config.clone();
+    std::thread::spawn(move || {
+        let _ = server::Session::serve(&listening, &serving);
+    });
+    let (one, two) = (project("opened-one"), project("opened-two"));
+    let _a = Client::attach(&socket, &one);
+    let mut b = Client::attach(&socket, &two);
+
+    let text = std::fs::read_to_string(home.join("projects.json")).expect("the list");
+    let offered: Vec<PathBuf> = weft::projects::read(&text).into_iter().map(|p| p.path).collect();
+    assert_eq!(offered, [one.clone(), two.clone()], "{text}");
+    assert!(weft::projects::read(&text).iter().all(|p| p.opened > 0), "{text}");
+
+    b.send(Call::Shutdown);
+    for dir in [home, one, two] {
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
 /// What `stty size` says in this client's pane: the size the agent was given.
 /// The mark is printed through an octal escape, so the echoed command line
 /// never matches it.

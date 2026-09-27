@@ -10,30 +10,24 @@ use weft::server;
 
 /// The first screen when no directory was named. It opens nothing: the
 /// daemon is not asked for anything until there is a project to ask about.
+/// It offers the projects a daemon has open, from Weft's own
+/// `projects.json`, which is read and never written here.
 fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std::path::PathBuf>> {
     use crossterm::event::{self, Event, KeyCode};
     use ratatui::text::Line;
     use ratatui::widgets::Paragraph;
 
+    let offered = offered_projects(
+        &std::fs::read_to_string(weft::routing::file().with_file_name("projects.json"))
+            .unwrap_or_default(),
+    );
     let mut typed = String::new();
+    let mut picked = 0usize;
     let mut said: Option<String> = None;
     loop {
+        let lines = picker_lines(&typed, said.as_deref(), &offered, picked);
         terminal.draw(|frame| {
-            let mut lines = vec![
-                Line::raw(" ▚▞ WEFT"),
-                Line::raw(""),
-                Line::raw("   Open a project"),
-                Line::raw(""),
-                Line::raw(format!("   {typed}█")),
-                Line::raw(""),
-                Line::raw("   The path of a repository to work in."),
-            ];
-            if let Some(why) = &said {
-                lines.push(Line::raw(""));
-                lines.push(Line::raw(format!("   {why}")));
-            }
-            lines.push(Line::raw(""));
-            lines.push(Line::raw("  [Enter] OPEN   [X] QUIT"));
+            let lines: Vec<Line> = lines.iter().map(|l| Line::raw(l.clone())).collect();
             frame.render_widget(Paragraph::new(lines), frame.area());
         })?;
         let Event::Key(key) = event::read()? else { continue };
@@ -41,7 +35,14 @@ fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std:
             continue;
         }
         match key.code {
-            KeyCode::Enter if !typed.trim().is_empty() => {
+            KeyCode::Up => picked = picked.saturating_sub(1),
+            KeyCode::Down => picked = (picked + 1).min(offered.len().saturating_sub(1)),
+            KeyCode::Enter if typed.trim().is_empty() => {
+                if let Some(root) = offered.get(picked) {
+                    return Ok(Some(root.clone()));
+                }
+            }
+            KeyCode::Enter => {
                 let want = typed.trim();
                 let want = match want.strip_prefix('~') {
                     Some(rest) => match std::env::var_os("HOME") {
@@ -64,6 +65,49 @@ fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std:
             _ => {}
         }
     }
+}
+
+/// The projects `projects.json` lists that are still directories here.
+fn offered_projects(text: &str) -> Vec<std::path::PathBuf> {
+    weft::projects::read(text).into_iter().map(|p| p.path).filter(|p| p.is_dir()).collect()
+}
+
+/// What the first screen says: the path being typed, and the projects open
+/// in Weft to pick from instead.
+fn picker_lines(
+    typed: &str,
+    said: Option<&str>,
+    offered: &[std::path::PathBuf],
+    picked: usize,
+) -> Vec<String> {
+    let mut lines = vec![
+        " ▚▞ WEFT".to_string(),
+        String::new(),
+        "   Open a project".into(),
+        String::new(),
+        format!("   {typed}█"),
+        String::new(),
+        "   The path of a repository to work in.".into(),
+    ];
+    if !offered.is_empty() {
+        lines.push(String::new());
+        lines.push("   Or one open in Weft:".into());
+        for (i, p) in offered.iter().enumerate() {
+            let mark = if i == picked && typed.trim().is_empty() { "▸" } else { " " };
+            lines.push(format!("   {mark} {}", p.display()));
+        }
+    }
+    if let Some(why) = said {
+        lines.push(String::new());
+        lines.push(format!("   {why}"));
+    }
+    lines.push(String::new());
+    lines.push(if offered.is_empty() {
+        "  [Enter] OPEN   [X] QUIT".into()
+    } else {
+        "  [↑↓] PICK   [Enter] OPEN   [X] QUIT".into()
+    });
+    lines
 }
 
 /// Put the starting `config.toml` where the person can see and change it,
@@ -229,6 +273,22 @@ fn update() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_picker_offers_the_projects_open_in_weft() {
+        let here = std::env::temp_dir().canonicalize().expect("a directory");
+        let open = [weft::projects::Opened { path: here.clone(), opened: 1 }];
+        let gone = weft::projects::Opened { path: "/no/such/place".into(), opened: 2 };
+        let text = weft::projects::write(&[open[0].clone(), gone]);
+        let offered = offered_projects(&text);
+        assert_eq!(offered, std::slice::from_ref(&here), "one that is gone is not offered");
+        let drawn = picker_lines("", None, &offered, 0).join("\n");
+        assert!(drawn.contains(&format!("▸ {}", here.display())), "{drawn}");
+        assert!(drawn.contains("[↑↓] PICK"), "{drawn}");
+        let typing = picker_lines("/else", None, &offered, 0).join("\n");
+        assert!(!typing.contains('▸'), "a typed path is what Enter opens: {typing}");
+        assert!(!picker_lines("", None, &[], 0).join("\n").contains("PICK"));
+    }
 
     #[test]
     fn the_starting_config_is_written_once_and_then_left_alone() {

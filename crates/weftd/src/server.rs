@@ -112,6 +112,8 @@ struct Starting {
 /// one whatever else the daemon is holding.
 struct Project {
     root: PathBuf,
+    /// When this daemon opened it, as receipts count time.
+    opened: i64,
     panes: Vec<Slot>,
     /// The id the next pane started here is given.
     next_pane: u32,
@@ -349,6 +351,17 @@ fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> 
             })
             .collect(),
     )
+}
+
+/// Write a file whole or not at all, so a reader never sees half of one.
+fn write_whole(path: &Path, text: String) {
+    let part = path.with_extension("json.part");
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if std::fs::write(&part, text).is_ok() {
+        let _ = std::fs::rename(&part, path);
+    }
 }
 
 /// Why Enter was withheld. Written once here because it is the daemon that
@@ -887,6 +900,19 @@ impl Session {
         (states, bound, sessions)
     }
 
+    /// The projects open here, beside `config.toml`, for a window's picker.
+    fn write_projects(&self) {
+        let open: Vec<_> = self
+            .projects
+            .iter()
+            .map(|p| weft_core::projects::Opened { path: p.root.clone(), opened: p.opened })
+            .collect();
+        write_whole(
+            &self.config.with_file_name("projects.json"),
+            weft_core::projects::write(&open),
+        );
+    }
+
     /// Weft's own pane map, `<project>/.fab7/weft/panes.json`: which pane
     /// runs which harness and session, and how Weft knows. RingFrame never
     /// reads it; nothing in `.fab7/rf/` names a pane.
@@ -901,15 +927,10 @@ impl Session {
             let _ = std::fs::write(&ignore, "*\n");
         }
         let panes: Vec<_> = p.panes.iter().map(|s| &s.map).collect();
-        let Ok(mut text) = serde_json::to_vec_pretty(&serde_json::json!({"panes": panes})) else {
-            return;
-        };
-        text.push(b'\n');
-        // Whole or not at all: a reader never sees half a map.
-        let part = dir.join("panes.json.part");
-        if std::fs::write(&part, text).is_ok() {
-            let _ = std::fs::rename(&part, dir.join("panes.json"));
-        }
+        let mut text =
+            serde_json::to_string_pretty(&serde_json::json!({"panes": panes})).unwrap_or_default();
+        text.push('\n');
+        write_whole(&dir.join("panes.json"), text);
     }
 
     /// One pane's state, read now.
@@ -951,6 +972,7 @@ impl Session {
                     self.harnesses.clone().unwrap_or_else(|| crate::ringframe::harnesses(&root));
                 let config = crate::routing::read_at(&self.config, &harnesses);
                 self.projects.push(Project {
+                    opened: crate::turns::now_millis(),
                     routing: config.routing(&root),
                     ringframe: config.ringframe_override(&root),
                     notify: config.notify(),
@@ -970,6 +992,7 @@ impl Session {
                 let at = self.projects.len() - 1;
                 // A map a daemon before this one left names panes that are gone.
                 self.write_map(at);
+                self.write_projects();
                 at
             }
         }
