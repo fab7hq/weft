@@ -164,7 +164,9 @@ pub const TURN_EVENTS: [&str; 4] = ["ready", "working", "waiting", "turn_ended"]
 
 /// Append one event to the session's `turns.jsonl`: the event, the session
 /// id and the time, and nothing from the conversation. A payload with no
-/// session, or an event that is not one of the four, records nothing.
+/// session, an event that is not one of the four, or one that repeats the
+/// session's last records nothing: the file records changes, not every tool
+/// call.
 pub fn turn(
     ws: &Workspace,
     host: &str,
@@ -175,6 +177,12 @@ pub fn turn(
     let session = crate::profiles::session_of(&profile, payload);
     let session = session.as_str();
     if session.is_empty() || !TURN_EVENTS.contains(&event) {
+        return Ok(None);
+    }
+    let path = ws.rf_dir().join("sessions").join(host).join(session).join("turns.jsonl");
+    let last = std::fs::read_to_string(&path).unwrap_or_default();
+    let last = last.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok());
+    if last.is_some_and(|l| l["event"] == event) {
         return Ok(None);
     }
     let rec = json!({"event": event, "session_id": session});
@@ -418,6 +426,29 @@ mod tests {
             assert!(!text.contains("never kept"), "nothing from the conversation");
             // Prompt captures stay where they are.
             assert!(!ws.rf_dir().join("sessions/claude-code/s1/prompts.jsonl").exists());
+        });
+    }
+
+    /// `turns.jsonl` records changes: an event that repeats the session's
+    /// last, as every tool call's `working` does, is not written again.
+    #[test]
+    fn an_event_that_repeats_the_last_is_not_recorded_again() {
+        crate::testing::with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            let hook = json!({"session_id": "s1"});
+            assert!(turn(&ws, "claude-code", &hook, "working").unwrap().is_some());
+            assert_eq!(turn(&ws, "claude-code", &hook, "working").unwrap(), None, "a repeat");
+            assert!(turn(&ws, "claude-code", &hook, "waiting").unwrap().is_some());
+            assert!(turn(&ws, "claude-code", &hook, "working").unwrap().is_some(), "a change");
+            let text =
+                std::fs::read_to_string(ws.rf_dir().join("sessions/claude-code/s1/turns.jsonl"))
+                    .unwrap();
+            let events: Vec<String> = text
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
+                .collect();
+            assert_eq!(events, [r#""working""#, r#""waiting""#, r#""working""#]);
         });
     }
 
