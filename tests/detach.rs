@@ -41,6 +41,11 @@ struct Client {
 
 impl Client {
     fn attach(socket: &PathBuf, project: &Path) -> Self {
+        Self::attach_at(socket, project, 24, 80)
+    }
+
+    /// Attach from a window of this size.
+    fn attach_at(socket: &PathBuf, project: &Path, rows: u16, cols: u16) -> Self {
         let deadline = Instant::now() + Duration::from_secs(5);
         let stream = loop {
             if let Ok(s) = UnixStream::connect(socket) {
@@ -53,7 +58,7 @@ impl Client {
         let mut c = Client { stream, frames, next: 1, opened: serde_json::json!({}) };
         c.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("hello");
         c.opened = c
-            .answer(Call::Open { rows: 24, cols: 80, path: project.to_string_lossy().into_owned() })
+            .answer(Call::Open { rows, cols, path: project.to_string_lossy().into_owned() })
             .expect("project.open");
         c
     }
@@ -640,8 +645,12 @@ fn agents_are_sent_once_until_a_receipt_moves() {
 /// The mark is printed through an octal escape, so the echoed command line
 /// never matches it.
 fn size_seen(c: &mut Client, mark: &str) -> String {
+    size_seen_in(c, 0, mark)
+}
+
+fn size_seen_in(c: &mut Client, pane: u32, mark: &str) -> String {
     let cmd = format!("printf '\\075{mark}\\075 %s\\n' \"$(stty size)\"\n");
-    c.send(Call::Input { pane: 0, bytes: cmd.into_bytes() });
+    c.send(Call::Input { pane, bytes: cmd.into_bytes() });
     let needle = format!("={mark}= ");
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut seen = String::new();
@@ -656,6 +665,23 @@ fn size_seen(c: &mut Client, mark: &str) -> String {
         }
     }
     seen
+}
+
+/// A new agent starts at the size of the window that asked for it: the size
+/// it opened the project at, then the size it last drew an agent at.
+#[test]
+fn a_new_pane_starts_at_the_size_of_the_window_that_asked() {
+    let (root, socket) = session("start-size");
+    let mut c = Client::attach_at(&socket, &root, 30, 100);
+    c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    c.wait_for_added();
+    assert_eq!(size_seen(&mut c, "opened"), "30 100", "the size it opened at");
+    c.send(Call::Resize { pane: 0, rows: 20, cols: 60 });
+    c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    let (pane, _) = c.wait_for_added();
+    assert_eq!(size_seen_in(&mut c, pane, "drawn"), "20 60", "the size it last drew at");
+    c.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
 }
 
 /// A second, smaller window opening the project leaves the

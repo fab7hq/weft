@@ -163,6 +163,9 @@ struct Clients {
     /// Which project each client attached to. A client that has not attached
     /// yet is in none, and hears nothing.
     watching: HashMap<u64, usize>,
+    /// The size each window opened its project at, then the size it last
+    /// drew an agent at: the size an agent it asks for starts at.
+    sizes: HashMap<u64, (u16, u16)>,
 }
 
 impl Clients {
@@ -579,6 +582,7 @@ impl Session {
     /// where it goes; a client only names the act.
     fn act(
         &mut self,
+        client: u64,
         at: usize,
         act: &str,
         unit_id: Option<&str>,
@@ -646,7 +650,7 @@ impl Session {
                 };
                 let (pane, fresh) = match self.free_pane_of(at, &into) {
                     Some(pane) => (pane, false),
-                    None => match self.start_for(at, &into) {
+                    None => match self.start_for(client, at, &into) {
                         Some(pane) => (pane, true),
                         None => {
                             return Answer::No("no_pane", format!("Weft could not start {into}"));
@@ -691,9 +695,9 @@ impl Session {
 
     /// Start a pane of this harness for an act, on its own command: never
     /// another pane's, which may be resuming someone else's session.
-    fn start_for(&mut self, at: usize, harness: &str) -> Option<u32> {
+    fn start_for(&mut self, client: u64, at: usize, harness: &str) -> Option<u32> {
         let spec = self.projects[at].harnesses.find(harness)?.spec();
-        let id = self.spawn(at, harness, &spec, None)?;
+        let id = self.spawn(client, at, harness, &spec, None)?;
         self.look_at(at, harness);
         Some(id)
     }
@@ -1021,7 +1025,8 @@ impl Session {
             }
             // Opening resizes nothing: another window may be drawing these
             // agents at its own size.
-            Call::Open { path: project, .. } => {
+            Call::Open { path: project, rows, cols } => {
+                self.clients.sizes.insert(client, (rows, cols));
                 let at = self.project_at(PathBuf::from(project));
                 self.clients.watching.insert(client, at);
                 // An act routed to a harness with no pane yet still needs its
@@ -1072,7 +1077,7 @@ impl Session {
             }
             Call::StartAgent { harness, spec, session } => {
                 if let Some(at) = self.clients.watching.get(&client).copied() {
-                    let _ = self.spawn(at, &harness, &spec, session);
+                    let _ = self.spawn(client, at, &harness, &spec, session);
                     // Asked when a pane starts, because that is when a person
                     // would care.
                     self.look_at(at, &harness);
@@ -1084,6 +1089,7 @@ impl Session {
                 }
             }
             Call::Resize { pane, rows, cols } => {
+                self.clients.sizes.insert(client, (rows, cols));
                 if let Some(slot) = self.watched(client).and_then(|(_, p)| p.slot(pane)) {
                     slot.wants.insert(client, (rows, cols));
                     slot.follow(client);
@@ -1113,7 +1119,7 @@ impl Session {
                 let Some(at) = self.clients.watching.get(&client).copied() else {
                     return Ok(Answer::No("no_project", "open a project first".into()));
                 };
-                return Ok(self.act(at, &act, unit.as_deref(), pane, text.as_deref()));
+                return Ok(self.act(client, at, &act, unit.as_deref(), pane, text.as_deref()));
             }
             Call::ConfirmAsk { unit } => {
                 let Some(at) = self.clients.watching.get(&client).copied() else {
@@ -1194,9 +1200,11 @@ impl Session {
         self.clients.broadcast(project, &Out::Panes { panes });
     }
 
-    /// Start an agent, and answer with its pane's id.
+    /// Start an agent at the size of the window that asked, and answer with
+    /// its pane's id.
     fn spawn(
         &mut self,
+        client: u64,
         project: usize,
         harness: &str,
         spec: &str,
@@ -1225,7 +1233,8 @@ impl Session {
         let id = p.next_pane;
         p.next_pane += 1;
         let (tx, harness_name) = (self.tx.clone(), harness.to_string());
-        match Pane::spawn_args(harness, &program, &argv, &cwd, 24, 80) {
+        let size = self.clients.sizes.get(&client).copied().unwrap_or((24, 80));
+        match Pane::spawn_args(harness, &program, &argv, &cwd, size.0, size.1) {
             Ok(mut pane) => {
                 // Every byte a pane prints goes to the session, which records
                 // it for replay and forwards it to whoever is attached.
@@ -1243,8 +1252,8 @@ impl Session {
                     map: crate::turns::Started::new(id, harness, spec, now, resumed),
                     pane,
                     replay: Vec::new(),
-                    size: (24, 80),
-                    wants: HashMap::new(),
+                    size,
+                    wants: HashMap::from([(client, size)]),
                     turbo,
                 });
                 self.write_map(project);

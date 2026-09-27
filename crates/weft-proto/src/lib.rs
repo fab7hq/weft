@@ -34,7 +34,9 @@ pub enum Call {
         client: String,
         protocol: u64,
     },
-    /// Watch a project. The daemon holds many; a client sees one.
+    /// Watch a project. The daemon holds many; a client sees one. `rows` and
+    /// `cols` are the size an agent this window asks for starts at, until it
+    /// draws one at another.
     Open {
         path: String,
         rows: u16,
