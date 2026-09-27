@@ -677,15 +677,10 @@ impl Session {
             .map(|(s, _)| s.map.pane)
     }
 
-    /// Start a pane of this harness for an act, on the command line one of its
-    /// panes here was started with, else its plain program.
+    /// Start a pane of this harness for an act, on its own command: never
+    /// another pane's, which may be resuming someone else's session.
     fn start_for(&mut self, at: usize, harness: &str) -> Option<u32> {
-        let spec = self.projects[at]
-            .panes
-            .iter()
-            .find(|s| s.map.harness == harness)
-            .map(|s| s.map.spec.clone())
-            .or_else(|| self.projects[at].harnesses.find(harness).map(|h| h.program.clone()))?;
+        let spec = self.projects[at].harnesses.find(harness)?.spec();
         let id = self.spawn(at, harness, &spec, None)?;
         self.look_at(at, harness);
         Some(id)

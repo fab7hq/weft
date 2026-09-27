@@ -395,25 +395,20 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 
 /// Delegation goes to an agent of the act's harness that is free — its latest
 /// event `ready` or `turn_ended` (turn-state.md §4) — and when none is, the
-/// daemon starts one there on the same command line.
+/// daemon starts one of that harness.
 #[test]
 fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     let socket = protocol::private_socket("weft-delegate");
     let root = project("delegate");
-    std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
-    let compiled = serde_json::json!({
-        "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.compiled",
-        "time": "2026-09-19T14:02:00Z", "id": "ask_1",
-        "actor": {"kind": "human", "id": "me"}, "links": [],
-        "data": {"title": "Ship it", "selected_capability": "native_plan",
-                 "delivery_mode": "human_handoff", "host": {"name": "sh"},
-                 "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
-                 "classification": {}, "route_explanation": {}}
-    });
-    std::fs::write(root.join(".fab7/rf/ledger.jsonl"), format!("{compiled}\n")).expect("ledger");
+    ask_on_record(&root, "sh");
     let listening = socket.clone();
+    let harnesses = weft::harness_table::Harnesses(vec![harness_running("sh", "cat")]);
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
+        let _ = server::Session::serve_with(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(harnesses),
+        );
     });
 
     let mut c = Client::attach(&socket, &root);
@@ -438,7 +433,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     assert_eq!(pane, 0);
     assert!(!why.contains("started one"), "{why}");
 
-    // Working, as its hook reports it: a new agent on the same command line.
+    // Working, as its hook reports it: a new agent of that harness.
     agent_says(&root, "sh", "s1", "working");
     c.wait_for_state(Some(Turn::Working));
     c.send(check());
@@ -449,7 +444,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
 
     let mut stop = Client::attach(&socket, &root);
     let panes = stop.hello();
-    assert_eq!(panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(), ["/bin/cat", "/bin/cat"]);
+    assert_eq!(panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(), ["/bin/cat", "cat"]);
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
@@ -522,6 +517,42 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
     assert_eq!(b.wait_for_refusal(), None, "typed once it said it was ready");
 
     b.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// An agent Weft starts for an Eval runs its harness's own command, never
+/// another pane's: that one may be resuming someone else's session.
+#[test]
+fn an_agent_started_for_an_eval_resumes_nobodys_session() {
+    let root = project("own-command");
+    ask_on_record(&root, "cat-agent");
+    let socket = protocol::private_socket("weft-own-command");
+    let listening = socket.clone();
+    let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", "cat")]);
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_with(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(harnesses),
+        );
+    });
+    let mut c = Client::attach(&socket, &root);
+    let resumed = Call::StartAgent {
+        harness: "cat-agent".into(),
+        spec: "cat -".into(),
+        session: Some("theirs".into()),
+    };
+    c.send(resumed);
+    c.wait_for_added();
+    agent_says(&root, "cat-agent", "theirs", "working");
+    c.wait_for_state(Some(Turn::Working));
+    c.send(Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None });
+    c.wait_for_added();
+
+    let mut look = Client::attach(&socket, &root);
+    let specs: Vec<String> = look.hello().into_iter().map(|p| p.spec).collect();
+    assert_eq!(specs, ["cat -", "cat"], "the harness's own command");
+    look.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
