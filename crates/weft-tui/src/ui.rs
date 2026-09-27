@@ -371,7 +371,7 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         None => {}
     }
     if app.waiting_here() {
-        return plain("  [Enter] ANSWER IT   [Y] WHY WEFT THINKS SO");
+        return plain("  [Enter] ANSWER IT   [Y] HOW WEFT KNOWS");
     }
     if app.detail().is_some() {
         // `[P]ROCEED` is there only while the Ask's prompt is still to be
@@ -955,8 +955,13 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             .map(|(key, label, _)| format!("[{key}]  {label}"))
             .collect(),
         Modal::CloseProject { .. } => vec!["Close it".into(), "Cancel".into()],
-        Modal::SendAnyway { .. } => {
-            vec!["Type it anyway".into(), "Cancel — I will answer the agent".into()]
+        Modal::SendAnyway { why, .. } => {
+            let cancel = if *why == weft_core::turns::ASKING {
+                "Cancel — I will answer the agent"
+            } else {
+                "Cancel"
+            };
+            vec!["Type it anyway".into(), cancel.into()]
         }
         Modal::OpenProject { .. } => Vec::new(),
         Modal::Quit => vec![
@@ -1626,7 +1631,7 @@ mod tests {
         press(&mut a, KeyCode::Char(' '));
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("[Enter] ANSWER IT"), "{drawn}");
-        assert!(drawn.contains("[Y] WHY WEFT THINKS SO"), "{drawn}");
+        assert!(drawn.contains("[Y] HOW WEFT KNOWS"), "{drawn}");
         assert!(drawn.contains("is asking you something"), "{drawn}");
         assert!(drawn.contains("Weft never answers for you"), "{drawn}");
     }

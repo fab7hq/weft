@@ -60,8 +60,8 @@ pub fn follow_up_of(unit: &Unit) -> &str {
     unit.check.as_ref().map_or(unit.ask_id.as_str(), |c| c.eval_id.as_str())
 }
 
-/// `None` when the unit is closed, cancelled, or waiting on someone else —
-/// which is exactly when the row carries no dot.
+/// `None` when the unit is closed, cancelled, or waiting on someone else:
+/// then `[P]ROCEED` has nothing to do.
 pub fn next_step(unit: &Unit) -> Option<Next> {
     if unit.cancelled || unit.sealed.is_some() {
         return None;

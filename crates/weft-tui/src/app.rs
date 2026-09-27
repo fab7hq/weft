@@ -37,10 +37,6 @@ pub struct Pending {
     pub why: Vec<String>,
 }
 
-/// The surfaces that interrupt. Everything else in v2 is drawn in place.
-/// One project open in this window: its name, its root, and the client
-/// connection that watches it. The daemon gives a connection one project to
-/// watch, so a window with two projects holds two connections.
 /// One notification, through the terminal Weft runs in: OSC 9 where the
 /// terminal shows it, the bell where it shows none. Nothing leaves the
 /// terminal (ADR-0017).
@@ -66,6 +62,9 @@ pub struct Hits {
     pub turbo: Option<(u16, u16, u16)>,
 }
 
+/// One project open in this window: its name, its root, and the client
+/// connection that watches it. The daemon gives a connection one project to
+/// watch, so a window with two projects holds two connections.
 pub struct Open {
     pub name: String,
     pub root: PathBuf,
@@ -169,15 +168,14 @@ pub struct Follows {
     pub carries: String,
 }
 
+/// The surfaces that interrupt, each a panel anchored to the bottom.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Modal {
     Quit,
     Help,
-    /// The agent looks like it is waiting for its person, and the person has
-    /// been shown what Weft read. Typing is theirs to allow.
-    ///
-    /// Or the agent has not reported that it is ready, which is the only
-    /// state Weft types into on its own: `why` says which.
+    /// The agent has not reported that it is ready, which is the only state
+    /// Weft types into on its own: `why` says what it reported instead.
+    /// Typing is the person's to allow, and the default.
     SendAnyway {
         pending: Pending,
         why: &'static str,
@@ -623,7 +621,7 @@ impl App {
         self.selected_index().and_then(|i| self.units.get(i))
     }
 
-    /// Open units, as the title bar counts them.
+    /// Agents running, as the title bar's OPEN counts them.
     pub fn open_count(&self) -> usize {
         self.with_board(|b| b.open_count())
     }
@@ -759,7 +757,7 @@ impl App {
     }
 
     /// What to tell the person, once per change: an agent they are not
-    /// looking at ended its turn or started asking them something (ADR-0017).
+    /// looking at started asking them something (ADR-0017).
     /// The agent in front is never announced, and nothing is said with
     /// `notify = false`.
     pub fn notices(&mut self) -> Vec<String> {
@@ -1562,7 +1560,8 @@ impl App {
         Ok(())
     }
 
-    /// The wheel, while an agent has the keys: its pane's scrollback.
+    /// A click selects, as the arrows would; the wheel, while an agent has
+    /// the keys, scrolls its pane.
     pub fn on_mouse(&mut self, m: MouseEvent) {
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             return self.on_click(m.column, m.row);
@@ -2512,6 +2511,9 @@ pub(crate) mod tests {
             let drawn = crate::ui::panel_text(&a).join("\n");
             assert!(drawn.contains(why), "{drawn}");
             assert!(drawn.contains("Type it anyway"), "{drawn}");
+            // Only an agent asking is one the person would answer instead.
+            let answer = drawn.contains("Cancel — I will answer the agent");
+            assert_eq!(answer, state == Some(Turn::Waiting), "{drawn}");
         }
         for state in [Turn::Ready, Turn::TurnEnded] {
             let mut a = recorded(Sent::ReadyToSend);
