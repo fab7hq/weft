@@ -14,7 +14,7 @@
 //! path, is asserting rather than checking: that vote counts as `unknown` in
 //! the item majority. It is still a vote and still in the denominator, so
 //! agreement falls rather than the judge disappearing. Both the vote as cast
-//! and what it counted as are recorded, so a reader — or Weft — sees the
+//! and what it counted as are recorded, so a reader sees the
 //! decision instead of having to repeat it.
 
 use std::collections::{BTreeMap, BTreeSet};

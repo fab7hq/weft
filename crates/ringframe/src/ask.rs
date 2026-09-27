@@ -442,8 +442,8 @@ fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
 }
 
 /// What a request is titled until its compile names it: the first line the
-/// person wrote, without the `--override '<json>'` or `[follow-up <id>]` Weft
-/// may put in front of it, cut to 72 characters.
+/// person wrote, without the `--override '<json>'` or `[follow-up <id>]` a
+/// tool that runs RingFrame may put in front of it, cut to 72 characters.
 pub fn requested_title(source: &[u8]) -> String {
     let text = String::from_utf8_lossy(source);
     let mut rest = text.trim_start();
@@ -823,7 +823,7 @@ pub fn cancel(
 /// the person may still want, while writing a refusal they never made.
 ///
 /// The Ask stays open and confirmable. Whoever asks next — the same skill, or
-/// Weft's board — can still put it to the person.
+/// a tool that shows the record — can still put it to the person.
 pub fn unanswered(
     ws: &Workspace,
     ask_id: &str,

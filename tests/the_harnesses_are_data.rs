@@ -123,6 +123,11 @@ fn lines(path: &Path, text: &str, comments: bool) -> Vec<(usize, String)> {
     let (mut skipping, mut depth, mut pending) = (false, 0i64, false);
     for (n, line) in text.lines().enumerate() {
         let t = line.trim_start();
+        if pending && !line.contains('{') && line.trim_end().ends_with(';') {
+            // A test item with no body, such as `mod tests;`.
+            pending = false;
+            continue;
+        }
         if skipping || pending {
             // Inside a `#[cfg(test)]` item: skip until its braces close.
             depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;

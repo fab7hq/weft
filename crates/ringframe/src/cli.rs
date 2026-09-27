@@ -612,8 +612,8 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
         let left = crate::config::leftover_folders(&ws);
         if !left.is_empty() {
             err = format!(
-                "ringframe: limitation: override folders are not read; move them into Weft's \
-                 config.toml [ringframe]: {}\n",
+                "ringframe: limitation: override folders are not read; pass what they hold \
+                 with --override: {}\n",
                 left.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")
             );
         }
@@ -2438,8 +2438,8 @@ limitations = []
             assert_eq!(
                 err,
                 format!(
-                    "ringframe: limitation: override folders are not read; move them into \
-                     Weft's config.toml [ringframe]: {}, {}\n",
+                    "ringframe: limitation: override folders are not read; pass what they \
+                     hold with --override: {}, {}\n",
                     personal.display(),
                     project.display()
                 )

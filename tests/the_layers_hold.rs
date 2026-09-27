@@ -162,15 +162,20 @@ fn sources(dir: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// Each line of a crate's non-test Rust source: `#[cfg(test)]` items and
-/// comments left out.
-fn non_test_lines(dir: &Path) -> Vec<(String, String)> {
+/// Each line of a crate's non-test Rust source: `#[cfg(test)]` items left
+/// out, and comments too unless `comments`.
+fn non_test_lines(dir: &Path, comments: bool) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for path in sources(dir) {
         let text = std::fs::read_to_string(&path).expect("read");
         let (mut depth, mut skipping, mut pending) = (0i64, false, false);
         for line in text.lines() {
             let t = line.trim_start();
+            if pending && !line.contains('{') && line.trim_end().ends_with(';') {
+                // A test item with no body, such as `mod tests;`.
+                pending = false;
+                continue;
+            }
             if skipping || pending {
                 depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
                 if pending && line.contains('{') {
@@ -183,7 +188,7 @@ fn non_test_lines(dir: &Path) -> Vec<(String, String)> {
             }
             if t.starts_with("#[cfg(test)]") {
                 (pending, depth) = (true, 0);
-            } else if !t.starts_with("//") {
+            } else if comments || !t.starts_with("//") {
                 out.push((path.display().to_string(), line.to_string()));
             }
         }
@@ -196,7 +201,7 @@ fn non_test_lines(dir: &Path) -> Vec<(String, String)> {
 #[test]
 fn nothing_in_the_client_sleeps() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/weft-tui/src");
-    let lines = non_test_lines(&src);
+    let lines = non_test_lines(&src, false);
     assert!(lines.len() > 1000, "found too little code to check");
     let sleeping: Vec<_> = lines
         .iter()
@@ -211,10 +216,38 @@ fn nothing_in_the_client_sleeps() {
 #[test]
 fn the_client_counts_nothing_that_needs_you_itself() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/weft-tui/src");
-    let found: Vec<_> = non_test_lines(&src)
+    let found: Vec<_> = non_test_lines(&src, false)
         .into_iter()
         .filter(|(_, l)| l.contains("Turn::Waiting"))
         .map(|(p, l)| format!("{p}: {}", l.trim()))
         .collect();
     assert!(found.is_empty(), "the client decides NEEDS YOU:\n{}", found.join("\n"));
+}
+
+/// RingFrame is not aware of Weft: its code says what RingFrame does and who
+/// may call it, a person or a tool, and its shipped product, when the fab7
+/// checkout is beside this one, says the same.
+#[test]
+fn ringframe_names_no_weft() {
+    let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut found: Vec<String> = non_test_lines(&here.join("crates/ringframe/src"), true)
+        .into_iter()
+        .filter(|(p, l)| !p.ends_with("testing.rs") && l.to_lowercase().contains("weft"))
+        .map(|(p, l)| format!("{p}: {}", l.trim()))
+        .collect();
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() { walk(&path, out) } else { out.push(path) }
+        }
+    }
+    let mut shipped = Vec::new();
+    walk(&here.join("../fab7/products/ringframe"), &mut shipped);
+    for path in shipped {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        for line in text.lines().filter(|l| l.to_lowercase().contains("weft")) {
+            found.push(format!("{}: {}", path.display(), line.trim()));
+        }
+    }
+    assert!(found.is_empty(), "RingFrame names Weft:\n{}", found.join("\n"));
 }
