@@ -49,8 +49,12 @@ impl Turns {
         heard
     }
 
+    /// Every session's latest event, in a fixed order, so the same receipts
+    /// always make the same answer and nothing is told twice.
     pub fn sessions(&self) -> Vec<Session> {
-        self.seen.values().filter_map(|(_, _, s)| s.clone()).collect()
+        let mut all: Vec<Session> = self.seen.values().filter_map(|(_, _, s)| s.clone()).collect();
+        all.sort_by(|a, b| (&a.harness, &a.id).cmp(&(&b.harness, &b.id)));
+        all
     }
 }
 

@@ -586,6 +586,25 @@ fn a_second_window_is_offered_the_projects_the_first_opened() {
     }
 }
 
+/// Agents are told when they change, and only then: two sessions and no new
+/// receipt send nothing more.
+#[test]
+fn agents_are_sent_once_until_a_receipt_moves() {
+    let (root, socket) = session("agents-once");
+    agent_says(&root, "codex", "s1", "turn_ended");
+    agent_says(&root, "claude-code", "s2", "turn_ended");
+    let mut c = Client::attach(&socket, &root);
+    c.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into(), session: None });
+    c.wait_until(|e| matches!(e, Event::Agents { .. }).then_some(()));
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    while Instant::now() < deadline {
+        let again = c.next_event(Duration::from_millis(100));
+        assert!(!matches!(again, Some(Event::Agents { .. })), "sent again: {again:?}");
+    }
+    c.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// What `stty size` says in this client's pane: the size the agent was given.
 /// The mark is printed through an octal escape, so the echoed command line
 /// never matches it.
