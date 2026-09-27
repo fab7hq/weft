@@ -40,6 +40,9 @@ pub struct Harness {
     pub update_marketplace: Option<Vec<String>>,
     /// Moves the installed plugin to the marketplace's version, when it can.
     pub update_plugin: Option<Vec<String>>,
+    /// How what `list` answers reads, when the file says: without it, Weft
+    /// cannot tell whether the plugin is there.
+    pub listing: Option<Listing>,
     /// How this harness is told to pick a recorded session back up. The id is
     /// appended.
     pub resume: Vec<String>,
@@ -52,6 +55,18 @@ pub struct Harness {
     /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
+}
+
+/// How a harness's plugin listing reads: the lists holding what it has
+/// installed, the lists holding what it could install, the field that names
+/// a plugin in either, and the fields of a row that say it is off when false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listing {
+    pub installed: Vec<String>,
+    pub available: Vec<String>,
+    pub name: String,
+    #[serde(default)]
+    pub on: Vec<String>,
 }
 
 /// The marketplace and plugin RingFrame publishes. Named here once.
@@ -78,6 +93,7 @@ impl Harness {
             install_plugin: argv(&plugin["install"]),
             update_marketplace: argv(&plugin["update_marketplace"]),
             update_plugin: argv(&plugin["update"]),
+            listing: serde_json::from_value(plugin["listing"].clone()).ok(),
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),

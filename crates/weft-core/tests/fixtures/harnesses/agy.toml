@@ -19,3 +19,9 @@ default = ".gemini/antigravity-cli"
 list = ["plugin", "list"]
 # No install or update: `plugin install rf@fab7` is known not to work, and there is
 # no source to install from yet. The plugin is put in place by hand until there is.
+
+[plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
+installed = ["imports"]
+available = []
+name = "name"
+on = []

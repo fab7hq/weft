@@ -21,7 +21,7 @@ pub fn look(h: &Harness, cli: bool) -> (Readiness, Option<String>) {
         return (Readiness::Missing(Gap::Cli), None);
     }
     match ask(h) {
-        Some(listing) => (read(h, &listing), weft_core::sync::installed(&listing)),
+        Some(listing) => (read(h, &listing), weft_core::sync::installed(h, &listing)),
         None => (Readiness::Unknown, None),
     }
 }
@@ -54,6 +54,12 @@ mod tests {
             install_plugin: Some(argv(&["y"])),
             update_marketplace: Some(argv(&["z"])),
             update_plugin: Some(argv(&["w"])),
+            listing: Some(weft_core::harness::Listing {
+                installed: argv(&["installed"]),
+                available: argv(&["available"]),
+                name: "id".into(),
+                on: argv(&["enabled"]),
+            }),
             resume: argv(&["resume"]),
             transcript: None,
             turbo: Vec::new(),

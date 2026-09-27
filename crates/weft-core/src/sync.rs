@@ -59,9 +59,10 @@ impl View {
 }
 
 /// The installed `rf` version, from the same listing readiness reads.
-pub fn installed(listing: &Value) -> Option<String> {
-    listing["installed"].as_array()?.iter().find_map(|row| {
-        let id = row.get("id").or_else(|| row.get("pluginId"))?.as_str()?;
+pub fn installed(h: &Harness, listing: &Value) -> Option<String> {
+    let shape = h.listing.as_ref()?;
+    crate::readiness::rows(listing, &shape.installed).iter().find_map(|row| {
+        let id = row.get(&shape.name)?.as_str()?;
         (id == crate::harness::PLUGIN).then(|| row["version"].as_str().map(str::to_string))?
     })
 }
@@ -208,14 +209,21 @@ mod tests {
     #[test]
     fn the_installed_version_comes_from_either_harness_listing() {
         assert_eq!(
-            installed(&json!({"installed": [{"id": "rf@fab7", "version": "0.1.2"}]})).as_deref(),
+            installed(
+                &find("claude-code").unwrap(),
+                &json!({"installed": [{"id": "rf@fab7", "version": "0.1.2"}]})
+            )
+            .as_deref(),
             Some("0.1.2")
         );
         assert_eq!(
-            installed(&json!({"installed": [{"pluginId": "rf@fab7", "version": "0.1.1"}]}))
-                .as_deref(),
+            installed(
+                &find("codex").unwrap(),
+                &json!({"installed": [{"pluginId": "rf@fab7", "version": "0.1.1"}]})
+            )
+            .as_deref(),
             Some("0.1.1")
         );
-        assert_eq!(installed(&json!({"installed": []})), None);
+        assert_eq!(installed(&find("codex").unwrap(), &json!({"installed": []})), None);
     }
 }

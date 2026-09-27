@@ -25,3 +25,9 @@ install = ["plugin", "add", "rf@fab7"]
 update_marketplace = ["plugin", "marketplace", "upgrade", "fab7"]
 # Adding again installs the version the refreshed marketplace holds.
 update = ["plugin", "add", "rf@fab7"]
+
+[plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
+installed = ["installed"]
+available = ["available"]
+name = "pluginId"
+on = ["enabled", "installed"]

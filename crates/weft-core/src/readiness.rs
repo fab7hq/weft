@@ -59,42 +59,40 @@ impl Readiness {
     }
 }
 
-/// What a harness's plugin listing says. Harnesses with marketplaces answer
-/// with `installed` and `available` lists and name a plugin by `id` or
-/// `pluginId`. One with none (Antigravity) lists what it has as `imports`, by
-/// `name`, so its plugin is there when `rf` is, and there is no marketplace
-/// to have added.
+/// What a harness's plugin listing says, read the way its harness file says
+/// it reads. A harness with marketplaces names a plugin `rf@fab7`, and has
+/// the marketplace when anything it lists comes from it; one with none names
+/// it `rf`, and has no marketplace to add.
 pub fn read(h: &crate::harness::Harness, listing: &Value) -> Readiness {
+    let Some(shape) = &h.listing else { return Readiness::Unknown };
     let marketplaces = h.add_marketplace.is_some();
-    let rows = |key: &str| listing.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
-    let installed: Vec<Value> = rows("installed").into_iter().chain(rows("imports")).collect();
-    let known: Vec<Value> = installed.iter().cloned().chain(rows("available")).collect();
+    let installed = rows(listing, &shape.installed);
+    let known: Vec<Value> =
+        installed.iter().cloned().chain(rows(listing, &shape.available)).collect();
+    let name = |row: &Value| row.get(&shape.name).and_then(Value::as_str).map(str::to_string);
 
-    if marketplaces && !known.iter().any(|row| from(row, MARKETPLACE)) {
+    let from_ours = |row: &Value| {
+        name(row).is_some_and(|n| n.rsplit_once('@').is_some_and(|(_, m)| m == MARKETPLACE))
+    };
+    if marketplaces && !known.iter().any(from_ours) {
         return Readiness::Missing(Gap::Marketplace);
     }
     let short = PLUGIN.split('@').next().unwrap_or(PLUGIN);
+    let want = if marketplaces { PLUGIN } else { short };
     let ready = installed.iter().any(|row| {
-        (id_of(row) == Some(PLUGIN.to_string())
-            || (!marketplaces && row.get("name").and_then(Value::as_str) == Some(short)))
-            // Absent means enabled: Claude Code lists only what is installed
-            // and says `enabled` explicitly; Codex says both.
-            && row.get("enabled").and_then(Value::as_bool).unwrap_or(true)
-            && row.get("installed").and_then(Value::as_bool).unwrap_or(true)
+        name(row).as_deref() == Some(want)
+            // Absent means on: a listing that says nothing lists what it has.
+            && shape.on.iter().all(|f| row.get(f).and_then(Value::as_bool).unwrap_or(true))
     });
     if ready { Readiness::Ready } else { Readiness::Missing(Gap::Plugin) }
 }
 
-fn id_of(row: &Value) -> Option<String> {
-    row.get("id").or_else(|| row.get("pluginId")).and_then(Value::as_str).map(str::to_string)
-}
-
-/// Whether a listed plugin comes from the marketplace we are looking for.
-fn from(row: &Value, marketplace: &str) -> bool {
-    if row.get("marketplaceName").and_then(Value::as_str) == Some(marketplace) {
-        return true;
-    }
-    id_of(row).is_some_and(|id| id.rsplit('@').next() == Some(marketplace))
+/// Every row of these lists in a listing.
+pub fn rows(listing: &Value, lists: &[String]) -> Vec<Value> {
+    lists
+        .iter()
+        .flat_map(|k| listing.get(k).and_then(Value::as_array).cloned().unwrap_or_default())
+        .collect()
 }
 
 #[cfg(test)]
@@ -102,15 +100,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// A harness with marketplaces, and one with none.
+    /// Each fixture harness, as its file reads.
+    fn harness(name: &str) -> crate::harness::Harness {
+        crate::harness::Harness::of(name, &crate::harness::fixture::file(name)).expect(name)
+    }
+
     fn with() -> crate::harness::Harness {
-        crate::harness::fixture::harnesses().find("claude-code").cloned().expect("claude")
+        harness("claude-code")
     }
 
     fn without() -> crate::harness::Harness {
-        let mut p = crate::harness::fixture::file("codex");
-        p["plugin"]["add_marketplace"] = Value::Null;
-        crate::harness::Harness::of("codex", &p).expect("a harness")
+        harness("agy")
     }
 
     /// Captured from `claude plugin list --available --json`.
@@ -138,7 +138,8 @@ mod tests {
     #[test]
     fn both_harnesses_are_read_by_one_reader() {
         assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
-        assert_eq!(read(&with(), &codex(true)), Readiness::Ready);
+        assert_eq!(read(&harness("codex"), &codex(true)), Readiness::Ready);
+        assert_eq!(read(&harness("codex"), &codex(false)), Readiness::Missing(Gap::Plugin));
     }
 
     #[test]
@@ -160,7 +161,7 @@ mod tests {
             "installed": [],
             "available": [{"pluginId": "rf@fab7", "marketplaceName": "fab7", "installed": false}]
         });
-        assert_eq!(read(&with(), &available), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&harness("codex"), &available), Readiness::Missing(Gap::Plugin));
     }
 
     /// Captured from `agy plugin list` (Antigravity 1.2.12) once `rf` is
@@ -183,6 +184,33 @@ mod tests {
         // And the two with marketplaces read exactly as before.
         assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
         assert_eq!(read(&with(), &agy(&["rf"])), Readiness::Missing(Gap::Marketplace));
+    }
+
+    /// A harness whose listing holds its plugins under `plugins`, named by
+    /// `slug`, is read from what its harness file says of that shape.
+    #[test]
+    fn a_listing_is_read_the_way_its_harness_file_says() {
+        let mut p = crate::harness::fixture::file("codex");
+        p["plugin"]["listing"] =
+            json!({"installed": ["plugins"], "available": ["catalog"], "name": "slug"});
+        let odd = crate::harness::Harness::of("odd", &p).expect("a harness");
+        let has = json!({"plugins": [{"slug": "rf@fab7"}], "catalog": []});
+        assert_eq!(read(&odd, &has), Readiness::Ready);
+        let offered = json!({"plugins": [], "catalog": [{"slug": "rf@fab7"}]});
+        assert_eq!(read(&odd, &offered), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&odd, &json!({"plugins": []})), Readiness::Missing(Gap::Marketplace));
+        assert_eq!(
+            crate::sync::installed(
+                &odd,
+                &json!({"plugins": [{"slug": "rf@fab7",
+            "version": "0.2.0"}]})
+            )
+            .as_deref(),
+            Some("0.2.0")
+        );
+        p["plugin"]["listing"] = Value::Null;
+        let blind = crate::harness::Harness::of("blind", &p).expect("still offered");
+        assert_eq!(read(&blind, &has), Readiness::Unknown, "no shape, no answer");
     }
 
     #[test]
