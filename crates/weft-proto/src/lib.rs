@@ -163,6 +163,9 @@ pub enum Event {
     Injected {
         pane: u32,
         refusal: Option<String>,
+        /// It was typed and sent, and RingFrame would not record that it
+        /// went: why, in RingFrame's words.
+        unrecorded: Option<String>,
     },
     /// What each harness is short of here, by the name RingFrame records.
     Readiness {
@@ -379,8 +382,8 @@ impl Event {
                        "payload": b64(payload)}),
             ),
             Event::Resolved { id, yes } => ("pending.resolved", json!({"id": id, "yes": yes})),
-            Event::Injected { pane, refusal } => {
-                ("injected", json!({"pane": pane, "refusal": refusal}))
+            Event::Injected { pane, refusal, unrecorded } => {
+                ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
             }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Sync { view } => ("sync", json!({"view": view})),
@@ -430,6 +433,7 @@ impl Event {
             "injected" => Event::Injected {
                 pane: n("pane")? as u32,
                 refusal: p.get("refusal")?.as_str().map(str::to_string),
+                unrecorded: s("unrecorded"),
             },
             _ => return None,
         })
@@ -725,8 +729,8 @@ mod tests {
                 payload: b"/plan ship it".to_vec(),
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
-            Event::Injected { pane: 0, refusal: Some("PaneBlocked".into()) },
-            Event::Injected { pane: 0, refusal: None },
+            Event::Injected { pane: 0, refusal: Some("PaneBlocked".into()), unrecorded: None },
+            Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },
             Event::Sync { view: json!({"rows": []}) },
             Event::Agents {

@@ -424,6 +424,10 @@ fn hint(app: &App) -> Paragraph<'static> {
     if let Some(refusal) = app.last_refusal() {
         return Paragraph::new(Line::styled(format!(" {}", refused(&refusal)), th.needs_you()));
     }
+    if let Some(why) = app.unrecorded() {
+        let said = format!(" Sent, but RingFrame did not record it ({why}). It has gone once.");
+        return Paragraph::new(Line::styled(said, th.needs_you()));
+    }
     if let Some(v) = app.newer.get().filter(|_| app.modal.is_none() && !app.waiting_here()) {
         let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
         return Paragraph::new(Line::styled(format!(" Weft {v} is out - run weft update"), lit));

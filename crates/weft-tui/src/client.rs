@@ -118,6 +118,9 @@ pub struct Session {
     pub panes: Vec<PaneView>,
     /// The last refusal the server reported, for the UI to show.
     pub last_refusal: Option<String>,
+    /// Why RingFrame would not record the last send that went, if it would
+    /// not.
+    pub unrecorded: Option<String>,
     /// This project's board, as the daemon read it. A client renders the
     /// record; it does not read it.
     pub units: Vec<weft_core::ledger::Unit>,
@@ -198,6 +201,7 @@ impl Session {
             inbox,
             panes: Vec::new(),
             last_refusal: None,
+            unrecorded: None,
             units: Vec::new(),
             readiness: serde_json::json!({}),
             sync: None,
@@ -376,7 +380,10 @@ impl Session {
                     self.waiting.push(Staged { id, pane, what, why, payload });
                 }
                 Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
-                Event::Injected { refusal, .. } => self.last_refusal = refusal,
+                Event::Injected { refusal, unrecorded, .. } => {
+                    self.last_refusal = refusal;
+                    self.unrecorded = unrecorded;
+                }
                 Event::Readiness { states } => self.readiness = states,
                 Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
                 Event::Agents { panes, bound, sessions } => {
@@ -411,6 +418,7 @@ impl Session {
         why: &str,
     ) -> Result<String> {
         self.last_refusal = None;
+        self.unrecorded = None;
         let answer = self.ask(Call::Stage {
             pane: self.id_at(pane)?,
             bytes: bytes.to_vec(),
@@ -435,6 +443,7 @@ impl Session {
         text: Option<&str>,
     ) -> Result<String> {
         self.last_refusal = None;
+        self.unrecorded = None;
         let pane = pane.map(|p| self.id_at(p)).transpose()?;
         let answer = self.ask(Call::Act {
             act: act.to_string(),

@@ -35,9 +35,11 @@ fn run_program(program: &str, project: &Path, args: &[&str]) -> Result<Vec<u8>, 
     if out.status.success() {
         return Ok(out.stdout);
     }
+    // A refusal is said on stderr, or as JSON on stdout.
+    let said = if out.stderr.is_empty() { &out.stdout } else { &out.stderr };
     Err(Error::Refused {
         code: out.status.code().unwrap_or(-1),
-        message: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        message: String::from_utf8_lossy(said).trim().to_string(),
     })
 }
 

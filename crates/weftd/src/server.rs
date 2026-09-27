@@ -539,6 +539,7 @@ impl Session {
         // the decision is theirs.
         let not_ready =
             if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
+        let mut unrecorded = None;
         let refusal = match self.projects[project].slot(w.pane) {
             Some(slot) => match not_ready {
                 Err(why) if slot.pane.running() => Some(why.to_string()),
@@ -549,10 +550,21 @@ impl Session {
                         slot.map.enter(crate::turns::now_millis());
                         // Sent on the person's yes: their submission, on
                         // record, so the Ask moves on to its Eval even
-                        // where no hook sees it arrive.
+                        // where no hook sees it arrive. When RingFrame will
+                        // not record it, the person is told: the row would
+                        // otherwise offer the send again.
                         if let Some(ask) = &w.sends {
                             let root = self.projects[project].root.clone();
-                            let _ = crate::ringframe::ask_submitted(&root, ask);
+                            unrecorded = crate::ringframe::ask_submitted(&root, ask).err().map(
+                                |e| match e {
+                                    crate::ringframe::Error::NotInstalled => {
+                                        "ringframe is not installed".to_string()
+                                    }
+                                    crate::ringframe::Error::Refused { message, .. } => {
+                                        weft_core::offers::first_line(&message).to_string()
+                                    }
+                                },
+                            );
                         }
                         None
                     }
@@ -560,7 +572,7 @@ impl Session {
             },
             None => Some("NoProcess".to_string()),
         };
-        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal });
+        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded });
     }
 
     /// One of RingFrame's three acts. The daemon works out what to type and
@@ -1243,8 +1255,10 @@ impl Session {
                 Some(id)
             }
             Err(e) => {
-                self.clients
-                    .broadcast(project, &Out::Injected { pane: id, refusal: Some(e.to_string()) });
+                self.clients.broadcast(
+                    project,
+                    &Out::Injected { pane: id, refusal: Some(e.to_string()), unrecorded: None },
+                );
                 None
             }
         }

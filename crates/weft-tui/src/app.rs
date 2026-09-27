@@ -334,6 +334,12 @@ impl App {
         sess!(self).last_refusal.clone()
     }
 
+    /// Why RingFrame would not record the last send that went, if it would
+    /// not.
+    pub fn unrecorded(&self) -> Option<String> {
+        sess!(self).unrecorded.clone()
+    }
+
     /// Whether there is a `ringframe` to read a record from. Weft still runs
     /// panes without one; it just has nothing to show on the board.
     pub fn record_available(&self) -> bool {
@@ -1878,6 +1884,12 @@ pub(crate) mod tests {
         })
     }
 
+    pub(crate) fn ringframe_on_path() -> bool {
+        std::env::var_os("PATH").is_some_and(|paths| {
+            std::env::split_paths(&paths).any(|dir| dir.join("ringframe").is_file())
+        })
+    }
+
     pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
         use std::sync::atomic::{AtomicU32, Ordering};
         static N: AtomicU32 = AtomicU32::new(0);
@@ -2750,6 +2762,33 @@ pub(crate) mod tests {
         assert!(a.modal.is_none(), "{:?}", a.modal);
         assert!(a.detail().is_none(), "the detail view closed");
         assert_eq!(a.focus, Focus::Agent, "and the keys are the agent's");
+    }
+
+    /// Sent on the person's yes, and RingFrame would not record that it went:
+    /// the person is told, rather than being offered the send again blind.
+    #[test]
+    fn a_send_ringframe_would_not_record_is_said() {
+        if !ringframe_on_path() {
+            eprintln!("skipped: ringframe is not on PATH");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let mut a = recorded(Sent::ReadyToSend);
+        std::fs::write(a.root().join(".fab7/rf/y"), "Ship it.\n").expect("the prompt");
+        let ledger = a.root().join(".fab7/rf/ledger.jsonl");
+        std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o444)).expect("ro");
+        press(&mut a, KeyCode::Char('p'));
+        assert!(matches!(a.modal, Some(Modal::Confirm(_))), "{:?} / {:?}", a.modal, a.hint_text());
+        press(&mut a, KeyCode::Enter);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline && a.session_mut().unrecorded.is_none() {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let said = drawn(&mut a).lines().last().unwrap_or_default().to_string();
+        assert!(said.contains("RingFrame did not record it"), "{said}");
+        assert!(said.contains("ledger.io"), "and why: {said}");
+        std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o644)).expect("rw");
     }
 
     /// Turbo mode is switched from Weft, by `[T]` or a click on it in the
