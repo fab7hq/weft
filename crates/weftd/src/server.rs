@@ -100,6 +100,16 @@ struct Waiting {
 const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
 const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
+/// A send into an agent that is still starting, until it may be typed or its
+/// deadline passes.
+struct Starting {
+    w: Waiting,
+    force: bool,
+    until: std::time::Instant,
+    /// The screen when it last changed, for a send the person forced.
+    screen: (std::time::Instant, String),
+}
+
 /// One project's panes. Panes are numbered within it, so a client counts from
 /// one whatever else the daemon is holding.
 struct Project {
@@ -119,6 +129,9 @@ struct Project {
     /// Whether agents started here get their harness's turbo flags.
     turbo: bool,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
+    /// Sends said yes to that wait for an agent Weft just started, looked at
+    /// on each tick rather than waited on, so nothing else stops meanwhile.
+    starting: Vec<Starting>,
     folds: crate::acts::Folds,
     /// The harnesses RingFrame's profiles define, read when the project
     /// opened. Weft keeps no list of its own.
@@ -458,47 +471,69 @@ impl Session {
 
     /// Type a prompt that was said yes to. The refusal, if there is one, is
     /// the person's to see: it says what is sitting unsent in their agent.
+    ///
+    /// An agent Weft just started is not ready until it says so, and one that
+    /// never will still draws its composer a moment after it starts. Either
+    /// is waited for on the tick, never here.
     fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
-        if w.fresh && !force {
-            // An agent Weft just started is not ready until it says so.
-            let deadline = std::time::Instant::now() + STARTED_TIMEOUT;
-            while std::time::Instant::now() < deadline
-                && crate::turns::may_type(self.pane_state(project, w.pane)).is_err()
-            {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+        if w.fresh {
+            let now = std::time::Instant::now();
+            let screen = (now, String::new());
+            let until = now + STARTED_TIMEOUT;
+            self.projects[project].starting.push(Starting { w, force, until, screen });
+            return;
+        }
+        self.type_now(project, w, force);
+    }
+
+    /// Type each send whose agent is ready now, or whose wait is over.
+    fn type_what_started(&mut self, project: usize) {
+        let waiting = std::mem::take(&mut self.projects[project].starting);
+        let now = std::time::Instant::now();
+        for mut s in waiting {
+            let go = now >= s.until
+                || if s.force {
+                    // The words on it are not read, only whether it has gone
+                    // still.
+                    match self.projects[project].panes.get(s.w.pane as usize) {
+                        Some(slot) => slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET),
+                        None => true,
+                    }
+                } else {
+                    crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok()
+                };
+            if go {
+                self.type_now(project, s.w, s.force);
+            } else {
+                self.projects[project].starting.push(s);
             }
         }
+    }
+
+    fn type_now(&mut self, project: usize, w: Waiting, force: bool) {
         // Weft types on its own only into an agent that reported it is ready
         // (ADR-0013). When the person has been told and said to type anyway,
         // the decision is theirs.
         let not_ready =
             if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
         let refusal = match self.projects[project].panes.get_mut(w.pane as usize) {
-            Some(slot) => {
-                if w.fresh && force {
-                    // A harness that never says it is ready still draws its
-                    // composer a moment after it starts; the words on it are
-                    // not read, only whether it has gone still.
-                    slot.pane.wait_until_quiet(STARTED_QUIET, STARTED_TIMEOUT);
-                }
-                match not_ready {
-                    Err(why) if slot.pane.running() => Some(why.to_string()),
-                    _ => match slot.pane.inject_as(&w.payload, &w.how) {
-                        Err(r) => Some(format!("{r:?}")),
-                        Ok(a) if !a.submitted => Some(withheld(&a)),
-                        Ok(_) => {
-                            // Sent on the person's yes: their submission, on
-                            // record, so the Ask moves on to its Eval even
-                            // where no hook sees it arrive.
-                            if let Some(ask) = &w.sends {
-                                let root = self.projects[project].root.clone();
-                                let _ = crate::ringframe::ask_submitted(&root, ask);
-                            }
-                            None
+            Some(slot) => match not_ready {
+                Err(why) if slot.pane.running() => Some(why.to_string()),
+                _ => match slot.pane.inject_as(&w.payload, &w.how) {
+                    Err(r) => Some(format!("{r:?}")),
+                    Ok(a) if !a.submitted => Some(withheld(&a)),
+                    Ok(_) => {
+                        // Sent on the person's yes: their submission, on
+                        // record, so the Ask moves on to its Eval even
+                        // where no hook sees it arrive.
+                        if let Some(ask) = &w.sends {
+                            let root = self.projects[project].root.clone();
+                            let _ = crate::ringframe::ask_submitted(&root, ask);
                         }
-                    },
-                }
-            }
+                        None
+                    }
+                },
+            },
             None => Some("NoProcess".to_string()),
         };
         self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal });
@@ -798,6 +833,7 @@ impl Session {
     /// state has.
     fn follow_the_record(&mut self) {
         for at in 0..self.projects.len() {
+            self.type_what_started(at);
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
@@ -891,6 +927,7 @@ impl Session {
                     ledger,
                     waiting: Vec::new(),
                     readiness: HashMap::new(),
+                    starting: Vec::new(),
                     folds: crate::acts::Folds::default(),
                     turns: crate::turns::Turns::default(),
                     harnesses,

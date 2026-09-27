@@ -445,6 +445,72 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// A harness of this name that runs `program`, from a fixture profile.
+fn harness_running(name: &str, program: &str) -> weft::harness_table::Harness {
+    let mut p = weft::harness_table::fixture::profile("codex");
+    p["host"] = name.into();
+    p["program"] = program.into();
+    weft::harness_table::Harness::from_profile(&p).expect("a harness")
+}
+
+/// One Ask on this project's ledger, asked of `host`.
+fn ask_on_record(root: &Path, host: &str) {
+    std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
+    let compiled = serde_json::json!({
+        "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.compiled",
+        "time": "2026-09-19T14:02:00Z", "id": "ask_1",
+        "actor": {"kind": "human", "id": "me"}, "links": [],
+        "data": {"title": "Ship it", "selected_capability": "native_plan",
+                 "delivery_mode": "human_handoff", "host": {"name": host},
+                 "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
+                 "classification": {}, "route_explanation": {}}
+    });
+    std::fs::write(root.join(".fab7/rf/ledger.jsonl"), format!("{compiled}\n")).expect("ledger");
+}
+
+/// A send into an agent Weft just started waits for it to say `ready`, and
+/// the daemon does not stop while it waits: another window is answered and
+/// every other pane's output keeps arriving.
+#[test]
+fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
+    let root = project("fresh-wait");
+    ask_on_record(&root, "cat-agent");
+    let socket = protocol::private_socket("weft-fresh-wait");
+    let listening = socket.clone();
+    let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", "cat")]);
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_with(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(harnesses),
+        );
+    });
+
+    let mut a = Client::attach(&socket, &root);
+    a.send(Call::StartAgent { harness: "cat-agent".into(), spec: "cat".into() });
+    a.wait_for_added();
+    agent_says(&root, "cat-agent", "busy", "working");
+    a.wait_for_state(Some(Turn::Working));
+    // Nothing is free, so the daemon starts an agent for the Eval, which will
+    // never say it is ready.
+    a.send(Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None });
+    let id = a.wait_until(|e| match e {
+        Event::Pending { id, .. } => Some(id),
+        _ => None,
+    });
+    a.send(Call::Resolve { pending: id, yes: true, force: false });
+    a.wait_for_resolved();
+
+    let began = Instant::now();
+    let mut b = Client::attach(&socket, &root);
+    assert!(began.elapsed() < Duration::from_secs(2), "another window waited on the send");
+    b.send(Call::Input { pane: 0, bytes: b"still-moving\n".to_vec() });
+    assert!(b.wait_for("still-moving", 2).contains("still-moving"), "output stopped arriving");
+
+    b.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// What `stty size` says in this client's pane: the size the agent was given.
 /// The mark is printed through an octal escape, so the echoed command line
 /// never matches it.

@@ -204,26 +204,20 @@ impl Pane {
         self.write_and_submit(body, typed.is_some())
     }
 
-    /// Wait until the pane has drawn something and then left it alone for
-    /// `still`, or `timeout` passes. Whether it settled is returned; what is
-    /// typed next checks the screen again either way.
-    pub fn wait_until_quiet(
+    /// Whether the pane has drawn something and then left it alone for
+    /// `still`. One look: `last` is the screen when it last changed, kept by
+    /// the caller between looks, so nothing waits here.
+    pub fn gone_quiet(
         &self,
+        last: &mut (std::time::Instant, String),
         still: std::time::Duration,
-        timeout: std::time::Duration,
     ) -> bool {
-        let deadline = std::time::Instant::now() + timeout;
-        let mut last = (std::time::Instant::now(), String::new());
-        while std::time::Instant::now() < deadline {
-            let screen = self.with_screen(|s| s.contents());
-            if screen != last.1 {
-                last = (std::time::Instant::now(), screen);
-            } else if !screen.trim().is_empty() && last.0.elapsed() >= still {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+        let screen = self.with_screen(|s| s.contents());
+        if screen != last.1 {
+            *last = (std::time::Instant::now(), screen);
+            return false;
         }
-        false
+        !screen.trim().is_empty() && last.0.elapsed() >= still
     }
 
     /// Wait for the host to show something, rather than assuming it did.
