@@ -70,9 +70,10 @@ pub struct Open {
     pub name: String,
     pub root: PathBuf,
     pub session: Session,
-    /// Each pane's state when the person was last told about it. `None`
-    /// until first seen, so what was already so is never announced.
-    heard: Option<Vec<Option<weft_core::turns::Turn>>>,
+    /// Each pane's state, by pane id, when the person was last told about
+    /// it. `None` until first seen, so what was already so is never
+    /// announced.
+    heard: Option<std::collections::HashMap<u32, Option<weft_core::turns::Turn>>>,
 }
 
 impl Open {
@@ -765,21 +766,20 @@ impl App {
         let mut out = Vec::new();
         let (at, focus) = (self.at, self.pane_focus);
         for (i, p) in self.projects.iter_mut().enumerate() {
-            let now: Vec<_> = p.session.panes.iter().map(|v| v.turn).collect();
-            let before = p.heard.replace(now.clone());
-            // A pane came or went: the numbers moved, so this is a first sight.
-            let Some(before) = before.filter(|b| b.len() == now.len()) else { continue };
+            let now = p.session.panes.iter().map(|v| (v.id, v.turn)).collect();
+            let Some(before) = p.heard.replace(now) else { continue };
             if !p.session.notify {
                 continue;
             }
-            for (pane, (was, is)) in before.iter().zip(&now).enumerate() {
+            for (pane, v) in p.session.panes.iter().enumerate() {
                 // Only an agent asking for input: when a turn ends is the
-                // person's workflow, not an alarm.
-                if *is != Some(Turn::Waiting) || was == is || (i == at && pane == focus) {
+                // person's workflow, not an alarm. A pane that just opened
+                // was asking nothing before.
+                let was = before.get(&v.id).copied().flatten();
+                if v.turn != Some(Turn::Waiting) || was == v.turn || (i == at && pane == focus) {
                     continue;
                 }
-                let harness = p.session.panes.get(pane).map_or("an agent", |v| v.harness.as_str());
-                out.push(format!("{harness} in {}: needs your input", p.name));
+                out.push(format!("{} in {}: needs your input", v.harness, p.name));
             }
         }
         out
@@ -2691,6 +2691,26 @@ pub(crate) mod tests {
             set(&mut a, vec![Some(Turn::Working), Some(Turn::Waiting)]).is_empty(),
             "turned off"
         );
+    }
+
+    /// Panes are told apart by id, so one opening while another starts
+    /// asking loses nothing and announces only the one asking.
+    #[test]
+    fn an_agent_opening_while_another_asks_sends_one_notification() {
+        use weft_core::turns::Turn;
+        let mut a = app();
+        a.session_mut().set_turns(vec![Some(Turn::Working)]);
+        assert!(a.notices().is_empty(), "first sight");
+        a.add("codex", "/bin/cat").expect("a second agent");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() < 2 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        a.pane_focus = 1;
+        a.session_mut().set_turns(vec![Some(Turn::Waiting), None]);
+        let told = a.notices();
+        assert_eq!(told.len(), 1, "{told:?}");
     }
 
     #[test]
