@@ -83,6 +83,13 @@ pub fn ask_confirm(project: &Path, ask_id: &str) -> Result<(), Error> {
     run_program("ringframe", project, &["ask", "confirm", "--ask", ask_id]).map(|_| ())
 }
 
+/// The person submitted this Ask's prompt: Weft typed it on their yes and
+/// pressed Enter. RingFrame records it as attributed to them; where a hook
+/// also observes it arrive, that receipt outranks this.
+pub fn ask_submitted(project: &Path, ask_id: &str) -> Result<(), Error> {
+    run_program("ringframe", project, &["ask", "submitted", "--ask", ask_id]).map(|_| ())
+}
+
 pub fn ask_copy(project: &Path, ask_id: &str) -> Result<Vec<u8>, Error> {
     run(project, &["ask", "copy", "--ask", ask_id])
 }
@@ -95,6 +102,14 @@ pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or(Error::Refused { code: 4, message: "the profile names no invocation prefix".into() })
+}
+
+/// Every harness a profile defines, as RingFrame lists them. Weft keeps no
+/// list of its own (ADR-0015): no answer is no harness to offer.
+pub fn harnesses(project: &Path) -> weft_core::harness::Harnesses {
+    json(project, &["profile", "list", "--json"])
+        .map(|v| weft_core::harness::Harnesses::of(&v))
+        .unwrap_or_default()
 }
 
 /// The size at which this host's composer folds a paste into a placeholder,

@@ -998,19 +998,21 @@ fn delta(current: &Value, previous: Option<&Value>) -> Value {
 /// command, whether it succeeded, and the subject it ran against. Output is
 /// never read, and RingFrame decides nothing about what the command was for.
 /// Only while some Ask is open, and never for RingFrame's own commands.
+///
+/// Which hook fired, and so whether the command succeeded, is the plugin's to
+/// say (`--outcome`): the CLI names no hook and no tool.
 pub fn record_fact(
     ws: &Workspace,
     host: &str,
+    outcome: &str,
     payload: &Value,
 ) -> Result<Option<Value>, EvalError> {
-    let outcome = match str_of(payload, "hook_event_name").as_str() {
-        "PostToolUse" => "succeeded",
-        "PostToolUseFailure" => "failed",
-        _ => return Ok(None),
-    };
+    if !["succeeded", "failed"].contains(&outcome) {
+        return Ok(None);
+    }
     let command = str_of(&payload["tool_input"], "command");
     let first = command.split_whitespace().next();
-    if str_of(payload, "tool_name") != "Bash" || first.is_none() || first == Some("ringframe") {
+    if first.is_none() || first == Some("ringframe") {
         return Ok(None);
     }
     let open = crate::ask::open_asks(ws).map_err(|e| ledger("fact.open_asks", e.to_string()))?;
@@ -1023,7 +1025,7 @@ pub fn record_fact(
         "command": command, "outcome": outcome,
         "subject": {"kind": kind, "ref": reference, "sha256": sha,
                     "content": worktree_content(ws)?},
-        "host": host, "session_ref": str_of(payload, "session_id"),
+        "host": host, "session_ref": crate::profiles::session_of(host, payload),
         "tool_use_id": str_of(payload, "tool_use_id"),
     });
     let actor = json!({"kind": "agent", "id": host});
@@ -1496,7 +1498,8 @@ mod tests {
                     ws,
                     "claude-code",
                     "s9",
-                    &str_of(&sub, "sha256")
+                    &str_of(&sub, "sha256"),
+                    "hook:UserPromptSubmit"
                 )
                 .unwrap()
                 .unwrap()["state"],
@@ -2367,9 +2370,14 @@ mod tests {
     fn a_shell_command_during_open_work_is_a_fact_about_the_subject() {
         eval_bench(|ws| {
             two_asks_and_work(ws);
-            let ok = record_fact(ws, "claude-code", &hook("PostToolUse", "Bash", "npm test"))
-                .unwrap()
-                .unwrap();
+            let ok = record_fact(
+                ws,
+                "claude-code",
+                "succeeded",
+                &hook("PostToolUse", "Bash", "npm test"),
+            )
+            .unwrap()
+            .unwrap();
             let (kind, reference) = default_subject(ws).unwrap();
             let sha = subject_digest(ws, &kind, &reference).unwrap();
             assert_eq!(ok["type"], "tool.fact");
@@ -2381,10 +2389,14 @@ mod tests {
                                    "content": worktree_content(ws).unwrap()},
                        "host": "claude-code", "session_ref": "s1", "tool_use_id": "toolu_1"})
             );
-            let failed =
-                record_fact(ws, "claude-code", &hook("PostToolUseFailure", "Bash", "npm test"))
-                    .unwrap()
-                    .unwrap();
+            let failed = record_fact(
+                ws,
+                "claude-code",
+                "failed",
+                &hook("PostToolUseFailure", "Bash", "npm test"),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(failed["data"]["outcome"], "failed");
             let ledger = std::fs::read_to_string(ws.rf_dir().join("ledger.jsonl")).unwrap();
             assert!(!ledger.contains("SECRET"), "no output reaches the ledger");
@@ -2407,13 +2419,15 @@ mod tests {
     /// `npm test` (of `outcome`) on the edited tree, then an open Eval.
     fn with_facts(ws: &Workspace, outcome: &str) -> Facts {
         let (a, _, _) = two_asks_and_work(ws);
-        let stale = record_fact(ws, "claude-code", &hook("PostToolUse", "Bash", "npm test"))
-            .unwrap()
-            .unwrap();
+        let stale =
+            record_fact(ws, "claude-code", "succeeded", &hook("PostToolUse", "Bash", "npm test"))
+                .unwrap()
+                .unwrap();
         std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n").unwrap();
         let hook_name = if outcome == "succeeded" { "PostToolUse" } else { "PostToolUseFailure" };
-        let fresh =
-            record_fact(ws, "claude-code", &hook(hook_name, "Bash", "npm test")).unwrap().unwrap();
+        let fresh = record_fact(ws, "claude-code", outcome, &hook(hook_name, "Bash", "npm test"))
+            .unwrap()
+            .unwrap();
         let out = open_eval(ws, Open::default()).unwrap();
         Facts {
             eval_id: str_of(&out, "eval_id"),
@@ -2477,10 +2491,14 @@ mod tests {
                 two_asks_and_work(ws);
                 std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
                     .unwrap();
-                let tested =
-                    record_fact(ws, "claude-code", &hook("PostToolUse", "Bash", "npm test"))
-                        .unwrap()
-                        .unwrap();
+                let tested = record_fact(
+                    ws,
+                    "claude-code",
+                    "succeeded",
+                    &hook("PostToolUse", "Bash", "npm test"),
+                )
+                .unwrap()
+                .unwrap();
                 assert_eq!(tested["data"]["subject"]["kind"], "worktree");
                 commit(&ws.root, extra, "tested work");
                 let out = open_eval(ws, Open::default()).unwrap();
@@ -2787,14 +2805,18 @@ mod tests {
     #[test]
     fn nothing_else_is_a_fact() {
         eval_bench(|ws| {
-            let none = |p: Value| assert_eq!(record_fact(ws, "claude-code", &p).unwrap(), None);
+            let none = |p: Value| {
+                assert_eq!(record_fact(ws, "claude-code", "succeeded", &p).unwrap(), None)
+            };
             none(hook("PostToolUse", "Bash", "npm test"));
             crate::testing::confirm_ask(ws, "t", b"s\n", b"p\n");
             none(hook("PostToolUse", "Bash", "ringframe eval open"));
             none(hook("PostToolUse", "Bash", "  ringframe ask list --json"));
-            none(hook("PostToolUse", "Read", "npm test"));
-            none(hook("PreToolUse", "Bash", "npm test"));
             none(hook("PostToolUse", "Bash", ""));
+            // Which hooks and tools count is the plugin's matcher; an outcome
+            // that is neither of the two is nothing.
+            let fired = hook("PostToolUse", "Bash", "npm test");
+            assert_eq!(record_fact(ws, "claude-code", "", &fired).unwrap(), None);
             assert!(store::events(ws).unwrap().iter().all(|e| e["type"] != "tool.fact"));
         });
     }

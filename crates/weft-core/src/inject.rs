@@ -48,9 +48,6 @@ pub enum Refusal {
     /// The host never showed the mode as on, so the prompt was not sent. It
     /// would have run as an ordinary request, which is not what was confirmed.
     ModeNotEntered,
-    /// The pane is waiting on a permission or approval dialog. Injecting would
-    /// answer a dialog Weft must never answer.
-    PaneBlocked,
     NoProcess,
     InjectionInFlight,
 }
@@ -58,16 +55,12 @@ pub enum Refusal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneState {
     pub running: bool,
-    pub blocked: bool,
     pub injecting: bool,
 }
 
 pub fn check(pane: &PaneState) -> Result<(), Refusal> {
     if !pane.running {
         return Err(Refusal::NoProcess);
-    }
-    if pane.blocked {
-        return Err(Refusal::PaneBlocked);
     }
     if pane.injecting {
         return Err(Refusal::InjectionInFlight);
@@ -266,26 +259,20 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_pane_is_refused() {
-        let pane = PaneState { running: true, blocked: true, injecting: false };
-        assert_eq!(check(&pane), Err(Refusal::PaneBlocked));
-    }
-
-    #[test]
     fn a_dead_pane_is_refused() {
-        let pane = PaneState { running: false, blocked: false, injecting: false };
+        let pane = PaneState { running: false, injecting: false };
         assert_eq!(check(&pane), Err(Refusal::NoProcess));
     }
 
     #[test]
     fn a_second_injection_is_refused_while_one_is_in_flight() {
-        let pane = PaneState { running: true, blocked: false, injecting: true };
+        let pane = PaneState { running: true, injecting: true };
         assert_eq!(check(&pane), Err(Refusal::InjectionInFlight));
     }
 
     #[test]
     fn a_live_idle_pane_is_allowed() {
-        let pane = PaneState { running: true, blocked: false, injecting: false };
+        let pane = PaneState { running: true, injecting: false };
         assert_eq!(check(&pane), Ok(()));
     }
 

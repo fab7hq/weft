@@ -57,6 +57,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("profile", Some("show")) => {
             s(&["--host", "--version", "--override"], NONE, &["--host"], true, NONE)
         }
+        ("profile", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("compile")) => s(
             &[
                 "--staged",
@@ -74,6 +75,9 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             false,
             &["--link", "--limitation"],
         ),
+        ("ask", Some("request")) => {
+            s(&["--staged", "--host"], NONE, &["--staged", "--host"], false, NONE)
+        }
         ("ask", Some("confirm")) => s(&["--ask"], NONE, &["--ask"], false, NONE),
         ("ask", Some("unanswered")) => s(&["--ask", "--reason"], NONE, &["--ask"], false, NONE),
         ("ask", Some("cancel")) => {
@@ -81,9 +85,13 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
         ("ask", Some("copy")) => s(&["--ask"], &["--body"], &["--ask"], false, NONE),
-        ("ask", Some("delivery")) => {
-            s(&["--ask", "--state", "--reason"], &["--from-hook", "--handoff"], NONE, false, NONE)
-        }
+        ("ask", Some("delivery")) => s(
+            &["--ask", "--state", "--reason", "--host"],
+            &["--from-hook", "--handoff"],
+            NONE,
+            false,
+            NONE,
+        ),
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => s(
@@ -127,17 +135,24 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("sessions", Some("capture")) => {
             s(&["--host", "--host-version"], NONE, &["--host"], false, NONE)
         }
-        ("fact", None) => s(&["--host"], &["--from-hook"], &["--host"], false, NONE),
+        ("sessions", Some("turn")) => {
+            s(&["--host", "--event"], &["--from-hook"], &["--host", "--event"], false, NONE)
+        }
+        ("fact", None) => {
+            s(&["--host", "--outcome"], &["--from-hook"], &["--host", "--outcome"], false, NONE)
+        }
         _ => None,
     }
 }
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 25] = [
+const SURFACE: [(&str, Option<&str>); 28] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
+    ("profile", Some("list")),
+    ("ask", Some("request")),
     ("ask", Some("compile")),
     ("ask", Some("confirm")),
     ("ask", Some("unanswered")),
@@ -157,6 +172,7 @@ const SURFACE: [(&str, Option<&str>); 25] = [
     ("deltas", Some("domains")),
     ("deltas", Some("render")),
     ("sessions", Some("capture")),
+    ("sessions", Some("turn")),
     ("fact", None),
     // Listed last because they are not commands.
     ("--version", None),
@@ -171,9 +187,15 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
             "replace the synced configuration; overrides arrive with --override. \
              --check only says whether a newer release is out"
         }
+        ("profile", Some("list")) => {
+            "every harness a profile defines: how to start, set up and resume it"
+        }
         ("profile", _) => "the host's capabilities and how each one has to be delivered",
         ("ask", Some("compile")) => {
             "persist a staged intent and its prompt; the only Ask that writes artifacts"
+        }
+        ("ask", Some("request")) => {
+            "record the staged intent as asked, before it is composed, where no prompt hook can"
         }
         ("ask", Some("confirm")) => "record the chooser's answer",
         ("ask", Some("unanswered")) => {
@@ -199,9 +221,14 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("sessions", Some("capture")) => {
             "store a hook's prompt payload; reads the payload on stdin"
         }
+        ("sessions", Some("turn")) => {
+            "--from-hook: record the agent's state, --event ready, working, waiting or \
+             turn_ended; reads a hook payload on stdin and keeps only its session"
+        }
         ("fact", None) => {
-            "--from-hook: record whether the agent's shell command succeeded, against the \
-             subject; reads a post-tool hook payload on stdin and never its output"
+            "--from-hook --outcome succeeded|failed: record the agent's shell command and \
+             whether it succeeded, against the subject; reads a post-tool hook payload on \
+             stdin and never its output"
         }
         ("--version", None) => "print the version",
         ("--help", None) => "print this",
@@ -684,6 +711,10 @@ fn dispatch(
             out["plans"] = json!(workspace::plans(&ws));
             (ws, Outcome::Ok(0, out))
         }
+        ("profile", Some("list")) => match profiles::harnesses() {
+            Ok(p) => (ws, Outcome::Ok(0, json!({"profiles": p}))),
+            Err(e) => (ws, from_config_error(e)),
+        },
         ("ask", Some(what)) => ask_command(ns, ws, actor, what, read_stdin),
         ("deltas", Some(what)) => deltas_command(ns, ws, what),
         ("eval", Some("list")) => match evaluate::list_records(&ws) {
@@ -813,7 +844,12 @@ fn dispatch(
                 // A hook must never fail the host turn.
                 let session = rec["session_id"].as_str().unwrap_or_default();
                 let sha = rec["sha256"].as_str().unwrap_or_default();
-                if let Ok(Some(s)) = ask::submission_from_capture(&ws, host, session, sha) {
+                // Which hook saw it is the payload's to say; the CLI names none.
+                let hook = payload.get("hook_event_name").and_then(Value::as_str);
+                let observed_by = hook.map_or("hook".to_string(), |h| format!("hook:{h}"));
+                if let Ok(Some(s)) =
+                    ask::submission_from_capture(&ws, host, session, sha, &observed_by)
+                {
                     submission = s;
                 }
             }
@@ -823,6 +859,41 @@ fn dispatch(
             }
             out["submission"] = submission;
             (ws, Outcome::Ok(0, out))
+        }
+        ("sessions", Some("turn")) => {
+            if !ns.has("--from-hook") {
+                bail!(Outcome::UsageDetail(
+                    "a turn is only recorded from a hook: --from-hook".into()
+                ));
+            }
+            let event = ns.one("--event").unwrap_or_default();
+            if !sessions::TURN_EVENTS.contains(&event) {
+                bail!(Outcome::UsageDetail(format!(
+                    "--event is one of {}",
+                    sessions::TURN_EVENTS.join(", ")
+                )));
+            }
+            let payload: Value = match serde_json::from_str(&read_stdin()) {
+                Ok(v) => v,
+                Err(e) => bail!(Outcome::UsageDetail(e.to_string())),
+            };
+            let ws = match hook_workspace(ns.workspace.as_ref(), ws, &payload) {
+                Ok(w) => w,
+                Err(e) => {
+                    return (workspace::resolve(None, None).expect("cwd"), Outcome::UsageDetail(e));
+                }
+            };
+            let host = ns.one("--host").unwrap_or_default();
+            match sessions::turn(&ws, host, &payload, event) {
+                Ok(rec) => {
+                    let mut out = json!({"recorded": rec.is_some()});
+                    for (k, v) in rec.iter().flat_map(|r| r.as_object().into_iter().flatten()) {
+                        out[k] = v.clone();
+                    }
+                    (ws, Outcome::Ok(0, out))
+                }
+                Err(e) => (ws, Outcome::Error("sessions.io".into(), e.to_string())),
+            }
         }
         ("fact", None) => {
             if !ns.has("--from-hook") {
@@ -841,7 +912,12 @@ fn dispatch(
                 }
             };
             let host = ns.one("--host").unwrap_or_default();
-            match evaluate::record_fact(&ws, host, &payload) {
+            match evaluate::record_fact(
+                &ws,
+                host,
+                ns.one("--outcome").unwrap_or_default(),
+                &payload,
+            ) {
                 Ok(Some(ev)) => {
                     let out = json!({"recorded": true, "fact_id": ev["id"],
                                      "outcome": ev["data"]["outcome"]});
@@ -902,6 +978,13 @@ fn ask_command(
                 }
             ))
         }
+        "request" => {
+            // A bare name is a host too, as a person would type it.
+            let raw = ns.one("--host").unwrap_or_default();
+            let host = json_arg(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+            let staged = PathBuf::from(ns.one("--staged").unwrap_or_default());
+            done!(ask::request_staged(&ws, &staged, &host))
+        }
         "confirm" => done!(ask::confirm(&ws, &id, Some(&actor))),
         "unanswered" => done!(ask::unanswered(&ws, &id, ns.one("--reason"), Some(&actor))),
         "cancel" => {
@@ -930,7 +1013,9 @@ fn ask_command(
                     let payload: Value =
                         serde_json::from_str(&read_stdin()).map_err(|e| e.to_string())?;
                     let ws = hook_workspace(ns.workspace.as_ref(), ws, &payload)?;
-                    let rec = ask::delivery_from_hook(&ws, &payload).map_err(|e| e.to_string())?;
+                    let host = ns.one("--host").unwrap_or_default();
+                    let rec =
+                        ask::delivery_from_hook(&ws, host, &payload).map_err(|e| e.to_string())?;
                     Ok((ws, rec))
                 })();
                 return match recorded {
@@ -1134,6 +1219,47 @@ mod tests {
     }
 
     #[test]
+    fn a_turn_from_a_hook_is_written_and_read_back() {
+        cli(|c| {
+            let payload = format!(
+                r#"{{"hook_event_name":"SessionStart","session_id":"s1","source":"startup","cwd":"{}"}}"#,
+                c.root.display()
+            );
+            let turn = |event: &str| {
+                let args = ["sessions", "turn", "--from-hook", "--host", "claude-code", "--event"];
+                let mut args: Vec<&str> = args.to_vec();
+                args.push(event);
+                c.piped(&args, &payload)
+            };
+            let (code, out, _) = turn("ready");
+            assert_eq!(code, 0);
+            assert_eq!(out["recorded"], true);
+            assert_eq!(out["event"], "ready");
+            assert_eq!(out["session_id"], "s1");
+            let (code, _, _) = turn("turn_ended");
+            assert_eq!(code, 0);
+            let text = std::fs::read_to_string(
+                c.root.join(".fab7/rf/sessions/claude-code/s1/turns.jsonl"),
+            )
+            .unwrap();
+            let events: Vec<String> = text
+                .lines()
+                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
+                .collect();
+            assert_eq!(events, ["\"ready\"", "\"turn_ended\""]);
+
+            // Only the four events, and only from a hook.
+            let (code, _, _) = turn("done");
+            assert_eq!(code, 1, "an event that is not one of the four is a usage error");
+            let (code, _, _) = c.piped(
+                &["sessions", "turn", "--host", "claude-code", "--event", "ready"],
+                &payload,
+            );
+            assert_eq!(code, 1, "a turn is only recorded from a hook");
+        });
+    }
+
+    #[test]
     fn ask_confirm_show_delivery_flow() {
         cli(|c| {
             let payload = format!(
@@ -1156,12 +1282,14 @@ mod tests {
             let ask_id = out["ask_id"].as_str().unwrap().to_string();
 
             let hook = r#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"EnterPlanMode","tool_use_id":"t1","tool_response":{"ok":1}}"#;
-            let (code, out, _) = c.piped(&["ask", "delivery", "--from-hook"], hook);
+            let (code, out, _) =
+                c.piped(&["ask", "delivery", "--from-hook", "--host", "claude-code"], hook);
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], true);
             assert_eq!(out["state"], "native_accepted");
             // Never fails the host turn.
-            let (code, out, _) = c.piped(&["ask", "delivery", "--from-hook"], hook);
+            let (code, out, _) =
+                c.piped(&["ask", "delivery", "--from-hook", "--host", "claude-code"], hook);
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], false);
 
@@ -1207,6 +1335,39 @@ mod tests {
             let ids: Vec<&str> =
                 out["asks"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap()).collect();
             assert_eq!(ids, [a_id.as_str(), b_id.as_str()]);
+        });
+    }
+
+    /// A skill whose harness has no prompt hook puts the Ask on record as
+    /// asked from its staging; compiling that staging keeps the id.
+    #[test]
+    fn ask_request_records_the_staged_intent_and_compile_keeps_its_id() {
+        cli(|c| {
+            let staged = c.staged("stage-1");
+            let (code, out, _) =
+                c.go(&["ask", "request", "--staged", &staged, "--host", "claude-code"]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["recorded"], true);
+            let id = out["ask_id"].as_str().unwrap().to_string();
+            let host = r#"{"name":"claude-code","surface":"native-tui"}"#;
+            let (code, out, _) = c.go(&[
+                "ask",
+                "compile",
+                "--staged",
+                &staged,
+                "--title",
+                "t",
+                "--capability",
+                "native_plan",
+                "--classification",
+                CLS,
+                "--route",
+                ROUTE,
+                "--host",
+                host,
+            ]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(out["ask_id"], id.as_str());
         });
     }
 
@@ -1363,14 +1524,18 @@ mod tests {
                 r#"{{"hook_event_name":"PostToolUse","session_id":"s9","tool_name":"Bash","tool_input":{{"command":"npm test"}},"tool_response":{{"stdout":"ok"}},"tool_use_id":"t1","cwd":"{}"}}"#,
                 c.root.display()
             );
-            let (code, out, _) =
-                c.piped(&["fact", "--from-hook", "--host", "claude-code"], &payload);
+            let (code, out, _) = c.piped(
+                &["fact", "--from-hook", "--host", "claude-code", "--outcome", "succeeded"],
+                &payload,
+            );
             assert_eq!(code, 0, "{out}");
             assert_eq!(out["recorded"], true);
             assert_eq!(out["outcome"], "succeeded");
             let skipped = payload.replace("npm test", "ringframe ask list");
-            let (code, out, _) =
-                c.piped(&["fact", "--from-hook", "--host", "claude-code"], &skipped);
+            let (code, out, _) = c.piped(
+                &["fact", "--from-hook", "--host", "claude-code", "--outcome", "succeeded"],
+                &skipped,
+            );
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], false);
         });
@@ -1906,6 +2071,137 @@ mod tests {
         });
     }
 
+    /// Slice 9 S9.2 (ADR-0018): the profile carries every harness fact both
+    /// programs read, `profile show --json` returns them, and `unknown`
+    /// carries none of them; `profile list` names the harnesses that have them.
+    #[test]
+    fn a_profile_carries_the_harness_and_unknown_carries_none() {
+        const FACTS: [&str; 7] = [
+            "title",
+            "program",
+            "session_field",
+            "resume",
+            "config",
+            "plugin",
+            "invocation_prefix",
+        ];
+        cli(|c| {
+            for host in ["claude-code", "codex"] {
+                let (code, out, _) = c.go(&["profile", "show", "--host", host, "--json"]);
+                assert_eq!(code, 0);
+                for k in FACTS {
+                    assert!(!out[k].is_null(), "{host} has no {k}");
+                }
+                assert!(out["plugin"]["list"].is_array() && out["config"]["env"].is_string());
+            }
+            let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--json"]);
+            assert_eq!(out["transcript"], "Ctrl+T");
+            let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
+            for k in &FACTS[..6] {
+                assert!(out[k].is_null(), "unknown carries {k}");
+            }
+            let (code, out, _) = c.go(&["profile", "list", "--json"]);
+            assert_eq!(code, 0);
+            let hosts: Vec<&str> = out["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["host"].as_str())
+                .collect();
+            assert_eq!(hosts, ["claude-code", "codex"], "unknown is never offered");
+        });
+    }
+
+    /// harness-profile.md §5.3, the CLI's half: a made-up third harness is
+    /// read from its profile alone, its session field, its prefix and its
+    /// title, with no change to the program.
+    #[test]
+    fn a_made_up_third_harness_is_read_from_its_profile_alone() {
+        cli(|c| {
+            let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
+            let zed = r#"schema = "ringframe.profile/1"
+profile_id = "zed-agent"
+host = "zed-agent"
+surface = "native-tui"
+invocation_prefix = "@rf:"
+fallback = "human_handoff"
+title = "Zed Agent"
+program = "zed-agent"
+session_field = "threadId"
+resume = ["--thread"]
+
+[config]
+env = "ZED_AGENT_HOME"
+default = ".zed-agent"
+
+[plugin]
+list = ["plugins", "--json"]
+add_marketplace = ["plugins", "add-source", "fab7hq/fab7"]
+install = ["plugins", "install", "rf@fab7"]
+update_marketplace = ["plugins", "refresh", "fab7"]
+update = ["plugins", "install", "rf@fab7"]
+
+[routing]
+precedence = ["native_direct"]
+guidance = ["Continue directly."]
+
+[[capabilities]]
+id = "native_direct"
+selection = "anything"
+purpose = "continue"
+activation = {}
+confirmation = {}
+continuation = "same turn"
+effects = []
+permission_owner = "host"
+delivery_mode = "human_handoff"
+qualification = {}
+limitations = []
+"#;
+            std::fs::write(home.join(".fab7/rf/config/harnesses/zed-agent.toml"), zed).unwrap();
+            let (_, out, _) = c.go(&["profile", "list", "--json"]);
+            let hosts: Vec<&str> = out["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["host"].as_str())
+                .collect();
+            assert!(hosts.contains(&"zed-agent"), "{hosts:?}");
+
+            let payload = format!(r#"{{"threadId":"z1","cwd":"{}"}}"#, c.root.display());
+            let turn =
+                ["sessions", "turn", "--from-hook", "--host", "zed-agent", "--event", "ready"];
+            let (code, out, _) = c.piped(&turn, &payload);
+            assert_eq!(
+                (code, &out["recorded"], &out["session_id"]),
+                (0, &json!(true), &json!("z1"))
+            );
+            let asked = format!(
+                r#"{{"threadId":"z1","prompt":"@rf:ask fix it","cwd":"{}"}}"#,
+                c.root.display()
+            );
+            let (_, out, _) = c.piped(&["sessions", "capture", "--host", "zed-agent"], &asked);
+            assert_eq!(out["captured"], true);
+            let other = format!(
+                r#"{{"threadId":"z1","prompt":"/rf:ask fix it","cwd":"{}"}}"#,
+                c.root.display()
+            );
+            c.piped(&["sessions", "capture", "--host", "zed-agent"], &other);
+            let kept = std::fs::read_to_string(
+                c.root.join(".fab7/rf/sessions/zed-agent/z1/prompts.jsonl"),
+            )
+            .unwrap();
+            let stored: Vec<Value> =
+                kept.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+            assert_eq!(stored[0]["prompt"], "@rf:ask fix it", "its own prefix is its invocation");
+            assert!(stored[1]["prompt"].is_null(), "another harness's prefix is only a prompt");
+            // A session field the profile does not name is not a session.
+            let wrong = format!(r#"{{"session_id":"z2","cwd":"{}"}}"#, c.root.display());
+            let (_, out, _) = c.piped(&turn, &wrong);
+            assert_eq!(out["recorded"], false);
+        });
+    }
+
     #[test]
     fn minimal_profile_keeps_only_what_routing_reads() {
         cli(|c| {
@@ -2196,12 +2492,13 @@ mod the_marketplace_contract {
     /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
     /// Taken from `fab7/products/ringframe/`, and checked against it below
     /// when that tree happens to be beside this one.
-    const CALLED: [(&str, Option<&str>); 19] = [
+    const CALLED: [(&str, Option<&str>); 21] = [
         ("init", None),
         ("profile", Some("show")),
         ("deltas", Some("domains")),
         ("deltas", Some("render")),
         ("ask", Some("preflight")),
+        ("ask", Some("request")),
         ("ask", Some("compile")),
         ("ask", Some("copy")),
         ("ask", Some("confirm")),
@@ -2216,6 +2513,7 @@ mod the_marketplace_contract {
         ("seal", Some("create")),
         ("seal", Some("check")),
         ("sessions", Some("capture")),
+        ("sessions", Some("turn")),
     ];
 
     #[test]

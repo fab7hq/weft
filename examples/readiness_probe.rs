@@ -1,14 +1,15 @@
-//! Ask each supported harness where it stands. No panes, no model, no writes.
+//! Ask each harness RingFrame has a profile for where it stands. No panes, no
+//! model, no writes.
 //!
 //!   cargo run --example readiness_probe
 
 use weft::harness::OnThisMachine as _;
-use weft::{harness, readiness};
+use weft::readiness;
 
 fn main() {
     let cli = weft::ringframe::installed();
     println!("ringframe CLI installed: {cli}");
-    for h in harness::SUPPORTED {
+    for h in weft::ringframe::harnesses(std::path::Path::new(".")).iter() {
         let found = h.on_path();
         let state = readiness::check(h, cli);
         println!(
@@ -17,7 +18,7 @@ fn main() {
             found,
             h.config_home().display(),
             state,
-            state.say(h.name).map(|s| format!("  — {s}")).unwrap_or_default()
+            state.say(&h.name).map(|s| format!("  — {s}")).unwrap_or_default()
         );
     }
 }

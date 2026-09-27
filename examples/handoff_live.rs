@@ -39,8 +39,7 @@ fn main() -> anyhow::Result<()> {
 
     let mut pane = Pane::spawn_args(prog.as_str(), &prog, &[], &cwd, 32, 100)?;
     std::thread::sleep(std::time::Duration::from_secs(7));
-    let attempt =
-        pane.inject_as(prompt.as_bytes(), false, &how).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let attempt = pane.inject_as(prompt.as_bytes(), &how).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     println!("attempt:  {attempt:?}");
     std::thread::sleep(std::time::Duration::from_secs(12));
     let screen = pane.with_screen(|s| s.contents());

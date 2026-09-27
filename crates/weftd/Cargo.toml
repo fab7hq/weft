@@ -13,3 +13,6 @@ serde_json = "1.0.151"
 vt100 = "0.16.2"
 weft-core = { path = "../weft-core" }
 weft-proto = { path = "../weft-proto" }
+
+[dev-dependencies]
+weft-core = { path = "../weft-core", features = ["fixtures"] }

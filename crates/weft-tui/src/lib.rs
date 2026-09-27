@@ -13,5 +13,5 @@ pub mod theme;
 pub mod ui;
 
 // The rules, for drawing what they decided.
-pub use weft_core::{blocked, board, inject, ledger, offers, readiness, record, routing, sessions};
+pub use weft_core::{board, inject, ledger, offers, readiness, record, routing, sessions};
 pub use weft_proto as protocol;

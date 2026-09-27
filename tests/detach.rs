@@ -9,6 +9,22 @@ use std::time::{Duration, Instant};
 use weft::protocol;
 use weft::protocol::{Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
+use weft::turns::Turn;
+
+/// A hook's receipt, where RingFrame's plugin writes it. Dated ahead, so it
+/// always comes after the pane it belongs to started.
+fn agent_says(root: &Path, harness: &str, session: &str, event: &str) {
+    let dir = root.join(".fab7/rf/sessions").join(harness).join(session);
+    std::fs::create_dir_all(&dir).expect("session dir");
+    let line = serde_json::json!({"event": event, "session_id": session,
+                                  "time": "2099-01-01T00:00:00.000Z"});
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(dir.join("turns.jsonl"))
+        .expect("receipt");
+    writeln!(f, "{line}").expect("append");
+}
 
 struct Client {
     next: u64,
@@ -146,6 +162,21 @@ impl Client {
     fn hello(&mut self) -> Vec<weft::protocol::PaneInfo> {
         weft::protocol::panes_of(self.opened.get("panes").expect("panes in the answer"))
             .expect("panes")
+    }
+
+    /// The first pane's state, once the daemon reports it as this.
+    fn wait_for_state(&mut self, want: Option<Turn>) {
+        self.wait_until(|e| match e {
+            Event::Agents { panes, .. } if panes.first().copied().flatten() == want => Some(()),
+            _ => None,
+        })
+    }
+
+    fn wait_for_refusal(&mut self) -> Option<String> {
+        self.wait_until(|e| match e {
+            Event::Injected { refusal, .. } => Some(refusal),
+            _ => None,
+        })
     }
 
     /// Whether nothing that would type or add a pane arrives.
@@ -317,6 +348,9 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     one.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into() });
     one.wait_for_added();
     two.wait_for_added();
+    agent_says(&root, "codex", "s1", "ready");
+    one.wait_for_state(Some(Turn::Ready));
+    two.wait_for_state(Some(Turn::Ready));
 
     one.send(Call::Stage {
         pane: 0,
@@ -350,10 +384,11 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Delegation goes to a pane of the act's harness that is free, and when none
-/// is, the daemon starts one there on the same command line.
+/// Delegation goes to an agent of the act's harness that is free — its latest
+/// event `ready` or `turn_ended` (turn-state.md §4) — and when none is, the
+/// daemon starts one there on the same command line.
 #[test]
-fn an_eval_goes_to_an_idle_pane_of_its_harness_or_starts_one() {
+fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     let socket = protocol::private_socket("weft-delegate");
     let root = project("delegate");
     std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
@@ -376,6 +411,8 @@ fn an_eval_goes_to_an_idle_pane_of_its_harness_or_starts_one() {
     c.hello();
     c.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into() });
     assert_eq!(c.wait_for_added(), (0, "sh".to_string()));
+    agent_says(&root, "sh", "s1", "ready");
+    c.wait_for_state(Some(Turn::Ready));
     let check =
         || Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None };
     let pending_pane = |c: &mut Client| {
@@ -385,16 +422,16 @@ fn an_eval_goes_to_an_idle_pane_of_its_harness_or_starts_one() {
         })
     };
 
-    // Idle: it goes to the pane that is there.
+    // Free: it goes to the agent that is there.
     // Sent rather than answered: the Pending event comes before the answer.
     c.send(check());
     let (pane, why) = pending_pane(&mut c);
     assert_eq!(pane, 0);
     assert!(!why.contains("started one"), "{why}");
 
-    // Busy, as a harness at work draws it: a new pane on the same command line.
-    c.send(Call::Input { pane: 0, bytes: b"working... esc to interrupt\n".to_vec() });
-    c.wait_for("esc to interrupt", 5);
+    // Working, as its hook reports it: a new agent on the same command line.
+    agent_says(&root, "sh", "s1", "working");
+    c.wait_for_state(Some(Turn::Working));
     c.send(check());
     assert_eq!(c.wait_for_added(), (1, "sh".to_string()));
     let (pane, why) = pending_pane(&mut c);
@@ -405,5 +442,201 @@ fn an_eval_goes_to_an_idle_pane_of_its_harness_or_starts_one() {
     let panes = stop.hello();
     assert_eq!(panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(), ["/bin/cat", "/bin/cat"]);
     stop.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// What `stty size` says in this client's pane: the size the agent was given.
+/// The mark is printed through an octal escape, so the echoed command line
+/// never matches it.
+fn size_seen(c: &mut Client, mark: &str) -> String {
+    let cmd = format!("printf '\\075{mark}\\075 %s\\n' \"$(stty size)\"\n");
+    c.send(Call::Input { pane: 0, bytes: cmd.into_bytes() });
+    let needle = format!("={mark}= ");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut seen = String::new();
+    while Instant::now() < deadline {
+        if let Some(Event::Output { bytes, .. }) = c.next_event(Duration::from_millis(250)) {
+            seen.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        if let Some(rest) = seen.split(&needle).nth(1)
+            && let Some((size, _)) = rest.split_once('\n')
+        {
+            return size.trim().to_string();
+        }
+    }
+    seen
+}
+
+/// A second, smaller window opening the project leaves the
+/// agent the size it had; the agent takes the size of whichever window last
+/// focused it or typed into it.
+#[test]
+fn a_second_window_resizes_nothing_and_the_pane_follows_whoever_types() {
+    let (root, socket) = session("sizes");
+    let mut big = Client::attach(&socket, &root);
+    big.hello();
+    big.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into() });
+    big.wait_for_added();
+    big.send(Call::Resize { pane: 0, rows: 40, cols: 120 });
+    assert_eq!(size_seen(&mut big, "one"), "40 120", "the first window's size");
+
+    // Opening from a smaller window changes nothing.
+    let mut small = Client::attach(&socket, &root);
+    small.hello();
+    assert_eq!(size_seen(&mut big, "two"), "40 120", "opening resized the pane");
+
+    // The small window focuses the pane: it takes the small size.
+    small.send(Call::Resize { pane: 0, rows: 20, cols: 60 });
+    assert_eq!(size_seen(&mut small, "three"), "20 60", "the window that focused it");
+
+    // The big window types into it: it takes the big size back.
+    assert_eq!(size_seen(&mut big, "four"), "40 120", "the window that typed into it");
+    // And the small one again.
+    assert_eq!(size_seen(&mut small, "five"), "20 60", "the window that typed into it");
+
+    big.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt it types
+/// nothing and says why; after `ready` it types; told to type anyway, it
+/// types whatever the state.
+#[test]
+fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
+    let (root, socket) = session("ready");
+    let mut c = Client::attach(&socket, &root);
+    c.hello();
+    c.send(Call::StartAgent { harness: "codex".into(), spec: "/bin/cat".into() });
+    c.wait_for_added();
+    let stage = |c: &mut Client, text: &str| {
+        c.answer(Call::Stage {
+            pane: 0,
+            bytes: text.as_bytes().to_vec(),
+            how: weft::inject::Handoff::Whole,
+            what: "send".into(),
+            why: String::new(),
+        })
+        .expect("staged")["pending"]
+            .as_str()
+            .expect("an id")
+            .to_string()
+    };
+
+    let id = stage(&mut c, "not-yet");
+    c.send(Call::Resolve { pending: id, yes: true, force: false });
+    assert_eq!(c.wait_for_refusal().as_deref(), Some("Weft can't tell whether the agent is ready"));
+
+    agent_says(&root, "codex", "c1", "working");
+    c.wait_for_state(Some(Turn::Working));
+    let id = stage(&mut c, "still-not");
+    c.send(Call::Resolve { pending: id, yes: true, force: false });
+    assert_eq!(c.wait_for_refusal().as_deref(), Some("the agent is working"));
+
+    let id = stage(&mut c, "anyway-typed");
+    c.send(Call::Resolve { pending: id, yes: true, force: true });
+    assert_eq!(c.wait_for_refusal(), None, "the person said to type it anyway");
+
+    agent_says(&root, "codex", "c1", "turn_ended");
+    c.wait_for_state(Some(Turn::TurnEnded));
+    let id = stage(&mut c, "now-typed");
+    c.send(Call::Resolve { pending: id, yes: true, force: false });
+    assert_eq!(c.wait_for_refusal(), None);
+
+    let mut stop = Client::attach(&socket, &root);
+    let replay = stop.replay();
+    assert!(!replay.contains("not-yet") && !replay.contains("still-not"), "{replay}");
+    assert!(replay.contains("anyway-typed") && replay.contains("now-typed"), "{replay}");
+    stop.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Turbo mode: with `turbo = true` in Weft's config, every agent the daemon
+/// starts gets its profile's turbo flags; the pane keeps the command line it
+/// was asked for, and says it runs in turbo. A project that turns it off
+/// starts agents without them.
+#[test]
+fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
+    let mut echo = weft::harness_table::fixture::profile("codex");
+    echo["host"] = "echo-agent".into();
+    echo["program"] = "echo".into();
+    echo["turbo"] = serde_json::json!(["TURBO-FLAG"]);
+    let harnesses = weft::harness_table::Harnesses(vec![
+        weft::harness_table::Harness::from_profile(&echo).expect("a harness"),
+    ]);
+    let on = project("turbo-on");
+    let off = project("turbo-off");
+    let socket = protocol::private_socket("weft-turbo");
+    let config = socket.with_extension("turbo-config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "turbo = true\n\n[projects.\"{}\"]\nturbo = false\n",
+            off.canonicalize().unwrap().display()
+        ),
+    )
+    .expect("config");
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
+    });
+
+    for (root, want, turbo) in [(&on, "hello TURBO-FLAG", true), (&off, "hello", false)] {
+        let mut c = Client::attach(&socket, &root.canonicalize().unwrap());
+        c.hello();
+        c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo hello".into() });
+        c.wait_for_added();
+        // The whole line: under load its end can arrive in a later read.
+        let seen = c.wait_for(want, 5);
+        let line = seen.lines().find(|l| l.contains("hello")).unwrap_or("").trim().to_string();
+        assert_eq!(line, want, "turbo {turbo}");
+        let mut look = Client::attach(&socket, &root.canonicalize().unwrap());
+        let panes = look.hello();
+        assert_eq!(panes[0].spec, "echo hello", "the command line as asked");
+        assert_eq!(panes[0].turbo, turbo);
+    }
+
+    let mut stop = Client::attach(&socket, &on);
+    stop.send(Call::Shutdown);
+    std::fs::remove_dir_all(&on).ok();
+    std::fs::remove_dir_all(&off).ok();
+}
+
+/// The person turns turbo mode on and off from Weft. It starts
+/// as `config.toml` says; an agent started after a switch follows it, and one
+/// already running keeps the mode it was started in.
+#[test]
+fn turbo_can_be_switched_and_the_next_agent_follows_it() {
+    let mut echo = weft::harness_table::fixture::profile("codex");
+    echo["host"] = "echo-agent".into();
+    echo["program"] = "echo".into();
+    echo["turbo"] = serde_json::json!(["TURBO-FLAG"]);
+    let harnesses = weft::harness_table::Harnesses(vec![
+        weft::harness_table::Harness::from_profile(&echo).expect("a harness"),
+    ]);
+    let root = project("turbo-switch");
+    let socket = protocol::private_socket("weft-turbo-switch");
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_with(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(harnesses),
+        );
+    });
+    let mut c = Client::attach(&socket, &root.canonicalize().unwrap());
+    assert_eq!(c.opened.get("turbo"), Some(&serde_json::json!(false)), "off unless configured");
+    let answer = c.answer(Call::Turbo { on: true }).expect("switched on");
+    assert_eq!(answer.get("turbo"), Some(&serde_json::json!(true)));
+    c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo one".into() });
+    c.wait_for_added();
+    c.answer(Call::Turbo { on: false }).expect("switched off");
+    c.send(Call::StartAgent { harness: "echo-agent".into(), spec: "echo two".into() });
+    c.wait_for_added();
+    let mut look = Client::attach(&socket, &root.canonicalize().unwrap());
+    assert_eq!(look.opened.get("turbo"), Some(&serde_json::json!(false)), "as last switched");
+    let panes = look.hello();
+    assert_eq!(panes.iter().map(|p| p.turbo).collect::<Vec<_>>(), [true, false]);
+
+    look.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }

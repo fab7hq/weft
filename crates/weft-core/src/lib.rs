@@ -8,7 +8,6 @@
 //! The shell that does reach those things lives above: it reads the files,
 //! runs `ringframe`, owns the PTYs, and asks this crate what any of it means.
 
-pub mod blocked;
 pub mod board;
 pub mod config;
 pub mod eval_stages;
@@ -21,3 +20,4 @@ pub mod record;
 pub mod routing;
 pub mod sessions;
 pub mod sync;
+pub mod turns;

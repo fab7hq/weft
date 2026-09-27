@@ -21,14 +21,16 @@ pub fn look(h: &Harness, cli: bool) -> (Readiness, Option<String>) {
         return (Readiness::Missing(Gap::Cli), None);
     }
     match ask(h) {
-        Some(listing) => (read(&listing), weft_core::sync::installed(&listing)),
+        Some(listing) => {
+            (read_with(&listing, h.add_marketplace.is_some()), weft_core::sync::installed(&listing))
+        }
         None => (Readiness::Unknown, None),
     }
 }
 
 /// What the harness said, or nothing at all when it would not say.
 fn ask(h: &Harness) -> Option<Value> {
-    let out = Command::new(h.program).args(h.list).output().ok()?;
+    let out = Command::new(&h.program).args(&h.list).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -41,10 +43,28 @@ mod tests {
     use serde_json::json;
     use weft_core::readiness::Gap;
 
+    fn absent() -> crate::harness::Harness {
+        let argv = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        crate::harness::Harness {
+            name: "nowhere".into(),
+            title: "Nowhere".into(),
+            program: "definitely-not-a-real-binary-weft".into(),
+            config_env: Some("NOWHERE_HOME".into()),
+            config_default: ".nowhere".into(),
+            list: argv(&["plugin", "list", "--json"]),
+            add_marketplace: Some(argv(&["x"])),
+            install_plugin: argv(&["y"]),
+            update_marketplace: Some(argv(&["z"])),
+            update_plugin: argv(&["w"]),
+            resume: argv(&["resume"]),
+            transcript: None,
+            turbo: Vec::new(),
+        }
+    }
+
     #[test]
     fn no_cli_is_the_first_gap_and_nothing_else_is_asked() {
-        let h = crate::harness::find("codex").expect("codex");
-        assert_eq!(check(h, false), Readiness::Missing(Gap::Cli));
+        assert_eq!(check(&absent(), false), Readiness::Missing(Gap::Cli));
     }
 
     #[test]
@@ -52,19 +72,6 @@ mod tests {
         // `read` never sees the output, because there was none. The distinction
         // matters: Missing can be fixed by installing, Unknown cannot.
         assert_eq!(read(&json!("not a listing at all")), Readiness::Missing(Gap::Marketplace));
-        let absent = crate::harness::Harness {
-            name: "nowhere",
-            program: "definitely-not-a-real-binary-weft",
-            config_env: "NOWHERE_HOME",
-            config_default: ".nowhere",
-            list: &["plugin", "list", "--json"],
-            add_marketplace: &["x"],
-            install_plugin: &["y"],
-            update_marketplace: &["z"],
-            update_plugin: &["w"],
-            resume: &["resume"],
-            transcript: None,
-        };
-        assert_eq!(check(&absent, true), Readiness::Unknown);
+        assert_eq!(check(&absent(), true), Readiness::Unknown);
     }
 }

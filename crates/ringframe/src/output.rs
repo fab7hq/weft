@@ -121,6 +121,10 @@ fn capture(data: &Value) -> Value {
 fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
     Some(match (cmd, sub) {
         ("profile", Some("show")) => profile(d),
+        ("profile", Some("list")) => json!({
+            "profiles": d["profiles"].as_array().into_iter().flatten()
+                .map(|p| pick(p, &["host", "title", "program"])).collect::<Vec<_>>()
+        }),
         ("deltas", Some("domains")) => json!({
             "domains": d["domains"].as_array().into_iter().flatten()
                 .map(|x| pick(x, &DOMAIN_KEYS)).collect::<Vec<_>>()
@@ -152,6 +156,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
             pick(d, &["ask_id", "prompt_path", "delivery_mode", "source_verified"])
         }
         ("ask", Some("copy")) => d.clone(),
+        ("ask", Some("request")) => pick(d, &["ask_id", "recorded"]),
         ("ask", Some("preflight")) => pick(d, &["ready", "workspace"]),
         ("ask", Some("confirm")) => pick(d, &["ask_id", "confirmation"]),
         ("ask", Some("cancel")) => json!({"ask_id": d["ask_id"], "state": "cancelled"}),
@@ -170,6 +175,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("seal", Some("create")) => seal_view(d),
         ("sessions", Some("capture")) => capture(d),
         ("fact", None) => pick(d, &["recorded", "fact_id", "outcome"]),
+        ("sessions", Some("turn")) => pick(d, &["recorded", "event", "session_id"]),
         ("sessions", Some("prune")) => pick(d, &["removed"]),
         ("export", None) => pick(d, &["ask_id", "out", "files"]),
         _ => return None,

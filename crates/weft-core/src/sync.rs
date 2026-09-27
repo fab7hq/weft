@@ -27,10 +27,10 @@ pub struct Step {
 }
 
 impl Step {
-    fn new(program: &str, args: &[&str]) -> Self {
+    fn new(program: &str, args: &[impl AsRef<str>]) -> Self {
         Step {
             program: program.into(),
-            args: args.iter().map(|a| a.to_string()).collect(),
+            args: args.iter().map(|a| a.as_ref().to_string()).collect(),
             mark: Mark::Waiting,
             said: String::new(),
         }
@@ -90,23 +90,27 @@ pub fn view(check: Option<&Value>, harnesses: &[(&Harness, Readiness, Option<Str
             (Readiness::Missing(Gap::Cli), _) => "RingFrame is not installed".into(),
             (Readiness::Unknown, _) => "could not ask it".into(),
             (Readiness::Missing(Gap::Marketplace), _) => {
-                v.steps.push(Step::new(h.program, h.add_marketplace));
-                v.steps.push(Step::new(h.program, h.install_plugin));
+                if let Some(add) = &h.add_marketplace {
+                    v.steps.push(Step::new(&h.program, add));
+                }
+                v.steps.push(Step::new(&h.program, &h.install_plugin));
                 "not set up".into()
             }
             (Readiness::Missing(Gap::Plugin), _) => {
-                v.steps.push(Step::new(h.program, h.install_plugin));
+                v.steps.push(Step::new(&h.program, &h.install_plugin));
                 "not set up".into()
             }
             (Readiness::Ready, Some(have)) if plugin.as_deref().is_some_and(|p| older(have, p)) => {
-                v.steps.push(Step::new(h.program, h.update_marketplace));
-                v.steps.push(Step::new(h.program, h.update_plugin));
+                if let Some(refresh) = &h.update_marketplace {
+                    v.steps.push(Step::new(&h.program, refresh));
+                }
+                v.steps.push(Step::new(&h.program, &h.update_plugin));
                 format!("rf {have} → {}", plugin.as_deref().unwrap_or_default())
             }
             (Readiness::Ready, Some(have)) => format!("rf {have}, up to date"),
             (Readiness::Ready, None) => "up to date".into(),
         };
-        v.rows.push((h.name.into(), now));
+        v.rows.push((h.name.clone(), now));
     }
     v
 }
@@ -119,8 +123,11 @@ fn older(have: &str, latest: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::find;
     use serde_json::json;
+
+    fn find(name: &str) -> Option<crate::harness::Harness> {
+        crate::harness::fixture::harnesses().find(name).cloned()
+    }
 
     fn lines(v: &View) -> Vec<String> {
         v.steps.iter().map(Step::line).collect()
@@ -135,8 +142,8 @@ mod tests {
         let v = view(
             Some(&check),
             &[
-                (claude, Readiness::Ready, Some("0.1.1".into())),
-                (codex, Readiness::Missing(Gap::Marketplace), None),
+                (&claude, Readiness::Ready, Some("0.1.1".into())),
+                (&codex, Readiness::Missing(Gap::Marketplace), None),
             ],
         );
         assert_eq!(
@@ -159,13 +166,13 @@ mod tests {
         let claude = find("claude-code").unwrap();
         let current =
             json!({"revision": "v0.1.1", "latest": "v0.1.1", "plugin": "0.1.2", "behind": false});
-        let v = view(Some(&current), &[(claude, Readiness::Ready, Some("0.1.2".into()))]);
+        let v = view(Some(&current), &[(&claude, Readiness::Ready, Some("0.1.2".into()))]);
         assert!(!v.needs_anything());
         let local =
             json!({"revision": "local", "latest": "v0.1.1", "plugin": "0.1.2", "behind": false});
         assert_eq!(view(Some(&local), &[]).rows[0].1, "local, not replaced");
         // Unreachable still offers setup, which needs no network.
-        let v = view(None, &[(claude, Readiness::Missing(Gap::Plugin), None)]);
+        let v = view(None, &[(&claude, Readiness::Missing(Gap::Plugin), None)]);
         assert_eq!(lines(&v), ["claude plugin install rf@fab7 --scope user"]);
     }
 

@@ -73,6 +73,14 @@ pub struct Check {
     pub judged_by: Option<String>,
 }
 
+/// Where a hook saw a prompt arrive: the session it arrived in, and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arrival {
+    pub host: String,
+    pub session: String,
+    pub at: String,
+}
+
 /// An Eval's first stage, recorded: which Eval, and the harness that mapped it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gathered {
@@ -147,6 +155,14 @@ pub struct Unit {
     /// the Ask is still open, and still the person's to say yes to.
     pub unanswered: bool,
     pub sent: Sent,
+    /// Where the prompt was observed arriving, when a hook saw it. The work
+    /// goes on in that session, which may not be the one it was asked in.
+    #[serde(default)]
+    pub arrived: Option<Arrival>,
+    /// When the person attested they submitted it — Weft typing it on their
+    /// yes — where no hook observed it arrive (`ask.submission` attributed).
+    #[serde(default)]
+    pub attributed_at: Option<String>,
     pub check: Option<Check>,
     /// An open Eval over this work whose change map is published and whose
     /// debate has not run: the next `[E]VAL` sends the debate.
@@ -157,6 +173,11 @@ pub struct Unit {
     /// these are the record it came from, so a row can lead to the receipt.
     pub seal_id: Option<String>,
     pub sealed_at: Option<String>,
+    /// Asked, and nothing composed yet: RingFrame recorded the person's
+    /// words (`ask.requested`) and no compile has followed. ASKING, not
+    /// ASKED.
+    #[serde(default)]
+    pub requested_only: bool,
 }
 
 impl Unit {
@@ -198,22 +219,12 @@ impl Unit {
         })
     }
 
-    /// Which act is waiting on the person. Their union is `needs_you`: a
-    /// prompt to send or a yes to give is the Ask's; a verdict with no
-    /// decision on it is the Seal's.
-    pub fn ask_needs_you(&self) -> bool {
-        !self.cancelled
-            && self.sealed.is_none()
-            && (self.sent == Sent::ReadyToSend || self.awaiting_yes())
-    }
-
-    pub fn seal_needs_you(&self) -> bool {
-        !self.cancelled && self.sealed.is_none() && self.check.is_some()
-    }
-
     /// Where the Ask itself stands, whatever has happened to it since. The
     /// status collapses into this once there is no verdict and no seal.
     pub fn sent_phrase(&self) -> &'static str {
+        if self.requested_only {
+            return "asked, still being composed";
+        }
         match self.sent {
             // An Ask nobody answered is not an Ask nobody wants. It says what
             // is missing — a yes — rather than that nothing has happened.
@@ -227,38 +238,15 @@ impl Unit {
         }
     }
 
-    /// The dot the vocabulary puts in front of a status that waits on you:
-    /// `● READY TO SEND`. Only the handoff that is ready carries it.
-    pub fn marker(&self) -> &'static str {
-        if self.cancelled || self.sealed.is_some() {
-            return "";
-        }
-        // An Ask that was asked about and never answered wants the same
-        // attention as one ready to send: both are waiting on the person.
-        if self.sent == Sent::ReadyToSend || self.awaiting_yes() { "● " } else { "" }
-    }
-
     /// Compiled, asked about, and never answered. The candidate is on disk and
     /// the only thing missing is the person saying yes.
     pub fn awaiting_yes(&self) -> bool {
         self.unanswered && !self.confirmed && !self.cancelled && self.sent == Sent::NotSent
     }
 
-    /// Waiting on a decision only the person can make: a prompt to type, or a
-    /// verdict to decide on.
-    ///
-    /// A route the agent took for itself asks nothing, so it never counts —
-    /// otherwise the count stops meaning "act now".
     /// Not sealed and not cancelled: what `OPEN` counts.
     pub fn is_open(&self) -> bool {
         self.sealed.is_none() && !self.cancelled
-    }
-
-    pub fn needs_you(&self) -> bool {
-        if self.cancelled || self.sealed.is_some() {
-            return false;
-        }
-        matches!(self.sent, Sent::ReadyToSend) || self.awaiting_yes() || self.check.is_some()
     }
 }
 
@@ -300,13 +288,47 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
         let data = e.get("data").cloned().unwrap_or(Value::Null);
 
         match kind {
+            // Asked, before anything is composed: on the list at once, so an
+            // Ask whose composing never finished is not lost.
+            "ask.requested" => {
+                if index.contains_key(&id) {
+                    continue;
+                }
+                index.insert(id.clone(), units.len());
+                units.push(Unit {
+                    ask_id: id,
+                    title: s(&data, &["title"]).unwrap_or("untitled").to_string(),
+                    harness: s(&data, &["host", "name"]).unwrap_or("unknown").to_string(),
+                    delivery: Delivery::default(),
+                    // Captured by the prompt hook, from the host itself.
+                    session_ref: s(&data, &["host", "session_ref"]).map(str::to_string),
+                    route: String::new(),
+                    asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
+                    delivery_mode: String::new(),
+                    cancelled: false,
+                    confirmed: false,
+                    unanswered: false,
+                    sent: Sent::NotSent,
+                    arrived: None,
+                    attributed_at: None,
+                    check: None,
+                    gathered: None,
+                    sealed: None,
+                    seal_id: None,
+                    sealed_at: None,
+                    requested_only: true,
+                });
+            }
             "ask.compiled" => {
                 let mode = s(&data, &["delivery_mode"]).unwrap_or_default().to_string();
                 // A dispatch route has nothing for the person to send.
                 let sent =
                     if mode == "native_dispatch" { Sent::TakenByAgent } else { Sent::NotSent };
-                index.insert(id.clone(), units.len());
-                units.push(Unit {
+                // The compile of an Ask already on the list as asked takes its
+                // place there, and keeps when it was asked.
+                let asked = index.get(&id).map(|i| units[*i].asked_at.clone());
+                let at = *index.entry(id.clone()).or_insert(units.len());
+                let unit = Unit {
                     ask_id: id,
                     title: s(&data, &["title"]).unwrap_or("untitled").to_string(),
                     harness: s(&data, &["host", "name"]).unwrap_or("unknown").to_string(),
@@ -318,18 +340,27 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         .then(|| s(&data, &["host", "session_ref"]).map(str::to_string))
                         .flatten(),
                     route: s(&data, &["selected_capability"]).unwrap_or_default().to_string(),
-                    asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
+                    asked_at: asked
+                        .unwrap_or_else(|| s(e, &["time"]).unwrap_or_default().to_string()),
                     delivery_mode: mode,
                     cancelled: false,
                     confirmed: false,
                     unanswered: false,
                     sent,
+                    arrived: None,
+                    attributed_at: None,
                     check: None,
                     gathered: None,
                     sealed: None,
                     seal_id: None,
                     sealed_at: None,
-                });
+                    requested_only: false,
+                };
+                if at == units.len() {
+                    units.push(unit);
+                } else {
+                    units[at] = unit;
+                }
             }
             "ask.unanswered" => {
                 if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
@@ -363,7 +394,27 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
             "ask.submission" => {
                 if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
                     let exact = data.get("as_modified").and_then(Value::as_bool) != Some(true);
+                    if s(&data, &["state"]) == Some("attributed") {
+                        // The person's word that it was sent: it went, but no
+                        // hook saw it arrive, so a receipt, in either order,
+                        // outranks it.
+                        u.attributed_at = s(e, &["time"]).map(str::to_string);
+                        if !matches!(u.sent, Sent::Arrived { .. }) {
+                            u.sent = Sent::Unconfirmed;
+                        }
+                        continue;
+                    }
                     u.sent = Sent::Arrived { exact };
+                    if s(&data, &["state"]) == Some("observed")
+                        && let (Some(host), Some(session)) =
+                            (s(&data, &["host", "name"]), s(&data, &["host", "session_ref"]))
+                    {
+                        u.arrived = Some(Arrival {
+                            host: host.into(),
+                            session: session.into(),
+                            at: s(e, &["time"]).unwrap_or_default().into(),
+                        });
+                    }
                 }
             }
             "eval.opened" => {
@@ -429,7 +480,45 @@ fn basis_asks(data: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Next;
     use serde_json::json;
+
+    fn requested(id: &str, title: &str) -> Value {
+        json!({
+            "schema": "ringframe.ledger/1", "event_id": "evt_0", "type": "ask.requested",
+            "time": "2026-09-19T14:01:00Z", "id": id,
+            "actor": {"kind": "human", "id": "local-user"}, "links": [],
+            "data": {"title": title, "captured_by": "prompt_hook",
+                     "source": {"role": "source_intent", "path": "x", "bytes": 2, "sha256": "a"},
+                     "host": {"name": "codex", "session_ref": "01a0"}}
+        })
+    }
+
+    /// An Ask is on the list the moment it is asked: ASKING, with the
+    /// person's words as its title, until its compile takes its place and
+    /// keeps when it was asked.
+    #[test]
+    fn an_ask_is_on_the_list_as_soon_as_it_is_asked_and_its_compile_takes_its_place() {
+        let asked = project(&[requested("ask_1", "fix the login bug")]);
+        assert_eq!(asked.len(), 1);
+        let u = &asked[0];
+        assert!(u.requested_only && u.is_open());
+        assert_eq!((u.title.as_str(), u.harness.as_str()), ("fix the login bug", "codex"));
+        assert_eq!(u.status(), "asked, still being composed");
+        assert_eq!(crate::board::next_step(u), None, "nothing to send yet");
+
+        let both = project(&[
+            requested("ask_0", "another"),
+            requested("ask_1", "fix the login bug"),
+            compiled("ask_1", "Login fix", "codex", "human_handoff"),
+        ]);
+        assert_eq!(both.len(), 2, "one unit per Ask");
+        let u = &both[1];
+        assert!(!u.requested_only);
+        assert_eq!(u.title, "Login fix");
+        assert_eq!(u.asked_at, "2026-09-19T14:01:00Z", "when it was asked");
+        assert_eq!(u.status(), "not sent yet");
+    }
 
     fn compiled(id: &str, title: &str, host: &str, mode: &str) -> Value {
         json!({
@@ -506,7 +595,7 @@ mod tests {
         ]);
         assert_eq!(units[0].sent, Sent::ReadyToSend);
         assert_eq!(units[0].status(), "ready to send");
-        assert!(units[0].needs_you());
+        assert_eq!(crate::board::next_step(&units[0]), Some(Next::Send));
     }
 
     #[test]
@@ -519,7 +608,11 @@ mod tests {
         ]);
         assert_eq!(units[0].sent, Sent::TakenByAgent);
         assert_eq!(units[0].status(), "the agent took it");
-        assert!(!units[0].needs_you(), "a dispatch route never waits on you");
+        assert_ne!(
+            crate::board::next_step(&units[0]),
+            Some(Next::Send),
+            "a dispatch route has nothing to send"
+        );
     }
 
     #[test]
@@ -537,7 +630,7 @@ mod tests {
             ),
         ]);
         assert_eq!(units[0].sent, Sent::ReadyToSend);
-        assert!(units[0].needs_you());
+        assert_eq!(crate::board::next_step(&units[0]), Some(Next::Send));
     }
 
     #[test]
@@ -655,7 +748,7 @@ mod tests {
         ]);
         assert_eq!(units[0].sealed.as_deref(), Some("deferred"));
         assert_eq!(units[0].status(), "parked", "deferred reads as parked");
-        assert!(!units[0].needs_you());
+        assert_eq!(crate::board::next_step(&units[0]), None);
     }
 
     #[test]
@@ -670,34 +763,6 @@ mod tests {
         assert_eq!(u.ask_state(), "ready to send");
         assert_eq!(u.eval_state(), None);
         assert_eq!(u.seal_state(), None);
-    }
-
-    #[test]
-    fn exactly_one_act_carries_what_the_row_waits_on() {
-        // The Ask wants sending; nothing else is waiting yet.
-        let ready = project(&[
-            compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("ask.confirmed", "ask_1", json!({"confirmation": {}})),
-        ]);
-        assert!(ready[0].ask_needs_you() && !ready[0].seal_needs_you());
-
-        // Once it is sent and judged, the decision is the Seal's, not the
-        // Ask's — and the union is still exactly `needs_you`.
-        let judged = project(&[
-            compiled("ask_1", "t", "codex", "human_handoff"),
-            ev("ask.submission", "ask_1", json!({"as_modified": false})),
-            ev(
-                "eval.completed",
-                "evl_1",
-                json!({
-                    "basis": {"asks": ["ask_1"]}, "subject": {},
-                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
-                }),
-            ),
-        ]);
-        let u = &judged[0];
-        assert!(!u.ask_needs_you() && u.seal_needs_you());
-        assert_eq!(u.needs_you(), u.ask_needs_you() || u.seal_needs_you());
     }
 
     #[test]
@@ -732,7 +797,11 @@ mod tests {
                 }),
             ),
         ]);
-        assert!(units[0].needs_you(), "an aligned verdict still wants a decision");
+        assert_eq!(
+            crate::board::next_step(&units[0]),
+            Some(Next::Seal),
+            "an aligned verdict still wants a decision"
+        );
     }
 
     #[test]
@@ -743,7 +812,7 @@ mod tests {
             ev("ask.cancelled", "ask_1", json!({"cancellation": {}})),
         ]);
         assert_eq!(units[0].status(), "cancelled");
-        assert!(!units[0].needs_you());
+        assert_eq!(crate::board::next_step(&units[0]), None);
     }
 
     #[test]
@@ -806,6 +875,37 @@ mod tests {
         assert_eq!(project(&[missing]).swap_remove(0).session_ref, None);
     }
 
+    /// A submission the person attests to — Weft typing it on their yes,
+    /// where no hook could observe it — reads as sent, unconfirmed; one a hook
+    /// observed wins, in either order.
+    #[test]
+    fn an_attributed_submission_is_sent_and_an_observed_one_wins() {
+        let at = |kind: &str, state: &str, t: &str| {
+            json!({"type": kind, "id": "ask_1", "time": t,
+                   "data": {"state": state, "as_modified": false,
+                            "host": {"name": "codex", "session_ref": "c1"}}})
+        };
+        let base = || {
+            vec![
+                compiled("ask_1", "t", "codex", "human_handoff"),
+                ev("ask.confirmed", "ask_1", json!({})),
+            ]
+        };
+        let mut attributed = base();
+        attributed.push(at("ask.submission", "attributed", "2026-09-19T14:04:00Z"));
+        let u = &project(&attributed)[0];
+        assert_eq!(u.sent, Sent::Unconfirmed);
+        assert_eq!(u.attributed_at.as_deref(), Some("2026-09-19T14:04:00Z"));
+        assert_eq!(u.sent_phrase(), "sent, unconfirmed");
+        let mut then_observed = attributed.clone();
+        then_observed.push(at("ask.submission", "observed", "2026-09-19T14:04:01Z"));
+        assert_eq!(project(&then_observed)[0].sent, Sent::Arrived { exact: true });
+        let mut observed_first = base();
+        observed_first.push(at("ask.submission", "observed", "2026-09-19T14:04:00Z"));
+        observed_first.push(at("ask.submission", "attributed", "2026-09-19T14:04:01Z"));
+        assert_eq!(project(&observed_first)[0].sent, Sent::Arrived { exact: true });
+    }
+
     #[test]
     fn an_ask_nobody_answered_still_needs_you() {
         // Codex's chooser returns the same empty result whether it was
@@ -819,9 +919,8 @@ mod tests {
         let u = &units[0];
         assert!(u.unanswered && !u.cancelled && !u.confirmed);
         assert!(u.awaiting_yes(), "still the person's to say yes to");
-        assert!(u.needs_you(), "and it is waiting on them");
+        assert_eq!(crate::board::next_step(u), Some(Next::Confirm), "and it is waiting on them");
         assert_eq!(u.status(), "waiting for your yes");
-        assert_eq!(u.marker(), "● ");
     }
 
     #[test]
@@ -846,7 +945,7 @@ mod tests {
             ev("ask.cancelled", "ask_1", json!({"cancellation": {"observed_by": "skill"}})),
         ]);
         assert!(!units[0].awaiting_yes());
-        assert!(!units[0].needs_you());
+        assert_eq!(crate::board::next_step(&units[0]), None);
         assert_eq!(units[0].status(), "cancelled");
     }
 
@@ -855,6 +954,5 @@ mod tests {
         let units = project(&[compiled("ask_1", "t", "codex", "human_handoff")]);
         assert!(!units[0].unanswered && !units[0].awaiting_yes());
         assert_eq!(units[0].status(), "not sent yet");
-        assert_eq!(units[0].marker(), "");
     }
 }

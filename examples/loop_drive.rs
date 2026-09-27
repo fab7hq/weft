@@ -87,14 +87,8 @@ impl Drive {
                 self.send(ENTER);
                 return true;
             }
-            // Only answer when the pane is actually waiting, and only a
-            // question read off a real screen. Matching prose in a transcript
-            // once put Enter into a composer and ran an unrelated command,
-            // which is the same mistake Weft itself refuses to make.
-            if weft::blocked::looks_blocked(&s).is_none() {
-                std::thread::sleep(Duration::from_millis(400));
-                continue;
-            }
+            // The questions below are read off the screen by this probe, as
+            // a person reads them; Weft itself reads no screen.
             const QUESTIONS: &[&str] = &[
                 "Would you like to proceed",
                 "Do you want to proceed",

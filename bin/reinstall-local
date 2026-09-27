@@ -15,9 +15,10 @@
 # configuration it last synced from the marketplace, which is a confusing way
 # to spend an afternoon.
 #
-#   ./bin/reinstall-local            both hosts
+#   ./bin/reinstall-local            every host (`both` still means that)
 #   ./bin/reinstall-local claude     one host
 #   ./bin/reinstall-local codex
+#   ./bin/reinstall-local agy
 #   ./bin/reinstall-local none       binaries and configuration only
 #
 # FAB7_DIR overrides where the marketplace checkout is (default: ../fab7).
@@ -28,11 +29,11 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 fab7=${FAB7_DIR:-$(CDPATH= cd -- "$root/../fab7" 2>/dev/null && pwd || true)}
 bin_dir=${WEFT_BIN_DIR:-$HOME/.local/bin}
-want=${1:-both}
+want=${1:-all}
 
 case $want in
-    claude | codex | both | none) ;;
-    *) printf '%s\n' "usage: reinstall-local [claude|codex|both|none]" >&2; exit 1 ;;
+    claude | codex | agy | all | both | none) ;;
+    *) printf '%s\n' "usage: reinstall-local [claude|codex|agy|all|none]" >&2; exit 1 ;;
 esac
 
 printf 'Building from %s\n' "$root"

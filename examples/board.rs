@@ -11,8 +11,7 @@ fn main() {
     let units = led.units();
     println!("--- {} · {} units ---", root, units.len());
     for u in &units {
-        let mark = if u.needs_you() { "●" } else { " " };
-        println!("{mark} {:<34} {:<12} {}", truncate(&u.title, 34), u.harness, u.status());
+        println!("  {:<34} {:<12} {}", truncate(&u.title, 34), u.harness, u.status());
         if let Some(c) = &u.check {
             let root = std::path::Path::new(&root);
             match weft::record::read(root, &c.eval_id) {

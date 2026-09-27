@@ -17,17 +17,35 @@ pub fn latest(root: &Path, harness: &str) -> Option<Recorded> {
         .max_by(|a, b| a.at.cmp(&b.at))
 }
 
-/// One session directory: the last receipt in it, if it has any.
+/// One session directory: when it was last used and its last prompt, from
+/// its receipts. A harness with no prompt hook (Antigravity) records only its
+/// turns, and a session in which a turn ran is still one to pick up. One that
+/// only said it was `ready` never held a conversation, so there is nothing
+/// to resume.
 fn read(dir: &Path) -> Option<Recorded> {
-    let id = dir.file_name()?.to_str()?.to_string();
-    let text = std::fs::read_to_string(dir.join("prompts.jsonl")).ok()?;
-    let last = text.lines().rev().find(|l| !l.trim().is_empty())?;
-    let receipt: serde_json::Value = serde_json::from_str(last).ok()?;
     // The id is the directory's, not the receipt's: the directory is what the
     // hook keyed on, and a receipt that disagreed with it would be the bug.
-    let at = receipt.get("time")?.as_str()?.to_string();
-    let prompt = receipt.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-    Some(Recorded { id, at, last: first_line(prompt) })
+    let id = dir.file_name()?.to_str()?.to_string();
+    let prompts = receipts(&dir.join("prompts.jsonl"));
+    let turns = receipts(&dir.join("turns.jsonl"));
+    let used =
+        !prompts.is_empty() || turns.iter().any(|t| t.get("event").is_some_and(|e| e != "ready"));
+    if !used {
+        return None;
+    }
+    let at = [prompts.last(), turns.last()]
+        .into_iter()
+        .filter_map(|r| r?.get("time")?.as_str())
+        .max()?
+        .to_string();
+    let said = prompts.last().and_then(|r| r.get("prompt")?.as_str()).unwrap_or("");
+    Some(Recorded { id, at, last: first_line(said) })
+}
+
+/// Every receipt a file holds, skipping a line that is not one.
+fn receipts(path: &Path) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 #[cfg(test)]
@@ -87,6 +105,41 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("dir");
         std::fs::write(dir.join("prompts.jsonl"), "").expect("write");
         assert_eq!(latest(&tmp, "codex"), None);
+    }
+
+    /// Antigravity has no prompt hook, so its sessions hold only turn
+    /// receipts: it is still offered, as of its latest turn, with no prompt
+    /// to show.
+    #[test]
+    fn a_session_with_only_turn_receipts_is_offered_too() {
+        let tmp = workspace("case");
+        let dir = tmp.join(".fab7/rf/sessions/agy/c1");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let turns = [
+            r#"{"event":"working","session_id":"c1","time":"2026-09-27T09:33:00.000Z"}"#,
+            r#"{"event":"turn_ended","session_id":"c1","time":"2026-09-27T09:34:06.392Z"}"#,
+        ];
+        std::fs::write(dir.join("turns.jsonl"), turns.join("\n") + "\n").expect("turns");
+        let found = latest(&tmp, "agy").expect("a session");
+        assert_eq!((found.id.as_str(), found.last.as_str()), ("c1", ""));
+        assert_eq!(found.at, "2026-09-27T09:34:06.392Z");
+        // Where both are kept, the later of the two says when it was used.
+        receipt(&tmp, "agy", "c1", "2026-09-27T09:32:00.000Z", "/plan it");
+        let found = latest(&tmp, "agy").expect("a session");
+        assert_eq!(
+            (found.at.as_str(), found.last.as_str()),
+            ("2026-09-27T09:34:06.392Z", "/plan it")
+        );
+    }
+
+    #[test]
+    fn a_session_that_only_started_has_nothing_to_resume() {
+        let tmp = workspace("case");
+        let dir = tmp.join(".fab7/rf/sessions/claude-code/s1");
+        std::fs::create_dir_all(&dir).expect("dir");
+        let ready = r#"{"event":"ready","session_id":"s1","time":"2026-09-27T09:33:00.000Z"}"#;
+        std::fs::write(dir.join("turns.jsonl"), format!("{ready}\n")).expect("turns");
+        assert_eq!(latest(&tmp, "claude-code"), None);
     }
 
     #[test]

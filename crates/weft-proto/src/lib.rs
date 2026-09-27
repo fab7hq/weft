@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 pub use weft_core::board::PaneInfo;
 use weft_core::inject::Handoff;
 use weft_core::ledger::Unit;
+use weft_core::turns::{Session, Turn};
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
@@ -95,6 +96,12 @@ pub enum Call {
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
     Available,
+    /// Turn this project's turbo mode on or off. Agents started from now on
+    /// follow it; one already running keeps the mode it was started in.
+    /// Answers with `{"turbo": bool}`.
+    Turbo {
+        on: bool,
+    },
     /// Yes or no, by id. Whoever answers first answers for everyone.
     Resolve {
         pending: String,
@@ -124,6 +131,8 @@ pub enum Event {
         pane: u32,
         harness: String,
         spec: String,
+        /// Started in turbo mode.
+        turbo: bool,
     },
     Exited {
         pane: u32,
@@ -160,6 +169,14 @@ pub enum Event {
     /// The RingFrame view, as it stands.
     Sync {
         view: Value,
+    },
+    /// Each agent's state, as its hooks reported it: one per pane, in order,
+    /// and the latest event of every session this project has receipts for.
+    Agents {
+        panes: Vec<Option<Turn>>,
+        /// The session each pane runs, when Weft can tell.
+        bound: Vec<Option<String>>,
+        sessions: Vec<Session>,
     },
 }
 
@@ -278,6 +295,7 @@ impl Call {
             Call::Read { what, unit } => ("read", json!({"what": what, "unit": unit})),
             Call::Sync { proceed } => ("sync", json!({"proceed": proceed})),
             Call::Available => ("agents.available", json!({})),
+            Call::Turbo { on } => ("project.turbo", json!({"on": on})),
             Call::Resolve { pending, yes, force } => {
                 ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
             }
@@ -320,6 +338,7 @@ impl Call {
             "read" => Call::Read { what: s("what")?, unit: s("unit")? },
             "sync" => Call::Sync { proceed: p.get("proceed")?.as_bool()? },
             "agents.available" => Call::Available,
+            "project.turbo" => Call::Turbo { on: p.get("on")?.as_bool()? },
             "pending.resolve" => {
                 Call::Resolve {
                     pending: s("pending")?,
@@ -342,9 +361,10 @@ impl Event {
             Event::Output { pane, bytes } => {
                 ("pane.output", json!({"pane": pane, "bytes": b64(bytes)}))
             }
-            Event::Added { pane, harness, spec } => {
-                ("pane.added", json!({"pane": pane, "harness": harness, "spec": spec}))
-            }
+            Event::Added { pane, harness, spec, turbo } => (
+                "pane.added",
+                json!({"pane": pane, "harness": harness, "spec": spec, "turbo": turbo}),
+            ),
             Event::Exited { pane } => ("pane.exited", json!({"pane": pane})),
             Event::Units { units, records } => {
                 ("units", json!({"units": units, "records": records}))
@@ -360,6 +380,9 @@ impl Event {
             }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Sync { view } => ("sync", json!({"view": view})),
+            Event::Agents { panes, bound, sessions } => {
+                ("agents", json!({"panes": panes, "bound": bound, "sessions": sessions}))
+            }
         }
     }
 
@@ -371,9 +394,12 @@ impl Event {
             "pane.output" => {
                 Event::Output { pane: n("pane")? as u32, bytes: un_b64(p.get("bytes")?.as_str()?)? }
             }
-            "pane.added" => {
-                Event::Added { pane: n("pane")? as u32, harness: s("harness")?, spec: s("spec")? }
-            }
+            "pane.added" => Event::Added {
+                pane: n("pane")? as u32,
+                harness: s("harness")?,
+                spec: s("spec")?,
+                turbo: p.get("turbo").and_then(Value::as_bool).unwrap_or(false),
+            },
             "pane.exited" => Event::Exited { pane: n("pane")? as u32 },
             "units" => Event::Units {
                 units: serde_json::from_value(p.get("units")?.clone()).ok()?,
@@ -389,6 +415,14 @@ impl Event {
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
             "sync" => Event::Sync { view: p.get("view")?.clone() },
+            "agents" => Event::Agents {
+                panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
+                bound: p
+                    .get("bound")
+                    .and_then(|b| serde_json::from_value(b.clone()).ok())
+                    .unwrap_or_default(),
+                sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
+            },
             "injected" => Event::Injected {
                 pane: n("pane")? as u32,
                 refusal: p.get("refusal")?.as_str().map(str::to_string),
@@ -414,7 +448,8 @@ pub fn panes_json(panes: &[PaneInfo]) -> Value {
         panes
             .iter()
             .map(|p| {
-                json!({"pane": p.pane, "harness": p.harness, "spec": p.spec, "running": p.running})
+                json!({"pane": p.pane, "harness": p.harness, "spec": p.spec, "running": p.running,
+                       "turbo": p.turbo})
             })
             .collect(),
     )
@@ -429,6 +464,7 @@ pub fn panes_of(v: &Value) -> Option<Vec<PaneInfo>> {
                 harness: p.get("harness")?.as_str()?.to_string(),
                 spec: p.get("spec")?.as_str()?.to_string(),
                 running: p.get("running")?.as_bool()?,
+                turbo: p.get("turbo").and_then(Value::as_bool).unwrap_or(false),
             })
         })
         .collect()
@@ -623,6 +659,7 @@ mod tests {
             Call::Read { what: "judges".into(), unit: "ask_1".into() },
             Call::Sync { proceed: true },
             Call::Available,
+            Call::Turbo { on: true },
             Call::Detach,
             Call::Shutdown,
         ] {
@@ -659,10 +696,16 @@ mod tests {
                     harness: "codex".into(),
                     spec: "codex resume 01a0".into(),
                     running: true,
+                    turbo: true,
                 }],
             },
             Event::Output { pane: 0, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
-            Event::Added { pane: 1, harness: "claude-code".into(), spec: "claude".into() },
+            Event::Added {
+                pane: 1,
+                harness: "claude-code".into(),
+                spec: "claude".into(),
+                turbo: false,
+            },
             Event::Exited { pane: 1 },
             Event::Units { units: Vec::new(), records: json!({}) },
             Event::Pending {
@@ -677,6 +720,17 @@ mod tests {
             Event::Injected { pane: 0, refusal: None },
             Event::Readiness { states: json!({"codex": "ready"}) },
             Event::Sync { view: json!({"rows": []}) },
+            Event::Agents {
+                panes: vec![Some(Turn::TurnEnded), None],
+                bound: vec![Some("s1".into()), None],
+                sessions: vec![Session {
+                    harness: "claude-code".into(),
+                    id: "s1".into(),
+                    first: 1,
+                    latest: Turn::TurnEnded,
+                    at: 2,
+                }],
+            },
         ] {
             roundtrip(Line::Event(event));
         }

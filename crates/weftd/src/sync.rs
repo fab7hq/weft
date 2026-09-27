@@ -7,10 +7,10 @@ use serde_json::Value;
 use weft_core::readiness::Readiness;
 use weft_core::sync::{Mark, View, view};
 
-use crate::harness::{OnThisMachine, SUPPORTED};
+use crate::harness::{Harnesses, OnThisMachine};
 
 /// What the view shows, and each harness's readiness as found on the way.
-pub fn look() -> (View, Vec<(String, Readiness)>) {
+pub fn look(harnesses: &Harnesses) -> (View, Vec<(String, Readiness)>) {
     let check = Command::new("ringframe")
         .args(["sync", "--check"])
         .output()
@@ -18,7 +18,7 @@ pub fn look() -> (View, Vec<(String, Readiness)>) {
         .filter(|o| o.status.success())
         .and_then(|o| serde_json::from_slice::<Value>(&o.stdout).ok());
     let cli = crate::ringframe::installed();
-    let found: Vec<_> = SUPPORTED
+    let found: Vec<_> = harnesses
         .iter()
         .filter(|h| h.on_path())
         .map(|h| {
@@ -26,7 +26,7 @@ pub fn look() -> (View, Vec<(String, Readiness)>) {
             (h, state, version)
         })
         .collect();
-    let states = found.iter().map(|(h, s, _)| (h.name.to_string(), *s)).collect();
+    let states = found.iter().map(|(h, s, _)| (h.name.clone(), *s)).collect();
     (view(check.as_ref(), &found), states)
 }
 

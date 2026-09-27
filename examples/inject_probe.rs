@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let bracketed = pane.with_screen(|s| s.bracketed_paste());
     println!("--- bracketed paste advertised: {bracketed} ---");
 
-    match pane.inject(payload.as_bytes(), false) {
+    match pane.inject(payload.as_bytes()) {
         Ok(attempt) => {
             println!("--- injected {} bytes (bracketed={}) ---", attempt.bytes, attempt.bracketed)
         }

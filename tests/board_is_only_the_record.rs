@@ -85,6 +85,37 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     }
 }
 
+/// turn-state.md §6 test 6. The agent's state is rendered only from a
+/// receipt: none on the row with no receipt, and the receipt's on the row once
+/// one is written for the session the ledger names.
+#[test]
+fn an_agents_state_appears_only_once_its_receipt_is_written() {
+    const SAYS_A_STATE: &[&str] = &["ready ·", "working", "waiting for you", "turn ended"];
+    let mut asked = compiled("ask_1", "health endpoint", "codex");
+    asked["data"]["host"] =
+        json!({"name": "codex", "session_ref": "c1", "session_ref_source": "capture"});
+    let (root, mut app) = board(&[asked]);
+    let drawn = screen(&mut app, 100, 30);
+    for phrase in SAYS_A_STATE {
+        assert!(!drawn.contains(phrase), "no receipt, yet the row said {phrase:?}:\n{drawn}");
+    }
+
+    let dir = root.join(".fab7/rf/sessions/codex/c1");
+    std::fs::create_dir_all(&dir).expect("session dir");
+    let line = json!({"event": "turn_ended", "session_id": "c1",
+                      "time": "2026-09-19T14:05:00.000Z"});
+    std::fs::write(dir.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut drawn = String::new();
+    while std::time::Instant::now() < deadline && !drawn.contains("turn ended") {
+        app.pump();
+        drawn = screen(&mut app, 100, 30);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(drawn.contains("turn ended · ASKED"), "{drawn}");
+    clean(&root);
+}
+
 #[test]
 fn weft_takes_no_lock_and_writes_nothing_under_the_record() {
     let (root, mut app) = board(&[

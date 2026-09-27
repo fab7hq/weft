@@ -109,10 +109,9 @@ fn main() -> anyhow::Result<()> {
     for (i, unit) in app.units().iter().enumerate() {
         let mark = if i == app.selected { "▸" } else { " " };
         println!(
-            "  {mark} {:<44} {:<12} {}{}",
+            "  {mark} {:<44} {:<12} {}",
             unit.title,
             unit.harness,
-            unit.marker(),
             unit.status().to_uppercase()
         );
     }
@@ -130,10 +129,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(refusal) = app.last_refusal() {
         println!("  Weft did not type it: {refusal}");
     }
-    match app.waiting(0) {
-        Some(e) => println!("  the agent is waiting (from the screen): {} · {}", e.rule, e.line),
-        None => println!("  the agent is not waiting, as far as the screen shows"),
-    }
+    println!("  the agent's state, as its hooks reported it: {:?}", app.pane_turn(0));
     println!("\n── the agent's pane ──\n{}", app.pane_text(0).unwrap_or_default().trim_end());
 
     if stop {

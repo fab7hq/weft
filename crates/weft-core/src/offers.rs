@@ -226,10 +226,9 @@ fn said_plainly(code: &str) -> &str {
 /// The headline of a unit's detail view: where it stands, in the vocabulary
 /// the sidebar uses.
 pub fn detail_headline(unit: &crate::ledger::Unit) -> String {
-    let dot = if unit.ask_needs_you() || unit.seal_needs_you() { "● " } else { "" };
     format!(
-        "{dot}ASK {}   EVAL {}   SEAL {}",
-        act_state(true),
+        "ASK {}   EVAL {}   SEAL {}",
+        ask_state(unit),
         eval_state(unit),
         act_state(unit.sealed.is_some())
     )
@@ -251,6 +250,11 @@ pub fn act_state(done: bool) -> &'static str {
     if done { "[DONE]" } else { "[HAVEN'T RUN]" }
 }
 
+/// An Ask asked and not yet composed is under way, not done.
+fn ask_state(unit: &crate::ledger::Unit) -> &'static str {
+    if unit.requested_only { "[ASKING]" } else { act_state(true) }
+}
+
 /// One unit's whole story: the Ask that started it, the Eval that judged it,
 /// the Seal that closed it. Three sections in the order they happen, so there
 /// is one place to read instead of three keys to find.
@@ -267,10 +271,19 @@ pub fn detail_read(
 ) -> Vec<String> {
     let mut out = vec![detail_headline(unit), format!("  {}", provenance(unit)), String::new()];
 
-    out.push(format!("ASK {}", act_state(true)));
+    out.push(format!("ASK {}", ask_state(unit)));
+    // Asked and not composed: what there is, is what the person wrote.
+    if unit.requested_only {
+        out.push("  You asked:".into());
+    }
     match prompt {
         Some(text) => out.extend(text.lines().map(|l| format!("  {l}"))),
+        None if unit.requested_only => out.push("  what you asked is not on disk".into()),
         None => out.push("  the prompt is not on disk".into()),
+    }
+    if unit.requested_only {
+        out.push(String::new());
+        out.push(format!("  {} has not composed its prompt yet.", unit.harness));
     }
 
     out.push(String::new());
@@ -339,6 +352,23 @@ mod tests {
 
     use crate::ledger::{Sent, Unit};
 
+    /// Asked and not yet composed: the view says ASKING, and shows what the
+    /// person asked, since there is no prompt yet.
+    #[test]
+    fn an_ask_still_being_composed_shows_what_was_asked() {
+        let mut u = sealed("accepted");
+        u.sealed = None;
+        u.seal_id = None;
+        u.sealed_at = None;
+        u.check = None;
+        u.requested_only = true;
+        let lines = super::detail_read(&u, Some("fix the login bug"), None, None, None);
+        assert!(lines[0].starts_with("ASK [ASKING]"), "{lines:?}");
+        assert!(lines.contains(&"ASK [ASKING]".to_string()), "{lines:?}");
+        assert!(lines.contains(&"  fix the login bug".to_string()), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("has not composed its prompt yet")), "{lines:?}");
+    }
+
     fn sealed(disposition: &str) -> Unit {
         Unit {
             ask_id: "ask_1".into(),
@@ -354,10 +384,13 @@ mod tests {
             confirmed: true,
             sent: Sent::Arrived { exact: true },
             check: None,
+            arrived: None,
+            attributed_at: None,
             gathered: None,
             sealed: Some(disposition.into()),
             seal_id: Some("sel_1".into()),
             sealed_at: Some("2026-09-19T16:40:00Z".into()),
+            requested_only: false,
         }
     }
 

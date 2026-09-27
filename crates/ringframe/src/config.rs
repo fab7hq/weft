@@ -315,11 +315,11 @@ mod tests {
                 ),
                 (
                     "harnesses/claude-code.toml",
-                    "0a2545c1a1c24a3b8c03c976251adc8e12e2676a06d917a087f6856f06e4b069",
+                    "e8d00e9df5ba9985779a3b516f5a88223b01ae8cd33e5f61c97608a79f648906",
                 ),
                 (
                     "harnesses/codex.toml",
-                    "e050482ebfd4aba59b688f57f2ca5d0a1d6cbbee03e70bcaca1eb249290ced6b",
+                    "46631952cabbdf222f1080c145b70397cdaf81625b7f713c2ea85908a417f4f2",
                 ),
                 (
                     "harnesses/unknown.toml",
@@ -354,11 +354,11 @@ mod tests {
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "0a2545c1a1c24a3b8c03c976251adc8e12e2676a06d917a087f6856f06e4b069",
+                        "e8d00e9df5ba9985779a3b516f5a88223b01ae8cd33e5f61c97608a79f648906",
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "e050482ebfd4aba59b688f57f2ca5d0a1d6cbbee03e70bcaca1eb249290ced6b",
+                        "46631952cabbdf222f1080c145b70397cdaf81625b7f713c2ea85908a417f4f2",
                     ),
                     (
                         "config/harnesses/unknown.toml",

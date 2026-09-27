@@ -101,6 +101,7 @@ mod tests {
         let r = crate::config::read(
             "[routing]\nask = \"claude-code\"\n\n[eval.gather]\nharness = \"codex\"\n\n\
              [eval.debate]\nharness = \"claude-code\"\n",
+            &crate::harness::fixture::harnesses(),
         )
         .routing(std::path::Path::new("/p"));
         assert_eq!(r.harnesses(), ["claude-code", "codex"]);

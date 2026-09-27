@@ -63,15 +63,24 @@ impl Readiness {
 /// plugin differently — `id` against `pluginId` — and that is the whole of the
 /// difference, so one reader handles both.
 pub fn read(listing: &Value) -> Readiness {
+    read_with(listing, true)
+}
+
+/// The same, for a harness that has marketplaces or has none. One with none
+/// (Antigravity) lists what it has as `imports`, by `name`, so its plugin is
+/// there when `rf` is, and there is no marketplace to have added.
+pub fn read_with(listing: &Value, marketplaces: bool) -> Readiness {
     let rows = |key: &str| listing.get(key).and_then(Value::as_array).cloned().unwrap_or_default();
-    let installed = rows("installed");
+    let installed: Vec<Value> = rows("installed").into_iter().chain(rows("imports")).collect();
     let known: Vec<Value> = installed.iter().cloned().chain(rows("available")).collect();
 
-    if !known.iter().any(|row| from(row, MARKETPLACE)) {
+    if marketplaces && !known.iter().any(|row| from(row, MARKETPLACE)) {
         return Readiness::Missing(Gap::Marketplace);
     }
+    let short = PLUGIN.split('@').next().unwrap_or(PLUGIN);
     let ready = installed.iter().any(|row| {
-        id_of(row) == Some(PLUGIN.to_string())
+        (id_of(row) == Some(PLUGIN.to_string())
+            || (!marketplaces && row.get("name").and_then(Value::as_str) == Some(short)))
             // Absent means enabled: Claude Code lists only what is installed
             // and says `enabled` explicitly; Codex says both.
             && row.get("enabled").and_then(Value::as_bool).unwrap_or(true)
@@ -145,6 +154,28 @@ mod tests {
             "available": [{"pluginId": "rf@fab7", "marketplaceName": "fab7", "installed": false}]
         });
         assert_eq!(read(&available), Readiness::Missing(Gap::Plugin));
+    }
+
+    /// Captured from `agy plugin list` (Antigravity 1.2.12) once `rf` is
+    /// installed: `imports`, named by `name`, and no marketplace at all.
+    fn agy(names: &[&str]) -> Value {
+        let rows: Vec<Value> = names
+            .iter()
+            .map(|n| json!({"name": n, "source": "antigravity",
+                            "importedAt": "2026-09-27T06:18:59Z", "components": ["skills", "hooks"]}))
+            .collect();
+        json!({"imports": rows})
+    }
+
+    /// A harness with no marketplace to add has its plugin by name alone.
+    #[test]
+    fn a_harness_with_no_marketplaces_is_ready_when_it_has_the_plugin() {
+        assert_eq!(read_with(&agy(&["rf"]), false), Readiness::Ready);
+        assert_eq!(read_with(&agy(&["other"]), false), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read_with(&json!({"imports": []}), false), Readiness::Missing(Gap::Plugin));
+        // And the two with marketplaces read exactly as before.
+        assert_eq!(read_with(&claude(true), true), Readiness::Ready);
+        assert_eq!(read_with(&agy(&["rf"]), true), Readiness::Missing(Gap::Marketplace));
     }
 
     #[test]

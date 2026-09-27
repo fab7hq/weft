@@ -116,10 +116,10 @@ fn main() -> Result<()> {
         println!("weft {}\n", env!("CARGO_PKG_VERSION"));
         println!("weft [project-dir] [agent ...]\n");
         println!("  project-dir   the repository to work in (default: .)");
-        println!("  agent         claude and/or codex; optional, for scripts and probes\n");
+        println!("  agent         a harness's program, as its RingFrame profile names it;");
+        println!("                optional, for scripts and probes\n");
         println!("An agent may carry its own arguments, quoted as one word:\n");
-        println!("  weft . \"claude --model sonnet --effort medium\"");
-        println!("  weft . \"codex -m gpt-5.6-luna -c model_reasoning_effort=medium\"\n");
+        println!("  weft . \"<program> --its --own --arguments\"\n");
         println!("Weft passes them through untouched. It never chooses a model,");
         println!("and starts no agent unless you name one or press N.\n");
         println!("Agents run in a background session that outlives this window.");
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
 
     let mut terminal = ratatui::init();
     let mut out = std::io::stdout();
-    // The mouse is captured only while an agent has the keys; see `App::run`.
+    // The mouse is captured while Weft runs; see `App::run`.
     let _ = execute!(out, EnableBracketedPaste);
 
     // Named a directory, or asked for one. Nothing is opened and no daemon
@@ -169,8 +169,9 @@ fn main() -> Result<()> {
     let mut started = Ok(());
     for agent in &agents {
         let program = agent.split_whitespace().next().unwrap_or(agent);
-        let harness = if program == "claude" { "claude-code" } else { program };
-        if let Err(e) = weft.add(harness, agent) {
+        // The harness this program starts, as RingFrame's profiles say.
+        let harness = weft.harness_for_program(program).unwrap_or_else(|| program.to_string());
+        if let Err(e) = weft.add(&harness, agent) {
             started = Err(e);
             break;
         }

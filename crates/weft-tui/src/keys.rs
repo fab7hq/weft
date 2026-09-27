@@ -79,6 +79,8 @@ pub enum Action {
     OpenProject,
     /// Weft's own operations, gathered out of the bar.
     WeftMenu,
+    /// Turbo mode on or off, for the agents started next.
+    Turbo,
     Ask,
     Eval,
     Seal,
@@ -135,6 +137,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'n' => Action::NewAgent,
             'b' => Action::ToggleSidebar,
             'w' => Action::WeftMenu,
+            't' => Action::Turbo,
             'h' => Action::Help,
             'x' => Action::Quit,
             _ => Action::Ignore,

@@ -20,6 +20,11 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use anyhow::Result;
 
 use crate::pane::Pane;
+use crate::turns::Turn;
+
+/// Each pane's agent state, the session each pane runs, and every session's
+/// latest event.
+type Agents = (Vec<Option<Turn>>, Vec<Option<String>>, Vec<crate::turns::Session>);
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
 /// Everything a pane has printed since it started, so a late client can be
@@ -37,9 +42,31 @@ struct Slot {
     /// whether a session is already open here before opening it a second time.
     spec: String,
     replay: Vec<u8>,
+    /// The size the agent was last given, and the size each window last
+    /// drew it at. A pane takes the size of the window that last focused it
+    /// or typed into it, so two windows of different sizes never squeeze an
+    /// agent for the other.
+    size: (u16, u16),
+    wants: HashMap<u64, (u16, u16)>,
+    /// When Weft started it, as receipts count time: a session first heard
+    /// of after this may be this agent's.
+    started: i64,
+    /// Started in turbo mode: its harness's turbo flags were added to the
+    /// command line it was asked for, which `spec` keeps as it was.
+    turbo: bool,
 }
 
 impl Slot {
+    /// Give the agent this window's size, if it drew it at one.
+    fn follow(&mut self, client: u64) {
+        if let Some(&size) = self.wants.get(&client)
+            && size != self.size
+            && self.pane.resize(size.0, size.1).is_ok()
+        {
+            self.size = size;
+        }
+    }
+
     fn record(&mut self, bytes: &[u8]) {
         self.replay.extend_from_slice(bytes);
         if self.replay.len() > REPLAY_LIMIT {
@@ -64,6 +91,8 @@ struct Waiting {
     confirm: Option<String>,
     /// The pane was started for this, and may still be starting up.
     fresh: bool,
+    /// The Ask whose prompt this sends, recorded as submitted once it is.
+    sends: Option<String>,
 }
 
 /// How long a pane Weft started for an act must be still before it is typed
@@ -85,8 +114,19 @@ struct Project {
     routing: weft_core::routing::Routing,
     /// The `--override` every `/rf:` command carries here, if any.
     ringframe: Option<String>,
+    /// Whether clients tell the person when an agent needs them.
+    notify: bool,
+    /// Whether agents started here get their harness's turbo flags.
+    turbo: bool,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
     folds: crate::acts::Folds,
+    /// The harnesses RingFrame's profiles define, read when the project
+    /// opened. Weft keeps no list of its own.
+    harnesses: weft_core::harness::Harnesses,
+    /// Each agent's state, from its hooks' receipts, and what clients were
+    /// last told of it.
+    turns: crate::turns::Turns,
+    agents: Option<Agents>,
 }
 
 #[derive(Default)]
@@ -168,6 +208,9 @@ pub struct Session {
     next_pending: u64,
     /// Weft's `config.toml`, read each time a project opens.
     config: PathBuf,
+    /// The harnesses to use instead of asking RingFrame, for a test that
+    /// must not depend on the machine's profiles.
+    harnesses: Option<weft_core::harness::Harnesses>,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -214,11 +257,11 @@ fn recorded_first(root: &Path, confirm: Option<&str>) -> Result<(), String> {
 /// Picking a session up comes before a fresh one, because a workspace with
 /// history is a workspace you are coming back to. The session is whatever
 /// RingFrame's receipts name; nothing is invented to fill a gap.
-fn starts(root: &Path) -> serde_json::Value {
+fn starts(root: &Path, harnesses: &weft_core::harness::Harnesses) -> serde_json::Value {
     use crate::harness::OnThisMachine as _;
     let mut out = Vec::new();
-    for h in weft_core::harness::SUPPORTED.iter().filter(|h| h.on_path()) {
-        if let Some(s) = crate::sessions::latest(root, h.name) {
+    for h in harnesses.iter().filter(|h| h.on_path()) {
+        if let Some(s) = crate::sessions::latest(root, &h.name) {
             out.push(serde_json::json!({
                 "harness": h.name,
                 "label": format!("{} · pick up where you left off", h.name),
@@ -307,6 +350,16 @@ impl Session {
     /// --serve` passes `~/.fab7/weft/config.toml`; a test passes a path of its
     /// own, so nothing it does depends on the person's file.
     pub fn serve(socket: &Path, config: &Path) -> Result<()> {
+        Self::serve_with(socket, config, None)
+    }
+
+    /// Serve with these harnesses rather than the ones RingFrame's profiles
+    /// define on this machine. For tests; `weft --serve` asks RingFrame.
+    pub fn serve_with(
+        socket: &Path,
+        config: &Path,
+        harnesses: Option<weft_core::harness::Harnesses>,
+    ) -> Result<()> {
         if let Some(dir) = socket.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -339,6 +392,7 @@ impl Session {
             tx,
             next_pending: 1,
             config: config.to_path_buf(),
+            harnesses,
         };
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
@@ -405,21 +459,44 @@ impl Session {
     /// Type a prompt that was said yes to. The refusal, if there is one, is
     /// the person's to see: it says what is sitting unsent in their agent.
     fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
+        if w.fresh && !force {
+            // An agent Weft just started is not ready until it says so.
+            let deadline = std::time::Instant::now() + STARTED_TIMEOUT;
+            while std::time::Instant::now() < deadline
+                && crate::turns::may_type(self.pane_state(project, w.pane)).is_err()
+            {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+        // Weft types on its own only into an agent that reported it is ready
+        // (ADR-0013). When the person has been told and said to type anyway,
+        // the decision is theirs.
+        let not_ready =
+            if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
         let refusal = match self.projects[project].panes.get_mut(w.pane as usize) {
             Some(slot) => {
-                if w.fresh {
-                    // A harness draws its composer a moment after it starts.
+                if w.fresh && force {
+                    // A harness that never says it is ready still draws its
+                    // composer a moment after it starts; the words on it are
+                    // not read, only whether it has gone still.
                     slot.pane.wait_until_quiet(STARTED_QUIET, STARTED_TIMEOUT);
                 }
-                let screen = slot.pane.with_screen(|s| s.contents());
-                // Whether the pane looks busy is Weft's inference. When the
-                // person has seen what it read and said to type anyway, the
-                // decision is theirs.
-                let blocked = !force && weft_core::blocked::looks_blocked(&screen).is_some();
-                match slot.pane.inject_as(&w.payload, blocked, &w.how) {
-                    Err(r) => Some(format!("{r:?}")),
-                    Ok(a) if !a.submitted => Some(withheld(&a)),
-                    Ok(_) => None,
+                match not_ready {
+                    Err(why) if slot.pane.running() => Some(why.to_string()),
+                    _ => match slot.pane.inject_as(&w.payload, &w.how) {
+                        Err(r) => Some(format!("{r:?}")),
+                        Ok(a) if !a.submitted => Some(withheld(&a)),
+                        Ok(_) => {
+                            // Sent on the person's yes: their submission, on
+                            // record, so the Ask moves on to its Eval even
+                            // where no hook sees it arrive.
+                            if let Some(ask) = &w.sends {
+                                let root = self.projects[project].root.clone();
+                                let _ = crate::ringframe::ask_submitted(&root, ask);
+                            }
+                            None
+                        }
+                    },
                 }
             }
             None => Some("NoProcess".to_string()),
@@ -497,7 +574,7 @@ impl Session {
                     let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
                     ("seal", into, String::new())
                 };
-                let (pane, fresh) = match self.idle_pane_of(at, &into) {
+                let (pane, fresh) = match self.free_pane_of(at, &into) {
                     Some(pane) => (pane, false),
                     None => match self.start_for(at, &into) {
                         Some(pane) => (pane, true),
@@ -530,15 +607,16 @@ impl Session {
         self.stage(at, pane, built, false)
     }
 
-    /// The first of this harness's panes that is running and not busy.
-    fn idle_pane_of(&mut self, at: usize, harness: &str) -> Option<u32> {
-        let panes: Vec<(String, bool, String)> = self.projects[at]
+    /// The first of this harness's agents that is free for new work: one
+    /// whose latest event is `ready` or `turn_ended` (turn-state.md §4).
+    fn free_pane_of(&mut self, at: usize, harness: &str) -> Option<u32> {
+        let states = self.agents_of(at).0;
+        self.projects[at]
             .panes
-            .iter_mut()
-            .map(|s| (s.harness.clone(), s.pane.running(), s.pane.with_screen(|v| v.contents())))
-            .collect();
-        let each = panes.iter().map(|(h, running, screen)| (h.as_str(), *running, screen.as_str()));
-        weft_core::blocked::idle_pane(each, harness).map(|i| i as u32)
+            .iter()
+            .zip(states)
+            .position(|(s, state)| s.harness == harness && crate::turns::may_type(state).is_ok())
+            .map(|i| i as u32)
     }
 
     /// Start a pane of this harness for an act, on the command line one of its
@@ -549,7 +627,7 @@ impl Session {
             .iter()
             .find(|s| s.harness == harness)
             .map(|s| s.spec.clone())
-            .or_else(|| weft_core::harness::find(harness).map(|h| h.program.to_string()))?;
+            .or_else(|| self.projects[at].harnesses.find(harness).map(|h| h.program.clone()))?;
         let before = self.projects[at].panes.len();
         self.spawn(at, harness, &spec);
         (self.projects[at].panes.len() > before).then(|| {
@@ -580,6 +658,7 @@ impl Session {
             how: built.how,
             confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
             fresh,
+            sends: built.ask_id.clone(),
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))
@@ -595,6 +674,19 @@ impl Session {
                 })),
                 Err(e) => Answer::No("refused", format!("RingFrame would not hand it over: {e:?}")),
             },
+            // What the person asked, as RingFrame recorded it: for an Ask whose
+            // prompt is not composed yet, it is all there is to show.
+            "source" => {
+                let safe =
+                    !unit.is_empty() && unit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+                let path = root.join(".fab7/rf/asks").join(unit).join("source.txt");
+                match std::fs::read(&path) {
+                    Ok(bytes) if safe => Answer::Ok(serde_json::json!({
+                        "text": String::from_utf8_lossy(&bytes)
+                    })),
+                    _ => Answer::No("no_record", "what was asked is not on disk".into()),
+                }
+            }
             // `unit` is an eval id here: a record is named by the Eval, not the Ask.
             "judges" => match crate::record::read(&root, unit) {
                 Some(r) => Answer::Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)),
@@ -614,12 +706,13 @@ impl Session {
     /// run loop. Every change reaches the client as it happens.
     fn sync(&mut self, at: usize, proceed: bool) -> Answer {
         let tx = self.tx.clone();
+        let harnesses = self.projects[at].harnesses.clone();
         std::thread::spawn(move || {
             let show = |v: &weft_core::sync::View| {
                 let view = serde_json::to_value(v).unwrap_or_default();
                 let _ = tx.send(Wake::Sync { project: at, view });
             };
-            let (mut v, states) = crate::sync::look();
+            let (mut v, states) = crate::sync::look(&harnesses);
             // Looking is asking each harness again, so what it said replaces
             // an older answer — a stale "could not tell" included.
             for (harness, state) in states {
@@ -632,7 +725,7 @@ impl Session {
             if v.steps.iter().any(|s| s.mark == weft_core::sync::Mark::Failed) {
                 return;
             }
-            let (v, states) = crate::sync::look();
+            let (v, states) = crate::sync::look(&harnesses);
             show(&v);
             for (harness, state) in states {
                 let _ = tx.send(Wake::Readiness { project: at, harness, state });
@@ -649,9 +742,16 @@ impl Session {
     fn look_at(&mut self, at: usize, name: &str) {
         use weft_core::readiness::Readiness;
         let (tx, name) = (self.tx.clone(), name.to_string());
+        let found = self.projects[at].harnesses.find(&name).cloned();
         std::thread::spawn(move || {
             let cli = crate::ringframe::installed();
-            let Some(h) = weft_core::harness::find(&name) else {
+            // No CLI is no profile either; that is the gap to name.
+            if !cli {
+                let state = Readiness::Missing(weft_core::readiness::Gap::Cli);
+                let _ = tx.send(Wake::Readiness { project: at, harness: name, state });
+                return;
+            }
+            let Some(h) = found.as_ref() else {
                 let _ = tx.send(Wake::Readiness {
                     project: at,
                     harness: name,
@@ -689,18 +789,64 @@ impl Session {
                 harness: s.harness.clone(),
                 spec: s.spec.clone(),
                 running: s.pane.running(),
+                turbo: s.turbo,
             })
             .collect()
     }
 
-    /// Tell each project's clients when its record has moved.
+    /// Tell each project's clients when its record has moved, or an agent's
+    /// state has.
     fn follow_the_record(&mut self) {
         for at in 0..self.projects.len() {
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
             }
+            let agents = self.agents_of(at);
+            if self.projects[at].agents.as_ref() != Some(&agents) {
+                self.projects[at].agents = Some(agents.clone());
+                let (panes, bound, sessions) = agents;
+                self.clients.broadcast(at, &Out::Agents { panes, bound, sessions });
+            }
         }
+    }
+
+    /// Each pane's state and every session's latest event, re-read from the
+    /// receipts. A pane started to resume a session runs that session.
+    fn agents_of(&mut self, at: usize) -> Agents {
+        let p = &mut self.projects[at];
+        p.turns.refresh(&p.root);
+        let sessions = p.turns.sessions();
+        let started: Vec<crate::turns::Started> = p
+            .panes
+            .iter_mut()
+            .map(|slot| {
+                let resumed = p.harnesses.find(&slot.harness).and_then(|h| {
+                    sessions
+                        .iter()
+                        .find(|s| s.harness == slot.harness && h.resume_spec(&s.id) == slot.spec)
+                        .map(|s| s.id.clone())
+                });
+                crate::turns::Started {
+                    harness: slot.harness.clone(),
+                    at: slot.started,
+                    resumed,
+                    running: slot.pane.running(),
+                }
+            })
+            .collect();
+        let states = crate::turns::pane_states(&started, &sessions);
+        let bound = crate::turns::bind(&started, &sessions)
+            .into_iter()
+            .zip(&started)
+            .map(|(id, p)| id.filter(|_| p.running))
+            .collect();
+        (states, bound, sessions)
+    }
+
+    /// One pane's state, read now.
+    fn pane_state(&mut self, at: usize, pane: u32) -> Option<Turn> {
+        self.agents_of(at).0.get(pane as usize).copied().flatten()
     }
 
     /// The board and the records behind it. Read here so that nothing opens a
@@ -732,16 +878,23 @@ impl Session {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let config = crate::routing::read_at(&self.config);
+                let harnesses =
+                    self.harnesses.clone().unwrap_or_else(|| crate::ringframe::harnesses(&root));
+                let config = crate::routing::read_at(&self.config, &harnesses);
                 self.projects.push(Project {
                     routing: config.routing(&root),
                     ringframe: config.ringframe_override(&root),
+                    notify: config.notify(),
+                    turbo: config.turbo(&root),
                     root,
                     panes: Vec::new(),
                     ledger,
                     waiting: Vec::new(),
                     readiness: HashMap::new(),
                     folds: crate::acts::Folds::default(),
+                    turns: crate::turns::Turns::default(),
+                    harnesses,
+                    agents: None,
                 });
                 self.projects.len() - 1
             }
@@ -762,7 +915,9 @@ impl Session {
                     )
                 });
             }
-            Call::Open { rows, cols, path: project } => {
+            // Opening resizes nothing: another window may be drawing these
+            // agents at its own size.
+            Call::Open { path: project, .. } => {
                 let at = self.project_at(PathBuf::from(project));
                 self.clients.watching.insert(client, at);
                 // An act routed to a harness with no pane yet still needs its
@@ -773,12 +928,10 @@ impl Session {
                         self.look_at(at, &harness);
                     }
                 }
-                for slot in &mut self.projects[at].panes {
-                    let _ = slot.pane.resize(rows, cols);
-                }
                 self.projects[at].ledger.refresh();
                 let Out::Units { units, records } = self.board_of(at) else { unreachable!() };
                 let panes = self.pane_infos(at);
+                let (agent_panes, bound, sessions) = self.agents_of(at);
                 // Everything comes back in the answer — the board, the panes,
                 // and a replay of what each has printed — rather than as
                 // events sent before it. A client that waits for its answer
@@ -795,6 +948,10 @@ impl Session {
                     "replay": replay,
                     "readiness": readiness_json(&self.projects[at].readiness),
                     "routing": routing_json(&self.projects[at].routing),
+                    "agents": {"panes": agent_panes, "bound": bound, "sessions": sessions},
+                    "notify": self.projects[at].notify,
+                    "turbo": self.projects[at].turbo,
+                    "harnesses": &self.projects[at].harnesses,
                     // Why this workspace could not finish an Ask, if it could not.
                     "gap": workspace_gap(&self.projects[at].root),
                 })));
@@ -803,6 +960,7 @@ impl Session {
                 if let Some(slot) =
                     self.watched(client).and_then(|(_, p)| p.panes.get_mut(pane as usize))
                 {
+                    slot.follow(client);
                     let _ = slot.pane.send(&bytes);
                 }
             }
@@ -823,7 +981,8 @@ impl Session {
                 if let Some(slot) =
                     self.watched(client).and_then(|(_, p)| p.panes.get_mut(pane as usize))
                 {
-                    let _ = slot.pane.resize(rows, cols);
+                    slot.wants.insert(client, (rows, cols));
+                    slot.follow(client);
                 }
             }
             Call::Stage { pane, bytes, how, what, why } => {
@@ -841,6 +1000,7 @@ impl Session {
                     how,
                     confirm: None,
                     fresh: false,
+                    sends: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -878,7 +1038,16 @@ impl Session {
                     return Ok(Answer::No("no_project", "open a project first".into()));
                 };
                 let root = self.projects[at].root.clone();
-                return Ok(Answer::Ok(serde_json::json!({"starts": starts(&root)})));
+                let found = &self.projects[at].harnesses;
+                return Ok(Answer::Ok(serde_json::json!({"starts": starts(&root, found)})));
+            }
+            Call::Turbo { on } => {
+                let Some(at) = self.clients.watching.get(&client).copied() else {
+                    return Ok(Answer::No("no_project", "open a project first".into()));
+                };
+                // Held while the daemon runs; `config.toml` says where it starts.
+                self.projects[at].turbo = on;
+                return Ok(Answer::Ok(serde_json::json!({"turbo": on})));
             }
             Call::Resolve { pending, yes, force } => {
                 let Some(at) = self.clients.watching.get(&client).copied() else {
@@ -940,7 +1109,20 @@ impl Session {
         let cwd = p.root.to_string_lossy().into_owned();
         let mut parts = spec.split_whitespace();
         let program = parts.next().unwrap_or(spec).to_string();
-        let args: Vec<String> = parts.map(str::to_string).collect();
+        let mut args: Vec<String> = parts.map(str::to_string).collect();
+        // Turbo mode, when this project's config turns it on: the harness's
+        // own flags from its profile, each once, after the person's own.
+        let flags = if p.turbo {
+            p.harnesses.find(harness).map(|h| h.turbo.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        for flag in &flags {
+            if !args.contains(flag) {
+                args.push(flag.clone());
+            }
+        }
+        let turbo = !flags.is_empty();
         let argv: Vec<&str> = args.iter().map(String::as_str).collect();
 
         let id = self.projects[project].panes.len() as u32;
@@ -963,10 +1145,14 @@ impl Session {
                     harness: harness_name.clone(),
                     spec: spec.to_string(),
                     replay: Vec::new(),
+                    size: (24, 80),
+                    wants: HashMap::new(),
+                    started: crate::turns::now_millis(),
+                    turbo,
                 });
                 self.clients.broadcast(
                     project,
-                    &Out::Added { pane: id, harness: harness_name, spec: spec.to_string() },
+                    &Out::Added { pane: id, harness: harness_name, spec: spec.to_string(), turbo },
                 );
             }
             Err(e) => {

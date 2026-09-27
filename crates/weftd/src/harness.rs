@@ -1,6 +1,8 @@
-//! Finding a supported harness on this machine.
+//! Finding a harness on this machine.
 //!
-//! The table itself, and every rule about it, live in [`weft_core::harness`].
+//! What a harness is comes from its RingFrame profile, read by
+//! [`crate::ringframe::harnesses`]; every rule about it lives in
+//! [`weft_core::harness`].
 //! What is here is the two questions only a machine can answer: where this
 //! harness keeps its configuration, and whether it is installed.
 
@@ -17,11 +19,12 @@ pub trait OnThisMachine {
 impl OnThisMachine for Harness {
     /// Where this harness keeps its configuration, honouring its own variable.
     fn config_home(&self) -> PathBuf {
-        self.config_home_from(std::env::var_os(self.config_env), home())
+        let set = self.config_env.as_ref().and_then(std::env::var_os);
+        self.config_home_from(set, home())
     }
     fn on_path(&self) -> bool {
         std::env::var_os("PATH").is_some_and(|paths| {
-            std::env::split_paths(&paths).any(|dir| dir.join(self.program).is_file())
+            std::env::split_paths(&paths).any(|dir| dir.join(&self.program).is_file())
         })
     }
 }

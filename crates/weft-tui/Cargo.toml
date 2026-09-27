@@ -23,4 +23,5 @@ weft-proto = { path = "../weft-proto" }
 # not in the graph of anything that ships this crate, which is the whole point
 # of the split.
 [dev-dependencies]
+weft-core = { path = "../weft-core", features = ["fixtures"] }
 weftd = { path = "../weftd" }

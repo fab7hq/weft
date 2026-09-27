@@ -21,10 +21,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let geo = geometry(app, area);
     let th = app.theme;
+    app.hits = Default::default();
 
-    frame.render_widget(title_bar(app, geo.title.width), geo.title);
+    let (title, turbo) = title_bar(app, geo.title.width);
+    app.hits.turbo = turbo.map(|(from, to)| (geo.title.y, geo.title.x + from, geo.title.x + to));
+    frame.render_widget(title, geo.title);
     if geo.tabs.height > 0 {
-        frame.render_widget(Paragraph::new(tab_row(app, &geo)), geo.tabs);
+        let (line, tabs) = tab_row(app, &geo);
+        app.hits.tabs =
+            tabs.into_iter().map(|(from, to, pane)| (geo.tabs.y, from, to, pane)).collect();
+        frame.render_widget(Paragraph::new(line), geo.tabs);
     }
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
 
@@ -186,7 +192,8 @@ fn vlines(height: u16, th: Theme) -> Vec<Line<'static>> {
 
 // --- the bars ----------------------------------------------------------------
 
-fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
+/// The title bar, and the columns its turbo switch covers, for a click.
+fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u16, u16)>) {
     let th = app.theme;
     // Where you are is shown by what is lit, not by a word: WEFT in the accent
     // means the keys are Weft's, and the agent's own name in the accent means
@@ -213,6 +220,16 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
     if app.sync_view().is_some_and(|v| v.needs_anything()) {
         right.push(Span::styled("↑ [U]PDATE   ", lit));
     }
+    // The turbo switch: always there, because it matters most before the
+    // first agent starts. It decides how the next agents start.
+    let before: usize = right.iter().map(Span::width).sum();
+    let switch = Span::styled(
+        if app.turbo() { "⚡ [T]URBO ON" } else { "[T]URBO OFF" },
+        if app.turbo() { lit } else { th.label() },
+    );
+    let switch_len = switch.width();
+    right.push(switch);
+    right.push(Span::raw("   "));
     right.extend(match (app.pane_count(), app.focus) {
         (0, _) => vec![Span::styled("NO AGENT RUNNING ", th.label())],
         // The counts keep their place whichever surface has the keys: they
@@ -231,11 +248,16 @@ fn title_bar(app: &App, width: u16) -> Paragraph<'static> {
             spans
         }
     });
-    Paragraph::new(spread(left, right, width))
+    let width_of = |spans: &[Span]| spans.iter().map(Span::width).sum::<usize>();
+    let (l, r) = (width_of(&left), width_of(&right));
+    let from = (l + (width as usize).saturating_sub(l + r).max(1) + before) as u16;
+    let hit = (from + switch_len as u16 <= width).then_some((from, from + switch_len as u16));
+    (Paragraph::new(spread(left, right, width)), hit)
 }
 
 /// Agents are tabs over the pane. The focused surface's header is the accent.
-fn tab_row(app: &App, geo: &Geo) -> Line<'static> {
+/// The tab row, and the columns each agent's tab covers, for a click.
+fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, usize)>) {
     let th = app.theme;
     let in_weft = app.focus == Focus::Weft;
     let mut spans: Vec<Span> = Vec::new();
@@ -267,19 +289,23 @@ fn tab_row(app: &App, geo: &Geo) -> Line<'static> {
             th.title(),
         );
         push(&mut spans, &mut col, back, th.label());
-        return Line::from(spans);
+        return (Line::from(spans), Vec::new());
     }
+    let mut tabs = Vec::new();
 
     for i in 0..app.pane_count() {
         let active = i == app.pane_focus;
-        let waiting = app.waiting(i).is_some();
+        let waiting = app.waiting(i);
         let harness = app.harness_at(i).unwrap_or("agent").to_string();
         let ready = app.readiness(&harness).is_ready();
+        // ⚡: started in turbo mode, every permission granted.
+        let turbo = app.pane_turbo(i);
         let text = format!(
-            "{}{} {}{}{}",
+            "{}{} {}{}{}{}",
             if active { "▸ " } else { "" },
             i + 1,
             harness,
+            if turbo { " ⚡" } else { "" },
             if waiting { " ●" } else { "" },
             if ready { "" } else { " ⚠" }
         );
@@ -291,17 +317,18 @@ fn tab_row(app: &App, geo: &Geo) -> Line<'static> {
             (_, _, true) => th.needs_you(),
             _ => th.label(),
         };
+        let from = geo.tabs.x + col;
         push(&mut spans, &mut col, text, style);
+        tabs.push((from, geo.tabs.x + col, i));
         push(&mut spans, &mut col, "    ".into(), th.label());
     }
     push(&mut spans, &mut col, "+".into(), th.label());
-    Line::from(spans)
+    (Line::from(spans), tabs)
 }
 
 /// A refusal from the daemon, in words that say what to do about it.
 fn refused(code: &str) -> String {
     match code {
-        "PaneBlocked" => "Weft did not type it: the agent looks like it is waiting for you.".into(),
         "ModeNotEntered" => {
             "Weft did not type it: the agent never showed the command as on.".into()
         }
@@ -347,11 +374,12 @@ fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         return plain("  [Enter] ANSWER IT   [Y] WHY WEFT THINKS SO");
     }
     if app.detail().is_some() {
-        // Three keys, the same three on every state of the view. `[P]ROCEED`
-        // is dim when there is nothing to carry forward, and the state line
-        // at the top of the view is what says why.
+        // `[P]ROCEED` is there only while the Ask's prompt is still to be
+        // sent. Once it went, what happens next is the person's: the one
+        // thing offered is a follow-up.
         let mut left = vec![Span::raw("  ")];
-        for (label, act) in [("[P]ROCEED", Act::Proceed), ("[F] FOLLOW UP", Act::FollowUp)] {
+        let proceed = app.proceeds().then_some(("[P]ROCEED", Act::Proceed));
+        for (label, act) in proceed.into_iter().chain([("[F] FOLLOW UP", Act::FollowUp)]) {
             left.push(key(app, label, act));
             left.push(Span::raw("   "));
         }
@@ -418,7 +446,7 @@ fn hint(app: &App) -> Paragraph<'static> {
         (Some(_), _) => String::new(),
         (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(
-            " {} needs your answer (from the screen). Weft never answers for you.",
+            " {} is asking you something. Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")
         ),
         (None, Focus::Weft) if app.detail().is_some() => String::new(),
@@ -452,7 +480,9 @@ fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragraph<'static
     // wheel. One line goes to the "N above" marker when the list is scrolled.
     app.note_list_rows(area.height.saturating_sub(1) as usize);
 
-    if app.units().is_empty() {
+    // An agent is on the list the moment it is opened, so the empty list is
+    // only for a project with no agent and nothing asked.
+    if app.units().is_empty() && app.pane_count() == 0 {
         lines.push(Line::raw(""));
         if let Some((name, state)) = app.not_ready() {
             lines.push(Line::styled(
@@ -503,7 +533,25 @@ fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragraph<'static
             lines.push(Line::styled(format!("   ↓ {} more", all.len() - i), th.label()));
             break;
         }
+        app.hits.rows.push((area.y + lines.len() as u16, i));
         lines.push(sidebar_row(app, row, i == app.selected, width));
+    }
+    // An agent open and nothing asked yet: say what comes next under it.
+    if app.units().is_empty() {
+        let next: Vec<String> = match app.not_ready() {
+            Some((name, state)) => vec![
+                state.say(&name).unwrap_or_default(),
+                "Nothing is written down until it is set up.".into(),
+            ],
+            None if app.record_available() => {
+                vec!["[A]SK for something and Weft writes it down.".into()]
+            }
+            None => vec!["No ringframe on PATH, so there is no record to read.".into()],
+        };
+        if lines.len() + 1 + next.len() <= room {
+            lines.push(Line::raw(""));
+            lines.extend(next.into_iter().map(|n| Line::styled(format!(" {n}"), th.label())));
+        }
     }
     Paragraph::new(lines)
 }
@@ -531,10 +579,17 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
                 Span::styled("⌫".to_string(), th.label()),
             ])
         }
-        Row::Harness { name, folded, waiting, running, .. } => {
-            let tail = if *waiting > 0 { format!("{waiting} ●  ") } else { "   ".into() };
+        Row::Harness { project, name, folded, waiting, running } => {
+            // The badge of an agent asking for input: the one thing NEEDS YOU is.
+            let tail = match waiting {
+                0 => "   ".to_string(),
+                1 => "● needs your input  ".to_string(),
+                n => format!("● {n} need your input  "),
+            };
             let gone = if *running { "" } else { " · not running" };
-            let head = format!("   {} {name}{gone}", if *folded { "▸" } else { "▾" });
+            // ⚡: an agent of it runs in turbo mode, as its tab says too.
+            let turbo = if app.harness_turbo(*project, name) { " ⚡" } else { "" };
+            let head = format!("   {} {name}{turbo}{gone}", if *folded { "▸" } else { "▾" });
             let room = width.saturating_sub(tail.chars().count() + 1);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
@@ -545,35 +600,41 @@ fn sidebar_row(app: &App, row: &crate::app::Row, picked: bool, width: usize) -> 
             // The row's own project, not the focused one: a unit in the
             // background was being drawn from whichever board was in front.
             let Some(unit) = app.units_of(*project).get(*unit) else { return Line::raw("") };
-            let (word, waiting) = row_state(unit);
-            let state = format!("{}{word}  ", if waiting { "● " } else { "" });
+            // Where the Ask stands, and never an alarm: what needs you is an
+            // agent asking, and that is its harness's row.
+            let word = row_state(unit);
+            // The agent's state, when its session reported one; nothing
+            // rather than a guess when it did not.
+            let agent = app.unit_turn(*project, unit).map(|t| format!("{} · ", t.plain()));
+            let state = format!("{}{word}  ", agent.unwrap_or_default());
             let head = format!("      {}", unit.title);
             let room = width.saturating_sub(state.chars().count() + 1);
             Line::from(vec![
                 pick(padded(&clip(&head, room), room)),
-                Span::styled(state, if waiting { th.needs_you() } else { th.label() }),
+                Span::styled(state, th.label()),
             ])
         }
     }
 }
 
 /// Where a unit stands, in one word: the furthest act that has happened, in
-/// the past tense, and whether it is waiting on the person.
+/// the past tense.
 ///
 /// The same three acts the detail view names, so the sidebar and the view
 /// teach one vocabulary between them rather than two.
-fn row_state(unit: &Unit) -> (String, bool) {
+fn row_state(unit: &Unit) -> &'static str {
     if unit.cancelled {
-        return ("CANCELLED".into(), false);
-    }
-    let word = if unit.sealed.is_some() {
+        "CANCELLED"
+    } else if unit.requested_only {
+        // Asked, and its prompt still being composed: under way, not done.
+        "ASKING"
+    } else if unit.sealed.is_some() {
         "SEALED"
     } else if unit.check.is_some() {
         "EVALED"
     } else {
         "ASKED"
-    };
-    (word.into(), unit.needs_you())
+    }
 }
 
 // --- the pane, the drawer, and no agent ---------------------------------------
@@ -708,7 +769,7 @@ fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Weft => "WEFT".into(),
         Modal::CloseProject { .. } => "CLOSE THIS PROJECT?".into(),
         Modal::OpenProject { .. } => "OPEN A PROJECT".into(),
-        Modal::SendAnyway { .. } => "THE AGENT LOOKS LIKE IT IS WAITING".into(),
+        Modal::SendAnyway { .. } => "THE AGENT HAS NOT SAID IT IS READY".into(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
@@ -724,14 +785,11 @@ fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         // The menu is its choices; there is nothing to say above them.
         Modal::Weft => Vec::new(),
-        Modal::SendAnyway { evidence, .. } => vec![
-            "Weft read this on the screen and took it for a question meant".into(),
-            "for you:".into(),
+        Modal::SendAnyway { why, .. } => vec![
+            format!("Weft did not type it: {why}."),
             String::new(),
-            format!("  {evidence}"),
-            String::new(),
-            "Typing now would answer it. If that line is left over from".into(),
-            "something already dealt with, say so and Weft will type.".into(),
+            "Weft types on its own only into an agent that has said it is".into(),
+            "ready. If you can see it is, say so and Weft will type.".into(),
             String::new(),
         ],
         Modal::OpenProject { text } => {
@@ -818,6 +876,7 @@ fn help_lines(app: &App) -> Vec<String> {
         ("O", "open a project"),
         ("N", "new agent"),
         ("B", "sidebar"),
+        ("T", "turbo mode, next agents"),
         ("W", "the Weft menu"),
         ("H", "help"),
         ("X", "quit"),
@@ -904,14 +963,17 @@ fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
         Modal::PickUp { harness, session, .. } => crate::app::pick_up_choices(session.as_ref())
             .into_iter()
             .map(|c| match (c, session) {
-                (crate::app::PickUp::Resume, Some(s)) => clip(
-                    &format!(
-                        "Resume the session this was asked in · {} · {}",
-                        crate::sessions::clock(&s.at),
-                        s.last
-                    ),
-                    72,
-                ),
+                (crate::app::PickUp::Resume, Some(s)) => {
+                    let mut said = format!(
+                        "Resume the session this was asked in · {}",
+                        crate::sessions::clock(&s.at)
+                    );
+                    // A harness with no prompt hook has no last prompt to show.
+                    if !s.last.is_empty() {
+                        said.push_str(&format!(" · {}", s.last));
+                    }
+                    clip(&said, 72)
+                }
                 _ => format!("Start a fresh {harness}"),
             })
             .collect(),
@@ -970,7 +1032,8 @@ fn routing_lines(app: &App) -> Vec<String> {
 }
 
 fn spread(left: Vec<Span<'static>>, right: Vec<Span<'static>>, width: u16) -> Line<'static> {
-    let used: usize = left.iter().chain(right.iter()).map(|s| s.content.chars().count()).sum();
+    // Display width, not characters: `⚡` takes two cells.
+    let used: usize = left.iter().chain(right.iter()).map(Span::width).sum();
     let gap = (width as usize).saturating_sub(used).max(1);
     let mut spans = left;
     spans.push(Span::raw(" ".repeat(gap)));
@@ -1009,6 +1072,19 @@ fn fold(text: &str, width: usize) -> Vec<String> {
         out.push(chars[at..].iter().collect());
     }
     out
+}
+
+/// What the list and the panel say, as text, for tests that read the screen
+/// the way a person would.
+#[cfg(test)]
+pub(crate) fn sidebar_text(app: &App) -> String {
+    let flat = |l: Line<'static>| l.spans.iter().map(|s| s.content.to_string()).collect::<String>();
+    app.rows().iter().map(|r| flat(sidebar_row(app, r, false, 80))).collect::<Vec<_>>().join("\n")
+}
+
+#[cfg(test)]
+pub(crate) fn panel_text(app: &App) -> Vec<String> {
+    panel_lines(app).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1121,8 +1197,13 @@ mod tests {
         }
         let drawn = screen(&mut a, 80, 24);
         let title = drawn.lines().next().expect("a title bar");
-        assert!(title.contains("OPEN  2"), "{title}");
-        assert!(title.contains("NEEDS YOU  2"), "{title}");
+        assert!(title.contains("OPEN  1"), "one agent is open: {title}");
+        // NEEDS YOU is an agent asking for input: here, none is.
+        assert!(!title.contains("NEEDS YOU"), "{title}");
+        crate::app::tests::agent_says(&mut a, "codex", "fixture", "waiting");
+        let drawn = screen(&mut a, 80, 24);
+        let title = drawn.lines().next().expect("a title bar");
+        assert!(title.contains("NEEDS YOU  1"), "{title}");
     }
 
     #[test]
@@ -1171,17 +1252,19 @@ mod tests {
         let row = drawn.lines().find(|l| l.contains("health endpoint")).expect("the row");
         // Whose it is is the level above, not repeated on every child.
         assert!(drawn.lines().any(|l| l.contains("▾ codex")), "{drawn}");
-        // The act that is waiting, named as the bar names it. What the judges
-        // said is a section of the detail view, not four more lines here.
-        assert!(row.contains("● EVALED"), "{row}");
+        // The furthest act, named as the bar names it, and never an alarm.
+        // What the judges said is a section of the detail view, not four
+        // more lines here.
+        assert!(row.contains("EVALED") && !row.contains('●'), "{row}");
         assert!(!drawn.contains("DOESN'T MATCH"), "the verdict is not on the row:\n{drawn}");
     }
 
     #[test]
-    fn a_handoff_that_is_ready_carries_the_dot_the_vocabulary_gives_it() {
+    fn an_ask_row_carries_no_dot_even_when_its_prompt_is_ready() {
+        // The dot is an agent asking for input, on its harness's row.
         let mut a = judged();
         let drawn = screen(&mut a, 80, 24);
-        assert!(drawn.contains("● ASKED"), "{drawn}");
+        assert!(drawn.contains("ASKED") && !drawn.contains("● ASKED"), "{drawn}");
     }
 
     #[test]
@@ -1241,7 +1324,7 @@ mod tests {
             lines[23]
         );
         assert!(!lines[0].contains("Ctrl"), "the title bar stops repeating it: {}", lines[0]);
-        assert!(lines[0].contains("NEEDS YOU"), "the counts keep their place: {}", lines[0]);
+        assert!(lines[0].contains("OPEN"), "the counts keep their place: {}", lines[0]);
     }
 
     #[test]
@@ -1273,7 +1356,9 @@ mod tests {
         }
         assert!(drawn.contains("ASK"), "and the top of it is on the screen:\n{drawn}");
         assert!(drawn.contains("A check is a judgement, not a guarantee."), "{drawn}");
-        assert!(drawn.contains("[P]ROCEED"), "{drawn}");
+        // Judged, it has nothing to send: [F] FOLLOW UP is the one way on.
+        assert!(!drawn.contains("[P]ROCEED"), "{drawn}");
+        assert!(drawn.contains("[F] FOLLOW UP"), "{drawn}");
         assert!(drawn.contains("[ESC] CLOSE"), "{drawn}");
     }
 
@@ -1379,15 +1464,11 @@ mod tests {
     }
 
     #[test]
-    fn space_goes_to_the_ask_that_needs_you_and_opens_it() {
+    fn space_goes_to_an_agent_asking_and_never_to_an_ask() {
         let mut a = judged();
         press(&mut a, KeyCode::Char(' '));
-        assert_eq!(
-            a.selected_unit().map(|u| u.title.clone()),
-            Some("readme fix".into()),
-            "it moved past the selection to the next thing that needs you"
-        );
-        assert!(a.detail().is_some(), "and opened it");
+        assert!(a.detail().is_none(), "an Ask is not NEEDS YOU");
+        assert_eq!(a.hint_text(), Some("Nothing needs your input."));
     }
 
     #[test]
@@ -1424,9 +1505,13 @@ mod tests {
     fn help_says_what_this_project_routes() {
         let mut a = judged();
         let text = "[routing]\neval = \"claude-code\"\nseal = \"codex\"\n";
-        a.set_routing(weft_core::config::read(text).routing(a.root()));
+        a.set_routing(
+            weft_core::config::read(text, &weft_core::harness::fixture::harnesses())
+                .routing(a.root()),
+        );
         press(&mut a, KeyCode::Char('h'));
-        let drawn = screen(&mut a, 80, 24);
+        // Tall enough for the whole of help; at 24 rows it scrolls to this.
+        let drawn = screen(&mut a, 80, 30);
         assert!(drawn.contains("This project routes"), "{drawn}");
         assert!(drawn.contains("eval → claude-code"), "{drawn}");
         assert!(drawn.contains("seal → codex"), "{drawn}");
@@ -1496,15 +1581,7 @@ mod tests {
     #[test]
     fn a_pane_waiting_for_an_answer_offers_to_take_you_there_and_nothing_else() {
         let mut a = judged();
-        a.input(0, b"Allow command?\r\n").expect("type");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            a.pump();
-            if a.waiting(0).is_some() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
+        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
         let tabs = screen(&mut a, 80, 24);
         assert!(
             tabs.lines().nth(1).is_some_and(|l| l.contains('●')),
@@ -1515,7 +1592,7 @@ mod tests {
         let drawn = screen(&mut a, 80, 24);
         assert!(drawn.contains("[Enter] ANSWER IT"), "{drawn}");
         assert!(drawn.contains("[Y] WHY WEFT THINKS SO"), "{drawn}");
-        assert!(drawn.contains("(from the screen)"), "the inference is labelled: {drawn}");
+        assert!(drawn.contains("is asking you something"), "{drawn}");
         assert!(drawn.contains("Weft never answers for you"), "{drawn}");
     }
 

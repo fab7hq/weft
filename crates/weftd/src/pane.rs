@@ -159,16 +159,16 @@ impl Pane {
         Ok(())
     }
 
-    pub fn state(&mut self, blocked: bool) -> PaneState {
-        PaneState { running: self.running(), blocked, injecting: self.injecting }
+    pub fn state(&mut self) -> PaneState {
+        PaneState { running: self.running(), injecting: self.injecting }
     }
 
     /// Type a prompt on the person's behalf.
     ///
     /// Returns once the bytes are written. That is all it proves: the caller
     /// must never report this as delivery.
-    pub fn inject(&mut self, payload: &[u8], blocked: bool) -> Result<Attempt, Refusal> {
-        self.inject_as(payload, blocked, &Handoff::Whole)
+    pub fn inject(&mut self, payload: &[u8]) -> Result<Attempt, Refusal> {
+        self.inject_as(payload, &Handoff::Whole)
     }
 
     /// Type a prompt the way its command requires.
@@ -176,12 +176,7 @@ impl Pane {
     /// The bytes that reach the host are the same whichever way this goes; what
     /// changes is whether the host reads the command. Typed, it does; inside a
     /// folded paste, it does not.
-    pub fn inject_as(
-        &mut self,
-        payload: &[u8],
-        blocked: bool,
-        how: &Handoff,
-    ) -> Result<Attempt, Refusal> {
+    pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
         if let Handoff::EnterMode { command, active, .. } = how {
             // The mode first, on its own, and only believed when the host says
             // so. A mode switch is handled by the TUI and submits no prompt, so
@@ -206,7 +201,7 @@ impl Pane {
             std::thread::sleep(inject::ENTER_DELAY);
         }
         let body = how.body(payload);
-        self.write_and_submit(body, blocked, typed.is_some())
+        self.write_and_submit(body, typed.is_some())
     }
 
     /// Wait until the pane has drawn something and then left it alone for
@@ -246,10 +241,9 @@ impl Pane {
     fn write_and_submit(
         &mut self,
         payload: &[u8],
-        blocked: bool,
         command_typed: bool,
     ) -> Result<Attempt, Refusal> {
-        let state = self.state(blocked);
+        let state = self.state();
         inject::check(&state)?;
         self.injecting = true;
         let bracketed = self.bracketed_paste();
@@ -428,8 +422,7 @@ mod tests {
         // Enter must not be sent and the attempt must say so.
         let mut pane = sh("stty -echo; cat > /dev/null");
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt =
-            pane.inject(b"/plan Return the real build number", false).expect("allowed to write");
+        let attempt = pane.inject(b"/plan Return the real build number").expect("allowed to write");
         assert!(!attempt.echoed, "nothing was echoed");
         assert!(!attempt.submitted, "so Enter was withheld");
     }
@@ -447,7 +440,7 @@ mod tests {
             payload.len()
         ));
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(payload, false).expect("allowed to write");
+        let attempt = pane.inject(payload).expect("allowed to write");
         assert!(attempt.echoed, "the whole prompt is there, folded");
         assert!(!attempt.submitted, "so Enter is withheld");
         assert_eq!(attempt.folded_command.as_deref(), Some("/plan"), "and it says which command");
@@ -463,7 +456,7 @@ mod tests {
             payload.len()
         ));
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(payload, false).expect("allowed to write");
+        let attempt = pane.inject(payload).expect("allowed to write");
         assert!(attempt.submitted, "nothing here needs a command to run");
         assert_eq!(attempt.folded_command, None);
     }
@@ -472,7 +465,7 @@ mod tests {
     fn injected_bytes_reach_the_process_exactly() {
         let mut pane = sh("cat > /tmp/weft-inject-test.txt");
         let payload = "/plan Return the real build number";
-        pane.inject(payload.as_bytes(), false).expect("allowed");
+        pane.inject(payload.as_bytes()).expect("allowed");
         std::thread::sleep(std::time::Duration::from_millis(200));
         pane.send(&[4]).expect("eof"); // Ctrl-D closes cat's stdin
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -482,15 +475,9 @@ mod tests {
     }
 
     #[test]
-    fn injection_into_a_blocked_pane_is_refused_before_anything_is_written() {
-        let mut pane = sh("cat > /dev/null");
-        assert_eq!(pane.inject(b"anything", true), Err(Refusal::PaneBlocked));
-    }
-
-    #[test]
     fn an_injection_waits_for_the_pane_to_show_the_text() {
         let mut pane = sh("cat");
-        let attempt = pane.inject(b"$rf:eval the distinctive tail", false).expect("allowed");
+        let attempt = pane.inject(b"$rf:eval the distinctive tail").expect("allowed");
         assert!(attempt.echoed, "Enter is sent once the text is visible");
         assert!(attempt.bytes > 0);
     }

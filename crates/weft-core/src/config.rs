@@ -19,25 +19,30 @@ use crate::routing::{ACTS, Routing};
 pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval is split, and RingFrame
 # overrides. Read when a project opens; restart Weft after editing.
 
+# notify = false               # no terminal notification when an agent needs you
+# turbo = true                 # agents run with every permission granted and no
+#                              # question asked: each harness's `turbo` flag, from
+#                              # its RingFrame profile. Codex's also drops its sandbox.
+
 [routing]                      # every project; each act optional
-# ask  = "codex"
-# eval = "claude-code"
-# seal = "claude-code"
+# ask  = "<harness>"          # a harness as its RingFrame profile names it
+# eval = "<harness>"
+# seal = "<harness>"
 
 [eval.gather]                  # an Eval split across harnesses
-# harness = "codex"
-# context = { model = "gpt-6-luna", effort = "low" }
+# harness = "<harness>"
+# context = { model = "<model>", effort = "low" }
 
 [eval.debate]
-# harness   = "claude-code"
-# adversary = { model = "claude-opus-5-5", effort = "high" }
+# harness   = "<harness>"
+# adversary = { model = "<model>", effort = "high" }
 
 [ringframe]                    # RingFrame overrides, in RingFrame's keys
 # [ringframe.deltas."practices/software-development"]
 # ...
 
 # [projects."/Users/me/work/thing"]      # one project: the same tables
-# routing = { eval = "codex" }
+# routing = { eval = "<harness>" }
 "#;
 
 /// The tables one scope holds, keeping only names Weft knows.
@@ -46,6 +51,8 @@ struct Tables {
     routing: Map<String, Value>,
     eval: Map<String, Value>,
     ringframe: Map<String, Value>,
+    /// `turbo = true | false`, when this scope says.
+    turbo: Option<bool>,
 }
 
 /// The file as read.
@@ -59,12 +66,17 @@ pub struct Config {
     pub ignored: Vec<String>,
     /// The files this one replaced, found beside it and not read.
     pub leftover: Vec<String>,
+    /// `notify = false`: no terminal notification when an agent needs you.
+    quiet: bool,
+    /// The harnesses the profiles define, while the file is read.
+    known: Vec<String>,
 }
 
 /// Parse the file. Nothing readable is nothing set, which is how Weft behaves
 /// without one.
-pub fn read(text: &str) -> Config {
-    let mut c = Config::default();
+pub fn read(text: &str, known: &crate::harness::Harnesses) -> Config {
+    let mut c =
+        Config { known: known.iter().map(|h| h.name.clone()).collect(), ..Config::default() };
     let parsed = text.parse::<toml::Table>().ok().and_then(|t| serde_json::to_value(t).ok());
     let Some(Value::Object(file)) = parsed else { return c };
     c.machine = c.tables(&file, "");
@@ -80,13 +92,14 @@ pub fn read(text: &str) -> Config {
     }
     c.unknown.sort();
     c.ignored.sort();
+    c.known.clear();
     c
 }
 
 /// A harness Weft supports, or the name reported as unknown.
 fn harness<'a>(name: &'a Value, at: &str, c: &mut Config) -> Option<&'a str> {
     match name.as_str() {
-        Some(h) if crate::harness::find(h).is_some() => Some(h),
+        Some(h) if c.known.iter().any(|k| k == h) => Some(h),
         Some(h) => {
             c.unknown.push(format!("{at}: {h}"));
             None
@@ -99,6 +112,18 @@ fn harness<'a>(name: &'a Value, at: &str, c: &mut Config) -> Option<&'a str> {
 }
 
 impl Config {
+    /// Whether Weft tells the person, through the terminal, when an agent
+    /// they are not looking at needs them. On unless one line turns it off.
+    pub fn notify(&self) -> bool {
+        !self.quiet
+    }
+
+    /// Whether agents Weft starts in the project at `root` run in turbo mode:
+    /// the project's `turbo` line, else the machine's, else off.
+    pub fn turbo(&self, root: &Path) -> bool {
+        self.project(root).and_then(|p| p.turbo).or(self.machine.turbo).unwrap_or(false)
+    }
+
     /// One scope's tables, keeping what Weft knows and reporting the rest.
     fn tables(&mut self, t: &Map<String, Value>, at: &str) -> Tables {
         let mut out = Tables::default();
@@ -133,6 +158,8 @@ impl Config {
                     }
                 }
                 ("ringframe", Value::Object(r)) => out.ringframe = r.clone(),
+                ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
+                ("turbo", Value::Bool(on)) => out.turbo = Some(*on),
                 ("projects", _) if at.is_empty() => {}
                 _ => self.ignored.push(here),
             }
@@ -229,18 +256,51 @@ fn merge(base: &mut Map<String, Value>, over: &Map<String, Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_(text: &str) -> Config {
+        read(text, &crate::harness::fixture::harnesses())
+    }
     use serde_json::json;
 
     const HERE: &str = "/work/thing";
 
     fn at(text: &str) -> Routing {
-        read(text).routing(Path::new(HERE))
+        read_(text).routing(Path::new(HERE))
     }
 
     #[test]
     fn the_starting_file_sets_nothing() {
-        assert_eq!(read(STARTING), Config::default());
-        assert_eq!(read(STARTING).ringframe_override(Path::new(HERE)), None);
+        assert_eq!(read_(STARTING), Config::default());
+        assert_eq!(read_(STARTING).ringframe_override(Path::new(HERE)), None);
+    }
+
+    /// One line turns notifications off; absent, they are on.
+    #[test]
+    fn one_line_turns_notifications_off() {
+        assert!(read_(STARTING).notify(), "on unless turned off");
+        assert!(!read_("notify = false\n").notify());
+        let uncommented = STARTING.replace("# notify = false", "notify = false");
+        assert!(!read_(&uncommented).notify(), "the starting file's own line works uncommented");
+        assert!(read_("notify = true\n").notify());
+        let c = read_("notify = \"no\"\n");
+        assert!(c.notify(), "a value that is not a yes or a no changes nothing");
+        assert_eq!(c.ignored, ["notify"]);
+    }
+
+    /// Turbo mode: off unless turned on, for every project or for one, the
+    /// project's line over the machine's.
+    #[test]
+    fn turbo_is_off_unless_turned_on_and_a_project_wins() {
+        let here = Path::new(HERE);
+        assert!(!read_(STARTING).turbo(here), "off in the starting file");
+        let uncommented = STARTING.replace("# turbo = true", "turbo = true");
+        assert!(read_(&uncommented).turbo(here), "its own line works uncommented");
+        let text = format!("turbo = true\n\n[projects.\"{HERE}\"]\nturbo = false\n");
+        assert!(!read_(&text).turbo(here), "the project's own line wins");
+        assert!(read_(&text).turbo(Path::new("/elsewhere")), "the machine's holds elsewhere");
+        let c = read_("turbo = \"yes\"\n");
+        assert!(!c.turbo(here), "anything but a yes or a no changes nothing");
+        assert_eq!(c.ignored, ["turbo"]);
     }
 
     #[test]
@@ -264,7 +324,7 @@ routing = { eval = "codex" }
 routing = { ask = "claude-code" }
 "#;
         assert_eq!(at(text).each(), vec![("ask", "codex"), ("eval", "codex")]);
-        let other = read(text).routing(Path::new("/work/other"));
+        let other = read_(text).routing(Path::new("/work/other"));
         assert_eq!(other.each(), vec![("ask", "claude-code"), ("eval", "claude-code")]);
     }
 
@@ -297,7 +357,7 @@ adversary = { effort = "xhigh" }
 
     #[test]
     fn unknown_names_are_reported_once_and_ignored() {
-        let c = read(
+        let c = read_(
             r#"
 colour = "blue"
 
@@ -346,7 +406,7 @@ eval = "cursor"
     #[test]
     fn nothing_readable_sets_nothing_rather_than_failing() {
         for text in ["", "not toml", "routing = \"codex\"", "[[routing]]\nask = \"codex\"\n"] {
-            let c = read(text);
+            let c = read_(text);
             assert!(c.routing(Path::new(HERE)).is_empty(), "{text:?}");
             assert_eq!(c.ringframe_override(Path::new(HERE)), None, "{text:?}");
         }
@@ -366,16 +426,16 @@ entries = [{ id = "codex.native_plan.hand_back", status = "qualified" }]
         let machine = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"entries":[{"id":"practice.kiss","text":"Keep it plain."}]}}}}]"#;
         let project = r#"[{"layer":"weft-project","ringframe":{"deltas":{"codex":{"entries":[{"id":"codex.native_plan.hand_back","status":"qualified"}]}}}}]"#;
         let here = Path::new(HERE);
-        assert_eq!(read(KISS).ringframe_override(here).as_deref(), Some(machine));
-        assert_eq!(read(MINE).ringframe_override(here).as_deref(), Some(project));
+        assert_eq!(read_(KISS).ringframe_override(here).as_deref(), Some(machine));
+        assert_eq!(read_(MINE).ringframe_override(here).as_deref(), Some(project));
         let both = format!("{},{}", &machine[..machine.len() - 1], &project[1..]);
-        assert_eq!(read(&format!("{KISS}{MINE}")).ringframe_override(here), Some(both));
-        assert_eq!(read(MINE).ringframe_override(Path::new("/work/other")), None);
+        assert_eq!(read_(&format!("{KISS}{MINE}")).ringframe_override(here), Some(both));
+        assert_eq!(read_(MINE).ringframe_override(Path::new("/work/other")), None);
     }
 
     #[test]
     fn a_quote_in_an_override_cannot_end_the_shell_word() {
-        let c = read("[ringframe.deltas.codex]\nwhy = \"it's\"\n");
+        let c = read_("[ringframe.deltas.codex]\nwhy = \"it's\"\n");
         let typed = c.ringframe_override(Path::new(HERE)).unwrap();
         assert!(!typed.contains('\''), "{typed}");
         let back: Value = serde_json::from_str(&typed).unwrap();

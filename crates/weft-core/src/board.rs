@@ -33,6 +33,8 @@ pub enum Act {
     ToggleSidebar,
     /// Weft's own operations, gathered out of the bar.
     WeftMenu,
+    /// Turn turbo mode on or off for the agents started next.
+    Turbo,
     Help,
     Quit,
 }
@@ -74,7 +76,8 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
         Sent::ReadyToSend => Some(Next::Send),
         // Nothing has judged it, and it has reached the agent one way or
         // another. A prompt still sitting unconfirmed is not this.
-        Sent::TakenByAgent | Sent::Arrived { .. } => Some(Next::Eval),
+        // Sent on the person's word, with no receipt: it went, so its Eval.
+        Sent::TakenByAgent | Sent::Arrived { .. } | Sent::Unconfirmed => Some(Next::Eval),
         _ => None,
     }
 }
@@ -88,6 +91,8 @@ pub struct PaneInfo {
     /// a session is already open somewhere rather than starting it twice.
     pub spec: String,
     pub running: bool,
+    /// Started in turbo mode: its harness's turbo flags were added.
+    pub turbo: bool,
 }
 
 /// Everything an availability decision reads. Borrowed: the shell owns this
@@ -103,6 +108,9 @@ pub struct Board<'a> {
     pub routing: &'a Routing,
     /// Why this workspace could not finish an Ask, if it could not.
     pub workspace_gap: Option<&'a str>,
+    /// What each pane's agent last reported, in the order of `panes`, when
+    /// Weft can tell.
+    pub agents: &'a [Option<crate::turns::Turn>],
 }
 
 impl Board<'_> {
@@ -118,16 +126,18 @@ impl Board<'_> {
         self.panes.iter().position(|p| p.harness == harness)
     }
 
-    /// Open units, as the title bar counts them.
+    /// Agents running in this project, as the title bar counts them: OPEN
+    /// is the harnesses the person has open, not the Asks on the record.
     pub fn open_count(&self) -> usize {
-        self.units.iter().filter(|u| u.is_open()).count()
+        self.panes.iter().filter(|p| p.running).count()
     }
 
-    /// Units waiting on a decision only the person can make. Panes waiting for
-    /// an answer are an inference and carry their own dot on the tab, so they
-    /// are not folded into a count the board claims to have read.
+    /// Agents asking their person for input: a question, a choice, a
+    /// permission. Nothing else is NEEDS YOU. Work waiting on its next step
+    /// is the person's to pick up when they choose, and a finished turn
+    /// says nothing about whether the work is done.
     pub fn needs_you(&self) -> usize {
-        self.units.iter().filter(|u| u.needs_you()).count()
+        self.agents.iter().filter(|a| **a == Some(crate::turns::Turn::Waiting)).count()
     }
 
     /// The harness whose readiness decides what the person can do now: the one
@@ -179,7 +189,7 @@ impl Board<'_> {
         let u = self.selected_unit()?;
         let name = match (act, next_step(u)) {
             (Act::Proceed, Some(Next::Send | Next::Confirm)) => u.harness.clone(),
-            (Act::Proceed, Some(_)) | (Act::Eval | Act::Seal, _) => self.deciding_harness(act)?,
+            (Act::Eval | Act::Seal, _) => self.deciding_harness(act)?,
             _ => return None,
         };
         self.pane_for(&name).is_none().then_some(name)
@@ -215,6 +225,7 @@ impl Board<'_> {
             | Act::ToggleSidebar
             | Act::OpenProject
             | Act::WeftMenu
+            | Act::Turbo
             | Act::Help
             | Act::Quit => None,
             Act::ReadyUp => match self.deciding_harness(Act::ReadyUp) {
@@ -240,19 +251,26 @@ impl Board<'_> {
                 }
                 Some(_) => None,
             },
-            // One verb, so its refusal is about the one thing it would do.
-            // `next_step` decides what that is; this decides whether it can.
+            // [P] sends an Ask's prompt that is waiting to be sent, and does
+            // nothing else. Once it went, what happens next is the person's
+            // workflow: the one thing offered is a follow-up.
             Act::Proceed => match self.selected_unit() {
                 None => Some("Nothing has been asked for yet.".into()),
                 Some(u) => match next_step(u) {
-                    None => Some(format!("{} is closed. [F] FOLLOW UP asks again.", u.title)),
                     Some(Next::Send | Next::Confirm) => {
                         self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
                     }
-                    Some(_) => {
-                        let name = self.deciding_harness(act)?;
-                        self.pane_for(&name).is_none().then(|| no_pane(&name))
+                    None if !u.is_open() => {
+                        Some(format!("{} is closed. [F] FOLLOW UP asks again.", u.title))
                     }
+                    None if u.requested_only => Some(format!(
+                        "{} is still being composed in {}. There is nothing to send yet.",
+                        u.title, u.harness
+                    )),
+                    _ => Some(format!(
+                        "{} has nothing to send. [F] FOLLOW UP asks for more.",
+                        u.title
+                    )),
                 },
             },
             Act::Detail => self
@@ -275,7 +293,13 @@ mod tests {
     use crate::readiness::Gap;
 
     fn pane(harness: &str) -> PaneInfo {
-        PaneInfo { pane: 0, harness: harness.into(), spec: harness.into(), running: true }
+        PaneInfo {
+            pane: 0,
+            harness: harness.into(),
+            spec: harness.into(),
+            running: true,
+            turbo: false,
+        }
     }
 
     fn unit(harness: &str, sent: Sent) -> Unit {
@@ -293,10 +317,13 @@ mod tests {
             confirmed: true,
             sent,
             check: None,
+            arrived: None,
+            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,
+            requested_only: false,
         }
     }
 
@@ -329,10 +356,59 @@ mod tests {
             readiness: ready,
             routing,
             workspace_gap: None,
+            agents: &[],
         }
     }
 
     const READY: &dyn Fn(&str) -> Readiness = &|_| Readiness::Ready;
+
+    /// NEEDS YOU is an agent asking its person for input, and nothing else:
+    /// work waiting on the next step is the person's to pick up, not an alarm.
+    #[test]
+    fn needs_you_is_an_agent_asking_for_input_and_nothing_else() {
+        use crate::turns::Turn;
+        let units =
+            [unit("codex", Sent::ReadyToSend), unit("codex", Sent::Arrived { exact: true })];
+        let panes = [pane("codex"), pane("codex")];
+        let routing = Routing::default();
+        let mut b = board(&units, &panes, READY, &routing);
+        assert_eq!(b.needs_you(), 0, "a prompt to send is not an agent asking");
+        let working = [Some(Turn::Working), Some(Turn::TurnEnded)];
+        b.agents = &working;
+        assert_eq!(b.needs_you(), 0, "nor is a finished turn");
+        let asking = [Some(Turn::Waiting), Some(Turn::Waiting)];
+        b.agents = &asking;
+        assert_eq!(b.needs_you(), 2, "each agent asking for input");
+    }
+
+    /// [P] sends a prompt that is waiting to be sent, and does nothing else:
+    /// an Ask that was sent, judged or sealed has only [F] FOLLOW UP.
+    #[test]
+    fn proceed_is_only_for_a_prompt_waiting_to_be_sent() {
+        let routing = Routing::default();
+        let panes = [pane("codex")];
+        for (sent, offered) in [
+            (Sent::ReadyToSend, true),
+            (Sent::Arrived { exact: true }, false),
+            (Sent::Unconfirmed, false),
+            (Sent::TakenByAgent, false),
+        ] {
+            let units = [unit("codex", sent)];
+            let b = board(&units, &panes, READY, &routing);
+            assert_eq!(b.unavailable(Act::Proceed).is_none(), offered, "{sent:?}");
+        }
+        let mut judged = unit("codex", Sent::Arrived { exact: true });
+        judged.check = Some(crate::ledger::Check {
+            eval_id: "evl_1".into(),
+            verdict: crate::ledger::Verdict::Matches,
+            agreement: 1.0,
+            judged_by: None,
+        });
+        let units = [judged];
+        let b = board(&units, &panes, READY, &routing);
+        let said = b.unavailable(Act::Proceed).expect("no [P] once judged");
+        assert!(said.contains("FOLLOW UP"), "{said}");
+    }
 
     #[test]
     fn an_act_is_available_when_its_harness_is_ready_and_open() {
@@ -348,8 +424,11 @@ mod tests {
     fn a_routed_act_is_about_the_harness_it_goes_to() {
         let units = [unit("codex", Sent::ReadyToSend)];
         let panes = [pane("codex")];
-        let routing = crate::config::read("[routing]\neval = \"claude-code\"\n")
-            .routing(std::path::Path::new("/p"));
+        let routing = crate::config::read(
+            "[routing]\neval = \"claude-code\"\n",
+            &crate::harness::fixture::harnesses(),
+        )
+        .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
         assert_eq!(b.unavailable(Act::Eval), None, "no claude-code pane: the daemon starts one");
@@ -369,6 +448,7 @@ mod tests {
         let panes = [pane("claude-code")];
         let routing = crate::config::read(
             "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\nharness = \"claude-code\"\n",
+            &crate::harness::fixture::harnesses(),
         )
         .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
@@ -439,27 +519,15 @@ mod tests {
     }
 
     #[test]
-    fn the_verb_is_live_exactly_when_the_row_carries_a_dot() {
-        // The sidebar and the detail view may never disagree about whether
-        // something is waiting.
-        for sent in
-            [Sent::NotSent, Sent::ReadyToSend, Sent::TakenByAgent, Sent::Arrived { exact: true }]
-        {
-            let u = unit("codex", sent);
-            assert_eq!(next_step(&u).is_some(), u.needs_you() || next_step(&u).is_some());
-            if u.needs_you() {
-                assert!(next_step(&u).is_some(), "{sent:?} needs you but cannot proceed");
-            }
-        }
-    }
-
-    #[test]
-    fn the_counts_read_the_record_and_nothing_else() {
+    fn open_counts_the_agents_running_not_the_asks() {
         let units = [unit("codex", Sent::ReadyToSend), unit("codex", Sent::TakenByAgent)];
-        let panes = [pane("codex")];
+        let mut ended = pane("claude-code");
+        ended.running = false;
+        let panes = [pane("codex"), ended, pane("agy")];
         let none = Routing::default();
         let b = board(&units, &panes, READY, &none);
-        assert_eq!(b.open_count(), 2);
-        assert_eq!(b.needs_you(), 1, "only the one waiting on a person");
+        assert_eq!(b.open_count(), 2, "two agents running; the ended one is not open");
+        let b = board(&units, &[], READY, &none);
+        assert_eq!(b.open_count(), 0, "Asks alone open nothing");
     }
 }

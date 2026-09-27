@@ -77,6 +77,8 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
         "ask.compiled" => vec!["delivery_mode"],
         // An observation, not an outcome: the Ask stays open after it.
         "ask.unanswered" => return Some(vec!["unanswered"]),
+        // Asked, before anything is composed: the person's words and where.
+        "ask.requested" => return Some(vec!["title", "source", "host"]),
         "ask.confirmed" => return Some(vec!["confirmation"]),
         "ask.cancelled" => return Some(vec!["cancellation"]),
         "ask.submission" => {
@@ -135,7 +137,8 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
 
 /// Every event type the record can hold. A type with no required-key list is
 /// not a type this release writes or reads.
-pub const EVENT_TYPES: [&str; 12] = [
+pub const EVENT_TYPES: [&str; 13] = [
+    "ask.requested",
     "ask.compiled",
     "ask.confirmed",
     "ask.cancelled",
@@ -244,6 +247,7 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
     }
     match event_type {
         "ask.compiled" => validate_compiled(data)?,
+        "ask.requested" => check_ref("data.source", &data["source"])?,
         "ask.confirmed" | "ask.cancelled" | "ask.unanswered" => {
             let field = match event_type {
                 "ask.confirmed" => "confirmation",

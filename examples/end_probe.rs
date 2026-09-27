@@ -19,7 +19,8 @@ fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
     let name = args.next().unwrap_or_else(|| "codex".into());
     let root = PathBuf::from(args.next().unwrap_or_else(|| ".".into())).canonicalize()?;
-    let h = weft::harness::find(&name).expect("a supported harness");
+    let all = weft::ringframe::harnesses(&root);
+    let h = all.find(&name).expect("a harness RingFrame has a profile for").clone();
 
     let socket = protocol::private_socket("weft-end");
     let _ = std::fs::remove_file(&socket);
@@ -29,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     });
     let session = Session::connect(&socket, &root, 40, 120)?;
     let mut app = App::with_session(root.clone(), Toggle, session);
-    app.add(&name, h.program)?;
+    app.add(&name, &h.program)?;
     println!("started {name}: {} pane(s)", app.pane_count());
 
     // Let it come up, then quit it the way a person would.

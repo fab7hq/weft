@@ -10,11 +10,10 @@ use std::time::Duration;
 use anyhow::Result;
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyEvent, KeyEventKind, KeyModifiers,
-    MouseEvent, MouseEventKind,
+    MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::DefaultTerminal;
 
-use crate::blocked::{self, Evidence};
 use crate::client::Session;
 use crate::encode;
 use crate::keys::{self, Action, Chord, Focus, Key, Toggle};
@@ -22,7 +21,6 @@ use crate::ledger::Unit;
 use crate::theme::Theme;
 pub use weft_core::board::Act;
 use weft_core::board::{Board, Next, PaneInfo};
-use weft_core::harness;
 pub use weft_core::offers::{PickUp, pick_up_choices, say_handoff};
 use weft_core::readiness::{Gap, Readiness};
 use weft_core::sessions::Recorded;
@@ -43,10 +41,37 @@ pub struct Pending {
 /// One project open in this window: its name, its root, and the client
 /// connection that watches it. The daemon gives a connection one project to
 /// watch, so a window with two projects holds two connections.
+/// One notification, through the terminal Weft runs in: OSC 9 where the
+/// terminal shows it, the bell where it shows none. Nothing leaves the
+/// terminal (ADR-0017).
+pub fn notification(term_program: Option<&str>, message: &str) -> Vec<u8> {
+    const SHOWS_OSC_9: [&str; 3] = ["iTerm.app", "WezTerm", "ghostty"];
+    if !term_program.is_some_and(|t| SHOWS_OSC_9.contains(&t)) {
+        return b"\x07".to_vec();
+    }
+    let text: String = message.chars().filter(|c| !c.is_control()).collect();
+    format!("\x1b]9;{text}\x07").into_bytes()
+}
+
+/// Where the last frame drew what a click can land on: each list row's line,
+/// and each agent tab's columns. Written by `ui::draw`, read by `on_mouse`.
+#[derive(Debug, Clone, Default)]
+pub struct Hits {
+    /// `(y, row)`: the screen line a row of `rows()` was drawn on.
+    pub rows: Vec<(u16, usize)>,
+    /// `(y, from, to, pane)`: the columns an agent's tab covers.
+    pub tabs: Vec<(u16, u16, u16, usize)>,
+    /// `(y, from, to)`: where the turbo switch is in the title bar.
+    pub turbo: Option<(u16, u16, u16)>,
+}
+
 pub struct Open {
     pub name: String,
     pub root: PathBuf,
     pub session: Session,
+    /// Each pane's state when the person was last told about it. `None`
+    /// until first seen, so what was already so is never announced.
+    heard: Option<Vec<Option<weft_core::turns::Turn>>>,
 }
 
 impl Open {
@@ -55,7 +80,7 @@ impl Open {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "project".into());
-        Open { name, root, session }
+        Open { name, root, session, heard: None }
     }
 }
 
@@ -124,10 +149,11 @@ impl Row {
 }
 
 /// Weft's own operations, in the order the menu lists them.
-pub const WEFT_MENU: [(char, &str, Act); 5] = [
+pub const WEFT_MENU: [(char, &str, Act); 6] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
+    ('T', "Turbo mode on or off", Act::Turbo),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
 ];
@@ -147,9 +173,12 @@ pub enum Modal {
     Help,
     /// The agent looks like it is waiting for its person, and the person has
     /// been shown what Weft read. Typing is theirs to allow.
+    ///
+    /// Or the agent has not reported that it is ready, which is the only
+    /// state Weft types into on its own: `why` says which.
     SendAnyway {
         pending: Pending,
-        evidence: String,
+        why: &'static str,
     },
     /// Take a project out of this window. Nothing is stopped and nothing is
     /// deleted, which the panel says, because "close" is the word people
@@ -201,8 +230,6 @@ pub struct Detail {
     /// because only the render knows how wide the screen is.
     pub lines: Vec<String>,
     pub offset: usize,
-    /// What `[P]ROCEED` would do. `None` draws it dim.
-    pub next: Option<Next>,
 }
 
 pub struct App {
@@ -256,6 +283,8 @@ pub struct App {
     /// pane that is gone stays gone, and repeating it would take the screen
     /// back every tick.
     announced: std::collections::HashSet<usize>,
+    /// What a click can land on, as the last frame drew it.
+    pub hits: Hits,
     /// What could be started here, as of the last time anyone asked.
     starts: Vec<Start>,
     /// Which harness takes which act here. Read once: a person edits the file
@@ -365,11 +394,82 @@ impl App {
         self.readiness.insert(harness.to_string(), state);
     }
 
-    /// Whether a pane looks like it is waiting for a person. Inference, and
-    /// labelled as such everywhere it is shown.
-    pub fn waiting(&self, pane: usize) -> Option<Evidence> {
-        let view = sess!(self).panes.get(pane)?;
-        blocked::looks_blocked(&view.contents())
+    /// Whether a pane's agent is asking its person something, as its hooks
+    /// reported it. Weft reads nothing off the screen (ADR-0013).
+    pub fn waiting(&self, pane: usize) -> bool {
+        self.pane_turn(pane) == Some(weft_core::turns::Turn::Waiting)
+    }
+
+    /// The harness a command line's program starts, by its profile.
+    pub fn harness_for_program(&self, program: &str) -> Option<String> {
+        sess!(self).harnesses.for_program(program).map(|h| h.name.clone())
+    }
+
+    /// Whether agents started in this project from now on run in turbo mode.
+    pub fn turbo(&self) -> bool {
+        sess!(self).turbo
+    }
+
+    /// Switch turbo mode for the agents started next. An agent already
+    /// running keeps the mode it was started in: a harness takes its flags
+    /// only when it starts.
+    fn toggle_turbo(&mut self) {
+        let on = !self.turbo();
+        if let Err(e) = sess!(self).set_turbo(on) {
+            self.say(format!("Weft could not switch turbo mode: {e}"));
+            return;
+        }
+        self.say(if on {
+            "Turbo mode on: the next agents you start get every permission and ask nothing. \
+             Agents already running keep their mode."
+        } else {
+            "Turbo mode off: the next agents you start ask as they normally do. \
+             Agents already running keep their mode."
+        });
+    }
+
+    /// Whether any agent of this harness in a project runs in turbo mode.
+    pub fn harness_turbo(&self, project: usize, harness: &str) -> bool {
+        self.projects[project]
+            .session
+            .panes
+            .iter()
+            .any(|p| p.running && p.turbo && p.harness == harness)
+    }
+
+    /// Whether a pane's agent was started in turbo mode.
+    pub fn pane_turbo(&self, pane: usize) -> bool {
+        sess!(self).panes.get(pane).is_some_and(|p| p.turbo)
+    }
+
+    /// A pane's agent state, as its hooks reported it. None is not ready.
+    pub fn pane_turn(&self, pane: usize) -> Option<weft_core::turns::Turn> {
+        sess!(self).pane_turns.get(pane).copied().flatten()
+    }
+
+    /// The agent state of a unit of work, from the session the ledger names
+    /// for it.
+    pub fn unit_turn(&self, project: usize, unit: &Unit) -> Option<weft_core::turns::Turn> {
+        let turns = if project == self.at {
+            &sess!(self).turns
+        } else {
+            &self.projects[project].session.turns
+        };
+        weft_core::turns::state_of(unit, turns)
+    }
+
+    /// A project's agents asking their person for input, of one harness or
+    /// of all of them. This is NEEDS YOU, and nothing else is.
+    pub fn agents_waiting(&self, project: usize, harness: Option<&str>) -> usize {
+        let s = &self.projects[project].session;
+        s.panes
+            .iter()
+            .zip(&s.pane_turns)
+            .filter(|(p, t)| {
+                **t == Some(weft_core::turns::Turn::Waiting)
+                    && harness.is_none_or(|h| p.harness == h)
+            })
+            .count()
     }
 
     /// The facts a decision reads, borrowed from the state that holds them.
@@ -384,6 +484,7 @@ impl App {
             readiness: &|h| self.readiness(h),
             routing: &self.routing,
             workspace_gap: self.workspace_gap.as_deref(),
+            agents: &sess!(self).pane_turns,
         })
     }
 
@@ -397,6 +498,7 @@ impl App {
                 harness: p.harness.clone(),
                 spec: p.spec.clone(),
                 running: p.running,
+                turbo: p.turbo,
             })
             .collect()
     }
@@ -419,8 +521,9 @@ impl App {
         let mut out = Vec::new();
         for (at, p) in self.projects.iter().enumerate() {
             let units = self.units_of(at);
-            let waiting = units.iter().filter(|u| u.needs_you()).count();
-            let open = units.iter().filter(|u| u.is_open()).count();
+            let waiting = self.agents_waiting(at, None);
+            // The agents running, as the title bar counts them.
+            let open = p.session.panes.iter().filter(|pane| pane.running).count();
             let folded = self.folded.contains(&p.name);
             out.push(Row::Project { project: at, name: p.name.clone(), folded, open, waiting });
             if folded {
@@ -428,10 +531,13 @@ impl App {
             }
             // Harnesses in the order they first appear, so the tree does not
             // reshuffle itself as work arrives.
+            // An agent with nothing asked of it yet still has a row, so
+            // there is somewhere to say it needs your input.
             let mut seen: Vec<&str> = Vec::new();
-            for u in units {
-                if !seen.contains(&u.harness.as_str()) {
-                    seen.push(&u.harness);
+            let running = p.session.panes.iter().map(|pane| pane.harness.as_str());
+            for name in units.iter().map(|u| u.harness.as_str()).chain(running) {
+                if !seen.contains(&name) {
+                    seen.push(name);
                 }
             }
             for name in seen {
@@ -443,7 +549,7 @@ impl App {
                 }
                 let key = format!("{at}\u{0}{name}");
                 let folded = self.folded.contains(&key);
-                let waiting = units.iter().filter(|u| u.harness == name && u.needs_you()).count();
+                let waiting = self.agents_waiting(at, Some(name));
                 out.push(Row::Harness {
                     project: at,
                     name: name.to_string(),
@@ -514,7 +620,7 @@ impl App {
         self.with_board(|b| b.open_count())
     }
 
-    /// Units waiting on a decision only the person can make.
+    /// Agents in this project asking their person for input.
     pub fn needs_you(&self) -> usize {
         self.with_board(|b| b.needs_you())
     }
@@ -570,6 +676,7 @@ impl App {
             workspace_gap: None,
             readiness: std::collections::HashMap::new(),
             announced: std::collections::HashSet::new(),
+            hits: Hits::default(),
             starts: Vec::new(),
             routing: Default::default(),
             newer: Default::default(),
@@ -602,20 +709,10 @@ impl App {
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         self.take_the_board();
         self.look_for_agents();
-        // The mouse is Weft's only while an agent has the keys, so the wheel
-        // scrolls that agent; in Weft it stays the terminal's.
-        let mut captured = false;
+        // The mouse is Weft's: a click selects a row or goes to an agent,
+        // and while an agent has the keys the wheel scrolls that agent. A click never reaches an agent.
+        let _ = crossterm::execute!(std::io::stdout(), EnableMouseCapture);
         while !self.quit {
-            let want = self.focus == Focus::Agent;
-            if want != captured {
-                captured = want;
-                let mut out = std::io::stdout();
-                let _ = if want {
-                    crossterm::execute!(out, EnableMouseCapture)
-                } else {
-                    crossterm::execute!(out, DisableMouseCapture)
-                };
-            }
             terminal.draw(|frame| crate::ui::draw(frame, &mut self))?;
             if event::poll(Duration::from_millis(50))? {
                 match event::read()? {
@@ -633,8 +730,48 @@ impl App {
                 self.take_the_board();
             }
             self.notice_an_agent_that_ended();
+            let told = self.notices();
+            if !told.is_empty() {
+                use std::io::Write as _;
+                let program = std::env::var("TERM_PROGRAM").ok();
+                let mut out = std::io::stdout();
+                for said in told {
+                    let _ = out.write_all(&notification(program.as_deref(), &said));
+                }
+                let _ = out.flush();
+            }
         }
+        let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
         Ok(())
+    }
+
+    /// What to tell the person, once per change: an agent they are not
+    /// looking at ended its turn or started asking them something (ADR-0017).
+    /// The agent in front is never announced, and nothing is said with
+    /// `notify = false`.
+    pub fn notices(&mut self) -> Vec<String> {
+        use weft_core::turns::Turn;
+        let mut out = Vec::new();
+        let (at, focus) = (self.at, self.pane_focus);
+        for (i, p) in self.projects.iter_mut().enumerate() {
+            let now = p.session.pane_turns.clone();
+            let before = p.heard.replace(now.clone());
+            // A pane came or went: the numbers moved, so this is a first sight.
+            let Some(before) = before.filter(|b| b.len() == now.len()) else { continue };
+            if !p.session.notify {
+                continue;
+            }
+            for (pane, (was, is)) in before.iter().zip(&now).enumerate() {
+                // Only an agent asking for input: when a turn ends is the
+                // person's workflow, not an alarm.
+                if *is != Some(Turn::Waiting) || was == is || (i == at && pane == focus) {
+                    continue;
+                }
+                let harness = p.session.panes.get(pane).map_or("an agent", |v| v.harness.as_str());
+                out.push(format!("{harness} in {}: needs your input", p.name));
+            }
+        }
+        out
     }
 
     /// An agent quit from inside — `Ctrl+D`, `/exit`, or it simply stopped.
@@ -693,7 +830,7 @@ impl App {
     /// back: the harness says that, in its own pane.
     fn pick_up(&mut self, harness: &str, session: Option<&Recorded>, then: Option<Act>) {
         self.modal = None;
-        let Some(h) = harness::find(harness) else {
+        let Some(h) = sess!(self).harnesses.find(harness).cloned() else {
             self.modal = Some(Modal::Note(format!("Weft does not know how to start {harness}.")));
             return;
         };
@@ -786,25 +923,26 @@ impl App {
     /// Answer a question the person was asked. The daemon does the typing,
     /// because the daemon owns the pane.
     fn do_inject(&mut self, pending: &Pending) {
-        // Weft must never answer a dialog meant for a person. What it reads
-        // off the screen is an inference, though, and an inference that
-        // cannot be overruled is a dead end — a stale chooser left in an
-        // agent's scrollback would stop every Ask with no way through.
-        if let Some(e) = self.waiting(pending.pane) {
-            self.modal =
-                Some(Modal::SendAnyway { pending: pending.clone(), evidence: e.line.clone() });
-            self.modal_choice = 1;
+        // Weft types on its own only into an agent that said it is ready
+        // (ADR-0013). Anything else is the person's to allow; sending is the
+        // default, since they asked for it a key ago.
+        if let Err(why) = weft_core::turns::may_type(self.pane_turn(pending.pane)) {
+            self.modal = Some(Modal::SendAnyway { pending: pending.clone(), why });
+            self.modal_choice = 0;
             return;
         }
         self.do_inject_forcing(pending, false)
     }
 
-    /// The pane looked busy and the person said to type anyway. What Weft read
-    /// off the screen is an inference; this is the person overruling it.
+    /// The agent had not said it was ready, and the person said to type
+    /// anyway: the decision is theirs.
     fn do_inject_forcing(&mut self, pending: &Pending, force: bool) {
         match sess!(self).resolve(&pending.staged, true, force) {
             Ok(()) => {
                 self.modal = None;
+                // The detail view blocks the screen; the person goes where the
+                // keys went, into the agent.
+                self.detail = None;
                 self.focus = Focus::Agent;
                 self.pane_focus = pending.pane;
             }
@@ -865,8 +1003,10 @@ impl App {
         let Some(unit) = self.selected_unit().cloned() else { return };
         // A part that will not come back is a fact about the record, not a
         // reason to refuse the view: the section says so and the rest opens.
+        // Asked and not composed yet: what the person asked is what there is.
+        let part = if unit.requested_only { "source" } else { "wording" };
         let prompt = sess!(self)
-            .read("wording", &unit.ask_id)
+            .read(part, &unit.ask_id)
             .ok()
             .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(str::to_string));
         let record = unit.check.as_ref().and_then(|c| {
@@ -886,22 +1026,22 @@ impl App {
             ),
             title: unit.title.clone(),
             harness: unit.harness.clone(),
-            next: weft_core::board::next_step(&unit),
             offset: 0,
         });
     }
 
-    /// Carry the selected unit forward, whatever that means for it.
+    /// Whether the selected Ask has a prompt still to send: the one thing
+    /// `[P]ROCEED` does. Once it went, what comes next is the person's call.
+    pub fn proceeds(&self) -> bool {
+        self.selected_unit().is_some_and(|u| {
+            matches!(weft_core::board::next_step(u), Some(Next::Send | Next::Confirm))
+        })
+    }
+
+    /// Send the selected Ask's prompt.
     fn proceed(&mut self) {
-        if !self.guard(Act::Proceed) {
-            return;
-        }
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        match weft_core::board::next_step(&unit) {
-            Some(Next::Confirm) | Some(Next::Send) => self.start_send(),
-            Some(Next::Eval) => self.start_skill("eval"),
-            Some(Next::Seal) => self.start_skill("seal"),
-            None => {}
+        if self.guard(Act::Proceed) {
+            self.start_send();
         }
     }
 
@@ -953,7 +1093,7 @@ impl App {
             .iter()
             .filter_map(|v| {
                 Some(Start {
-                    harness: harness::find(v.get("harness")?.as_str()?)?.name,
+                    harness: v.get("harness")?.as_str()?.to_string(),
                     label: v.get("label")?.as_str()?.to_string(),
                     spec: v.get("spec")?.as_str()?.to_string(),
                     session: v.get("session").and_then(|s| {
@@ -977,7 +1117,8 @@ impl App {
     fn start_agent_picker(&mut self) {
         self.look_for_agents();
         if self.fresh_starts().is_empty() {
-            self.say("No coding agent found. Install claude or codex first.");
+            let titles = sess!(self).harnesses.titles();
+            self.say(format!("No coding agent found. Install {titles} first."));
             return;
         }
         self.modal = Some(Modal::StartAgent { choice: 0 });
@@ -986,7 +1127,7 @@ impl App {
 
     pub fn start_chosen_agent(&mut self, choice: usize) {
         let Some(start) = self.fresh_starts().get(choice).cloned() else { return };
-        match self.add(start.harness, &start.spec) {
+        match self.add(&start.harness, &start.spec) {
             Ok(()) => {
                 self.modal = None;
                 self.pane_focus = sess!(self).panes.len().saturating_sub(1);
@@ -1043,7 +1184,12 @@ impl App {
         if n == 0 {
             return;
         }
-        self.selected = ((self.selected as i32 + delta as i32).rem_euclid(n)) as usize;
+        self.select_row(((self.selected as i32 + delta as i32).rem_euclid(n)) as usize);
+    }
+
+    /// Select one row of the list, the way the arrows arrive at it.
+    fn select_row(&mut self, row: usize) {
+        self.selected = row;
         self.follow_the_selection();
         // Picking a row that is scrolled away brings it back into view, above
         // or below. There is no wheel any more, so the arrows have to.
@@ -1185,43 +1331,44 @@ impl App {
         }
     }
 
-    /// The next thing that needs you: a pane waiting for an answer first,
-    /// because it is blocking whatever was asked of it, then the next row.
+    /// The next agent asking for input: in this project first, then in the
+    /// next project that has one. Nothing else is NEEDS YOU.
     fn next_needs_you(&mut self) {
         if let Some(pane) = self.next_waiting_pane() {
-            self.pane_focus = pane;
-            self.show_work = false;
-            self.detail = None;
+            self.go_to_pane(pane);
             return;
         }
-        // The thing that needs you is an Ask, and its detail view is where
-        // you act on it, so one key goes the whole way. When nothing needs
-        // you it is the newest Ask, which is the one just made.
-        let rows = self.rows();
-        let actions: Vec<usize> =
-            (0..rows.len()).filter(|i| matches!(rows[*i], Row::Action { .. })).collect();
-        if actions.is_empty() {
-            self.say("Nothing has been asked for yet.");
+        let n = self.projects.len();
+        let elsewhere = (1..n).map(|step| (self.at + step) % n).find_map(|at| {
+            let s = &self.projects[at].session;
+            let pane =
+                s.pane_turns.iter().position(|t| *t == Some(weft_core::turns::Turn::Waiting));
+            pane.filter(|i| *i < s.panes.len()).map(|pane| (at, pane))
+        });
+        let Some((at, pane)) = elsewhere else {
+            self.say("Nothing needs your input.");
             return;
-        }
-        let pick = {
-            let needs = |i: &usize| match &rows[*i] {
-                Row::Action { project, unit } => {
-                    self.units_of(*project).get(*unit).is_some_and(|u| u.needs_you())
-                }
-                _ => false,
-            };
-            actions
-                .iter()
-                .copied()
-                .find(|i| *i > self.selected && needs(i))
-                .or_else(|| actions.iter().copied().find(|i| needs(i)))
-                .unwrap_or(*actions.last().expect("one"))
         };
-        self.selected = pick;
-        self.show_work = true;
-        self.follow_the_selection();
-        self.act(Act::Detail);
+        self.at = at;
+        self.take_the_board();
+        self.go_to_pane(pane);
+    }
+
+    /// Show a pane, with its harness's row picked in the sidebar: the row
+    /// that carries the badge, and the project any act then lands in.
+    fn go_to_pane(&mut self, pane: usize) {
+        if let Some(name) = self.harness_at(pane).map(str::to_string) {
+            let at = self.at;
+            let row = self.rows().iter().position(
+                |r| matches!(r, Row::Harness { project, name: n, .. } if *project == at && *n == name),
+            );
+            if let Some(row) = row {
+                self.selected = row;
+            }
+        }
+        self.pane_focus = pane;
+        self.show_work = false;
+        self.detail = None;
     }
 
     /// The next pane waiting for an answer, skipping the one already shown.
@@ -1233,25 +1380,22 @@ impl App {
             if i == self.pane_focus && showing_pane {
                 continue;
             }
-            if self.waiting(i).is_some() {
+            if self.waiting(i) {
                 return Some(i);
             }
         }
-        (!showing_pane && self.waiting(self.pane_focus).is_some()).then_some(self.pane_focus)
+        (!showing_pane && self.waiting(self.pane_focus)).then_some(self.pane_focus)
     }
 
-    /// The one thing Weft infers rather than reads, and its evidence.
+    /// Why Weft says an agent is waiting: its own hook said so. Nothing on
+    /// the screen is read.
     fn explain_waiting(&mut self) {
-        match self.waiting(self.pane_focus) {
-            Some(e) => {
-                let harness = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
-                self.say(format!(
-                    "{harness}: the {} rule matched \"{}\" near the bottom of the screen.",
-                    e.rule, e.line
-                ));
-            }
-            None => self.say("Nothing on that screen looks like a question for you."),
-        }
+        let harness = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
+        self.say(if self.waiting(self.pane_focus) {
+            format!("{harness} reported, through its hook, that it is asking you something.")
+        } else {
+            format!("{harness} has not reported that it is asking you anything.")
+        });
     }
 
     fn toggle_work(&mut self) {
@@ -1303,6 +1447,7 @@ impl App {
                 self.modal = Some(Modal::Weft);
                 self.modal_choice = 0;
             }
+            Act::Turbo => self.toggle_turbo(),
             Act::Help => {
                 self.modal = Some(Modal::Help);
                 self.modal_choice = 0;
@@ -1379,6 +1524,7 @@ impl App {
             Action::ReadyUp => self.act(Act::ReadyUp),
             Action::OpenProject => self.act(Act::OpenProject),
             Action::WeftMenu => self.act(Act::WeftMenu),
+            Action::Turbo => self.act(Act::Turbo),
             Action::Unfold => {
                 self.fold_selected(false);
             }
@@ -1392,6 +1538,9 @@ impl App {
 
     /// The wheel, while an agent has the keys: its pane's scrollback.
     pub fn on_mouse(&mut self, m: MouseEvent) {
+        if m.kind == MouseEventKind::Down(MouseButton::Left) {
+            return self.on_click(m.column, m.row);
+        }
         let delta = match m.kind {
             MouseEventKind::ScrollUp => 3,
             MouseEventKind::ScrollDown => -3,
@@ -1408,12 +1557,34 @@ impl App {
         }
         // Nothing moved: say whose history it is rather than doing nothing.
         let name = self.harness_at(self.pane_focus).unwrap_or("the agent").to_string();
-        self.say(match harness::find(&name).and_then(|h| h.transcript) {
+        let key = sess!(self).harnesses.find(&name).and_then(|h| h.transcript.clone());
+        self.say(match key {
             Some(key) => {
                 format!("{name} keeps its own history: press {key} in the agent to read it.")
             }
             None => format!("Nothing of {name}'s has scrolled away yet."),
         });
+    }
+
+    /// A click selects a row, as the arrows would, or goes to an agent, as
+    /// its number would. It never types into an agent.
+    fn on_click(&mut self, column: u16, line: u16) {
+        if self.modal.is_some() || self.detail.is_some() {
+            return;
+        }
+        if self.hits.turbo.is_some_and(|(y, from, to)| y == line && (from..to).contains(&column)) {
+            self.toggle_turbo();
+        } else if let Some(&(_, row)) = self.hits.rows.iter().find(|(y, _)| *y == line) {
+            self.focus = Focus::Weft;
+            self.select_row(row);
+        } else if let Some(&(.., pane)) = self
+            .hits
+            .tabs
+            .iter()
+            .find(|(y, from, to, _)| *y == line && (*from..*to).contains(&column))
+        {
+            self.pane_focus = pane;
+        }
     }
 
     fn toggle_focus(&mut self) {
@@ -1430,7 +1601,7 @@ impl App {
 
     /// Whether the agent on screen is the thing waiting for an answer.
     pub fn waiting_here(&self) -> bool {
-        !self.show_work && self.waiting(self.pane_focus).is_some()
+        !self.show_work && self.waiting(self.pane_focus)
     }
 
     fn on_modal_key(&mut self, key: KeyEvent) -> Result<()> {
@@ -1645,7 +1816,7 @@ impl App {
 /// The command is shown before it runs and is the one a person would type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Start {
-    pub harness: &'static str,
+    pub harness: String,
     pub label: String,
     pub spec: String,
     /// The session this would pick up, when it picks one up.
@@ -1716,9 +1887,10 @@ pub(crate) mod tests {
         let _ = std::fs::remove_file(&socket);
         let listening = socket.clone();
         std::thread::spawn(move || {
-            let _ = weftd::server::Session::serve(
+            let _ = weftd::server::Session::serve_with(
                 &listening,
                 &listening.with_extension("no-config.toml"),
+                Some(weft_core::harness::fixture::harnesses()),
             );
         });
         let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
@@ -1735,7 +1907,29 @@ pub(crate) mod tests {
         // the code. Tests about readiness itself set their own.
         a.set_readiness("codex", Readiness::Ready);
         a.set_readiness("claude-code", Readiness::Ready);
+        agent_says(&mut a, "codex", "fixture", "ready");
         a
+    }
+
+    /// A hook's receipt, written where RingFrame's plugin writes it, and
+    /// waited for until the daemon has read it. Dated ahead so it always
+    /// comes after the pane started.
+    pub(crate) fn agent_says(a: &mut App, harness: &str, session: &str, event: &str) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.session_mut().panes.is_empty() {
+            a.session_mut().pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let dir = a.root().join(".fab7/rf/sessions").join(harness).join(session);
+        std::fs::create_dir_all(&dir).expect("session dir");
+        let line = serde_json::json!({"event": event, "session_id": session,
+                                      "time": "2099-01-01T00:00:00.000Z"});
+        std::fs::write(dir.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
+        let want = weft_core::turns::Turn::recorded(event);
+        while std::time::Instant::now() < deadline && a.pane_turn(0) != want {
+            a.session_mut().pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn with_unit(sent: Sent) -> App {
@@ -1829,10 +2023,13 @@ pub(crate) mod tests {
             confirmed: true,
             sent,
             check: None,
+            arrived: None,
+            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,
+            requested_only: false,
         }
     }
 
@@ -1955,6 +2152,36 @@ pub(crate) mod tests {
         }
     }
 
+    /// harness-profile.md §5.3: a made-up third harness, defined by a profile
+    /// alone, is offered with no change to Weft.
+    #[test]
+    fn a_made_up_third_harness_is_offered_from_its_profile_alone() {
+        let mut zed = weft_core::harness::fixture::profile("codex");
+        zed["host"] = "zed-agent".into();
+        zed["title"] = "Zed Agent".into();
+        zed["program"] = "cat".into(); // on every machine's PATH
+        let mut all = weft_core::harness::fixture::harnesses();
+        all.0.push(weft_core::harness::Harness::from_profile(&zed).expect("a harness"));
+        let (root, _) = test_session("zed");
+        let socket = weft_proto::private_socket("weft-app-zed");
+        let _ = std::fs::remove_file(&socket);
+        let listening = socket.clone();
+        std::thread::spawn(move || {
+            let _ = weftd::server::Session::serve_with(
+                &listening,
+                &listening.with_extension("no-config.toml"),
+                Some(all),
+            );
+        });
+        let session = crate::client::Session::connect(&socket, &root, 24, 80).expect("connect");
+        let mut a = App::with_session(root, Toggle, session);
+        a.look_for_agents();
+        let zed: Vec<_> = a.starts().iter().filter(|s| s.harness == "zed-agent").collect();
+        assert_eq!(zed.len(), 1, "offered fresh: {:?}", a.starts());
+        assert_eq!(zed[0].spec, "cat");
+        assert_eq!(a.harness_for_program("/bin/cat").as_deref(), Some("zed-agent"));
+    }
+
     #[test]
     fn send_is_offered_for_an_ask_nobody_answered() {
         // The defect this closes: a chooser that timed out left a row on the
@@ -1972,7 +2199,11 @@ pub(crate) mod tests {
     fn routed(pairs: &[(&str, &str)]) -> App {
         let mut a = app();
         let acts: String = pairs.iter().map(|(k, v)| format!("{k} = \"{v}\"\n")).collect();
-        a.routing = weft_core::config::read(&format!("[routing]\n{acts}")).routing(a.root());
+        a.routing = weft_core::config::read(
+            &format!("[routing]\n{acts}"),
+            &weft_core::harness::fixture::harnesses(),
+        )
+        .routing(a.root());
         a.set_units(vec![unit(Sent::TakenByAgent)]);
         a
     }
@@ -2189,38 +2420,373 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_pane_that_looks_busy_asks_before_typing_and_can_be_overruled() {
-        // A stale chooser left in an agent's scrollback used to stop every
-        // Ask, silently and with no way through: the daemon refused and
-        // nothing drew the refusal.
+    fn an_agent_asking_its_person_is_asked_about_first_and_can_be_overruled() {
+        // Its hook said it is asking; typing now would answer it. Weft asks
+        // first; sending is the default, and Cancel is one key
+        // away.
         let mut a = recorded(Sent::ReadyToSend);
-        a.input(0, b"Do you want to proceed?\r\n").expect("write");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline && a.waiting(0).is_none() {
-            a.pump();
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(a.waiting(0).is_some(), "the fixture has to look busy for this test");
+        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
+        assert!(a.waiting(0));
+        a.do_inject(&pending_for(0));
+        let Some(Modal::SendAnyway { why, .. }) = a.modal.clone() else {
+            panic!("it must ask first, got {:?}", a.modal)
+        };
+        assert_eq!(why, "the agent is asking you something");
+        assert_eq!(a.modal_choice, 0, "Type it anyway is the default");
+        press(&mut a, KeyCode::Down);
+        assert_eq!(a.modal_choice, 1, "Cancel is one key away");
+        press(&mut a, KeyCode::Enter);
+        assert!(a.modal.is_none(), "{:?}", a.modal);
+    }
 
-        // Straight to the typing step; what composes the prompt is the send
-        // path's own test.
-        a.do_inject(&Pending {
+    fn pending_for(pane: usize) -> Pending {
+        Pending {
             staged: "pnd_1".into(),
-            pane: 0,
+            pane,
             payload: b"anything".to_vec(),
             what: "send".into(),
             why: Vec::new(),
-        });
-        let Some(Modal::SendAnyway { evidence, .. }) = a.modal.clone() else {
-            panic!("it must say what it read, got {:?}", a.modal)
-        };
-        assert!(evidence.contains("Do you want to proceed?"), "{evidence}");
+        }
+    }
 
-        // And the cancel half is the default, because answering the agent is
-        // usually the right thing.
-        assert_eq!(a.modal_choice, 1);
+    /// turn-state.md §6 tests 3 and 4, on the panel: with no event, or with
+    /// one that is not ready, Weft asks and says why; the person may still
+    /// type it anyway.
+    #[test]
+    fn an_agent_that_has_not_said_it_is_ready_is_asked_about_first() {
+        use weft_core::turns::Turn;
+        for (state, why) in [
+            (None, "Weft can't tell whether the agent is ready"),
+            (Some(Turn::Working), "the agent is working"),
+            (Some(Turn::Waiting), "the agent is asking you something"),
+        ] {
+            let mut a = recorded(Sent::ReadyToSend);
+            a.session_mut().pane_turns = vec![state];
+            a.do_inject(&pending_for(0));
+            let Some(Modal::SendAnyway { why: said, .. }) = a.modal.clone() else {
+                panic!("{state:?} must ask first, got {:?}", a.modal)
+            };
+            assert_eq!(said, why);
+            let drawn = crate::ui::panel_text(&a).join("\n");
+            assert!(drawn.contains(why), "{drawn}");
+            assert!(drawn.contains("Type it anyway"), "{drawn}");
+        }
+        for state in [Turn::Ready, Turn::TurnEnded] {
+            let mut a = recorded(Sent::ReadyToSend);
+            a.session_mut().pane_turns = vec![Some(state)];
+            a.do_inject(&pending_for(0));
+            assert!(a.modal.is_none(), "{state:?} is typed into: {:?}", a.modal);
+        }
+    }
+
+    /// §6 test 1, drawn: the row carries the agent's state from its receipt.
+    #[test]
+    fn the_row_of_an_ask_shows_its_agents_state() {
+        use weft_core::turns::{Session, Turn};
+        let mut a = with_unit(Sent::Arrived { exact: true });
+        let before = crate::ui::sidebar_text(&a);
+        assert!(!before.contains("working"), "no receipt, no state: {before}");
+        a.session_mut().turns = vec![Session {
+            harness: "codex".into(),
+            id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
+            first: 1,
+            latest: Turn::Working,
+            at: 1,
+        }];
+        let after = crate::ui::sidebar_text(&a);
+        assert!(after.contains("working · ASKED"), "{after}");
+    }
+
+    /// NEEDS YOU is an agent asking its person for input, and nothing
+    /// else: not a prompt ready to send, not a finished turn. Its harness's row carries the badge, and Space goes to the agent.
+    #[test]
+    fn only_an_agent_asking_for_input_needs_you_and_space_goes_to_it() {
+        let mut a = app();
+        let mut ready = unit(Sent::ReadyToSend);
+        ready.ask_id = "ask_2".into();
+        a.set_units(vec![unit(Sent::Arrived { exact: true }), ready]);
+        agent_says(&mut a, "codex", "fixture", "turn_ended");
+        assert_eq!(a.needs_you(), 0, "a finished turn and a prompt to send ask nothing");
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(a.hint_text(), Some("Nothing needs your input."));
+        assert!(a.detail().is_none(), "Space opens no Ask");
+        assert!(!crate::ui::sidebar_text(&a).contains('●'), "{}", crate::ui::sidebar_text(&a));
+
+        agent_says(&mut a, "codex", "fixture", "waiting");
+        assert_eq!(a.needs_you(), 1);
+        let rows = crate::ui::sidebar_text(&a);
+        let badge = rows.lines().find(|l| l.contains("needs your input")).expect("a badge");
+        assert!(badge.contains("codex") && !badge.contains("ASKED"), "{rows}");
+        press(&mut a, KeyCode::Char(' '));
+        assert_eq!(a.pane_focus, 0);
+        assert!(!a.show_work && a.detail().is_none(), "Space shows the agent asking");
+    }
+
+    /// The list shows an agent the moment it is opened, before anything is
+    /// asked, and OPEN counts it: OPEN is the harnesses open, not the Asks.
+    #[test]
+    fn an_agent_is_on_the_list_and_counted_as_soon_as_it_is_opened() {
+        let mut a = app();
+        let screen = drawn(&mut a);
+        assert!(screen.contains("▾ codex"), "drawn before anything is asked:\n{screen}");
+        assert!(screen.contains("1 open"), "{screen}");
+        assert_eq!(a.open_count(), 1);
+        a.set_units(vec![unit(Sent::ReadyToSend), unit(Sent::Arrived { exact: true })]);
+        assert_eq!(a.open_count(), 1, "Asks are not agents");
+        let drawn = drawn(&mut a);
+        assert!(drawn.lines().next().is_some_and(|t| t.contains("OPEN  1")), "{drawn}");
+    }
+
+    /// The owner's case: someone asks, quits before the prompt is composed,
+    /// and comes back. RingFrame recorded the Ask as asked, so the list shows
+    /// it as ASKING and its view shows what was asked.
+    #[test]
+    fn an_ask_recorded_as_asked_is_on_the_list_and_its_view_shows_the_words() {
+        let mut a = app();
+        let rf = a.root().join(".fab7/rf");
+        std::fs::create_dir_all(rf.join("asks/ask_1")).expect("asks");
+        std::fs::write(rf.join("asks/ask_1/source.txt"), "fix the login bug\nplease").expect("src");
+        let requested = serde_json::json!({
+            "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.requested",
+            "time": "2026-09-27T10:00:00Z", "id": "ask_1",
+            "actor": {"kind": "human", "id": "local-user"}, "links": [],
+            "data": {"title": "fix the login bug", "captured_by": "prompt_hook",
+                     "source": {"role": "source_intent", "path": "asks/ask_1/source.txt",
+                                "bytes": 24, "sha256": "a"},
+                     "host": {"name": "codex", "session_ref": "fixture"}}
+        });
+        std::fs::write(rf.join("ledger.jsonl"), format!("{requested}\n")).expect("ledger");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.session_mut().units.is_empty() {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        a.take_the_board();
+        let rows = crate::ui::sidebar_text(&a);
+        let row = rows.lines().find(|l| l.contains("fix the login bug")).expect("the row");
+        assert!(row.contains("ASKING"), "{rows}");
+        press(&mut a, KeyCode::Enter);
+        let lines = a.detail().expect("its view").lines.clone();
+        assert!(lines.contains(&"ASK [ASKING]".to_string()), "{lines:?}");
+        assert!(lines.contains(&"  please".to_string()), "the words as asked: {lines:?}");
+        assert!(!a.proceeds(), "nothing to send yet");
+    }
+
+    /// An agent with nothing asked of it has a row too, so its badge has
+    /// somewhere to be.
+    #[test]
+    fn an_agent_with_no_asks_still_has_a_row_for_its_badge() {
+        let mut a = app();
+        agent_says(&mut a, "codex", "fixture", "waiting");
+        let rows = crate::ui::sidebar_text(&a);
+        assert!(
+            rows.lines().any(|l| l.contains("codex") && l.contains("needs your input")),
+            "{rows}"
+        );
+    }
+
+    /// ADR-0017: an agent the person is not looking at that starts asking
+    /// for input sends one notification; a turn that ends sends none; the agent in
+    /// front sends none; one that stays waiting is not announced again;
+    /// turned off, nothing is sent.
+    #[test]
+    fn an_agent_you_are_not_looking_at_tells_you_once_when_it_needs_you() {
+        use weft_core::turns::Turn;
+        let mut a = app();
+        a.add("codex", "/bin/cat").expect("a second agent");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() < 2 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        a.pane_focus = 0;
+        let set = |a: &mut App, states: Vec<Option<Turn>>| {
+            a.session_mut().pane_turns = states;
+            a.notices()
+        };
+        assert!(
+            set(&mut a, vec![Some(Turn::Working), Some(Turn::Working)]).is_empty(),
+            "first sight"
+        );
+        assert!(
+            set(&mut a, vec![Some(Turn::Working), Some(Turn::TurnEnded)]).is_empty(),
+            "a turn that ended is not an alarm"
+        );
+        let told = set(&mut a, vec![Some(Turn::Working), Some(Turn::Waiting)]);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(told[0].contains("codex") && told[0].contains("needs your input"), "{told:?}");
+        assert!(
+            set(&mut a, vec![Some(Turn::Working), Some(Turn::Waiting)]).is_empty(),
+            "once per change"
+        );
+        assert!(
+            set(&mut a, vec![Some(Turn::TurnEnded), Some(Turn::Waiting)]).is_empty(),
+            "the agent in front is never announced"
+        );
+        a.session_mut().notify = false;
+        set(&mut a, vec![Some(Turn::Working), Some(Turn::Working)]);
+        assert!(
+            set(&mut a, vec![Some(Turn::Working), Some(Turn::Waiting)]).is_empty(),
+            "turned off"
+        );
+    }
+
+    #[test]
+    fn a_notification_goes_through_the_terminal_or_rings_its_bell() {
+        assert_eq!(
+            notification(Some("iTerm.app"), "codex: turn ended"),
+            b"\x1b]9;codex: turn ended\x07"
+        );
+        assert_eq!(notification(Some("ghostty"), "x"), b"\x1b]9;x\x07");
+        assert_eq!(
+            notification(Some("Apple_Terminal"), "x"),
+            b"\x07",
+            "the bell where there is none"
+        );
+        assert_eq!(notification(None, "x"), b"\x07");
+        assert_eq!(
+            notification(Some("WezTerm"), "a\x07b\x1bc"),
+            b"\x1b]9;abc\x07",
+            "nothing in a message can end the sequence early"
+        );
+    }
+
+    fn drawn(a: &mut App) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).expect("terminal");
+        terminal.draw(|frame| crate::ui::draw(frame, a)).expect("draw");
+        let b = terminal.backend().buffer().clone();
+        (0..30)
+            .map(|y| (0..120).map(|x| b.cell((x, y)).map_or(" ", |c| c.symbol())).collect())
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
+    fn click(a: &mut App, column: u16, row: u16) {
+        a.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    /// A click on a row selects it, as the arrows would,
+    /// and types nothing into any agent.
+    #[test]
+    fn a_click_on_a_row_selects_it() {
+        let mut a = app();
+        let mut second = unit(Sent::Arrived { exact: true });
+        second.ask_id = "ask_2".into();
+        second.title = "the second one".into();
+        a.set_units(vec![unit(Sent::Arrived { exact: true }), second]);
+        let screen = drawn(&mut a);
+        let (y, line) =
+            screen.lines().enumerate().find(|(_, l)| l.contains("the second one")).expect("drawn");
+        let x = line.find("the second one").expect("x") as u16;
+        let before = a.pane_text(0);
+        a.focus = Focus::Agent;
+        click(&mut a, x, y as u16);
+        assert_eq!(a.selected_unit().map(|u| u.ask_id.as_str()), Some("ask_2"));
+        assert_eq!(a.focus, Focus::Weft, "the list has the keys, as after an arrow");
+        std::thread::sleep(Duration::from_millis(200));
+        a.pump();
+        assert_eq!(a.pane_text(0), before, "a click never types into an agent");
+    }
+
+    /// And a click on an agent's tab goes to that agent, as its number would.
+    #[test]
+    fn a_click_on_an_agents_tab_goes_to_it() {
+        let mut a = app();
+        a.add("codex", "/bin/cat").expect("a second agent");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline && a.pane_count() < 2 {
+            a.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        a.pane_focus = 0;
+        let screen = drawn(&mut a);
+        let (y, line) =
+            screen.lines().enumerate().find(|(_, l)| l.contains("2 codex")).expect("tabs");
+        let x = line.find("2 codex").expect("x") as u16;
+        click(&mut a, x + 2, y as u16);
+        assert_eq!(a.pane_focus, 1);
+        click(&mut a, 0, 29);
+        assert_eq!(a.pane_focus, 1, "a click elsewhere goes nowhere");
+    }
+
+    /// A send made from the detail view closes it, so the person lands in the
+    /// agent the keys went to rather than on a view that blocks the screen.
+    #[test]
+    fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
+        // The prompt is still to be sent, so [P]ROCEED sends it.
+        let mut a = recorded(Sent::ReadyToSend);
+        std::fs::write(a.root().join(".fab7/rf/y"), "Ship it.\n").expect("the prompt");
+        press(&mut a, KeyCode::Enter); // the row's detail view
+        assert!(a.detail().is_some(), "the detail view is open");
+        press(&mut a, KeyCode::Char('p'));
+        assert!(matches!(a.modal, Some(Modal::Confirm(_))), "{:?} / {:?}", a.modal, a.hint_text());
         press(&mut a, KeyCode::Enter);
         assert!(a.modal.is_none(), "{:?}", a.modal);
+        assert!(a.detail().is_none(), "the detail view closed");
+        assert_eq!(a.focus, Focus::Agent, "and the keys are the agent's");
+    }
+
+    /// Turbo mode is switched from Weft, by `[T]` or a click on it in the
+    /// title bar, and the title bar says where it stands.
+    #[test]
+    fn turbo_mode_is_switched_by_its_key_or_a_click_and_shown_in_the_title() {
+        let mut a = app();
+        let title = |a: &mut App| drawn(a).lines().next().unwrap_or("").to_string();
+        assert!(title(&mut a).contains("[T]URBO OFF"), "{}", title(&mut a));
+        press(&mut a, KeyCode::Char('t'));
+        assert!(a.turbo());
+        let on = title(&mut a);
+        assert!(on.contains('⚡') && on.contains("[T]URBO ON"), "{on}");
+        assert!(a.hint_text().is_some_and(|h| h.contains("next")), "{:?}", a.hint_text());
+        // One character per cell on the drawn line, so this is the column.
+        let x = on.find("[T]URBO").map(|b| on[..b].chars().count()).expect("x") as u16;
+        click(&mut a, x + 3, 0);
+        assert!(!a.turbo(), "a click switches it back");
+    }
+
+    /// A harness row says which harness has an agent running in turbo mode.
+    #[test]
+    fn a_harness_running_in_turbo_mode_carries_its_badge() {
+        let mut a = app();
+        assert!(!crate::ui::sidebar_text(&a).contains('⚡'));
+        a.session_mut().panes[0].turbo = true;
+        let rows = crate::ui::sidebar_text(&a);
+        assert!(rows.lines().any(|l| l.contains("codex") && l.contains('⚡')), "{rows}");
+    }
+
+    /// An agent started in turbo mode says so on its tab, and only it.
+    #[test]
+    fn an_agent_in_turbo_mode_says_so_on_its_tab() {
+        let mut a = app();
+        let tabs = |a: &mut App| drawn(a).lines().nth(1).unwrap_or("").to_string();
+        assert!(!tabs(&mut a).contains('⚡'), "{}", tabs(&mut a));
+        a.session_mut().panes[0].turbo = true;
+        assert!(tabs(&mut a).contains("1 codex ⚡"), "{}", tabs(&mut a));
+    }
+
+    /// The owner's case: an Ask sent through Weft, which no hook saw arrive.
+    /// Nothing asks for the send again: [P] has nothing to do, and what
+    /// comes next is the person's, through [F] FOLLOW UP or the bar's acts.
+    #[test]
+    fn a_sent_ask_is_never_sent_again_by_proceed() {
+        let mut a = app();
+        let mut u = unit(Sent::Unconfirmed);
+        u.attributed_at = Some("2026-09-27T10:01:00.000Z".into());
+        a.set_units(vec![u]);
+        agent_says(&mut a, "codex", "fixture", "turn_ended");
+        assert_eq!(a.needs_you(), 0, "a finished turn asks nothing");
+        press(&mut a, KeyCode::Char('p'));
+        assert!(a.modal.is_none(), "{:?}", a.modal);
+        assert_eq!(
+            a.hint_text(),
+            Some("health endpoint has nothing to send. [F] FOLLOW UP asks for more.")
+        );
     }
 
     #[test]
@@ -2258,11 +2824,14 @@ pub(crate) mod tests {
         assert_eq!(a.unavailable(Act::Proceed), None);
 
         // An Ask that was compiled and never answered is waiting on the
-        // harness's chooser, not on the person, so there is nothing to carry.
+        // harness's chooser, not on the person, so there is nothing to send.
         let mut a = recorded(Sent::NotSent);
         press(&mut a, KeyCode::Char('p'));
         assert!(a.modal.is_none(), "{:?}", a.modal);
-        assert_eq!(a.hint_text(), Some("health endpoint is closed. [F] FOLLOW UP asks again."));
+        assert_eq!(
+            a.hint_text(),
+            Some("health endpoint has nothing to send. [F] FOLLOW UP asks for more.")
+        );
     }
 
     #[test]
@@ -2325,16 +2894,17 @@ pub(crate) mod tests {
 
     #[test]
     fn the_verb_is_live_when_there_is_a_step_and_dim_when_there_is_not() {
-        // A row with a dot can always be carried forward. A sent and unjudged
-        // row carries no dot — nothing is kept waiting by it — and can still
-        // be carried, into its Eval. A closed one cannot be carried at all.
+        // A prompt still to be sent is the one thing [P] carries. A sent one
+        // is not carried at all: its Eval is the bar's [E]VAL, when the
+        // person wants it. A closed one only follows up.
         let a = with_unit(Sent::ReadyToSend);
-        assert!(a.selected_unit().expect("a unit").needs_you());
+        assert!(a.proceeds());
         assert_eq!(a.unavailable(Act::Proceed), None);
 
         let a = with_unit(Sent::Arrived { exact: true });
-        assert!(!a.selected_unit().expect("a unit").needs_you());
-        assert_eq!(a.unavailable(Act::Proceed), None, "its Eval is the step");
+        assert!(!a.proceeds());
+        assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("FOLLOW UP")));
+        assert_eq!(a.unavailable(Act::Eval), None, "its Eval is the person's to run");
 
         let mut a = app();
         let mut sealed = unit(Sent::Arrived { exact: true });
@@ -2543,69 +3113,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn space_goes_to_the_ask_that_needs_you() {
-        // The thing that needs you is an Ask, and its detail view is where
-        // you act on it, so one key goes the whole way.
+    fn space_never_opens_an_ask() {
+        // A prompt ready to send is the person's to send when they choose: it
+        // is not NEEDS YOU, so Space leaves the selection where it was.
         let mut a = app();
         let mut ready = unit(Sent::ReadyToSend);
         ready.ask_id = "ask_2".into();
-        ready.title = "readme fix".into();
         a.set_units(vec![unit(Sent::TakenByAgent), ready]);
+        let before = a.selected;
         press(&mut a, KeyCode::Char(' '));
-        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("readme fix".into()));
+        assert_eq!(a.selected, before);
+        assert!(a.detail().is_none());
+        assert_eq!(a.needs_you(), 0);
     }
 
     #[test]
-    fn space_falls_back_to_the_newest_ask_when_nothing_needs_you() {
+    fn explaining_a_waiting_agent_says_its_hook_said_so() {
         let mut a = app();
-        let mut older = unit(Sent::TakenByAgent);
-        older.title = "older".into();
-        let mut newest = unit(Sent::TakenByAgent);
-        newest.ask_id = "ask_2".into();
-        newest.title = "newest".into();
-        a.set_units(vec![older, newest]);
-        press(&mut a, KeyCode::Char(' '));
-        assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("newest".into()));
-    }
-
-    #[test]
-    fn the_needs_you_count_is_derived_from_the_record() {
-        let mut a = app();
-        a.set_units(vec![unit(Sent::ReadyToSend), unit(Sent::Arrived { exact: true })]);
-        assert_eq!(a.needs_you(), 1);
-    }
-
-    #[test]
-    fn explaining_a_waiting_pane_quotes_the_line_it_matched() {
-        let mut a = app();
-        a.input(0, b"Allow command?\r\n").expect("type");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            a.pump();
-            if a.waiting(0).is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
         press(&mut a, KeyCode::Char('y'));
         let hint = a.hint_text().expect("a sentence");
-        assert!(hint.contains("Allow command?"), "quotes the evidence: {hint}");
-        assert!(hint.contains("permission"), "names the rule: {hint}");
+        assert!(hint.contains("reported, through its hook"), "{hint}");
+        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Working)];
+        press(&mut a, KeyCode::Char('y'));
+        assert!(a.hint_text().expect("a sentence").contains("has not reported"));
     }
 
     #[test]
     fn weft_never_answers_a_waiting_agent_itself() {
         // [Enter] ANSWER IT puts the person in the pane; it types nothing.
         let mut a = app();
-        a.input(0, b"Allow command?\r\n").expect("type");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        while std::time::Instant::now() < deadline {
-            a.pump();
-            if a.waiting(0).is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
         press(&mut a, KeyCode::Char(' '));
         assert!(!a.show_work(), "Space shows the pane that is waiting");
         press(&mut a, KeyCode::Enter);
@@ -2704,10 +3242,13 @@ mod start_tests {
             confirmed: true,
             sent: Sent::ReadyToSend,
             check: None,
+            arrived: None,
+            attributed_at: None,
             gathered: None,
             sealed: None,
             seal_id: None,
             sealed_at: None,
+            requested_only: false,
         }]);
         a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)).expect("key");
         assert!(

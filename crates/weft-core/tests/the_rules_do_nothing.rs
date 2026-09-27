@@ -70,6 +70,10 @@ fn the_rules_depend_only_on_things_that_parse() {
         .split("[dependencies]")
         .nth(1)
         .expect("a dependencies section")
+        // Only that table: `[features]` below it is not a dependency.
+        .split("\n[")
+        .next()
+        .unwrap_or_default()
         .lines()
         .filter(|l| l.contains('='))
         .map(|l| l.split('=').next().unwrap().trim())

@@ -46,6 +46,52 @@ pub fn for_host(host: &Value) -> Result<Value, ConfigError> {
     load("unknown")
 }
 
+/// The profile for a host by its id, or `unknown`'s.
+pub fn of(host: &str) -> Result<Value, ConfigError> {
+    for_host(&serde_json::json!({"name": host}))
+}
+
+/// Every profile that defines a harness: one with a `program` to start.
+/// `unknown` defines none, so it is never offered (ADR-0018).
+pub fn harnesses() -> Result<Vec<Value>, ConfigError> {
+    let mut out = Vec::new();
+    for name in names()? {
+        let p = load(&name)?;
+        if p["program"].is_string() {
+            out.push(p);
+        }
+    }
+    Ok(out)
+}
+
+/// A host's facts, read from its profile. None when it names none, or
+/// there is no profile to read.
+fn fact(host: &str, key: &str) -> Option<String> {
+    of(host).ok()?.get(key)?.as_str().map(str::to_string)
+}
+
+/// The name a person reads; the host's id when its profile gives none.
+pub fn title(host: &str) -> String {
+    fact(host, "title").unwrap_or_else(|| host.to_string())
+}
+
+/// The hook payload's session id field, from the host's profile.
+pub fn session_field(host: &str) -> Option<String> {
+    fact(host, "session_field")
+}
+
+/// The prefix a RingFrame skill is invoked with on this host.
+pub fn invocation_prefix(host: &str) -> Option<String> {
+    fact(host, "invocation_prefix")
+}
+
+/// The session a hook payload names, by the field the host's profile says.
+pub fn session_of(host: &str, payload: &Value) -> String {
+    session_field(host)
+        .and_then(|f| payload.get(f)?.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 pub fn capability<'a>(profile: &'a Value, cap_id: &str) -> Option<&'a Value> {
     profile["capabilities"].as_array()?.iter().find(|c| c["id"] == cap_id)
 }

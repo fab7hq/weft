@@ -22,6 +22,8 @@ pub struct PaneView {
     /// The command line this pane runs, as the server reports it.
     pub spec: String,
     pub running: bool,
+    /// Started in turbo mode, as the daemon reports it.
+    pub turbo: bool,
     parser: vt100::Parser,
     rows: u16,
     cols: u16,
@@ -32,6 +34,7 @@ impl PaneView {
     fn of(p: weft_proto::PaneInfo) -> Self {
         let mut v = Self::new(p.harness, p.spec);
         v.running = p.running;
+        v.turbo = p.turbo;
         v
     }
 
@@ -40,6 +43,7 @@ impl PaneView {
             harness,
             spec,
             running: true,
+            turbo: false,
             parser: vt100::Parser::new(24, 80, 10_000),
             rows: 24,
             cols: 80,
@@ -122,6 +126,23 @@ pub struct Session {
     /// What is waiting on a person, newest last. The daemon's, not this
     /// client's: another client may answer one of these.
     pub waiting: Vec<Staged>,
+    /// The pane and size this client last told the daemon it draws. Told
+    /// once per change, since telling is focusing: the agent takes the size
+    /// of the window that last focused it or typed into it.
+    told: Option<(usize, u16, u16)>,
+    /// Each pane's agent state, in order, and every session's latest event,
+    /// as the daemon read them from the hooks' receipts.
+    pub pane_turns: Vec<Option<weft_core::turns::Turn>>,
+    /// The session each pane runs, when the daemon can tell.
+    pub pane_sessions: Vec<Option<String>>,
+    pub turns: Vec<weft_core::turns::Session>,
+    /// Whether to tell the person when an agent needs them, from Weft's
+    /// `config.toml` as the daemon read it.
+    pub notify: bool,
+    /// Whether agents started here from now on run in turbo mode.
+    pub turbo: bool,
+    /// The harnesses RingFrame's profiles define, as the daemon read them.
+    pub harnesses: weft_core::harness::Harnesses,
 }
 
 impl Session {
@@ -178,6 +199,13 @@ impl Session {
             routing: weft_core::routing::Routing::default(),
             gap: None,
             waiting: Vec::new(),
+            told: None,
+            pane_turns: Vec::new(),
+            pane_sessions: Vec::new(),
+            turns: Vec::new(),
+            notify: true,
+            turbo: false,
+            harnesses: Default::default(),
             next_call: 1,
             answers: std::collections::HashMap::new(),
         };
@@ -200,6 +228,15 @@ impl Session {
         session.readiness =
             opened.get("readiness").cloned().unwrap_or_else(|| serde_json::json!({}));
         session.records = opened.get("records").cloned().unwrap_or_else(|| serde_json::json!({}));
+        if let Some(agents) = opened.get("agents") {
+            session.take_agents(agents);
+        }
+        session.harnesses = opened
+            .get("harnesses")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
+        session.notify = opened.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
+        session.turbo = opened.get("turbo").and_then(|v| v.as_bool()).unwrap_or(false);
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
         if let Some(r) = opened.get("routing") {
             session.routing = weft_core::routing::Routing::of(
@@ -218,6 +255,13 @@ impl Session {
             }
         }
         Ok(session)
+    }
+
+    fn take_agents(&mut self, agents: &serde_json::Value) {
+        let field = |k: &str| agents.get(k).cloned().unwrap_or_default();
+        self.pane_turns = serde_json::from_value(field("panes")).unwrap_or_default();
+        self.pane_sessions = serde_json::from_value(field("bound")).unwrap_or_default();
+        self.turns = serde_json::from_value(field("sessions")).unwrap_or_default();
     }
 
     /// Make a call. The answer arrives on the same socket, against this id.
@@ -265,15 +309,20 @@ impl Session {
             match event {
                 Event::Panes { panes } => {
                     self.panes = panes.into_iter().map(PaneView::of).collect();
+                    // Renumbered: the pane last told may be another now.
+                    self.told = None;
                 }
                 Event::Output { pane, bytes } => {
                     if let Some(p) = self.panes.get_mut(pane as usize) {
                         p.feed(&bytes);
                     }
                 }
-                Event::Added { pane, harness, spec } => {
+                Event::Added { pane, harness, spec, turbo } => {
                     while self.panes.len() <= pane as usize {
                         self.panes.push(PaneView::new(harness.clone(), spec.clone()));
+                    }
+                    if let Some(p) = self.panes.get_mut(pane as usize) {
+                        p.turbo = turbo;
                     }
                 }
                 Event::Exited { pane } => {
@@ -292,6 +341,11 @@ impl Session {
                 Event::Injected { refusal, .. } => self.last_refusal = refusal,
                 Event::Readiness { states } => self.readiness = states,
                 Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
+                Event::Agents { panes, bound, sessions } => {
+                    self.pane_turns = panes;
+                    self.pane_sessions = bound;
+                    self.turns = sessions;
+                }
             }
         }
         changed
@@ -358,6 +412,13 @@ impl Session {
         self.ask(Call::Read { what: what.to_string(), unit: unit.to_string() })
     }
 
+    /// Turn turbo mode on or off for the agents started here from now on.
+    pub fn set_turbo(&mut self, on: bool) -> Result<()> {
+        let answer = self.ask(Call::Turbo { on })?;
+        self.turbo = answer.get("turbo").and_then(|v| v.as_bool()).unwrap_or(on);
+        Ok(())
+    }
+
     /// The agents that could be started here.
     pub fn available(&mut self) -> Result<Vec<serde_json::Value>> {
         let answer = self.ask(Call::Available)?;
@@ -379,6 +440,10 @@ impl Session {
         if let Some(p) = self.panes.get_mut(pane) {
             p.resize(rows, cols);
         }
+        if self.told == Some((pane, rows, cols)) {
+            return Ok(());
+        }
+        self.told = Some((pane, rows, cols));
         self.tell(Call::Resize { pane: pane as u32, rows, cols }).map(|_| ())
     }
 

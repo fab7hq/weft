@@ -66,14 +66,6 @@ which is the prompt without its command:
 
 Paste that beside what you typed, and submit.";
 
-fn host_title(host: &str) -> &str {
-    match host {
-        "claude-code" => "Claude Code",
-        "codex" => "Codex",
-        other => other,
-    }
-}
-
 fn fill(template: &str, pairs: &[(&str, String)]) -> String {
     let mut out = template.to_string();
     for (k, v) in pairs {
@@ -449,6 +441,104 @@ fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
     Ok(())
 }
 
+/// What a request is titled until its compile names it: the first line the
+/// person wrote, without the `--override '<json>'` or `[follow-up <id>]` Weft
+/// may put in front of it, cut to 72 characters.
+pub fn requested_title(source: &[u8]) -> String {
+    let text = String::from_utf8_lossy(source);
+    let mut rest = text.trim_start();
+    if let Some(after) = rest.strip_prefix("--override '")
+        && let Some(end) = after.find('\'')
+    {
+        rest = after[end + 1..].trim_start();
+    }
+    if rest.starts_with("[follow-up ")
+        && let Some(end) = rest.find(']')
+    {
+        rest = rest[end + 1..].trim_start();
+    }
+    let line = rest.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 72 {
+        line.chars().take(71).chain(['…']).collect()
+    } else {
+        line.to_string()
+    }
+}
+
+/// The request a compile of these source bytes continues: recorded by this
+/// host, not yet compiled, with the same words (a trailing newline aside),
+/// and from the same session when both know theirs. The newest wins.
+fn open_request(
+    ws: &Workspace,
+    host: &str,
+    session: Option<&str>,
+    source: &[u8],
+) -> Result<Option<(String, Value)>, AskError> {
+    let want = |b: &[u8]| String::from_utf8_lossy(b).trim_end_matches('\n').to_string();
+    let wanted = want(source);
+    for (id, rec) in by_id(ws)?.into_iter().rev() {
+        let Some(req) = rec.requested.filter(|_| rec.compiled.is_none()) else { continue };
+        let d = &req["data"];
+        let theirs = d["host"]["session_ref"].as_str();
+        if str_of(&d["host"], "name") != host || session.zip(theirs).is_some_and(|(a, b)| a != b) {
+            continue;
+        }
+        let path = ws.rf_dir().join(str_of(&d["source"], "path"));
+        if std::fs::read(&path).is_ok_and(|b| want(&b) == wanted) {
+            return Ok(Some((id, d["source"].clone())));
+        }
+    }
+    Ok(None)
+}
+
+/// Put an Ask on record the moment it is asked, before any of it is composed:
+/// the person's words, as `asks/<id>/source.txt`, and `ask.requested`. The
+/// compile that follows takes the same id, so an Ask whose composing never
+/// finished is still on record as asked. Asked again before it is compiled,
+/// the same request is returned and nothing is written.
+pub fn request(
+    ws: &Workspace,
+    host: &str,
+    session: Option<&str>,
+    source: &[u8],
+    captured_by: &str,
+) -> Result<Value, AskError> {
+    workspace::require_git(ws)?;
+    if let Some((id, source_ref)) = open_request(ws, host, session, source)? {
+        return Ok(json!({"ask_id": id, "source": source_ref, "recorded": false}));
+    }
+    let ask_id = ids::new_id("ask");
+    let path = format!("asks/{ask_id}/source.txt");
+    let source_ref = json!({"role": "source_intent", "path": path,
+                            "bytes": source.len(), "sha256": digest::sha256_bytes(source)});
+    let data = json!({
+        "title": requested_title(source),
+        "source": source_ref,
+        "host": {"name": host, "session_ref": session},
+        "captured_by": captured_by,
+    });
+    let ev = event("ask.requested", &ask_id, &default_actor(None), data, &[]);
+    schema::validate_event(&ev)?;
+    let wrote = store::publish(ws, &path, source, "source_intent")?;
+    assert_eq!(wrote, source_ref, "the published source is not what was recorded");
+    store::append(ws, &ev)?;
+    Ok(json!({"ask_id": ask_id, "source": source_ref, "recorded": true}))
+}
+
+/// `ringframe ask request --staged <dir> --host <json>`: the request from a
+/// skill, for a harness whose prompt reaches no hook. Reads the staged
+/// `source.txt` and leaves the staging for the compile.
+pub fn request_staged(ws: &Workspace, staged: &Path, host: &Value) -> Result<Value, AskError> {
+    let staged = workspace::within(ws, staged)?;
+    let source = std::fs::read(staged.join("source.txt"))?;
+    if source.is_empty() || String::from_utf8(source.clone()).is_err() {
+        return Err(ledger("ask.staged_file", "source.txt must be non-empty UTF-8"));
+    }
+    let name = host.as_str().map(str::to_string).unwrap_or_else(|| str_of(host, "name"));
+    let session = host.get("session_ref").and_then(Value::as_str);
+    request(ws, &name, session, &source, "skill")
+}
+
 /// The only Ask operation that writes artifacts. Appends `ask.compiled`.
 pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
@@ -574,13 +664,19 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     if str_of(&profile, "profile_id") == "unknown" {
         limitations.push("qualification gap: no profile for this host".into());
     }
-    let ask_id = ids::new_id("ask");
+    let session_ref = host.get("session_ref").and_then(Value::as_str).map(str::to_string);
+    // An Ask already on record as asked is this one: same id, and the source
+    // it was asked with, which is published already.
+    let requested = open_request(ws, &str_of(&host, "name"), session_ref.as_deref(), &source)?;
+    let ask_id = requested.as_ref().map_or_else(|| ids::new_id("ask"), |(id, _)| id.clone());
     // Provisional references let the event be validated before anything is written.
-    let source_ref = json!({"role": "source_intent", "path": format!("asks/{ask_id}/source.txt"),
-                            "bytes": source.len(), "sha256": digest::sha256_bytes(&source)});
+    let source_ref = match &requested {
+        Some((_, r)) => r.clone(),
+        None => json!({"role": "source_intent", "path": format!("asks/{ask_id}/source.txt"),
+                       "bytes": source.len(), "sha256": digest::sha256_bytes(&source)}),
+    };
     let prompt_ref = json!({"role": "generated_prompt", "path": format!("asks/{ask_id}/prompt.txt"),
                             "bytes": prompt.len(), "sha256": digest::sha256_bytes(&prompt)});
-    let session_ref = host.get("session_ref").and_then(Value::as_str).map(str::to_string);
     let (verified, reason) =
         sessions::source_verified(ws, &str_of(&host, "name"), session_ref.as_deref(), &source);
     if let Some(reason) = reason {
@@ -610,12 +706,14 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     });
     let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &args.links);
     schema::validate_event(&ev)?;
-    let wrote_source = store::publish(ws, &str_of(&source_ref, "path"), &source, "source_intent")?;
+    if requested.is_none() {
+        let wrote = store::publish(ws, &str_of(&source_ref, "path"), &source, "source_intent")?;
+        // The references went into a validated event before the bytes existed;
+        // if they now disagree, the record would describe a file that is not there.
+        assert_eq!(wrote, source_ref, "the published source is not what was recorded");
+    }
     let wrote_prompt =
         store::publish(ws, &str_of(&prompt_ref, "path"), &prompt, "generated_prompt")?;
-    // The references went into a validated event before the bytes existed; if
-    // they now disagree, the record would describe a file that is not there.
-    assert_eq!(wrote_source, source_ref, "the published source is not what was recorded");
     assert_eq!(wrote_prompt, prompt_ref, "the published prompt is not what was recorded");
     store::append(ws, &ev)?;
     std::fs::remove_dir_all(&staged)?;
@@ -789,6 +887,7 @@ pub fn submission_from_capture(
     host: &str,
     session: &str,
     sha256: &str,
+    observed_by: &str,
 ) -> Result<Option<Value>, AskError> {
     let mut hits: Vec<(String, String, bool)> = Vec::new();
     for (ask_id, v) in by_id(ws)? {
@@ -812,7 +911,7 @@ pub fn submission_from_capture(
         "ask.submission",
         &ask_id,
         json!({
-            "state": "observed", "observed_by": "hook:UserPromptSubmit", "attributed_by": null,
+            "state": "observed", "observed_by": observed_by, "attributed_by": null,
             "as_modified": false, "host": {"name": host, "session_ref": session},
             "prompt_sha256": sha256, "match": matched,
         }),
@@ -895,6 +994,9 @@ pub fn prompt_text(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
 /// Everything the ledger says about one Ask.
 #[derive(Default, Clone)]
 pub struct AskRecord {
+    /// Asked, before anything was composed. Absent from an Ask compiled
+    /// before requests were recorded.
+    pub requested: Option<Value>,
     pub compiled: Option<Value>,
     pub confirmed: Option<Value>,
     pub cancelled: Option<Value>,
@@ -916,6 +1018,7 @@ fn by_id(ws: &Workspace) -> Result<Vec<(String, AskRecord)>, AskError> {
         let rec = &mut out.iter_mut().find(|(k, _)| *k == id).expect("just inserted").1;
         match kind {
             "submission" => rec.submissions.push(ev),
+            "requested" => rec.requested = Some(ev),
             "compiled" => rec.compiled = Some(ev),
             "confirmed" => rec.confirmed = Some(ev),
             "cancelled" => rec.cancelled = Some(ev),
@@ -988,12 +1091,29 @@ fn append_delivery(
     Ok(out)
 }
 
-/// Record `native_accepted` (or `delivery_failed`) from a `PostToolUse`
+/// The receipt the Ask's capability declares it is captured by.
+fn captured_by(compiled: &Value) -> Value {
+    let d = &compiled["data"];
+    profiles::for_host(&d["host"])
+        .ok()
+        .and_then(|p| profiles::capability(&p, &str_of(d, "selected_capability")).cloned())
+        .and_then(|cap| cap.get("receipt")?.get("captured_by").cloned())
+        .unwrap_or(Value::Null)
+}
+
+/// Record `native_accepted` (or `delivery_failed`) from a post-tool
 /// payload; never raise.
-pub fn delivery_from_hook(ws: &Workspace, payload: &Value) -> Result<Option<Value>, AskError> {
-    let session = str_of(payload, "session_id");
-    let host = "claude-code";
-    if str_of(payload, "hook_event_name") != "PostToolUse" || session.is_empty() {
+///
+/// The plugin runs this from the hook its capability's receipt names; the CLI
+/// names no hook, and the session is read from the field the host's profile
+/// names.
+pub fn delivery_from_hook(
+    ws: &Workspace,
+    host: &str,
+    payload: &Value,
+) -> Result<Option<Value>, AskError> {
+    let session = profiles::session_of(host, payload);
+    if session.is_empty() {
         return Ok(None);
     }
     let tool = str_of(payload, "tool_name");
@@ -1044,7 +1164,7 @@ pub fn delivery_from_hook(ws: &Workspace, payload: &Value) -> Result<Option<Valu
     let receipt = json!({
         "tool": tool, "tool_use_id": payload.get("tool_use_id").cloned().unwrap_or(Value::Null),
         "session_id": session, "response_sha256": digest::sha256_bytes(&store::canonical(&response)),
-        "captured_by": "hook:PostToolUse",
+        "captured_by": captured_by(&compiled),
     });
     let limitations = if failed {
         vec![format!(
@@ -1078,7 +1198,7 @@ pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value),
     let d = &compiled["data"];
     let path = ws.rf_dir().join(str_of(&d["prompt"], "path"));
     let host = str_of(&d["host"], "name");
-    let title = host_title(&host).to_string();
+    let title = profiles::title(&host);
     let mut text = fill(
         HANDOFF,
         &[
@@ -1463,6 +1583,10 @@ mod tests {
         store::events(ws).unwrap()
     }
 
+    fn compiled_event(ws: &Workspace) -> Value {
+        events(ws).into_iter().find(|e| e["type"] == "ask.compiled").expect("a compiled Ask")
+    }
+
     fn types(ws: &Workspace) -> Vec<String> {
         events(ws).iter().map(|e| str_of(e, "type")).collect()
     }
@@ -1516,17 +1640,94 @@ mod tests {
                 b"Fix the login bug.\n"
             );
             assert!(!ws.rf_dir().join("tmp/stage-1").exists());
-            let evs = events(ws);
-            assert_eq!(evs.len(), 1);
-            assert_eq!(evs[0]["type"], "ask.compiled");
-            assert_eq!(evs[0]["id"], out["ask_id"]);
-            assert_eq!(evs[0]["data"]["host"]["profile_id"], "claude-code");
-            assert_eq!(evs[0]["data"]["host"]["workspace"]["rule"], "cwd");
+            // The prompt hook put the Ask on record as asked; compile adds one event.
+            assert_eq!(types(ws), ["ask.requested", "ask.compiled"]);
+            let ev = compiled_event(ws);
+            assert_eq!(ev["id"], out["ask_id"]);
+            assert_eq!(ev["data"]["host"]["profile_id"], "claude-code");
+            assert_eq!(ev["data"]["host"]["workspace"]["rule"], "cwd");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
             let shown = only_ask(ws);
             assert_eq!(shown["outcome"], "compiled");
             assert_eq!(shown["submission"], "unobserved");
         });
+    }
+
+    /// An Ask is on record the moment the person asks it: the prompt hook
+    /// records their words as `ask.requested`, before any of it is composed,
+    /// and the compile that follows keeps its id and its source.
+    #[test]
+    fn an_ask_is_on_record_the_moment_it_is_asked_and_its_compile_keeps_the_id() {
+        bench(|ws| {
+            capture(ws, "claude-code", "s1", "/rf:ask fix the login bug", None);
+            let evs = events(ws);
+            assert_eq!(types(ws), ["ask.requested"]);
+            let id = str_of(&evs[0], "id");
+            assert!(id.starts_with("ask_"));
+            let d = &evs[0]["data"];
+            assert_eq!(d["title"], "fix the login bug");
+            assert_eq!(d["host"]["name"], "claude-code");
+            assert_eq!(d["host"]["session_ref"], "s1");
+            let source = ws.rf_dir().join(str_of(&d["source"], "path"));
+            assert_eq!(std::fs::read(source).unwrap(), b"fix the login bug");
+            assert!(list_asks(ws).unwrap().is_empty(), "not an Ask RingFrame can act on yet");
+
+            let out = compiled(ws);
+            assert_eq!(str_of(&out, "ask_id"), id, "the compile is the same Ask");
+            assert_eq!(out["source"], d["source"], "and its source is the one asked");
+            assert_eq!(types(ws), ["ask.requested", "ask.compiled"]);
+            assert_eq!(out["source_verified"], "exact");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+            assert_eq!(only_ask(ws)["outcome"], "compiled");
+
+            // A revision is a new candidate, with an id of its own.
+            let again =
+                compile_with(ws, Args { links: link("revises", &id), ..Args::default() }).unwrap();
+            assert_ne!(str_of(&again, "ask_id"), id);
+        });
+    }
+
+    #[test]
+    fn a_prompt_that_is_not_an_ask_requests_nothing() {
+        bench(|ws| {
+            capture(ws, "claude-code", "s1", "hello there", None);
+            capture(ws, "claude-code", "s1", "/rf:ask   ", None);
+            capture(ws, "claude-code", "s1", "/rf:eval the login fix", None);
+            assert!(types(ws).is_empty(), "{:?}", types(ws));
+        });
+    }
+
+    /// A harness with no prompt hook records the request from its skill,
+    /// from the staged source, which compile then reads from the same place.
+    /// Asked twice, it is recorded once.
+    #[test]
+    fn a_request_from_staging_is_recorded_once_and_compiled_under_its_id() {
+        bench(|ws| {
+            let staged = stage(ws);
+            let host = json!({"name": "claude-code", "surface": "native-tui"});
+            let first = request_staged(ws, &staged, &host).unwrap();
+            let second = request_staged(ws, &staged, &host).unwrap();
+            assert_eq!(first["ask_id"], second["ask_id"]);
+            assert_eq!(types(ws), ["ask.requested"]);
+            assert!(staged.exists(), "compile still reads the staging");
+            let out = compile_with(
+                ws,
+                Args { staged: Some(staged), host: host.clone(), ..Args::default() },
+            )
+            .unwrap();
+            assert_eq!(out["ask_id"], first["ask_id"]);
+        });
+    }
+
+    #[test]
+    fn a_requests_title_is_what_was_asked_without_what_weft_adds() {
+        assert_eq!(requested_title(b"fix the login bug\nand more"), "fix the login bug");
+        assert_eq!(
+            requested_title(b"--override '{\"a\": 1}' [follow-up evl_1] tidy the tests"),
+            "tidy the tests"
+        );
+        let long = "x".repeat(100);
+        assert_eq!(requested_title(long.as_bytes()).chars().count(), 72);
     }
 
     fn codex() -> Value {
@@ -1944,25 +2145,43 @@ mod tests {
             .unwrap();
             // The person pastes the exact prompt; the hook captures its digest.
             let rec = capture(ws, "codex", "c1", "Fix the login bug.\n", None);
-            let sub = submission_from_capture(ws, "codex", "c1", &str_of(&rec, "sha256"))
-                .unwrap()
-                .unwrap();
+            let sub = submission_from_capture(
+                ws,
+                "codex",
+                "c1",
+                &str_of(&rec, "sha256"),
+                "hook:UserPromptSubmit",
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(sub["ask_id"], out["ask_id"]);
             assert_eq!(sub["state"], "observed");
             assert_eq!(sub["observed_by"], "hook:UserPromptSubmit");
             assert_eq!(sub["match"], "exact");
             // Once only.
             assert!(
-                submission_from_capture(ws, "codex", "c1", &str_of(&rec, "sha256"))
-                    .unwrap()
-                    .is_none()
+                submission_from_capture(
+                    ws,
+                    "codex",
+                    "c1",
+                    &str_of(&rec, "sha256"),
+                    "hook:UserPromptSubmit"
+                )
+                .unwrap()
+                .is_none()
             );
             // Composers drop the trailing newline of a pasted file; that is
             // still the same prompt.
             let pasted = capture(ws, "codex", "c1", "Something else.", None);
-            let sub2 = submission_from_capture(ws, "codex", "c1", &str_of(&pasted, "sha256"))
-                .unwrap()
-                .unwrap();
+            let sub2 = submission_from_capture(
+                ws,
+                "codex",
+                "c1",
+                &str_of(&pasted, "sha256"),
+                "hook:UserPromptSubmit",
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(sub2["ask_id"], other["ask_id"]);
             assert_eq!(sub2["match"], "trailing_newline_dropped");
             assert_eq!(ask_by_id(ws, &str_of(&other, "ask_id"))["submission"], "observed");
@@ -1977,7 +2196,17 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(submission_from_capture(ws, "codex", "c1", &"f".repeat(64)).unwrap().is_none());
+            assert!(
+                submission_from_capture(
+                    ws,
+                    "codex",
+                    "c1",
+                    &"f".repeat(64),
+                    "hook:UserPromptSubmit"
+                )
+                .unwrap()
+                .is_none()
+            );
             assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
             let att = submitted(ws, &str_of(&third, "ask_id"), true, None).unwrap();
             assert_eq!(att["state"], "attributed");
@@ -2023,15 +2252,19 @@ mod tests {
             .unwrap();
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             assert_eq!(out["source_verified"], "exact");
-            let host = events(ws)[0]["data"]["host"].clone();
+            let host = compiled_event(ws)["data"]["host"].clone();
             assert_eq!(host["session_ref"], "hook-session");
             assert_eq!(host["session_ref_source"], "capture");
             assert_eq!(host["version"], "2.1.263 (Claude Code)");
             assert_eq!(host["version_source"], "capture");
             assert_eq!(host["profile_id"], "claude-code");
-            let rec = delivery_from_hook(ws, &hook("hook-session", false, "EnterPlanMode"))
-                .unwrap()
-                .unwrap();
+            let rec = delivery_from_hook(
+                ws,
+                "claude-code",
+                &hook("hook-session", false, "EnterPlanMode"),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(rec["state"], "native_accepted");
         });
     }
@@ -2201,7 +2434,9 @@ mod tests {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let rec = delivery_from_hook(ws, &hook("s1", false, "EnterPlanMode")).unwrap().unwrap();
+            let rec = delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+                .unwrap()
+                .unwrap();
             assert_eq!(rec["state"], "native_accepted");
             assert_eq!(rec["ask_id"], out["ask_id"]);
             let last = events(ws).pop().unwrap();
@@ -2210,7 +2445,11 @@ mod tests {
             assert_eq!(last["data"]["receipt"]["captured_by"], "hook:PostToolUse");
             assert_eq!(last["data"]["qualification"]["id"], "ringframe-ask-plan-q04");
             // Already delivered: skip, and log why.
-            assert!(delivery_from_hook(ws, &hook("s1", false, "EnterPlanMode")).unwrap().is_none());
+            assert!(
+                delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+                    .unwrap()
+                    .is_none()
+            );
             let skipped = std::fs::read_to_string(
                 ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"),
             )
@@ -2225,7 +2464,9 @@ mod tests {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let rec = delivery_from_hook(ws, &hook("s1", true, "EnterPlanMode")).unwrap().unwrap();
+            let rec = delivery_from_hook(ws, "claude-code", &hook("s1", true, "EnterPlanMode"))
+                .unwrap()
+                .unwrap();
             assert_eq!(rec["state"], "delivery_failed");
         });
     }
@@ -2236,9 +2477,15 @@ mod tests {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             assert!(
-                delivery_from_hook(ws, &hook("other", false, "EnterPlanMode")).unwrap().is_none()
+                delivery_from_hook(ws, "claude-code", &hook("other", false, "EnterPlanMode"))
+                    .unwrap()
+                    .is_none()
             );
-            assert!(delivery_from_hook(ws, &hook("s1", false, "Write")).unwrap().is_none());
+            assert!(
+                delivery_from_hook(ws, "claude-code", &hook("s1", false, "Write"))
+                    .unwrap()
+                    .is_none()
+            );
             compile_with(
                 ws,
                 Args {
@@ -2248,7 +2495,11 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(delivery_from_hook(ws, &hook("s1", false, "EnterPlanMode")).unwrap().is_none());
+            assert!(
+                delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+                    .unwrap()
+                    .is_none()
+            );
             let skipped = std::fs::read_to_string(
                 ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"),
             )
@@ -2490,9 +2741,15 @@ mod tests {
             // Codex hands the UserPromptSubmit hook the text after "/plan ",
             // without the file's trailing newline.
             let rec = capture(ws, "codex", "s-one", "Fix the login bug.", None);
-            let sub = submission_from_capture(ws, "codex", "s-one", &str_of(&rec, "sha256"))
-                .unwrap()
-                .unwrap();
+            let sub = submission_from_capture(
+                ws,
+                "codex",
+                "s-one",
+                &str_of(&rec, "sha256"),
+                "hook:UserPromptSubmit",
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(sub["ask_id"], out["ask_id"]);
             assert_eq!(sub["match"], "host_prefix_stripped");
             assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
@@ -2507,9 +2764,15 @@ mod tests {
             confirm(ws, &str_of(&second, "ask_id"), None).unwrap();
             delivery_handoff(ws, &str_of(&second, "ask_id")).unwrap();
             let rec = capture(ws, "codex", "s-two", "Fix the login bug.", None);
-            let sub = submission_from_capture(ws, "codex", "s-two", &str_of(&rec, "sha256"))
-                .unwrap()
-                .unwrap();
+            let sub = submission_from_capture(
+                ws,
+                "codex",
+                "s-two",
+                &str_of(&rec, "sha256"),
+                "hook:UserPromptSubmit",
+            )
+            .unwrap()
+            .unwrap();
             // The Ask that was handed off is the one a paste is expected for.
             assert_eq!(sub["ask_id"], second["ask_id"]);
 
@@ -2521,9 +2784,15 @@ mod tests {
             let rec2 = capture(ws, "codex", "s-three", "Fix the login bug.", None);
             // Two delivered candidates: no attribution.
             assert!(
-                submission_from_capture(ws, "codex", "s-three", &str_of(&rec2, "sha256"))
-                    .unwrap()
-                    .is_none()
+                submission_from_capture(
+                    ws,
+                    "codex",
+                    "s-three",
+                    &str_of(&rec2, "sha256"),
+                    "hook:UserPromptSubmit"
+                )
+                .unwrap()
+                .is_none()
             );
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
@@ -2838,7 +3107,7 @@ mod tests {
                     },
                 )
                 .unwrap();
-                let recorded = events(ws)[0]["data"]["host"].clone();
+                let recorded = compiled_event(ws)["data"]["host"].clone();
                 assert_eq!(recorded["version"], json!(version));
                 assert_eq!(recorded["profile_id"], "codex");
                 assert_eq!(recorded["profile_sha256"], profiles::sha256("codex").unwrap());

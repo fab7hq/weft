@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
     // Startup questions belong to the agent and are answered there, the way a
     // person would. Weft never answers one on anyone's behalf.
     let answered = settle_startup(&mut app);
-    let blocked = app.waiting(0).map(|e| format!("{} · {}", e.rule, e.line));
+    let blocked = app.waiting(0).then(|| "the agent reported it is asking".to_string());
     steps.push(
         json!({"step": "startup", "answered": answered, "blocked": blocked, "screen": tail(&app)}),
     );
@@ -206,7 +206,7 @@ fn settle_startup(app: &mut App) -> Vec<String> {
                 quiet = Instant::now();
                 std::thread::sleep(Duration::from_secs(3));
             }
-            None if app.waiting(0).is_none() && quiet.elapsed() > SETTLE => return answered,
+            None if !app.waiting(0) && quiet.elapsed() > SETTLE => return answered,
             None => std::thread::sleep(Duration::from_millis(250)),
         }
     }
