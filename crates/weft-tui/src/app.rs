@@ -444,7 +444,7 @@ impl App {
 
     /// A pane's agent state, as its hooks reported it. None is not ready.
     pub fn pane_turn(&self, pane: usize) -> Option<weft_core::turns::Turn> {
-        sess!(self).pane_turns.get(pane).copied().flatten()
+        sess!(self).panes.get(pane).and_then(|p| p.turn)
     }
 
     /// The agent state of a unit of work, from the session the ledger names
@@ -464,9 +464,8 @@ impl App {
         let s = &self.projects[project].session;
         s.panes
             .iter()
-            .zip(&s.pane_turns)
-            .filter(|(p, t)| {
-                **t == Some(weft_core::turns::Turn::Waiting)
+            .filter(|p| {
+                p.turn == Some(weft_core::turns::Turn::Waiting)
                     && harness.is_none_or(|h| p.harness == h)
             })
             .count()
@@ -476,6 +475,7 @@ impl App {
     /// The decision itself is `weft_core::board`.
     fn with_board<T>(&self, f: impl FnOnce(Board<'_>) -> T) -> T {
         let panes = self.pane_facts();
+        let agents: Vec<_> = sess!(self).panes.iter().map(|p| p.turn).collect();
         f(Board {
             units: &self.units,
             selected: self.selected_index().unwrap_or(usize::MAX),
@@ -484,7 +484,7 @@ impl App {
             readiness: &|h| self.readiness(h),
             routing: &self.routing,
             workspace_gap: self.workspace_gap.as_deref(),
-            agents: &sess!(self).pane_turns,
+            agents: &agents,
         })
     }
 
@@ -492,9 +492,8 @@ impl App {
         sess!(self)
             .panes
             .iter()
-            .enumerate()
-            .map(|(i, p)| PaneInfo {
-                pane: i as u32,
+            .map(|p| PaneInfo {
+                pane: p.id,
                 harness: p.harness.clone(),
                 spec: p.spec.clone(),
                 running: p.running,
@@ -726,7 +725,7 @@ impl App {
                     _ => {}
                 }
             }
-            if sess!(self).pump() {
+            if self.pump_all() {
                 self.take_the_board();
             }
             self.notice_an_agent_that_ended();
@@ -754,7 +753,7 @@ impl App {
         let mut out = Vec::new();
         let (at, focus) = (self.at, self.pane_focus);
         for (i, p) in self.projects.iter_mut().enumerate() {
-            let now = p.session.pane_turns.clone();
+            let now: Vec<_> = p.session.panes.iter().map(|v| v.turn).collect();
             let before = p.heard.replace(now.clone());
             // A pane came or went: the numbers moved, so this is a first sight.
             let Some(before) = before.filter(|b| b.len() == now.len()) else { continue };
@@ -851,12 +850,23 @@ impl App {
 
     /// Take the board the daemon read, and notice anything it implies. The
     /// record is followed once, in the daemon, and every client is told.
-    fn take_the_board(&mut self) {
-        // Every project's connection is pumped, so a board in the background
-        // is as current as the one on screen.
+    /// Take in what every project's connection has sent, so a board in the
+    /// background is as current as the one on screen. The agent in front
+    /// stays in front when one before it closes.
+    fn pump_all(&mut self) -> bool {
+        let focused = sess!(self).panes.get(self.pane_focus).map(|p| p.id);
+        let mut changed = false;
         for p in &mut self.projects {
-            p.session.pump();
+            changed |= p.session.pump();
         }
+        if let Some(i) = focused.and_then(|id| sess!(self).index_of(id)) {
+            self.pane_focus = i;
+        }
+        changed
+    }
+
+    fn take_the_board(&mut self) {
+        self.pump_all();
         if self.units != sess!(self).units {
             self.units = sess!(self).units.clone();
             self.clamp_selection();
@@ -1153,9 +1163,10 @@ impl App {
                 let Some(w) = sess!(self).waiting.iter().find(|w| w.id == id).cloned() else {
                     return;
                 };
+                let Some(pane) = sess!(self).index_of(w.pane) else { return };
                 self.modal = Some(Modal::Confirm(Pending {
                     staged: w.id,
-                    pane: w.pane,
+                    pane,
                     payload: w.payload,
                     what: w.what,
                     why: w.why.lines().map(str::to_string).collect(),
@@ -1341,9 +1352,8 @@ impl App {
         let n = self.projects.len();
         let elsewhere = (1..n).map(|step| (self.at + step) % n).find_map(|at| {
             let s = &self.projects[at].session;
-            let pane =
-                s.pane_turns.iter().position(|t| *t == Some(weft_core::turns::Turn::Waiting));
-            pane.filter(|i| *i < s.panes.len()).map(|pane| (at, pane))
+            let pane = s.panes.iter().position(|p| p.turn == Some(weft_core::turns::Turn::Waiting));
+            pane.map(|pane| (at, pane))
         });
         let Some((at, pane)) = elsewhere else {
             self.say("Nothing needs your input.");
@@ -2425,7 +2435,7 @@ pub(crate) mod tests {
         // first; sending is the default, and Cancel is one key
         // away.
         let mut a = recorded(Sent::ReadyToSend);
-        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
+        a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Waiting)]);
         assert!(a.waiting(0));
         a.do_inject(&pending_for(0));
         let Some(Modal::SendAnyway { why, .. }) = a.modal.clone() else {
@@ -2461,7 +2471,7 @@ pub(crate) mod tests {
             (Some(Turn::Waiting), "the agent is asking you something"),
         ] {
             let mut a = recorded(Sent::ReadyToSend);
-            a.session_mut().pane_turns = vec![state];
+            a.session_mut().set_turns(vec![state]);
             a.do_inject(&pending_for(0));
             let Some(Modal::SendAnyway { why: said, .. }) = a.modal.clone() else {
                 panic!("{state:?} must ask first, got {:?}", a.modal)
@@ -2473,7 +2483,7 @@ pub(crate) mod tests {
         }
         for state in [Turn::Ready, Turn::TurnEnded] {
             let mut a = recorded(Sent::ReadyToSend);
-            a.session_mut().pane_turns = vec![Some(state)];
+            a.session_mut().set_turns(vec![Some(state)]);
             a.do_inject(&pending_for(0));
             assert!(a.modal.is_none(), "{state:?} is typed into: {:?}", a.modal);
         }
@@ -2601,7 +2611,7 @@ pub(crate) mod tests {
         }
         a.pane_focus = 0;
         let set = |a: &mut App, states: Vec<Option<Turn>>| {
-            a.session_mut().pane_turns = states;
+            a.session_mut().set_turns(states);
             a.notices()
         };
         assert!(
@@ -3130,11 +3140,11 @@ pub(crate) mod tests {
     #[test]
     fn explaining_a_waiting_agent_says_its_hook_said_so() {
         let mut a = app();
-        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
+        a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Waiting)]);
         press(&mut a, KeyCode::Char('y'));
         let hint = a.hint_text().expect("a sentence");
         assert!(hint.contains("reported, through its hook"), "{hint}");
-        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Working)];
+        a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Working)]);
         press(&mut a, KeyCode::Char('y'));
         assert!(a.hint_text().expect("a sentence").contains("has not reported"));
     }
@@ -3143,7 +3153,7 @@ pub(crate) mod tests {
     fn weft_never_answers_a_waiting_agent_itself() {
         // [Enter] ANSWER IT puts the person in the pane; it types nothing.
         let mut a = app();
-        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
+        a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Waiting)]);
         press(&mut a, KeyCode::Char(' '));
         assert!(!a.show_work(), "Space shows the pane that is waiting");
         press(&mut a, KeyCode::Enter);

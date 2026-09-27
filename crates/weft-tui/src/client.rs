@@ -18,12 +18,17 @@ use weft_proto::{clear_dead, is_live, socket_path};
 
 /// One pane, as this client sees it.
 pub struct PaneView {
+    /// The daemon's name for it, which never changes while it runs. Every
+    /// call about a pane carries this, never its place in the list.
+    pub id: u32,
     pub harness: String,
     /// The command line this pane runs, as the server reports it.
     pub spec: String,
     pub running: bool,
     /// Started in turbo mode, as the daemon reports it.
     pub turbo: bool,
+    /// Its agent's state, as its hooks reported it and the daemon read it.
+    pub turn: Option<weft_core::turns::Turn>,
     parser: vt100::Parser,
     rows: u16,
     cols: u16,
@@ -32,18 +37,20 @@ pub struct PaneView {
 impl PaneView {
     /// From what the daemon says a pane is.
     fn of(p: weft_proto::PaneInfo) -> Self {
-        let mut v = Self::new(p.harness, p.spec);
+        let mut v = Self::new(p.pane, p.harness, p.spec);
         v.running = p.running;
         v.turbo = p.turbo;
         v
     }
 
-    fn new(harness: String, spec: String) -> Self {
+    fn new(id: u32, harness: String, spec: String) -> Self {
         Self {
+            id,
             harness,
             spec,
             running: true,
             turbo: false,
+            turn: None,
             parser: vt100::Parser::new(24, 80, 10_000),
             rows: 24,
             cols: 80,
@@ -91,7 +98,8 @@ impl PaneView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Staged {
     pub id: String,
-    pub pane: usize,
+    /// The pane's id.
+    pub pane: u32,
     pub what: String,
     pub why: String,
     pub payload: Vec<u8>,
@@ -126,14 +134,12 @@ pub struct Session {
     /// What is waiting on a person, newest last. The daemon's, not this
     /// client's: another client may answer one of these.
     pub waiting: Vec<Staged>,
-    /// The pane and size this client last told the daemon it draws. Told
-    /// once per change, since telling is focusing: the agent takes the size
-    /// of the window that last focused it or typed into it.
-    told: Option<(usize, u16, u16)>,
-    /// Each pane's agent state, in order, and every session's latest event,
-    /// as the daemon read them from the hooks' receipts.
-    pub pane_turns: Vec<Option<weft_core::turns::Turn>>,
-    /// The session each pane runs, when the daemon can tell.
+    /// The pane (by id) and size this client last told the daemon it draws.
+    /// Told once per change, since telling is focusing: the agent takes the
+    /// size of the window that last focused it or typed into it.
+    told: Option<(u32, u16, u16)>,
+    /// The session each pane runs, when the daemon can tell, and every
+    /// session's latest event, as the daemon read them from the receipts.
     pub pane_sessions: Vec<Option<String>>,
     pub turns: Vec<weft_core::turns::Session>,
     /// Whether to tell the person when an agent needs them, from Weft's
@@ -200,7 +206,6 @@ impl Session {
             gap: None,
             waiting: Vec::new(),
             told: None,
-            pane_turns: Vec::new(),
             pane_sessions: Vec::new(),
             turns: Vec::new(),
             notify: true,
@@ -249,7 +254,7 @@ impl Session {
         }
         for chunk in opened.get("replay").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
             if let Some((pane, bytes)) = weft_proto::output_of(chunk)
-                && let Some(p) = session.panes.get_mut(pane as usize)
+                && let Some(p) = session.view(pane)
             {
                 p.feed(&bytes);
             }
@@ -259,9 +264,30 @@ impl Session {
 
     fn take_agents(&mut self, agents: &serde_json::Value) {
         let field = |k: &str| agents.get(k).cloned().unwrap_or_default();
-        self.pane_turns = serde_json::from_value(field("panes")).unwrap_or_default();
+        self.set_turns(serde_json::from_value(field("panes")).unwrap_or_default());
         self.pane_sessions = serde_json::from_value(field("bound")).unwrap_or_default();
         self.turns = serde_json::from_value(field("sessions")).unwrap_or_default();
+    }
+
+    /// Each pane's agent state, one per pane in the daemon's order, which is
+    /// this client's too: both follow the same events.
+    pub fn set_turns(&mut self, turns: Vec<Option<weft_core::turns::Turn>>) {
+        for (i, p) in self.panes.iter_mut().enumerate() {
+            p.turn = turns.get(i).copied().flatten();
+        }
+    }
+
+    /// Where the pane with this id is in the list.
+    pub fn index_of(&self, id: u32) -> Option<usize> {
+        self.panes.iter().position(|p| p.id == id)
+    }
+
+    fn id_at(&self, pane: usize) -> Result<u32> {
+        self.panes.get(pane).map(|p| p.id).ok_or_else(|| anyhow!("there is no pane {pane}"))
+    }
+
+    fn view(&mut self, id: u32) -> Option<&mut PaneView> {
+        self.panes.iter_mut().find(|p| p.id == id)
     }
 
     /// Make a call. The answer arrives on the same socket, against this id.
@@ -308,25 +334,37 @@ impl Session {
             };
             match event {
                 Event::Panes { panes } => {
-                    self.panes = panes.into_iter().map(PaneView::of).collect();
-                    // Renumbered: the pane last told may be another now.
-                    self.told = None;
+                    // A pane already here keeps its screen and its state: its
+                    // id is the same, so nothing needs replaying.
+                    let mut kept = std::mem::take(&mut self.panes);
+                    self.panes = panes
+                        .into_iter()
+                        .map(|info| match kept.iter().position(|v| v.id == info.pane) {
+                            Some(i) => {
+                                let mut v = kept.swap_remove(i);
+                                v.running = info.running;
+                                v.turbo = info.turbo;
+                                v
+                            }
+                            None => PaneView::of(info),
+                        })
+                        .collect();
                 }
                 Event::Output { pane, bytes } => {
-                    if let Some(p) = self.panes.get_mut(pane as usize) {
+                    if let Some(p) = self.view(pane) {
                         p.feed(&bytes);
                     }
                 }
                 Event::Added { pane, harness, spec, turbo } => {
-                    while self.panes.len() <= pane as usize {
-                        self.panes.push(PaneView::new(harness.clone(), spec.clone()));
+                    if self.index_of(pane).is_none() {
+                        self.panes.push(PaneView::new(pane, harness, spec));
                     }
-                    if let Some(p) = self.panes.get_mut(pane as usize) {
+                    if let Some(p) = self.view(pane) {
                         p.turbo = turbo;
                     }
                 }
                 Event::Exited { pane } => {
-                    if let Some(p) = self.panes.get_mut(pane as usize) {
+                    if let Some(p) = self.view(pane) {
                         p.running = false;
                     }
                 }
@@ -335,14 +373,14 @@ impl Session {
                     self.records = records;
                 }
                 Event::Pending { id, pane, what, why, payload } => {
-                    self.waiting.push(Staged { id, pane: pane as usize, what, why, payload });
+                    self.waiting.push(Staged { id, pane, what, why, payload });
                 }
                 Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
                 Event::Injected { refusal, .. } => self.last_refusal = refusal,
                 Event::Readiness { states } => self.readiness = states,
                 Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
                 Event::Agents { panes, bound, sessions } => {
-                    self.pane_turns = panes;
+                    self.set_turns(panes);
                     self.pane_sessions = bound;
                     self.turns = sessions;
                 }
@@ -356,7 +394,8 @@ impl Session {
     }
 
     pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
-        self.tell(Call::Input { pane: pane as u32, bytes: bytes.to_vec() }).map(|_| ())
+        let pane = self.id_at(pane)?;
+        self.tell(Call::Input { pane, bytes: bytes.to_vec() }).map(|_| ())
     }
 
     /// Put something in front of the person. The daemon holds it and tells
@@ -371,7 +410,7 @@ impl Session {
     ) -> Result<String> {
         self.last_refusal = None;
         let answer = self.ask(Call::Stage {
-            pane: pane as u32,
+            pane: self.id_at(pane)?,
             bytes: bytes.to_vec(),
             how,
             what: what.to_string(),
@@ -394,10 +433,11 @@ impl Session {
         text: Option<&str>,
     ) -> Result<String> {
         self.last_refusal = None;
+        let pane = pane.map(|p| self.id_at(p)).transpose()?;
         let answer = self.ask(Call::Act {
             act: act.to_string(),
             unit: unit.map(str::to_string),
-            pane: pane.map(|p| p as u32),
+            pane,
             text: text.map(str::to_string),
         })?;
         answer
@@ -437,20 +477,22 @@ impl Session {
     }
 
     pub fn resize(&mut self, pane: usize, rows: u16, cols: u16) -> Result<()> {
+        let id = self.id_at(pane)?;
         if let Some(p) = self.panes.get_mut(pane) {
             p.resize(rows, cols);
         }
-        if self.told == Some((pane, rows, cols)) {
+        if self.told == Some((id, rows, cols)) {
             return Ok(());
         }
-        self.told = Some((pane, rows, cols));
-        self.tell(Call::Resize { pane: pane as u32, rows, cols }).map(|_| ())
+        self.told = Some((id, rows, cols));
+        self.tell(Call::Resize { pane: id, rows, cols }).map(|_| ())
     }
 
     /// Stop one agent and take its pane away. The server answers with the
-    /// whole list again, so this client's numbering cannot go stale.
+    /// list again; every other pane keeps its id.
     pub fn close(&mut self, pane: usize) -> Result<()> {
-        self.tell(Call::CloseAgent { pane: pane as u32 }).map(|_| ())
+        let pane = self.id_at(pane)?;
+        self.tell(Call::CloseAgent { pane }).map(|_| ())
     }
 
     /// Leave without stopping anything. This is the ordinary way out.
@@ -509,14 +551,14 @@ mod tests {
 
     #[test]
     fn a_view_rebuilds_the_screen_from_the_harnesses_own_bytes() {
-        let mut v = PaneView::new("codex".into(), "codex".into());
+        let mut v = PaneView::new(0, "codex".into(), "codex".into());
         v.feed(b"hello from the pane");
         assert!(v.contents().contains("hello from the pane"));
     }
 
     #[test]
     fn scrollback_is_the_views_own_business() {
-        let mut v = PaneView::new("sh".into(), "/bin/sh".into());
+        let mut v = PaneView::new(0, "sh".into(), "/bin/sh".into());
         for i in 1..=60 {
             v.feed(format!("line-{i}\r\n").as_bytes());
         }
@@ -533,8 +575,8 @@ mod tests {
 
     #[test]
     fn two_views_of_one_pane_scroll_independently() {
-        let mut a = PaneView::new("sh".into(), "/bin/sh".into());
-        let mut b = PaneView::new("sh".into(), "/bin/sh".into());
+        let mut a = PaneView::new(0, "sh".into(), "/bin/sh".into());
+        let mut b = PaneView::new(0, "sh".into(), "/bin/sh".into());
         for i in 1..=60 {
             let line = format!("line-{i}\r\n");
             a.feed(line.as_bytes());
@@ -545,9 +587,38 @@ mod tests {
         assert_eq!(b.scroll_offset(), 0, "one client scrolling does not move another");
     }
 
+    fn until(s: &mut Session, done: impl Fn(&Session) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && !done(s) {
+            s.pump();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(done(s), "it never happened");
+    }
+
+    /// The daemon names a pane once, and closing one before it renumbers
+    /// nothing: the pane keeps its id, its screen, and its keys.
+    #[test]
+    fn a_pane_keeps_its_id_when_one_before_it_closes() {
+        let (_root, mut s) = crate::app::tests::test_session("ids");
+        s.spawn("codex", "/bin/cat").expect("first");
+        s.spawn("codex", "/bin/cat").expect("second");
+        until(&mut s, |s| s.panes.len() == 2);
+        let second = s.panes[1].id;
+        assert_ne!(s.panes[0].id, second);
+        s.input(1, b"second-pane\n").expect("typed");
+        until(&mut s, |s| s.panes[1].contents().contains("second-pane"));
+        s.close(0).expect("closed");
+        until(&mut s, |s| s.panes.len() == 1);
+        assert_eq!(s.panes[0].id, second, "the same id");
+        assert!(s.panes[0].contents().contains("second-pane"), "and the same screen");
+        s.input(0, b"still-here\n").expect("typed");
+        until(&mut s, |s| s.panes[0].contents().contains("still-here"));
+    }
+
     #[test]
     fn a_view_resizes_without_losing_what_is_on_it() {
-        let mut v = PaneView::new("sh".into(), "/bin/sh".into());
+        let mut v = PaneView::new(0, "sh".into(), "/bin/sh".into());
         v.feed(b"resize me");
         v.resize(30, 100);
         assert_eq!(v.with_screen(|s| s.size()), (30, 100));

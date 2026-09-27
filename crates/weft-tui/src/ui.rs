@@ -1581,7 +1581,7 @@ mod tests {
     #[test]
     fn a_pane_waiting_for_an_answer_offers_to_take_you_there_and_nothing_else() {
         let mut a = judged();
-        a.session_mut().pane_turns = vec![Some(weft_core::turns::Turn::Waiting)];
+        a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Waiting)]);
         let tabs = screen(&mut a, 80, 24);
         assert!(
             tabs.lines().nth(1).is_some_and(|l| l.contains('●')),

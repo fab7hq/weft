@@ -21,7 +21,7 @@ use weft_core::turns::{Session, Turn};
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 1;
+pub const PROTOCOL: u64 = 2;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
