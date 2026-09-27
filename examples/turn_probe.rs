@@ -100,15 +100,17 @@ fn main() -> anyhow::Result<()> {
         )?;
         std::fs::write(out.join("typed.bin"), &bytes)?;
         let typed_at = now();
+        let mut seen = Seen::from(&app);
         app.input(0, &bytes)?;
-        std::thread::sleep(Duration::from_secs(1));
+        seen.wait(&mut app, Duration::from_secs(1));
         app.input(0, b"\r")?;
         steps.push(json!({"step": "typed", "at": typed_at, "bytes": bytes.len(),
                           "by": "the person", "weft_refused": refused}));
-        return watch(&mut app, steps, never_ready);
+        return watch(&mut app, steps, never_ready, seen);
     };
     std::fs::write(out.join("typed.bin"), &pending.payload)?;
     let typed_at = now();
+    let mut seen = Seen::from(&app);
     press(&mut app, KeyCode::Enter);
     let mut forced = None;
     if let Some(Modal::SendAnyway { why, .. }) = &app.modal {
@@ -125,8 +127,7 @@ fn main() -> anyhow::Result<()> {
     }
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until && app.last_refusal().is_none() {
-        app.pump();
-        std::thread::sleep(Duration::from_millis(100));
+        seen.wait(&mut app, Duration::from_millis(100));
     }
     let refusal = app.last_refusal();
     steps.push(json!({"step": "typed", "at": typed_at, "bytes": pending.payload.len(),
@@ -135,36 +136,70 @@ fn main() -> anyhow::Result<()> {
         return done(json!({"outcome": "weft-refused", "weft_refused": refusal, "steps": steps}));
     }
 
-    watch(&mut app, steps, never_ready)
+    watch(&mut app, steps, never_ready, seen)
+}
+
+/// Every state Weft showed the pane in, with when it was first seen, from
+/// the moment the prompt went in. Looked at while the probe waits, too, so a
+/// short state is not missed.
+struct Seen {
+    last: Option<Turn>,
+    changes: Vec<Value>,
+}
+
+impl Seen {
+    fn from(app: &App) -> Self {
+        let last = app.pane_turn(0);
+        Seen { last, changes: vec![json!({"at": now(), "state": last})] }
+    }
+
+    fn look(&mut self, app: &mut App) -> Option<Turn> {
+        app.pump();
+        let state = app.pane_turn(0);
+        if state != self.last {
+            self.changes.push(json!({"at": now(), "state": state}));
+            self.last = state;
+        }
+        state
+    }
+
+    /// Wait as long as the person would, looking all the while.
+    fn wait(&mut self, app: &mut App, how_long: Duration) {
+        let until = Instant::now() + how_long;
+        loop {
+            self.look(app);
+            if Instant::now() >= until {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100).min(until - Instant::now()));
+        }
+    }
 }
 
 /// Watch the state Weft reads, answering the agent as its person only when
 /// Weft says it is waiting, until its turn has stayed ended.
-fn watch(app: &mut App, mut steps: Vec<Value>, never_ready: bool) -> anyhow::Result<()> {
+fn watch(app: &mut App, mut steps: Vec<Value>, never_ready: bool, mut seen: Seen) -> anyhow::Result<()> {
     // Watch the state Weft reads. Answer the agent, as its person, only when
     // Weft says it is waiting: Enter takes the agent's own first choice.
     let deadline = Instant::now() + TURN_WITHIN;
-    let mut last = app.pane_turn(0);
-    let mut changes = vec![json!({"at": now(), "state": last})];
+    let mut last = seen.last;
     let mut answers: Vec<Value> = Vec::new();
     let mut unreported: Vec<Value> = Vec::new();
     let mut ended: Option<Instant> = None;
     let mut outcome = "turn-never-ended";
     while Instant::now() < deadline {
-        app.pump();
-        let state = app.pane_turn(0);
+        let state = seen.look(app);
         if state != last {
-            changes.push(json!({"at": now(), "state": state}));
             last = state;
             ended = None;
         }
         match state {
             Some(Turn::Waiting) if answers.len() < ANSWERS => {
-                std::thread::sleep(Duration::from_secs(2));
+                seen.wait(app, Duration::from_secs(2));
                 answers.push(json!({"at": now(), "screen": tail(app)}));
                 app.input(0, b"\r").ok();
-                // The answer lands before the next look.
-                std::thread::sleep(Duration::from_secs(2));
+                // The answer lands before the next answer.
+                seen.wait(app, Duration::from_secs(2));
             }
             // A question the harness asks its person without reporting it:
             // Weft cannot see it, but the person can, and answers it. Only
@@ -174,10 +209,10 @@ fn watch(app: &mut App, mut steps: Vec<Value>, never_ready: bool) -> anyhow::Res
                 if let Some((name, _, keys)) =
                     UNREPORTED.iter().find(|(_, n, _)| screen.contains(n))
                 {
-                    std::thread::sleep(Duration::from_secs(2));
+                    seen.wait(app, Duration::from_secs(2));
                     unreported.push(json!({"at": now(), "question": name, "screen": tail(app)}));
                     app.input(0, keys).ok();
-                    std::thread::sleep(Duration::from_secs(2));
+                    seen.wait(app, Duration::from_secs(2));
                 }
             }
             Some(Turn::TurnEnded) => {
@@ -191,7 +226,7 @@ fn watch(app: &mut App, mut steps: Vec<Value>, never_ready: bool) -> anyhow::Res
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    steps.push(json!({"step": "watched", "at": now(), "changes": changes, "answers": answers, "unreported": unreported,
+    steps.push(json!({"step": "watched", "at": now(), "changes": seen.changes, "answers": answers, "unreported": unreported,
                       "screen": tail(app)}));
     done(json!({"outcome": outcome, "never_ready": never_ready, "steps": steps}))
 }
