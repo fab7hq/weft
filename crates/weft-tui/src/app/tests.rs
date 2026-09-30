@@ -69,9 +69,19 @@ pub(crate) fn connect_when_listening(
     crate::client::Session::connect(socket, root, 24, 80).expect("connect")
 }
 
+/// Weft opens SET UP by itself once a run when no harness can be used. Whether
+/// one can is a fact about the machine: a laptop with Claude Code answers no
+/// and a CI runner with none answers yes, and the tests that are not about
+/// set-up would pass on one and fail on the other. They say it was offered.
+pub(crate) fn not_first_run(a: &mut App) {
+    a.setup_asked = true;
+    a.setup_offered = true;
+}
+
 pub(crate) fn app() -> App {
     let (root, session) = test_session("codex");
     let mut a = App::with_session(root, Toggle, session);
+    not_first_run(&mut a);
     a.add("codex", "/bin/cat").expect("spawn");
     a.settle();
     // Say what this fixture's readiness is instead of inheriting the
@@ -683,8 +693,11 @@ fn eval_and_seal_always_confirm_before_typing() {
         };
         let text = String::from_utf8(p.payload).unwrap();
         // Whatever words follow, the command token is closed, so Enter
-        // means send rather than pick a completion.
-        assert!(text.starts_with(&format!("$rf:{expect} ")), "got {text:?}");
+        // means send rather than pick a completion. Whether it starts `$` or
+        // `/` is the installed RingFrame's profile speaking, which a machine
+        // without one does not have.
+        let command = text.trim_start_matches(['$', '/']);
+        assert!(command.starts_with(&format!("rf:{expect} ")), "got {text:?}");
     }
 }
 
@@ -1577,6 +1590,7 @@ fn the_board_is_read_from_a_real_ledger_on_disk() {
     });
     let session = connect_when_listening(&socket, &dir);
     let mut a = App::with_session(dir.clone(), Toggle, session);
+    not_first_run(&mut a);
     a.refresh_for_test();
     assert_eq!(a.units().len(), 1);
     assert_eq!(a.units()[0].title, "health endpoint");
@@ -1590,7 +1604,9 @@ mod start_tests {
 
     fn bare() -> App {
         let (root, session) = super::test_session("bare");
-        App::with_session(root, Toggle, session)
+        let mut a = App::with_session(root, Toggle, session);
+        super::not_first_run(&mut a);
+        a
     }
 
     #[test]
