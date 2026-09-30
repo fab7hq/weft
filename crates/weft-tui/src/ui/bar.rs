@@ -24,30 +24,54 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         return plain(&format!("  {}  BACK TO WEFT", app.toggle.label()));
     }
     match &app.modal {
-        Some(Modal::Confirm(_)) => return plain("  [Enter] DO IT   [←] CANCEL"),
-        Some(Modal::Quit) => return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL"),
-        Some(Modal::Weft) => return plain("  [↑↓] PICK   [Enter] DO IT   [ESC] CLOSE"),
+        // `Enter` does what is picked everywhere; [H]ELP says so once, and no
+        // bar spends its room on it.
+        Some(Modal::Confirm(_)) => return plain("  [←] CANCEL"),
+        Some(Modal::Quit) => return plain("  [↑↓] PICK   [←] CANCEL"),
+        Some(Modal::Weft) => return plain("  [↑↓] PICK   [ESC] CLOSE"),
         Some(Modal::CloseProject { .. }) => {
-            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
+            return plain("  [↑↓] PICK   [←] CANCEL");
         }
-        Some(Modal::OpenProject { .. }) => return plain("  [Enter] OPEN   [←] CANCEL"),
+        Some(Modal::OpenProject { .. }) => return plain("  [←] CANCEL"),
         Some(Modal::SendAnyway { .. }) => {
-            return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL");
+            return plain("  [↑↓] PICK   [←] CANCEL");
         }
-        Some(Modal::StartAgent { .. }) => return plain("  [↑↓] PICK   [Enter] START   [←] CANCEL"),
+        Some(Modal::StartAgent { .. }) => return plain("  [↑↓] PICK   [←] CANCEL"),
+        Some(Modal::Ask { .. }) => return plain("  [←] CANCEL"),
         Some(Modal::RingFrame) => {
-            return match app.sync_view() {
-                Some(v) if v.needs_anything() && !v.running => plain("  [P]ROCEED   [ESC] CLOSE"),
-                _ => plain("  [ESC] CLOSE"),
-            };
+            // Whether [P]ROCEED has anything to run: nothing is offered that
+            // would do nothing.
+            let view = app.setup_view();
+            let mut keys = "  [↑↓] PICK".to_string();
+            if view.is_some_and(|v| v.proceeds()) {
+                keys.push_str("   [P]ROCEED ALL");
+            }
+            keys.push_str("   [ESC] CLOSE");
+            return plain(&keys);
         }
-        Some(Modal::Ask { .. }) => return plain("  [Enter] SEND   [←] CANCEL"),
-        Some(Modal::PickUp { .. }) => return plain("  [↑↓] PICK   [Enter] DO IT   [←] CANCEL"),
+        Some(Modal::Locate { .. }) => return plain("  [←] BACK"),
+        Some(Modal::PickUp { .. }) => return plain("  [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [ESC] CLOSE"),
         None => {}
     }
     if app.waiting_here() {
-        return plain("  [Enter] ANSWER IT   [Y] HOW WEFT KNOWS");
+        return plain("  [Y] HOW WEFT KNOWS");
+    }
+    if let Some(e) = app.eval_screen() {
+        let keys = match e.top() {
+            crate::app::Layer::Hunk { .. } => "  [↑↓] SCROLL".to_string(),
+            crate::app::Layer::Step { .. } => "  [↑↓] MOVE   [D] THE CHANGE".to_string(),
+            crate::app::Layer::List { .. } => format!(
+                "  [↑↓] MOVE   [D] THE CHANGE   [TAB] {}",
+                if e.mode == weft_core::eval_view::Mode::Steps { "BY FILE" } else { "BY STEP" }
+            ),
+        };
+        let back = if e.layers.len() > 1 { "[ESC] BACK " } else { "[ESC] CLOSE " };
+        return Paragraph::new(spread(
+            vec![Span::styled(keys, th.label())],
+            vec![Span::styled(back, th.label())],
+            width,
+        ));
     }
     if app.detail().is_some() {
         // `[P]ROCEED` is there only while the Ask's prompt is still to be
@@ -58,6 +82,9 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         for (label, act) in proceed.into_iter().chain([("[F] FOLLOW UP", Act::FollowUp)]) {
             left.push(key(app, label, act));
             left.push(Span::raw("   "));
+        }
+        if app.has_eval_view() {
+            left.push(Span::styled("[V] EVAL VIEW   ", th.label()));
         }
         left.push(Span::styled("[↑↓] SCROLL", th.label()));
         return Paragraph::new(spread(left, vec![Span::styled("[ESC] CLOSE ", th.label())], width));

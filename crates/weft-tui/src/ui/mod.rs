@@ -19,6 +19,7 @@ use crate::theme::{Theme, pair};
 
 mod agent;
 mod bar;
+mod eval;
 mod list;
 mod panel;
 #[cfg(test)]
@@ -27,6 +28,7 @@ mod title;
 
 use agent::*;
 use bar::*;
+use eval::*;
 use list::*;
 use panel::*;
 use title::*;
@@ -59,7 +61,11 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
     }
     frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
 
-    if app.detail().is_some() {
+    if app.eval_screen().is_some() {
+        // It blocks, as the detail view does.
+        let para = eval_view(app, geo.content);
+        frame.render_widget(para, geo.content);
+    } else if app.detail().is_some() {
         // It blocks. Nothing behind it is reachable while it is open, which
         // is what keeps `[P]ROCEED` and the acts on the bar from ever being
         // live at the same time.
@@ -163,7 +169,7 @@ fn geometry(app: &App, area: Rect) -> Geo {
 
     // The detail view blocks, so it takes the whole body: no split, no
     // divider, and no junction in the rule above it.
-    if app.detail().is_some() {
+    if app.detail().is_some() || app.eval_screen().is_some() {
         return geo;
     }
 

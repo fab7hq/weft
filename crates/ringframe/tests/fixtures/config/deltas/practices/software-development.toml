@@ -5,7 +5,7 @@ domain = "software-development"
 description = """\
 Building and changing software: design, implementation, refactoring, tests, \
 debugging, review, dependencies, and running what you shipped."""
-render = { heading = "Rules:", core_cap = 6 }
+render = { heading = "Rules:", core_cap = 5 }
 source = "https://lawsofsoftwareengineering.com/"
 concerns = [
   "api_surface",
@@ -20,6 +20,10 @@ concerns = [
   "tests_only",
   "operate",
 ]
+
+# tier: core | situational | reference (default situational); concerns from the domain vocabulary
+
+# ================= design philosophies
 
 [[entries]]
 id = "practice.kiss"
@@ -91,19 +95,7 @@ Make names, signatures, defaults, and behaviour match what a reader of the \
 surrounding code would expect; when a choice would surprise, prefer the \
 conventional one."""
 
-[[entries]]
-id = "practice.plan_as_files"
-label = "Plan As Files"
-principle = "A stage ends by committing an artifact the next stage can read"
-applies_to = { capability = ["native_plan"], result = ["plan"] }
-tier = "core"
-text = """\
-Write the plan into the repository, not only into the conversation: \
-plans/<slug>/ with one file per decision under adr/, one per contract under \
-spec/, and plan.md holding the sequence and what done means for each step. \
-Stop when it is written; do not begin building it. The next request reads \
-those files and implements them, and the review reads the diff against them, \
-so a plan left in the session can be checked by nobody."""
+# ================= architecture laws
 
 [[entries]]
 id = "practice.gall"
@@ -158,6 +150,8 @@ text = """\
 Change one thing at a time in a complex system and observe the effect before \
 the next change."""
 
+# ================= planning laws
+
 [[entries]]
 id = "practice.knuth"
 label = "Knuth"
@@ -209,6 +203,8 @@ text = """\
 Split work across agents only along independent items; hand research and \
 review to a sub-agent when the context would grow past what one agent holds \
 well, and keep a single implementation in one thread."""
+
+# ================= quality laws
 
 [[entries]]
 id = "practice.boy_scout"
@@ -284,6 +280,8 @@ text = """\
 Assume every step can fail; verify the current state before changing it and \
 name the rollback before the first change."""
 
+# ================= decision laws
+
 [[entries]]
 id = "practice.occam"
 label = "Occam"
@@ -336,6 +334,8 @@ text = """\
 Prefer approaches, libraries, and patterns with a long record over new ones \
 unless the requirement needs what only the new one offers."""
 
+# ================= cross-cutting (owner practice; to be evaluated)
+
 [[entries]]
 id = "practice.assumptions"
 label = "Assumptions"
@@ -345,4 +345,4 @@ tier = "core"
 text = """\
 Where the requirement is silent, write the assumption you are making in one \
 line before acting on it."""
-status = "candidate"
+status = "candidate"   # q09 found no effect from the abstract form; this form is to be evaluated

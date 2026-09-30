@@ -27,7 +27,7 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
     ];
     let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
     let mut right = Vec::new();
-    if app.sync_view().is_some_and(|v| v.needs_anything()) {
+    if app.setup_view().is_some_and(|v| v.needs_anything()) {
         right.push(Span::styled("↑ [U]PDATE   ", lit));
     }
     // The turbo switch: always there, because it matters most before the
@@ -87,11 +87,15 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
         _ => push(&mut spans, &mut col, " ".into(), th.label()),
     }
 
-    // The detail view replaces the tabs with the unit it is about.
-    if let Some(d) = app.detail() {
+    // The detail view, and the Eval view, replace the tabs with the unit
+    // they are about.
+    let about = app
+        .eval_screen()
+        .map(|e| (format!("EVAL · {}", e.title), format!("{} ", e.eval_id)))
+        .or_else(|| app.detail().map(|d| (d.title.clone(), format!("{} ", d.harness))));
+    if let Some((title, back)) = about {
         let width = geo.tabs.width.saturating_sub(col);
-        let back = format!("{} ", d.harness);
-        let title = clip(&d.title, width.saturating_sub(cells(&back) as u16 + 1) as usize);
+        let title = clip(&title, width.saturating_sub(cells(&back) as u16 + 1) as usize);
         push(
             &mut spans,
             &mut col,

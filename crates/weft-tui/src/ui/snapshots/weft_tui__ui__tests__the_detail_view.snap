@@ -1,5 +1,5 @@
 ---
-source: crates/weft-tui/src/ui.rs
+source: crates/weft-tui/src/ui/tests.rs
 expression: drawn
 ---
  ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
@@ -32,4 +32,4 @@ expression: drawn
    A check is a judgement, not a guarantee.
  … 1 more lines · [↓]
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  [F] FOLLOW UP   [↑↓] SCROLL                                                                               [ESC] CLOSE
+  [F] FOLLOW UP   [V] EVAL VIEW   [↑↓] SCROLL                                                               [ESC] CLOSE

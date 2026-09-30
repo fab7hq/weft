@@ -17,11 +17,19 @@ default = ".gemini/antigravity-cli"
 
 [plugin]   # argv, as Weft's readiness and RingFrame views run them; it has no marketplace commands
 list = ["plugin", "list"]
-# No install or update: `plugin install rf@fab7` is known not to work, and there is
-# no source to install from yet. The plugin is put in place by hand until there is.
+# No marketplace to add (`plugin install rf@fab7` answers "unknown marketplace"):
+# it installs from the repository, cloned at the plugin's own path, named `rf` by
+# its plugin.json. A second install replaces it exactly, so it is also the update.
+install = ["plugin", "install", "https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity"]
+update = ["plugin", "install", "https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity"]
+# Taking it out again, for a local reinstall. It keeps no cache: an install
+# replaces the plugin exactly.
+uninstall = ["plugin", "uninstall", "rf"]
 
 [plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
 installed = ["imports"]
 available = []
 name = "name"
 on = []
+# What `list` prints, instead of JSON, when nothing is installed.
+none = "No imported plugins."

@@ -92,8 +92,8 @@ pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
 pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Asking {
     let mut why = vec![format!("Weft will type  {command}  into {into}.")];
     if skill == "eval" {
-        why.push("The agent will look at everything still open and have three".into());
-        why.push("judges check it. None of them did the work.".into());
+        why.push("Weft has gathered the change. The agent will run RingFrame's".into());
+        why.push("judging tasks on it; none of the judges did the work.".into());
     } else {
         why.push("The agent will ask what you decided, and write a receipt.".into());
     }
@@ -132,8 +132,17 @@ pub fn judges_read(record: &crate::record::Record, check: &crate::ledger::Check)
             check.agreement
         ),
         format!("{} judges checked the work · none of them did it", record.judges.len()),
-        String::new(),
     ];
+    if let Some((judged, total)) = record.windows_judged {
+        lines.push(format!("{judged} of {total} changes judged"));
+    }
+    if record.fabrications > 0 {
+        lines.push(format!(
+            "{} citations a judge gave were not in their source, and were not counted",
+            record.fabrications
+        ));
+    }
+    lines.push(String::new());
     for j in &record.judges {
         lines.push(format!("JUDGE      {} · {} · {}", j.angle, j.host, j.model));
     }
@@ -234,8 +243,8 @@ pub fn detail_headline(unit: &crate::ledger::Unit) -> String {
     )
 }
 
-/// An Eval in two stages has a state between the two: its change map is
-/// published and its debate has not run.
+/// An Eval in two stages has a state between the two: its change is gathered
+/// and its debate has not run.
 fn eval_state(unit: &crate::ledger::Unit) -> &'static str {
     if unit.check.is_none() && unit.gathered.is_some() {
         "[GATHERED]"
@@ -305,7 +314,10 @@ pub fn detail_read(
         None => match &unit.gathered {
             Some(g) => {
                 out.push(format!("EVAL {}", eval_state(unit)));
-                out.push(format!("  change map by {}", g.by));
+                // Who read the change for it: Weft itself, or a harness whose
+                // skill ran the gather.
+                let by = if g.by == "weft" { "Weft" } else { g.by.as_str() };
+                out.push(format!("  gathered by {by}"));
                 out.push(format!(
                     "  [E]VAL  debate in {}",
                     debate_in.unwrap_or("the routed harness")
@@ -387,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn a_gathered_eval_says_who_mapped_it_and_where_the_debate_goes() {
+    fn a_gathered_eval_says_who_gathered_it_and_where_the_debate_goes() {
         let mut u = sealed("accepted");
         u.sealed = None;
         u.seal_id = None;
@@ -395,8 +407,11 @@ mod tests {
         let lines = super::detail_read(&u, None, None, None, Some("claude-code"));
         assert!(lines[0].contains("EVAL [GATHERED]"), "{lines:?}");
         let at = lines.iter().position(|l| l == "EVAL [GATHERED]").expect("the section");
-        assert_eq!(lines[at + 1], "  change map by codex");
+        assert_eq!(lines[at + 1], "  gathered by codex");
         assert_eq!(lines[at + 2], "  [E]VAL  debate in claude-code");
+        u.gathered = Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "weft".into() });
+        let lines = super::detail_read(&u, None, None, None, Some("claude-code"));
+        assert!(lines.iter().any(|l| l == "  gathered by Weft"), "{lines:?}");
     }
 
     #[test]

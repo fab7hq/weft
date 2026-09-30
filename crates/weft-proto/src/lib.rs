@@ -92,11 +92,14 @@ pub enum Call {
         what: String,
         unit: String,
     },
-    /// Ask what the configuration and each harness need to reach the latest
-    /// RingFrame release, and with `proceed`, run it all in order. Answered by
-    /// `Event::Sync`, again at every step.
-    Sync {
-        proceed: bool,
+    /// The RingFrame view (`[U]`): `look` at RingFrame's configuration and
+    /// every harness file, `locate` one whose program is at `path`, `run` one's
+    /// setup or update, or `all` that is behind. Answered by `Event::Setup`,
+    /// again at every step.
+    Setup {
+        act: String,
+        harness: String,
+        path: String,
     },
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
@@ -175,7 +178,7 @@ pub enum Event {
         states: Value,
     },
     /// The RingFrame view, as it stands.
-    Sync {
+    Setup {
         view: Value,
     },
     /// Each agent's state, as its hooks reported it: one per pane, in order,
@@ -299,7 +302,9 @@ impl Call {
             }
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit } => ("read", json!({"what": what, "unit": unit})),
-            Call::Sync { proceed } => ("sync", json!({"proceed": proceed})),
+            Call::Setup { act, harness, path } => {
+                ("setup", json!({"act": act, "harness": harness, "path": path}))
+            }
             Call::Available => ("agents.available", json!({})),
             Call::Turbo { on } => ("project.turbo", json!({"on": on})),
             Call::Resolve { pending, yes, force } => {
@@ -344,7 +349,11 @@ impl Call {
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read { what: s("what")?, unit: s("unit")? },
-            "sync" => Call::Sync { proceed: p.get("proceed")?.as_bool()? },
+            "setup" => Call::Setup {
+                act: s("act")?,
+                harness: s("harness").unwrap_or_default(),
+                path: s("path").unwrap_or_default(),
+            },
             "agents.available" => Call::Available,
             "project.turbo" => Call::Turbo { on: p.get("on")?.as_bool()? },
             "pending.resolve" => {
@@ -387,7 +396,7 @@ impl Event {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
             }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
-            Event::Sync { view } => ("sync", json!({"view": view})),
+            Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Agents { panes, sessions } => {
                 ("agents", json!({"panes": panes, "sessions": sessions}))
             }
@@ -422,7 +431,7 @@ impl Event {
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
-            "sync" => Event::Sync { view: p.get("view")?.clone() },
+            "setup" => Event::Setup { view: p.get("view")?.clone() },
             "agents" => Event::Agents {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
                 sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
@@ -667,7 +676,11 @@ mod tests {
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read { what: "judges".into(), unit: "ask_1".into() },
-            Call::Sync { proceed: true },
+            Call::Setup {
+                act: "locate".into(),
+                harness: "codex".into(),
+                path: "/opt/codex".into(),
+            },
             Call::Available,
             Call::Turbo { on: true },
             Call::Detach,
@@ -729,7 +742,7 @@ mod tests {
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },
-            Event::Sync { view: json!({"rows": []}) },
+            Event::Setup { view: json!({"rows": []}) },
             Event::Agents {
                 panes: vec![Some(Turn::TurnEnded), None],
                 sessions: vec![Session {

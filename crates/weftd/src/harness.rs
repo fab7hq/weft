@@ -40,11 +40,21 @@ impl OnThisMachine for Harness {
         let set = self.config_env.as_ref().and_then(std::env::var_os);
         self.config_home_from(set, home())
     }
+    /// On `PATH`, or where the person said it is (an absolute path).
     fn on_path(&self) -> bool {
+        if self.program.contains('/') {
+            return runnable(Path::new(&self.program));
+        }
         std::env::var_os("PATH").is_some_and(|paths| {
             std::env::split_paths(&paths).any(|dir| dir.join(&self.program).is_file())
         })
     }
+}
+
+/// A file that exists and may be run.
+pub fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
 
 fn home() -> PathBuf {

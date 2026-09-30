@@ -214,10 +214,19 @@ enum Wake {
         harness: String,
         state: weft_core::readiness::Readiness,
     },
-    /// The RingFrame view moved: a check came back, or a step started or ended.
-    Sync {
+    /// The latest release was asked again: each open project's view is
+    /// looked at again, so `↑ [U]PDATE` says what is behind now.
+    Checked,
+    /// The RingFrame view moved.
+    Setup {
         project: usize,
         view: serde_json::Value,
+    },
+    /// The person said where a harness's program is: every project runs it
+    /// from there from now on.
+    Program {
+        harness: String,
+        program: String,
     },
 }
 
@@ -270,10 +279,19 @@ impl Answer {
 /// Picking a session up comes before a fresh one, because a workspace with
 /// history is a workspace you are coming back to. The session is whatever
 /// RingFrame's receipts name; nothing is invented to fill a gap.
-fn starts(root: &Path, harnesses: &weft_core::harness::Harnesses) -> serde_json::Value {
+/// What can be started here: each harness set up for RingFrame, fresh, and
+/// where a session of it was left. A harness whose plugin is not in it is
+/// offered by SET UP, not here: an agent started in it would record nothing.
+fn starts(
+    root: &Path,
+    harnesses: &weft_core::harness::Harnesses,
+    readiness: &HashMap<String, weft_core::readiness::Readiness>,
+) -> serde_json::Value {
     use crate::harness::OnThisMachine as _;
     let mut out = Vec::new();
-    for h in harnesses.iter().filter(|h| h.on_path()) {
+    let ready =
+        |h: &&weft_core::harness::Harness| readiness.get(&h.name).is_some_and(|r| r.is_ready());
+    for h in harnesses.iter().filter(|h| h.on_path()).filter(ready) {
         if let Some(s) = crate::sessions::latest(root, &h.name) {
             out.push(serde_json::json!({
                 "harness": h.name,
@@ -391,6 +409,21 @@ impl Session {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
+        // What the latest release is, asked when the daemon starts and then
+        // twice a day, never at every look: the kept answer is what each view
+        // reads. A test's daemon, handed its harnesses, reaches no network.
+        if harnesses.is_none() {
+            let check_tx = tx.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let _ = crate::onboarding::check(true);
+                    if check_tx.send(Wake::Checked).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(crate::onboarding::CHECK_EVERY);
+                }
+            });
+        }
         let accept_tx = tx.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -438,14 +471,30 @@ impl Session {
                     self.clients.broadcast(project, &Out::Exited { pane })
                 }
                 Wake::Tick => self.follow_the_record(),
+                Wake::Checked => {
+                    for at in 0..self.projects.len() {
+                        self.setup(at, "look", "", "");
+                    }
+                }
                 Wake::Readiness { project, harness, state } => {
-                    if let Some(p) = self.projects.get_mut(project) {
+                    // A test's harnesses are its fixture of a machine set up
+                    // for RingFrame: what the real machine answers does not
+                    // overwrite them.
+                    let fixture =
+                        self.harnesses.as_ref().is_some_and(|h| h.find(&harness).is_some());
+                    if let Some(p) = self.projects.get_mut(project).filter(|_| !fixture) {
                         p.readiness.insert(harness, state);
                     }
                     self.tell_readiness(project);
                 }
-                Wake::Sync { project, view } => {
-                    self.clients.broadcast(project, &Out::Sync { view })
+                Wake::Setup { project, view } => {
+                    self.clients.broadcast(project, &Out::Setup { view })
+                }
+                Wake::Program { harness, program } => {
+                    for p in &mut self.projects {
+                        p.harnesses = std::mem::take(&mut p.harnesses)
+                            .with_programs(|n| (n == harness).then(|| program.clone()));
+                    }
                 }
             }
         }
@@ -525,14 +574,36 @@ impl Session {
                 // which of its stages runs next, and on what.
                 let project = &self.projects[at];
                 let (skill, into, args) = if act == "check" {
-                    let (gather, debate) = weft_core::eval_stages::resolve(
+                    let debate = weft_core::eval_stages::resolve(
                         project.routing.eval_stages.as_ref(),
                         project.routing.get("eval"),
                         &unit.harness,
                     );
-                    let gathered = unit.gathered.as_ref().map(|g| g.eval_id.as_str());
-                    let (into, args) =
-                        weft_core::eval_stages::next_send(&gather, &debate, gathered);
+                    // Weft gathers: RingFrame reads the change, and only the
+                    // debate goes to a harness.
+                    let eval_id = match &unit.gathered {
+                        Some(g) => g.eval_id.clone(),
+                        None => {
+                            let agents = weft_core::eval_stages::agents(&debate);
+                            match crate::ringframe::eval_open(
+                                &root,
+                                agents.as_ref(),
+                                project.ringframe.as_deref(),
+                            ) {
+                                Ok(id) => id,
+                                Err(crate::ringframe::Error::NotInstalled) => {
+                                    return Answer::No(
+                                        "no_ringframe",
+                                        "the ringframe CLI is not installed".into(),
+                                    );
+                                }
+                                Err(crate::ringframe::Error::Refused { message, .. }) => {
+                                    return Answer::No("refused", message);
+                                }
+                            }
+                        }
+                    };
+                    let (into, args) = weft_core::eval_stages::debate_send(&debate, &eval_id);
                     ("eval", into, args)
                 } else {
                     let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
@@ -599,6 +670,27 @@ impl Session {
                 Some(r) => Answer::Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)),
                 None => Answer::No("no_record", "that check's record is not on disk".into()),
             },
+            // `unit` is an eval id: the Eval view, from RingFrame's files as
+            // they are now, so it can be read while the Eval runs.
+            "eval" => match crate::record::eval_view(&root, unit) {
+                Some(v) => Answer::Ok(serde_json::to_value(&v).unwrap_or(serde_json::Value::Null)),
+                None if root.join(".fab7/rf/evals").join(unit).join("record.json").exists() => {
+                    Answer::No(
+                        "no_view",
+                        "this Eval was judged before the Eval view; [Enter] shows its record"
+                            .into(),
+                    )
+                }
+                None => Answer::No("no_record", "that Eval is not on disk".into()),
+            },
+            // `unit` is `<eval id>/<window id>`: one change's hunk.
+            "window" => match unit
+                .split_once('/')
+                .and_then(|(e, w)| crate::record::window_text(&root, e, w))
+            {
+                Some(text) => Answer::Ok(serde_json::json!({ "text": text })),
+                None => Answer::No("no_record", "that change is not on disk".into()),
+            },
             // `unit` is a seal id here, for the same reason: a receipt is
             // named by the Seal, not by the Ask it closed.
             "seal" => match crate::ringframe::seal_checked(&root, unit) {
@@ -609,34 +701,93 @@ impl Session {
         }
     }
 
-    /// Look, and with `proceed` run what is behind and look again, off the
-    /// run loop. Every change reaches the client as it happens.
-    fn sync(&mut self, at: usize, proceed: bool) -> Answer {
+    /// The RINGFRAME view: `look` at RingFrame's configuration and every
+    /// harness file, `locate` one's program at `path`, `run` one's setup or
+    /// update, or run `all` that is behind (the configuration first, then each
+    /// harness by title). Off the run loop: asking a harness costs processes,
+    /// and its commands can take a minute. Every change goes to the clients as
+    /// `Event::Setup`, and each harness's readiness is told as it is asked.
+    fn setup(&mut self, at: usize, act: &str, harness: &str, path: &str) -> Answer {
         let tx = self.tx.clone();
+        let config_path = self.config.clone();
         let harnesses = self.projects[at].harnesses.clone();
+        let (act, harness, path) = (act.to_string(), harness.to_string(), path.to_string());
+        if !matches!(act.as_str(), "look" | "locate" | "run" | "all") {
+            return Answer::No("unknown_act", format!("the RingFrame view has no {act}"));
+        }
+        if matches!(act.as_str(), "locate" | "run") && harnesses.find(&harness).is_none() {
+            return Answer::No(
+                "unknown_harness",
+                format!("Weft has no harness file for {harness}"),
+            );
+        }
         std::thread::spawn(move || {
-            let show = |v: &weft_core::sync::View| {
+            use crate::onboarding::{look, proceed, run, runs, with};
+            let show = |v: &weft_core::onboarding::View| {
                 let view = serde_json::to_value(v).unwrap_or_default();
-                let _ = tx.send(Wake::Sync { project: at, view });
+                let _ = tx.send(Wake::Setup { project: at, view });
             };
-            let (mut v, states) = crate::sync::look(&harnesses);
-            // Looking is asking each harness again, so what it said replaces
-            // an older answer — a stale "could not tell" included.
+            let cli = crate::ringframe::installed();
+            let mut check = crate::onboarding::check(false);
+            let mut harnesses = harnesses;
+            let mut note = None;
+            // A step's row shows it running; a failed one stays on its row
+            // until the next look.
+            let mut failed: Option<(String, weft_core::onboarding::State)> = None;
+            match act.as_str() {
+                "locate" => match crate::onboarding::check_program(&path).and_then(|p| {
+                    crate::onboarding::save(&config_path, &harness, "program", p.clone().into())
+                        .map(|()| p)
+                }) {
+                    Ok(program) => {
+                        harnesses =
+                            harnesses.with_programs(|n| (n == harness).then(|| program.clone()));
+                        let _ = tx.send(Wake::Program { harness: harness.clone(), program });
+                    }
+                    Err(e) => note = Some(e),
+                },
+                "run" | "all" => {
+                    let (base, _) = look(&harnesses, &check, cli);
+                    if act == "all" && base.configuration_behind {
+                        let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
+                        if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                            proceed(sync, |_| {})
+                        {
+                            note = Some(format!("{step} failed: {said}"));
+                        }
+                        check = crate::onboarding::check(true);
+                    }
+                    let (base, _) = look(&harnesses, &check, cli);
+                    let todo: Vec<String> = base
+                        .rows
+                        .iter()
+                        .filter(|r| if act == "run" { r.name == harness } else { runs(r) })
+                        .map(|r| r.name.clone())
+                        .collect();
+                    for name in todo {
+                        let h = harnesses.find(&name).cloned().expect("a row is a harness");
+                        let latest = base.plugin.clone();
+                        if let Some(state) = run(&h, cli, latest.as_deref(), |state| {
+                            show(&with(base.clone(), &name, state));
+                        }) {
+                            failed = Some((name, state));
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            // Looked at again, whatever was done: the tick is the harness's
+            // answer now, never a command's exit code.
+            let (mut v, states) = look(&harnesses, &check, cli);
+            v.note = note;
+            if let Some((name, state)) = failed {
+                v = with(v, &name, state);
+            }
             for (harness, state) in states {
                 let _ = tx.send(Wake::Readiness { project: at, harness, state });
             }
-            if !proceed {
-                return show(&v);
-            }
-            crate::sync::proceed(&mut v, show);
-            if v.steps.iter().any(|s| s.mark == weft_core::sync::Mark::Failed) {
-                return;
-            }
-            let (v, states) = crate::sync::look(&harnesses);
             show(&v);
-            for (harness, state) in states {
-                let _ = tx.send(Wake::Readiness { project: at, harness, state });
-            }
         });
         Answer::nothing()
     }
@@ -755,6 +906,8 @@ impl Session {
                     None => crate::harness::installed(&self.config.with_file_name("harnesses")),
                 };
                 let config = crate::routing::read_at(&self.config, &harnesses);
+                // Where the person said a harness's program is, when not on PATH.
+                let harnesses = harnesses.with_programs(|n| config.program(n).map(str::to_string));
                 self.projects.push(Project {
                     opened: crate::turns::now_millis(),
                     routing: config.routing(&root),
@@ -766,7 +919,15 @@ impl Session {
                     next_pane: 0,
                     ledger,
                     waiting: Vec::new(),
-                    readiness: HashMap::new(),
+                    // Harnesses a test hands over are its fixture of a machine
+                    // set up for RingFrame; the files' harnesses are asked.
+                    readiness: match &self.harnesses {
+                        Some(h) => h
+                            .iter()
+                            .map(|h| (h.name.clone(), weft_core::readiness::Readiness::Ready))
+                            .collect(),
+                        None => HashMap::new(),
+                    },
                     starting: Vec::new(),
                     folds: crate::acts::Folds::default(),
                     turns: crate::turns::Turns::default(),
@@ -908,15 +1069,29 @@ impl Session {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 return Ok(self.read(at, &what, &unit));
             }
-            Call::Sync { proceed } => {
+            Call::Setup { act, harness, path } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                return Ok(self.sync(at, proceed));
+                return Ok(self.setup(at, &act, &harness, &path));
             }
             Call::Available => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                let root = self.projects[at].root.clone();
-                let found = &self.projects[at].harnesses;
-                return Ok(Answer::Ok(serde_json::json!({"starts": starts(&root, found)})));
+                // A harness not asked yet is asked now, off the loop: it is
+                // offered once it says it is set up.
+                let unasked: Vec<String> = {
+                    use crate::harness::OnThisMachine as _;
+                    let p = &self.projects[at];
+                    p.harnesses
+                        .iter()
+                        .filter(|h| h.on_path() && !p.readiness.contains_key(&h.name))
+                        .map(|h| h.name.clone())
+                        .collect()
+                };
+                for name in unasked {
+                    self.look_at(at, &name);
+                }
+                let p = &self.projects[at];
+                let found = starts(&p.root, &p.harnesses, &p.readiness);
+                return Ok(Answer::Ok(serde_json::json!({"starts": found})));
             }
             Call::Turbo { on } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };

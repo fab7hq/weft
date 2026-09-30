@@ -1,39 +1,92 @@
-# RingFrame host deltas for Codex. Rendered by the CLI only when `status = "qualified"`.
+# RingFrame route rules for Codex. Rendered by the CLI only when `status = "qualified"`; qualified by ringframe-route-rules-q01.
+# A route rule says what the turn delivers, the order of the work, when it
+# stops and what it shows; practice rules say what good work looks like.
+# What each rule rests on: research/knowledge-base/harnesses/codex/capability.md.
 schema = "ringframe.deltas/1"
 scope = "host"
 host = "codex"
 
 [[entries]]
-id = "codex.native_plan.hand_back"
-label = "Hand back"
+id = "codex.native_plan.plan_as_files"
+label = "Plan As Files"
+status = "qualified"
+capability = "native_plan"
+applies_to = { result = ["plan"] }
+# Preflight P0.3 of ringframe-route-rules-q01 (codex-cli 0.158.0): Plan mode
+# wrote nothing even when told to; it ends with a proposed plan, and the files
+# are written on the next turn, out of Plan mode.
+text = """\
+Draft the plan as the files it will become: plans/<slug>/plan.md with the \
+sequence and what done means for each step, plans/<slug>/adr/ with one file \
+per decision, plans/<slug>/spec/ with one per contract. End by asking the \
+person to leave Plan mode so you can write exactly those files; write them, \
+then stop — building it is a later request."""
+why = """\
+/plan is user-entered, and Plan mode writes nothing: it ends with a proposed \
+plan and the person leaves it. A plan left in the session can be checked by \
+nobody."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/codex#ask"
+
+[[entries]]
+id = "codex.native_plan.after_approval"
+label = "After Approval"
+# No generated prompt carried it in ringframe-route-rules-q01: every L2
+# attempt (5 of 5) classified the bounded change as a plan, as the routing
+# guidance's plan-first rule directs.
 status = "candidate"
 capability = "native_plan"
+applies_to = { result = ["workspace_change"] }
 text = """\
 End the plan with the exact checks the implementer must run; the person \
-reviews and leaves Plan mode themselves."""
-why = "/plan is user-entered and read-only; there is no model transition out of it."
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#codex"
+reviews it and leaves Plan mode themselves."""
+why = "/plan is user-entered; there is no model transition out of it."
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/codex#ask"
 
 [[entries]]
-id = "codex.native_goal.item_loop"
-label = "Item loop"
-status = "candidate"
+id = "codex.native_goal.step_loop"
+label = "Step Loop"
+status = "qualified"
 capability = "native_goal"
+applies_to = { result = ["workspace_change"] }
+# It works a plan, so the prompt must name one the workspace holds, by path.
+names_plan = true
 text = """\
-Work the plan one item at a time, in order. Per item: analyze the current \
-implementation against the item; implement test-first; review the change."""
+Work the plan's steps one at a time, in its order. Per step: read the code \
+it touches against the step, make the change test-first, then review the \
+diff against the step."""
 why = """\
 A persistent objective needs an iteration shape; the owner's loop is \
-analyze, TDD, code review. Outcome judgement belongs to rf:eval."""
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#codex"
+analyze, TDD, review. Outcome judgement belongs to rf:eval."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/codex#ask"
 
 [[entries]]
-id = "codex.native_goal.terminal_condition"
-label = "Terminal condition"
-status = "candidate"
+id = "codex.native_goal.done_check"
+label = "Done Check"
+status = "qualified"
 capability = "native_goal"
-text = "Done when every item has been through the loop; then stop and report what remains open."
+text = """\
+After each step write a compact checkpoint: the step, the check you ran and \
+its result, and what remains. Done when every step has a passing \
+checkpoint; or when a step needs the owner, reported as \
+`BLOCKED: <step>: <question>`, which also ends the goal."""
 why = """\
-/goal keeps the objective attached until cleared; without a terminal \
-condition it never ends."""
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#codex"
+Codex stops a goal when it judges the stopping condition met; the \
+documentation asks for commands that show progress and compact \
+checkpoints. Without a blocked exit, a step that needs the owner has none."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/codex#ask"
+
+[[entries]]
+id = "codex.native_direct.show_checks"
+label = "Show Checks"
+status = "qualified"
+capability = "native_direct"
+applies_to = { result = ["workspace_change"] }
+text = """\
+Before your final message, run the checks that show the change works, \
+report each command with its result, and list the files you changed."""
+why = "Same-turn work has no receipt; the final message is the only record of what was checked."
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/codex#ask"

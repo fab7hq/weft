@@ -100,11 +100,5 @@ pub(super) fn no_agent(app: &App, area: Rect) -> Paragraph<'static> {
         lines.push(Line::raw(""));
     }
     lines.push(Line::styled("   [N] starts an agent.".to_string(), th.label()));
-    if !app.units().is_empty() {
-        lines.push(Line::styled(
-            "   [Enter] on your work picks up the session it was asked in.".to_string(),
-            th.label(),
-        ));
-    }
     Paragraph::new(lines)
 }

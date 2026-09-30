@@ -137,10 +137,13 @@ pub struct Session {
     /// What each harness is short of here, as the daemon found it.
     pub readiness: serde_json::Value,
     /// The RingFrame view, as the daemon last reported it.
-    pub sync: Option<weft_core::sync::View>,
+    /// The RingFrame view, as the daemon last sent it.
+    pub setup: Option<weft_core::onboarding::View>,
     /// The Eval record behind each check, by eval id. Read by the daemon so
     /// that drawing a frame opens no file.
     pub records: serde_json::Value,
+    /// How many boards the daemon has sent: one each time the ledger grew.
+    pub boards: u64,
     /// What this project routes, and what an Ask could not finish here.
     pub routing: weft_core::routing::Routing,
     pub gap: Option<String>,
@@ -212,8 +215,9 @@ impl Session {
             unrecorded: None,
             units: Vec::new(),
             readiness: serde_json::json!({}),
-            sync: None,
+            setup: None,
             records: serde_json::json!({}),
+            boards: 0,
             routing: weft_core::routing::Routing::default(),
             gap: None,
             waiting: Vec::new(),
@@ -408,6 +412,7 @@ impl Session {
                 Event::Units { units, records } => {
                     self.units = units;
                     self.records = records;
+                    self.boards += 1;
                 }
                 Event::Pending { id, pane, what, why, payload } => {
                     self.waiting.push(Staged { id, pane, what, why, payload });
@@ -418,7 +423,7 @@ impl Session {
                     self.unrecorded = unrecorded;
                 }
                 Event::Readiness { states } => self.readiness = states,
-                Event::Sync { view } => self.sync = serde_json::from_value(view).ok(),
+                Event::Setup { view } => self.setup = serde_json::from_value(view).ok(),
                 Event::Agents { panes, sessions } => {
                     self.set_turns(panes);
                     self.turns = sessions;
@@ -497,10 +502,11 @@ impl Session {
         self.tell(Call::Available)
     }
 
-    /// Ask what is behind RingFrame's latest release; with `proceed`, catch
-    /// it all up. The answer arrives as events.
-    pub fn sync_now(&mut self, proceed: bool) -> Result<()> {
-        self.tell(Call::Sync { proceed }).map(|_| ())
+    /// The RingFrame view: `look`, `locate` one harness (at `path`), `run`
+    /// one, or `all` that is behind. The answer arrives as events.
+    pub fn setup(&mut self, act: &str, harness: &str, path: &str) -> Result<()> {
+        let call = Call::Setup { act: act.into(), harness: harness.into(), path: path.into() };
+        self.tell(call).map(|_| ())
     }
 
     /// Yes or no, by id. Whoever answers first answers for everyone.

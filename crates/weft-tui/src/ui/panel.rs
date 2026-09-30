@@ -29,7 +29,8 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
-        Modal::RingFrame => "SYNC RINGFRAME".into(),
+        Modal::RingFrame => "RINGFRAME".into(),
+        Modal::Locate { harness, .. } => format!("WHERE IS {}?", harness.to_uppercase()),
         Modal::PickUp { harness, .. } => format!("{} IS NOT RUNNING", harness.to_uppercase()),
     }
     .to_string()
@@ -103,7 +104,13 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             vec!["It runs here, with your own settings.".into(), String::new()]
         }
         Modal::PickUp { .. } => Vec::new(),
-        Modal::RingFrame => ringframe_body(app.sync_view()),
+        Modal::RingFrame => setup_body(app),
+        Modal::Locate { text, .. } => vec![
+            format!("{text}█"),
+            String::new(),
+            "The whole path of its program, as `/…` or `~/…`. Weft runs it with".into(),
+            "--version to check it starts, and keeps it in ~/.fab7/weft/config.toml.".into(),
+        ],
     }
 }
 
@@ -114,24 +121,31 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
         ("NAVIGATION", ""),
         ("↑ ↓", "move"),
         ("→ ←", "unfold · fold, back"),
-        ("Enter", "open"),
+        ("Enter", "open/proceed"),
         ("Space", "what needs you"),
         ("Tab", "next agent"),
         ("1-9", "that agent"),
-        (toggle, "agent, and back"),
+        (toggle, "switch active pane"),
         ("⌫", "close the project"),
     ];
-    let ringframe = [("RINGFRAME", ""), ("A", "ask"), ("E", "eval"), ("S", "seal")];
+    let ringframe = [
+        ("RINGFRAME", ""),
+        ("A", "ask"),
+        ("E", "eval"),
+        ("S", "seal"),
+        ("V", "eval view"),
+        ("D", "a change"),
+    ];
     let weft = [
         ("WEFT", ""),
         ("P", "proceed the action"),
         ("F", "follow up next action"),
-        ("U", "sync RingFrame"),
         ("O", "open a project"),
         ("N", "new agent"),
         ("B", "sidebar"),
-        ("T", "turbo mode, next agents"),
+        ("T", "turbo mode"),
         ("W", "the Weft menu"),
+        ("U", "update"),
         ("H", "help"),
         ("X", "quit"),
     ];
@@ -159,43 +173,6 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
     lines
 }
 
-pub(super) fn ringframe_body(view: Option<&weft_core::sync::View>) -> Vec<String> {
-    use weft_core::sync::Mark;
-    let Some(v) = view else { return vec!["Checking the latest release…".into()] };
-    let mut l = vec![match (&v.latest, &v.plugin) {
-        (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
-        (Some(t), None) => format!("Latest release {t}"),
-        _ => "Weft could not reach the latest release.".into(),
-    }];
-    l.push(String::new());
-    l.extend(v.rows.iter().map(|(name, now)| format!("  {name:<15} {now}")));
-    l.push(String::new());
-    if v.steps.is_empty() {
-        l.push("Everything is up to date.".into());
-        l.push("Open agents keep their skills until you restart them.".into());
-        return l;
-    }
-    let failed = v.steps.iter().any(|s| s.mark == Mark::Failed);
-    l.push(match (v.running, failed) {
-        (true, _) => "Running:".into(),
-        (_, true) => "Stopped. [P]ROCEED runs it again from the failed command:".into(),
-        _ => "[P]ROCEED will run, in order:".into(),
-    });
-    for s in &v.steps {
-        let mark = match s.mark {
-            Mark::Waiting => '·',
-            Mark::Running => '▸',
-            Mark::Done => '✓',
-            Mark::Failed => '✗',
-        };
-        l.push(format!("  {mark} {}", s.line()));
-        l.extend(s.said.lines().map(|said| format!("      {said}")));
-    }
-    l.push(String::new());
-    l.push("Your personal and project rules are not touched.".into());
-    l
-}
-
 /// The choices a panel offers, if it is the kind that picks one.
 pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
@@ -213,6 +190,17 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             vec!["Type it anyway".into(), cancel.into()]
         }
         Modal::OpenProject { .. } => Vec::new(),
+        Modal::RingFrame => app
+            .setup_view()
+            .map(|v| {
+                v.rows
+                    .iter()
+                    .map(|r| {
+                        clip(&format!("{}  {:<14}{}", r.state.mark(), r.title, r.state.words()), 72)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
             "Quit and stop the agents".into(),
@@ -286,4 +274,41 @@ pub(super) fn routing_lines(app: &App) -> Vec<String> {
     }
     let said: Vec<String> = routed.iter().map(|(act, h)| format!("{act} → {h}")).collect();
     vec![String::new(), format!("This project routes  {}", said.join("   "))]
+}
+
+/// What the RingFrame view says above its rows: the latest release, where
+/// RingFrame's configuration stands, what the last thing tried came to, and a
+/// failed step's own last lines.
+fn setup_body(app: &App) -> Vec<String> {
+    let Some(v) = app.setup_view() else {
+        return vec!["Checking the latest release…".into(), String::new()];
+    };
+    let mut lines = vec![
+        match (&v.latest, &v.plugin) {
+            (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
+            (Some(t), None) => format!("Latest release {t}"),
+            _ => "Weft could not reach the latest release.".into(),
+        },
+        format!("RingFrame's configuration: {}", v.configuration),
+        String::new(),
+    ];
+    if v.rows.is_empty() {
+        lines.push("Weft has no harness files in ~/.fab7/weft/harnesses.".into());
+        lines.push(String::new());
+        return lines;
+    }
+    lines.push("Sign in to a harness yourself first: Weft runs its own plugin".into());
+    lines.push("commands, then asks it again. Your rules are not touched.".into());
+    lines.push(String::new());
+    if let Some(note) = &v.note {
+        lines.push(note.clone());
+        lines.push(String::new());
+    }
+    if let Some(r) = v.rows.get(app.modal_choice)
+        && let weft_core::onboarding::State::Failed { said, .. } = &r.state
+    {
+        lines.extend(said.lines().map(|l| format!("  {l}")));
+        lines.push(String::new());
+    }
+    lines
 }

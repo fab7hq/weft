@@ -35,6 +35,26 @@ pub fn names() -> Result<Vec<String>, ConfigError> {
     Ok(config::stems(&dir()?))
 }
 
+/// Each harness's name in prose (its `title`, lower case) and the folder
+/// names its files go by in a repository (`path_names`, else the profile's
+/// own name). Empty when no configuration is installed.
+pub fn aliases() -> Vec<(String, Vec<String>)> {
+    let Ok(names) = names() else { return Vec::new() };
+    names
+        .iter()
+        .filter_map(|n| {
+            let p = load(n).ok()?;
+            let title = p.get("title")?.as_str()?.to_lowercase();
+            let paths = p
+                .get("path_names")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .unwrap_or_else(|| vec![n.clone()]);
+            Some((title, paths))
+        })
+        .collect()
+}
+
 /// Every profile that loads. One that does not is skipped, with one warning
 /// per profile, so it hides no other harness.
 fn loaded() -> Result<Vec<Value>, ConfigError> {

@@ -169,6 +169,10 @@ pub fn create(
     if eval_id.is_some() {
         match &record {
             None => codes.push("seal.eval_missing".into()),
+            Some(_) if evaluate::voided(ws)?.contains_key(eval_id.unwrap_or_default()) => {
+                codes.push("seal.eval_voided".into());
+                record = None;
+            }
             Some(r) => {
                 let basis: BTreeSet<String> = strings(&r["basis"], "asks").into_iter().collect();
                 if !ask_ids.iter().any(|a| basis.contains(a)) {
@@ -415,6 +419,20 @@ mod tests {
             // touch it.
             assert_eq!(chk["fresh"], true);
             assert_eq!(chk["subject_matches"], true);
+        });
+    }
+
+    #[test]
+    fn a_voided_eval_is_not_sealed_on() {
+        eval_bench(|ws| {
+            let (_a, _b, rec) = judged(ws, ["yes", "yes", "yes"]);
+            let eval_id = str_of(&rec, "eval_id");
+            crate::evaluate::void_eval(ws, &eval_id, "the judges were scripts", None).unwrap();
+            let e = create(ws, "accepted", Some(&eval_id), None, None).unwrap_err();
+            assert_eq!(codes_of(e), ["seal.eval_voided"]);
+            // Without --eval the Seal finds no Eval to stand on.
+            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            assert_eq!(receipt["eval"], Value::Null);
         });
     }
 

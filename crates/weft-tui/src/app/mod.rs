@@ -83,11 +83,13 @@ macro_rules! sess {
     };
 }
 
+mod eval;
 mod input;
 mod notices;
 #[cfg(test)]
 pub(crate) mod tests;
 
+pub use eval::{EvalScreen, Layer};
 pub use notices::notification;
 
 /// `~` is what people type for their home directory, and a path box that
@@ -147,11 +149,12 @@ impl Row {
 }
 
 /// Weft's own operations, in the order the menu lists them.
+/// Turbo mode is not here: its switch is always on the title bar.
 pub const WEFT_MENU: [(char, &str, Act); 6] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
-    ('T', "Turbo mode on or off", Act::Turbo),
+    ('U', "Update", Act::ReadyUp),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
 ];
@@ -191,6 +194,11 @@ pub enum Modal {
     /// Weft's own operations, gathered out of the bar. Every one of them also
     /// has its own key; this is for finding them, not for reaching them.
     Weft,
+    /// Where a harness's program is, typed, when it is not on `PATH`.
+    Locate {
+        harness: String,
+        text: String,
+    },
     /// Composing an intent; a follow-up also says what work it is about.
     Ask {
         text: String,
@@ -257,6 +265,14 @@ pub struct App {
     detail: Option<Detail>,
     /// The furthest the drawer may be scrolled, as the last render measured it.
     detail_reach: usize,
+    /// The Eval view, when it is open. It blocks, as the detail view does.
+    eval: Option<EvalScreen>,
+    /// Whether SET UP has been asked for once, and offered once: it opens by
+    /// itself at most once a run, when nothing is ready.
+    setup_asked: bool,
+    setup_offered: bool,
+    /// How many rows the Eval view had room for, as the last render measured it.
+    eval_reach: usize,
     /// How many rows the sidebar had room for, as the last render measured
     /// it. Only the render knows, and moving the selection has to keep it in
     /// view now that there is no wheel.
@@ -555,8 +571,8 @@ impl App {
             if folded {
                 continue;
             }
-            // Harnesses in the order they first appear, so the tree does not
-            // reshuffle itself as work arrives.
+            // Harnesses by the name a person reads, A to Z, as every list of
+            // them is: the tree does not reshuffle itself as work arrives.
             // An agent with nothing asked of it yet still has a row, so
             // there is somewhere to say it needs your input.
             let mut seen: Vec<&str> = Vec::new();
@@ -566,6 +582,10 @@ impl App {
                     seen.push(name);
                 }
             }
+            let title = |name: &str| {
+                p.session.harnesses.find(name).map_or(name.to_string(), |h| h.title.clone())
+            };
+            seen.sort_by_key(|name| title(name).to_lowercase());
             for name in seen {
                 let running =
                     p.session.panes.iter().any(|pane| pane.running && pane.harness == name);
@@ -697,6 +717,10 @@ impl App {
             list_offset: 0,
             detail: None,
             detail_reach: 0,
+            eval: None,
+            eval_reach: 0,
+            setup_asked: false,
+            setup_offered: false,
             list_rows: 1,
             show_work: true,
             focus: Focus::Weft,
@@ -767,6 +791,8 @@ impl App {
         match then {
             Then::Confirm => self.confirm_staged(at, answer),
             Then::Read(part) => self.read_part(part, answer),
+            Then::EvalView { eval_id, title } => self.eval_read(eval_id, title, answer),
+            Then::Hunk { window } => self.hunk_read(window, answer),
             Then::Turbo => self.turbo_switched(at, answer),
             Then::Starts(opening) => {
                 self.take_starts(answer.ok());
@@ -902,6 +928,15 @@ impl App {
     }
 
     fn show_pick_up(&mut self, harness: String, then: Option<Act>) {
+        // Picked up only where it is set up: otherwise SET UP is where it goes.
+        if !self.readiness(&harness).is_ready() {
+            let title =
+                sess!(self).harnesses.find(&harness).map_or(harness.clone(), |h| h.title.clone());
+            self.say(format!(
+                "{title} is not set up for RingFrame. [W] → Set up a harness sets it up."
+            ));
+            return;
+        }
         let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
             let id = u.session_ref.clone()?;
             let at = weft_core::turns::millis(&u.asked_at).unwrap_or_default();
@@ -961,6 +996,8 @@ impl App {
 
     fn take_the_board(&mut self) {
         self.pump_all();
+        self.follow_eval();
+        self.offer_setup();
         if self.units != sess!(self).units {
             self.units = sess!(self).units.clone();
             self.clamp_selection();
@@ -1185,30 +1222,20 @@ impl App {
         }
     }
 
-    /// Ask, off the draw loop, whether RingFrame or a harness is behind. The
-    /// answer lights `↑ [U]PDATE`.
+    /// Ask, off the draw loop, whether RingFrame or a harness is behind or
+    /// not set up. The answer lights `↑ [U]PDATE`.
     pub fn look_for_updates(&mut self) {
-        let _ = sess!(self).sync_now(false);
+        let _ = sess!(self).setup("look", "", "");
     }
 
-    /// Open the RingFrame view, which asks again the moment it opens.
+    /// `[U]`: the RingFrame view, which asks again the moment it opens.
     fn open_ringframe(&mut self) {
-        if let Err(e) = sess!(self).sync_now(false) {
+        if let Err(e) = sess!(self).setup("look", "", "") {
             self.modal = Some(Modal::Note(format!("Weft could not ask: {e}")));
             return;
         }
         self.modal = Some(Modal::RingFrame);
-    }
-
-    /// The RingFrame view, once the daemon has answered.
-    pub fn sync_view(&self) -> Option<&weft_core::sync::View> {
-        sess!(self).sync.as_ref()
-    }
-
-    fn proceed_sync(&mut self) {
-        if self.sync_view().is_some_and(|v| v.needs_anything() && !v.running) {
-            let _ = sess!(self).sync_now(true);
-        }
+        self.modal_choice = 0;
     }
 
     fn start_ask(&mut self, follows: Option<Follows>) {
@@ -1268,8 +1295,12 @@ impl App {
 
     fn open_agent_picker(&mut self) {
         if self.fresh_starts().is_empty() {
-            let titles = sess!(self).harnesses.titles();
-            self.say(format!("No coding agent found. Install {titles} first."));
+            // Only a harness set up for RingFrame is offered: SET UP is where
+            // the others are.
+            self.say(
+                "No harness is set up for RingFrame yet. [W] → Set up a harness lists them, \
+                 and sets one up.",
+            );
             return;
         }
         self.modal = Some(Modal::StartAgent { choice: 0 });
@@ -1681,6 +1712,10 @@ enum Then {
     Starts(Opening),
     /// An agent started: go to it, when asked to, then carry on.
     Started { go: bool, then: Option<Act> },
+    /// The Eval view, read or read again.
+    EvalView { eval_id: String, title: String },
+    /// One change's hunk, for the Eval view.
+    Hunk { window: String },
 }
 
 /// A part of the detail view.

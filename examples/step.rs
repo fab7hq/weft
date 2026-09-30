@@ -162,6 +162,7 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         StartAgent { .. } => "StartAgent",
         RingFrame => "RingFrame",
         PickUp { .. } => "PickUp",
+        Locate { .. } => "Locate",
     }
 }
 

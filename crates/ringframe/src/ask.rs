@@ -317,7 +317,7 @@ fn render_prompt(
     classification: &Value,
     text_in: &[u8],
     form: &str,
-) -> Result<(Vec<u8>, Value), AskError> {
+) -> Result<(Vec<u8>, Value, bool), AskError> {
     let rendered = deltas::render(
         over,
         profile,
@@ -328,6 +328,11 @@ fn render_prompt(
     )
     .map_err(|e| ledger("ask.classification", e.0))?;
     let body = String::from_utf8_lossy(text_in).trim_end_matches('\n').to_string();
+    let names_plan = rendered["host"]["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|e| e["names_plan"] == json!(true));
     let mut text = format!("{}{body}\n", str_of(cap, "prompt_prefix"));
     let rendered_text = str_of(&rendered, "text");
     if form == "body" && !rendered_text.is_empty() {
@@ -340,16 +345,16 @@ fn render_prompt(
         "practice": without(&rendered["practice"], &["text", "entries"]),
     });
     if form == "composed" {
-        let mut supplied: Vec<Value> =
-            rendered["host"]["entries"].as_array().cloned().unwrap_or_default();
+        let route: Vec<Value> = rendered["host"]["entries"].as_array().cloned().unwrap_or_default();
+        let mut supplied = route.clone();
         supplied.extend(rendered["practice"]["entries"].as_array().cloned().unwrap_or_default());
         let (applied, omitted) =
-            deltas::audit_composed(&String::from_utf8_lossy(text_in), &supplied)
+            deltas::audit_composed(&String::from_utf8_lossy(text_in), &supplied, &route)
                 .map_err(|e| ledger("ask.composed_rules", e.0))?;
         provenance["applied"] = json!(applied);
         provenance["omitted"] = json!(omitted);
     }
-    Ok((text.into_bytes(), provenance))
+    Ok((text.into_bytes(), provenance, names_plan))
 }
 
 /// How this prompt has to reach the host, recorded rather than re-derived.
@@ -379,6 +384,22 @@ fn delivery_block(profile: &Value, cap: &Value, prompt: &[u8]) -> Value {
         "paste_fold_chars": fold,
         "folds": fold.is_some_and(|f| prompt.len() as u64 >= f),
     })
+}
+
+/// The RingFrame configuration a source intent carries: one that begins
+/// `--override '<json>'`, as a tool that runs RingFrame types it. Read from the
+/// exact source rather than trusted to the flag, because the model composing
+/// the Ask repeats that flag by hand and once left it off `ask compile` (q01,
+/// Claude Code), which compiled the prompt without the rules it turns on.
+fn source_override(source: &[u8]) -> Result<Option<config::Overrides>, AskError> {
+    let text = String::from_utf8_lossy(source);
+    let Some(rest) = text.trim_start().strip_prefix("--override '") else {
+        return Ok(None);
+    };
+    let Some(end) = rest.find('\'') else {
+        return Err(ledger("ask.override", "the source intent's --override has no closing quote"));
+    };
+    config::Overrides::parse(&rest[..end]).map(Some).map_err(|e| ledger("ask.override", e.0))
 }
 
 /// Refuse an Ask this workspace could never finish, before any work is done.
@@ -430,6 +451,16 @@ fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
             .filter(|e| types.contains(&str_of(e, "type").as_str()))
             .map(|e| str_of(e, "id"))
             .collect();
+        // A voided Eval is not something to follow up or remedy: it is what
+        // the person said not to build on.
+        if rel != "revises"
+            && events.iter().any(|e| e["type"] == "eval.voided" && str_of(e, "id") == id)
+        {
+            return Err(ledger(
+                "ask.link_voided",
+                format!("{rel}:{id} names an Eval that was voided; name another, or none"),
+            ));
+        }
         if !have.contains(&id) {
             let listed = if have.is_empty() { "none".to_string() } else { have.join(", ") };
             return Err(ledger(
@@ -547,6 +578,8 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     // RingFrame was opened in. The skill already stages under `.fab7/rf/tmp/`.
     let staged = workspace::within(ws, args.staged)?;
     let (source, form, mut prompt) = read_staged(&staged)?;
+    let from_source = source_override(&source)?;
+    let overrides = from_source.as_ref().unwrap_or(args.overrides);
     let classification = normalize_classification(&args.classification);
     let mut host = args.host.clone();
     let mut provenance: Vec<(&str, Value)> = Vec::new();
@@ -606,14 +639,15 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
             ),
         ));
     }
-    let domains = deltas::selected_domains(&classification, args.overrides)
+    let domains = deltas::selected_domains(&classification, overrides)
         .map_err(|e| ledger("ask.classification", e.0))?;
-    deltas::validate_concerns(&list_of(&classification, "concerns"), &domains, args.overrides)
+    deltas::validate_concerns(&list_of(&classification, "concerns"), &domains, overrides)
         .map_err(|e| ledger("ask.classification", e.0))?;
     let mut compiler = json!({"source": "prompt"});
+    let mut names_plan = false;
     if form != "prompt" {
-        let (rendered, prov) = render_prompt(
-            args.overrides,
+        let (rendered, prov, plan_rule) = render_prompt(
+            overrides,
             &profile,
             &cap,
             args.capability,
@@ -623,6 +657,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         )?;
         prompt = rendered;
         compiler = prov;
+        names_plan = plan_rule;
     }
     let prefix = str_of(&cap, "prompt_prefix");
     if !prefix.is_empty() && !prompt.starts_with(prefix.as_bytes()) {
@@ -646,6 +681,28 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         prompt.splice(prefix.len()..prefix.len(), line.into_bytes());
     }
     let text = String::from_utf8_lossy(&prompt).to_string();
+    // A rule that works "the plan's steps" is only well defined beside the
+    // plan it means, so the prompt names one this workspace holds, by path.
+    if names_plan {
+        let held: Vec<String> = workspace::plans(ws)
+            .iter()
+            .filter_map(|p| p["slug"].as_str().map(str::to_string))
+            .collect();
+        if !held.iter().any(|slug| text.contains(&format!("plans/{slug}/"))) {
+            return Err(ledger(
+                "ask.plan_path",
+                if held.is_empty() {
+                    "this route's rules work a plan, and this workspace holds none: write the plan first"
+                        .to_string()
+                } else {
+                    format!(
+                        "this route's rules work a plan: name it by its path (plans/<slug>/plan.md); held: {}",
+                        held.join(", ")
+                    )
+                },
+            ));
+        }
+    }
     if let Some(max) = cap.get("max_prompt_chars").and_then(Value::as_u64)
         && text.trim_end_matches('\n').chars().count() as u64 > max
     {
@@ -695,6 +752,13 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     for (k, v) in provenance {
         host_block[k] = v;
     }
+    // Where the Eval reads each repository's change from: the commit it is at
+    // now, for the workspace and every repository the Ask names.
+    let (baselines, unreadable) = crate::evidence::baselines(
+        ws,
+        &[&String::from_utf8_lossy(&source), &String::from_utf8_lossy(&prompt)],
+    );
+    limitations.extend(unreadable);
     let data = json!({
         "title": args.title, "classification": classification,
         "selected_capability": args.capability, "route_explanation": args.route,
@@ -702,7 +766,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         "source_verified": verified, "limitations": limitations,
         "delivery_mode": cap["delivery_mode"],
         "delivery": delivery_block(&profile, &cap, &prompt),
-        "compiler": compiler, "base_commit": head(ws),
+        "compiler": compiler, "base_commit": head(ws), "baselines": baselines,
     });
     let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &args.links);
     schema::validate_event(&ev)?;
@@ -726,19 +790,16 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
 
 /// The workspace commit an Ask starts from; Eval's anchor when no Seal
 /// precedes it. Null outside Git.
+/// The commit the work starts from, none in a repository without one. Read
+/// with the Eval's Git helper, which tries a failed read once more: a read
+/// that failed for a moment left an Ask with no base, and its Eval with no
+/// anchor (q07, Antigravity confirm a3).
 fn head(ws: &Workspace) -> Value {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&ws.root)
-        .args(["rev-parse", "--verify", "--quiet", "HEAD"])
-        .output();
-    match out {
-        Ok(o) if o.status.success() => {
-            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
-            if s.is_empty() { Value::Null } else { Value::String(s) }
-        }
-        _ => Value::Null,
-    }
+    crate::evaluate::git(&ws.root, &["rev-parse", "--verify", "--quiet", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map_or(Value::Null, Value::String)
 }
 
 fn append_event(
@@ -1357,6 +1418,7 @@ fn summary(ws: &Workspace, ask_id: &str, rec: &AskRecord, sealed: &BTreeSet<Stri
         "outcome": outcome, "state": state_of(ask_id, rec, sealed),
         "confirmed_at": time_of(&rec.confirmed),
         "base_commit": d.get("base_commit").cloned().unwrap_or(Value::Null),
+        "baselines": d.get("baselines").cloned().unwrap_or(Value::Null),
         // Asked and not answered. Still open, still confirmable; said so a
         // client can put it back in front of the person.
         "unanswered_at": time_of(&rec.unanswered),
@@ -1433,6 +1495,7 @@ mod tests {
         host: Value,
         links: Vec<Value>,
         actor: Option<Value>,
+        overrides: crate::config::Overrides,
     }
 
     impl Default for Args {
@@ -1446,6 +1509,7 @@ mod tests {
                 host: host(),
                 links: Vec::new(),
                 actor: None,
+                overrides: crate::config::Overrides::default(),
             }
         }
     }
@@ -1464,7 +1528,7 @@ mod tests {
                 links: args.links,
                 limitations: Vec::new(),
                 actor: args.actor,
-                overrides: &crate::config::Overrides::default(),
+                overrides: &args.overrides,
             },
         )
     }
@@ -1523,6 +1587,24 @@ mod tests {
                 .unwrap();
             compile_with(ws, Args { links: link("follows", &open_eval), ..Default::default() })
                 .unwrap();
+        });
+    }
+
+    #[test]
+    fn a_voided_eval_is_neither_followed_nor_remedied() {
+        bench(|ws| {
+            let eval_id = completed_eval(ws);
+            crate::evaluate::void_eval(ws, &eval_id, "the judges were scripts", None).unwrap();
+            let before = events(ws).len();
+            for rel in ["remediates", "follows"] {
+                let e = ledger_error(
+                    compile_with(ws, Args { links: link(rel, &eval_id), ..Default::default() })
+                        .unwrap_err(),
+                );
+                assert_eq!(e.code, "ask.link_voided", "{e}");
+                assert!(e.to_string().contains(&eval_id), "{e}");
+            }
+            assert_eq!(events(ws).len(), before, "a refused link writes nothing");
         });
     }
 
@@ -2830,7 +2912,9 @@ mod tests {
                 text.starts_with("/goal Run plans/checkout-perf, every item in order.\n"),
                 "{text}"
             );
-            assert!(text.contains("\nRules:\n"), "{text}");
+            // A continuing objective carries the goal's Done Check, not the
+            // Step Loop, which works a plan.
+            assert!(text.contains("\nRules:\nFor this route:\n- Done Check: "), "{text}");
             // A labelled directive, selected by the performance concern.
             assert!(
                 text.contains("- Knuth: Do not optimize on suspicion; measure first"),
@@ -2839,7 +2923,7 @@ mod tests {
             let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
             let comp = &ev["data"]["compiler"];
             assert_eq!(comp["source"], "body");
-            assert_eq!(comp["host"]["deltas"], json!([]));
+            assert_eq!(comp["host"]["deltas"], json!(["codex.native_goal.done_check"]));
             assert!(list_of(&comp["practice"], "selected").contains(&"practice.knuth".to_string()));
             assert_eq!(comp["practice"]["matched_concerns"], json!(["performance"]));
             assert_eq!(str_of(&comp["practice"], "shipped_sha256").len(), 64);
@@ -3001,6 +3085,199 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.composed_rules");
+        });
+    }
+
+    /// Claude Code's goal rules turned on the way an evaluation arm does it:
+    /// an override layer that marks them qualified.
+    fn goal_rules_on() -> crate::config::Overrides {
+        let on = |id: &str| json!({"id": id, "status": "qualified"});
+        crate::config::Overrides::parse(
+            &json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
+                on("claude-code.native_goal.step_loop"),
+                on("claude-code.native_goal.done_check"),
+            ]}}}}])
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// The plan a goal Ask names, on disk, as a plan Ask would have left it.
+    fn hold_plan(ws: &Workspace, slug: &str) {
+        std::fs::create_dir_all(ws.root.join(format!("plans/{slug}"))).unwrap();
+        std::fs::write(ws.root.join(format!("plans/{slug}/plan.md")), "# X\n\n## Step 1\n")
+            .unwrap();
+    }
+
+    fn goal_args(staged: std::path::PathBuf) -> Args {
+        Args {
+            staged: Some(staged),
+            title: "Build x".into(),
+            capability: "native_goal".into(),
+            classification: json!({"task": ["implement"], "result": "workspace_change",
+                                   "interaction": "approval_gated", "horizon": "session",
+                                   "effects": ["write"]}),
+            host: json!({"name": "claude-code", "surface": "native-tui"}),
+            overrides: goal_rules_on(),
+            ..Default::default()
+        }
+    }
+
+    const STEP_LOOP: &str =
+        "- Step Loop: Work steps 1 to 3 of plans/x/plan.md in order, test-first.\n";
+    const DONE_CHECK: &str = "- Done Check: Show each step's `npm test` run and its result.\n";
+
+    fn goal_stage(ws: &Workspace, rules: &str) -> std::path::PathBuf {
+        stage_named(
+            ws,
+            "composed.txt",
+            b"build plans/x\n",
+            format!("Build plans/x/plan.md, steps 1 to 3.\n\nRules:\nFor this route:\n{rules}\n- KISS: Build each step as written.\n").as_bytes(),
+        )
+    }
+
+    #[test]
+    fn candidates_render_through_an_override_layer() {
+        bench(|ws| {
+            hold_plan(ws, "x");
+            hold_plan(ws, "y");
+            let out =
+                compile_with(ws, goal_args(goal_stage(ws, &format!("{STEP_LOOP}{DONE_CHECK}"))))
+                    .unwrap();
+            let comp = &compiled_event(ws)["data"]["compiler"];
+            assert_eq!(
+                comp["host"]["deltas"],
+                json!(["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"])
+            );
+            assert!(prompt_text(ws, &str_of(&out, "ask_id")).unwrap().starts_with("/goal Build"));
+
+            // A layer that marks them candidates keeps them out of the prompt.
+            let mut plain = goal_args(stage_named(
+                ws,
+                "composed.txt",
+                b"build plans/y\n",
+                b"Build plans/y/plan.md.\n\nRules:\n- KISS: Build each step as written.\n",
+            ));
+            let off = |id: &str| json!({"id": id, "status": "candidate"});
+            plain.overrides = crate::config::Overrides::parse(
+                &json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
+                    off("claude-code.native_goal.step_loop"),
+                    off("claude-code.native_goal.done_check"),
+                ]}}}}])
+                .to_string(),
+            )
+            .unwrap();
+            compile_with(ws, plain).unwrap();
+            let last = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
+            assert_eq!(last["data"]["compiler"]["host"]["deltas"], json!([]));
+        });
+    }
+
+    #[test]
+    fn a_composed_prompt_records_host_rules_as_applied() {
+        bench(|ws| {
+            hold_plan(ws, "x");
+            hold_plan(ws, "y");
+            compile_with(ws, goal_args(goal_stage(ws, &format!("{STEP_LOOP}{DONE_CHECK}"))))
+                .unwrap();
+            let comp = &compiled_event(ws)["data"]["compiler"];
+            let applied = list_of(comp, "applied");
+            for id in ["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"] {
+                assert!(applied.contains(&id.to_string()), "{id}: {applied:?}");
+            }
+            assert!(!list_of(comp, "omitted").iter().any(|i| i.starts_with("claude-code.")));
+        });
+    }
+
+    #[test]
+    fn a_composed_prompt_that_omits_a_host_rule_is_refused() {
+        bench(|ws| {
+            hold_plan(ws, "x");
+            hold_plan(ws, "y");
+            let before = events(ws).len();
+            let e = compile_with(ws, goal_args(goal_stage(ws, STEP_LOOP))).unwrap_err();
+            let e = ledger_error(e);
+            assert_eq!(e.code, "ask.composed_rules");
+            assert!(e.to_string().contains("'Done Check' is required on this route"), "{e}");
+            assert_eq!(events(ws).len(), before, "nothing is written");
+        });
+    }
+
+    #[test]
+    fn a_rendered_goal_carries_its_route_rules_first() {
+        bench(|ws| {
+            hold_plan(ws, "x");
+            hold_plan(ws, "y");
+            let d = stage_named(ws, "body.txt", b"build plans/x\n", b"Build plans/x/plan.md.\n");
+            let out = compile_with(ws, goal_args(d)).unwrap();
+            let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
+            assert!(
+                text.starts_with(
+                    "/goal Build plans/x/plan.md.\nRules:\nFor this route:\n- Step Loop: Work the plan's steps"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("\n- Done Check: A separate model judges"), "{text}");
+            assert!(text.contains("\n\n- KISS: "), "{text}");
+        });
+    }
+
+    #[test]
+    fn the_source_intents_override_applies_even_when_the_flag_is_left_off() {
+        bench(|ws| {
+            hold_plan(ws, "x");
+            let on = |id: &str| json!({"id": id, "status": "qualified"});
+            let layer = json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
+                on("claude-code.native_goal.step_loop"), on("claude-code.native_goal.done_check")]}}}}]);
+            let source = format!("--override '{layer}' build plans/x\n");
+            let d = stage_named(
+                ws,
+                "composed.txt",
+                source.as_bytes(),
+                format!(
+                    "Build plans/x/plan.md.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}"
+                )
+                .as_bytes(),
+            );
+            let mut args = goal_args(d);
+            args.overrides = crate::config::Overrides::default();
+            compile_with(ws, args).unwrap();
+            assert_eq!(
+                compiled_event(ws)["data"]["compiler"]["host"]["deltas"],
+                json!(["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"])
+            );
+        });
+    }
+
+    #[test]
+    fn a_rule_that_works_a_plan_needs_the_plans_path() {
+        // q01 chain, Codex and Antigravity: the next /goal named the plan by
+        // its slug or by words, which a transcript-only judge cannot open.
+        bench(|ws| {
+            let by_words = |ws: &Workspace| {
+                goal_args(stage_named(
+                    ws,
+                    "composed.txt",
+                    b"build the json flag\n",
+                    format!("Build the json flag plan.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}").as_bytes(),
+                ))
+            };
+            let e = ledger_error(compile_with(ws, by_words(ws)).unwrap_err());
+            assert_eq!(e.code, "ask.plan_path");
+            assert!(e.to_string().contains("holds none"), "{e}");
+
+            hold_plan(ws, "cli-json-flag");
+            let e = ledger_error(compile_with(ws, by_words(ws)).unwrap_err());
+            assert_eq!(e.code, "ask.plan_path");
+            assert!(e.to_string().contains("held: cli-json-flag"), "{e}");
+
+            let by_path = goal_args(stage_named(
+                ws,
+                "composed.txt",
+                b"build the json flag\n",
+                format!("Build plans/cli-json-flag/plan.md.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}").as_bytes(),
+            ));
+            compile_with(ws, by_path).unwrap();
         });
     }
 

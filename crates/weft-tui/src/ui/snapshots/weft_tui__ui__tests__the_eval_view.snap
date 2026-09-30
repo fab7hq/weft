@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+ EVAL · health endpoint                                                                                           evl_2
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ EVAL drifted · confidence 0.75 · drift: commission 2%, omission 50%
+ BY STEP
+ FINDINGS
+   unclaimed rewrite: commit 94d7989 ("Follow-up work") rewrites lines of 758156f (7)
+ UNEXPLAINED CHANGES
+   · src/telemetry.rs  w_t                                                  unexplained: posts the project path outside
+ ▾ Phase 1 · plans/app/plan.md                                                                        1 met · 1 not met
+   ✗ 7  A failed send is told.                                                                       not met · 1 change
+   ✓ 8  Keep the log short.                                                                              met · 1 change
+ CHECKS RINGFRAME RAN
+   `cargo test`: succeeded in 12 s
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [↑↓] MOVE   [D] THE CHANGE   [TAB] BY FILE                                                                [ESC] CLOSE
+ [H]ELP lists every key.

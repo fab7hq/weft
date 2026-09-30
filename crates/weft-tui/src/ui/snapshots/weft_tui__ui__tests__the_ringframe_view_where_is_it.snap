@@ -1,0 +1,35 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                            ↑ [U]PDATE   [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ WHERE IS CODEX?
+ /opt/codex█
+
+ The whole path of its program, as `/…` or `~/…`. Weft runs it with
+ --version to check it starts, and keeps it in ~/.fab7/weft/config.toml.
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [←] BACK

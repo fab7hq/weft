@@ -87,6 +87,10 @@ pub enum Action {
     Help,
     Quit,
     NextPane,
+    /// The Eval view of the selected work.
+    EvalView,
+    /// In the Eval view: the selected change's hunk.
+    Diff,
     /// Hand the keystroke to the harness untouched.
     ToAgent,
     /// Weft has no meaning for this key, and does nothing with it.
@@ -139,6 +143,9 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'w' => Action::WeftMenu,
             't' => Action::Turbo,
             'h' => Action::Help,
+            // The Eval view, and in it a change's hunk (`d` as in diff).
+            'v' => Action::EvalView,
+            'd' => Action::Diff,
             'x' => Action::Quit,
             _ => Action::Ignore,
         },
@@ -250,7 +257,7 @@ mod tests {
     #[test]
     fn a_key_weft_has_no_meaning_for_does_nothing() {
         // v1 fell through to Help, which opened a dialog on a stray keystroke.
-        for c in ['q', 'z', 'v', '/'] {
+        for c in ['q', 'z', 'g', '/'] {
             assert_eq!(route(plain(Key::Char(c)), Focus::Weft, Toggle), Action::Ignore, "{c}");
         }
     }

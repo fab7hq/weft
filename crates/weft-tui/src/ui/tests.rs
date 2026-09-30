@@ -62,6 +62,12 @@ fn a_follow_up_says_what_it_follows() {
 
 /// An Ask that has been judged, with the record the judges wrote on disk.
 fn judged() -> App {
+    judged_with(false)
+}
+
+/// `judged`, with an Eval of both Asks already gathered on the record, for a
+/// test that presses `[E]VAL`.
+fn judged_with(gathered: bool) -> App {
     let mut a = app();
     let eval_id = "evl_1";
     let dir = a.root().join(".fab7/rf/evals").join(eval_id);
@@ -105,6 +111,9 @@ fn judged() -> App {
     // reach a unit that is really on the ledger. These two go there first,
     // with the same ids; the richer board below is what is drawn.
     crate::app::tests::record_units(&a, &["ask_1", "ask_2"]);
+    if gathered {
+        crate::app::tests::gather_on_record(&a, &["ask_1", "ask_2"]);
+    }
     a.refresh_for_test();
     a.set_units(vec![u, ready]);
     // The daemon reads a record for a unit it knows; this board is
@@ -310,18 +319,21 @@ fn scrolling_past_the_last_line_stops_there_instead_of_emptying_the_panel() {
 
 #[test]
 fn the_confirmation_is_anchored_to_the_bottom_with_the_row_still_in_view() {
-    let mut a = judged();
+    let mut a = judged_with(true);
     press(&mut a, KeyCode::Down);
     press(&mut a, KeyCode::Char('e'));
     let drawn = screen(&mut a, 80, 24);
     let lines: Vec<&str> = drawn.lines().collect();
-    let row = lines.iter().position(|l| l.contains("readme fix")).expect("the row");
+    let row = lines
+        .iter()
+        .position(|l| l.contains("readme fix"))
+        .unwrap_or_else(|| panic!("the row:\n{drawn}"));
     let panel = lines
         .iter()
         .position(|l| l.contains("EVAL THIS WORK"))
         .unwrap_or_else(|| panic!("the panel:\n{drawn}"));
     assert!(row < panel, "the row it is about stays above it:\n{drawn}");
-    assert!(lines[22].contains("[Enter] DO IT"), "{}", lines[22]);
+    assert!(!lines[22].contains("[Enter]"), "{}", lines[22]);
     assert!(lines[22].contains("[←] CANCEL"), "{}", lines[22]);
     assert!(lines[23].contains("never types into an agent without asking"), "{}", lines[23]);
 }
@@ -454,8 +466,8 @@ fn folding_a_line_keeps_every_character() {
 fn what_can_be_used_is_lit_and_what_cannot_is_grey() {
     let a = judged();
     let available = key(&a, "[A]SK", Act::Ask);
-    // Already set up, so there is nothing to ready.
-    let unavailable = key(&a, "[U]PDATE", Act::ReadyUp);
+    // Judged, so there is nothing to send.
+    let unavailable = key(&a, "[P]ROCEED", Act::Proceed);
     assert_eq!(available.style.fg, Some(a.theme.primary()), "active reads as text");
     assert_eq!(unavailable.style.fg, Some(a.theme.muted()), "inactive reads as grey");
 }
@@ -485,7 +497,7 @@ fn a_pane_waiting_for_an_answer_offers_to_take_you_there_and_nothing_else() {
 
     press(&mut a, KeyCode::Char(' '));
     let drawn = screen(&mut a, 80, 24);
-    assert!(drawn.contains("[Enter] ANSWER IT"), "{drawn}");
+    assert!(!drawn.contains("[Enter]"), "Enter is the default, said once in [H]ELP: {drawn}");
     assert!(drawn.contains("[Y] HOW WEFT KNOWS"), "{drawn}");
     assert!(drawn.contains("is asking you something"), "{drawn}");
     assert!(drawn.contains("Weft never answers for you"), "{drawn}");
@@ -498,4 +510,242 @@ fn an_unavailable_action_puts_one_sentence_in_the_hint_and_no_dialog() {
     let drawn = screen(&mut a, 80, 24);
     assert!(drawn.contains("Nothing has been asked for yet."), "{drawn}");
     assert!(!drawn.contains("┌"), "no box was opened:\n{drawn}");
+}
+
+/// Work judged by an Eval of today's kind (`/2`): RingFrame's files for it on
+/// disk, as the daemon reads them for the Eval view.
+fn judged_v2(closed: bool) -> App {
+    let mut a = app();
+    let eval_id = "evl_2";
+    let rf = a.root().join(".fab7/rf");
+    let dir = rf.join("evals").join(eval_id);
+    std::fs::create_dir_all(&dir).expect("evals dir");
+    let s7 = "../plans/app/plan.md#Phase 1/7";
+    let s8 = "../plans/app/plan.md#Phase 1/8";
+    let write = |name: &str, v: serde_json::Value| {
+        std::fs::write(dir.join(name), v.to_string()).expect(name);
+    };
+    write(
+        "changes.json",
+        serde_json::json!({"requirements": [
+        {"id": s7, "kind": "local", "part": "../plans/app/plan.md#Phase 1", "ask": "ask_1",
+         "text": "**A failed send is told.** The person sees why.", "done_when": "A test with a refusing CLI."},
+        {"id": s8, "kind": "local", "part": "../plans/app/plan.md#Phase 1", "ask": "ask_1",
+         "text": "Keep the log short.", "done_when": "The log is one line."}],
+        "findings": [{"kind": "unclaimed_rewrite", "requirements": [s7],
+                      "detail": "commit 94d7989 (\"Follow-up work\") rewrites lines of 758156f"}]}),
+    );
+    write(
+        "evidence.json",
+        serde_json::json!({"windows": [
+        {"id": "w_b", "path": "src/server.rs", "class": "code"},
+        {"id": "w_a", "path": "src/log.rs", "class": "code"},
+        {"id": "w_t", "path": "src/telemetry.rs", "class": "code"}]}),
+    );
+    write(
+        "brief.json",
+        serde_json::json!({"asks": [{"ask_id": "ask_1", "title": "health endpoint"}]}),
+    );
+    write(
+        "windows.json",
+        serde_json::json!({"windows": {
+        "w_b": "--- src/server.rs\n@@ -1 +1,2 @@\n+let mut unrecorded = None;\n+let _ = submit(ask);\n",
+        "w_a": "--- src/log.rs\n@@ -1 +1 @@\n+log(one_line);\n",
+        "w_t": "--- src/telemetry.rs\n@@ -0,0 +1 @@\n+post(\"https://collect.example.com\");\n"}}),
+    );
+    if closed {
+        write(
+            "record.json",
+            serde_json::json!({
+            "schema": "ringframe.eval-record/2", "eval_id": eval_id, "verdict": "drifted", "confidence": 0.75,
+            "drift": {"commission": 0.02, "omission": 0.5}, "judges": [],
+            "items": [
+                {"id": s7, "result": "not_met", "votes": [
+                    {"role": "reduce", "vote": "met", "counted": true, "reason": "the person is told",
+                     "citations": [{"window": "w_b", "quote": "let mut unrecorded = None;"}]},
+                    {"role": "confirm", "vote": "not_met", "counted": true, "reason": "the follow-up drops the refusal again",
+                     "missing": "unrecorded is never set", "citations": []}]},
+                {"id": s8, "result": "met", "votes": [
+                    {"role": "reduce", "vote": "met", "counted": true, "reason": "one line",
+                     "citations": [{"window": "w_a", "quote": "log(one_line);"}]}]}],
+            "windows": [
+                {"id": "w_b", "path": "src/server.rs", "result": "required", "readings": {"map": {"serves": [s7]}}},
+                {"id": "w_a", "path": "src/log.rs", "result": "required", "readings": {"map": {"serves": [s8]}}},
+                {"id": "w_t", "path": "src/telemetry.rs", "result": "unexplained",
+                 "readings": {"map": {"unexplained": "posts the project path outside", "quote": "collect.example.com"}}}],
+            "findings": [{"kind": "unclaimed_rewrite", "requirements": [s7],
+                          "detail": "commit 94d7989 (\"Follow-up work\") rewrites lines of 758156f"}],
+            "checks": [{"command": "cargo test", "outcome": "succeeded", "seconds": 12}],
+            "limitations": []}),
+        );
+    } else {
+        // Running: the map is in, one reduce is out.
+        let tasks = rf.join(format!("tmp/eval-{eval_id}/tasks"));
+        std::fs::create_dir_all(&tasks).expect("tasks");
+        for t in ["m1", "r1", "r2"] {
+            std::fs::write(tasks.join(format!("{eval_id}~{t}.json")), "{}").expect("task");
+        }
+        std::fs::create_dir_all(dir.join("tasks")).expect("outputs");
+        let map = serde_json::json!({"kind": "map", "judge": {"role": "map"}, "windows": [
+            {"window": "w_b", "serves": [s7]}, {"window": "w_a", "serves": [s8]},
+            {"window": "w_t", "unexplained": "posts the project path outside", "quote": "collect.example.com"}]});
+        let reduce = serde_json::json!({"kind": "reduce", "judge": {"role": "reduce"}, "requirements": [
+            {"id": s7, "vote": "met", "reason": "the person is told", "citations": []}]});
+        let mut ledger = String::new();
+        for (t, out) in [("m1", map), ("r1", reduce)] {
+            let path = format!("evals/{eval_id}/tasks/{eval_id}.{t}.1.json");
+            std::fs::write(rf.join(&path), out.to_string()).expect("output");
+            ledger.push_str(
+                &serde_json::json!({"type": "eval.task", "data": {
+                "eval_id": eval_id, "task_id": format!("{eval_id}~{t}"), "outcome": "accepted",
+                "artifact": {"path": path}}})
+                .to_string(),
+            );
+            ledger.push('\n');
+        }
+        std::fs::write(rf.join("eval-tasks.fixture"), ledger).expect("tasks");
+    }
+    let mut u = unit(Sent::Arrived { exact: true });
+    if closed {
+        u.check = Some(Check {
+            eval_id: eval_id.into(),
+            verdict: Verdict::DoesntMatch,
+            agreement: 0.75,
+            judged_by: None,
+        });
+    } else {
+        u.gathered =
+            Some(crate::ledger::Gathered { eval_id: eval_id.into(), by: "fixture".into() });
+    }
+    crate::app::tests::record_units(&a, &["ask_1"]);
+    // The Eval's task events go on the ledger after the Asks it judges.
+    if let Ok(tasks) = std::fs::read_to_string(rf.join("eval-tasks.fixture")) {
+        let mut ledger = std::fs::read_to_string(rf.join("ledger.jsonl")).unwrap_or_default();
+        ledger.push_str(&tasks);
+        std::fs::write(rf.join("ledger.jsonl"), ledger).expect("ledger");
+    }
+    a.refresh_for_test();
+    a.set_units(vec![u]);
+    a
+}
+
+#[test]
+fn the_eval_view_reads_requirements_first_then_a_step_its_change_and_by_file() {
+    let mut a = judged_v2(true);
+    press(&mut a, KeyCode::Char('v'));
+    assert!(a.eval_screen().is_some(), "[V] opens the Eval view");
+    expect_screen("the_eval_view", &screen(&mut a, 120, 32));
+    // The first pickable row is the unexplained change; the steps follow.
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Enter);
+    expect_screen("the_eval_view_step", &screen(&mut a, 120, 32));
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Char('d'));
+    let drawn = screen(&mut a, 120, 32);
+    assert!(
+        drawn.contains("CHANGE src/server.rs  w_b")
+            && drawn.contains("+let mut unrecorded = None;"),
+        "{drawn}"
+    );
+    press(&mut a, KeyCode::Esc);
+    press(&mut a, KeyCode::Esc);
+    press(&mut a, KeyCode::Tab);
+    expect_screen("the_eval_view_by_file", &screen(&mut a, 120, 32));
+    press(&mut a, KeyCode::Esc);
+    assert!(a.eval_screen().is_none(), "Esc from the list closes it");
+}
+
+#[test]
+fn a_running_eval_shows_what_is_in_as_so_far() {
+    let mut a = judged_v2(false);
+    press(&mut a, KeyCode::Char('v'));
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("judging · map 1 of 1 · reduce 1 of 2 · confirm —"), "{drawn}");
+    assert!(drawn.contains("met, so far"), "{drawn}");
+    assert!(drawn.contains("judging · 1 change"), "{drawn}");
+}
+
+#[test]
+fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
+    use weft_core::onboarding::{Row, State, View};
+    let key = |a: &mut App, code: KeyCode| {
+        a.on_key(crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE))
+            .expect("key")
+    };
+    let mut a = app();
+    // The daemon's own look first, so it cannot land on top of the fixture.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while a.setup_view().is_none() && std::time::Instant::now() < deadline {
+        a.pump();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let row = |name: &str, title: &str, state: State| Row {
+        name: name.into(),
+        title: title.into(),
+        program: name.into(),
+        state,
+    };
+    a.session_mut().setup = Some(View {
+        latest: Some("v0.1.3".into()),
+        plugin: Some("0.1.3".into()),
+        configuration: "up to date".into(),
+        configuration_behind: false,
+        rows: vec![
+            row("antigravity", "Antigravity", State::Failed {
+                step: "agy plugin install https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity".into(),
+                said: "Error: not signed in".into(),
+            }),
+            row("claude-code", "Claude Code", State::Behind { have: "0.1.2".into(), latest: "0.1.3".into() }),
+            row("codex", "Codex", State::NotFound),
+            row("zed", "Zed Agent", State::Ready { version: Some("0.1.3".into()) }),
+        ],
+        note: None,
+    });
+    a.modal = Some(crate::app::Modal::RingFrame);
+    a.modal_choice = 0;
+    let drawn = screen(&mut a, 120, 32);
+    expect_screen("the_ringframe_view", &drawn);
+    assert!(drawn.contains("Error: not signed in"), "a failed step says what it printed");
+    let bar = |a: &mut App| {
+        let drawn = screen(a, 120, 32);
+        drawn.lines().rev().find(|l| l.contains("[ESC] CLOSE")).expect("the bar").to_string()
+    };
+    // `Enter` does the picked row, as everywhere, and the bar does not say so;
+    // `[P]ROCEED ALL` is there while something is behind.
+    assert!(
+        !bar(&mut a).contains("[Enter]") && bar(&mut a).contains("[P]ROCEED ALL"),
+        "{}",
+        bar(&mut a)
+    );
+    // `Enter` on a harness that is not found asks where it is.
+    a.modal_choice = 2;
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.modal,
+        Some(crate::app::Modal::Locate { harness: "codex".into(), text: String::new() })
+    );
+    for c in "/opt/codex".chars() {
+        key(&mut a, KeyCode::Char(c));
+    }
+    expect_screen("the_ringframe_view_where_is_it", &screen(&mut a, 120, 32));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.modal, Some(crate::app::Modal::RingFrame), "back to the view");
+}
+
+#[test]
+fn help_says_what_enter_does_once_and_update_sits_above_help() {
+    let a = app();
+    let help = help_lines(&a).join("\n");
+    assert!(help.contains("open/proceed"), "{help}");
+    assert!(help.contains("switch active pane"), "{help}");
+    assert!(help.contains("T  turbo mode"), "{help}");
+    let at = |key: &str| {
+        help.lines().position(|l| l.contains(key)).unwrap_or_else(|| panic!("{key} in {help}"))
+    };
+    assert_eq!(at("U  update") + 1, at("H  help"), "update sits right above help:\n{help}");
+    // The Weft menu: the same order, and no turbo, whose switch is on the title bar.
+    let menu: Vec<char> = crate::app::WEFT_MENU.iter().map(|(k, ..)| *k).collect();
+    assert_eq!(menu, ['O', 'N', 'B', 'U', 'H', 'X']);
+    assert_eq!(crate::app::WEFT_MENU[3].1, "Update");
 }

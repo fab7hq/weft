@@ -145,6 +145,31 @@ pub(crate) fn record_units(app: &App, ids: &[&str]) {
     std::fs::write(rf.join("ledger.jsonl"), lines).expect("ledger");
 }
 
+/// An Eval of these Asks, opened and gathered, as `ringframe eval open` leaves
+/// it: `[E]VAL` then offers its debate without running the CLI.
+pub(crate) fn gather_on_record(app: &App, asks: &[&str]) {
+    use std::io::Write;
+    let ev = |kind: &str, n: u32, data: serde_json::Value| {
+        serde_json::json!({"schema": "ringframe.ledger/1", "event_id": format!("evt_g{n}"),
+            "type": kind, "time": "2026-09-19T14:04:00Z", "id": "evl_g",
+            "actor": {"kind": "human", "id": "local-user"}, "links": [], "data": data})
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(app.root().join(".fab7/rf/ledger.jsonl"))
+        .expect("ledger");
+    writeln!(f, "{}", ev("eval.opened", 1, serde_json::json!({"basis": {"asks": asks}})))
+        .expect("opened");
+    writeln!(
+        f,
+        "{}",
+        ev("eval.gathered", 2, serde_json::json!({"eval_id": "evl_g", "host": "weft"}))
+    )
+    .expect("gathered");
+    // The daemon reads the record on its quarter-second tick.
+    std::thread::sleep(Duration::from_millis(600));
+}
+
 /// A project whose daemon can see this work, because it is really on the
 /// ledger. `set_units` puts a unit in front of the person; only the record
 /// puts it where an act can reach it.
@@ -265,6 +290,7 @@ fn frames_are_drawn_for_what_changed_and_no_more() {
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
     while std::time::Instant::now() < deadline
         && (a.session_mut().readiness.get("codex").is_none()
+            || a.setup_view().is_none()
             || a.frame(&mut t, Duration::from_millis(500)).expect("a frame"))
     {
         a.frame(&mut t, Duration::from_millis(50)).expect("a frame");
@@ -381,9 +407,21 @@ fn a_made_up_harness_is_offered_from_its_harness_file_alone() {
     let (root, _) = test_session("zed");
     let home = root.join("machine");
     std::fs::create_dir_all(home.join("harnesses")).expect("harnesses");
+    // Its program answers its plugin listing as a harness set up for
+    // RingFrame does, and is `cat` otherwise.
+    let program = home.join("zed");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\nif [ \"$1\" = plugin ]; then echo '{\"installed\":[{\"pluginId\":\"rf@fab7\",\"enabled\":true,\"installed\":true}],\"available\":[]}'; exit 0; fi\nexec cat\n",
+    )
+    .expect("its program");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("run");
+    }
     let zed = weft_core::harness::fixture::text("codex")
         .replace("title = \"Codex\"", "title = \"Zed Agent\"")
-        .replace("program = \"codex\"", "program = \"cat\""); // on every machine's PATH
+        .replace("program = \"codex\"", &format!("program = \"{}\"", program.display()));
     std::fs::write(home.join("harnesses/zed-agent.toml"), zed).expect("its file");
     let socket = weft_proto::private_socket("weft-app-zed");
     let _ = std::fs::remove_file(&socket);
@@ -393,12 +431,22 @@ fn a_made_up_harness_is_offered_from_its_harness_file_alone() {
     });
     let session = connect_when_listening(&socket, &root);
     let mut a = App::with_session(root, Toggle, session);
-    a.look_for_agents(Opening::Nothing);
-    a.settle();
+    // Offered once it has said it is set up: the first look asks it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        a.look_for_agents(Opening::Nothing);
+        a.settle();
+        if a.starts().iter().any(|s| s.harness == "zed-agent")
+            || std::time::Instant::now() > deadline
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let zed: Vec<_> = a.starts().iter().filter(|s| s.harness == "zed-agent").collect();
     assert_eq!(zed.len(), 1, "offered fresh: {:?}", a.starts());
-    assert_eq!(zed[0].spec, "cat");
-    assert_eq!(a.harness_for_program("/bin/cat").as_deref(), Some("zed-agent"));
+    assert_eq!(zed[0].spec, program.display().to_string());
+    assert_eq!(a.harness_for_program(&program.display().to_string()).as_deref(), Some("zed-agent"));
 }
 
 #[test]
@@ -627,6 +675,8 @@ fn backspace_edits_the_intent() {
 fn eval_and_seal_always_confirm_before_typing() {
     for (key, expect) in [('e', "eval"), ('s', "seal")] {
         let mut a = recorded(Sent::TakenByAgent);
+        gather_on_record(&a, &["ask_1"]);
+        a.settle();
         press(&mut a, KeyCode::Char(key));
         let Some(Modal::Confirm(p)) = a.modal.clone() else {
             panic!("{key} must confirm first, got {:?}", a.modal)
@@ -1134,6 +1184,8 @@ fn a_sent_ask_is_never_sent_again_by_proceed() {
 #[test]
 fn cancelling_a_confirmation_types_nothing() {
     let mut a = recorded(Sent::TakenByAgent);
+    gather_on_record(&a, &["ask_1"]);
+    a.settle();
     press(&mut a, KeyCode::Char('e'));
     assert!(matches!(a.modal, Some(Modal::Confirm(_))));
     press(&mut a, KeyCode::Left); // [←] CANCEL
@@ -1144,6 +1196,8 @@ fn cancelling_a_confirmation_types_nothing() {
 #[test]
 fn confirming_types_it_and_puts_you_in_the_agent() {
     let mut a = recorded(Sent::TakenByAgent);
+    gather_on_record(&a, &["ask_1"]);
+    a.settle();
     press(&mut a, KeyCode::Char('e'));
     press(&mut a, KeyCode::Enter);
     assert!(a.modal.is_none());
@@ -1347,6 +1401,12 @@ fn readiness_follows_the_harness_that_owns_the_work() {
     claude_row.harness = "claude-code".into();
     a.set_units(vec![codex_row, claude_row]);
 
+    // Harnesses are listed by name, so Codex's work is found, not assumed first.
+    a.selected = a
+        .rows()
+        .iter()
+        .position(|r| matches!(r, Row::Action { unit, .. } if a.units()[*unit].harness == "codex"))
+        .expect("the codex row");
     let blocked = a.unavailable(Act::Eval).expect("codex is not set up");
     assert!(blocked.contains("codex is not set up"), "{blocked}");
     // The two units hang under different harnesses, so reaching the
@@ -1363,13 +1423,13 @@ fn readiness_follows_the_harness_that_owns_the_work() {
 }
 
 #[test]
-fn the_ringframe_view_runs_nothing_before_proceed() {
-    let mut a = app();
+fn u_opens_the_ringframe_view_with_no_agent_running() {
+    // Setting a harness up is what a person does before any agent runs.
+    let (root, session) = test_session("bare-u");
+    let mut a = App::with_session(root, Toggle, session);
+    assert_eq!(a.pane_count(), 0);
     press(&mut a, KeyCode::Char('u'));
     assert_eq!(a.modal, Some(Modal::RingFrame));
-    // Until the daemon has said what is behind, there is nothing to run.
-    press(&mut a, KeyCode::Char('p'));
-    assert!(a.sync_view().is_none());
     press(&mut a, KeyCode::Left);
     assert!(a.modal.is_none());
 }
@@ -1548,7 +1608,7 @@ mod start_tests {
         match a.modal {
             Some(Modal::StartAgent { .. }) => {}
             None => assert!(
-                a.hint_text().is_some_and(|h| h.contains("No coding agent")),
+                a.hint_text().is_some_and(|h| h.contains("No harness is set up")),
                 "either a picker or a plain sentence: {:?}",
                 a.hint_text()
             ),

@@ -8,6 +8,7 @@
 pub mod acts;
 pub mod harness;
 pub mod ledger;
+pub mod onboarding;
 pub mod pane;
 pub mod readiness;
 pub mod record;

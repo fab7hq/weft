@@ -76,7 +76,10 @@ fn harness_words() -> Vec<String> {
             }
         }
     }
-    assert!(out.iter().any(|w| w == "agy"), "an agy fixture: {out:?}");
+    assert!(
+        out.iter().any(|w| w == "antigravity") && out.iter().any(|w| w == "agy"),
+        "the Antigravity fixture, its id and its program: {out:?}"
+    );
     assert!(out.len() >= 9, "the fixture files named too few harnesses: {out:?}");
     out.sort();
     out.dedup();

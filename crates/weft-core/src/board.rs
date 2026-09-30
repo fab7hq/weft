@@ -26,7 +26,7 @@ pub enum Act {
     Detail,
     /// A new Ask about work that already exists.
     FollowUp,
-    /// Set the agent that owns the work up for RingFrame.
+    /// RingFrame and every harness, set up and caught up: the RINGFRAME view.
     ReadyUp,
     NewAgent,
     OpenProject,
@@ -152,7 +152,8 @@ impl Board<'_> {
     /// `Send` is not routed. It is the delivery of an Ask already compiled, so
     /// it follows that Ask's own record rather than a preference.
     pub fn deciding_harness(&self, act: Act) -> Option<String> {
-        // An Eval routed per stage goes where its next stage runs.
+        // Weft gathers an Eval itself; its debate goes where `[eval.debate]`
+        // says.
         if act == Act::Eval
             && let Some(stages) = &self.routing.eval_stages
         {
@@ -160,10 +161,9 @@ impl Board<'_> {
                 .selected_unit()
                 .map(|u| u.harness.clone())
                 .or_else(|| self.panes.get(self.focused).map(|p| p.harness.clone()))?;
-            let (gather, debate) =
+            let debate =
                 crate::eval_stages::resolve(Some(stages), self.routing.get("eval"), &fallback);
-            let gathered = self.selected_unit().is_some_and(|u| u.gathered.is_some());
-            return Some(if gathered { debate.harness } else { gather.harness });
+            return Some(debate.harness);
         }
         if let Some(routed) = Self::act_key(act).and_then(|k| self.routing.get(k)) {
             return Some(routed.to_string());
@@ -225,22 +225,10 @@ impl Board<'_> {
             | Act::ToggleSidebar
             | Act::OpenProject
             | Act::WeftMenu
+            | Act::ReadyUp
             | Act::Turbo
             | Act::Help
             | Act::Quit => None,
-            Act::ReadyUp => match self.deciding_harness(Act::ReadyUp) {
-                None => Some("Start an agent first — [N]EW AGENT.".into()),
-                Some(name) if self.readiness(&name).is_ready() => {
-                    Some(format!("{name} is already set up for RingFrame."))
-                }
-                // A missing CLI opens the panel too: it has nothing to run,
-                // but it carries the one command the person needs.
-                Some(name) if self.readiness(&name) == Readiness::Unknown => self
-                    .readiness(&name)
-                    .say(&name)
-                    .map(|s| format!("{s} There is nothing to offer until it answers.")),
-                Some(_) => None,
-            },
             Act::Ask => {
                 (self.panes.is_empty()).then(|| "Start an agent first — [N]EW AGENT.".to_string())
             }
@@ -432,20 +420,21 @@ mod tests {
     }
 
     #[test]
-    fn an_eval_routed_per_stage_is_about_the_harness_its_next_stage_runs_in() {
+    fn an_eval_is_about_the_harness_its_debate_runs_in() {
+        // Weft gathers the Eval itself, so a gather harness no longer decides.
         let mut units = [unit("claude-code", Sent::TakenByAgent)];
         let panes = [pane("claude-code")];
         let routing = crate::config::read(
-            "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\nharness = \"claude-code\"\n",
+            "[eval.gather]\nharness = \"claude-code\"\n\n[eval.debate]\nharness = \"codex\"\n",
             &crate::harness::fixture::harnesses(),
         )
         .routing(std::path::Path::new("/p"));
         let b = board(&units, &panes, READY, &routing);
         assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("codex"));
         units[0].gathered =
-            Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "codex".into() });
+            Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "weft".into() });
         let b = board(&units, &panes, READY, &routing);
-        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("claude-code"));
+        assert_eq!(b.deciding_harness(Act::Eval).as_deref(), Some("codex"));
     }
 
     #[test]
@@ -512,7 +501,7 @@ mod tests {
         let units = [unit("codex", Sent::ReadyToSend), unit("codex", Sent::TakenByAgent)];
         let mut ended = pane("claude-code");
         ended.running = false;
-        let panes = [pane("codex"), ended, pane("agy")];
+        let panes = [pane("codex"), ended, pane("antigravity")];
         let none = Routing::default();
         let b = board(&units, &panes, READY, &none);
         assert_eq!(b.open_count(), 2, "two agents running; the ended one is not open");

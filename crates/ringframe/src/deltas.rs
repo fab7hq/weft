@@ -102,7 +102,7 @@ pub fn load_host_catalog(host: &str, over: &Overrides) -> Result<Value, ConfigEr
     for e in entries(&cat) {
         let id = e.get("id").and_then(Value::as_str).unwrap_or("None");
         check(
-            ["id", "capability", "text", "matrix_ref", "status"]
+            ["id", "label", "capability", "text", "matrix_ref", "status"]
                 .iter()
                 .all(|k| e.get(*k).is_some()),
             format!("deltas/{host}.toml: entry {id} incomplete"),
@@ -138,6 +138,15 @@ pub fn load_practice_catalog(domain: &str, over: &Overrides) -> Result<Value, Co
         check(
             ["id", "text", "applies_to"].iter().all(|k| e.get(*k).is_some()),
             format!("practice entry {id} incomplete"),
+        )?;
+        // Refused rather than ignored: ignoring it would quietly widen the
+        // person's rule to every route.
+        check(
+            e["applies_to"].get("capability").is_none(),
+            format!(
+                "practice entry {id}: applies_to.capability names a route; route rules are \
+                 host entries (deltas/<host>.toml)"
+            ),
         )?;
     }
     Ok(cat)
@@ -177,16 +186,11 @@ fn non_empty_list(v: Option<&Value>) -> bool {
     v.and_then(Value::as_array).is_some_and(|a| !a.is_empty())
 }
 
-fn matches(entry: &Value, classification: &Value, capability: &str) -> bool {
+/// Whether an entry's `applies_to` matches the classification. A host entry
+/// is keyed by its capability as well; a route that serves two kinds of work
+/// (`native_plan` for a plan, and for bounded work) tells them apart here.
+fn matches(entry: &Value, classification: &Value) -> bool {
     let a = entry.get("applies_to").cloned().unwrap_or_else(|| json!({}));
-    // The route, which is how a directive earns its own heading. It narrows
-    // rather than decides: a route that serves two kinds of work needs the
-    // result beside it, or the rule fires on the kind it is not about.
-    if non_empty_list(a.get("capability"))
-        && !a["capability"].as_array().into_iter().flatten().any(|v| v == capability)
-    {
-        return false;
-    }
     if non_empty_list(a.get("task"))
         && !any_shared(&a["task"], classification.get("task").unwrap_or(&Value::Null))
     {
@@ -305,9 +309,9 @@ pub const PHASES: [(&str, &str); 9] = [
     ("document", "When documenting:"),
 ];
 pub const EVERY_PHASE: &str = "Throughout:";
-/// Rules that belong to the route rather than the work. They say what this
-/// turn is for, so they lead and they are not mixed in with the principles —
-/// a deliverable listed third of ten reads like an aside.
+/// The host's route rules: what this turn delivers, the order of the work,
+/// when it stops. They lead and are not mixed in with the principles — a
+/// deliverable listed third of ten reads like an aside.
 pub const THIS_ROUTE: &str = "For this route:";
 
 fn phase_heading(task: &str) -> Option<&'static str> {
@@ -316,11 +320,6 @@ fn phase_heading(task: &str) -> Option<&'static str> {
 
 pub fn is_heading(line: &str) -> bool {
     line == EVERY_PHASE || line == THIS_ROUTE || PHASES.iter().any(|(_, h)| *h == line)
-}
-
-/// Whether a rule was chosen for the route rather than for the work.
-fn route_scoped(entry: &Value) -> bool {
-    entry.get("applies_to").is_some_and(|a| non_empty_list(a.get("capability")))
 }
 
 pub fn revision() -> String {
@@ -392,7 +391,6 @@ fn practice(
     over: &Overrides,
     domain: &str,
     classification: &Value,
-    capability: &str,
     statuses: &[String],
     subagents: bool,
 ) -> Result<Practice, ConfigError> {
@@ -416,7 +414,7 @@ fn practice(
     for (order, (_, e)) in merged.iter().enumerate() {
         if e.get("enabled") == Some(&json!(false))
             || !practice_statuses.contains(status_of(e).as_str())
-            || !matches(e, classification, capability)
+            || !matches(e, classification)
         {
             continue;
         }
@@ -553,8 +551,9 @@ fn practice(
     })
 }
 
-/// Deterministic delta block for one Ask: host lines, then the base practice
-/// rules, then any specialist domain's.
+/// Deterministic delta block for one Ask: one `Rules:` list, the host's route
+/// rules first under their own heading, then the base practice rules, then
+/// any specialist domain's.
 pub fn render(
     over: &Overrides,
     profile: &Value,
@@ -576,17 +575,23 @@ pub fn render(
                 text_of(e, "capability") == capability
                     && statuses.contains(&text_of(e, "status"))
                     && e.get("enabled") != Some(&json!(false))
+                    && matches(e, classification)
             })
             .collect();
         host_block = json!({
             "catalog_sha256": config::sha256_of(&cat),
             "deltas": chosen.iter().map(|e| text_of(e, "id")).collect::<Vec<_>>(),
             "status_filter": statuses,
-            "text": chosen.iter().map(|e| text_of(e, "text").trim().to_string())
-                .collect::<Vec<_>>().join("\n"),
-            "entries": chosen.iter().map(|e| json!({
-                "id": text_of(e, "id"), "label": label(e), "text": text_of(e, "text").trim()
-            })).collect::<Vec<_>>(),
+            "text": chosen.iter().map(|e| rule_line(e)).collect::<Vec<_>>().join("\n"),
+            "entries": chosen.iter().map(|e| {
+                let mut out = json!({
+                    "id": text_of(e, "id"), "label": label(e), "text": squeeze(&text_of(e, "text"))
+                });
+                if e.get("names_plan") == Some(&json!(true)) {
+                    out["names_plan"] = json!(true);
+                }
+                out
+            }).collect::<Vec<_>>(),
         });
     }
 
@@ -608,7 +613,7 @@ pub fn render(
     let subagents = profile.get("subagents") == Some(&json!(true));
     let blocks: Vec<Practice> = names
         .iter()
-        .map(|n| practice(over, n, classification, capability, statuses, subagents))
+        .map(|n| practice(over, n, classification, statuses, subagents))
         .collect::<Result<_, _>>()?;
 
     let all_entries: Vec<Value> = blocks.iter().flat_map(|b| b.entries.clone()).collect();
@@ -637,20 +642,9 @@ pub fn render(
             .flat_map(|(_, kept)| kept.iter().cloned())
             .collect()
     };
-    let render_rule = |e: &Value| format!("- {}: {}", label(e), squeeze(&text_of(e, "text")));
     let mut lines: Vec<String> = Vec::new();
-
-    // What this turn is for, before how to do it.
-    let route_rules: Vec<Value> =
-        order.iter().flat_map(|p| rules_in(p)).filter(route_scoped).collect();
-    if !route_rules.is_empty() {
-        lines.push(THIS_ROUTE.to_string());
-        lines.extend(route_rules.iter().map(&render_rule));
-        lines.push(String::new());
-    }
-
     for phase in &order {
-        let rules: Vec<Value> = rules_in(phase).into_iter().filter(|e| !route_scoped(e)).collect();
+        let rules = rules_in(phase);
         if rules.is_empty() {
             continue;
         }
@@ -658,12 +652,17 @@ pub fn render(
             lines.push(String::new());
             lines.push(phase.clone());
         }
-        lines.extend(rules.iter().map(&render_rule));
+        lines.extend(rules.iter().map(rule_line));
     }
-    let practice_text = if all_entries.is_empty() {
-        String::new()
-    } else {
-        format!("{heading}\n{}", lines.join("\n").trim_start_matches('\n'))
+    let principles = lines.join("\n").trim_start_matches('\n').to_string();
+    let practice_text =
+        if all_entries.is_empty() { String::new() } else { format!("{heading}\n{principles}") };
+    // What this turn is for, before how to do it.
+    let route = text_of(&host_block, "text");
+    let text = match (route.is_empty(), principles.is_empty()) {
+        (true, _) => practice_text.clone(),
+        (false, true) => format!("{heading}\n{THIS_ROUTE}\n{route}"),
+        (false, false) => format!("{heading}\n{THIS_ROUTE}\n{route}\n\n{principles}"),
     };
 
     let first = &blocks[0];
@@ -689,19 +688,22 @@ pub fn render(
         })).collect::<Vec<_>>(),
     });
 
-    let text = [text_of(&host_block, "text"), practice_text]
-        .into_iter()
-        .filter(|p| !p.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
     Ok(json!({"text": text, "host": host_block, "practice": practice_block}))
 }
 
+fn rule_line(e: &Value) -> String {
+    format!("- {}: {}", label(e), squeeze(&text_of(e, "text")))
+}
+
 /// A composed prompt must end with a `Rules:` list whose every label names a
-/// supplied directive. Returns the applied ids and the omitted ones.
+/// supplied directive, and must apply every `required` one (the host's route
+/// rules) under `For this route:`, with nothing else in that block: a blank
+/// line ends it, as the CLI prints it. Returns the applied ids and the
+/// omitted ones.
 pub fn audit_composed(
     text: &str,
     supplied: &[Value],
+    required: &[Value],
 ) -> Result<(Vec<String>, Vec<String>), ConfigError> {
     let lines: Vec<&str> = text.lines().collect();
     let last_rules = lines.iter().rposition(|l| l.trim().eq_ignore_ascii_case("rules:"));
@@ -724,12 +726,15 @@ pub fn audit_composed(
         names.dedup();
         format!("[{}]", names.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
     };
+    let route_ids: Vec<String> = required.iter().map(|e| text_of(e, "id")).collect();
     let mut applied: Vec<String> = Vec::new();
     let mut inside_a_rule = false;
+    let mut in_route = false;
     for line in &lines[start + 1..] {
         let line = line.trim();
         if line.is_empty() || is_heading(line) {
             // A phase heading the CLI printed; match the exact text, never its shape.
+            in_route = line == THIS_ROUTE;
             continue;
         }
         // A directive is a sentence, and a sentence wraps. A line that does
@@ -758,10 +763,28 @@ pub fn audit_composed(
                     known()
                 ))
             })?;
+            // The route block holds the host's rules and only them, so a reader
+            // can tell what this turn is for from how to do it.
+            let is_route = route_ids.contains(id);
+            if is_route != in_route {
+                return Err(ConfigError(if is_route {
+                    format!("rule '{lab}' is a route rule: put it under `{THIS_ROUTE}`")
+                } else {
+                    format!(
+                        "rule '{lab}' is not a route rule: end the `{THIS_ROUTE}` block with a \
+                         blank line before it"
+                    )
+                }));
+            }
             if !applied.contains(id) {
                 applied.push(id.clone());
             }
         }
+    }
+    // A route rule says how the host works, not whether a principle bears on
+    // the task, so it is never the model's to leave out.
+    if let Some(missing) = required.iter().find(|e| !applied.contains(&text_of(e, "id"))) {
+        return Err(ConfigError(format!("rule '{}' is required on this route", label(missing))));
     }
     let omitted: Vec<String> =
         supplied.iter().map(|e| text_of(e, "id")).filter(|id| !applied.contains(id)).collect();
@@ -835,14 +858,15 @@ mod tests {
                         "{id}"
                     );
                     assert!(!text_of(e, "matrix_ref").is_empty(), "{id}");
+                    assert!(!text_of(e, "label").is_empty(), "{id}");
                     assert!(HOST_STATUS.contains(&text_of(e, "status").as_str()), "{id}");
                 }
             }
+            // Every host with a profile has its route rules.
+            assert_eq!(host_catalog_names().unwrap(), ["antigravity", "claude-code", "codex"]);
             let prac = load_practice_catalog(DEFAULT_DOMAIN, &Overrides::default()).unwrap();
             assert_eq!(prac["scope"], "practice");
-            // Six since practice.plan_as_files: planning carries one
-            // structural rule on top of the five principles.
-            assert_eq!(prac["render"], json!({"heading": "Rules:", "core_cap": 6}));
+            assert_eq!(prac["render"], json!({"heading": "Rules:", "core_cap": 5}));
             let all: Vec<String> = entries(&prac).iter().map(|e| text_of(e, "id")).collect();
             let unique: BTreeSet<&String> = all.iter().collect();
             assert_eq!(all.len(), unique.len(), "duplicate entry ids");
@@ -870,29 +894,31 @@ mod tests {
     #[test]
     fn host_deltas_render_only_when_qualified_by_default() {
         bench(|_, _| {
-            let out = rendered("claude-code", &impl_task());
+            // Codex's After Approval is still a candidate (q01 never saw it).
+            let out = rendered("codex", &impl_task());
             assert_eq!(
                 out["host"]["catalog_sha256"],
                 json!(config::sha256_of(
-                    &load_host_catalog("claude-code", &Overrides::default()).unwrap()
+                    &load_host_catalog("codex", &Overrides::default()).unwrap()
                 ))
             );
-            // D1..D6 are candidates until measured.
             assert_eq!(out["host"]["deltas"], json!([]));
             assert_eq!(out["host"]["status_filter"], json!(["qualified"]));
+            // Claude Code's, qualified, renders by default.
+            assert_eq!(
+                ids(&rendered("claude-code", &impl_task())["host"]["deltas"]),
+                ["claude-code.native_plan.after_approval"]
+            );
             let out2 = render(
                 &Overrides::default(),
-                &profiles::load("claude-code").unwrap(),
+                &profiles::load("codex").unwrap(),
                 "native_plan",
                 &impl_task(),
                 &statuses(&["qualified", "candidate"]),
                 DEFAULT_DOMAIN,
             )
             .unwrap();
-            assert!(
-                ids(&out2["host"]["deltas"])
-                    .contains(&"claude-code.native_plan.verify_paths".to_string())
-            );
+            assert_eq!(ids(&out2["host"]["deltas"]), ["codex.native_plan.after_approval"]);
             assert!(!text_of(&out2["host"], "text").is_empty());
         });
     }
@@ -1094,27 +1120,118 @@ mod tests {
                "horizon": "session", "effects": ["read"], "concerns": concerns})
     }
 
-    #[test]
-    fn a_planning_directive_follows_what_the_turn_delivers_not_the_route() {
-        // It was keyed on the route, and `native_plan` is also the route for
-        // ordinary bounded work — so that work was told to write a plan and
-        // stop, which is the opposite of what it was asked for.
-        bench(|_, _| {
-            let mut plan = impl_task();
-            plan["result"] = json!("plan");
-            assert!(
-                selected(&rendered("claude-code", &plan))
-                    .contains(&"practice.plan_as_files".to_string()),
-                "a turn that delivers a plan is told where to put it"
-            );
+    fn with_candidates(host: &str, capability: &str, cls: &Value) -> Value {
+        render(
+            &Overrides::default(),
+            &profiles::load(host).unwrap(),
+            capability,
+            cls,
+            &statuses(&["qualified", "candidate"]),
+            DEFAULT_DOMAIN,
+        )
+        .unwrap()
+    }
 
-            let build = impl_task();
-            assert_eq!(build["result"], json!("workspace_change"));
-            assert!(
-                !selected(&rendered("claude-code", &build))
-                    .contains(&"practice.plan_as_files".to_string()),
-                "bounded work on the planning route is not told to stop at a plan"
-            );
+    #[test]
+    fn a_host_rule_selects_by_result() {
+        // `native_plan` is also the route for ordinary bounded work, which
+        // must not be told to write a plan and stop.
+        bench(|_, _| {
+            for host in ["antigravity", "claude-code", "codex"] {
+                let mut plan = impl_task();
+                plan["result"] = json!("plan");
+                assert_eq!(
+                    ids(&with_candidates(host, "native_plan", &plan)["host"]["deltas"]),
+                    [format!("{host}.native_plan.plan_as_files")]
+                );
+                assert_eq!(
+                    ids(&with_candidates(host, "native_plan", &impl_task())["host"]["deltas"]),
+                    [format!("{host}.native_plan.after_approval")]
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn a_host_entry_without_a_label_is_refused() {
+        bench(|_, _| {
+            let layers = over(json!([{"layer": "weft", "ringframe": {"deltas": {"codex": {
+                "entries": [{"id": "codex.native_direct.bare", "capability": "native_direct",
+                             "text": "Do it.", "matrix_ref": "x", "status": "candidate"}]}}}}]));
+            let e = load_host_catalog("codex", &layers).unwrap_err();
+            assert!(e.0.contains("codex.native_direct.bare incomplete"), "{e}");
+        });
+    }
+
+    #[test]
+    fn a_practice_entry_that_names_a_route_is_refused() {
+        bench(|_, _| {
+            let layers = over(json!([{"layer": "weft", "ringframe": {"deltas": {
+                "practices/software-development": {"entries": [{
+                    "id": "practice.team.routed", "tier": "core", "text": "Stop.",
+                    "applies_to": {"capability": ["native_plan"]}}]}}}}]));
+            let e = load_practice_catalog(DEFAULT_DOMAIN, &layers).unwrap_err();
+            assert!(e.0.contains("route rules are host entries"), "{e}");
+        });
+    }
+
+    /// The classifications that reach each route in practice.
+    fn route_probes() -> Vec<(&'static str, Value)> {
+        let mut plan = impl_task();
+        plan["result"] = json!("plan");
+        let mut answer = probe("question", &[]);
+        answer["result"] = json!("answer");
+        let mut objective = impl_task();
+        objective["result"] = json!("continuing_objective");
+        vec![
+            ("native_plan", plan),
+            ("native_plan", impl_task()),
+            ("native_goal", impl_task()),
+            ("native_goal", objective),
+            ("native_direct", impl_task()),
+            ("native_direct", answer),
+        ]
+    }
+
+    #[test]
+    fn every_host_rule_can_be_selected() {
+        bench(|_, _| {
+            for host in host_catalog_names().unwrap() {
+                let reached: BTreeSet<String> = route_probes()
+                    .iter()
+                    .flat_map(|(cap, cls)| ids(&with_candidates(&host, cap, cls)["host"]["deltas"]))
+                    .collect();
+                let all: BTreeSet<String> =
+                    entries(&load_host_catalog(&host, &Overrides::default()).unwrap())
+                        .iter()
+                        .map(|e| text_of(e, "id"))
+                        .collect();
+                assert_eq!(reached, all, "{host}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_goal_prompt_with_its_host_rules_fits() {
+        // A goal shares its character budget with the brief and the rules.
+        bench(|_, _| {
+            for host in ["antigravity", "claude-code", "codex"] {
+                let profile = profiles::load(host).unwrap();
+                let cap = profiles::capability(&profile, "native_goal").unwrap().clone();
+                let Some(max) = cap.get("max_prompt_chars").and_then(Value::as_u64) else {
+                    continue;
+                };
+                let out = with_candidates(host, "native_goal", &impl_task());
+                assert_eq!(ids(&out["host"]["deltas"]).len(), 2, "{host}");
+                let prompt = format!(
+                    "{}{}\n{}",
+                    text_of(&cap, "prompt_prefix"),
+                    "b".repeat(1500),
+                    text_of(&out, "text")
+                );
+                let n = prompt.chars().count() as u64;
+                assert!(n <= max, "{host}: {n} of {max}");
+            }
         });
     }
 
@@ -1246,17 +1363,13 @@ text = "Measure the widget after fitting it."
             assert_eq!(selected(&out)[..base_ids.len()], base_ids[..]);
             assert!(selected(&out).contains(&"practice.widget_first".to_string()));
             assert!(selected(&out).contains(&"practice.widget_check".to_string()));
-            // Route rules lead and are set apart, so compare the principles
-            // among themselves: the base domain's, then the specialist's.
             let text = text_of(p, "text");
             let labels: Vec<&str> = text
                 .lines()
-                .filter(|l| l.starts_with("- ") && !l.starts_with("- Plan As Files"))
+                .filter(|l| l.starts_with("- "))
                 .map(|l| l.split(':').next().unwrap_or(""))
                 .collect();
-            let base_principles =
-                base_ids.iter().filter(|i| *i != "practice.plan_as_files").count();
-            assert_eq!(labels[base_principles], "- Widget First", "{text}");
+            assert_eq!(labels[base_ids.len()], "- Widget First", "{text}");
         });
     }
 
@@ -1382,14 +1495,10 @@ text = "Measure the widget after fitting it."
             let text = text_of(&out["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
-            // One task means no phase headings. The route heading is not a
-            // phase; it says what the turn is for.
+            // One task means no phase headings.
             assert!(!lines.iter().any(|l| PHASES.iter().any(|(_, h)| h == l)), "{text}");
             assert!(
-                lines[1..]
-                    .iter()
-                    .filter(|l| !l.trim().is_empty() && **l != THIS_ROUTE)
-                    .all(|l| l.starts_with("- ")),
+                lines[1..].iter().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("- ")),
                 "{text}"
             );
         });
@@ -1449,7 +1558,7 @@ text = "Measure the widget after fitting it."
                 "Do the thing.\n\nRules:\n\nWhile researching:\n- {}: applied to this task.\n",
                 text_of(&supplied[0], "label")
             );
-            let (applied, omitted) = audit_composed(&composed, &supplied).unwrap();
+            let (applied, omitted) = audit_composed(&composed, &supplied, &[]).unwrap();
             assert_eq!(applied, [text_of(&supplied[0], "id")]);
             assert_eq!(omitted.len(), supplied.len() - 1);
         });
@@ -1460,8 +1569,8 @@ text = "Measure the widget after fitting it."
         bench(|_, _| {
             let out = rendered("claude-code", &impl_task());
             let supplied: Vec<Value> = out["practice"]["entries"].as_array().unwrap().clone();
-            let e =
-                audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied).unwrap_err();
+            let e = audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied, &[])
+                .unwrap_err();
             assert!(e.0.contains("not `- <labels>"), "{e}");
         });
     }
@@ -1479,7 +1588,7 @@ text = "Measure the widget after fitting it."
                     "Do the thing.\n\nRules:\n{heading}\n- {}: applied here.\n",
                     text_of(&supplied[0], "label")
                 );
-                let (applied, _) = audit_composed(&composed, &supplied).unwrap();
+                let (applied, _) = audit_composed(&composed, &supplied, &[]).unwrap();
                 assert_eq!(applied, [text_of(&supplied[0], "id")], "{heading}");
             }
         });
@@ -1498,7 +1607,7 @@ text = "Measure the widget after fitting it."
             let wrapped = format!(
                 "Do the thing.\n\nRules:\n- {label}: applied to this task, at such\n  length that it wraps onto a second line,\n  and a third.\n"
             );
-            let (applied, _) = audit_composed(&wrapped, &supplied).unwrap();
+            let (applied, _) = audit_composed(&wrapped, &supplied, &[]).unwrap();
             assert_eq!(applied, [text_of(&supplied[0], "id")]);
         });
     }
@@ -1512,20 +1621,20 @@ text = "Measure the widget after fitting it."
                 .as_array()
                 .unwrap()
                 .clone();
-            let e =
-                audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied).unwrap_err();
+            let e = audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied, &[])
+                .unwrap_err();
             assert!(e.0.contains("not `- <labels>"), "{e}");
         });
     }
 
     #[test]
-    fn a_route_rule_leads_and_is_set_apart() {
+    fn host_rules_lead_the_rules_list_under_for_this_route() {
         // A deliverable listed third of ten reads like an aside.
         bench(|_, _| {
             let mut cls = impl_task();
             cls["result"] = json!("plan");
-            let out = rendered("claude-code", &cls);
-            let text = text_of(&out["practice"], "text");
+            let out = with_candidates("claude-code", "native_plan", &cls);
+            let text = text_of(&out, "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
             assert_eq!(lines[1], THIS_ROUTE);
@@ -1533,32 +1642,71 @@ text = "Measure the widget after fitting it."
             // And the principles follow, after a blank line.
             assert!(text.contains("\n\n- KISS:"), "{text}");
             // The heading is one the audit knows, so a composed prompt may
-            // carry it back.
+            // carry it back; the practice block alone does not carry it.
             assert!(is_heading(THIS_ROUTE));
+            assert!(!text_of(&out["practice"], "text").contains(THIS_ROUTE));
         });
     }
 
     #[test]
     fn with_no_route_rule_there_is_no_route_heading() {
         bench(|_, _| {
+            // Codex's bounded-work plan route has no qualified rule.
             let out = render(
                 &Overrides::default(),
-                &profiles::load("claude-code").unwrap(),
-                "native_goal",
+                &profiles::load("codex").unwrap(),
+                "native_plan",
                 &impl_task(),
                 &statuses(&QUALIFIED),
                 DEFAULT_DOMAIN,
             )
             .unwrap();
-            let text = text_of(&out["practice"], "text");
+            let text = text_of(&out, "text");
             assert!(!text.contains(THIS_ROUTE), "{text}");
             assert!(text.starts_with("Rules:\n- "), "{text}");
         });
     }
 
     #[test]
+    fn the_audit_requires_every_route_rule() {
+        bench(|_, _| {
+            let out = with_candidates("codex", "native_goal", &impl_task());
+            let route: Vec<Value> = out["host"]["entries"].as_array().unwrap().clone();
+            let composed = "Build it.\n\nRules:\nFor this route:\n- Step Loop: in order.\n";
+            let e = audit_composed(composed, &route, &route).unwrap_err();
+            assert!(e.0.contains("'Done Check' is required on this route"), "{e}");
+            let both = format!("{composed}- Done Check: a checkpoint per step.\n");
+            let (applied, omitted) = audit_composed(&both, &route, &route).unwrap();
+            assert_eq!(applied.len(), 2);
+            assert!(omitted.is_empty());
+        });
+    }
+
+    #[test]
+    fn the_route_block_holds_the_route_rules_and_only_them() {
+        // Seen on Antigravity (q01 L2, F4): no blank line after the route
+        // rules, so the principles read as part of the route.
+        bench(|_, _| {
+            let out = with_candidates("antigravity", "native_goal", &impl_task());
+            let route: Vec<Value> = out["host"]["entries"].as_array().unwrap().clone();
+            let mut supplied = route.clone();
+            supplied.extend(out["practice"]["entries"].as_array().unwrap().iter().cloned());
+            let head = "Build it.\n\nRules:\nFor this route:\n- Step Loop: in order.\n- Done Check: show checks.\n";
+            let run_on = format!("{head}- KISS: keep it small.\n");
+            let e = audit_composed(&run_on, &supplied, &route).unwrap_err();
+            assert!(e.0.contains("'KISS' is not a route rule"), "{e}");
+            let apart = format!("{head}\n- KISS: keep it small.\n");
+            assert!(audit_composed(&apart, &supplied, &route).is_ok());
+            let outside =
+                "Build it.\n\nRules:\n- Step Loop: in order.\n- Done Check: show checks.\n";
+            let e = audit_composed(outside, &supplied, &route).unwrap_err();
+            assert!(e.0.contains("'Step Loop' is a route rule"), "{e}");
+        });
+    }
+
+    #[test]
     fn the_audit_refuses_a_composed_prompt_with_no_rules_list() {
-        let e = audit_composed("Just do it.\n", &[]).unwrap_err();
+        let e = audit_composed("Just do it.\n", &[], &[]).unwrap_err();
         assert!(e.0.contains("no `Rules:` section"), "{e}");
     }
 

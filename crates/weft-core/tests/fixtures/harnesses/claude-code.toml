@@ -22,6 +22,12 @@ add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
 install = ["plugin", "install", "rf@fab7", "--scope", "user"]
 update_marketplace = ["plugin", "marketplace", "update", "fab7"]
 update = ["plugin", "update", "rf@fab7"]
+# Taking it out again, for a local reinstall: the plugin, the marketplace, and
+# the cache it keeps under its configuration home, so an edit lands without a
+# version bump.
+uninstall = ["plugin", "uninstall", "rf@fab7"]
+remove_marketplace = ["plugin", "marketplace", "remove", "fab7"]
+cache = "plugins/cache/fab7"
 
 [plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
 installed = ["installed"]

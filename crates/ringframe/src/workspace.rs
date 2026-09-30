@@ -84,7 +84,7 @@ pub fn resolve(cwd: Option<&Path>, explicit: Option<&Path>) -> std::io::Result<W
 
 /// The plans this project already holds, by slug, sorted.
 ///
-/// `plans/<slug>/` is the layout the `plan_as_files` practice writes, and a
+/// `plans/<slug>/` is the layout each host's Plan As Files rule writes, and a
 /// plan that is already written is a terminal condition: the Ask that names
 /// it builds it rather than planning it again. Which wording named it — "the
 /// crypto trading agent plan", "plans/crypto-trading-agent", "crypto trading
@@ -93,8 +93,12 @@ pub fn resolve(cwd: Option<&Path>, explicit: Option<&Path>) -> std::io::Result<W
 ///
 /// A project that keeps its plans somewhere else simply has none to report,
 /// which is what this said before there was a list at all.
-pub fn plans(ws: &Workspace) -> Vec<String> {
-    let mut out: Vec<String> = std::fs::read_dir(ws.root.join("plans"))
+///
+/// Each comes with its path and its title (the plan's first `# ` heading):
+/// a slug alone left the model to guess that "the --json flag" meant
+/// `cli-json-greeting` (q01, Codex), and the path is what the next Ask names.
+pub fn plans(ws: &Workspace) -> Vec<serde_json::Value> {
+    let mut slugs: Vec<String> = std::fs::read_dir(ws.root.join("plans"))
         .into_iter()
         .flatten()
         .flatten()
@@ -102,8 +106,18 @@ pub fn plans(ws: &Workspace) -> Vec<String> {
         .filter_map(|e| e.file_name().to_str().map(str::to_string))
         .filter(|name| !name.starts_with('.'))
         .collect();
-    out.sort();
-    out
+    slugs.sort();
+    slugs
+        .into_iter()
+        .map(|slug| {
+            let rel = format!("plans/{slug}/plan.md");
+            let text = std::fs::read_to_string(ws.root.join(&rel)).ok();
+            let title = text.as_deref().and_then(|t| {
+                t.lines().find_map(|l| l.strip_prefix("# ")).map(|h| h.trim().to_string())
+            });
+            serde_json::json!({"slug": slug, "path": text.is_some().then_some(rel), "title": title})
+        })
+        .collect()
 }
 
 /// Absolute, with symlinks followed. A workspace root reached two ways has to
@@ -218,8 +232,17 @@ fn version_key(tag: &str) -> (u8, Vec<u64>) {
     }
 }
 
-/// The highest `vX.Y.Z`. The API does not promise an order, so never take the
-/// first.
+/// The tag names `git ls-remote --tags --refs` lists, one `<sha>\trefs/tags/<name>`
+/// a line.
+fn tags_listed(listing: &str) -> Vec<&str> {
+    listing
+        .lines()
+        .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, name)| name.trim()))
+        .collect()
+}
+
+/// The highest `vX.Y.Z`. A listing does not promise an order, so never take
+/// the first.
 pub fn latest_tag<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     names.into_iter().filter(|n| n.starts_with(BUNDLE_TAG_PREFIX)).max_by_key(|n| version_key(n))
 }
@@ -353,13 +376,24 @@ fn fetch(url: &str, timeout: &str) -> Result<Vec<u8>, WorkspaceError> {
     Ok(out.stdout)
 }
 
+/// The release tags, asked of the repository with `git ls-remote` rather than
+/// GitHub's REST API: the API allows sixty unauthenticated calls an hour to a
+/// machine, and a tool that checks often used them up ("could not
+/// reach the latest release" was that limit).
 fn newest_tag() -> Result<String, WorkspaceError> {
-    let body = fetch(&format!("https://api.github.com/repos/{BUNDLE_REPO}/tags"), "30")?;
-    let tags: Value = serde_json::from_slice(&body)
-        .map_err(|e| WorkspaceError::new("config.fetch", format!("tags: {e}")))?;
-    let names: Vec<&str> =
-        tags.as_array().into_iter().flatten().filter_map(|t| t["name"].as_str()).collect();
-    latest_tag(names).map(str::to_string).ok_or_else(|| {
+    let out = Command::new("git")
+        .args(["ls-remote", "--tags", "--refs", &format!("https://github.com/{BUNDLE_REPO}.git")])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| WorkspaceError::new("config.fetch", format!("git: {e}")))?;
+    if !out.status.success() {
+        return Err(WorkspaceError::new(
+            "config.fetch",
+            format!("git ls-remote {BUNDLE_REPO}: {}", String::from_utf8_lossy(&out.stderr).trim()),
+        ));
+    }
+    let listing = String::from_utf8_lossy(&out.stdout);
+    latest_tag(tags_listed(&listing)).map(str::to_string).ok_or_else(|| {
         WorkspaceError::new(
             "config.no_release",
             format!("{BUNDLE_REPO} has no {BUNDLE_TAG_PREFIX}* release tag"),
@@ -533,7 +567,9 @@ mod tests {
         }
         // A loose file is not a plan, and neither is a hidden directory.
         std::fs::write(ws.root.join("plans/README.md"), "why this exists\n").unwrap();
-        assert_eq!(plans(&ws), vec!["crypto-trading-agent", "ringframe"]);
+        let held = plans(&ws);
+        let slugs: Vec<&str> = held.iter().filter_map(|p| p["slug"].as_str()).collect();
+        assert_eq!(slugs, ["crypto-trading-agent", "ringframe"]);
     }
 
     #[test]
@@ -585,6 +621,13 @@ mod tests {
         let repo = crate::testing::repo();
         let ws = resolve(Some(repo.path()), None).unwrap();
         assert!(require_git(&ws).is_ok());
+    }
+
+    #[test]
+    fn release_tags_are_read_from_git_ls_remote() {
+        let listing = "a153a72\trefs/tags/v0.1.0\nf08ca91\trefs/tags/v0.1.10\n71ca6fc\trefs/tags/v0.1.2\n0000000\trefs/tags/nightly\n";
+        assert_eq!(tags_listed(listing), ["v0.1.0", "v0.1.10", "v0.1.2", "nightly"]);
+        assert_eq!(latest_tag(tags_listed(listing)), Some("v0.1.10"));
     }
 
     #[test]

@@ -11,10 +11,12 @@
 pub mod board;
 pub mod config;
 pub mod eval_stages;
+pub mod eval_view;
 pub mod harness;
 pub mod inject;
 pub mod ledger;
 pub mod offers;
+pub mod onboarding;
 pub mod projects;
 pub mod readiness;
 pub mod record;

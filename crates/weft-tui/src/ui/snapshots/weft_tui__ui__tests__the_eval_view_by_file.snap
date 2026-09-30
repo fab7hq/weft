@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+ EVAL · health endpoint                                                                                           evl_2
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ EVAL drifted · confidence 0.75 · drift: commission 2%, omission 50%
+ BY FILE
+ ▾ src/log.rs                                                                                                  1 change
+   · w_a                                                                                                       required
+ ▾ src/server.rs                                                                                               1 change
+   · w_b                                                                                                       required
+ ▾ src/telemetry.rs                                                                            1 change · 1 unexplained
+   · w_t                                                                    unexplained: posts the project path outside
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [↑↓] MOVE   [D] THE CHANGE   [TAB] BY STEP                                                                [ESC] CLOSE
+ [H]ELP lists every key.

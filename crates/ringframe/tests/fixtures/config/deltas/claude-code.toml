@@ -1,41 +1,91 @@
-# RingFrame host deltas for Claude Code. Rendered by the CLI only when `status = "qualified"`.
+# RingFrame route rules for Claude Code. Rendered by the CLI only when `status = "qualified"`; qualified by ringframe-route-rules-q01.
+# A route rule says what the turn delivers, the order of the work, when it
+# stops and what it shows; practice rules say what good work looks like.
+# What each rule rests on: research/knowledge-base/harnesses/claude-code/capability.md.
 schema = "ringframe.deltas/1"
 scope = "host"
 host = "claude-code"
 
 [[entries]]
-id = "claude-code.native_plan.verify_paths"
-label = "Verify paths"
-status = "candidate"
+id = "claude-code.native_plan.plan_as_files"
+label = "Plan As Files"
+status = "qualified"
 capability = "native_plan"
+applies_to = { result = ["plan"] }
 text = """\
-Before declaring the work complete, confirm every requested file exists and \
-every check you named has run."""
+Draft the plan in Plan mode and present it with ExitPlanMode. Once it is \
+approved, write it into the repository: plans/<slug>/plan.md with the \
+sequence and what done means for each step, plans/<slug>/adr/ with one file \
+per decision, plans/<slug>/spec/ with one per contract. Then stop; building \
+it is a later request."""
 why = """\
-Plan mode continues into implementation under host permissions; the model \
-can stop at the plan or skip its own checks."""
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code"
-evidence = "ringframe-compiler-value-q09 (effect on one task of three; not qualified)"
+Plan mode is read-only until ExitPlanMode approval, and approval continues \
+under host permissions: without a stop, the turn goes on to build. A plan \
+left in the session can be checked by nobody."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/claude-code#ask"
 
 [[entries]]
-id = "claude-code.native_plan.continue_after_approval"
-label = "Continue after approval"
-status = "candidate"
+id = "claude-code.native_plan.after_approval"
+label = "After Approval"
+status = "qualified"
 capability = "native_plan"
+applies_to = { result = ["workspace_change"] }
 text = """\
-After the plan is approved, continue to the requested artifacts in this \
-session instead of stopping at the plan."""
-why = "ExitPlanMode approval hands control back; a plan-only stop is a common end state."
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code"
+Present the plan with ExitPlanMode, naming the checks that will show the \
+work is done before its steps. Once it is approved, carry it out in this \
+session, run those checks, and confirm every requested file exists before \
+you finish."""
+why = """\
+ExitPlanMode approval hands control back, and a plan-only stop is a common \
+end state; checks named before the steps make the review concrete."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/claude-code#ask"
 
 [[entries]]
-id = "claude-code.native_plan.checks_first"
-label = "Checks first"
-status = "candidate"
-capability = "native_plan"
-text = "Name the runnable checks that will show the work is done before the implementation steps."
+id = "claude-code.native_goal.step_loop"
+label = "Step Loop"
+status = "qualified"
+capability = "native_goal"
+applies_to = { result = ["workspace_change"] }
+# It works a plan, so the prompt must name one the workspace holds, by path.
+names_plan = true
+text = """\
+Work the plan's steps one at a time, in its order. Per step: read the code \
+it touches against the step, make the change test-first, then review the \
+diff against the step."""
 why = """\
-The plan is reviewed by a person before effects; checks named up front make \
-the review concrete."""
-matrix_ref = "https://github.com/fab7hq/ringframe/blob/main/docs/commands/ask.md#claude-code"
-evidence = "ringframe-compiler-value-q09 (never emitted by the prose compiler; unmeasured)"
+A persistent objective needs an iteration shape; the owner's loop is \
+analyze, TDD, review. Outcome judgement belongs to rf:eval."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/claude-code#ask"
+
+[[entries]]
+id = "claude-code.native_goal.done_check"
+label = "Done Check"
+status = "qualified"
+capability = "native_goal"
+text = """\
+A separate model judges this goal from the conversation alone and cannot \
+open files, so show each check as you run it: the command and its result. \
+Done when every step's check has passed here; or when a step needs the \
+owner, reported as `BLOCKED: <step>: <question>`, which also ends the goal."""
+why = """\
+The /goal evaluator reads only the transcript, runs no command and opens no \
+file: a condition that names a plan gives it nothing to judge, and a turn \
+that stops to ask is judged not met until the no-progress stop."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/claude-code#ask"
+
+[[entries]]
+id = "claude-code.native_direct.show_checks"
+label = "Show Checks"
+status = "qualified"
+capability = "native_direct"
+applies_to = { result = ["workspace_change"] }
+text = """\
+Before your final message, run the checks that show the change works, \
+report each command with its result, and list the files you changed."""
+why = "Same-turn work has no receipt; the final message is the only record of what was checked."
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/claude-code#ask"

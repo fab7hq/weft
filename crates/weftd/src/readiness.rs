@@ -32,7 +32,13 @@ fn ask(h: &Harness) -> Option<Value> {
     if !out.status.success() {
         return None;
     }
-    serde_json::from_slice(&out.stdout).ok()
+    serde_json::from_slice(&out.stdout).ok().or_else(|| {
+        // Some harnesses say "nothing installed" in words: that is an empty
+        // listing, not a harness that would not answer.
+        let said = String::from_utf8_lossy(&out.stdout);
+        let none = h.listing.as_ref()?.none.as_deref()?;
+        (said.trim() == none).then(|| serde_json::json!({}))
+    })
 }
 
 #[cfg(test)]
@@ -59,6 +65,7 @@ mod tests {
                 available: argv(&["available"]),
                 name: "id".into(),
                 on: argv(&["enabled"]),
+                none: None,
             }),
             resume: argv(&["resume"]),
             transcript: None,

@@ -110,7 +110,7 @@ mod tests {
     }
 
     fn without() -> crate::harness::Harness {
-        harness("agy")
+        harness("antigravity")
     }
 
     /// Captured from `claude plugin list --available --json`.
@@ -166,7 +166,7 @@ mod tests {
 
     /// Captured from `agy plugin list` (Antigravity 1.2.12) once `rf` is
     /// installed: `imports`, named by `name`, and no marketplace at all.
-    fn agy(names: &[&str]) -> Value {
+    fn antigravity(names: &[&str]) -> Value {
         let rows: Vec<Value> = names
             .iter()
             .map(|n| json!({"name": n, "source": "antigravity",
@@ -178,12 +178,12 @@ mod tests {
     /// A harness with no marketplace to add has its plugin by name alone.
     #[test]
     fn a_harness_with_no_marketplaces_is_ready_when_it_has_the_plugin() {
-        assert_eq!(read(&without(), &agy(&["rf"])), Readiness::Ready);
-        assert_eq!(read(&without(), &agy(&["other"])), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&without(), &antigravity(&["rf"])), Readiness::Ready);
+        assert_eq!(read(&without(), &antigravity(&["other"])), Readiness::Missing(Gap::Plugin));
         assert_eq!(read(&without(), &json!({"imports": []})), Readiness::Missing(Gap::Plugin));
         // And the two with marketplaces read exactly as before.
         assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
-        assert_eq!(read(&with(), &agy(&["rf"])), Readiness::Missing(Gap::Marketplace));
+        assert_eq!(read(&with(), &antigravity(&["rf"])), Readiness::Missing(Gap::Marketplace));
     }
 
     /// A harness whose listing holds its plugins under `plugins`, named by

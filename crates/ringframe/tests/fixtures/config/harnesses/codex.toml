@@ -5,6 +5,10 @@ host = "codex"
 surface = "native-tui"
 invocation_prefix = "$rf:"
 confirmation = { tool = "request_user_input" }
+# The composer folds a paste of this many characters or more into a placeholder, and a
+# folded paste is not scanned for slash commands. Measured against the installed host:
+# codex 0.155.1: a paste of 1001 characters or more becomes `[Pasted Content N chars]`.
+# A prompt at or over this length cannot carry its command in the same paste.
 paste_fold_chars = 1001
 subagents = true
 fallback = "human_handoff"
@@ -15,6 +19,9 @@ fallback = "human_handoff"
 # from the plugin's hooks.
 # The name a person reads, in the handoff the CLI writes.
 title = "Codex"
+# The folder names this harness's files go by in a repository (its plugin
+# folder): how an Eval links a step that names the harness to its files.
+path_names = ["codex"]
 # The hook payload's session id.
 session_field = "session_id"
 
@@ -52,7 +59,7 @@ plan, whatever the source intent calls the change, and building is the next \
 Ask once there are files to read. When it is listed, the plan is the \
 terminal condition, so this Ask builds it, classified as task implement with \
 result workspace_change, preferring the continuing objective, and naming the \
-plan rather than restating what it already says, since a route with a \
+plan by the path `plans` gives, rather than restating what it already says, since a route with a \
 character budget cannot carry the same constraints twice. The terminal \
 condition is the plan finished, not its first step, so the Ask covers the \
 whole sequence and its done-criteria; scope it to one step only when the \
@@ -71,17 +78,22 @@ selection = """\
 A plan or analysis before implementation, or bounded work with effects when \
 the user has not requested immediate execution. Do not prefer this general \
 default over a fitting continuing objective or dedicated review."""
-sources = ["https://developers.openai.com/codex/cli/slash-commands"]
+sources = ["https://learn.chatgpt.com/codex/reference/slash-commands"]
 purpose = "Codex Plan mode, entered by the person with /plan"
 activation = {}
 confirmation = { tool = "request_user_input" }
-continuation = "the person submits the prompt; Codex Plan mode owns research and review"
+continuation = """\
+the person submits the prompt; Codex Plan mode researches and ends with a \
+proposed plan, writing nothing; the person leaves Plan mode, and the next \
+prompt carries out the writing"""
+# Plan mode reads; the approved continuation writes. Declaring only the
+# read half made the profile contradict its own `continuation` line.
 effects = ["workspace_read", "workspace_write"]
 permission_owner = "host"
 delivery_mode = "human_handoff"
 prompt_prefix = "/plan "
-prompt_prefix_kind = "mode"
-prompt_prefix_active = "Plan mode"
+prompt_prefix_kind = "mode"   # switch to Plan mode; it persists for the session
+prompt_prefix_active = "Plan mode"   # shown by the host once the mode is on
 qualification = {}
 limitations = [
   "This profile maps Plan to user submission; it does not invoke a mode-transition tool",
@@ -95,21 +107,27 @@ A continuing objective with a user-supplied terminal condition, where work \
 should continue until that condition is met. Infer this from the intended \
 continuation, without requiring the word goal. Do not select for a plan-only \
 or review-only request."""
-sources = ["https://developers.openai.com/codex/cli/slash-commands"]
+sources = [
+  "https://learn.chatgpt.com/use-cases/follow-goals",
+  "https://learn.chatgpt.com/codex/reference/slash-commands",
+]
 purpose = "Codex persistent chat goal, entered by the person with /goal"
 activation = {}
 confirmation = { tool = "request_user_input" }
-continuation = "the person submits the prompt; Codex keeps the objective attached to the chat"
+continuation = """\
+the person submits the prompt; Codex works across turns and stops when it \
+judges the stopping condition met; pause, resume and clear are the person's"""
 effects = ["per source intent"]
 permission_owner = "host"
 delivery_mode = "human_handoff"
 prompt_prefix = "/goal "
-prompt_prefix_kind = "inline"
+prompt_prefix_kind = "inline"   # the argument is the objective; sent alone it only views the goal
 max_prompt_chars = 4000
 qualification = {}
 limitations = [
   "/goal is user-entered on Codex and limited to 4000 characters",
   "submission is observed only through the host prompt hook",
+  "completion is Codex's own judgement",
 ]
 
 [[capabilities]]
@@ -156,7 +174,7 @@ effects = ["workspace_read"]
 permission_owner = "host"
 delivery_mode = "human_handoff"
 prompt_prefix = "/review "
-prompt_prefix_kind = "inline"
+prompt_prefix_kind = "inline"   # a one-shot action over the current changes
 qualification = {}
 limitations = [
   "User submission is required by this RingFrame mapping.",

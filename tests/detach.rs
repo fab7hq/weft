@@ -406,6 +406,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     let socket = protocol::private_socket("weft-delegate");
     let root = project("delegate");
     ask_on_record(&root, "sh");
+    gathered_on_record(&root);
     let listening = socket.clone();
     let harnesses = weft::harness_table::Harnesses(vec![harness_running("sh", "cat")]);
     std::thread::spawn(move || {
@@ -476,6 +477,28 @@ fn ask_on_record(root: &Path, host: &str) {
     std::fs::write(root.join(".fab7/rf/ledger.jsonl"), format!("{compiled}\n")).expect("ledger");
 }
 
+/// An Eval of that Ask, opened and gathered: what `ringframe eval open` leaves.
+/// Weft debates it without gathering again, so these tests need no CLI.
+fn gathered_on_record(root: &Path) {
+    let ev = |kind: &str, n: u32, data: serde_json::Value| {
+        serde_json::json!({"schema": "ringframe.ledger/1", "event_id": format!("evt_g{n}"),
+            "type": kind, "time": "2026-09-19T14:03:00Z", "id": "evl_1",
+            "actor": {"kind": "human", "id": "me"}, "links": [], "data": data})
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".fab7/rf/ledger.jsonl"))
+        .expect("ledger");
+    writeln!(f, "{}", ev("eval.opened", 1, serde_json::json!({"basis": {"asks": ["ask_1"]}})))
+        .expect("opened");
+    writeln!(
+        f,
+        "{}",
+        ev("eval.gathered", 2, serde_json::json!({"eval_id": "evl_1", "host": "weft"}))
+    )
+    .expect("gathered");
+}
+
 /// A send into an agent Weft just started waits for it to say `ready`, and
 /// the daemon does not stop while it waits: another window is answered and
 /// every other pane's output keeps arriving.
@@ -483,6 +506,7 @@ fn ask_on_record(root: &Path, host: &str) {
 fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
     let root = project("fresh-wait");
     ask_on_record(&root, "cat-agent");
+    gathered_on_record(&root);
     let socket = protocol::private_socket("weft-fresh-wait");
     let listening = socket.clone();
     let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", "cat")]);
@@ -530,6 +554,7 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
 fn an_agent_started_for_an_eval_resumes_nobodys_session() {
     let root = project("own-command");
     ask_on_record(&root, "cat-agent");
+    gathered_on_record(&root);
     let socket = protocol::private_socket("weft-own-command");
     let listening = socket.clone();
     let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", "cat")]);

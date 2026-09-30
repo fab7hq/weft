@@ -13,11 +13,19 @@ impl App {
         self.hint = None;
         let chord = chord_of(key);
         // Esc is the agent's, except where a view of Weft's own is open.
-        let closing =
-            key.code == event::KeyCode::Esc && self.focus == Focus::Weft && self.detail().is_some();
+        let closing = key.code == event::KeyCode::Esc
+            && self.focus == Focus::Weft
+            && (self.detail().is_some() || self.eval.is_some());
         let action =
             if closing { Action::Back } else { keys::route(chord, self.focus, self.toggle) };
+        // The Eval view blocks: its keys are its own.
+        if self.eval.is_some() && !matches!(action, Action::ToggleFocus | Action::ToAgent) {
+            self.on_eval_action(action);
+            return Ok(());
+        }
         match action {
+            Action::EvalView => self.open_eval_view(),
+            Action::Diff => {}
             Action::ToggleFocus => self.toggle_focus(),
             Action::ToAgent => {
                 if let Some(bytes) = encode::encode(key) {
@@ -145,6 +153,40 @@ impl App {
     pub(crate) fn on_modal_key(&mut self, key: KeyEvent) -> Result<()> {
         let modal = self.modal.clone().expect("a modal");
 
+        // Where a harness's program is: typed, like a project's path.
+        if let Modal::Locate { harness, mut text } = modal {
+            match key.code {
+                event::KeyCode::Left | event::KeyCode::Esc => self.modal = Some(Modal::RingFrame),
+                event::KeyCode::Enter if !text.trim().is_empty() => {
+                    self.setup_locate(&harness, &text)
+                }
+                event::KeyCode::Backspace => {
+                    text.pop();
+                    self.modal = Some(Modal::Locate { harness, text });
+                }
+                event::KeyCode::Char(c) => {
+                    text.push(c);
+                    self.modal = Some(Modal::Locate { harness, text });
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+        if modal == Modal::RingFrame {
+            let rows = self.setup_view().map_or(0, |v| v.rows.len());
+            match key.code {
+                event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
+                event::KeyCode::Down => {
+                    self.modal_choice = (self.modal_choice + 1).min(rows.saturating_sub(1))
+                }
+                event::KeyCode::Enter => self.setup_selected(),
+                event::KeyCode::Char('p' | 'P') => self.setup_all(),
+                event::KeyCode::Left | event::KeyCode::Esc => self.modal = None,
+                _ => {}
+            }
+            return Ok(());
+        }
+
         // Composing text is its own keyboard.
         if let Modal::OpenProject { mut text } = modal {
             match key.code {
@@ -210,7 +252,6 @@ impl App {
             event::KeyCode::Down if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(1),
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => self.modal_choice = (self.modal_choice + 1).min(options - 1),
-            event::KeyCode::Char('p' | 'P') if modal == Modal::RingFrame => self.proceed_sync(),
             event::KeyCode::Char(c) if modal == Modal::Weft => {
                 if let Some(&(_, _, act)) =
                     WEFT_MENU.iter().find(|(k, ..)| k.eq_ignore_ascii_case(&c))
@@ -238,13 +279,13 @@ impl App {
     pub(crate) fn confirm_modal(&mut self, modal: &Modal) {
         match modal {
             Modal::Help | Modal::Note(_) => self.modal = None,
-            Modal::Ask { .. } => {}
+            // Their keys are their own, above; Enter never reaches here.
+            Modal::Ask { .. } | Modal::RingFrame | Modal::Locate { .. } => {}
             Modal::Confirm(pending) => {
                 let pending = pending.clone();
                 self.do_inject(&pending);
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
-            Modal::RingFrame => {}
             Modal::PickUp { harness, session, then } => {
                 let (harness, session, then) = (harness.clone(), session.clone(), *then);
                 match pick_up_choices(session.as_ref()).get(self.modal_choice) {

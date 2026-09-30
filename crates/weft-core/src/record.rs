@@ -76,10 +76,19 @@ pub struct Record {
     pub items: Vec<Item>,
     /// Changed paths no judge could tie to what was asked.
     pub unexplained: Vec<String>,
+    /// Citations a judge gave that RingFrame found were not in their source.
+    #[serde(default)]
+    pub fabrications: usize,
+    /// How much was judged, as RingFrame counted it: `(judged, total)` windows.
+    #[serde(default)]
+    pub windows_judged: Option<(u64, u64)>,
 }
 
 impl Record {
     pub fn parse(v: &Value) -> Option<Self> {
+        if v.get("schema").and_then(Value::as_str) == Some("ringframe.eval/2") {
+            return Self::parse_tasks(v);
+        }
         let judges = v
             .get("judgements")?
             .as_array()?
@@ -141,6 +150,111 @@ impl Record {
             judges,
             items,
             unexplained,
+            fabrications: 0,
+            windows_judged: None,
+        })
+    }
+
+    /// A record of an Eval run by tasks (`ringframe.eval/2`): each obligation
+    /// has a result, and each vote says what RingFrame counted it as.
+    fn parse_tasks(v: &Value) -> Option<Self> {
+        let str_at =
+            |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+        let judges = v
+            .get("judges")
+            .and_then(Value::as_array)
+            .map(|js| {
+                js.iter()
+                    .map(|j| Judge {
+                        angle: str_at(j, "angle"),
+                        host: str_at(j, "host"),
+                        model: str_at(j, "model"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let items = v
+            .get("items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|i| {
+                        let votes: Vec<Vote> = i
+                            .get("votes")
+                            .and_then(Value::as_array)
+                            .map(|vs| {
+                                vs.iter()
+                                    .map(|x| {
+                                        let cast = str_at(x, "vote");
+                                        // A map-and-reduce Eval (ADR-0020) votes `met` or
+                                        // `not_met` and says whether the vote counted; an
+                                        // earlier one voted `yes` or `no` and named what it
+                                        // counted as.
+                                        let as_yes_no = match cast.as_str() {
+                                            "met" | "yes" => Some("yes"),
+                                            "not_met" | "no" => Some("no"),
+                                            _ => None,
+                                        };
+                                        let counted = match x.get("counted") {
+                                            Some(Value::Bool(true)) => as_yes_no,
+                                            Some(Value::String(c)) => Some(c.as_str()),
+                                            _ => None,
+                                        };
+                                        Vote {
+                                            angle: str_at(x, "role"),
+                                            counted_as: counted.unwrap_or("unknown").to_string(),
+                                            uncited: counted.is_none() && as_yes_no.is_some(),
+                                            reason: str_at(x, "reason"),
+                                            cast,
+                                        }
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let majority = match i.get("result").and_then(Value::as_str) {
+                            Some("met") => "yes",
+                            Some("not_met") => "no",
+                            _ => "unknown",
+                        };
+                        Item {
+                            text: str_at(i, "text"),
+                            majority: majority.into(),
+                            agreement: i.get("agreement").and_then(Value::as_f64).unwrap_or(0.0),
+                            reasons: votes
+                                .iter()
+                                .filter(|v| !v.reason.is_empty())
+                                .map(|v| v.reason.clone())
+                                .collect(),
+                            votes,
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut unexplained: Vec<String> = Vec::new();
+        for w in v.get("windows").and_then(Value::as_array).into_iter().flatten() {
+            let path = str_at(w, "path");
+            if w.get("result").and_then(Value::as_str) == Some("unexplained")
+                && !unexplained.contains(&path)
+            {
+                unexplained.push(path);
+            }
+        }
+        let windows_judged = v
+            .get("coverage")
+            .and_then(|c| c.get("windows"))
+            .and_then(Value::as_array)
+            .and_then(|w| Some((w.first()?.as_u64()?, w.get(1)?.as_u64()?)));
+        Some(Record {
+            eval_id: v.get("eval_id")?.as_str()?.to_string(),
+            verdict: v.get("verdict")?.as_str()?.to_string(),
+            confidence: v.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
+            judges,
+            items,
+            unexplained,
+            fabrications: v.get("fabrications").and_then(Value::as_array).map_or(0, Vec::len),
+            windows_judged,
         })
     }
 
@@ -223,6 +337,58 @@ fn path_of(v: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// An Eval run by tasks, as RingFrame writes its record.
+    #[test]
+    fn a_record_of_an_eval_run_by_tasks_reads_as_any_other() {
+        let v = json!({
+            "schema": "ringframe.eval/2", "eval_id": "evl_2", "verdict": "drifted", "confidence": 0.5,
+            "coverage": {"windows": [5, 6], "obligations": [2, 2]},
+            "judges": [{"angle": "coverage", "host": "codex", "model": "luna"},
+                       {"angle": "adversary", "host": "codex", "model": "sol"}],
+            "items": [
+                {"id": "a", "text": "Add the endpoint", "result": "met", "agreement": 1.0,
+                 "votes": [{"role": "coverage", "vote": "yes", "counted": "yes", "reason": "it is exported"},
+                           {"role": "adversary", "vote": "yes", "counted": "yes", "reason": "returns seconds"}]},
+                {"id": "b", "text": "cargo test passes", "result": "unsettled", "agreement": 0.0,
+                 "votes": [{"role": "coverage", "vote": "yes", "counted": null, "reason": "the test exists"}]}],
+            "windows": [{"id": "w1", "path": "src/telemetry.js", "result": "unexplained"},
+                        {"id": "w2", "path": "src/telemetry.js", "result": "unexplained"},
+                        {"id": "w3", "path": "src/a.js", "result": "required"}],
+            "fabrications": [{"task_id": "t"}],
+        });
+        let r = Record::parse(&v).unwrap();
+        assert_eq!(r.judged_by(), ["codex"]);
+        assert_eq!(r.judges.len(), 2);
+        assert_eq!(r.items[0].plain_majority(), "yes");
+        assert_eq!(r.items[0].agreed(), Some((2, 2)));
+        assert_eq!(r.items[1].plain_majority(), "not sure");
+        assert_eq!(r.items[1].uncited(), 1, "a yes RingFrame did not count");
+        assert_eq!(r.unexplained, ["src/telemetry.js"]);
+        assert_eq!(r.fabrications, 1);
+        assert_eq!(r.windows_judged, Some((5, 6)));
+    }
+
+    /// A map-and-reduce Eval (ADR-0020): votes are `met` or `not_met`, and
+    /// `counted` says whether RingFrame counted them.
+    #[test]
+    fn a_map_and_reduce_record_reads_its_votes() {
+        let v = json!({
+            "schema": "ringframe.eval/2", "eval_id": "evl_3", "verdict": "drifted", "confidence": 0.5,
+            "judges": [{"angle": "reduce", "host": "claude-code", "model": "sonnet"}],
+            "items": [
+                {"id": "s1", "text": "Step 1", "result": "not_met", "agreement": 1.0,
+                 "votes": [{"role": "reduce", "vote": "not_met", "counted": true, "reason": "gone"},
+                           {"role": "confirm", "vote": "not_met", "counted": true, "reason": "still gone"}]},
+                {"id": "s2", "text": "Step 2", "result": "unsettled", "agreement": 0.0,
+                 "votes": [{"role": "reduce", "vote": "met", "counted": false, "reason": "looks right"}]}],
+            "windows": [],
+        });
+        let r = Record::parse(&v).unwrap();
+        assert_eq!(r.items[0].plain_majority(), "no");
+        assert_eq!(r.items[0].agreed(), Some((2, 2)));
+        assert_eq!(r.items[1].uncited(), 1, "a vote RingFrame did not count");
+    }
 
     fn record() -> Value {
         json!({

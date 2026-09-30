@@ -178,7 +178,12 @@ impl Seen {
 
 /// Watch the state Weft reads, answering the agent as its person only when
 /// Weft says it is waiting, until its turn has stayed ended.
-fn watch(app: &mut App, mut steps: Vec<Value>, never_ready: bool, mut seen: Seen) -> anyhow::Result<()> {
+fn watch(
+    app: &mut App,
+    mut steps: Vec<Value>,
+    never_ready: bool,
+    mut seen: Seen,
+) -> anyhow::Result<()> {
     // Watch the state Weft reads. Answer the agent, as its person, only when
     // Weft says it is waiting: Enter takes the agent's own first choice.
     let deadline = Instant::now() + TURN_WITHIN;

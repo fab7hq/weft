@@ -106,20 +106,20 @@ mod tests {
     #[test]
     fn a_session_with_only_turn_receipts_is_offered_too() {
         let tmp = workspace("case");
-        let dir = tmp.join(".fab7/rf/sessions/agy/c1");
+        let dir = tmp.join(".fab7/rf/sessions/antigravity/c1");
         std::fs::create_dir_all(&dir).expect("dir");
         let turns = [
             r#"{"event":"working","session_id":"c1","time":"2026-09-27T09:33:00.000Z"}"#,
             r#"{"event":"turn_ended","session_id":"c1","time":"2026-09-27T09:34:06.392Z"}"#,
         ];
         std::fs::write(dir.join("turns.jsonl"), turns.join("\n") + "\n").expect("turns");
-        let found = latest(&tmp, "agy").expect("a session");
+        let found = latest(&tmp, "antigravity").expect("a session");
         assert_eq!((found.id.as_str(), found.last.as_str()), ("c1", ""));
         let at = |t| weft_core::turns::millis(t).expect("a time");
         assert_eq!(found.at, at("2026-09-27T09:34:06.392Z"));
         // Where both are kept, the later of the two says when it was used.
-        receipt(&tmp, "agy", "c1", "2026-09-27T09:32:00.000Z", "/plan it");
-        let found = latest(&tmp, "agy").expect("a session");
+        receipt(&tmp, "antigravity", "c1", "2026-09-27T09:32:00.000Z", "/plan it");
+        let found = latest(&tmp, "antigravity").expect("a session");
         assert_eq!((found.at, found.last.as_str()), (at("2026-09-27T09:34:06.392Z"), "/plan it"));
     }
 

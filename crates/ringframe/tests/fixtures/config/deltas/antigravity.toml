@@ -1,0 +1,90 @@
+# RingFrame route rules for Antigravity. Rendered by the CLI only when `status = "qualified"`; qualified by ringframe-route-rules-q01.
+# A route rule says what the turn delivers, the order of the work, when it
+# stops and what it shows; practice rules say what good work looks like.
+# What each rule rests on: research/knowledge-base/harnesses/antigravity/capability.md.
+schema = "ringframe.deltas/1"
+scope = "host"
+host = "antigravity"
+
+[[entries]]
+id = "antigravity.native_plan.plan_as_files"
+label = "Plan As Files"
+status = "qualified"
+capability = "native_plan"
+applies_to = { result = ["plan"] }
+text = """\
+The implementation plan you ask approval for is a plan for writing the \
+plan: its steps are the files plans/<slug>/plan.md (the sequence and what \
+done means for each step), plans/<slug>/adr/ (one per decision) and \
+plans/<slug>/spec/ (one per contract). Once it is approved, write those \
+files and stop; building it is a later request."""
+why = """\
+/plan asks for an implementation plan artifact and approval before any code \
+change besides artifacts, and approval moves the agent into execution: \
+without this, the approved plan is the change itself, and it gets built."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/antigravity#ask"
+
+[[entries]]
+id = "antigravity.native_plan.after_approval"
+label = "After Approval"
+# No generated prompt carried it in ringframe-route-rules-q01: every L2
+# attempt (5 of 5) classified the bounded change as a plan, as the routing
+# guidance's plan-first rule directs.
+status = "candidate"
+capability = "native_plan"
+applies_to = { result = ["workspace_change"] }
+text = """\
+Name in the plan artifact the checks that will show the work is done. Once \
+it is approved, carry it out, run those checks, and confirm every requested \
+file exists before you finish."""
+why = "Approval moves the agent into execution; checks named in the plan make both the review and the finish concrete."
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/antigravity#ask"
+
+[[entries]]
+id = "antigravity.native_goal.step_loop"
+label = "Step Loop"
+status = "qualified"
+capability = "native_goal"
+applies_to = { result = ["workspace_change"] }
+# It works a plan, so the prompt must name one the workspace holds, by path.
+names_plan = true
+text = """\
+Work the plan's steps one at a time, in its order. Per step: read the code \
+it touches against the step, make the change test-first, then review the \
+diff against the step."""
+why = """\
+A persistent objective needs an iteration shape; the owner's loop is \
+analyze, TDD, review. Outcome judgement belongs to rf:eval."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/antigravity#ask"
+
+[[entries]]
+id = "antigravity.native_goal.done_check"
+label = "Done Check"
+status = "qualified"
+capability = "native_goal"
+text = """\
+Show each check as you run it: the command and its result. Write \
+`<!-- GOAL_COMPLETE -->` only when every step's check has passed here. If a \
+step needs the owner, write `BLOCKED: <step>: <question>` and \
+`<!-- GOAL_CANCELLED -->`: this request asks you to stop there."""
+why = """\
+/goal forces continuation until the model writes the complete marker, or \
+the cancelled one when the user asked to stop; a blocked step has no other \
+way out."""
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/antigravity#ask"
+
+[[entries]]
+id = "antigravity.native_direct.show_checks"
+label = "Show Checks"
+status = "qualified"
+capability = "native_direct"
+applies_to = { result = ["workspace_change"] }
+text = """\
+Before your final message, run the checks that show the change works, \
+report each command with its result, and list the files you changed."""
+why = "Same-turn work has no receipt; the final message is the only record of what was checked."
+evidence = "ringframe-route-rules-q01 (well-defined prompts; plan-then-goal chain)"
+matrix_ref = "https://docs.getfab7.com/ringframe/harnesses/antigravity#ask"

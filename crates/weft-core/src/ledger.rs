@@ -81,7 +81,8 @@ pub struct Arrival {
     pub session: String,
 }
 
-/// An Eval's first stage, recorded: which Eval, and the harness that mapped it.
+/// An Eval's first stage, recorded: which Eval, and who gathered it (`weft`,
+/// or the harness whose skill ran the gather).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Gathered {
     pub eval_id: String,
@@ -160,7 +161,7 @@ pub struct Unit {
     #[serde(default)]
     pub arrived: Option<Arrival>,
     pub check: Option<Check>,
-    /// An open Eval over this work whose change map is published and whose
+    /// An open Eval over this work whose change is gathered and whose
     /// debate has not run: the next `[E]VAL` sends the debate.
     #[serde(default)]
     pub gathered: Option<Gathered>,

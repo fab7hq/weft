@@ -15,6 +15,7 @@ fn enum_values(key: &str) -> &'static [&'static str] {
         "actor.kind" => &["agent", "human", "policy"],
         "links[].rel" => &["evaluates", "follows", "remediates", "revises", "seals", "supersedes"],
         "fact.outcome" => &["failed", "succeeded"],
+        "task.outcome" => &["accepted", "failed", "refused"],
         "classification.task[]" => &[
             "clarify",
             "diagnose",
@@ -104,6 +105,20 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
         }
         "eval.opened" => return Some(vec!["brief", "basis", "anchor", "subject"]),
         "eval.gathered" => return Some(vec!["eval_id", "context_map", "host"]),
+        "eval.voided" => return Some(vec!["reason"]),
+        "eval.task" => {
+            return Some(vec![
+                "eval_id",
+                "task_id",
+                "kind",
+                "role",
+                "outcome",
+                "attempt",
+                "errors",
+                "fabrications",
+                "artifact",
+            ]);
+        }
         "tool.fact" => return Some(vec!["command", "outcome", "subject", "host", "session_ref"]),
         "eval.completed" => {
             return Some(vec![
@@ -137,7 +152,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
 
 /// Every event type the record can hold. A type with no required-key list is
 /// not a type this release writes or reads.
-pub const EVENT_TYPES: [&str; 13] = [
+pub const EVENT_TYPES: [&str; 15] = [
     "ask.requested",
     "ask.compiled",
     "ask.confirmed",
@@ -148,6 +163,8 @@ pub const EVENT_TYPES: [&str; 13] = [
     "eval.opened",
     "eval.gathered",
     "eval.completed",
+    "eval.voided",
+    "eval.task",
     "seal.created",
     "seal.refused",
     "tool.fact",
@@ -280,6 +297,17 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
         "eval.opened" => check_ref("data.brief", &data["brief"])?,
         "eval.gathered" => check_ref("data.context_map", &data["context_map"])?,
         "tool.fact" => check_enum("data.outcome", "fact.outcome", &data["outcome"])?,
+        "eval.task" => {
+            check_enum("data.outcome", "task.outcome", &data["outcome"])?;
+            if !data["artifact"].is_null() {
+                check_ref("data.artifact", &data["artifact"])?;
+            }
+        }
+        "eval.voided" => {
+            if data["reason"].as_str().is_none_or(|r| r.trim().is_empty()) {
+                return Err(fail("data.reason", "must say why"));
+            }
+        }
         "eval.completed" => {
             check_enum("data.verdict", "data.verdict", &data["verdict"])?;
             let ok = data["confidence"].as_f64().is_some_and(|c| (0.0..=1.0).contains(&c));

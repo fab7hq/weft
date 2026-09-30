@@ -67,6 +67,10 @@ pub struct Listing {
     pub name: String,
     #[serde(default)]
     pub on: Vec<String>,
+    /// What `list` prints instead of JSON when nothing is installed, for a
+    /// harness that says so in words.
+    #[serde(default)]
+    pub none: Option<String>,
 }
 
 /// The marketplace and plugin RingFrame publishes. Named here once.
@@ -152,6 +156,9 @@ impl Harnesses {
                 None => unread.push(id),
             }
         }
+        // By the name a person reads, A to Z: every list of harnesses Weft
+        // shows is in this order.
+        read.sort_by_key(|h| h.title.to_lowercase());
         (Harnesses(read), unread)
     }
 
@@ -163,8 +170,19 @@ impl Harnesses {
     /// The harness a command line starts, by its program name. `weft .
     /// "<program> --its --own --args"` names a harness the way a person would.
     pub fn for_program(&self, program: &str) -> Option<&Harness> {
-        let file = program.rsplit('/').next().unwrap_or(program);
-        self.0.iter().find(|h| h.program == file)
+        let file = |p: &str| p.rsplit('/').next().unwrap_or(p).to_string();
+        self.0.iter().find(|h| file(&h.program) == file(program))
+    }
+
+    /// Each harness's program where the person said it is, for those they
+    /// named: everything that runs it, runs it from there.
+    pub fn with_programs(mut self, program: impl Fn(&str) -> Option<String>) -> Self {
+        for h in &mut self.0 {
+            if let Some(p) = program(&h.name) {
+                h.program = p;
+            }
+        }
+        self
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &Harness> {
@@ -190,12 +208,12 @@ impl Harnesses {
 pub mod fixture {
     use super::*;
 
-    /// The text of a fixture harness file: `claude-code`, `codex` or `agy`.
+    /// The text of a fixture harness file: `claude-code`, `codex` or `antigravity`.
     pub fn text(name: &str) -> &'static str {
         match name {
             "claude-code" => include_str!("../tests/fixtures/harnesses/claude-code.toml"),
             "codex" => include_str!("../tests/fixtures/harnesses/codex.toml"),
-            "agy" => include_str!("../tests/fixtures/harnesses/agy.toml"),
+            "antigravity" => include_str!("../tests/fixtures/harnesses/antigravity.toml"),
             other => panic!("no fixture harness file {other}"),
         }
     }
@@ -388,7 +406,7 @@ mod tests {
         broken["plugin"] = Value::Null;
         assert_eq!(Harness::of("codex", &broken), None, "a file missing a field defines none");
         assert!(
-            Harness::of("agy", &file("agy")).is_some(),
+            Harness::of("antigravity", &file("antigravity")).is_some(),
             "no marketplace, no install: still one"
         );
     }

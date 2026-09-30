@@ -40,41 +40,51 @@ pub const MIN_JUDGES: usize = 3;
 
 pub use crate::ask::{AskError as EvalError, NeedsInput};
 
-fn ledger(code: &str, detail: impl Into<String>) -> EvalError {
+pub(crate) fn ledger(code: &str, detail: impl Into<String>) -> EvalError {
     EvalError::Ledger(LedgerError::new_public(code, detail))
 }
 
-fn need(ok: bool, code: &str, message: impl Into<String>) -> Result<(), EvalError> {
+pub(crate) fn need(ok: bool, code: &str, message: impl Into<String>) -> Result<(), EvalError> {
     if ok { Ok(()) } else { Err(ledger(code, message)) }
 }
 
-fn str_of(v: &Value, key: &str) -> String {
+pub(crate) fn str_of(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+pub(crate) fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }
 
 /// Round to two decimal places, ties to even. The confidence goes into a
 /// published record, so it has to land on the same number every time.
-fn round2(x: f64) -> f64 {
+pub(crate) fn round2(x: f64) -> f64 {
     (x * 100.0).round_ties_even() / 100.0
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String, EvalError> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, EvalError> {
     Ok(String::from_utf8_lossy(&git_bytes(root, args, &[0])?).to_string())
 }
 
 /// Git's output as it printed it. `ok` lists the exit codes that are not
-/// failures: `diff --no-index` exits 1 when the files differ.
-fn git_bytes(root: &Path, args: &[&str], ok: &[i32]) -> Result<Vec<u8>, EvalError> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .map_err(|e| ledger("eval.no_git", format!("git: {e}")))?;
+/// failures: `diff --no-index` exits 1 when the files differ. RingFrame only
+/// reads with Git, so a failed read is tried once more before it counts: a
+/// read can fail for a moment ("Not a git repository" in a fresh clone),
+/// and an Eval is advice that should not stop on one.
+pub(crate) fn git_bytes(root: &Path, args: &[&str], ok: &[i32]) -> Result<Vec<u8>, EvalError> {
+    let run = || {
+        Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .map_err(|e| ledger("eval.no_git", format!("git: {e}")))
+    };
+    let mut out = run()?;
+    if !out.status.code().is_some_and(|c| ok.contains(&c)) {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        out = run()?;
+    }
     if !out.status.code().is_some_and(|c| ok.contains(&c)) {
         return Err(ledger(
             "eval.git",
@@ -174,12 +184,12 @@ fn rename_target(path: &str) -> String {
     out.rsplit(" => ").next().unwrap_or(&out).to_string()
 }
 
-fn count_lines(p: &Path) -> u64 {
-    std::fs::read(p).map(|b| b.iter().filter(|c| **c == b'\n').count() as u64).unwrap_or(0)
-}
-
 /// Files changed between the anchor and the subject, with line counts. Never
 /// their content.
+fn count_lines(p: &Path) -> u64 {
+    std::fs::read(p).map_or(0, |b| b.iter().filter(|&&c| c == b'\n').count() as u64)
+}
+
 fn changes(ws: &Workspace, anchor: &str, subject: &Value) -> Result<Value, EvalError> {
     let kind = str_of(subject, "kind");
     let reference = str_of(subject, "ref");
@@ -280,7 +290,10 @@ fn patch(anchor: &str, subject: &Value, ws: &Workspace) -> Result<(Vec<u8>, bool
     Ok((out, true))
 }
 
-const ROLES: [&str; 5] = ["context", "intent", "coverage", "drift", "adversary"];
+/// The roles a caller may name: the current three, and the earlier names
+/// `tasks::current_roles` maps onto them.
+const ROLES: [&str; 9] =
+    ["map", "reduce", "confirm", "context", "intent", "coverage", "drift", "adversary", "trace"];
 
 /// What the caller asked each role to run on: its shape, never a catalogue.
 fn validate_agents(agents: &Value) -> Result<(), EvalError> {
@@ -379,7 +392,7 @@ fn anchor_time(ws: &Workspace, anchor: &Value) -> Option<String> {
 
 /// The latest completed Eval whose basis shares an Ask with this one: the
 /// loop's memory.
-fn previous_record(
+pub(crate) fn previous_record(
     ws: &Workspace,
     eval_id: &str,
     ask_ids: &[String],
@@ -398,7 +411,7 @@ fn previous_record(
     }
 }
 
-fn event(
+pub(crate) fn event(
     type_: &str,
     id: &str,
     actor: Option<&Value>,
@@ -425,12 +438,23 @@ pub struct Open<'a> {
     /// Model and effort per role, as the caller asked; recorded, never checked
     /// against a harness.
     pub agents: Option<Value>,
+    /// Repositories no Ask named, `<path>[=<anchor>]`.
+    pub repos: Vec<String>,
+    /// The harness that opened it. Given, the Eval is gathered as it opens:
+    /// what RingFrame prepared is the change every later task reads, in this
+    /// harness or another, so no agent gathers it again.
+    pub host: Option<&'a str>,
+    /// What the judges must not do, and where that came from: an override
+    /// layer's name, or `default`. Recorded once, so every task of this Eval,
+    /// in any harness, is given the same rules.
+    pub deny: Option<(&'a str, Vec<String>)>,
 }
 
 /// Write the facts-only brief over every open Ask and append `eval.opened`.
 pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let agents = args.agents.clone().unwrap_or_else(|| json!({}));
     validate_agents(&agents)?;
+    let agents = crate::tasks::current_roles(&agents);
     // `ask` does not import `evaluate`.
     let asks = crate::ask::open_asks(ws)?;
     need(
@@ -464,27 +488,38 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         _ => default_subject(ws)?,
     };
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
-    let mut dangling = list_records(ws)?.into_iter().filter(|r| {
-        r["state"] == "opened"
-            && array_of(&r["basis"], "asks").iter().map(str_of_value).collect::<Vec<_>>() == ask_ids
-    });
-    if let Some(open) = dangling.next_back() {
+    let subject =
+        json!({"kind": kind, "ref": reference, "sha256": subject_digest(ws, &kind, &reference)?});
+    // An Eval left open over the same Asks is continued while it judges this
+    // same work. Once the work has moved on, continuing it would judge what is
+    // gone, so a new Eval opens and says which one it supersedes.
+    let dangling: Vec<Value> = list_records(ws)?
+        .into_iter()
+        .filter(|r| {
+            r["state"] == "opened"
+                && array_of(&r["basis"], "asks").iter().map(str_of_value).collect::<Vec<_>>()
+                    == ask_ids
+        })
+        .collect();
+    let same_work = |r: &Value| {
+        r["subject"]["kind"] == subject["kind"] && r["subject"]["sha256"] == subject["sha256"]
+    };
+    if let Some(open) = dangling.iter().rfind(|r| same_work(r)) {
         return Err(ledger(
             "eval.already_open",
             format!(
-                "{} is open over the same Asks and not closed; close it or continue with it",
-                str_of(&open, "eval_id")
+                "{} is open over the same Asks and the same work, and not closed; close it or continue with it",
+                str_of(open, "eval_id")
             ),
         ));
     }
+    let superseded: Vec<String> = dangling.iter().map(|r| str_of(r, "eval_id")).collect();
     let anchor = anchor_of(ws, &asks, args.anchor)?;
     let anchor_ref = str_of(&anchor, "ref");
     git(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{anchor_ref}^{{commit}}")])
         .map_err(|_| {
             ledger("eval.anchor_missing", format!("{anchor_ref} is not a commit in this workspace"))
         })?;
-    let subject =
-        json!({"kind": kind, "ref": reference, "sha256": subject_digest(ws, &kind, &reference)?});
     let eval_id = ids::new_id("evl");
     let (before, counts) = unrecorded_prompts(ws, &asks, anchor_time(ws, &anchor).as_deref())?;
     let shares = |r: &Value| {
@@ -505,10 +540,18 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     if kind == "worktree" {
         limitations.push("subject is the uncommitted worktree".into());
     }
+    if !superseded.is_empty() {
+        limitations.push(format!(
+            "supersedes {}, left open over the same Asks and earlier work",
+            superseded.join(", ")
+        ));
+    }
     // What the harness saw the agent run, in order. Only a fact about this
     // exact subject can say anything about the work being judged. A fact
     // records the worktree's content, and a clean commit at HEAD holds exactly
-    // that, so tests run before the commit still describe it.
+    // that, so tests run before the commit still describe it. The brief lists
+    // only those: a long run records every command it ran, and listing the
+    // stale ones made a brief too large to read for no evidence.
     let content = match kind.as_str() {
         "worktree" => Some(str_of(&subject, "sha256")),
         "git_commit" if default_subject(ws)? == (kind.clone(), reference.clone()) => {
@@ -517,7 +560,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         _ => None,
     };
     let since = anchor_time(ws, &anchor);
-    let facts: Vec<Value> = store::events(ws)?
+    let (facts, stale): (Vec<Value>, Vec<Value>) = store::events(ws)?
         .iter()
         .filter(|e| e["type"] == "tool.fact")
         .filter(|e| since.as_deref().is_none_or(|t| str_of(e, "time").as_str() >= t))
@@ -530,10 +573,16 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
                     || content.as_deref().is_some_and(|c| about["content"] == c),
             })
         })
-        .collect();
-    if facts.is_empty() {
+        .partition(|f| f["fresh"] == true);
+    if facts.is_empty() && stale.is_empty() {
         limitations
             .push("no tool facts were recorded; the result of a command cannot be judged".into());
+    }
+    if !stale.is_empty() {
+        limitations.push(format!(
+            "{} of the recorded commands ran against other work than the subject and are not listed",
+            stale.len()
+        ));
     }
     let (patch_bytes, cut) = patch(&anchor_ref, &subject, ws)?;
     if cut {
@@ -545,8 +594,47 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         &patch_bytes,
         "changes_patch",
     )?;
+    // RingFrame's own reading of the work, for judges that read it in bounded
+    // pieces (ADR-0019 §1). An Eval still opens without it.
+    let (evidence, evidence_refs) = match crate::evidence::prepare(
+        ws,
+        &eval_id,
+        &asks,
+        &anchor_ref,
+        &kind,
+        &reference,
+        &args.repos,
+        &mut limitations,
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            limitations.push(format!("the evidence could not be prepared: {e}"));
+            (Value::Null, json!({}))
+        }
+    };
+    // The checks the Asks and their plan steps state, which RingFrame runs
+    // once (ADR-0020 D8): found here, started once the Eval is on record.
+    let checks = {
+        let changes: Value =
+            std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/changes.json")))
+                .ok()
+                .and_then(|b| serde_json::from_slice(&b).ok())
+                .unwrap_or(Value::Null);
+        let prompts: Vec<String> = asks
+            .iter()
+            .filter_map(|a| {
+                std::fs::read_to_string(ws.rf_dir().join(str_of(&a["prompt"], "path"))).ok()
+            })
+            .collect();
+        let steps = array_of(&changes, "requirements")
+            .iter()
+            .flat_map(|r| [str_of(r, "text"), str_of(r, "done_when")])
+            .collect::<Vec<_>>();
+        crate::checks::find(prompts.iter().chain(steps.iter()).map(String::as_str))
+    };
     let brief = json!({
         "schema": BRIEF_SCHEMA, "eval_id": eval_id, "time": sessions::now(),
+        "checks": checks,
         "workspace": ws.describe(), "anchor": anchor, "subject": subject,
         "asks": asks.iter().enumerate().map(|(i, a)| json!({
             "ask_id": a["ask_id"], "order": i + 1, "title": a["title"],
@@ -557,13 +645,14 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "changes": changes(ws, &anchor_ref, &subject)?,
         "unrecorded_prompts_before": before,
         "previous_evals": previous, "facts": facts, "limitations": limitations,
-        "agents": agents, "changes_patch": changes_patch,
+        "agents": agents, "changes_patch": changes_patch, "evidence": evidence,
+        "judges": crate::tasks::judges(args.deny.as_ref()),
     });
     let mut bytes = store::canonical(&brief);
     bytes.push(b'\n');
     let reference =
         store::publish(ws, &format!("evals/{eval_id}/brief.json"), &bytes, "eval_brief")?;
-    let data = json!({
+    let mut data = json!({
         "brief": reference, "changes_patch": changes_patch, "anchor": anchor, "subject": subject,
         "basis": {
             "asks": ask_ids,
@@ -571,9 +660,26 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             "unrecorded_prompts_before": before,
         },
     });
-    let links: Vec<Value> =
-        asks.iter().map(|a| json!({"rel": "evaluates", "id": a["ask_id"]})).collect();
+    for (k, v) in evidence_refs.as_object().into_iter().flatten() {
+        data[k] = v.clone();
+    }
+    let links: Vec<Value> = asks
+        .iter()
+        .map(|a| json!({"rel": "evaluates", "id": a["ask_id"]}))
+        .chain(superseded.iter().map(|id| json!({"rel": "supersedes", "id": id})))
+        .collect();
     store::append(ws, &event("eval.opened", &eval_id, args.actor.as_ref(), data.clone(), links)?)?;
+    // Fail-safe: an Eval whose checks cannot start goes on without them.
+    let _ = crate::checks::start(ws, &eval_id, &checks);
+    if let (Some(host), Some(evidence)) =
+        (args.host.filter(|h| !h.is_empty()), evidence_refs.get("evidence"))
+    {
+        let gathered = json!({"eval_id": eval_id, "context_map": evidence, "host": host});
+        store::append(
+            ws,
+            &event("eval.gathered", &eval_id, args.actor.as_ref(), gathered, Vec::new())?,
+        )?;
+    }
     let mut out = json!({
         "eval_id": eval_id,
         "brief_path": ws.rf_dir().join(str_of(&reference, "path")).to_string_lossy(),
@@ -763,6 +869,31 @@ pub fn validate_judgement(
     )?;
     for k in ["basis_notes", "commands_run"] {
         need(j.get(k).is_none_or(Value::is_array), code, format!("{where_}: {k} must be a list"))?;
+    }
+    templated(array_of(j, "votes"), "reason", "item", where_)?;
+    templated(array_of(j, "drift"), "finding", "path", where_)
+}
+
+/// A judge that read the work says something about each thing it judged. One
+/// text on two votes, or on two paths, was written without reading them: an
+/// Eval once recorded three such judgements, each from a script.
+fn templated(entries: &[Value], text: &str, about: &str, where_: &str) -> Result<(), EvalError> {
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for e in entries {
+        let said = normalized(&str_of(e, text));
+        if said.is_empty() {
+            continue;
+        }
+        if let Some(first) = seen.insert(said, str_of(e, about)) {
+            return Err(ledger(
+                "eval.templated",
+                format!(
+                    "{where_}: the {text} {:?} is on both {first} and {}; write each {text} from what that {about} shows",
+                    str_of(e, text),
+                    str_of(e, about)
+                ),
+            ));
+        }
     }
     Ok(())
 }
@@ -1191,6 +1322,11 @@ pub fn close_eval(
     if ws.rf_dir().join(format!("evals/{eval_id}/record.json")).exists() {
         return Err(ledger("ledger.immutable", format!("evals/{eval_id}/record.json")));
     }
+    need(
+        !crate::tasks::is_tasked(ws, eval_id),
+        "eval.use_next",
+        format!("{eval_id} runs by tasks; `ringframe eval next --eval {eval_id}` closes it"),
+    )?;
     let brief_sha = digest::sha256_file(&brief_path)?;
     let brief: Value = serde_json::from_slice(&std::fs::read(&brief_path)?)
         .map_err(|e| ledger("eval.missing", e.to_string()))?;
@@ -1367,13 +1503,24 @@ pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
         briefs.push((str_of(&brief, "time"), brief, bytes));
     }
     briefs.sort_by(|a, b| a.0.cmp(&b.0));
+    let voided = voided(ws)?;
     let mut out = Vec::new();
     for (_, brief, bytes) in briefs {
         let eval_id = str_of(&brief, "eval_id");
         let rec = load_record(ws, &eval_id)?;
         let field = |key: &str| rec.as_ref().map_or(Value::Null, |r| r[key].clone());
+        // Every reader that wants an Eval to build on asks for `completed` or
+        // `opened`, so a voided one is skipped by all of them at once.
+        let state = if voided.contains_key(&eval_id) {
+            "voided"
+        } else if rec.is_some() {
+            "completed"
+        } else {
+            "opened"
+        };
         out.push(json!({
-            "eval_id": eval_id, "state": if rec.is_some() { "completed" } else { "opened" },
+            "eval_id": eval_id, "state": state,
+            "voided": voided.get(&eval_id).cloned().unwrap_or(Value::Null),
             "opened_at": brief["time"],
             "basis": {"asks": array_of(&brief, "asks").iter()
                 .map(|a| a["ask_id"].clone()).collect::<Vec<_>>()},
@@ -1390,6 +1537,97 @@ pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
         }));
     }
     Ok(out)
+}
+
+/// Every voided Eval, by id: its reason and when.
+pub fn voided(ws: &Workspace) -> Result<BTreeMap<String, Value>, EvalError> {
+    Ok(store::events(ws)?
+        .iter()
+        .filter(|e| e["type"] == "eval.voided")
+        .map(|e| (str_of(e, "id"), json!({"reason": e["data"]["reason"], "time": e["time"]})))
+        .collect())
+}
+
+/// Withdraw an Eval that should not be built on. It stays in the record; it is
+/// no longer carried over, followed, remedied, sealed on or continued. Only a
+/// person withdraws one: a model that judged badly does not get to decide that
+/// its judgement did not count.
+pub fn void_eval(
+    ws: &Workspace,
+    eval_id: &str,
+    reason: &str,
+    actor: Option<&Value>,
+) -> Result<Value, EvalError> {
+    need(!reason.trim().is_empty(), "eval.void_reason", "say why with --reason")?;
+    let actor = actor.cloned().unwrap_or_else(
+        || json!({"kind": "human", "id": "local-user", "authority": "interactive"}),
+    );
+    need(
+        actor["kind"] == "human",
+        "eval.void_needs_person",
+        "only a person voids an Eval; run it without --actor, or with --actor human:<id>",
+    )?;
+    need(
+        store::events(ws)?.iter().any(|e| e["type"] == "eval.opened" && str_of(e, "id") == eval_id),
+        "eval.missing",
+        format!("{eval_id} is not an Eval in this workspace"),
+    )?;
+    if let Some(v) = voided(ws)?.get(eval_id) {
+        return Err(ledger(
+            "eval.already_voided",
+            format!("{eval_id} was voided at {}", str_of(v, "time")),
+        ));
+    }
+    store::append(
+        ws,
+        &event("eval.voided", eval_id, Some(&actor), json!({"reason": reason.trim()}), vec![])?,
+    )?;
+    Ok(json!({"eval_id": eval_id, "state": "voided", "reason": reason.trim()}))
+}
+
+/// A report's head, then each section's heading and how many items it
+/// holds, then where the whole report is: what a harness shows in a
+/// conversation, since typing the whole report again cost minutes of output
+/// (q03: 40 KB, 3.7 minutes).
+pub fn summary_of(report: &str, eval_id: &str) -> String {
+    let (head, rest) = report.split_once("\n## ").map_or((report, ""), |(h, r)| (h, r));
+    let mut out = head.trim_end().to_string();
+    out.push_str("\n\n");
+    for section in rest.split("\n## ") {
+        let mut lines = section.lines();
+        let Some(title) = lines.next() else { continue };
+        let items = lines.filter(|l| l.starts_with("- ") || l.starts_with("| ")).count();
+        out.push_str(&format!("- {}: {items}\n", title.trim_start_matches("## ").trim()));
+    }
+    out.push_str(&format!(
+        "\nThe whole report: `.fab7/rf/evals/{eval_id}/eval.md`, or `ringframe eval show --eval {eval_id}`.\n"
+    ));
+    out
+}
+
+/// The report of a completed Eval, as RingFrame wrote it. A harness shows this
+/// and composes nothing of its own: a coordinator that wrote its
+/// own report from a record it had read in part invented sixteen obligations.
+pub fn show_eval(ws: &Workspace, eval_id: &str) -> Result<String, EvalError> {
+    let path = ws.rf_dir().join(format!("evals/{eval_id}/eval.md"));
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        let opened = store::events(ws)?
+            .iter()
+            .any(|e| e["type"] == "eval.opened" && str_of(e, "id") == eval_id);
+        return Err(if opened {
+            ledger("eval.not_completed", format!("{eval_id} is open; it has no report yet"))
+        } else {
+            ledger("eval.missing", format!("{eval_id} is not an Eval in this workspace"))
+        });
+    };
+    Ok(match voided(ws)?.get(eval_id) {
+        Some(v) => format!(
+            "> Voided {}: {}. Nothing builds on this Eval.\n\n{text}",
+            str_of(v, "time"),
+            str_of(v, "reason")
+        ),
+        None => text,
+    })
 }
 
 /// The latest completed Eval whose basis shares an Ask with the given set.
@@ -1648,6 +1886,31 @@ mod tests {
         });
     }
 
+    /// An open Eval judges the work it was opened on. Once that work has
+    /// changed, opening again starts a new Eval that names the one it replaces.
+    #[test]
+    fn open_supersedes_an_open_eval_over_earlier_work() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let old = str_of(&o.out, "eval_id");
+            std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
+                .unwrap();
+            let out = open_eval(ws, Open::default()).unwrap();
+            let new = str_of(&out, "eval_id");
+            assert_ne!(new, old);
+            assert!(array_of(&brief_of(ws, &out), "limitations").iter().any(|l| str_of_value(l)
+                == format!("supersedes {old}, left open over the same Asks and earlier work")));
+            let opened = store::events(ws)
+                .unwrap()
+                .into_iter()
+                .rfind(|e| e["type"] == "eval.opened")
+                .unwrap();
+            assert!(array_of(&opened, "links").contains(&json!({"rel": "supersedes", "id": old})));
+            // The new one judges this work, so it is the one to continue.
+            refused(open_eval(ws, Open::default()).unwrap_err(), "eval.already_open");
+        });
+    }
+
     #[test]
     fn open_on_a_dirty_tree_takes_the_worktree_and_counts_untracked_files() {
         eval_bench(|ws| {
@@ -1846,7 +2109,7 @@ mod tests {
             );
             assert_eq!(
                 rec["items"][0]["votes"][1],
-                json!({"angle": "drift", "vote": "yes", "reason": "drift says yes",
+                json!({"angle": "drift", "vote": "yes", "reason": "drift says yes on i1",
                        "counted_as": "yes"})
             );
             assert_eq!(rec["drift"]["omission"], json!([]));
@@ -2448,7 +2711,7 @@ mod tests {
     }
 
     #[test]
-    fn the_brief_lists_each_fact_and_whether_it_describes_the_subject() {
+    fn the_brief_lists_the_facts_about_the_subject_and_counts_the_rest() {
         eval_bench(|ws| {
             let f = with_facts(ws, "failed");
             let brief: Value = serde_json::from_slice(
@@ -2460,22 +2723,20 @@ mod tests {
                 .iter()
                 .map(|x| (str_of(x, "id"), str_of(x, "outcome"), x["fresh"].clone()))
                 .collect();
-            assert_eq!(
-                facts,
-                [
-                    (f.stale.clone(), "succeeded".to_string(), json!(false)),
-                    (f.fresh.clone(), "failed".to_string(), json!(true)),
-                ]
-            );
+            assert_eq!(facts, [(f.fresh.clone(), "failed".to_string(), json!(true))]);
             assert_eq!(array_of(&brief, "facts")[0]["command"], "npm test");
             assert!(array_of(&brief, "facts")[0]["time"].is_string());
-            let says = |b: &Value| {
-                array_of(b, "limitations").iter().any(|l| {
-                    str_of_value(l)
-                        == "no tool facts were recorded; the result of a command cannot be judged"
-                })
+            let says = |b: &Value, text: &str| {
+                array_of(b, "limitations").iter().any(|l| str_of_value(l) == text)
             };
-            assert!(!says(&brief));
+            assert!(!says(
+                &brief,
+                "no tool facts were recorded; the result of a command cannot be judged"
+            ));
+            assert!(says(
+                &brief,
+                "1 of the recorded commands ran against other work than the subject and are not listed"
+            ));
         });
         eval_bench(|ws| {
             let o = opened(ws);
@@ -2506,11 +2767,11 @@ mod tests {
                 commit(&ws.root, extra, "tested work");
                 let out = open_eval(ws, Open::default()).unwrap();
                 assert_eq!(out["subject"]["kind"], "git_commit");
-                brief_of(ws, &out)["facts"][0]["fresh"].clone()
+                array_of(&brief_of(ws, &out), "facts").iter().any(|x| x["id"] == tested["id"])
             })
         };
-        assert_eq!(fresh_after(&[]), json!(true));
-        assert_eq!(fresh_after(&[("src/uptime.js", Some("changed after\n"))]), json!(false));
+        assert!(fresh_after(&[]));
+        assert!(!fresh_after(&[("src/uptime.js", Some("changed after\n"))]));
     }
 
     #[test]
@@ -2529,7 +2790,7 @@ mod tests {
             coverage["votes"][1]["facts_cited"] = json!([f.fresh]);
             let js = vec![
                 coverage,
-                citing(&f.brief_sha, "drift", &votes, json!([f.stale])),
+                citing(&f.brief_sha, "drift", &votes, json!([])),
                 citing(&f.brief_sha, "adversary", &votes, json!([])),
             ];
             let rec = close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items), &js).unwrap();
@@ -2539,11 +2800,7 @@ mod tests {
                     .map(|v| str_of(v, "counted_as"))
                     .collect()
             };
-            assert_eq!(
-                counted(0),
-                ["yes", "unknown", "unknown"],
-                "fresh counts; stale and uncited do not"
-            );
+            assert_eq!(counted(0), ["yes", "unknown", "unknown"], "fresh counts; uncited does not");
             assert_eq!(counted(1), ["unknown", "unknown", "unknown"], "a fact for another command");
             assert_eq!(
                 counted(2),
@@ -2582,11 +2839,20 @@ mod tests {
     fn open_records_the_agents_it_was_asked_for_and_refuses_what_is_not_a_role() {
         eval_bench(|ws| {
             two_asks_and_work(ws);
-            let asked = json!({"context": {"model": "claude-sonnet-5", "effort": "low"},
-                               "adversary": {"effort": "high"}});
+            let asked = json!({"map": {"model": "claude-sonnet-5", "effort": "low"},
+                               "confirm": {"effort": "high"}});
             let out = open_eval(ws, agents(asked.clone())).unwrap();
             assert_eq!(out["agents"], asked);
             assert_eq!(brief_of(ws, &out)["agents"], asked);
+        });
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            // Earlier names land on their roles now; a role that no longer
+            // runs is dropped, and a current name wins.
+            let earlier = json!({"context": {"model": "a"}, "trace": {"effort": "low"},
+                                 "adversary": {"model": "b"}, "confirm": {"model": "c"}});
+            let out = open_eval(ws, agents(earlier)).unwrap();
+            assert_eq!(out["agents"], json!({"map": {"effort": "low"}, "confirm": {"model": "c"}}));
         });
         eval_bench(|ws| {
             two_asks_and_work(ws);
@@ -2791,17 +3057,118 @@ mod tests {
                 .map(|a| citing(&f.brief_sha, a, &[("i1", "yes")], json!([f.fresh])))
                 .collect();
             let mut bad = good.clone();
-            bad[2]["votes"][0]["facts_cited"] = json!(["fct_nowhere"]);
-            refused(
-                close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items.clone()), &bad).unwrap_err(),
-                "eval.fact_unknown",
-            );
+            // A stale fact is not in the brief, so it cannot be cited either.
+            for id in ["fct_nowhere", f.stale.as_str()] {
+                bad[2]["votes"][0]["facts_cited"] = json!([id]);
+                refused(
+                    close(ws, &f.eval_id, &intent_doc(&f.brief_sha, items.clone()), &bad)
+                        .unwrap_err(),
+                    "eval.fact_unknown",
+                );
+            }
             let mut blank = items;
             blank[0]["check"] = json!("");
             refused(
                 close(ws, &f.eval_id, &intent_doc(&f.brief_sha, blank), &good).unwrap_err(),
                 "eval.intent",
             );
+        });
+    }
+
+    /// A voided Eval stays in the record and nothing builds on it: not the next
+    /// Eval's carry-over, not its `follows`, not `latest_for` (so not a Seal).
+    #[test]
+    fn a_voided_eval_is_kept_and_nothing_builds_on_it() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let first = str_of(&o.out, "eval_id");
+            let js: Vec<Value> =
+                angles().iter().map(|a| judgement(&o.brief_sha, a, &[("i1", "yes")])).collect();
+            close(ws, &first, &intent_doc(&o.brief_sha, one_item(&o.a)), &js).unwrap();
+            let ask_ids = [o.a.clone(), o.b.clone()];
+            assert_eq!(str_of(&latest_for(ws, &ask_ids).unwrap().unwrap(), "eval_id"), first);
+
+            refused(void_eval(ws, &first, "  ", None).unwrap_err(), "eval.void_reason");
+            let agent = json!({"kind": "agent", "id": "judge", "authority": "interactive"});
+            refused(
+                void_eval(ws, &first, "scripted judges", Some(&agent)).unwrap_err(),
+                "eval.void_needs_person",
+            );
+            refused(void_eval(ws, "evl_nowhere", "why", None).unwrap_err(), "eval.missing");
+            let out = void_eval(ws, &first, "the judges were scripts", None).unwrap();
+            assert_eq!(out["state"], "voided");
+            refused(void_eval(ws, &first, "again", None).unwrap_err(), "eval.already_voided");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+
+            let listed = list_records(ws).unwrap();
+            assert_eq!(listed[0]["state"], "voided");
+            assert_eq!(listed[0]["voided"]["reason"], "the judges were scripts");
+            assert!(latest_for(ws, &ask_ids).unwrap().is_none(), "a Seal finds no Eval");
+            let shown = show_eval(ws, &first).unwrap();
+            assert!(shown.starts_with("> Voided ") && shown.contains("the judges were scripts"));
+
+            let second = open_eval(ws, Open::default()).unwrap();
+            let sha2 = str_of(&second["brief"], "sha256");
+            assert_eq!(brief_of(ws, &second)["previous_evals"], json!([]), "not carried over");
+            let id2 = str_of(&second, "eval_id");
+            refused(show_eval(ws, &id2).unwrap_err(), "eval.not_completed");
+            let js2: Vec<Value> =
+                angles().iter().map(|a| judgement(&sha2, a, &[("i1", "yes")])).collect();
+            let rec2 = close(ws, &id2, &intent_doc(&sha2, one_item(&o.a)), &js2).unwrap();
+            assert_eq!(rec2["follows"], json!(null), "not followed");
+            assert_eq!(str_of(&latest_for(ws, &ask_ids).unwrap().unwrap(), "eval_id"), id2);
+        });
+    }
+
+    /// A voided Eval left open no longer holds the Asks: a new Eval opens over
+    /// the same work instead of continuing it.
+    #[test]
+    fn a_voided_open_eval_is_not_continued() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let first = str_of(&o.out, "eval_id");
+            refused(open_eval(ws, Open::default()).unwrap_err(), "eval.already_open");
+            void_eval(ws, &first, "opened by mistake", None).unwrap();
+            assert_ne!(str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id"), first);
+        });
+    }
+
+    /// An Eval once recorded three judgements a script wrote: one
+    /// reason on every vote, one finding on every path. A judge that read the
+    /// work says something about each thing it judged.
+    #[test]
+    fn a_templated_judgement_is_refused() {
+        eval_bench(|ws| {
+            let o = opened(ws);
+            let eid = str_of(&o.out, "eval_id");
+            let items = json!([
+                {"id": "i1", "text": "Expose an uptime endpoint", "ask_id": o.a, "status": "active"},
+                {"id": "i2", "text": "Skip the cache", "ask_id": o.b, "status": "active"},
+            ]);
+            let votes = [("i1", "unknown"), ("i2", "unknown")];
+            let good: Vec<Value> =
+                angles().iter().map(|a| judgement(&o.brief_sha, a, &votes)).collect();
+            let intent = intent_doc(&o.brief_sha, items);
+            let mut same_reason = good.clone();
+            for v in same_reason[0]["votes"].as_array_mut().unwrap() {
+                // Verbatim from that Eval's coverage judgement.
+                v["reason"] = json!(
+                    "The repository cannot establish whether this intent was fully met based on the provided brief and changes."
+                );
+            }
+            let e = close(ws, &eid, &intent, &same_reason).unwrap_err().to_string();
+            assert!(e.contains("eval.templated") && e.contains("i1") && e.contains("i2"), "{e}");
+            let mut same_finding = good.clone();
+            for d in same_finding[2]["drift"].as_array_mut().unwrap() {
+                d["finding"] = json!("Modified file"); // verbatim, its adversary
+            }
+            refused(close(ws, &eid, &intent, &same_finding).unwrap_err(), "eval.templated");
+            // Case and spacing do not make two texts different.
+            let mut spaced = good.clone();
+            spaced[1]["votes"][0]["reason"] = json!("Not  enough evidence");
+            spaced[1]["votes"][1]["reason"] = json!("not enough EVIDENCE");
+            refused(close(ws, &eid, &intent, &spaced).unwrap_err(), "eval.templated");
+            assert_eq!(close(ws, &eid, &intent, &good).unwrap()["verdict"], "incomplete");
         });
     }
 

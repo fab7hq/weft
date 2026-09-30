@@ -135,10 +135,11 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         }
         ("eval", Some("list")) => json!({
             "evals": d["evals"].as_array().into_iter().flatten()
-                .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis", "brief", "gathered"]))
+                .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis", "brief", "gathered", "voided"]))
                 .collect::<Vec<_>>()
         }),
         ("seal", Some("check")) => pick(d, &["seal_id", "fresh", "subject_matches", "codes"]),
+        ("eval", Some("grep")) => pick(d, &["lines"]),
         ("ledger", Some("verify")) => pick(d, &["clean", "findings"]),
         _ => return None,
     })
@@ -172,6 +173,12 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("eval", Some("open")) => eval_open(d),
         ("eval", Some("context")) => pick(d, &["eval_id", "context_map"]),
         ("eval", Some("close")) => eval_close(d),
+        ("eval", Some("show")) => d.clone(),
+        ("eval", Some("window")) => d.clone(),
+        ("eval", Some("commits")) => d.clone(),
+        ("eval", Some("next")) => d.clone(),
+        ("eval", Some("submit")) => pick(d, &["task_id", "state", "attempt", "errors", "left"]),
+        ("eval", Some("void")) => pick(d, &["eval_id", "state", "reason"]),
         ("seal", Some("create")) => seal_view(d),
         ("sessions", Some("capture")) => capture(d),
         ("fact", None) => pick(d, &["recorded", "fact_id", "outcome"]),

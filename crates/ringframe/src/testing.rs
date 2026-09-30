@@ -131,16 +131,33 @@ pub fn stage_in(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std
 
 /// Compile an Ask and confirm it in one step.
 pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) -> Value {
+    confirm_ask_as(ws, title, source, prompt, "native_plan")
+}
+
+/// As `confirm_ask`, routed to `capability`: `native_goal` for work an Eval
+/// judges (a planning Ask gives it no requirement).
+pub fn confirm_ask_as(
+    ws: &Workspace,
+    title: &str,
+    source: &[u8],
+    prompt: &[u8],
+    capability: &str,
+) -> Value {
     let staged = stage_in(ws, "prompt.txt", source, prompt);
+    let planning = capability == "native_plan";
     let out = crate::ask::compile(
         ws,
         crate::ask::Compile {
             staged: &staged,
             title,
-            capability: "native_plan",
-            classification: json!({"task": ["plan"], "result": "plan",
-                               "interaction": "approval_gated", "horizon": "session",
-                               "effects": ["read"]}),
+            capability,
+            classification: if planning {
+                json!({"task": ["plan"], "result": "plan", "interaction": "approval_gated",
+                       "horizon": "session", "effects": ["read"]})
+            } else {
+                json!({"task": ["implement"], "result": "workspace_change", "interaction": "interactive",
+                       "horizon": "session", "effects": ["workspace_write"]})
+            },
             route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
                       "effects": "reads", "gaps": []}),
             host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
@@ -195,10 +212,10 @@ pub fn judgement_over(
         "schema": "ringframe.eval-judgement/1", "brief_sha256": brief_sha,
         "judge": judge(angle),
         "votes": votes.iter().map(|(k, v)| json!({
-            "item": k, "vote": v, "reason": format!("{angle} says {v}")
+            "item": k, "vote": v, "reason": format!("{angle} says {v} on {k}")
         })).collect::<Vec<_>>(),
         "drift": full.iter().map(|(p, c)| json!({
-            "path": p, "finding": "seen", "classification": c
+            "path": p, "finding": format!("{p} seen"), "classification": c
         })).collect::<Vec<_>>(),
         "commands_run": ["npm test"],
     })

@@ -94,11 +94,20 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => s(
-            &["--anchor", "--subject-kind", "--subject-ref", "--agents", "--override"],
+            &[
+                "--anchor",
+                "--subject-kind",
+                "--subject-ref",
+                "--agents",
+                "--agents-from",
+                "--override",
+                "--repo",
+                "--host",
+            ],
             NONE,
             NONE,
             false,
-            NONE,
+            &["--repo"],
         ),
         ("eval", Some("close")) => s(
             &["--eval", "--intent", "--judgement", "--agents"],
@@ -111,6 +120,26 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             s(&["--eval", "--map", "--host"], NONE, &["--eval", "--map", "--host"], false, NONE)
         }
         ("eval", Some("list")) => s(NONE, NONE, NONE, true, NONE),
+        ("eval", Some("show")) => s(&["--eval"], &["--summary"], &["--eval"], false, NONE),
+        ("eval", Some("window")) => {
+            s(&["--eval", "--window", "--task"], NONE, &["--eval", "--window"], false, NONE)
+        }
+        ("eval", Some("next")) => s(
+            &["--eval", "--parallel", "--agents", "--agents-from", "--returned", "--host"],
+            NONE,
+            &["--eval"],
+            false,
+            &["--returned"],
+        ),
+        ("eval", Some("submit")) => s(&["--task"], NONE, &["--task"], false, NONE),
+        ("eval", Some("commits")) => s(&["--eval"], NONE, &["--eval"], false, NONE),
+        ("eval", Some("checks")) => s(&["--eval"], NONE, &["--eval"], false, NONE),
+        ("eval", Some("grep")) => {
+            s(&["--eval", "--text"], NONE, &["--eval", "--text"], false, NONE)
+        }
+        ("eval", Some("void")) => {
+            s(&["--eval", "--reason"], NONE, &["--eval", "--reason"], false, NONE)
+        }
         ("seal", Some("create")) => {
             s(&["--disposition", "--eval", "--note"], NONE, &["--disposition"], false, NONE)
         }
@@ -146,7 +175,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 27] = [
+const SURFACE: [(&str, Option<&str>); 35] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -164,6 +193,14 @@ const SURFACE: [(&str, Option<&str>); 27] = [
     ("eval", Some("context")),
     ("eval", Some("close")),
     ("eval", Some("list")),
+    ("eval", Some("next")),
+    ("eval", Some("submit")),
+    ("eval", Some("show")),
+    ("eval", Some("window")),
+    ("eval", Some("commits")),
+    ("eval", Some("checks")),
+    ("eval", Some("grep")),
+    ("eval", Some("void")),
     ("seal", Some("create")),
     ("seal", Some("check")),
     ("ledger", Some("verify")),
@@ -207,7 +244,29 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
             "publish the change map (--map @file) for an open Eval, so a debate in any harness reads it"
         }
         ("eval", Some("close")) => "aggregate the intent and the judgements into a verdict",
-        ("eval", Some("list")) => "every Eval, opened or completed",
+        ("eval", Some("list")) => "every Eval, opened, completed or voided",
+        ("eval", Some("show")) => {
+            "the report of a completed Eval, eval.md, verbatim; --summary: its head, what each \
+             section holds, and where the rest is"
+        }
+        ("eval", Some("window")) => {
+            "one window of an Eval's change, as a judge reads it; --task records the read"
+        }
+        ("eval", Some("next")) => {
+            "the Eval's tasks that are ready (--parallel at most out at once); --returned names each \
+             task whose judge has finished; closes it when all are in"
+        }
+        ("eval", Some("submit")) => {
+            "check a task's output, every citation against its source; accepted, refused or failed"
+        }
+        ("eval", Some("commits")) => "each repository's commits over the Eval's change",
+        ("eval", Some("checks")) => "run the Eval's checks once (eval open starts it)",
+        ("eval", Some("grep")) => {
+            "at most 20 lines of an Eval's windows and named documents that contain --text"
+        }
+        ("eval", Some("void")) => {
+            "withdraw an Eval so nothing builds on it; a person does this, with --reason"
+        }
         ("seal", Some("create")) => "record the decision that closes the open Asks",
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
@@ -469,6 +528,14 @@ fn json_arg(text: &str) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
+/// `--agents`, over the tiers of `--agents-from`'s agent definitions.
+fn agents_arg(ns: &Parsed) -> Result<Option<Value>, String> {
+    let given = ns.one("--agents").map(json_arg).transpose()?;
+    let defaults =
+        ns.one("--agents-from").map(|d| crate::tasks::agents_from(Path::new(d))).transpose()?;
+    Ok(crate::tasks::agents_over(given, defaults))
+}
+
 fn actor_of(text: Option<&str>, authority: &str) -> Value {
     let text = text.unwrap_or("human:local-user");
     let (kind, id) = text.split_once(':').unwrap_or((text, ""));
@@ -621,7 +688,13 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
     let (ws, outcome) = dispatch(&ns, ws, read_stdin);
     let (code, body) = match outcome {
         Outcome::Ok(code, result) => {
-            if (ns.cmd.as_str(), sub.as_deref()) == ("ask", Some("copy")) {
+            if matches!(
+                (ns.cmd.as_str(), sub.as_deref()),
+                ("ask", Some("copy"))
+                    | ("eval", Some("show"))
+                    | ("eval", Some("window"))
+                    | ("eval", Some("commits"))
+            ) {
                 return Run {
                     code,
                     out: result.as_str().unwrap_or_default().to_string(),
@@ -740,7 +813,7 @@ fn dispatch(
             Err(e) => (ws, from_ask_error(e)),
         },
         ("eval", Some("open")) => {
-            let agents = match ns.one("--agents").map(json_arg).transpose() {
+            let agents = match agents_arg(ns) {
                 Ok(v) => v,
                 Err(e) => return (ws, Outcome::UsageDetail(e)),
             };
@@ -752,6 +825,9 @@ fn dispatch(
                     subject_ref: ns.one("--subject-ref"),
                     actor: Some(actor),
                     agents,
+                    repos: ns.all("--repo"),
+                    host: ns.one("--host"),
+                    deny: ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
                 },
             );
             match out {
@@ -799,6 +875,93 @@ fn dispatch(
                 &intent,
                 &judgements,
                 agents.as_ref(),
+                Some(&actor),
+            );
+            match out {
+                Ok(v) => (ws, Outcome::Ok(0, v)),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("show")) => {
+            let eval = ns.one("--eval").unwrap_or_default();
+            match evaluate::show_eval(&ws, eval) {
+                Ok(text) if ns.has("--summary") => {
+                    (ws, Outcome::Ok(0, Value::String(evaluate::summary_of(&text, eval))))
+                }
+                Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("window")) => {
+            let eval = ns.one("--eval").unwrap_or_default();
+            let window = ns.one("--window").unwrap_or_default();
+            let text = crate::evidence::window_text(&ws, eval, window).and_then(|t| {
+                if let Some(task) = ns.one("--task") {
+                    crate::tasks::log_read(&ws, task, window)?;
+                }
+                Ok(t)
+            });
+            match text {
+                Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("next")) => {
+            let parallel = match ns.one("--parallel").map(str::parse::<usize>).transpose() {
+                Ok(p) => p.unwrap_or(crate::tasks::DEFAULT_PARALLEL),
+                Err(_) => bail!(Outcome::UsageDetail("--parallel is a number".into())),
+            };
+            let agents = match agents_arg(ns) {
+                Ok(v) => v,
+                Err(e) => bail!(Outcome::UsageDetail(e)),
+            };
+            let eval = ns.one("--eval").unwrap_or_default();
+            let returned: Vec<String> =
+                ns.all("--returned").iter().map(|s| s.to_string()).collect();
+            if let Some(host) = ns.one("--host")
+                && let Err(e) = crate::tasks::note_host(&ws, eval, host)
+            {
+                return (ws, from_ask_error(e));
+            }
+            match crate::tasks::next(&ws, eval, parallel, agents.as_ref(), &returned) {
+                Ok(v) => (ws, Outcome::Ok(0, v)),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("submit")) => {
+            match crate::tasks::submit(&ws, ns.one("--task").unwrap_or_default()) {
+                Ok((code, v)) => (ws, Outcome::Ok(code, v)),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("commits")) => {
+            match crate::tasks::commits(&ws, ns.one("--eval").unwrap_or_default()) {
+                Ok(logs) => {
+                    let text: String =
+                        logs.iter().map(|(repo, log)| format!("## {repo}\n\n{log}\n")).collect();
+                    (ws, Outcome::Ok(0, Value::String(text)))
+                }
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("checks")) => {
+            match crate::checks::run(&ws, ns.one("--eval").unwrap_or_default()) {
+                Ok(()) => (ws, Outcome::Ok(0, json!({"state": "done"}))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("grep")) => {
+            let eval = ns.one("--eval").unwrap_or_default();
+            match crate::evidence::grep(&ws, eval, ns.one("--text").unwrap_or_default()) {
+                Ok(lines) => (ws, Outcome::Ok(0, json!({"lines": lines}))),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
+        ("eval", Some("void")) => {
+            let out = evaluate::void_eval(
+                &ws,
+                ns.one("--eval").unwrap_or_default(),
+                ns.one("--reason").unwrap_or_default(),
                 Some(&actor),
             );
             match out {
@@ -1211,7 +1374,23 @@ mod tests {
             std::fs::create_dir_all(c.root.join("plans/crypto-trading-agent/adr")).unwrap();
             let (code, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
             assert_eq!(code, 0);
-            assert_eq!(out["plans"], serde_json::json!(["crypto-trading-agent"]));
+            // No plan.md yet: the folder is listed, with no path to name.
+            assert_eq!(
+                out["plans"],
+                serde_json::json!([{"slug": "crypto-trading-agent", "path": null, "title": null}])
+            );
+            std::fs::write(
+                c.root.join("plans/crypto-trading-agent/plan.md"),
+                "Intro.\n\n# Crypto trading agent\n\n## Step 1\n",
+            )
+            .unwrap();
+            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
+            assert_eq!(
+                out["plans"],
+                serde_json::json!([{"slug": "crypto-trading-agent",
+                                    "path": "plans/crypto-trading-agent/plan.md",
+                                    "title": "Crypto trading agent"}])
+            );
         });
     }
 
@@ -1540,6 +1719,83 @@ mod tests {
     }
 
     #[test]
+    fn a_person_voids_an_eval_over_the_cli() {
+        eval_bench(|ws| {
+            let c = Cli { root: ws.root.clone() };
+            let o = crate::testing::opened(ws);
+            let eval_id = o.out["eval_id"].as_str().unwrap().to_string();
+            let (code, out, _) = c.go(&["eval", "show", "--eval", &eval_id]);
+            assert_eq!((code, out["error"].clone()), (2, json!("eval.not_completed")));
+            let (code, _, err) = c.go(&["eval", "void", "--eval", &eval_id]);
+            assert_eq!(code, 1, "--reason is required: {err}");
+            let (code, out, _) = c.go(&[
+                "--actor",
+                "agent:judge",
+                "eval",
+                "void",
+                "--eval",
+                &eval_id,
+                "--reason",
+                "x",
+            ]);
+            assert_eq!((code, out["error"].clone()), (2, json!("eval.void_needs_person")));
+            let (code, out, _) =
+                c.go(&["eval", "void", "--eval", &eval_id, "--reason", "opened by mistake"]);
+            assert_eq!(code, 0);
+            assert_eq!(
+                out,
+                json!({"eval_id": eval_id, "state": "voided", "reason": "opened by mistake"})
+            );
+            let (_, listed, _) = c.go(&["eval", "list", "--minimal"]);
+            assert_eq!(listed["evals"][0]["state"], "voided");
+            assert_eq!(listed["evals"][0]["voided"]["reason"], "opened by mistake");
+        });
+    }
+
+    #[test]
+    fn an_eval_runs_by_tasks_over_the_cli() {
+        eval_bench(|ws| {
+            let c = Cli { root: ws.root.clone() };
+            two_asks_and_work(ws);
+            let (code, opened, _) = c.go(&["eval", "open"]);
+            assert_eq!(code, 0, "{opened}");
+            let eval_id = opened["eval_id"].as_str().unwrap().to_string();
+            let (code, next, _) = c.go(&["eval", "next", "--eval", &eval_id, "--parallel", "4"]);
+            assert_eq!(code, 0, "{next}");
+            assert_eq!(next["state"], "running");
+            let task = next["tasks"][0]["task_id"].as_str().unwrap().to_string();
+            assert!(task.ends_with("~m1"), "{task}");
+            // A judge's lookups.
+            let ev: Value = serde_json::from_slice(
+                &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/evidence.json"))).unwrap(),
+            )
+            .unwrap();
+            let w = ev["windows"][0]["id"].as_str().unwrap().to_string();
+            let (code, text, _) =
+                c.go(&["eval", "window", "--eval", &eval_id, "--window", &w, "--task", &task]);
+            assert_eq!(code, 0);
+            assert!(text.as_str().unwrap().starts_with("--- "));
+            let reads = std::fs::read_to_string(
+                ws.rf_dir().join(format!("tmp/eval-{eval_id}/reads.jsonl")),
+            )
+            .unwrap();
+            assert!(reads.contains(&w));
+            let (code, commits, _) = c.go(&["eval", "commits", "--eval", &eval_id]);
+            assert_eq!(code, 0);
+            assert!(commits.as_str().unwrap().starts_with("## ."), "{commits}");
+            // No output yet, then a refused one.
+            let (code, out, _) = c.go(&["eval", "submit", "--task", &task]);
+            assert_eq!((code, out["error"].clone()), (2, json!("eval.no_output")));
+            let path = ws.rf_dir().join(format!("tmp/eval-{eval_id}/out/{task}.json"));
+            std::fs::write(&path, "{}").unwrap();
+            let (code, out, _) = c.go(&["eval", "submit", "--task", &task]);
+            assert_eq!(code, 2, "{out}");
+            assert_eq!(out["state"], "refused");
+            assert_eq!(out["left"], 2, "two more tries");
+        });
+    }
+
+    #[test]
     fn eval_and_seal_over_the_cli() {
         eval_bench(|ws| {
             let c = Cli { root: ws.root.clone() };
@@ -1550,7 +1806,11 @@ mod tests {
             assert_eq!(out["subject"], "git_commit");
             assert!(out["brief_path"].as_str().unwrap().ends_with("brief.json"));
             assert!(out["changes_patch"].as_str().unwrap().ends_with("changes.patch"));
-            assert_eq!(out["agents"], json!({"drift": {"effort": "high"}}));
+            assert_eq!(
+                out["agents"],
+                json!({"map": {"effort": "high"}}),
+                "an earlier name is its role now"
+            );
             let eval_id = out["eval_id"].as_str().unwrap().to_string();
             let map = ws.root.join("map.md");
             std::fs::write(&map, "## src/uptime.js\nAdds uptime().\n").unwrap();
@@ -1643,6 +1903,12 @@ mod tests {
                     .collect::<Vec<_>>(),
                 [json!("drifted")]
             );
+            // The report is RingFrame's, printed as it wrote it.
+            let (code, shown, _) = c.go(&["eval", "show", "--eval", &eval_id]);
+            assert_eq!(code, 0);
+            let md = std::fs::read_to_string(ws.rf_dir().join(format!("evals/{eval_id}/eval.md")))
+                .unwrap();
+            assert_eq!(shown, Value::String(md));
 
             let (code, receipt, _) = c.go(&[
                 "seal",
@@ -2467,7 +2733,7 @@ mod the_marketplace_contract {
     /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
     /// Taken from `fab7/products/ringframe/`, and checked against it below
     /// when that tree happens to be beside this one.
-    const CALLED: [(&str, Option<&str>); 21] = [
+    const CALLED: [(&str, Option<&str>); 22] = [
         ("init", None),
         ("profile", Some("show")),
         ("deltas", Some("domains")),
@@ -2485,6 +2751,7 @@ mod the_marketplace_contract {
         ("eval", Some("open")),
         ("eval", Some("close")),
         ("eval", Some("list")),
+        ("eval", Some("show")),
         ("seal", Some("create")),
         ("seal", Some("check")),
         ("sessions", Some("capture")),
@@ -2505,6 +2772,29 @@ mod the_marketplace_contract {
                 sub.unwrap_or("")
             );
         }
+    }
+
+    /// A coordinator that composed its own report from a record it had read in
+    /// part invented obligations. Every Eval skill shows
+    /// RingFrame's report and describes none of its own.
+    #[test]
+    fn every_eval_skill_shows_ringframes_report() {
+        let plugins = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fab7/products/ringframe/plugins");
+        let Ok(plugins) = plugins.canonicalize() else {
+            return; // not checked out here
+        };
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&plugins).into_iter().flatten().flatten() {
+            let skill = entry.path().join("skills/eval/SKILL.md");
+            let Ok(text) = std::fs::read_to_string(&skill) else { continue };
+            seen += 1;
+            assert!(text.contains("ringframe eval show --eval"), "{}", skill.display());
+            for composed in ["item table", "Show the item", "commission paths with"] {
+                assert!(!text.contains(composed), "{} still composes: {composed}", skill.display());
+            }
+        }
+        assert!(seen >= 3, "only {seen} Eval skills found");
     }
 
     #[test]

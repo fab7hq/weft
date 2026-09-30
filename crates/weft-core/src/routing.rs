@@ -29,7 +29,8 @@ pub struct Routing {
     pub ignored: Vec<String>,
     /// A file `config.toml` replaced, found and not read.
     pub leftover: Vec<String>,
-    /// `[eval.gather]` and `[eval.debate]`: a harness and role settings per stage.
+    /// `[eval.debate]`: the debate's harness and its roles' settings. Weft
+    /// gathers the Eval itself.
     pub eval_stages: Option<Value>,
 }
 
@@ -97,14 +98,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_harnesses_routing_names_include_each_eval_stages() {
+    fn the_harnesses_routing_names_include_the_debates() {
         let r = crate::config::read(
             "[routing]\nask = \"claude-code\"\n\n[eval.gather]\nharness = \"codex\"\n\n\
              [eval.debate]\nharness = \"claude-code\"\n",
             &crate::harness::fixture::harnesses(),
         )
         .routing(std::path::Path::new("/p"));
-        assert_eq!(r.harnesses(), ["claude-code", "codex"]);
+        assert_eq!(r.harnesses(), ["claude-code"], "a gather harness is no longer read");
         assert!(Routing::default().harnesses().is_empty());
     }
 }

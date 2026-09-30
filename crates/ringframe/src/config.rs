@@ -120,12 +120,14 @@ fn to_json(node: toml::Value) -> Result<Value, String> {
 /// The layers `--override` supplies, applied in order over the synced
 /// bundle and merged by id. Each is a name, which is its provenance, and the
 /// delta documents it overrides, keyed by their path under `deltas/` without
-/// the extension.
+/// the extension. A layer may also say what an Eval's judges must not do
+/// (`eval.deny`); the last layer that says so decides it.
 #[derive(Debug, Default)]
-pub struct Overrides(Vec<(String, Map<String, Value>)>);
+pub struct Overrides(Vec<(String, Map<String, Value>)>, Option<(String, Vec<String>)>);
 
 impl Overrides {
-    /// `[{"layer": "<name>", "ringframe": {"deltas": {"<path>": {…}}}}, …]`.
+    /// `[{"layer": "<name>", "ringframe": {"deltas": {"<path>": {…}},
+    /// "eval": {"deny": ["…"]}}}, …]`.
     pub fn parse(text: &str) -> Result<Self, ConfigError> {
         let bad = |what: String| ConfigError(format!("--override {what}"));
         let value: Value =
@@ -134,6 +136,7 @@ impl Overrides {
             return Err(bad("must be a list of layers".into()));
         };
         let mut layers = Vec::new();
+        let mut deny = None;
         for (i, item) in items.into_iter().enumerate() {
             let Value::Object(mut layer) = item else {
                 return Err(bad(format!("layer {i} must be an object")));
@@ -150,6 +153,31 @@ impl Overrides {
                 Some(Value::Object(d)) => d,
                 Some(_) => return Err(bad(format!("layer {name}: deltas must be an object"))),
             };
+            match ringframe.remove("eval") {
+                None => {}
+                Some(Value::Object(mut eval)) => {
+                    let items = match eval.remove("deny") {
+                        Some(Value::Array(items)) => items,
+                        _ => {
+                            return Err(bad(format!(
+                                "layer {name}: eval.deny must be a list of rules"
+                            )));
+                        }
+                    };
+                    if let Some(key) = eval.keys().next() {
+                        return Err(bad(format!("layer {name}: unknown key \"eval.{key}\"")));
+                    }
+                    let rules = items
+                        .into_iter()
+                        .map(|r| match r {
+                            Value::String(s) if !s.trim().is_empty() => Ok(s.trim().to_string()),
+                            _ => Err(bad(format!("layer {name}: each eval.deny rule is text"))),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    deny = Some((name.clone(), rules));
+                }
+                Some(_) => return Err(bad(format!("layer {name}: eval must be an object"))),
+            }
             if let Some(key) = layer.keys().chain(ringframe.keys()).next() {
                 return Err(bad(format!("layer {name}: unknown key \"{key}\"")));
             }
@@ -158,7 +186,13 @@ impl Overrides {
             }
             layers.push((name, deltas));
         }
-        Ok(Overrides(layers))
+        Ok(Overrides(layers, deny))
+    }
+
+    /// What an Eval's judges must not do, and the layer that said so, when
+    /// any layer did.
+    pub fn eval_deny(&self) -> Option<(&str, &[String])> {
+        self.1.as_ref().map(|(name, rules)| (name.as_str(), rules.as_slice()))
     }
 
     /// Each layer's document for `path`, in order.
@@ -302,24 +336,32 @@ mod tests {
             fixture,
             vec![
                 (
+                    "deltas/antigravity.toml",
+                    "1ddda693ce7198d1ad82216655dd6a3ed5d8c6ee69afd78c77d64cbbc635ea17",
+                ),
+                (
                     "deltas/claude-code.toml",
-                    "8e8df4d73344e3797e984a9a484e1da9fb5dee0e9337cfee701b49cb8027b630",
+                    "7ae9628082b3b9f6de57826f0372d2cd67179130885ded34d9ca7df7ab640d34",
                 ),
                 (
                     "deltas/codex.toml",
-                    "ad74ec85c229d37b4336518796f070320b62ddf2be302b36406ccf5272a1ed00",
+                    "0a32b0ba145c88d9f562e409d3696d81ea1e072926d1e19ce67f30f24520aebc",
                 ),
                 (
                     "deltas/practices/software-development.toml",
-                    "8c7d2406cc02eb257f1d6c90d3d7ec1baaa7468d20bbd9f599c1353bd1ee1496",
+                    "95712a43be78b03ca64a6b62022688b282e8b57df9b7b41ca617d4121dad40de",
+                ),
+                (
+                    "harnesses/antigravity.toml",
+                    "26714e29709379c975d64bd82d3907fb12cc109871641c7b4e06c6aea5c5703c",
                 ),
                 (
                     "harnesses/claude-code.toml",
-                    "347aace8485c69d455edf5e68c8b0cebd09c7322d1df627ebd8eeda8f0cc2ba7",
+                    "85aaf428709101f5b7a8c31dc35f94430e3ce5397670c0c4a68b25f3e4a1a442",
                 ),
                 (
                     "harnesses/codex.toml",
-                    "95162a893b8791352c485468dd13c2542a29c13fefd48f4bab8d8638f2c61f5a",
+                    "c01cf617f9a9979653f088c3aae42f05f91e1a0f4991a37895d35befabe269cc",
                 ),
                 (
                     "harnesses/unknown.toml",
@@ -337,12 +379,16 @@ mod tests {
                         "5d0f73340532af8dbe0205ce6c0465b223219dd0cdc1fe05bc59139d78df128c",
                     ),
                     (
+                        "config/deltas/antigravity.toml",
+                        "1ddda693ce7198d1ad82216655dd6a3ed5d8c6ee69afd78c77d64cbbc635ea17",
+                    ),
+                    (
                         "config/deltas/claude-code.toml",
-                        "c465ced1c3b8ec55105cc22678b7b53764065ce518ee1f627a4265e0d07abe76",
+                        "7ae9628082b3b9f6de57826f0372d2cd67179130885ded34d9ca7df7ab640d34",
                     ),
                     (
                         "config/deltas/codex.toml",
-                        "76b00bc12f0aac0ef787e9a377b51144ab26aefc35f2cafa74db3ba954e83e63",
+                        "0a32b0ba145c88d9f562e409d3696d81ea1e072926d1e19ce67f30f24520aebc",
                     ),
                     (
                         "config/deltas/practices/autonomous-trading.toml",
@@ -350,15 +396,19 @@ mod tests {
                     ),
                     (
                         "config/deltas/practices/software-development.toml",
-                        "8c7d2406cc02eb257f1d6c90d3d7ec1baaa7468d20bbd9f599c1353bd1ee1496",
+                        "95712a43be78b03ca64a6b62022688b282e8b57df9b7b41ca617d4121dad40de",
+                    ),
+                    (
+                        "config/harnesses/antigravity.toml",
+                        "26714e29709379c975d64bd82d3907fb12cc109871641c7b4e06c6aea5c5703c",
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "347aace8485c69d455edf5e68c8b0cebd09c7322d1df627ebd8eeda8f0cc2ba7",
+                        "85aaf428709101f5b7a8c31dc35f94430e3ce5397670c0c4a68b25f3e4a1a442",
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "95162a893b8791352c485468dd13c2542a29c13fefd48f4bab8d8638f2c61f5a",
+                        "c01cf617f9a9979653f088c3aae42f05f91e1a0f4991a37895d35befabe269cc",
                     ),
                     (
                         "config/harnesses/unknown.toml",
@@ -449,14 +499,14 @@ mod tests {
                 {"layer": "weft-project", "ringframe": {"deltas": {
                     "practices/software-development": {"render": {"core_cap": 2},
                         "entries": [{"id": "practice.kiss", "text": "Project rule."}]},
-                    "codex": {"entries": [{"id": "codex.native_plan.hand_back",
+                    "codex": {"entries": [{"id": "codex.native_plan.after_approval",
                         "status": "qualified", "text": "Project host rule."}]}}}},
             ]));
             let result = deltas::render(
                 &layers,
                 &profiles::load("codex").unwrap(),
                 "native_plan",
-                &json!({"task": ["implement"]}),
+                &json!({"task": ["implement"], "result": "workspace_change"}),
                 &["qualified".to_string()],
                 deltas::DEFAULT_DOMAIN,
             )
@@ -537,10 +587,33 @@ mod tests {
                 r#"[{"layer": "weft", "ringframe": {"deltas": {"codex": []}}}]"#,
                 r#"deltas."codex" must be an object"#,
             ),
+            (r#"[{"layer": "w", "ringframe": {"eval": []}}]"#, "eval must be an object"),
+            (r#"[{"layer": "w", "ringframe": {"eval": {}}}]"#, "eval.deny must be a list"),
+            (r#"[{"layer": "w", "ringframe": {"eval": {"deny": [1]}}}]"#, "rule is text"),
+            (
+                r#"[{"layer": "w", "ringframe": {"eval": {"deny": [], "allow": []}}}]"#,
+                r#"unknown key "eval.allow""#,
+            ),
         ] {
             let e = Overrides::parse(text).unwrap_err();
             assert!(e.0.contains(says), "{text}: {e}");
         }
         assert!(Overrides::parse("[]").is_ok());
+    }
+
+    #[test]
+    fn the_last_layer_that_denies_decides_what_judges_must_not_do() {
+        let o = Overrides::parse(
+            r#"[{"layer": "weft", "ringframe": {"eval": {"deny": ["push", " "]}}}]"#,
+        );
+        assert!(o.unwrap_err().0.contains("rule is text"));
+        let o = Overrides::parse(
+            r#"[{"layer": "weft", "ringframe": {"eval": {"deny": ["push"]}}},
+                {"layer": "weft-project", "ringframe": {"eval": {"deny": []}}},
+                {"layer": "later", "ringframe": {"deltas": {}}}]"#,
+        )
+        .unwrap();
+        assert_eq!(o.eval_deny(), Some(("weft-project", &[][..])));
+        assert_eq!(Overrides::parse("[]").unwrap().eval_deny(), None);
     }
 }

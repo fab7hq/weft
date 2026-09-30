@@ -92,6 +92,45 @@ pub fn ask_submitted(project: &Path, ask_id: &str) -> Result<(), Error> {
     run_program("ringframe", project, &["ask", "submitted", "--ask", ask_id]).map(|_| ())
 }
 
+/// Open and gather the Eval of the open Asks, and say which it is: RingFrame
+/// reads the change with Git and records it as gathered, so no harness has to
+/// map it. An Eval already open over the same Asks and the same
+/// work is the one to continue, and RingFrame names it.
+pub fn eval_open(
+    project: &Path,
+    agents: Option<&Value>,
+    over: Option<&str>,
+) -> Result<String, Error> {
+    let agents = agents.map(Value::to_string);
+    let mut args = vec!["eval", "open", "--host", "weft"];
+    if let Some(a) = agents.as_deref() {
+        args.extend(["--agents", a]);
+    }
+    if let Some(o) = over {
+        args.extend(["--override", o]);
+    }
+    match json(project, &args) {
+        Ok(v) => {
+            v.get("eval_id").and_then(Value::as_str).map(str::to_string).ok_or(Error::Refused {
+                code: 4,
+                message: "RingFrame opened an Eval and named none".into(),
+            })
+        }
+        Err(Error::Refused { code, message }) => {
+            let said: Value = serde_json::from_str(&message).unwrap_or(Value::Null);
+            let detail = said.get("detail").and_then(Value::as_str).unwrap_or_default();
+            if said.get("error").and_then(Value::as_str) == Some("eval.already_open")
+                && let Some(id) = detail.split_whitespace().next().filter(|w| w.starts_with("evl_"))
+            {
+                return Ok(id.to_string());
+            }
+            let told = if detail.is_empty() { message } else { detail.to_string() };
+            Err(Error::Refused { code, message: told })
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn ask_copy(project: &Path, ask_id: &str) -> Result<Vec<u8>, Error> {
     run(project, &["ask", "copy", "--ask", ask_id])
 }
