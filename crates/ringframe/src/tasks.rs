@@ -1071,13 +1071,7 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
         .judged_windows()
         .iter()
         .map(|w| str_of(w, "id"))
-        .filter(|w| {
-            answers.get(w).is_some_and(|a| {
-                a.get("confirm").is_none()
-                    && a.get("map")
-                        .is_some_and(|m| m.get("unexplained").is_some_and(|u| !u.is_null()))
-            })
-        })
+        .filter(|w| answers.get(w).is_some_and(needs_window_confirm))
         .collect();
     let mut cur: Vec<String> = Vec::new();
     let mut bytes = 0;
@@ -1104,6 +1098,15 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
         });
     }
     tasks
+}
+
+/// A window the map called unexplained is read again, unless an earlier Eval's
+/// confirm is carried for it. A confirm given in this Eval keeps the window in
+/// its batch, so the batches, and their task ids, do not change as confirms
+/// land: with several out at once, a `cw2` must still be `cw2` after `cw1`.
+fn needs_window_confirm(a: &BTreeMap<String, Value>) -> bool {
+    let carried = a.get("confirm").is_some_and(|c| c.get("carried_from").is_some_and(|f| !f.is_null()));
+    !carried && a.get("map").is_some_and(|m| m.get("unexplained").is_some_and(|u| !u.is_null()))
 }
 
 // ---- instructions ---------------------------------------------------------------
@@ -3247,6 +3250,29 @@ mod tests {
 
     /// A second Eval of the same Asks judges only what changed: here the
     /// beacon alone, so both steps keep their verdicts and no reduce runs.
+    #[test]
+    fn a_window_stays_in_its_confirm_batch_once_its_confirm_lands() {
+        let map = json!({"unexplained": "posts to an outside address"});
+        let reading = |confirm: Option<Value>| {
+            let mut a = BTreeMap::from([("map".to_string(), map.clone())]);
+            if let Some(c) = confirm {
+                a.insert("confirm".to_string(), c);
+            }
+            a
+        };
+        assert!(needs_window_confirm(&reading(None)), "not yet confirmed");
+        assert!(
+            needs_window_confirm(&reading(Some(json!({"unexplained": "still"})))),
+            "confirmed in this Eval: its batch keeps it, so later batches keep their ids"
+        );
+        assert!(
+            !needs_window_confirm(&reading(Some(json!({"unexplained": "x", "carried_from": "evl_1"})))),
+            "carried from an earlier Eval: read again by no one"
+        );
+        let explained = BTreeMap::from([("map".to_string(), json!({"serves": ["s1"]}))]);
+        assert!(!needs_window_confirm(&explained));
+    }
+
     #[test]
     fn a_window_key_drops_line_numbers_but_keeps_the_item_and_the_path() {
         let w = |path: &str, at: &str, item: &str| {
