@@ -19,7 +19,7 @@ impl Session {
     /// Start a pane of this harness for an act, on its own command: never
     /// another pane's, which may be resuming someone else's session.
     pub(super) fn start_for(&mut self, client: u64, at: usize, harness: &str) -> Option<u32> {
-        let spec = self.projects[at].harnesses.find(harness)?.program.clone();
+        let spec = self.projects[at].harnesses.find(harness)?.spec();
         let id = self.spawn(client, at, harness, &spec, None)?;
         self.look_at(at, harness);
         Some(id)
@@ -124,6 +124,11 @@ impl Session {
         resumed: Option<String>,
     ) -> Option<u32> {
         let p = self.projects.get_mut(project)?;
+        // The agent's hooks write only into a workspace that exists. Without
+        // RingFrame, or outside Git, `init` refuses and the hooks record nothing.
+        if !p.root.join(".fab7/rf").is_dir() {
+            let _ = crate::ringframe::init(self.outside.as_ref(), &p.root);
+        }
         let cwd = p.root.to_string_lossy().into_owned();
         // Turbo mode, when this project's config turns it on: the harness's
         // own flags, after the person's own.

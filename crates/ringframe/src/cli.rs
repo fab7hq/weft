@@ -2853,17 +2853,33 @@ mod the_marketplace_contract {
         let Ok(plugins) = plugins.canonicalize() else {
             return; // not checked out here
         };
-        let mut seen = 0;
-        for entry in std::fs::read_dir(&plugins).into_iter().flatten().flatten() {
-            let skill = entry.path().join("skills/eval/SKILL.md");
-            let Ok(text) = std::fs::read_to_string(&skill) else { continue };
-            seen += 1;
+        // Every Eval skill, however deep its plugin keeps it (`agents/codex/…`)
+        // and whatever its host types it as (`eval`, `rf-eval`).
+        let mut skills = Vec::new();
+        let mut stack = vec![plugins];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                let in_skills = dir.file_name().is_some_and(|n| n == "skills");
+                if in_skills && matches!(name, "eval" | "rf-eval") {
+                    skills.push(path.join("SKILL.md"));
+                } else {
+                    stack.push(path);
+                }
+            }
+        }
+        for skill in &skills {
+            let text = std::fs::read_to_string(skill).expect("an Eval skill's SKILL.md");
             assert!(text.contains("ringframe eval show --eval"), "{}", skill.display());
             for composed in ["item table", "Show the item", "commission paths with"] {
                 assert!(!text.contains(composed), "{} still composes: {composed}", skill.display());
             }
         }
-        assert!(seen >= 3, "only {seen} Eval skills found");
+        assert!(skills.len() >= 6, "only {} Eval skills found: {skills:?}", skills.len());
     }
 
     #[test]

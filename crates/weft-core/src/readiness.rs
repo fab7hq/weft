@@ -69,7 +69,23 @@ pub fn read(h: &crate::harness::Harness, listing: &Value) -> Readiness {
     let installed = rows(listing, &shape.installed);
     let known: Vec<Value> =
         installed.iter().cloned().chain(rows(listing, &shape.available)).collect();
-    let name = |row: &Value| row.get(&shape.name).and_then(Value::as_str).map(str::to_string);
+    let name = |row: &Value| field(row, &shape.name).and_then(Value::as_str).map(str::to_string);
+    let on = |row: &Value| {
+        // Absent means on: a listing that says nothing lists what it has.
+        shape.on.iter().all(|f| field(row, f).and_then(Value::as_bool).unwrap_or(true))
+    };
+
+    // A harness whose listing names something else that proves the setup:
+    // each of those listed and on. Missing, its marketplace comes first when
+    // its file has one to add.
+    if !shape.want.is_empty() {
+        let listed = |w: &String| installed.iter().any(|r| name(r).as_ref() == Some(w) && on(r));
+        return match (shape.want.iter().all(listed), marketplaces) {
+            (true, _) => Readiness::Ready,
+            (false, true) => Readiness::Missing(Gap::Marketplace),
+            (false, false) => Readiness::Missing(Gap::Plugin),
+        };
+    }
 
     let from_ours = |row: &Value| {
         name(row).is_some_and(|n| n.rsplit_once('@').is_some_and(|(_, m)| m == MARKETPLACE))
@@ -79,19 +95,25 @@ pub fn read(h: &crate::harness::Harness, listing: &Value) -> Readiness {
     }
     let short = PLUGIN.split('@').next().unwrap_or(PLUGIN);
     let want = if marketplaces { PLUGIN } else { short };
-    let ready = installed.iter().any(|row| {
-        name(row).as_deref() == Some(want)
-            // Absent means on: a listing that says nothing lists what it has.
-            && shape.on.iter().all(|f| row.get(f).and_then(Value::as_bool).unwrap_or(true))
-    });
+    let ready = installed.iter().any(|row| name(row).as_deref() == Some(want) && on(row));
     if ready { Readiness::Ready } else { Readiness::Missing(Gap::Plugin) }
 }
 
-/// Every row of these lists in a listing.
+/// A row's field by its name, or by a dotted path into it (`plugin.id`) for a
+/// listing that nests what names a plugin.
+pub fn field<'a>(row: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(row, |v, key| v.get(key))
+}
+
+/// Every row of these lists in a listing. The list `.` is the listing
+/// itself, when it is an array.
 pub fn rows(listing: &Value, lists: &[String]) -> Vec<Value> {
     lists
         .iter()
-        .flat_map(|k| listing.get(k).and_then(Value::as_array).cloned().unwrap_or_default())
+        .flat_map(|k| {
+            let list = if k == "." { Some(listing) } else { listing.get(k) };
+            list.and_then(Value::as_array).cloned().unwrap_or_default()
+        })
         .collect()
 }
 
@@ -211,6 +233,40 @@ mod tests {
         p["plugin"]["listing"] = Value::Null;
         let blind = crate::harness::Harness::of("blind", &p).expect("still offered");
         assert_eq!(read(&blind, &has), Readiness::Unknown, "no shape, no answer");
+    }
+
+    /// A harness that lists skills, or marketplaces, rather than the plugin:
+    /// its file names the rows that prove setup, and `.` reads a bare array.
+    #[test]
+    fn a_listing_that_never_names_the_plugin_is_read_by_what_its_file_wants() {
+        let mut p = crate::harness::fixture::file("antigravity");
+        p["plugin"]["listing"] = json!({"installed": ["skills"], "available": [], "name": "id",
+                                        "want": ["rf-ask", "rf-eval", "rf-seal"]});
+        let skills = crate::harness::Harness::of("skills", &p).expect("a harness");
+        let all = json!({"skills": [{"id": "rf-ask"}, {"id": "rf-eval"}, {"id": "rf-seal"}]});
+        assert_eq!(read(&skills, &all), Readiness::Ready);
+        let some = json!({"skills": [{"id": "rf-ask"}, {"id": "plan"}]});
+        assert_eq!(read(&skills, &some), Readiness::Missing(Gap::Plugin), "every one, not any");
+        assert_eq!(read(&skills, &json!({"skills": []})), Readiness::Missing(Gap::Plugin));
+
+        let mut p = crate::harness::fixture::file("codex");
+        p["plugin"]["listing"] =
+            json!({"installed": ["."], "available": [], "name": "name", "want": ["fab7"]});
+        let bare = crate::harness::Harness::of("bare", &p).expect("a harness");
+        let added = json!([{"name": "cursor-public"}, {"name": "fab7", "scope": "user"}]);
+        assert_eq!(read(&bare, &added), Readiness::Ready, "a bare array, read as `.`");
+        assert_eq!(
+            read(&bare, &json!([{"name": "cursor-public"}])),
+            Readiness::Missing(Gap::Marketplace),
+            "missing, and its file has a marketplace to add"
+        );
+        assert!(crate::sync::installed(&bare, &added).is_none(), "no version to read");
+
+        p["plugin"]["listing"] = json!({"installed": ["plugins"], "available": [], "name": "plugin.id", "want": ["rf-x"]});
+        let nested = crate::harness::Harness::of("nested", &p).expect("a harness");
+        let has = json!({"plugins": [{"active": true, "plugin": {"id": "rf-x"}}]});
+        assert_eq!(read(&nested, &has), Readiness::Ready, "a dotted name reaches into the row");
+        assert_eq!(read(&nested, &json!({"plugins": []})), Readiness::Missing(Gap::Marketplace));
     }
 
     #[test]

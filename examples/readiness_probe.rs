@@ -7,11 +7,12 @@ use weft::harness::OnThisMachine as _;
 use weft::readiness;
 
 fn main() {
-    let cli = weft::ringframe::installed();
+    let machine = weft::outside::Machine;
+    let cli = weft::ringframe::installed(&machine);
     println!("ringframe CLI installed: {cli}");
     for h in weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0.iter() {
         let found = h.on_path();
-        let state = readiness::check(h, cli);
+        let state = readiness::check(&machine, h, cli);
         println!(
             "\n{:<12} on PATH {:<5} config {}\n             {:?}{}",
             h.name,

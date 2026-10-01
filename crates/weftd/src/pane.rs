@@ -19,9 +19,37 @@ pub struct Pane {
     /// listening to never accumulates output it will not be asked for.
     tap: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Shared with the reader, which answers the harness's cursor-position
+    /// queries as a terminal would.
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn Child + Send + Sync>,
     injecting: bool,
+}
+
+/// Where each cursor-position query in `bytes` ends (`ESC [ 6 n`, or the DEC
+/// form `ESC [ ? 6 n` when the flag is set), in order.
+fn cursor_queries(bytes: &[u8]) -> Vec<(usize, bool)> {
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 4 <= bytes.len() {
+        if bytes[at..].starts_with(b"\x1b[6n") {
+            out.push((at + 4, false));
+            at += 4;
+        } else if bytes[at..].starts_with(b"\x1b[?6n") {
+            out.push((at + 5, true));
+            at += 5;
+        } else {
+            at += 1;
+        }
+    }
+    out
+}
+
+/// How many bytes at the end of `bytes` could be the start of a query the next
+/// read finishes, to be held until then.
+fn query_prefix_at_end(bytes: &[u8]) -> usize {
+    let starts: [&[u8]; 5] = [b"\x1b[?6", b"\x1b[6", b"\x1b[?", b"\x1b[", b"\x1b"];
+    starts.iter().find(|s| bytes.ends_with(s)).map_or(0, |s| s.len())
 }
 
 impl Pane {
@@ -55,32 +83,59 @@ impl Pane {
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let tap: Arc<Mutex<Option<Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
+        let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
         let sink = Arc::clone(&parser);
         let tap_reader = Arc::clone(&tap);
+        let answer = Arc::clone(&writer);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
+            // The start of a query a read cut in two, held for the next read.
+            let mut held: Vec<u8> = Vec::new();
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
+                let mut bytes = std::mem::take(&mut held);
+                bytes.extend_from_slice(&buf[..n]);
+                let keep = query_prefix_at_end(&bytes);
+                held = bytes.split_off(bytes.len() - keep);
                 if let Ok(mut p) = sink.lock() {
-                    p.process(&buf[..n]);
+                    // A harness that asks where the cursor is waits for the
+                    // answer, and some give up and quit without it: answer
+                    // each query from the screen as it stands at that byte.
+                    let mut from = 0;
+                    for (end, private) in cursor_queries(&bytes) {
+                        p.process(&bytes[from..end]);
+                        from = end;
+                        let (row, col) = p.screen().cursor_position();
+                        let mark = if private { "?" } else { "" };
+                        let reply = format!("\x1b[{mark}{};{}R", row + 1, col + 1);
+                        if let Ok(mut w) = answer.lock() {
+                            let _ = w.write_all(reply.as_bytes());
+                            let _ = w.flush();
+                        }
+                    }
+                    p.process(&bytes[from..]);
                 }
                 // The same bytes go to whoever is streaming this pane, so a
                 // client rebuilds the screen from the harness's own output.
                 if let Ok(mut t) = tap_reader.lock()
                     && let Some(sender) = t.as_ref()
-                    && sender.send(buf[..n].to_vec()).is_err()
+                    && sender.send(bytes).is_err()
                 {
                     *t = None;
                 }
+            }
+            if !held.is_empty()
+                && let Ok(mut p) = sink.lock()
+            {
+                p.process(&held);
             }
             if let Ok(mut t) = tap_reader.lock() {
                 *t = None;
             }
         });
 
-        let writer = pair.master.take_writer()?;
         Ok(Self {
             title: title.into(),
             parser,
@@ -154,8 +209,9 @@ impl Pane {
     /// A keystroke the person typed while focused on this pane. Passed through
     /// untouched — Weft reserves only its toggle key.
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
-        self.writer.write_all(bytes)?;
-        self.writer.flush()?;
+        let mut writer = self.writer.lock().expect("pane writer");
+        writer.write_all(bytes)?;
+        writer.flush()?;
         Ok(())
     }
 
@@ -392,6 +448,30 @@ mod tests {
         let pane = sh("printf 'hello from a pane'");
         let text = pane.with_screen(|s| s.contents());
         assert!(text.contains("hello from a pane"), "screen was: {text:?}");
+    }
+
+    /// A harness that asks where the cursor is gets the answer a terminal
+    /// gives, from the pane's own screen; without it, one quits ("The cursor
+    /// position could not be read within a normal duration").
+    #[test]
+    fn a_pane_answers_a_harness_that_asks_where_the_cursor_is() {
+        let script =
+            "printf 'abc\\033[6n'; IFS= read -r -t 3 -d R reply; printf ' got=%s;' \"${reply#*[}\"";
+        let mut pane =
+            Pane::spawn_args("test", "bash", &["-c", script], "/tmp", 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let text = pane.with_screen(|s| s.contents());
+        assert!(text.contains("got=1;4;"), "the cursor sat after `abc`, row 1 column 4: {text:?}");
+        pane.stop();
+    }
+
+    #[test]
+    fn a_cursor_query_is_found_whole_or_cut_by_a_read() {
+        assert_eq!(cursor_queries(b"x\x1b[6ny\x1b[?6n"), [(5, false), (11, true)]);
+        assert!(cursor_queries(b"\x1b[60m\x1b[6").is_empty(), "not a query, and not one yet");
+        assert_eq!(query_prefix_at_end(b"abc\x1b[6"), 3, "held for the next read");
+        assert_eq!(query_prefix_at_end(b"abc\x1b"), 1);
+        assert_eq!(query_prefix_at_end(b"abc"), 0);
     }
 
     #[test]

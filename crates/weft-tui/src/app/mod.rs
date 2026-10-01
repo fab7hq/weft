@@ -960,7 +960,7 @@ impl App {
         };
         let spec = match session {
             Some(s) => h.resume_spec(&s.id),
-            None => h.program.clone(),
+            None => h.spec(),
         };
         let resumes = session.map(|s| s.id.as_str());
         if let Err(e) = self.start(harness, &spec, resumes, Then::Started { go: true, then }) {

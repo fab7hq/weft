@@ -5,10 +5,11 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use weft_core::onboarding::{Next, Row, State, View, row, steps};
+use weft_core::onboarding::{Next, Row, State, View, checking, row, steps};
 use weft_core::sync::{Mark, Step};
 
-use crate::harness::{Harness, Harnesses, OnThisMachine};
+use crate::harness::{Harness, Harnesses};
+use crate::outside::Outside;
 
 /// How long a program has to answer `--version` before it counts as not
 /// starting.
@@ -60,9 +61,34 @@ fn ask_check() -> Result<serde_json::Value, String> {
 /// and every harness file's row, found or not, current or behind; and, for
 /// each harness found, its readiness, to tell the clients.
 pub fn look(
+    out: &dyn Outside,
     harnesses: &Harnesses,
     check: &Result<serde_json::Value, String>,
     cli: bool,
+) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
+    look_as_they_answer(out, harnesses, check, cli, |_| {})
+}
+
+/// The view before anything has answered: every harness found on this machine
+/// being asked, the others not found, and the latest release still pending.
+/// Finding a program is a look at `PATH`, so this costs no process.
+pub fn pending(out: &dyn Outside, harnesses: &Harnesses) -> View {
+    let rows = harnesses
+        .iter()
+        .map(|h| if out.on_path(&h.program) { checking(h) } else { row(h, None, None) })
+        .collect();
+    View { pending_release: true, rows, ..View::default() }
+}
+
+/// [`look`], asking every harness found at once rather than one after another,
+/// and handing `shown` the view again as each one answers: a slow harness keeps
+/// only its own row waiting.
+pub fn look_as_they_answer(
+    out: &dyn Outside,
+    harnesses: &Harnesses,
+    check: &Result<serde_json::Value, String>,
+    cli: bool,
+    mut shown: impl FnMut(&View),
 ) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
     let known = check.as_ref().ok();
     let text = |k: &str| known.and_then(|c| c[k].as_str()).map(str::to_string);
@@ -71,25 +97,38 @@ pub fn look(
     if let Err(why) = check {
         configuration = format!("{configuration}: {why}");
     }
-    let mut states = Vec::new();
-    let rows = harnesses
-        .iter()
-        .map(|h| {
-            let found = h.on_path().then(|| crate::readiness::look(h, cli));
-            if let Some((state, _)) = &found {
-                states.push((h.name.clone(), *state));
-            }
-            row(h, found, plugin.as_deref())
-        })
-        .collect();
-    let view = View {
+    let found: Vec<bool> = harnesses.iter().map(|h| out.on_path(&h.program)).collect();
+    let mut view = View {
         latest,
-        plugin,
         configuration,
         configuration_behind: step.is_some(),
-        rows,
-        note: None,
+        rows: harnesses
+            .iter()
+            .zip(&found)
+            .map(|(h, &on)| if on { checking(h) } else { row(h, None, plugin.as_deref()) })
+            .collect(),
+        plugin,
+        ..View::default()
     };
+    let mut states = Vec::new();
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for (at, h) in harnesses.iter().enumerate().filter(|(at, _)| found[*at]) {
+            let tx = tx.clone();
+            scope.spawn(move || {
+                let _ = tx.send((at, crate::readiness::look(out, h, cli)));
+            });
+        }
+        drop(tx);
+        for (at, answer) in rx {
+            let h = &harnesses.0[at];
+            states.push((h.name.clone(), answer.0));
+            view.rows[at] = row(h, Some(answer), view.plugin.as_deref());
+            shown(&view);
+        }
+    });
+    // By the harnesses' order, as the rows are, whatever order they answered in.
+    states.sort_by_key(|(name, _)| harnesses.iter().position(|h| &h.name == name));
     (view, states)
 }
 
@@ -145,16 +184,22 @@ pub fn save(config: &Path, name: &str, key: &str, value: serde_json::Value) -> R
 /// Run this harness's setup commands in order, showing its row at every
 /// step, and stop at the first that fails. The row that comes back is the
 /// harness's own answer afterwards, or the failed step.
-pub fn run(h: &Harness, cli: bool, latest: Option<&str>, show: impl FnMut(State)) -> Option<State> {
-    let (state, have) = crate::readiness::look(h, cli);
-    proceed(steps(h, state, have.as_deref(), latest), show)
+pub fn run(
+    out: &dyn Outside,
+    h: &Harness,
+    cli: bool,
+    latest: Option<&str>,
+    show: impl FnMut(State),
+) -> Option<State> {
+    let (state, have) = crate::readiness::look(out, h, cli);
+    proceed(out, steps(h, state, have.as_deref(), latest), show)
 }
 
 /// Run these steps in order, showing each as it starts, and stop at the first
 /// that fails; that one comes back.
-pub fn proceed(steps: Vec<Step>, mut show: impl FnMut(State)) -> Option<State> {
+pub fn proceed(out: &dyn Outside, steps: Vec<Step>, mut show: impl FnMut(State)) -> Option<State> {
     let mut steps = steps;
-    crate::sync::proceed(&mut steps, |steps| {
+    crate::sync::proceed(out, &mut steps, |steps| {
         if let Some(s) = steps.iter().find(|s| s.mark == Mark::Running) {
             show(State::Running(s.line()));
         }
@@ -181,6 +226,7 @@ pub fn with(mut view: View, name: &str, state: State) -> View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outside::Machine;
 
     #[test]
     fn a_program_the_person_names_must_be_a_whole_path_that_starts() {
@@ -188,6 +234,63 @@ mod tests {
         assert!(check_program("/definitely/not/here").unwrap_err().contains("not a program"));
         assert_eq!(check_program("/bin/echo").as_deref(), Ok("/bin/echo"));
         assert!(check_program("/usr/bin/false").unwrap_err().contains("did not succeed"));
+    }
+
+    /// Two harnesses are asked at once: each says it has `rf` only once it has
+    /// seen the other one being asked too, so asked one after another, the
+    /// first would give up and read as not set up. Each answer is shown as it
+    /// comes, and the view opens before either has answered.
+    #[test]
+    fn the_harnesses_are_asked_at_once_and_shown_as_they_answer() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("weft-setup-at-once-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut files = Vec::new();
+        for (name, other) in [("slowa", "slowb"), ("slowb", "slowa")] {
+            let program = dir.join(name);
+            let (mine, theirs) =
+                (dir.join(format!("{name}.asked")), dir.join(format!("{other}.asked")));
+            std::fs::write(
+                &program,
+                format!(
+                    "#!/bin/sh\ntouch {mine}\ni=0\nwhile [ ! -f {theirs} ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done\n\
+                     if [ -f {theirs} ]; then echo '{{\"installed\":[{{\"name\":\"rf\"}}]}}'; else echo '{{\"installed\":[]}}'; fi\n",
+                    mine = mine.display(),
+                    theirs = theirs.display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+            files.push((
+                name.to_string(),
+                format!(
+                    "title = \"{name}\"\nprogram = \"{}\"\nresume = []\n\n[config]\ndefault = \".x\"\n\n\
+                     [plugin]\nlist = [\"list\"]\n\n[plugin.listing]\ninstalled = [\"installed\"]\n\
+                     available = []\nname = \"name\"\n",
+                    program.display()
+                ),
+            ));
+        }
+        let (harnesses, unread) = Harnesses::read(files);
+        assert!(unread.is_empty(), "{unread:?}");
+        let opened = pending(&Machine, &harnesses);
+        assert!(opened.pending_release);
+        assert!(opened.rows.iter().all(|r| r.state == State::Checking), "{:?}", opened.rows);
+
+        let mut seen = Vec::new();
+        let (view, states) =
+            look_as_they_answer(&Machine, &harnesses, &Ok(serde_json::json!({})), true, |v| {
+                seen.push(v.rows.iter().filter(|r| r.state == State::Checking).count());
+            });
+        assert_eq!(seen, [1, 0], "each answer shown as it came, the other still being asked");
+        assert!(!view.pending_release);
+        assert!(
+            view.rows.iter().all(|r| matches!(r.state, State::Ready { .. })),
+            "asked one after another, the first gave up: {:?}",
+            view.rows
+        );
+        assert_eq!(states.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A harness whose program is a script: it lists no `rf` until its
@@ -224,19 +327,19 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let h = stub(&dir);
         let harnesses = Harnesses(vec![h.clone()]);
-        let (v, _) = look(&harnesses, &Err("offline".into()), true);
+        let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), true);
         assert_eq!(v.rows[0].state, State::NotSetUp);
         let mut seen = Vec::new();
-        assert_eq!(run(&h, true, None, |s| seen.push(s)), None, "no step failed");
+        assert_eq!(run(&Machine, &h, true, None, |s| seen.push(s)), None, "no step failed");
         assert_eq!(seen, [State::Running(format!("{} install", h.program))]);
-        let (v, states) = look(&harnesses, &Err("offline".into()), true);
+        let (v, states) = look(&Machine, &harnesses, &Err("offline".into()), true);
         assert_eq!(v.rows[0].state, State::Ready { version: None });
         assert_eq!(states, [("stub".to_string(), weft_core::readiness::Readiness::Ready)]);
-        let (v, _) = look(&harnesses, &Err("offline".into()), false);
+        let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), false);
         assert_eq!(v.rows[0].state, State::NoCli, "RingFrame missing is Weft's installer's");
         let mut gone = h.clone();
         gone.program = dir.join("nothing-here").display().to_string();
-        let (v, _) = look(&Harnesses(vec![gone]), &Err("offline".into()), true);
+        let (v, _) = look(&Machine, &Harnesses(vec![gone]), &Err("offline".into()), true);
         assert_eq!(v.rows[0].state, State::NotFound);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -15,6 +15,7 @@ use weft_core::inject::{self, Handoff};
 use weft_core::ledger::Unit;
 use weft_core::offers::Asking;
 
+use crate::outside::{Outside, Shared};
 use crate::ringframe;
 
 /// A prompt ready to be put in front of a person.
@@ -29,8 +30,8 @@ pub struct Built {
 
 /// Send a compiled prompt. The wording is RingFrame's, read back through its
 /// CLI, and Weft does not touch it.
-pub fn send(root: &Path, unit: &Unit) -> Result<Built, String> {
-    let payload = ringframe::ask_copy(root, &unit.ask_id)
+pub fn send(out: &dyn Outside, root: &Path, unit: &Unit) -> Result<Built, String> {
+    let payload = ringframe::ask_copy(out, root, &unit.ask_id)
         .map_err(|e| format!("RingFrame would not hand over the wording: {e:?}"))?;
     let how = Handoff::choose(&unit.delivery);
     Ok(Built {
@@ -94,18 +95,30 @@ fn typed(command: &str, over: Option<&str>, words: &str) -> Vec<u8> {
 /// Both answers are properties of the machine, not of the moment: the skill
 /// prefix RingFrame uses for this host, and the size at which its composer
 /// stops reading a paste as text.
-#[derive(Default)]
 pub struct Folds {
     prefixes: HashMap<String, String>,
     at: HashMap<String, Option<usize>>,
+    out: Shared,
+}
+
+impl Default for Folds {
+    fn default() -> Self {
+        Folds::asking(crate::outside::machine())
+    }
 }
 
 impl Folds {
+    /// Kept answers, asked of `out` the first time each is needed.
+    pub fn asking(out: Shared) -> Self {
+        Folds { prefixes: HashMap::new(), at: HashMap::new(), out }
+    }
+
     fn prefix(&mut self, root: &Path, harness: &str) -> String {
         self.prefixes
             .entry(harness.to_string())
             .or_insert_with(|| {
-                ringframe::invocation_prefix(root, harness).unwrap_or_else(|_| "/rf:".into())
+                ringframe::invocation_prefix(self.out.as_ref(), root, harness)
+                    .unwrap_or_else(|_| "/rf:".into())
             })
             .clone()
     }
@@ -120,7 +133,7 @@ impl Folds {
         let fold = *self
             .at
             .entry(harness.to_string())
-            .or_insert_with(|| ringframe::paste_fold_chars(root, harness));
+            .or_insert_with(|| ringframe::paste_fold_chars(self.out.as_ref(), root, harness));
         match fold {
             Some(at) if payload.len() >= at => {
                 Handoff::TypeCommand { at: command.len() + 1, command }

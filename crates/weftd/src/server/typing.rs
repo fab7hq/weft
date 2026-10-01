@@ -24,9 +24,13 @@ pub(super) struct Starting {
 /// The order is the point: if the record cannot be written there is no
 /// confirmed Ask, and typing the prompt anyway would be a send with nothing
 /// behind it. An Ask that was already confirmed has nothing to write.
-pub(super) fn recorded_first(root: &Path, confirm: Option<&str>) -> Result<(), String> {
+pub(super) fn recorded_first(
+    out: &dyn crate::outside::Outside,
+    root: &Path,
+    confirm: Option<&str>,
+) -> Result<(), String> {
     let Some(ask_id) = confirm else { return Ok(()) };
-    crate::ringframe::ask_confirm(root, ask_id)
+    crate::ringframe::ask_confirm(out, root, ask_id)
         .map_err(|e| format!("RingFrame would not record your yes: {e:?}. Nothing was typed."))
 }
 
@@ -112,16 +116,17 @@ impl Session {
                         // otherwise offer the send again.
                         if let Some(ask) = &w.sends {
                             let root = self.projects[project].root.clone();
-                            unrecorded = crate::ringframe::ask_submitted(&root, ask).err().map(
-                                |e| match e {
-                                    crate::ringframe::Error::NotInstalled => {
-                                        "ringframe is not installed".to_string()
-                                    }
-                                    crate::ringframe::Error::Refused { message, .. } => {
-                                        weft_core::offers::first_line(&message).to_string()
-                                    }
-                                },
-                            );
+                            unrecorded =
+                                crate::ringframe::ask_submitted(self.outside.as_ref(), &root, ask)
+                                    .err()
+                                    .map(|e| match e {
+                                        crate::ringframe::Error::NotInstalled => {
+                                            "ringframe is not installed".to_string()
+                                        }
+                                        crate::ringframe::Error::Refused { message, .. } => {
+                                            weft_core::offers::first_line(&message).to_string()
+                                        }
+                                    });
                         }
                         None
                     }

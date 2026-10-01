@@ -64,6 +64,9 @@ plugins() {
             printf '  plugin  %s: %s is not on PATH, skipped\n' "$id" "$program"
             continue
         fi
+        # The words that always follow the program, for a harness reached
+        # through another command.
+        pre=$(words "$(field args "$file")")
         install=$(field install "$file")
         if [ -z "$install" ]; then
             printf '  plugin  %s: its harness file names no install, skipped\n' "$id"
@@ -72,7 +75,7 @@ plugins() {
         for step in uninstall remove_marketplace; do
             argv=$(field "$step" "$file")
             # shellcheck disable=SC2046 # an argv, split on purpose
-            [ -z "$argv" ] || "$program" $(words "$argv") >/dev/null 2>&1 || true
+            [ -z "$argv" ] || "$program" $pre $(words "$argv") >/dev/null 2>&1 || true
         done
         cache=$(field cache "$file" | tr -d '"')
         if [ -n "$cache" ]; then
@@ -84,8 +87,8 @@ plugins() {
         fi
         add=$(field add_marketplace "$file")
         # shellcheck disable=SC2046
-        if { [ -z "$add" ] || "$program" $(words "$(from_tree "$add")") >/dev/null; } &&
-            "$program" $(words "$(from_tree "$install")") >/dev/null; then
+        if { [ -z "$add" ] || "$program" $pre $(words "$(from_tree "$add")") >/dev/null; } &&
+            "$program" $pre $(words "$(from_tree "$install")") >/dev/null; then
             printf '  plugin  %s, from %s\n' "$id" "$fab7"
         else
             printf '  plugin  %s: its install failed\n' "$id"

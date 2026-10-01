@@ -24,6 +24,12 @@ pub struct Harness {
     pub title: String,
     /// The executable, as it is found on `PATH`.
     pub program: String,
+    /// The words that always follow the program, for a harness reached
+    /// through another command (`cursor agent`): every command Weft runs for
+    /// it starts with them, and finding it on `PATH` looks for the program
+    /// alone. Empty for most.
+    #[serde(default)]
+    pub args: Vec<String>,
     /// The variable that moves this harness's configuration home, when it
     /// has one.
     pub config_env: Option<String>,
@@ -55,11 +61,18 @@ pub struct Harness {
     /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
+    /// Whether its file marks it as beta: offered and used like any other
+    /// harness, and said to be beta where its setup is shown, because it has
+    /// not been tested as fully as the rest.
+    #[serde(default)]
+    pub beta: bool,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
 /// installed, the lists holding what it could install, the field that names
 /// a plugin in either, and the fields of a row that say it is off when false.
+/// A list named `.` is the listing itself, for a harness that answers with a
+/// bare array.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listing {
     pub installed: Vec<String>,
@@ -67,6 +80,11 @@ pub struct Listing {
     pub name: String,
     #[serde(default)]
     pub on: Vec<String>,
+    /// The names that say RingFrame is set up, every one of them listed as
+    /// installed and on, for a harness whose listing never names the plugin
+    /// as such (it lists skills, or marketplaces). Empty: the plugin itself.
+    #[serde(default)]
+    pub want: Vec<String>,
     /// What `list` prints instead of JSON when nothing is installed, for a
     /// harness that says so in words.
     #[serde(default)]
@@ -90,6 +108,7 @@ impl Harness {
             name: Some(id).filter(|id| !id.is_empty())?.to_string(),
             title: text(&p["title"])?,
             program: text(&p["program"])?,
+            args: argv(&p["args"]).unwrap_or_default(),
             config_env: text(&p["config"]["env"]),
             config_default: text(&p["config"]["default"])?,
             list: argv(&plugin["list"])?,
@@ -101,6 +120,7 @@ impl Harness {
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
+            beta: p["beta"].as_bool().unwrap_or(false),
         })
     }
 
@@ -118,10 +138,21 @@ impl Harness {
     /// The command line that opens a recorded session again, exactly as a
     /// person would type it.
     pub fn resume_spec(&self, session: &str) -> String {
-        let mut words = vec![self.program.clone()];
+        let mut words = vec![self.spec()];
         words.extend(self.resume.iter().cloned());
         words.push(session.to_string());
         words.join(" ")
+    }
+
+    /// The command line that starts it fresh: the program and its `args`.
+    pub fn spec(&self) -> String {
+        std::iter::once(&self.program).chain(&self.args).cloned().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The words after the program for one of its commands: its `args`, then
+    /// the command's own.
+    pub fn argv(&self, command: &[String]) -> Vec<String> {
+        self.args.iter().chain(command).cloned().collect()
     }
 }
 
@@ -234,6 +265,34 @@ pub mod fixture {
 mod tests {
     use super::fixture::{file, harnesses, text};
     use super::*;
+
+    /// A harness reached through another command: its `args` follow the
+    /// program in every command line Weft builds, and the program alone is
+    /// what is looked for and what a person's path replaces.
+    #[test]
+    fn args_follow_the_program_everywhere_it_runs() {
+        let mut p = file("codex");
+        p["program"] = serde_json::json!("launcher");
+        p["args"] = serde_json::json!(["agent"]);
+        let h = Harness::of("via", &p).expect("a harness");
+        assert_eq!(h.spec(), "launcher agent");
+        assert_eq!(h.resume_spec("s1"), "launcher agent resume s1");
+        assert_eq!(h.argv(&h.list), ["agent", "plugin", "list", "--json"]);
+        let all = Harnesses(vec![h]).with_programs(|_| Some("/opt/launcher".into()));
+        let moved = all.find("via").unwrap();
+        assert_eq!(
+            (moved.program.as_str(), moved.spec().as_str()),
+            ("/opt/launcher", "/opt/launcher agent")
+        );
+        assert!(all.for_program("launcher").is_some(), "named by its program, not its args");
+
+        let plain = Harness::of("codex", &file("codex")).unwrap();
+        assert!(plain.args.is_empty(), "absent means none");
+        assert_eq!(
+            (plain.spec(), plain.argv(&["x".into()])),
+            ("codex".into(), vec!["x".to_string()])
+        );
+    }
 
     #[test]
     fn the_harnesses_are_the_ones_the_profiles_define() {

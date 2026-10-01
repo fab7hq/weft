@@ -23,6 +23,11 @@ pub struct Step {
     /// The last lines a failed command printed.
     #[serde(default)]
     pub said: String,
+    /// Its failure does not stop the steps after it: adding a marketplace the
+    /// harness already has fails, and the install that follows still runs, and
+    /// says for itself whether the marketplace is there.
+    #[serde(default)]
+    pub may_fail: bool,
 }
 
 impl Step {
@@ -32,7 +37,14 @@ impl Step {
             args: args.iter().map(|a| a.as_ref().to_string()).collect(),
             mark: Mark::Waiting,
             said: String::new(),
+            may_fail: false,
         }
+    }
+
+    /// The same step, its failure not stopping the run.
+    pub fn may_fail(mut self) -> Self {
+        self.may_fail = true;
+        self
     }
 
     pub fn line(&self) -> String {
@@ -44,7 +56,7 @@ impl Step {
 pub fn installed(h: &Harness, listing: &Value) -> Option<String> {
     let shape = h.listing.as_ref()?;
     crate::readiness::rows(listing, &shape.installed).iter().find_map(|row| {
-        let id = row.get(&shape.name)?.as_str()?;
+        let id = crate::readiness::field(row, &shape.name)?.as_str()?;
         (id == crate::harness::PLUGIN).then(|| row["version"].as_str().map(str::to_string))?
     })
 }

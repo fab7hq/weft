@@ -4,31 +4,33 @@
 //! Running the command that produces one is here, because that is the only
 //! part that needs a process.
 
-use std::process::Command;
-
 use serde_json::Value;
 use weft_core::harness::Harness;
 pub use weft_core::readiness::*;
 
+use crate::outside::Outside;
+
 /// Ask one harness. `cli` is the global check, made once by the caller.
-pub fn check(h: &Harness, cli: bool) -> Readiness {
-    look(h, cli).0
+pub fn check(out: &dyn Outside, h: &Harness, cli: bool) -> Readiness {
+    look(out, h, cli).0
 }
 
 /// Its readiness, and the `rf` version it has installed, from one listing.
-pub fn look(h: &Harness, cli: bool) -> (Readiness, Option<String>) {
+pub fn look(out: &dyn Outside, h: &Harness, cli: bool) -> (Readiness, Option<String>) {
     if !cli {
         return (Readiness::Missing(Gap::Cli), None);
     }
-    match ask(h) {
+    match ask(out, h) {
         Some(listing) => (read(h, &listing), weft_core::sync::installed(h, &listing)),
         None => (Readiness::Unknown, None),
     }
 }
 
 /// What the harness said, or nothing at all when it would not say.
-fn ask(h: &Harness) -> Option<Value> {
-    let out = Command::new(&h.program).args(&h.list).output().ok()?;
+fn ask(outside: &dyn Outside, h: &Harness) -> Option<Value> {
+    let argv = h.argv(&h.list);
+    let args: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = outside.run(&h.program, &args, None).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -44,6 +46,7 @@ fn ask(h: &Harness) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::outside::Fixed;
     use serde_json::json;
     use weft_core::readiness::Gap;
 
@@ -53,6 +56,7 @@ mod tests {
             name: "nowhere".into(),
             title: "Nowhere".into(),
             program: "definitely-not-a-real-binary-weft".into(),
+            args: Vec::new(),
             config_env: Some("NOWHERE_HOME".into()),
             config_default: ".nowhere".into(),
             list: argv(&["plugin", "list", "--json"]),
@@ -66,16 +70,18 @@ mod tests {
                 name: "id".into(),
                 on: argv(&["enabled"]),
                 none: None,
+                want: Vec::new(),
             }),
             resume: argv(&["resume"]),
             transcript: None,
             turbo: Vec::new(),
+            beta: false,
         }
     }
 
     #[test]
     fn no_cli_is_the_first_gap_and_nothing_else_is_asked() {
-        assert_eq!(check(&absent(), false), Readiness::Missing(Gap::Cli));
+        assert_eq!(check(&Fixed::new(), &absent(), false), Readiness::Missing(Gap::Cli));
     }
 
     #[test]
@@ -86,6 +92,6 @@ mod tests {
             read(&absent(), &json!("not a listing at all")),
             Readiness::Missing(Gap::Marketplace)
         );
-        assert_eq!(check(&absent(), true), Readiness::Unknown);
+        assert_eq!(check(&Fixed::new(), &absent(), true), Readiness::Unknown);
     }
 }

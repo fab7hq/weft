@@ -120,6 +120,10 @@ for file in "$harnesses"/*.toml; do
     [ -n "$install" ] || continue
     title=$(field title "$file" | tr -d '"')
     program=$(field program "$file" | tr -d '"')
+    # The words that always follow the program, for a harness reached through
+    # another command.
+    pre=$(words "$(field args "$file")")
+    [ -z "$pre" ] || program="$program $pre"
     add=$(field add_marketplace "$file")
     [ -n "$said" ] || printf '\n%s\n' 'Now install the plugin for your harness:'
     said=yes

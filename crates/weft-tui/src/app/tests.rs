@@ -7,23 +7,53 @@ use serde_json::json;
 use weft_core::offers::first_line;
 use weft_core::readiness::{Gap, Readiness};
 
-/// A session backed by a real server on a scratch root, because the app is
-/// a client now and there is no honest way to test it without one.
-/// Whether this machine has Codex at all. Some tests are about what Weft
-/// offers for a harness that exists, and there is nothing to offer when it
-/// does not.
-pub(crate) fn codex_on_path() -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("codex").is_file()))
+/// The machine these tests run on, as each test says it is: nothing of the
+/// real machine's reaches the daemon. What a real harness does is a person's
+/// test to run, not a unit test's.
+pub(crate) type World = weftd::outside::Fixed;
+
+/// A machine set up for RingFrame: its CLI installed and current, and Claude
+/// Code and Codex each with the `rf` plugin. `more` goes first, so a test's
+/// own answers win over these.
+pub(crate) fn set_up(more: impl FnOnce(World) -> World) -> World {
+    more(World::new())
+        .answers("ringframe", &["--version"], 0, "ringframe 0.1.3\n")
+        .answers("ringframe", &["profile", "show", "--host", "codex"], 0, r#"{"invocation_prefix": "$rf:"}"#)
+        .answers(
+            "ringframe",
+            &["profile", "show", "--host", "claude-code"],
+            0,
+            r#"{"invocation_prefix": "/rf:"}"#,
+        )
+        .answers("ringframe", &["ask", "preflight"], 0, "{}")
+        .answers("ringframe", &["init"], 0, "{}")
+        .answers("ringframe", &["ask", "confirm"], 0, "{}")
+        .answers("ringframe", &["ask", "submitted"], 0, "{}")
+        .answers(
+            "codex",
+            &["plugin", "list"],
+            0,
+            r#"{"installed": [{"pluginId": "rf@fab7", "installed": true, "enabled": true}], "available": []}"#,
+        )
+        .answers(
+            "claude",
+            &["plugin", "list"],
+            0,
+            r#"{"installed": [{"id": "rf@fab7", "enabled": true}], "available": []}"#,
+        )
+        .with_release(Ok(serde_json::json!(
+            {"revision": "0.1.3", "latest": "0.1.3", "plugin": "0.1.3", "behind": false}
+        )))
 }
 
-pub(crate) fn ringframe_on_path() -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join("ringframe").is_file())
-    })
-}
-
+/// A session backed by a real daemon on a scratch root, because the app is a
+/// client and there is no honest way to test it without one; the daemon's
+/// machine is the world the test describes.
 pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
+    test_session_in(name, set_up(|w| w))
+}
+
+pub(crate) fn test_session_in(name: &str, world: World) -> (PathBuf, crate::client::Session) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
@@ -47,10 +77,11 @@ pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
     let _ = std::fs::remove_file(&socket);
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = weftd::server::Session::serve_with(
+        let _ = weftd::server::Session::serve_in(
             &listening,
             &listening.with_extension("no-config.toml"),
             Some(weft_core::harness::fixture::harnesses()),
+            world.shared(),
         );
     });
     let session = connect_when_listening(&socket, &root);
@@ -69,29 +100,34 @@ pub(crate) fn connect_when_listening(
     crate::client::Session::connect(socket, root, 24, 80).expect("connect")
 }
 
-/// Weft opens SET UP by itself once a run when no harness can be used. Whether
-/// one can is a fact about the machine: a laptop with Claude Code answers no
-/// and a CI runner with none answers yes, and the tests that are not about
-/// set-up would pass on one and fail on the other. They say it was offered.
-pub(crate) fn not_first_run(a: &mut App) {
-    a.setup_asked = true;
-    a.setup_offered = true;
+pub(crate) fn app() -> App {
+    app_in(set_up(|w| w))
 }
 
-pub(crate) fn app() -> App {
-    let (root, session) = test_session("codex");
+/// An agent running in a project, in this world, once the daemon has asked
+/// the world about each harness.
+pub(crate) fn app_in(world: World) -> App {
+    let (root, session) = test_session_in("codex", world);
     let mut a = App::with_session(root, Toggle, session);
-    not_first_run(&mut a);
     a.add("codex", "/bin/cat").expect("spawn");
-    a.settle();
-    // Say what this fixture's readiness is instead of inheriting the
-    // machine's. Otherwise these tests pass on a laptop with Codex and the
-    // plugin installed and fail everywhere else, which is not a fact about
-    // the code. Tests about readiness itself set their own.
-    a.set_readiness("codex", Readiness::Ready);
-    a.set_readiness("claude-code", Readiness::Ready);
+    asked(&mut a);
     agent_says(&mut a, "codex", "fixture", "ready");
     a
+}
+
+/// Until the daemon has asked its world about each harness in the project in
+/// front: asking what can be started asks about every harness on the
+/// machine, as Weft does when it opens a project.
+pub(crate) fn asked(a: &mut App) {
+    a.look_for_agents(Opening::Nothing);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline
+        && ["codex", "claude-code"].iter().any(|h| a.readiness(h) == Readiness::Unknown)
+    {
+        a.settle();
+        a.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// Now, as a receipt writes it.
@@ -184,7 +220,11 @@ pub(crate) fn gather_on_record(app: &App, asks: &[&str]) {
 /// ledger. `set_units` puts a unit in front of the person; only the record
 /// puts it where an act can reach it.
 fn recorded(sent: Sent) -> App {
-    let mut a = app();
+    recorded_in(sent, set_up(|w| w))
+}
+
+fn recorded_in(sent: Sent, world: World) -> App {
+    let mut a = app_in(world);
     let mut events = vec![serde_json::json!({
         "schema": "ringframe.ledger/1", "event_id": "evt_1", "type": "ask.compiled",
         "time": "2026-09-19T14:02:00Z", "id": "ask_1",
@@ -374,12 +414,8 @@ fn a_harness_with_nothing_open_and_no_agent_is_not_listed() {
 
 #[test]
 fn the_latest_recorded_session_is_found_for_picking_up() {
-    // `starts()` only offers a harness that is on this machine, so this
-    // is about what Weft does when one is. A runner has no Codex.
-    if !codex_on_path() {
-        eprintln!("skipped: codex is not on PATH");
-        return;
-    }
+    // `starts()` only offers a harness that is on this machine; in this
+    // world, Codex is.
     let mut a = app();
     let root = a.root().to_path_buf();
     let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
@@ -418,26 +454,25 @@ fn a_made_up_harness_is_offered_from_its_harness_file_alone() {
     let home = root.join("machine");
     std::fs::create_dir_all(home.join("harnesses")).expect("harnesses");
     // Its program answers its plugin listing as a harness set up for
-    // RingFrame does, and is `cat` otherwise.
-    let program = home.join("zed");
-    std::fs::write(
-        &program,
-        "#!/bin/sh\nif [ \"$1\" = plugin ]; then echo '{\"installed\":[{\"pluginId\":\"rf@fab7\",\"enabled\":true,\"installed\":true}],\"available\":[]}'; exit 0; fi\nexec cat\n",
-    )
-    .expect("its program");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("run");
-    }
+    // RingFrame does.
+    let program = home.join("zed").display().to_string();
     let zed = weft_core::harness::fixture::text("codex")
         .replace("title = \"Codex\"", "title = \"Zed Agent\"")
-        .replace("program = \"codex\"", &format!("program = \"{}\"", program.display()));
+        .replace("program = \"codex\"", &format!("program = \"{program}\""));
     std::fs::write(home.join("harnesses/zed-agent.toml"), zed).expect("its file");
+    let world = set_up(|w| {
+        w.answers(
+            &program,
+            &["plugin", "list"],
+            0,
+            r#"{"installed": [{"pluginId": "rf@fab7", "enabled": true, "installed": true}], "available": []}"#,
+        )
+    });
     let socket = weft_proto::private_socket("weft-app-zed");
     let _ = std::fs::remove_file(&socket);
     let (listening, config) = (socket.clone(), home.join("config.toml"));
     std::thread::spawn(move || {
-        let _ = weftd::server::Session::serve(&listening, &config);
+        let _ = weftd::server::Session::serve_in(&listening, &config, None, world.shared());
     });
     let session = connect_when_listening(&socket, &root);
     let mut a = App::with_session(root, Toggle, session);
@@ -455,8 +490,8 @@ fn a_made_up_harness_is_offered_from_its_harness_file_alone() {
     }
     let zed: Vec<_> = a.starts().iter().filter(|s| s.harness == "zed-agent").collect();
     assert_eq!(zed.len(), 1, "offered fresh: {:?}", a.starts());
-    assert_eq!(zed[0].spec, program.display().to_string());
-    assert_eq!(a.harness_for_program(&program.display().to_string()).as_deref(), Some("zed-agent"));
+    assert_eq!(zed[0].spec, program);
+    assert_eq!(a.harness_for_program(&program).as_deref(), Some("zed-agent"));
 }
 
 #[test]
@@ -693,11 +728,9 @@ fn eval_and_seal_always_confirm_before_typing() {
         };
         let text = String::from_utf8(p.payload).unwrap();
         // Whatever words follow, the command token is closed, so Enter
-        // means send rather than pick a completion. Whether it starts `$` or
-        // `/` is the installed RingFrame's profile speaking, which a machine
-        // without one does not have.
-        let command = text.trim_start_matches(['$', '/']);
-        assert!(command.starts_with(&format!("rf:{expect} ")), "got {text:?}");
+        // means send rather than pick a completion. `$` is what this world's
+        // RingFrame profile gives Codex.
+        assert!(text.starts_with(&format!("$rf:{expect} ")), "got {text:?}");
     }
 }
 
@@ -1086,8 +1119,10 @@ fn a_click_on_the_tab_after_a_turbo_tab_goes_to_it() {
 #[test]
 fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
     // The prompt is still to be sent, so [P]ROCEED sends it.
-    let mut a = recorded(Sent::ReadyToSend);
-    std::fs::write(a.root().join(".fab7/rf/y"), "Ship it.\n").expect("the prompt");
+    let mut a = recorded_in(
+        Sent::ReadyToSend,
+        set_up(|w| w.answers("ringframe", &["ask", "copy"], 0, "Ship it.\n")),
+    );
     press(&mut a, KeyCode::Enter); // the row's detail view
     assert!(a.detail().is_some(), "the detail view is open");
     press(&mut a, KeyCode::Char('p'));
@@ -1102,15 +1137,11 @@ fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
 /// the person is told, rather than being offered the send again blind.
 #[test]
 fn a_send_ringframe_would_not_record_is_said() {
-    if !ringframe_on_path() {
-        eprintln!("skipped: ringframe is not on PATH");
-        return;
-    }
-    use std::os::unix::fs::PermissionsExt;
-    let mut a = recorded(Sent::ReadyToSend);
-    std::fs::write(a.root().join(".fab7/rf/y"), "Ship it.\n").expect("the prompt");
-    let ledger = a.root().join(".fab7/rf/ledger.jsonl");
-    std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o444)).expect("ro");
+    let refuses = set_up(|w| {
+        w.answers("ringframe", &["ask", "submitted"], 2, "ledger.io: the ledger is read-only")
+            .answers("ringframe", &["ask", "copy"], 0, "Ship it.\n")
+    });
+    let mut a = recorded_in(Sent::ReadyToSend, refuses);
     press(&mut a, KeyCode::Char('p'));
     assert!(matches!(a.modal, Some(Modal::Confirm(_))), "{:?} / {:?}", a.modal, a.hint_text());
     press(&mut a, KeyCode::Enter);
@@ -1122,7 +1153,6 @@ fn a_send_ringframe_would_not_record_is_said() {
     let said = drawn(&mut a).lines().last().unwrap_or_default().to_string();
     assert!(said.contains("RingFrame did not record it"), "{said}");
     assert!(said.contains("ledger.io"), "and why: {said}");
-    std::fs::set_permissions(&ledger, std::fs::Permissions::from_mode(0o644)).expect("rw");
 }
 
 /// Turbo mode is switched from Weft, by `[T]` or a click on it in the
@@ -1585,12 +1615,15 @@ fn the_board_is_read_from_a_real_ledger_on_disk() {
     let _ = std::fs::remove_file(&socket);
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ =
-            weftd::server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
+        let _ = weftd::server::Session::serve_in(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(weft_core::harness::fixture::harnesses()),
+            set_up(|w| w).shared(),
+        );
     });
     let session = connect_when_listening(&socket, &dir);
     let mut a = App::with_session(dir.clone(), Toggle, session);
-    not_first_run(&mut a);
     a.refresh_for_test();
     assert_eq!(a.units().len(), 1);
     assert_eq!(a.units()[0].title, "health endpoint");
@@ -1604,9 +1637,7 @@ mod start_tests {
 
     fn bare() -> App {
         let (root, session) = super::test_session("bare");
-        let mut a = App::with_session(root, Toggle, session);
-        super::not_first_run(&mut a);
-        a
+        App::with_session(root, Toggle, session)
     }
 
     #[test]

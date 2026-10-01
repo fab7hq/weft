@@ -28,9 +28,10 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::with_session(root, Toggle, session);
     app.refresh_for_test();
     // Readiness is normally asked when a pane starts; this probe starts none.
-    let cli = weft::ringframe::installed();
+    let machine = weft::outside::Machine;
+    let cli = weft::ringframe::installed(&machine);
     for h in weft::harness::installed(&weft::routing::file().with_file_name("harnesses")).0.iter() {
-        app.set_readiness(&h.name, weft::readiness::check(h, cli));
+        app.set_readiness(&h.name, weft::readiness::check(&machine, h, cli));
     }
     for act in [Act::Ask, Act::Eval, Act::Seal, Act::Proceed] {
         println!(

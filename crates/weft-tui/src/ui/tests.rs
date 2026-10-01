@@ -156,6 +156,7 @@ fn six_units_in_two_projects_fit_on_one_screen() {
     let (other, _) = crate::app::tests::test_session("second");
     a.open_project(&other.to_string_lossy());
     a.add("codex", "/bin/cat").expect("an agent in the second project");
+    crate::app::tests::asked(&mut a);
     a.settle();
     let mut more: Vec<crate::ledger::Unit> = Vec::new();
     for i in 0..4 {
@@ -685,12 +686,14 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
         title: title.into(),
         program: name.into(),
         state,
+        beta: false,
     };
     a.session_mut().setup = Some(View {
         latest: Some("v0.1.3".into()),
         plugin: Some("0.1.3".into()),
         configuration: "up to date".into(),
         configuration_behind: false,
+        pending_release: false,
         rows: vec![
             row("antigravity", "Antigravity", State::Failed {
                 step: "agy plugin install https://github.com/fab7hq/fab7/tree/main/products/ringframe/plugins/antigravity".into(),

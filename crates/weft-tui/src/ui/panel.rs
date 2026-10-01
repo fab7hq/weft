@@ -192,14 +192,7 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
         Modal::OpenProject { .. } => Vec::new(),
         Modal::RingFrame => app
             .setup_view()
-            .map(|v| {
-                v.rows
-                    .iter()
-                    .map(|r| {
-                        clip(&format!("{}  {:<14}{}", r.state.mark(), r.title, r.state.words()), 72)
-                    })
-                    .collect()
-            })
+            .map(|v| v.rows.iter().map(|r| clip(&r.line(), 72)).collect())
             .unwrap_or_default(),
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
@@ -283,15 +276,19 @@ fn setup_body(app: &App) -> Vec<String> {
     let Some(v) = app.setup_view() else {
         return vec!["Checking the latest release…".into(), String::new()];
     };
-    let mut lines = vec![
-        match (&v.latest, &v.plugin) {
-            (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
-            (Some(t), None) => format!("Latest release {t}"),
-            _ => "Weft could not reach the latest release.".into(),
-        },
-        format!("RingFrame's configuration: {}", v.configuration),
-        String::new(),
-    ];
+    let mut lines = if v.pending_release {
+        vec!["Checking the latest release…".into(), String::new()]
+    } else {
+        vec![
+            match (&v.latest, &v.plugin) {
+                (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
+                (Some(t), None) => format!("Latest release {t}"),
+                _ => "Weft could not reach the latest release.".into(),
+            },
+            format!("RingFrame's configuration: {}", v.configuration),
+            String::new(),
+        ]
+    };
     if v.rows.is_empty() {
         lines.push("Weft has no harness files in ~/.fab7/weft/harnesses.".into());
         lines.push(String::new());

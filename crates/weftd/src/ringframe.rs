@@ -5,7 +5,8 @@
 //! Everything here is a read or a question — Weft issues no write commands.
 
 use std::path::Path;
-use std::process::Command;
+
+use crate::outside::Outside;
 
 use serde_json::Value;
 
@@ -19,19 +20,22 @@ pub enum Error {
     },
 }
 
-fn run(project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
-    run_program("ringframe", project, args)
+fn run(out: &dyn Outside, project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
+    run_program(out, "ringframe", project, args)
 }
 
 /// "No CLI" and "the CLI said no" are different situations, so a spawn failure
 /// becomes `NotInstalled` and never a refusal.
-fn run_program(program: &str, project: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
-    let out = Command::new(program)
-        .arg("--workspace")
-        .arg(project)
-        .args(args)
-        .output()
-        .map_err(|_| Error::NotInstalled)?;
+fn run_program(
+    outside: &dyn Outside,
+    program: &str,
+    project: &Path,
+    args: &[&str],
+) -> Result<Vec<u8>, Error> {
+    let project = project.to_string_lossy();
+    let argv: Vec<&str> =
+        ["--workspace", project.as_ref()].into_iter().chain(args.iter().copied()).collect();
+    let out = outside.run(program, &argv, None).map_err(|_| Error::NotInstalled)?;
     if out.status.success() {
         return Ok(out.stdout);
     }
@@ -43,8 +47,8 @@ fn run_program(program: &str, project: &Path, args: &[&str]) -> Result<Vec<u8>, 
     })
 }
 
-fn json(project: &Path, args: &[&str]) -> Result<Value, Error> {
-    let bytes = run(project, args)?;
+fn json(out: &dyn Outside, project: &Path, args: &[&str]) -> Result<Value, Error> {
+    let bytes = run(out, project, args)?;
     serde_json::from_slice(&bytes).map_err(|e| Error::Refused {
         code: 4,
         message: format!("could not read the CLI's answer: {e}"),
@@ -54,8 +58,15 @@ fn json(project: &Path, args: &[&str]) -> Result<Value, Error> {
 /// RingFrame's own exit code for "refused by a rule", as its help documents.
 const REFUSED_BY_A_RULE: i32 = 2;
 
-pub fn installed() -> bool {
-    Command::new("ringframe").arg("--version").output().is_ok()
+/// Set the project up for RingFrame, as a person would with `ringframe init`.
+/// A hook never makes the workspace; Weft does, through the CLI, before it
+/// starts an agent whose hooks will record into it.
+pub fn init(out: &dyn Outside, project: &Path) -> Result<(), Error> {
+    run(out, project, &["init"]).map(|_| ())
+}
+
+pub fn installed(out: &dyn Outside) -> bool {
+    out.run("ringframe", &["--version"], None).is_ok()
 }
 
 /// Whether this workspace could finish an Ask at all, asked of RingFrame.
@@ -63,8 +74,8 @@ pub fn installed() -> bool {
 /// `ask compile` has always refused a workspace with no Git repository or no
 /// commit, but it runs at the end. Weft asks first, so `[A]SK` is dim with a
 /// reason rather than typing an invocation that costs a turn and then fails.
-pub fn ask_preflight(project: &Path) -> Result<(), Error> {
-    match run(project, &["ask", "preflight"]) {
+pub fn ask_preflight(out: &dyn Outside, project: &Path) -> Result<(), Error> {
+    match run(out, project, &["ask", "preflight"]) {
         Ok(_) => Ok(()),
         // Only a rule refusal is an answer. RingFrame documents its exit
         // codes: 1 is usage, which is what an older CLI says about a verb it
@@ -81,15 +92,15 @@ pub fn ask_preflight(project: &Path) -> Result<(), Error> {
 /// Record the person's yes for an Ask whose confirmation surface never got
 /// one. RingFrame writes the record; Weft only carries the decision, which
 /// the person made by pressing the key.
-pub fn ask_confirm(project: &Path, ask_id: &str) -> Result<(), Error> {
-    run_program("ringframe", project, &["ask", "confirm", "--ask", ask_id]).map(|_| ())
+pub fn ask_confirm(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<(), Error> {
+    run(out, project, &["ask", "confirm", "--ask", ask_id]).map(|_| ())
 }
 
 /// The person submitted this Ask's prompt: Weft typed it on their yes and
 /// pressed Enter. RingFrame records it as attributed to them; where a hook
 /// also observes it arrive, that receipt outranks this.
-pub fn ask_submitted(project: &Path, ask_id: &str) -> Result<(), Error> {
-    run_program("ringframe", project, &["ask", "submitted", "--ask", ask_id]).map(|_| ())
+pub fn ask_submitted(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<(), Error> {
+    run(out, project, &["ask", "submitted", "--ask", ask_id]).map(|_| ())
 }
 
 /// Open and gather the Eval of the open Asks, and say which it is: RingFrame
@@ -97,6 +108,7 @@ pub fn ask_submitted(project: &Path, ask_id: &str) -> Result<(), Error> {
 /// map it. An Eval already open over the same Asks and the same
 /// work is the one to continue, and RingFrame names it.
 pub fn eval_open(
+    outside: &dyn Outside,
     project: &Path,
     agents: Option<&Value>,
     over: Option<&str>,
@@ -109,7 +121,7 @@ pub fn eval_open(
     if let Some(o) = over {
         args.extend(["--override", o]);
     }
-    match json(project, &args) {
+    match json(outside, project, &args) {
         Ok(v) => {
             v.get("eval_id").and_then(Value::as_str).map(str::to_string).ok_or(Error::Refused {
                 code: 4,
@@ -131,14 +143,14 @@ pub fn eval_open(
     }
 }
 
-pub fn ask_copy(project: &Path, ask_id: &str) -> Result<Vec<u8>, Error> {
-    run(project, &["ask", "copy", "--ask", ask_id])
+pub fn ask_copy(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<Vec<u8>, Error> {
+    run(out, project, &["ask", "copy", "--ask", ask_id])
 }
 
 /// How this harness's skills are invoked. Read from the profile rather than
 /// assumed, because RingFrame owns the answer and it differs by host.
-pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
-    let v = json(project, &["profile", "show", "--host", host, "--json"])?;
+pub fn invocation_prefix(out: &dyn Outside, project: &Path, host: &str) -> Result<String, Error> {
+    let v = json(out, project, &["profile", "show", "--host", host, "--json"])?;
     v.get("invocation_prefix")
         .and_then(Value::as_str)
         .map(str::to_string)
@@ -151,8 +163,8 @@ pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
 /// Measured by RingFrame against the installed hosts and written down once, so
 /// Weft reads it rather than carrying a second copy that can drift. `None`
 /// means the profile does not say, and Weft then assumes nothing.
-pub fn paste_fold_chars(project: &Path, host: &str) -> Option<usize> {
-    let v = json(project, &["profile", "show", "--host", host, "--json"]).ok()?;
+pub fn paste_fold_chars(out: &dyn Outside, project: &Path, host: &str) -> Option<usize> {
+    let v = json(out, project, &["profile", "show", "--host", host, "--json"]).ok()?;
     v.get("paste_fold_chars").and_then(Value::as_u64).map(|n| n as usize)
 }
 
@@ -164,13 +176,10 @@ pub struct Freshness {
 
 /// Everything RingFrame says about a receipt when it re-verifies it. Exit 2
 /// means "not fresh", not "broken", so the JSON is read whatever the code.
-pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
-    let out = Command::new("ringframe")
-        .arg("--workspace")
-        .arg(project)
-        .args(["seal", "check", "--seal", seal_id, "--json"])
-        .output()
-        .map_err(|_| Error::NotInstalled)?;
+pub fn seal_checked(outside: &dyn Outside, project: &Path, seal_id: &str) -> Result<Value, Error> {
+    let project = project.to_string_lossy();
+    let args = ["--workspace", project.as_ref(), "seal", "check", "--seal", seal_id, "--json"];
+    let out = outside.run("ringframe", &args, None).map_err(|_| Error::NotInstalled)?;
     serde_json::from_slice(&out.stdout).map_err(|_| Error::Refused {
         code: out.status.code().unwrap_or(-1),
         message: String::from_utf8_lossy(&out.stderr).trim().to_string(),
@@ -178,8 +187,8 @@ pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
 }
 
 /// A receipt a script can check.
-pub fn seal_check(project: &Path, seal_id: &str) -> Result<Freshness, Error> {
-    let v = seal_checked(project, seal_id)?;
+pub fn seal_check(out: &dyn Outside, project: &Path, seal_id: &str) -> Result<Freshness, Error> {
+    let v = seal_checked(out, project, seal_id)?;
     Ok(Freshness {
         fresh: v.get("fresh").and_then(Value::as_bool).unwrap_or(false),
         subject_matches: v.get("subject_matches").and_then(Value::as_bool).unwrap_or(false),
@@ -217,47 +226,44 @@ mod tests {
         }
     }
 
+    use crate::outside::Fixed;
+
     #[test]
     fn a_missing_cli_is_reported_as_missing_not_as_a_refusal() {
-        let got =
-            run_program("definitely-not-a-real-binary-weft", Path::new("/tmp"), &["ask", "list"]);
+        let got = run_program(&Fixed::new(), "ringframe", Path::new("/tmp"), &["ask", "list"]);
         assert_eq!(got, Err(Error::NotInstalled));
+        assert!(!installed(&Fixed::new()));
     }
 
     #[test]
     fn only_a_rule_refusal_is_an_answer_about_the_workspace() {
-        // An older CLI answers "invalid choice" with exit 1. That says nothing
-        // about the workspace, and Weft must not report it as though it did.
-        if !installed() {
-            eprintln!("skipped: ringframe is not on PATH");
-            return;
-        }
-        let nowhere = Path::new("/");
-        // Whatever this CLI makes of it, a usage error never blocks an Ask.
-        // An older CLI answers a verb it does not know with a usage error.
-        // Whatever this one makes of it, that is never a workspace gap.
-        if let Err(Error::Refused { code: 1, .. }) = run(nowhere, &["ask", "preflight"]) {
-            assert!(ask_preflight(nowhere).is_ok(), "a usage error is not a gap");
-        }
+        // An older CLI answers a verb it does not know with a usage error
+        // (exit 1). That says nothing about the workspace.
+        let older = Fixed::new().answers("ringframe", &["ask", "preflight"], 1, "");
+        assert!(ask_preflight(&older, Path::new("/p")).is_ok(), "a usage error is not a gap");
+        let refused = Fixed::new().answers("ringframe", &["ask", "preflight"], 2, "no git");
+        assert!(matches!(
+            ask_preflight(&refused, Path::new("/p")),
+            Err(Error::Refused { code: 2, .. })
+        ));
     }
 
     #[test]
-    fn the_cli_answers_where_it_is_installed() {
-        if !installed() {
-            eprintln!("skipped: ringframe is not on PATH");
-            return;
-        }
-        let prefix = invocation_prefix(Path::new("/tmp"), "codex").expect("a profile");
-        assert!(prefix.ends_with(':'), "a prefix ends at the verb: {prefix:?}");
+    fn the_prefix_is_the_profiles() {
+        let world = Fixed::new().answers(
+            "ringframe",
+            &["profile", "show", "--host", "codex"],
+            0,
+            r#"{"invocation_prefix": "$rf:", "paste_fold_chars": 1001}"#,
+        );
+        assert_eq!(invocation_prefix(&world, Path::new("/p"), "codex"), Ok("$rf:".into()));
+        assert_eq!(paste_fold_chars(&world, Path::new("/p"), "codex"), Some(1001));
     }
 
     #[test]
     fn an_unknown_host_degrades_rather_than_inventing_a_prefix() {
-        if !installed() {
-            eprintln!("skipped: ringframe is not on PATH");
-            return;
-        }
-        let got = invocation_prefix(Path::new("/tmp"), "not-a-harness");
-        assert!(got.is_ok() || matches!(got, Err(Error::Refused { .. })));
+        let world = Fixed::new().exists("ringframe");
+        let got = invocation_prefix(&world, Path::new("/p"), "not-a-harness");
+        assert!(matches!(got, Err(Error::Refused { .. })), "{got:?}");
     }
 }
