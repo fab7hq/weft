@@ -52,6 +52,12 @@ impl Workspace {
         self.root.join(".fab7").join("rf")
     }
 
+    /// Whether this workspace already holds RingFrame's record. A hook writes
+    /// only into one that does: it never creates the record itself.
+    pub fn exists(&self) -> bool {
+        self.rf_dir().is_dir()
+    }
+
     pub fn ensure(&self) -> std::io::Result<&Self> {
         let rf = self.rf_dir();
         std::fs::create_dir_all(&rf)?;
@@ -79,7 +85,30 @@ pub fn resolve(cwd: Option<&Path>, explicit: Option<&Path>) -> std::io::Result<W
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()?,
     };
-    Ok(Workspace { root: canonical_path(&here)?, rule: "cwd".into() })
+    let here = canonical_path(&here)?;
+    if let Some(found) = discover(&here) {
+        let rule = if found == here { "cwd" } else { "found" };
+        return Ok(Workspace { root: found, rule: rule.into() });
+    }
+    Ok(Workspace { root: here, rule: "cwd".into() })
+}
+
+/// The nearest directory at or above `start` that already holds a RingFrame
+/// record, looking no higher than the Git repository `start` is in. A harness
+/// run from a subdirectory of a project, or a shell that moved into one, is
+/// still that project's: without this each such directory grew a record of
+/// its own. A repository nested in another keeps its own, and a directory
+/// outside any repository is looked at alone.
+pub fn discover(start: &Path) -> Option<PathBuf> {
+    for dir in start.ancestors() {
+        if dir.join(".fab7").join("rf").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        if dir.join(".git").exists() {
+            return None;
+        }
+    }
+    None
 }
 
 /// The plans this project already holds, by slug, sorted.
@@ -174,6 +203,24 @@ pub fn within(ws: &Workspace, path: &Path) -> Result<PathBuf, WorkspaceError> {
 /// Git is a hard requirement: Eval diffs it and Seal names a commit as the
 /// subject. Refused here rather than at Eval, so that no Ask is ever recorded
 /// in a workspace whose work could not later be evaluated or sealed.
+/// What every command but `init` says in a repository that has not been set
+/// up. Only `ringframe init` makes a workspace: a hook, a skill or a command
+/// that records something writes into one that exists, and never creates it.
+pub fn uninitialized(ws: &Workspace) -> String {
+    format!(
+        "{} has no RingFrame workspace. Go to your repository's root and run          `ringframe init` once, then try again.",
+        ws.root.display()
+    )
+}
+
+pub fn require_initialized(ws: &Workspace) -> Result<(), WorkspaceError> {
+    if ws.exists() {
+        Ok(())
+    } else {
+        Err(WorkspaceError::new("workspace.uninitialized", uninitialized(ws)))
+    }
+}
+
 pub fn require_git(ws: &Workspace) -> Result<(), WorkspaceError> {
     let ok = |args: &[&str]| matches!(git(&ws.root, args), Ok(out) if out.status.success());
     if !ok(&["rev-parse", "--git-dir"]) {
@@ -521,6 +568,51 @@ pub fn install_config(source: Option<&Path>) -> Result<Value, WorkspaceError> {
 
 fn io(code: &'static str) -> impl Fn(std::io::Error) -> WorkspaceError {
     move |e| WorkspaceError::new(code, e.to_string())
+}
+
+#[cfg(test)]
+mod discover_tests {
+    use super::*;
+
+    fn git_repo() -> crate::testing::TempDir {
+        let dir = crate::testing::tmp_dir();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_subdirectory_resolves_to_the_workspace_above_it() {
+        let repo = git_repo();
+        std::fs::create_dir_all(repo.path().join(".fab7/rf")).unwrap();
+        let sub = repo.path().join("crates/app");
+        std::fs::create_dir_all(&sub).unwrap();
+        let ws = resolve(Some(&sub), None).unwrap();
+        assert_eq!(ws.root, canonical_path(repo.path()).unwrap());
+        assert_eq!(ws.rule, "found");
+        assert!(ws.exists());
+    }
+
+    #[test]
+    fn with_no_record_anywhere_the_directory_is_the_workspace_and_nothing_is_made() {
+        let repo = git_repo();
+        let sub = repo.path().join("crates");
+        std::fs::create_dir_all(&sub).unwrap();
+        let ws = resolve(Some(&sub), None).unwrap();
+        assert_eq!(ws.root, canonical_path(&sub).unwrap());
+        assert_eq!(ws.rule, "cwd");
+        assert!(!ws.exists());
+        assert!(!sub.join(".fab7").exists() && !repo.path().join(".fab7").exists());
+    }
+
+    #[test]
+    fn the_search_stops_at_the_repository_it_starts_in() {
+        let outer = git_repo();
+        std::fs::create_dir_all(outer.path().join(".fab7/rf")).unwrap();
+        let inner = outer.path().join("vendor/lib");
+        std::fs::create_dir_all(inner.join(".git")).unwrap();
+        let ws = resolve(Some(&inner), None).unwrap();
+        assert_eq!(ws.root, canonical_path(&inner).unwrap(), "a nested repository keeps its own");
+    }
 }
 
 #[cfg(test)]

@@ -92,7 +92,12 @@ pub fn now_millis() -> i64 {
 }
 
 fn dir(ws: &Workspace, host: &str, session: &str) -> std::io::Result<PathBuf> {
-    ws.ensure()?;
+    if !ws.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            crate::workspace::uninitialized(ws),
+        ));
+    }
     let d = ws.rf_dir().join("sessions").join(host).join(session);
     std::fs::create_dir_all(&d)?;
     Ok(d)

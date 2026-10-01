@@ -73,7 +73,7 @@ pub fn publish(
     data: &[u8],
     role: &str,
 ) -> Result<Value, LedgerError> {
-    ws.ensure()?;
+    initialized(ws)?;
     let final_path = ws.rf_dir().join(rel_path);
     if final_path.exists() {
         return Err(LedgerError::new("ledger.immutable", rel_path));
@@ -133,8 +133,13 @@ impl Drop for Lock {
 
 use std::os::unix::fs::OpenOptionsExt;
 
+/// Only `ringframe init` makes the workspace; a record goes into one that exists.
+fn initialized(ws: &Workspace) -> Result<(), LedgerError> {
+    crate::workspace::require_initialized(ws).map_err(|e| LedgerError::new(&e.code, e.detail))
+}
+
 pub fn append(ws: &Workspace, event: &Value) -> Result<(), LedgerError> {
-    ws.ensure()?;
+    initialized(ws)?;
     let mut line = canonical(event);
     line.push(b'\n');
     let ledger = ws.rf_dir().join("ledger.jsonl");

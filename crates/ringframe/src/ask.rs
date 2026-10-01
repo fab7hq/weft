@@ -410,6 +410,7 @@ fn source_override(source: &[u8]) -> Result<Option<config::Overrides>, AskError>
 /// was never usable. This is the same refusal, available first.
 pub fn preflight(ws: &Workspace) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
+    workspace::require_initialized(ws)?;
     Ok(json!({"ready": true, "workspace": ws.root.to_string_lossy()}))
 }
 

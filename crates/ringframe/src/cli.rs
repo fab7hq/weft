@@ -575,6 +575,13 @@ fn hook_input(
     }
 }
 
+/// What a hook answers in a repository with no workspace: nothing recorded,
+/// and why. A hook never creates the workspace; `ringframe init` does.
+fn not_initialized(ws: Workspace, key: &str) -> (Workspace, Outcome) {
+    let out = json!({key: false, "reason": workspace::uninitialized(&ws)});
+    (ws, Outcome::Ok(0, out))
+}
+
 fn hook_workspace(
     explicit: Option<&PathBuf>,
     ws: Workspace,
@@ -1007,6 +1014,9 @@ fn dispatch(
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
+            if !ws.exists() {
+                return not_initialized(ws, "captured");
+            }
             let host = ns.one("--host").unwrap_or_default();
             let rec = match sessions::capture(&ws, host, &payload, ns.one("--host-version")) {
                 Ok(r) => r,
@@ -1052,6 +1062,9 @@ fn dispatch(
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
+            if !ws.exists() {
+                return not_initialized(ws, "recorded");
+            }
             let host = ns.one("--host").unwrap_or_default();
             match sessions::turn(&ws, host, &payload, event) {
                 Ok(rec) => {
@@ -1074,6 +1087,9 @@ fn dispatch(
                 Ok(read) => read,
                 Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
             };
+            if !ws.exists() {
+                return not_initialized(ws, "recorded");
+            }
             let host = ns.one("--host").unwrap_or_default();
             match evaluate::record_fact(
                 &ws,
@@ -1180,6 +1196,9 @@ fn ask_command(
                     Ok(read) => read,
                     Err((ws, e)) => return unrecorded(ws, e),
                 };
+                if !ws.exists() {
+                    return not_initialized(ws, "recorded");
+                }
                 let host = ns.one("--host").unwrap_or_default();
                 return match ask::delivery_from_hook(&ws, host, &payload) {
                     Ok(rec) => {
@@ -2127,7 +2146,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_uses_the_payload_project_and_initializes_private_storage() {
+    fn a_hook_in_a_subdirectory_writes_into_the_workspace_above_and_makes_none() {
         for host_name in ["codex", "claude-code"] {
             eval_bench(|ws| {
                 let project = ws.root.join("test");
@@ -2142,13 +2161,63 @@ mod tests {
                     &mut read,
                 );
                 assert_eq!(run.code, 0, "{}", run.err);
-                let rf = project.join(".fab7/rf");
-                assert!(rf.join(format!("sessions/{host_name}/nested/prompts.jsonl")).exists());
-                assert_eq!(std::fs::read_to_string(rf.join(".gitignore")).unwrap(), "*\n");
-                use std::os::unix::fs::PermissionsExt;
-                assert_eq!(rf.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+                let prompts = format!("sessions/{host_name}/nested/prompts.jsonl");
+                assert!(ws.rf_dir().join(prompts).exists());
+                assert!(!project.join(".fab7").exists(), "a hook made a workspace of its own");
             });
         }
+    }
+
+    #[test]
+    fn a_hook_with_no_workspace_records_nothing_and_makes_none() {
+        with_config_home(|_| {
+            let repo = crate::testing::repo();
+            let root = repo.path();
+            let payload = format!(
+                r#"{{"cwd":"{}","session_id":"s1","prompt":"/rf:ask fix login"}}"#,
+                root.display()
+            );
+            for argv in [
+                vec!["sessions", "capture", "--host", "claude-code"],
+                vec![
+                    "sessions",
+                    "turn",
+                    "--from-hook",
+                    "--host",
+                    "claude-code",
+                    "--event",
+                    "ready",
+                ],
+            ] {
+                let mut read = || payload.clone();
+                let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
+                let run = super::run(&argv, &mut read);
+                assert_eq!(run.code, 0, "a hook never fails the turn: {}", run.err);
+                assert!(run.out.contains("false"), "nothing is recorded: {}", run.out);
+            }
+            assert!(!root.join(".fab7").exists(), "only `ringframe init` makes a workspace");
+        });
+    }
+
+    #[test]
+    fn init_makes_the_private_workspace_and_an_ask_needs_it() {
+        with_config_home(|_| {
+            let repo = crate::testing::repo();
+            let c = Cli { root: repo.path().to_path_buf() };
+            let (code, out, _) = c.go(&["ask", "preflight"]);
+            assert_ne!(code, 0);
+            assert!(out.to_string().contains("workspace.uninitialized"), "{out}");
+            assert!(!repo.path().join(".fab7").exists());
+
+            let (code, _, _) = c.go(&["init"]);
+            assert_eq!(code, 0);
+            let rf = repo.path().join(".fab7/rf");
+            assert_eq!(std::fs::read_to_string(rf.join(".gitignore")).unwrap(), "*\n");
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(rf.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+            let (code, _, _) = c.go(&["ask", "preflight"]);
+            assert_eq!(code, 0);
+        });
     }
 
     #[test]
