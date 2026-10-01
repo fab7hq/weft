@@ -340,7 +340,9 @@ fn window_key(text: &str) -> String {
         .lines()
         .map(|l| {
             if l.starts_with("@@") {
-                "@@".to_string()
+                // Drop the numbers, keep the item git names after them.
+                let item = l.splitn(3, "@@").nth(2).unwrap_or_default();
+                format!("@@{item}")
             } else if l.starts_with("~ moved ") {
                 l.rsplit_once(':').map_or(l, |(head, _)| head).to_string()
             } else {
@@ -3245,6 +3247,29 @@ mod tests {
 
     /// A second Eval of the same Asks judges only what changed: here the
     /// beacon alone, so both steps keep their verdicts and no reduce runs.
+    #[test]
+    fn a_window_key_drops_line_numbers_but_keeps_the_item_and_the_path() {
+        let w = |path: &str, at: &str, item: &str| {
+            format!("--- {path}\n@@ {at} @@ {item}\n     let a = 1;\n+    log(a);\n")
+        };
+        let key = |t: String| window_key(&t);
+        assert_eq!(
+            key(w("src/a.rs", "-1,2 +1,3", "fn alpha() {")),
+            key(w("src/a.rs", "-40,2 +52,3", "fn alpha() {")),
+            "only the numbers moved"
+        );
+        assert_ne!(
+            key(w("src/a.rs", "-1,2 +1,3", "fn alpha() {")),
+            key(w("src/a.rs", "-9,2 +9,3", "fn beta() {")),
+            "the same lines in another item"
+        );
+        assert_ne!(
+            key(w("src/a.rs", "-1,2 +1,3", "fn alpha() {")),
+            key(w("src/b.rs", "-1,2 +1,3", "fn alpha() {")),
+            "the same lines in another file"
+        );
+    }
+
     #[test]
     fn a_later_eval_judges_only_what_changed_and_carries_the_rest() {
         eval_bench(|ws| {
