@@ -3248,8 +3248,6 @@ mod tests {
         panic!("the Eval did not close");
     }
 
-    /// A second Eval of the same Asks judges only what changed: here the
-    /// beacon alone, so both steps keep their verdicts and no reduce runs.
     #[test]
     fn a_window_stays_in_its_confirm_batch_once_its_confirm_lands() {
         let map = json!({"unexplained": "posts to an outside address"});
@@ -3296,6 +3294,8 @@ mod tests {
         );
     }
 
+    /// A second Eval of the same Asks judges only what changed: here the
+    /// beacon alone, so both steps keep their verdicts and no reduce runs.
     #[test]
     fn a_later_eval_judges_only_what_changed_and_carries_the_rest() {
         eval_bench(|ws| {
