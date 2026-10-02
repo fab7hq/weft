@@ -1105,7 +1105,8 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
 /// its batch, so the batches, and their task ids, do not change as confirms
 /// land: with several out at once, a `cw2` must still be `cw2` after `cw1`.
 fn needs_window_confirm(a: &BTreeMap<String, Value>) -> bool {
-    let carried = a.get("confirm").is_some_and(|c| c.get("carried_from").is_some_and(|f| !f.is_null()));
+    let carried =
+        a.get("confirm").is_some_and(|c| c.get("carried_from").is_some_and(|f| !f.is_null()));
     !carried && a.get("map").is_some_and(|m| m.get("unexplained").is_some_and(|u| !u.is_null()))
 }
 
@@ -3264,7 +3265,9 @@ mod tests {
             "confirmed in this Eval: its batch keeps it, so later batches keep their ids"
         );
         assert!(
-            !needs_window_confirm(&reading(Some(json!({"unexplained": "x", "carried_from": "evl_1"})))),
+            !needs_window_confirm(&reading(Some(
+                json!({"unexplained": "x", "carried_from": "evl_1"})
+            ))),
             "carried from an earlier Eval: read again by no one"
         );
         let explained = BTreeMap::from([("map".to_string(), json!({"serves": ["s1"]}))]);
