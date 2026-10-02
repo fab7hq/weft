@@ -75,6 +75,13 @@ pub fn installed(h: &Harness, listing: &Value) -> Option<String> {
     })
 }
 
+/// The version a plugin's `plugin.json` gives, for a harness whose listing
+/// gives none.
+pub fn manifest_version(text: &str) -> Option<String> {
+    let manifest: Value = serde_json::from_str(text).ok()?;
+    manifest["version"].as_str().filter(|v| !v.is_empty()).map(str::to_string)
+}
+
 /// The configuration's line, from what `ringframe sync --check` printed (or
 /// `None` when it could not tell), and the step that catches it up when it
 /// is behind.

@@ -27,6 +27,9 @@ pub trait Outside: Send + Sync {
     fn release(&self, fresh: bool) -> Result<serde_json::Value, String>;
     /// The program the person pointed at, if it is one that starts.
     fn check_program(&self, path: &str) -> Result<String, String>;
+    /// The text of the newest file at `pattern`, where a `*` folder stands
+    /// for any one folder: a harness's installed `plugin.json`.
+    fn newest(&self, pattern: &Path) -> Option<String>;
 }
 
 pub type Shared = Arc<dyn Outside>;
@@ -64,6 +67,29 @@ impl Outside for Machine {
     fn check_program(&self, path: &str) -> Result<String, String> {
         crate::onboarding::check_program(path)
     }
+
+    fn newest(&self, pattern: &Path) -> Option<String> {
+        let mut found = vec![std::path::PathBuf::new()];
+        for part in pattern.components() {
+            let part = part.as_os_str();
+            found = if part == "*" {
+                found
+                    .iter()
+                    .filter_map(|dir| std::fs::read_dir(dir).ok())
+                    .flatten()
+                    .flatten()
+                    .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                    .map(|e| e.path())
+                    .collect()
+            } else {
+                found.into_iter().map(|dir| dir.join(part)).collect()
+            };
+        }
+        let modified =
+            |p: &std::path::PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let newest = found.into_iter().filter(|p| p.is_file()).max_by_key(modified)?;
+        std::fs::read_to_string(newest).ok()
+    }
 }
 
 /// A world a test describes: the programs in it and what each answers.
@@ -73,11 +99,16 @@ impl Outside for Machine {
 pub struct Fixed {
     programs: BTreeMap<String, Vec<(Vec<String>, i32, String)>>,
     release: Result<serde_json::Value, String>,
+    files: Vec<(std::path::PathBuf, String)>,
 }
 
 impl Default for Fixed {
     fn default() -> Self {
-        Fixed { programs: BTreeMap::new(), release: Err("no release check in this world".into()) }
+        Fixed {
+            programs: BTreeMap::new(),
+            release: Err("no release check in this world".into()),
+            files: Vec::new(),
+        }
     }
 }
 
@@ -107,6 +138,13 @@ impl Fixed {
 
     pub fn with_release(mut self, release: Result<serde_json::Value, String>) -> Self {
         self.release = release;
+        self
+    }
+
+    /// A file at `path`, under whatever home asks for it, holding `text`.
+    /// The last one given that a pattern matches is its newest.
+    pub fn file(mut self, path: &str, text: &str) -> Self {
+        self.files.push((path.into(), text.to_string()));
         self
     }
 
@@ -152,6 +190,15 @@ impl Outside for Fixed {
             Err(format!("{path} is not a program that can run"))
         }
     }
+
+    fn newest(&self, pattern: &Path) -> Option<String> {
+        let asked: Vec<_> = pattern.components().map(|c| c.as_os_str().to_owned()).collect();
+        self.files.iter().rev().find_map(|(path, text)| {
+            let have: Vec<_> = path.components().map(|c| c.as_os_str().to_owned()).collect();
+            let tail = asked.get(asked.len().checked_sub(have.len())?..)?;
+            tail.iter().zip(&have).all(|(a, h)| a == "*" || a == h).then(|| text.clone())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -177,5 +224,24 @@ mod tests {
         assert!(!w.run("ringframe", &["ask", "preflight"], None).unwrap().status.success());
         assert!(w.run("claude", &["--version"], None).is_err(), "no such program");
         assert!(!w.run("codex", &["plugin", "list"], None).unwrap().status.success());
+    }
+
+    /// On the machine, a `*` folder is any one folder, and the most recently
+    /// written match is the one read.
+    #[test]
+    fn the_newest_file_a_pattern_matches_is_read() {
+        let root = std::env::temp_dir().join(format!("weft-newest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (dir, text) in [("aaa", "old"), ("bbb", "new")] {
+            let at = root.join("rf").join(dir);
+            std::fs::create_dir_all(&at).unwrap();
+            std::fs::write(at.join("plugin.json"), text).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::write(root.join("rf/stray.json"), "not a folder").unwrap();
+        assert_eq!(Machine.newest(&root.join("rf/*/plugin.json")).as_deref(), Some("new"));
+        assert_eq!(Machine.newest(&root.join("rf/aaa/plugin.json")).as_deref(), Some("old"));
+        assert_eq!(Machine.newest(&root.join("rf/*/missing.json")), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

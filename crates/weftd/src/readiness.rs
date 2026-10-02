@@ -21,9 +21,20 @@ pub fn look(out: &dyn Outside, h: &Harness, cli: bool) -> (Readiness, Option<Str
         return (Readiness::Missing(Gap::Cli), None);
     }
     match ask(out, h) {
-        Some(listing) => (read(h, &listing), weft_core::sync::installed(h, &listing)),
+        Some(listing) => {
+            let version = weft_core::sync::installed(h, &listing).or_else(|| from_manifest(out, h));
+            (read(h, &listing), version)
+        }
         None => (Readiness::Unknown, None),
     }
+}
+
+/// The version in the installed plugin's own `plugin.json`, for a harness
+/// whose listing gives none and whose file says where that file is.
+fn from_manifest(out: &dyn Outside, h: &Harness) -> Option<String> {
+    use crate::harness::OnThisMachine;
+    let at = h.config_home().join(h.manifest.as_deref()?);
+    weft_core::sync::manifest_version(&out.newest(&at)?)
 }
 
 /// What the harness said, or nothing at all when it would not say.
@@ -75,6 +86,7 @@ mod tests {
             resume: argv(&["resume"]),
             transcript: None,
             turbo: Vec::new(),
+            manifest: None,
             beta: false,
         }
     }
@@ -93,5 +105,41 @@ mod tests {
             Readiness::Missing(Gap::Marketplace)
         );
         assert_eq!(check(&Fixed::new(), &absent(), true), Readiness::Unknown);
+    }
+
+    /// A listing that gives no version (Antigravity's imports, Cursor's
+    /// marketplaces) leaves it to the plugin's own `plugin.json`, where the
+    /// harness file says it is: the newest match of a `*` folder wins.
+    #[test]
+    fn a_listing_without_a_version_reads_it_from_the_installed_manifest() {
+        let mut h = absent();
+        h.program = "nowhere".into();
+        let listing = r#"{"installed": [{"id": "rf@fab7", "enabled": true}], "available": []}"#;
+        let world = |files: &[(&str, &str)]| {
+            files
+                .iter()
+                .fold(Fixed::new().answers("nowhere", &["list"], 0, listing), |w, (p, t)| {
+                    w.file(p, t)
+                })
+        };
+        assert_eq!(look(&world(&[]), &h, true), (Readiness::Ready, None), "no manifest named");
+
+        h.manifest = Some("plugins/cache/fab7/rf/*/.cursor-plugin/plugin.json".into());
+        let old =
+            ("plugins/cache/fab7/rf/aaa/.cursor-plugin/plugin.json", r#"{"version": "0.1.2"}"#);
+        let new =
+            ("plugins/cache/fab7/rf/bbb/.cursor-plugin/plugin.json", r#"{"version": "0.1.3"}"#);
+        assert_eq!(look(&world(&[old, new]), &h, true).1.as_deref(), Some("0.1.3"));
+        let unversioned =
+            ("plugins/cache/fab7/rf/ccc/.cursor-plugin/plugin.json", r#"{"name": "rf"}"#);
+        assert_eq!(look(&world(&[unversioned]), &h, true).1, None, "a manifest without one");
+
+        let listed = r#"{"installed": [{"id": "rf@fab7", "enabled": true, "version": "0.1.1"}]}"#;
+        let both = Fixed::new().answers("nowhere", &["list"], 0, listed).file(new.0, new.1);
+        assert_eq!(
+            look(&both, &h, true).1.as_deref(),
+            Some("0.1.1"),
+            "the listing's own comes first"
+        );
     }
 }

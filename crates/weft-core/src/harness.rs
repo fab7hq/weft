@@ -49,6 +49,11 @@ pub struct Harness {
     /// How what `list` answers reads, when the file says: without it, Weft
     /// cannot tell whether the plugin is there.
     pub listing: Option<Listing>,
+    /// Where the installed plugin's `plugin.json` is, under the harness's
+    /// configuration home, for a harness whose listing gives no version. A
+    /// `*` stands for any one folder; the newest match is read.
+    #[serde(default)]
+    pub manifest: Option<String>,
     /// How this harness is told to pick a recorded session back up. The id is
     /// appended.
     pub resume: Vec<String>,
@@ -117,6 +122,7 @@ impl Harness {
             update_marketplace: argv(&plugin["update_marketplace"]),
             update_plugin: argv(&plugin["update"]),
             listing: serde_json::from_value(plugin["listing"].clone()).ok(),
+            manifest: text(&plugin["manifest"]),
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
