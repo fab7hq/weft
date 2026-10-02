@@ -269,6 +269,40 @@ mod tests {
         assert_eq!(read(&nested, &json!({"plugins": []})), Readiness::Missing(Gap::Marketplace));
     }
 
+    /// The version is read under the same name readiness looks for, so a
+    /// harness that lists `rf` can be shown behind as one listing `rf@fab7` is.
+    #[test]
+    fn the_version_is_read_under_the_name_readiness_looks_for() {
+        let version =
+            |h: &crate::harness::Harness, listing: Value| crate::sync::installed(h, &listing);
+        assert_eq!(
+            version(&without(), json!({"imports": [{"name": "rf", "version": "0.1.2"}]}))
+                .as_deref(),
+            Some("0.1.2"),
+            "no marketplaces: `rf`"
+        );
+
+        let mut p = crate::harness::fixture::file("codex");
+        p["plugin"]["listing"] =
+            json!({"installed": ["."], "available": [], "name": "name", "want": ["rf"]});
+        let bare = crate::harness::Harness::of("bare", &p).expect("a harness");
+        let listed = json!([{"name": "rf", "version": "0.1.2"}, {"name": "other", "version": "9"}]);
+        assert_eq!(version(&bare, listed).as_deref(), Some("0.1.2"), "marketplaces, wanting `rf`");
+
+        p["plugin"]["listing"] = json!({"installed": ["plugins"], "available": [], "name": "plugin.id",
+                                        "on": ["active"], "want": ["rf"]});
+        let nested = crate::harness::Harness::of("nested", &p).expect("a harness");
+        let listed =
+            json!({"plugins": [{"active": true, "plugin": {"id": "rf", "version": "0.1.2"}}]});
+        assert_eq!(version(&nested, listed).as_deref(), Some("0.1.2"), "beside a dotted name");
+
+        assert_eq!(
+            version(&with(), json!({"installed": [{"id": "rf", "version": "0.1.2"}]})),
+            None,
+            "a harness with marketplaces and no `want` still names it `rf@fab7`"
+        );
+    }
+
     #[test]
     fn each_state_says_a_different_thing_and_names_its_harness() {
         assert_eq!(Readiness::Ready.say("codex"), None);

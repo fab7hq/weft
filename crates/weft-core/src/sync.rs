@@ -52,12 +52,26 @@ impl Step {
     }
 }
 
-/// The installed `rf` version, from the same listing readiness reads.
+/// The installed `rf` version, from the same listing readiness reads, under
+/// the name readiness looks for: `rf@fab7` where the harness has
+/// marketplaces, `rf` where it has none or its file wants `rf`. The version
+/// is the row's own, or beside a dotted name (`plugin.version` for
+/// `plugin.id`).
 pub fn installed(h: &Harness, listing: &Value) -> Option<String> {
+    use crate::readiness::field;
     let shape = h.listing.as_ref()?;
+    let plugin = crate::harness::PLUGIN;
+    let short = plugin.split('@').next().unwrap_or(plugin);
+    let wanted = if shape.want.iter().any(|w| w == short) || h.add_marketplace.is_none() {
+        short
+    } else {
+        plugin
+    };
+    let beside = shape.name.rsplit_once('.').map(|(at, _)| format!("{at}.version"));
     crate::readiness::rows(listing, &shape.installed).iter().find_map(|row| {
-        let id = crate::readiness::field(row, &shape.name)?.as_str()?;
-        (id == crate::harness::PLUGIN).then(|| row["version"].as_str().map(str::to_string))?
+        (field(row, &shape.name)?.as_str()? == wanted).then_some(())?;
+        let version = beside.as_deref().and_then(|b| field(row, b)).or_else(|| row.get("version"));
+        version?.as_str().map(str::to_string)
     })
 }
 
