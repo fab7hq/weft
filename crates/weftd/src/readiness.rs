@@ -20,22 +20,31 @@ pub fn look(out: &dyn Outside, h: &Harness, cli: bool) -> (Readiness, Option<Str
     if !cli {
         return (Readiness::Missing(Gap::Cli), None);
     }
-    match ask(out, h) {
-        Some(listing) => {
-            let version = weft_core::sync::installed(h, &listing).or_else(|| from_manifest(out, h));
-            (read(h, &listing), version)
-        }
-        None => (Readiness::Unknown, None),
+    let Some(listing) = ask(out, h) else { return (Readiness::Unknown, None) };
+    let state = read(h, &listing);
+    if let Some(version) = weft_core::sync::installed(h, &listing) {
+        return (state, Some(version));
+    }
+    // A listing that gives no version leaves it to the installed plugin's own
+    // `plugin.json`, where the harness file says it is.
+    let Some(at) = h.manifest.as_deref() else { return (state, None) };
+    use crate::harness::OnThisMachine;
+    match out.newest(&h.config_home().join(at)) {
+        // No plugin there, whatever the listing proved (Cursor's lists only
+        // the marketplace): the plugin itself is still to be installed.
+        None if state == Readiness::Ready => (Readiness::Missing(Gap::Plugin), None),
+        None => (state, None),
+        // A plugin from before it carried a version is older than any.
+        Some(text) => (
+            state,
+            Some(weft_core::sync::manifest_version(&text).unwrap_or_else(|| UNVERSIONED.into())),
+        ),
     }
 }
 
-/// The version in the installed plugin's own `plugin.json`, for a harness
-/// whose listing gives none and whose file says where that file is.
-fn from_manifest(out: &dyn Outside, h: &Harness) -> Option<String> {
-    use crate::harness::OnThisMachine;
-    let at = h.config_home().join(h.manifest.as_deref()?);
-    weft_core::sync::manifest_version(&out.newest(&at)?)
-}
+/// What an installed plugin whose `plugin.json` gives no version reads as:
+/// behind every release, so its update is offered.
+pub const UNVERSIONED: &str = "unversioned";
 
 /// What the harness said, or nothing at all when it would not say.
 fn ask(outside: &dyn Outside, h: &Harness) -> Option<Value> {
@@ -132,7 +141,17 @@ mod tests {
         assert_eq!(look(&world(&[old, new]), &h, true).1.as_deref(), Some("0.1.3"));
         let unversioned =
             ("plugins/cache/fab7/rf/ccc/.cursor-plugin/plugin.json", r#"{"name": "rf"}"#);
-        assert_eq!(look(&world(&[unversioned]), &h, true).1, None, "a manifest without one");
+        assert_eq!(
+            look(&world(&[unversioned]), &h, true),
+            (Readiness::Ready, Some(UNVERSIONED.into())),
+            "a plugin from before it carried a version"
+        );
+        assert!(weft_core::sync::older(UNVERSIONED, "0.1.3"), "so it is behind any release");
+        assert_eq!(
+            look(&world(&[]), &h, true),
+            (Readiness::Missing(Gap::Plugin), None),
+            "the listing proves the marketplace, and no plugin is there"
+        );
 
         let listed = r#"{"installed": [{"id": "rf@fab7", "enabled": true, "version": "0.1.1"}]}"#;
         let both = Fixed::new().answers("nowhere", &["list"], 0, listed).file(new.0, new.1);

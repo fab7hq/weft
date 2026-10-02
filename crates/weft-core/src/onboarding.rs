@@ -62,7 +62,7 @@ impl State {
             State::Behind { have, latest } => format!("rf {have} → {latest}"),
             State::NotFound => "not found".into(),
             State::NotSetUp => "not set up".into(),
-            State::CannotInstall => "its harness file names no command for it".into(),
+            State::CannotInstall => "Weft cannot do this one: its setup page says how".into(),
             State::Unknown => "would not say whether it is set up".into(),
             State::Checking => "checking".into(),
             State::NoCli => "RingFrame is missing: run Weft's installer again".into(),
