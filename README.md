@@ -45,14 +45,9 @@ probes that check one mechanism against a real harness, by hand.
 
 `./bin/reinstall-local` builds both binaries, installs them, syncs RingFrame's
 configuration and Weft's harness files (`~/.fab7/weft/harnesses/`) from a `fab7`
-checkout beside this one, and reinstalls the plugins, so a change is tested as
-users will get it:
-
-```sh
-./bin/reinstall-local           # every harness
-./bin/reinstall-local <harness>  # one harness
-./bin/reinstall-local none      # binaries and configuration only
-```
+checkout beside this one, and restarts the daemon, so a change is tested as
+users will get it. Each harness's plugin is then set up from Weft's RingFrame
+view (`U`).
 
 ## License
 

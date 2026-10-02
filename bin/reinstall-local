@@ -1,31 +1,19 @@
 #!/bin/sh
-# Put this working tree's binaries, configuration and plugins in front of your
-# hosts, for testing an edit before it is released.
+# Put this working tree's RingFrame and Weft, and a fab7 checkout's
+# configuration and harness files, in place, for testing an edit before it is
+# released. `install.sh` fetches a published build; this installs what you
+# just wrote:
 #
-# `install.sh` fetches a published build; this installs what you just wrote.
-# Four things have to move together and they live in two repositories:
-#
-#   the binaries       built here, into ~/.local/bin
+#   ringframe, weft    built here, into ~/.local/bin
 #   the configuration  from the fab7 checkout, into ~/.fab7/rf/config
 #   the harness files  from the fab7 checkout, into ~/.fab7/weft/harnesses
-#   the plugins        from the fab7 checkout, into each harness
 #
-# It then restarts the Weft daemon, which ends the agents running in it.
+# It then restarts the Weft daemon, which ends the agents running in it. Each
+# harness's plugin is set up in Weft's RingFrame view (`U`), as for a release.
 #
-# Miss the middle one and the skills change while the core keeps reading the
-# configuration it last synced from the marketplace, which is a confusing way
-# to spend an afternoon.
+#   ./bin/reinstall-local
 #
-#   ./bin/reinstall-local                    everything, every harness
-#   ./bin/reinstall-local <harness>          everything; the plugin for that harness only
-#   ./bin/reinstall-local none               binaries, configuration and harness files only
-#   ./bin/reinstall-local plugins [harness]  the plugins only (HostLab's candidate)
-#
-# A harness is named as its harness file is. How each one's plugin comes out
-# and goes back in is its harness file's to say, as for `install.sh`: Weft
-# names no harness.
-#
-# FAB7_DIR overrides where the marketplace checkout is (default: ../fab7).
+# FAB7_DIR overrides where the fab7 checkout is (default: ../fab7).
 # WEFT_BIN_DIR overrides where the binaries go (default: ~/.local/bin), the
 # same variable install.sh reads.
 set -eu
@@ -33,77 +21,6 @@ set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 fab7=${FAB7_DIR:-$(CDPATH= cd -- "$root/../fab7" 2>/dev/null && pwd || true)}
 bin_dir=${WEFT_BIN_DIR:-$HOME/.local/bin}
-want=${1:-all}
-only=all
-case $want in
-    plugins) only=${2:-all} ;;
-    all | none) ;;
-    *) only=$want ;;
-esac
-
-# A key of a harness file, as its line reads, and an argv's words. The same
-# reading as install.sh's.
-field() { sed -n "s/^$1 = //p" "$2" | head -n 1; }
-words() { printf '%s' "$1" | tr -d '[]",'; }
-# The published source a harness file names, pointed at this checkout: the
-# marketplace (`fab7hq/fab7`), or the repository at a plugin's path.
-from_tree() {
-    printf '%s' "$1" | sed "s#https://github.com/fab7hq/fab7/tree/main#$fab7#g; s#fab7hq/fab7#$fab7#g"
-}
-
-# Each harness's plugin, taken out and put back from the checkout, by the
-# harness's own commands: the installed plugin, its marketplace and its cache
-# first, so an edit lands at the same version, then the source added back.
-plugins() {
-    for file in "$fab7/products/weft/harnesses"/*.toml; do
-        [ -f "$file" ] || continue
-        id=$(basename "$file" .toml)
-        [ "$only" = all ] || [ "$only" = "$id" ] || continue
-        program=$(field program "$file" | tr -d '"')
-        if ! command -v "$program" >/dev/null 2>&1; then
-            printf '  plugin  %s: %s is not on PATH, skipped\n' "$id" "$program"
-            continue
-        fi
-        # The words that always follow the program, for a harness reached
-        # through another command.
-        pre=$(words "$(field args "$file")")
-        install=$(field install "$file")
-        if [ -z "$install" ]; then
-            printf '  plugin  %s: its harness file names no install, skipped\n' "$id"
-            continue
-        fi
-        for step in uninstall remove_marketplace; do
-            argv=$(field "$step" "$file")
-            # shellcheck disable=SC2046 # an argv, split on purpose
-            [ -z "$argv" ] || "$program" $pre $(words "$argv") >/dev/null 2>&1 || true
-        done
-        cache=$(field cache "$file" | tr -d '"')
-        if [ -n "$cache" ]; then
-            var=$(field env "$file" | tr -d '"')
-            home=''
-            [ -z "$var" ] || home=$(printenv "$var" || true)
-            [ -n "$home" ] || home="$HOME/$(field default "$file" | tr -d '"')"
-            rm -rf "${home:?}/$cache"
-        fi
-        add=$(field add_marketplace "$file")
-        # shellcheck disable=SC2046
-        if { [ -z "$add" ] || "$program" $pre $(words "$(from_tree "$add")") >/dev/null; } &&
-            "$program" $pre $(words "$(from_tree "$install")") >/dev/null; then
-            printf '  plugin  %s, from %s\n' "$id" "$fab7"
-        else
-            printf '  plugin  %s: its install failed\n' "$id"
-        fi
-    done
-}
-
-if [ "$want" = plugins ]; then
-    [ -n "$fab7" ] && [ -d "$fab7/products/weft/harnesses" ] ||
-        { printf '%s\n' "no fab7 checkout at ${fab7:-../fab7}; set FAB7_DIR" >&2; exit 1; }
-    printf 'Reinstalling the plugins from %s\n' "$fab7"
-    plugins
-    printf '\n%s\n' 'Restart the host: a running session keeps the skill it loaded at startup.'
-    exit 0
-fi
 
 printf 'Building from %s\n' "$root"
 ( cd "$root" && cargo build --release --locked --bin weft --bin ringframe )
@@ -123,7 +40,7 @@ if [ -n "$fab7" ] && [ -d "$fab7/products/ringframe/config" ]; then
     "$bin_dir/ringframe" init --global --from "$fab7/products/ringframe/config" >/dev/null
     printf '  config  %s\n' "$(cat "${HOME}/.fab7/rf/config/.revision" 2>/dev/null || echo installed)"
 else
-    printf '  config  skipped: no marketplace checkout at %s\n' "${fab7:-../fab7}"
+    printf '  config  skipped: no fab7 checkout at %s\n' "${fab7:-../fab7}"
     printf '          set FAB7_DIR if it lives somewhere else\n'
 fi
 
@@ -140,14 +57,6 @@ else
     printf '  harness skipped: no %s/products/weft/harnesses\n' "${fab7:-../fab7}"
 fi
 
-if [ "$want" != none ]; then
-    if [ -n "$fab7" ] && [ -d "$fab7/products/weft/harnesses" ]; then
-        plugins
-    else
-        printf '  plugin  skipped: no %s/products/weft/harnesses\n' "${fab7:-../fab7}"
-    fi
-fi
-
 # A running daemon is still the old binary, and only a starting one writes
 # ~/.fab7/weft/config.toml. Stopping it ends the agents in its panes.
 "$bin_dir/weft" stop | sed 's/^weft: /  weft    /'
@@ -158,4 +67,3 @@ case ":$PATH:" in
     *":$bin_dir:"*) ;;
     *) printf '\n%s\n' "Add $bin_dir to your PATH." ;;
 esac
-printf '\n%s\n' 'Restart the host: a running session keeps the skill it loaded at startup.'
