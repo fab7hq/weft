@@ -37,6 +37,27 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
         ],
         "the client draws, and asks the daemon for everything else",
     ),
+    (
+        "weft-remote",
+        &[
+            "anyhow",
+            "base64ct",
+            "ed25519-dalek",
+            "getrandom",
+            "http",
+            "serde_json",
+            "sha2",
+            "toml",
+            "tungstenite",
+            "ureq",
+            "web-push-native",
+            "weft-core",
+            "weft-proto",
+        ],
+        "another device's way in: a socket client like the TUI, the tunnel, the WebSocket \
+         (tungstenite), HTTPS (ureq with rustls), Web Push (web-push-native), Fab7's assertions \
+         (ed25519-dalek) and its own randomness (getrandom); never weftd",
+    ),
 ];
 
 fn dependencies(manifest: &str) -> Vec<String> {

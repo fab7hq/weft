@@ -132,6 +132,11 @@ fn main() -> Result<()> {
 
     // Started by a client to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
+    // Weft from another device: started by the daemon while remote access is
+    // on (remote.md §5).
+    if first.as_deref() == Some("remote") {
+        return weft_remote::run();
+    }
     if first.as_deref() == Some("--serve") {
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&protocol::socket_path(), &weft::routing::file());

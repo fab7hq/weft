@@ -1,0 +1,34 @@
+[package]
+name = "weft-remote"
+version = "0.1.3"
+edition = "2024"
+license = "Apache-2.0"
+
+# `weft remote`: Weft from another device (remote.md). A client of the
+# daemon's socket like the TUI, and the only part of Weft that listens on a
+# network port: loopback, behind cloudflared. Threads and channels, like the
+# daemon; no async runtime.
+[dependencies]
+anyhow = "1.0.104"
+# base64url for assertions, push keys and tokens; already under web-push-native.
+base64ct = { version = "1.8.3", features = ["alloc"] }
+# Checks Fab7's assertions (remote.md §8).
+ed25519-dalek = "3.0.0"
+# Tokens, the epoch, device ids.
+getrandom = "0.4.3"
+# The push request web-push-native builds is an http::Request.
+http = "1.4.2"
+serde_json = "1.0.151"
+# Agent ids and token hashes.
+sha2 = "0.11.0"
+# devices.toml and machine.toml.
+toml = "1.1.6"
+# The WebSocket, blocking, one thread per connection.
+tungstenite = "0.30.0"
+# HTTPS to the account service, GitHub and push services.
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# Web Push's encryption and VAPID, without its own HTTP.
+web-push-native = "0.5.0"
+weft-core = { path = "../weft-core" }
+weft-proto = { path = "../weft-proto" }
+

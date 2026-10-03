@@ -21,6 +21,7 @@ ratatui = "0.30.2"
 serde_json = "1.0.151"
 weft-core = { path = "crates/weft-core" }
 weft-proto = { path = "crates/weft-proto" }
+weft-remote = { path = "crates/weft-remote" }
 weft-tui = { path = "crates/weft-tui" }
 weftd = { path = "crates/weftd" }
 
