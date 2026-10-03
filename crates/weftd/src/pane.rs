@@ -618,7 +618,8 @@ mod tests {
         assert!(seqs.len() > 1, "more than one chunk: {seqs:?}");
         assert!(seqs.windows(2).all(|w| w[0] < w[1]), "strictly increasing: {seqs:?}");
         let (_, at) = pane.screen_at();
-        assert_eq!(at, *seqs.last().unwrap(), "the screen has taken every chunk sent");
+        // The shell's prompt may follow as one more chunk, so at least.
+        assert!(at >= *seqs.last().unwrap(), "the screen has taken every chunk sent: {at}");
         pane.stop();
     }
 
