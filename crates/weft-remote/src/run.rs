@@ -2,7 +2,7 @@
 //! the daemon's clients, the WebSockets, the tunnel and the account thread.
 //! Nothing it does waits on the network.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -21,6 +21,8 @@ use crate::socket::{self, Outbox, Socket};
 use crate::store::{self, Machine};
 use crate::tunnel::{self, Tunnel, TunnelEvent};
 use crate::view::View;
+
+mod protocol;
 
 /// The remote protocol's version.
 pub const VERSION: u64 = 1;
@@ -56,6 +58,11 @@ pub enum Wake {
     Tunnel(TunnelEvent),
     SignIn(SignIn),
     Tick,
+    /// Enter, after a message's paste (remote.md §4).
+    Enter {
+        at: usize,
+        pane: u32,
+    },
 }
 
 impl From<Heard> for Wake {
@@ -71,10 +78,35 @@ impl From<Socket> for Wake {
 }
 
 /// One WebSocket.
+#[derive(Default)]
 struct Conn {
     outbox: Outbox,
     /// The device it is, once it said hello with its token.
     device: Option<String>,
+    /// The agent it has open: a project and a pane.
+    watching: Option<(usize, u32)>,
+    /// Frames were dropped: nothing but a whole screen until one comes.
+    needs_full: bool,
+    /// The agents it has typed into since the Mac last did.
+    driving: HashSet<(usize, u32)>,
+    /// What it last said it shows: in the foreground, and which agent.
+    seen: Option<(bool, Option<String>)>,
+}
+
+/// A call made for a device's request, waiting for the daemon's answer.
+struct Asked {
+    conn: u64,
+    req: Value,
+    /// What the answer carries back: nothing, a pending, or a read.
+    carries: Carries,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Carries {
+    Nothing,
+    Pending,
+    Text,
+    Record,
 }
 
 /// A device waiting for the person's yes on this machine.
@@ -109,6 +141,13 @@ struct Remote {
     reported: Reported,
     cancel: Arc<AtomicBool>,
     _tunnel: Option<Tunnel>,
+    /// Calls waiting for the daemon's answer, by project and call id.
+    calls: HashMap<(usize, u64), Asked>,
+    /// What is waiting on the person, by pending id: its project and the
+    /// `pending` message devices are sent.
+    pendings: BTreeMap<String, (usize, Value)>,
+    /// When the person last typed on the Mac.
+    last_presence: Option<Instant>,
 }
 
 /// Run until told to stop, or the daemon goes.
@@ -165,6 +204,9 @@ impl Remote {
             reported: Reported::default(),
             cancel: Arc::default(),
             _tunnel: tunnel,
+            calls: HashMap::new(),
+            pendings: BTreeMap::new(),
+            last_presence: None,
         };
         remote.open_projects();
         if remote.machine.is_none() && !remote.view.no_cloudflared {
@@ -194,6 +236,10 @@ impl Remote {
                     self.tick();
                     true
                 }
+                Wake::Enter { at, pane } => {
+                    self.call(at, Call::Input { pane, bytes: b"\r".to_vec() });
+                    true
+                }
             };
             if !go_on {
                 break;
@@ -220,7 +266,12 @@ impl Remote {
                 daemon::Project::open(&self.settings.socket, &path, at, self.tx.clone())
             {
                 let agents = agents::Project::opened(&path, &client.opened);
+                let listed: Vec<Value> =
+                    client.opened["pendings"].as_array().cloned().unwrap_or_default();
                 self.projects.push(Some(Open { client, agents }));
+                for p in listed.iter().filter_map(weft_proto::pending_of) {
+                    self.pending_added(at, p);
+                }
                 self.tell_agents();
             }
         }
@@ -234,10 +285,29 @@ impl Remote {
                 if let Some(slot) = self.projects.get_mut(at) {
                     *slot = None;
                 }
+                let lost: Vec<_> = self.calls.keys().filter(|(p, _)| *p == at).copied().collect();
+                for key in lost {
+                    let asked = self.calls.remove(&key).expect("a call");
+                    self.error(asked.conn, &asked.req, "gone", "the project closed");
+                }
+                self.pendings.retain(|_, (p, _)| *p != at);
                 self.tell_agents();
             }
             Heard::Event(CONTROL, Event::RemoteAct { act }) => return self.act(&act),
-            Heard::Event(CONTROL, _) | Heard::Answer(..) => {}
+            Heard::Event(_, Event::Presence { .. }) => self.presence(),
+            Heard::Event(CONTROL, _) => {}
+            Heard::Answer(at, id, answer) => self.answered(at, id, answer),
+            Heard::Event(at, Event::Screen { pane, seq, full, rows, cols, bytes }) => {
+                self.screen(at, pane, seq, full, rows, cols, &bytes)
+            }
+            Heard::Event(at, Event::Pending { id, pane, what, why, payload }) => {
+                self.pending_added(at, Event::Pending { id, pane, what, why, payload })
+            }
+            Heard::Event(_, Event::Resolved { id, yes }) => {
+                if self.pendings.remove(&id).is_some() {
+                    self.to_devices(&json!({"type": "resolved", "id": id, "yes": yes}));
+                }
+            }
             Heard::Event(at, event) => {
                 let changed = self
                     .projects
@@ -374,15 +444,17 @@ impl Remote {
     fn socket(&mut self, s: Socket) {
         match s {
             Socket::Opened(id, outbox) => {
-                self.conns.insert(id, Conn { outbox, device: None });
+                self.conns.insert(id, Conn { outbox, ..Conn::default() });
             }
             Socket::Closed(id) => {
-                self.conns.remove(&id);
+                if let Some(c) = self.conns.remove(&id) {
+                    self.unwatch(id, c.watching);
+                }
                 if self.asking.as_ref().is_some_and(|a| a.conn == id) {
                     self.asking = None;
                 }
             }
-            Socket::Drained(_) => {}
+            Socket::Drained(id) => self.drained(id),
             Socket::Message(id, text) => self.message(id, &text),
         }
     }
@@ -421,9 +493,9 @@ impl Remote {
         match (m["type"].as_str(), device) {
             (Some("hello"), None) => self.hello(conn, &m),
             (Some("pair"), None) => self.pair(conn, &m),
-            // Nothing else before a hello, and nothing the protocol does not
-            // allow after one.
-            _ => self.close(conn),
+            // Nothing else before a hello.
+            (_, None) => self.close(conn),
+            (_, Some(_)) => self.request(conn, &m),
         }
     }
 
@@ -442,10 +514,11 @@ impl Remote {
         }
         let machine = self.machine.as_ref().map(|m| json!({"id": m.id, "name": m.name}));
         let agents = self.agents_message()["agents"].clone();
+        let pendings: Vec<Value> = self.pendings.values().map(|(_, p)| p.clone()).collect();
         self.send(
             conn,
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
-                   "vapid": null, "agents": agents, "pendings": []}),
+                   "vapid": null, "agents": agents, "pendings": pendings}),
         );
     }
 

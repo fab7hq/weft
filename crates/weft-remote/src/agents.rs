@@ -9,6 +9,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use weft_core::board::PaneInfo;
+use weft_core::ledger::Unit;
 use weft_core::turns::Turn;
 use weft_proto::Event;
 
@@ -34,6 +35,8 @@ pub struct Project {
     titles: HashMap<String, String>,
     /// Each pane's turn as last listed, and since when (milliseconds).
     since: HashMap<u32, (&'static str, i64)>,
+    /// The board, for the Ask an Eval or a Seal from a device is about.
+    units: Vec<Unit>,
 }
 
 impl Project {
@@ -57,6 +60,7 @@ impl Project {
             turns: serde_json::from_value(answer["agents"]["panes"].clone()).unwrap_or_default(),
             titles,
             since: HashMap::new(),
+            units: serde_json::from_value(answer["units"].clone()).unwrap_or_default(),
         };
         p.stamp(now());
         p
@@ -83,6 +87,7 @@ impl Project {
                 None => return false,
             },
             Event::Agents { panes, .. } => self.turns = panes.clone(),
+            Event::Units { units, .. } => self.units = units.clone(),
             _ => return false,
         }
         self.stamp(now());
@@ -99,6 +104,16 @@ impl Project {
         let p = self.panes.iter().find(|p| p.pane == pane)?;
         let title = self.titles.get(&p.harness).map_or(p.harness.as_str(), String::as_str);
         Some((p.harness.as_str(), title))
+    }
+
+    /// The Ask a device's Eval or Seal for this pane is about: the latest of
+    /// its harness's here that is neither cancelled nor sealed. The board has
+    /// no pane for an Ask, so this is the nearest the record says.
+    pub fn unit_for(&self, pane: u32) -> Option<&Unit> {
+        let (harness, _) = self.harness(pane)?;
+        self.units.iter().rev().find(|u| {
+            u.harness == harness && !u.cancelled && u.sealed.is_none() && !u.requested_only
+        })
     }
 
     /// The turn a device is shown for the pane at `i`.
@@ -136,14 +151,19 @@ impl Project {
             .map(|i| {
                 let p = &self.panes[i];
                 let (harness, title) = self.harness(p.pane).unwrap_or_default();
-                json!({
+                let mut row = json!({
                     "agent": agent_id(&self.key, p.pane),
                     "project": self.name,
                     "harness": harness,
                     "title": title,
                     "turn": self.turn(i),
                     "since": self.since.get(&p.pane).map_or(0, |(_, at)| *at),
-                })
+                });
+                if let Some(u) = self.unit_for(p.pane) {
+                    let eval = u.check.as_ref().map(|c| c.eval_id.clone());
+                    row["unit"] = json!({"id": u.ask_id, "title": u.title, "eval": eval});
+                }
+                row
             })
             .collect()
     }

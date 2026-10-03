@@ -356,3 +356,47 @@ impl Device {
         }
     }
 }
+
+/// A TUI that opened a project and started a shell in it: its client, and
+/// the project's folder.
+pub struct Shell {
+    pub tui: Tui,
+    pub project: PathBuf,
+}
+
+impl Harness {
+    /// A project with a shell running in it, as the TUI starts one.
+    pub fn shell(&self, name: &str) -> Shell {
+        let project = self.dir.join(name);
+        std::fs::create_dir_all(&project).unwrap();
+        let mut tui = Tui::connect(&self.socket);
+        let path = project.to_string_lossy().into_owned();
+        // It never reads a pane's bytes: a client that does not read them
+        // would stall the daemon's broadcast.
+        tui.call(Call::Open { path, rows: 24, cols: 80, raw: false });
+        tui.call(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+        Shell { tui, project }
+    }
+}
+
+impl Device {
+    /// The agents list once it holds `n` rows.
+    pub fn agents(&mut self, n: usize) -> Vec<Value> {
+        loop {
+            let m = self.next();
+            if m["type"] == "agents" && m["agents"].as_array().is_some_and(|a| a.len() == n) {
+                return m["agents"].as_array().unwrap().clone();
+            }
+        }
+    }
+
+    /// The answer to `req`: `ok` or `error`, skipping everything else.
+    pub fn answer(&mut self, req: i64) -> Value {
+        loop {
+            let m = self.next();
+            if (m["type"] == "ok" || m["type"] == "error") && m["req"] == req {
+                return m;
+            }
+        }
+    }
+}
