@@ -57,6 +57,10 @@ impl Release {
         let harnesses = fab7.join(format!("fab7-{tag}/products/weft/harnesses"));
         std::fs::create_dir_all(&harnesses).unwrap();
         std::fs::write(harnesses.join("zed-agent.toml"), "title = \"Zed Agent\"\n").unwrap();
+        // And its tool files (ADR-0023).
+        let tools = fab7.join(format!("fab7-{tag}/products/weft/tools"));
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::write(tools.join("cloudflared.toml"), "program = \"cloudflared\"\n").unwrap();
         run(&[
             "tar",
             "-czf",
@@ -183,6 +187,21 @@ fn the_harness_files_are_installed_from_the_same_fab7_and_replace_the_old() {
     let text =
         format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(installed.join("zed-agent.toml").is_file(), "{text}");
+    assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
+}
+
+/// The tool files come the same way, and replace the old the same way
+/// (ADR-0023).
+#[test]
+fn the_tool_files_are_installed_beside_the_harness_files() {
+    let release = Release::make("v0.1.0", false);
+    let installed = release.dir.path().join("home/.fab7/weft/tools");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(installed.join("gone.toml"), "program = \"gone\"\n").unwrap();
+    let out = release.install("v0.1.0");
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(installed.join("cloudflared.toml").is_file(), "{text}");
     assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
 }
 

@@ -98,6 +98,14 @@ if [ -n "$revision" ] && [ "$revision" != local ] &&
     rm -rf "$harnesses"
     mv "$harnesses.new" "$harnesses"
     printf 'Installed the harness files of fab7 %s to %s\n' "$revision" "$harnesses"
+    # Its tool files too: how Weft installs cloudflared when asked (ADR-0023).
+    tools="$HOME/.fab7/weft/tools"
+    if [ -d "$work"/fab7/*/products/weft/tools ]; then
+        rm -rf "$tools.new"
+        cp -R "$work"/fab7/*/products/weft/tools "$tools.new"
+        rm -rf "$tools"
+        mv "$tools.new" "$tools"
+    fi
 else
     printf '\n%s\n' "Weft's harness files could not be installed, so Weft offers no harness yet."
     printf '%s\n' 'Run `weft update` again once the configuration is in place.'
