@@ -7,6 +7,9 @@
 //! machine admits a device. Nothing here types what the person did not ask
 //! for, or runs a harness.
 
+pub mod agents;
+pub mod daemon;
+
 /// Run until told to stop.
 pub fn run() -> anyhow::Result<()> {
     anyhow::bail!("weft remote: not built yet")

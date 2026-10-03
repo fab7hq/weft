@@ -32,3 +32,7 @@ web-push-native = "0.5.0"
 weft-core = { path = "../weft-core" }
 weft-proto = { path = "../weft-proto" }
 
+# Tests talk to a real daemon, as the TUI's do. Not in the graph of anything
+# that ships this crate.
+[dev-dependencies]
+weftd = { path = "../weftd" }

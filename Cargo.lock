@@ -3057,6 +3057,7 @@ dependencies = [
  "web-push-native",
  "weft-core",
  "weft-proto",
+ "weftd",
 ]
 
 [[package]]
