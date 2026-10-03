@@ -1,4 +1,4 @@
-//! remote.md §12: with no `cloudflared`, the view says how to install it;
+//! remote.md §12: with no `cloudflared`, the view says so;
 //! looking again once it is there starts the tunnel.
 
 mod common;
@@ -19,7 +19,7 @@ fn looking_again_finds_cloudflared_once_it_is_installed() {
         },
         "no_cloudflared",
     );
-    assert_eq!(h.tui.view["install"], "brew install cloudflared");
+    assert!(h.tui.view["offer"].is_null(), "no tool file here: {}", h.tui.view);
     let (moved, program) = aside.unwrap();
     std::fs::rename(moved, program).unwrap();
     h.tui.act(json!({"act": "look"}));

@@ -38,6 +38,8 @@ pub struct Settings {
     pub account: Account,
     /// Fab7's assertion key.
     pub key: VerifyingKey,
+    /// GitHub's API, where Cloudflare's latest release is found (ADR-0023).
+    pub github: String,
 }
 
 impl Settings {
@@ -48,6 +50,7 @@ impl Settings {
             socket: weft_proto::socket_path(),
             account: Account::new(),
             key: devices::fab7_key(),
+            github: crate::install::GITHUB_API.to_string(),
         }
     }
 }
@@ -65,6 +68,10 @@ pub enum Wake {
     },
     /// A push service said a device's subscription is gone.
     PushGone(crate::push::Gone),
+    /// Installing cloudflared said this.
+    Installing(String),
+    /// Installing cloudflared ended, or why it failed.
+    Installed(Result<(), String>),
 }
 
 impl From<crate::push::Gone> for Wake {
@@ -182,6 +189,72 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Option<
     Some(tunnel)
 }
 
+/// How Weft would install `cloudflared` here (remote.md §7a): Homebrew when
+/// it is there, else Cloudflare's release for this machine; or why neither.
+fn offer(weft: &std::path::Path) -> Result<Value, String> {
+    let tool = crate::install::Tool::load(weft)?;
+    let download = tool.repo.is_some() && tool.asset().is_some();
+    if let Some(argv) = tool.brew.as_ref().filter(|a| on_path(&a[0])) {
+        return Ok(json!({"how": "brew", "argv": argv.join(" "), "download": download}));
+    }
+    if download {
+        let repo = tool.repo.unwrap_or_default();
+        return Ok(
+            json!({"how": "download", "from": format!("github.com/{repo}"), "download": false}),
+        );
+    }
+    Err(format!(
+        "Weft has no way to install {} on {}: put its path in config.toml as [remote] cloudflared.",
+        tool.program,
+        crate::install::machine()
+    ))
+}
+
+/// A program on `PATH`, or at the path it names.
+fn on_path(program: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let runnable = |p: &std::path::Path| {
+        p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    };
+    if program.contains('/') {
+        return runnable(std::path::Path::new(program));
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|d| runnable(&d.join(program))))
+}
+
+/// Homebrew's install, each line it says sent to the view; whether it worked.
+fn run_brew(argv: &[String], tx: &Sender<Wake>) -> Result<(), String> {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("{} could not start: {e}", argv.join(" ")))?;
+    let err = child.stderr.take().map(|e| {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
+                let _ = tx.send(Wake::Installing(line));
+            }
+        })
+    });
+    if let Some(out) = child.stdout.take() {
+        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(Wake::Installing(line));
+        }
+    }
+    if let Some(e) = err {
+        let _ = e.join();
+    }
+    match child.wait() {
+        Ok(s) if s.success() => Ok(()),
+        _ => Err(format!("{} did not finish: see its output above.", argv.join(" "))),
+    }
+}
+
 /// Run until told to stop, or the daemon goes.
 pub fn serve(settings: Settings) -> anyhow::Result<()> {
     let (tx, rx) = channel();
@@ -207,6 +280,7 @@ impl Remote {
         let pusher = crate::push::sender(key, tx.clone());
         let machine = Machine::load(&dir);
         let mut view = View { no_cloudflared: tunnel.is_none(), ..View::default() };
+        view.offer = offer(&settings.weft);
         view.login = machine.as_ref().map(|m| m.login.clone());
         let mut remote = Remote {
             devices: Devices::load(&dir),
@@ -265,6 +339,21 @@ impl Remote {
                     if let Some(d) = self.devices.get_mut(&g.device) {
                         d.push = None;
                         let _ = self.devices.save();
+                    }
+                    true
+                }
+                Wake::Installing(line) => {
+                    self.view.installing = Some(line);
+                    true
+                }
+                Wake::Installed(result) => {
+                    self.view.installing = None;
+                    match result {
+                        Ok(()) => {
+                            self.view.failed = None;
+                            self.look();
+                        }
+                        Err(why) => self.view.failed = Some(why),
                     }
                     true
                 }
@@ -429,12 +518,10 @@ impl Remote {
                 }
             }
             // `cloudflared` was missing: look again, and start if it is there.
-            Some("look") if self.tunnel.is_none() => {
-                self.tunnel = start_tunnel(&self.settings.weft, self.port, &self.tx);
-                self.view.no_cloudflared = self.tunnel.is_none();
-                if self.tunnel.is_some() && self.machine.is_none() {
-                    self.sign_in();
-                }
+            Some("look") if self.tunnel.is_none() => self.look(),
+            // Install it, as the offer said, now the person said yes (§7a).
+            Some("install") if self.tunnel.is_none() && self.view.installing.is_none() => {
+                self.install(act["how"].as_str().unwrap_or_default())
             }
             Some("cancel") => {
                 self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -478,6 +565,42 @@ impl Remote {
                 self.view.signing_in = None;
                 self.view.failed = (why != "cancelled").then_some(why);
             }
+        }
+    }
+
+    /// `cloudflared` was missing: look again, and start if it is there.
+    fn look(&mut self) {
+        self.tunnel = start_tunnel(&self.settings.weft, self.port, &self.tx);
+        self.view.no_cloudflared = self.tunnel.is_none();
+        self.view.offer = offer(&self.settings.weft);
+        if self.tunnel.is_some() && self.machine.is_none() {
+            self.sign_in();
+        }
+    }
+
+    /// Install `cloudflared` the way the person chose, off the loop.
+    fn install(&mut self, how: &str) {
+        let Ok(tool) = crate::install::Tool::load(&self.settings.weft) else { return };
+        let tx = self.tx.clone();
+        match how {
+            "brew" => {
+                let Some(argv) = tool.brew.clone().filter(|a| on_path(&a[0])) else {
+                    return;
+                };
+                self.view.installing = Some(argv.join(" "));
+                std::thread::spawn(move || {
+                    let _ = tx.send(Wake::Installed(run_brew(&argv, &tx)));
+                });
+            }
+            "download" => {
+                self.view.installing = Some(format!("Downloading {} from GitHub", tool.program));
+                let (github, weft) = (self.settings.github.clone(), self.settings.weft.clone());
+                std::thread::spawn(move || {
+                    let done = crate::install::download(&github, &tool, &weft).map(|_| ());
+                    let _ = tx.send(Wake::Installed(done));
+                });
+            }
+            _ => {}
         }
     }
 

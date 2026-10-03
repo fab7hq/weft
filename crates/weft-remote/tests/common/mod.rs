@@ -217,7 +217,7 @@ impl Tui {
 }
 
 /// A fake cloudflared: says where it was pointed, prints an address, waits.
-const CLOUDFLARED: &str = "#!/bin/sh\necho \"$*\" > \"$0.args\"\necho '|  https://test-tunnel.trycloudflare.com  |' >&2\nexec sleep 600\n";
+pub const CLOUDFLARED: &str = "#!/bin/sh\necho \"$*\" > \"$0.args\"\necho '|  https://test-tunnel.trycloudflare.com  |' >&2\nexec sleep 600\n";
 
 impl Harness {
     /// A daemon, and weft remote beside it, joined to the account as
@@ -233,6 +233,16 @@ impl Harness {
 
     /// The same, until the view's state is `state`.
     pub fn until(name: &str, prepare: impl FnOnce(&Path), state: &str) -> Self {
+        Self::until_github(name, prepare, state, "http://127.0.0.1:9")
+    }
+
+    /// The same, with GitHub's API at `github`.
+    pub fn until_github(
+        name: &str,
+        prepare: impl FnOnce(&Path),
+        state: &str,
+        github: &str,
+    ) -> Self {
         let dir = std::env::temp_dir().join(format!("wr-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("remote")).unwrap();
@@ -271,6 +281,7 @@ impl Harness {
             socket: socket.clone(),
             account: weft_remote::account::Account::at("http://127.0.0.1:9", "http://127.0.0.1:9"),
             key: fab7().verifying_key(),
+            github: github.to_string(),
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
         tui.wait_view(|v| v["state"] == state);

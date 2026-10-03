@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 /// Said wherever remote access is on (ADR-0021).
 pub const DECRYPTED: &str = "traffic is decrypted at Cloudflare's edge";
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct View {
     /// `cloudflared` was not found.
     pub no_cloudflared: bool,
@@ -23,11 +23,35 @@ pub struct View {
     pub devices: Vec<Value>,
     /// A device asking to be allowed: `{device, name, login}`.
     pub asking: Option<Value>,
+    /// With no `cloudflared`: how Weft would install it (remote.md §7a), or
+    /// why it cannot.
+    pub offer: Result<Value, String>,
+    /// Installing it: the last line it said.
+    pub installing: Option<String>,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View {
+            no_cloudflared: false,
+            signing_in: None,
+            failed: None,
+            login: None,
+            address: None,
+            up: false,
+            devices: Vec::new(),
+            asking: None,
+            offer: Err(String::new()),
+            installing: None,
+        }
+    }
 }
 
 impl View {
     pub fn json(&self) -> Value {
-        let state = if self.no_cloudflared {
+        let state = if self.installing.is_some() {
+            "installing"
+        } else if self.no_cloudflared {
             "no_cloudflared"
         } else if self.signing_in.is_some() {
             "signing_in"
@@ -44,8 +68,17 @@ impl View {
         if let Some(why) = &self.failed {
             v["failed"] = json!(why);
         }
+        if let Some(line) = &self.installing {
+            v["line"] = json!(line);
+        }
         if state == "no_cloudflared" {
-            v["install"] = json!("brew install cloudflared");
+            match &self.offer {
+                Ok(offer) => v["offer"] = offer.clone(),
+                Err(why) => {
+                    v["offer"] = Value::Null;
+                    v["why"] = json!(why);
+                }
+            }
         }
         if state == "on" {
             v["login"] = json!(self.login);
