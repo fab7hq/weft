@@ -58,7 +58,12 @@ impl Client {
         let mut c = Client { stream, frames, next: 1, opened: serde_json::json!({}) };
         c.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("hello");
         c.opened = c
-            .answer(Call::Open { rows, cols, path: project.to_string_lossy().into_owned() })
+            .answer(Call::Open {
+                rows,
+                cols,
+                path: project.to_string_lossy().into_owned(),
+                raw: true,
+            })
             .expect("project.open");
         c
     }

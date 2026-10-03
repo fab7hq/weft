@@ -66,7 +66,12 @@ fn connect(socket: &Path, project: &Path) -> (UnixStream, Lines<UnixStream>) {
     let mut lines = Lines::new(stream.try_clone().unwrap());
     let calls = [
         Call::Hello { client: "test".into(), protocol: PROTOCOL },
-        Call::Open { path: project.to_string_lossy().into_owned(), rows: ROWS, cols: COLS },
+        Call::Open {
+            path: project.to_string_lossy().into_owned(),
+            rows: ROWS,
+            cols: COLS,
+            raw: true,
+        },
     ];
     for (id, call) in calls.into_iter().enumerate() {
         stream.write_all(&Line::Call { id: id as u64, call }.encode()).unwrap();

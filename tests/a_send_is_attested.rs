@@ -102,7 +102,10 @@ fn a_send_weft_typed_is_recorded_as_submitted_and_a_refused_one_is_not() {
         stream.write_all(&Line::Call { id, call: c }.encode()).expect("write");
     };
     call(&mut stream, Call::Hello { client: "test".into(), protocol: PROTOCOL });
-    call(&mut stream, Call::Open { rows: 24, cols: 80, path: root.to_string_lossy().into_owned() });
+    call(
+        &mut stream,
+        Call::Open { rows: 24, cols: 80, path: root.to_string_lossy().into_owned(), raw: true },
+    );
     call(
         &mut stream,
         Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into(), session: None },

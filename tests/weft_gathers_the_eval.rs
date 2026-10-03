@@ -100,7 +100,10 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
         stream.write_all(&Line::Call { id, call: c }.encode()).expect("write");
     };
     call(&mut stream, Call::Hello { client: "test".into(), protocol: PROTOCOL });
-    call(&mut stream, Call::Open { rows: 24, cols: 80, path: root.to_string_lossy().into_owned() });
+    call(
+        &mut stream,
+        Call::Open { rows: 24, cols: 80, path: root.to_string_lossy().into_owned(), raw: true },
+    );
     call(
         &mut stream,
         Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into(), session: None },

@@ -238,8 +238,12 @@ impl Session {
         session.answered(hello)?;
         // The state comes back in the answer, so nothing is missed between
         // opening a project and the first pump.
-        let open =
-            session.tell(Call::Open { rows, cols, path: root.to_string_lossy().into_owned() })?;
+        let open = session.tell(Call::Open {
+            rows,
+            cols,
+            path: root.to_string_lossy().into_owned(),
+            raw: true,
+        })?;
         let opened = session.answered(open)?;
         if let Some(panes) = opened.get("panes").and_then(weft_proto::panes_of) {
             session.panes = panes.into_iter().map(PaneView::of).collect();

@@ -41,6 +41,10 @@ pub enum Call {
         path: String,
         rows: u16,
         cols: u16,
+        /// `output: "raw"` (the default) streams every pane's bytes as
+        /// `pane.output`; `"none"` never does, for a client that draws
+        /// screens instead (remote.md D4).
+        raw: bool,
     },
     /// Start a harness, fresh or resuming a recorded session. A resumed
     /// agent names its session, so the daemon knows it from the start.
@@ -297,9 +301,11 @@ impl Call {
             Call::Hello { client, protocol } => {
                 ("hello", json!({"client": client, "protocol": protocol}))
             }
-            Call::Open { path, rows, cols } => {
-                ("project.open", json!({"path": path, "rows": rows, "cols": cols}))
-            }
+            Call::Open { path, rows, cols, raw } => (
+                "project.open",
+                json!({"path": path, "rows": rows, "cols": cols,
+                       "output": if *raw { "raw" } else { "none" }}),
+            ),
             Call::StartAgent { harness, spec, session } => {
                 ("agent.start", json!({"harness": harness, "spec": spec, "session": session}))
             }
@@ -340,9 +346,16 @@ impl Call {
         let bytes = |k: &str| un_b64(p.get(k)?.as_str()?);
         Some(match method {
             "hello" => Call::Hello { client: s("client")?, protocol: n("protocol")? },
-            "project.open" => {
-                Call::Open { path: s("path")?, rows: n("rows")? as u16, cols: n("cols")? as u16 }
-            }
+            "project.open" => Call::Open {
+                path: s("path")?,
+                rows: n("rows")? as u16,
+                cols: n("cols")? as u16,
+                raw: match s("output").as_deref() {
+                    None | Some("raw") => true,
+                    Some("none") => false,
+                    Some(_) => return None,
+                },
+            },
             "agent.start" => {
                 Call::StartAgent { harness: s("harness")?, spec: s("spec")?, session: s("session") }
             }
@@ -693,7 +706,8 @@ mod tests {
     fn every_call_survives_the_wire() {
         for call in [
             Call::Hello { client: "weft-tui/0.1".into(), protocol: PROTOCOL },
-            Call::Open { path: "/home/me/work/a thing".into(), rows: 40, cols: 120 },
+            Call::Open { path: "/home/me/work/a thing".into(), rows: 40, cols: 120, raw: true },
+            Call::Open { path: "/home/me/work".into(), rows: 40, cols: 120, raw: false },
             Call::StartAgent {
                 harness: "codex".into(),
                 spec: "codex resume 01a0".into(),
@@ -829,6 +843,18 @@ mod tests {
         let mut lines = Lines::new(&wire[..]);
         assert_eq!(lines.next().unwrap(), Some(Line::Event(Event::Exited { pane: 4 })));
         assert_eq!(lines.next().unwrap(), None);
+    }
+
+    #[test]
+    fn a_project_opened_without_saying_how_streams_raw_output() {
+        let line =
+            br#"{"id":1,"method":"project.open","params":{"path":"/p","rows":24,"cols":80}}"#;
+        let Some(Line::Call { call: Call::Open { raw, .. }, .. }) = Line::decode(line) else {
+            panic!("an open")
+        };
+        assert!(raw, "a client from before protocol 3 asked for nothing else");
+        let other = br#"{"id":1,"method":"project.open","params":{"path":"/p","rows":24,"cols":80,"output":"some"}}"#;
+        assert_eq!(Line::decode(other), None, "only raw or none");
     }
 
     #[test]

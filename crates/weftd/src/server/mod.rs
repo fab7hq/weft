@@ -157,6 +157,9 @@ struct Clients {
     /// The size each window opened its project at, then the size it last
     /// drew an agent at: the size an agent it asks for starts at.
     sizes: HashMap<u64, (u16, u16)>,
+    /// Clients that opened their project with `output: "none"`: they are
+    /// never sent a pane's raw bytes (remote.md D4).
+    quiet: std::collections::HashSet<u64>,
 }
 
 impl Clients {
@@ -175,6 +178,17 @@ impl Clients {
         let watching = &self.watching;
         self.sinks.retain(|id, s| {
             watching.get(id) != Some(&project) || weft_proto::send(s, &wire).is_ok()
+        });
+    }
+
+    /// A pane's bytes, to everyone watching this project who asked for them.
+    fn broadcast_output(&mut self, project: usize, pane: u32, bytes: Vec<u8>) {
+        let wire = Line::Event(Out::Output { pane, bytes }).encode();
+        let (watching, quiet) = (&self.watching, &self.quiet);
+        self.sinks.retain(|id, s| {
+            watching.get(id) != Some(&project)
+                || quiet.contains(id)
+                || weft_proto::send(s, &wire).is_ok()
         });
     }
 
@@ -510,7 +524,7 @@ impl Session {
                         slot.record(&bytes);
                     }
                     self.printed(project, pane);
-                    self.clients.broadcast(project, &Out::Output { pane, bytes });
+                    self.clients.broadcast_output(project, pane, bytes);
                 }
                 Wake::Frames => self.frames(),
                 Wake::Exited { project, pane } => {
@@ -1020,8 +1034,13 @@ impl Session {
             }
             // Opening resizes nothing: another window may be drawing these
             // agents at its own size.
-            Call::Open { path: project, rows, cols } => {
+            Call::Open { path: project, rows, cols, raw } => {
                 self.clients.sizes.insert(client, (rows, cols));
+                if raw {
+                    self.clients.quiet.remove(&client);
+                } else {
+                    self.clients.quiet.insert(client);
+                }
                 let at = self.project_at(PathBuf::from(project));
                 self.clients.watching.insert(client, at);
                 // An act routed to a harness with no pane yet still needs its
@@ -1044,7 +1063,7 @@ impl Session {
                 let replay: Vec<_> = self.projects[at]
                     .panes
                     .iter()
-                    .filter(|s| !s.replay.is_empty())
+                    .filter(|s| raw && !s.replay.is_empty())
                     .map(|s| weft_proto::output_json(s.map.pane, &s.replay))
                     .collect();
                 return Ok(Answer::Ok(serde_json::json!({
