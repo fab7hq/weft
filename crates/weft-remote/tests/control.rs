@@ -1,0 +1,87 @@
+//! Control, size and messages (remote.md §9, §4): §14 test 7, and presence
+//! handing the keys back to the Mac.
+
+mod common;
+
+use std::time::{Duration, Instant};
+
+use base64ct::Encoding;
+use common::Harness;
+use serde_json::json;
+use weft_proto::Call;
+
+fn keys(text: &str) -> String {
+    base64ct::Base64::encode_string(text.as_bytes())
+}
+
+/// §14 test 7: a `text` message is the bracketed paste, then Enter in a
+/// write of its own.
+#[test]
+fn a_message_is_a_bracketed_paste_then_a_separate_enter() {
+    let mut h = Harness::start("text");
+    let shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    let log = shell.project.join("reads.log");
+    // Each read the program gets, with when, as hex.
+    let recorder = format!(
+        "exec python3 -u -c \"import os,sys,time,tty; tty.setraw(0); f=open('{}','w')\n\
+         while True:\n b=os.read(0,4096)\n f.write('%.3f %s\\\\n'%(time.time(),b.hex())); f.flush()\"\r",
+        log.display()
+    );
+    d.send(json!({"type": "keys", "agent": agent, "bytes": keys(&recorder), "req": 1}));
+    assert_eq!(d.answer(1)["type"], "ok");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !log.exists() {
+        assert!(Instant::now() < deadline, "the recorder never started");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    d.send(json!({"type": "text", "agent": agent, "text": "ship it", "req": 2}));
+    assert_eq!(d.answer(2)["type"], "ok");
+    let reads = loop {
+        let text = std::fs::read_to_string(&log).unwrap();
+        let reads: Vec<(f64, String)> = text
+            .lines()
+            .map(|l| {
+                let (t, hex) = l.split_once(' ').unwrap();
+                (t.parse().unwrap(), hex.to_string())
+            })
+            .collect();
+        if reads.iter().any(|(_, h)| h == "0d") {
+            break reads;
+        }
+        assert!(Instant::now() < deadline, "no Enter: {reads:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let paste = format!("{}{}{}", hex(b"\x1b[200~"), hex(b"ship it"), hex(b"\x1b[201~"));
+    let all: String = reads.iter().map(|(_, h)| h.as_str()).collect();
+    assert_eq!(all, format!("{paste}0d"), "the paste, then Enter, and nothing else");
+    let enter = reads.iter().find(|(_, h)| h == "0d").unwrap();
+    let pasted = reads.iter().find(|(_, h)| h.ends_with(&hex(b"\x1b[201~"))).unwrap();
+    assert!(enter.0 - pasted.0 >= 0.05, "Enter came on its own, {:.3} s later", enter.0 - pasted.0);
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The device that types has the keys; the person typing on the Mac takes
+/// them back (§9).
+#[test]
+fn typing_on_the_mac_takes_the_keys_back() {
+    let mut h = Harness::start("control");
+    let mut shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    d.send(json!({"type": "size", "agent": agent, "rows": 30, "cols": 40}));
+    d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 1}));
+    assert_eq!(d.next_of("control"), json!({"type": "control", "agent": agent, "by": "you"}));
+
+    // The TUI's typing, as presence.
+    shell.tui.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
+    assert_eq!(d.next_of("control"), json!({"type": "control", "agent": agent, "by": "mac"}));
+    // Typing from the device again takes them again.
+    d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 2}));
+    assert_eq!(d.next_of("control")["by"], "you");
+}
