@@ -98,10 +98,14 @@ pub enum Call {
     ConfirmAsk {
         unit: String,
     },
-    /// The exact wording, or the judgements, as RingFrame recorded them.
+    /// The exact wording, or the judgements, as RingFrame recorded them; or
+    /// `what: "history"`, a pane's last `lines` of scrollback and screen as
+    /// text (remote.md D7), where `unit` is empty.
     Read {
         what: String,
         unit: String,
+        pane: Option<u32>,
+        lines: Option<u64>,
     },
     /// The RingFrame view (`[U]`): `look` at RingFrame's configuration and
     /// every harness file, `locate` one whose program is at `path`, `run` one's
@@ -331,7 +335,9 @@ impl Call {
                 ("act", json!({"act": act, "unit": unit, "pane": pane, "text": text}))
             }
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
-            Call::Read { what, unit } => ("read", json!({"what": what, "unit": unit})),
+            Call::Read { what, unit, pane, lines } => {
+                ("read", json!({"what": what, "unit": unit, "pane": pane, "lines": lines}))
+            }
             Call::Setup { act, harness, path } => {
                 ("setup", json!({"act": act, "harness": harness, "path": path}))
             }
@@ -386,7 +392,12 @@ impl Call {
                 text: s("text"),
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
-            "read" => Call::Read { what: s("what")?, unit: s("unit")? },
+            "read" => Call::Read {
+                what: s("what")?,
+                unit: s("unit").unwrap_or_default(),
+                pane: n("pane").map(|n| n as u32),
+                lines: n("lines"),
+            },
             "setup" => Call::Setup {
                 act: s("act")?,
                 harness: s("harness").unwrap_or_default(),
@@ -741,7 +752,13 @@ mod tests {
             Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
             Call::ConfirmAsk { unit: "ask_1".into() },
-            Call::Read { what: "judges".into(), unit: "ask_1".into() },
+            Call::Read { what: "judges".into(), unit: "ask_1".into(), pane: None, lines: None },
+            Call::Read {
+                what: "history".into(),
+                unit: String::new(),
+                pane: Some(2),
+                lines: Some(40),
+            },
             Call::Setup {
                 act: "locate".into(),
                 harness: "codex".into(),

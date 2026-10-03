@@ -495,7 +495,12 @@ impl Session {
 
     /// The exact wording, or an Eval record, as RingFrame wrote them.
     pub fn read(&mut self, what: &str, unit: &str) -> Result<u64> {
-        self.tell(Call::Read { what: what.to_string(), unit: unit.to_string() })
+        self.tell(Call::Read {
+            what: what.to_string(),
+            unit: unit.to_string(),
+            pane: None,
+            lines: None,
+        })
     }
 
     /// Turn turbo mode on or off for the agents started here from now on.

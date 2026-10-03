@@ -213,3 +213,48 @@ fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// D7: `read {what: "history", pane, lines}` is the last lines of
+/// scrollback and screen as text, at most 2,000.
+#[test]
+fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
+    let (root, socket) = daemon("history");
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let pane = sh(&mut tui);
+    tui.send(Call::Input {
+        pane,
+        bytes: b"clear; for i in $(seq 1 3000); do echo history-line-$i; done\n".to_vec(),
+    });
+    tui.wait_for(|e| {
+        matches!(e, Event::Output { bytes, .. }
+        if String::from_utf8_lossy(bytes).contains("history-line-3000"))
+        .then_some(())
+    });
+    std::thread::sleep(Duration::from_millis(300));
+
+    let read = |c: &mut Client, lines: u64| {
+        let what = "history".to_string();
+        let answer = c.answer(Call::Read {
+            what,
+            unit: String::new(),
+            pane: Some(pane),
+            lines: Some(lines),
+        });
+        answer.unwrap()["text"].as_str().unwrap().to_string()
+    };
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    let ten = read(&mut remote, 10);
+    let ten: Vec<&str> = ten.lines().collect();
+    assert_eq!(ten.len(), 10, "{ten:?}");
+    assert_eq!(ten[8], "history-line-3000", "the last line before the prompt: {ten:?}");
+    assert_eq!(ten[0], "history-line-2992");
+
+    let all = read(&mut remote, 50_000);
+    let all: Vec<&str> = all.lines().collect();
+    assert_eq!(all.len(), 2000, "capped");
+    assert_eq!(all[0], "history-line-1002", "scrollback and screen, in order, none twice");
+    assert!(all.windows(2).take(1998).all(|w| w[0] != w[1]));
+
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}

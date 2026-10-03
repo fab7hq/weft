@@ -191,6 +191,33 @@ impl Pane {
         (parser.screen().state_formatted(), self.seq.load(Ordering::SeqCst))
     }
 
+    /// The last `lines` of what the pane printed, scrollback then screen, as
+    /// plain text: the history a device scrolls back through (remote.md D7).
+    /// Read under the parser lock, leaving the pane scrolled where it was.
+    pub fn history(&self, lines: usize) -> String {
+        let mut parser = self.parser.lock().expect("pane parser");
+        let screen = parser.screen_mut();
+        let (was, (rows, cols)) = (screen.scrollback(), screen.size());
+        screen.set_scrollback(usize::MAX);
+        let mut out: Vec<String> = Vec::new();
+        // Back as far as it goes, then a screen's height at a time: at each
+        // offset the top rows are the oldest not taken yet.
+        let mut back = screen.scrollback();
+        while back > 0 {
+            screen.set_scrollback(back);
+            let take = back.min(rows as usize);
+            out.extend(screen.rows(0, cols).take(take));
+            back -= take;
+        }
+        screen.set_scrollback(0);
+        out.extend(screen.rows(0, cols));
+        screen.set_scrollback(was);
+        while out.last().is_some_and(|l| l.trim().is_empty()) {
+            out.pop();
+        }
+        out.split_off(out.len().saturating_sub(lines)).join("\n")
+    }
+
     /// Move back through what the pane has already printed.
     ///
     /// A harness that asks for no mouse reporting and no alternate screen

@@ -40,6 +40,9 @@ use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 /// terminal's state is rebuilt by replaying what remains.
 const REPLAY_LIMIT: usize = 4 * 1024 * 1024;
 
+/// The most lines of a pane's history one `read` answers.
+const HISTORY_MAX: usize = 2_000;
+
 /// At most one `presence` in this long.
 const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -1192,8 +1195,17 @@ impl Session {
                     },
                 );
             }
-            Call::Read { what, unit } => {
+            Call::Read { what, unit, pane, lines } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                if what == "history" {
+                    let lines = lines.map_or(HISTORY_MAX, |n| n as usize).min(HISTORY_MAX);
+                    return Ok(match pane.and_then(|p| self.projects[at].slot(p)) {
+                        Some(slot) => {
+                            Answer::Ok(serde_json::json!({"text": slot.pane.history(lines)}))
+                        }
+                        None => Answer::No("no_pane", "there is no such pane here".into()),
+                    });
+                }
                 return Ok(self.read(at, &what, &unit));
             }
             Call::Setup { act, harness, path } => {
