@@ -4,6 +4,7 @@
 //! sandboxes it or alters its permissions.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -15,9 +16,13 @@ use weft_core::inject::{self, Handoff, PaneState, Refusal, Step};
 pub struct Pane {
     pub title: String,
     parser: Arc<Mutex<vt100::Parser>>,
+    /// The number of the last chunk the parser took, moved only while its
+    /// lock is held: a screen read under that lock holds every chunk up to
+    /// this number and none after (remote.md D1).
+    seq: Arc<AtomicU64>,
     /// Installed only when someone asks for the stream, so a pane nobody is
     /// listening to never accumulates output it will not be asked for.
-    tap: Arc<Mutex<Option<Sender<Vec<u8>>>>>,
+    tap: Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>,
     master: Box<dyn MasterPty + Send>,
     /// Shared with the reader, which answers the harness's cursor-position
     /// queries as a terminal would.
@@ -81,12 +86,14 @@ impl Pane {
         drop(pair.slave);
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
-        let tap: Arc<Mutex<Option<Sender<Vec<u8>>>>> = Arc::new(Mutex::new(None));
+        let seq = Arc::new(AtomicU64::new(0));
+        let tap: Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>> = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
         let sink = Arc::clone(&parser);
         let tap_reader = Arc::clone(&tap);
         let answer = Arc::clone(&writer);
+        let numbering = Arc::clone(&seq);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             // The start of a query a read cut in two, held for the next read.
@@ -99,6 +106,7 @@ impl Pane {
                 bytes.extend_from_slice(&buf[..n]);
                 let keep = query_prefix_at_end(&bytes);
                 held = bytes.split_off(bytes.len() - keep);
+                let mut number = 0;
                 if let Ok(mut p) = sink.lock() {
                     // A harness that asks where the cursor is waits for the
                     // answer, and some give up and quit without it: answer
@@ -116,12 +124,13 @@ impl Pane {
                         }
                     }
                     p.process(&bytes[from..]);
+                    number = numbering.fetch_add(1, Ordering::SeqCst) + 1;
                 }
                 // The same bytes go to whoever is streaming this pane, so a
                 // client rebuilds the screen from the harness's own output.
                 if let Ok(mut t) = tap_reader.lock()
                     && let Some(sender) = t.as_ref()
-                    && sender.send(bytes).is_err()
+                    && sender.send((number, bytes)).is_err()
                 {
                     *t = None;
                 }
@@ -139,6 +148,7 @@ impl Pane {
         Ok(Self {
             title: title.into(),
             parser,
+            seq,
             tap,
             master: pair.master,
             writer,
@@ -147,8 +157,9 @@ impl Pane {
         })
     }
 
-    /// Every byte this pane prints, from now on. One listener at a time.
-    pub fn stream_output(&mut self) -> Receiver<Vec<u8>> {
+    /// Every byte this pane prints, from now on, each chunk with its number.
+    /// One listener at a time.
+    pub fn stream_output(&mut self) -> Receiver<(u64, Vec<u8>)> {
         let (tx, rx) = channel();
         *self.tap.lock().expect("pane tap") = Some(tx);
         rx
@@ -171,6 +182,13 @@ impl Pane {
     pub fn with_screen<T>(&self, f: impl FnOnce(&vt100::Screen) -> T) -> T {
         let parser = self.parser.lock().expect("pane parser");
         f(parser.screen())
+    }
+
+    /// The screen as escape codes that redraw it, and the number of the last
+    /// chunk in it, read under one lock (remote.md D2).
+    pub fn screen_at(&self) -> (Vec<u8>, u64) {
+        let parser = self.parser.lock().expect("pane parser");
+        (parser.screen().state_formatted(), self.seq.load(Ordering::SeqCst))
     }
 
     /// Move back through what the pane has already printed.
@@ -565,7 +583,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         let mut seen = Vec::new();
         while std::time::Instant::now() < deadline {
-            if let Ok(chunk) = stream.recv_timeout(std::time::Duration::from_millis(200)) {
+            if let Ok((_, chunk)) = stream.recv_timeout(std::time::Duration::from_millis(200)) {
                 seen.extend_from_slice(&chunk);
                 if String::from_utf8_lossy(&seen).contains("streamed-to-the-server") {
                     break;
@@ -578,6 +596,30 @@ mod tests {
         );
         // And the pane's own screen still has it: the tap is a copy, not a move.
         assert!(pane.with_screen(|s| s.contents()).contains("streamed-to-the-server"));
+    }
+
+    /// Each chunk is numbered as the parser takes it, so a screen taken at
+    /// one number holds every chunk up to it and none after (remote.md D1).
+    #[test]
+    fn each_chunk_a_pane_prints_is_numbered_in_order() {
+        let mut pane = Pane::spawn("test", "/bin/sh", "/tmp", 24, 80).expect("spawn");
+        let stream = pane.stream_output();
+        pane.send(b"for i in $(seq 1 200); do echo numbered-$i; done\n").expect("send");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (mut seqs, mut seen) = (Vec::new(), Vec::new());
+        while std::time::Instant::now() < deadline
+            && !String::from_utf8_lossy(&seen).contains("numbered-200")
+        {
+            if let Ok((seq, chunk)) = stream.recv_timeout(std::time::Duration::from_millis(200)) {
+                seqs.push(seq);
+                seen.extend_from_slice(&chunk);
+            }
+        }
+        assert!(seqs.len() > 1, "more than one chunk: {seqs:?}");
+        assert!(seqs.windows(2).all(|w| w[0] < w[1]), "strictly increasing: {seqs:?}");
+        let (_, at) = pane.screen_at();
+        assert_eq!(at, *seqs.last().unwrap(), "the screen has taken every chunk sent");
+        pane.stop();
     }
 
     #[test]

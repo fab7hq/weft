@@ -196,9 +196,11 @@ enum Wake {
         call_id: u64,
         call: Call,
     },
+    /// A chunk a pane printed, numbered by its reader (remote.md D1).
     Output {
         project: usize,
         pane: u32,
+        seq: u64,
         bytes: Vec<u8>,
     },
     Exited {
@@ -491,7 +493,7 @@ impl Session {
                         return Ok(());
                     }
                 }
-                Wake::Output { project, pane, bytes } => {
+                Wake::Output { project, pane, seq: _, bytes } => {
                     if let Some(slot) = self.projects.get_mut(project).and_then(|p| p.slot(pane)) {
                         slot.record(&bytes);
                     }

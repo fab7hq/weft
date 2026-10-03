@@ -152,8 +152,8 @@ impl Session {
                 // it for replay and forwards it to whoever is attached.
                 let sink = pane.stream_output();
                 std::thread::spawn(move || {
-                    while let Ok(bytes) = sink.recv() {
-                        if tx.send(Wake::Output { project, pane: id, bytes }).is_err() {
+                    while let Ok((seq, bytes)) = sink.recv() {
+                        if tx.send(Wake::Output { project, pane: id, seq, bytes }).is_err() {
                             return;
                         }
                     }
