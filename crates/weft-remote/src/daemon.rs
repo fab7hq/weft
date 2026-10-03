@@ -32,6 +32,9 @@ pub struct Project {
     next: u64,
 }
 
+/// The number the control client's events come with.
+pub const CONTROL: usize = usize::MAX;
+
 /// The size a project is opened at. A device never resizes by watching; it
 /// says its own size before it types (remote.md §9).
 const ROWS: u16 = 24;
@@ -46,13 +49,38 @@ impl Project {
         at: usize,
         tx: Sender<T>,
     ) -> anyhow::Result<Self> {
+        Self::connect(socket, Some(path), at, tx)
+    }
+
+    /// The client that watches no project: it publishes the remote view and
+    /// hears the acts for it and presence. Numbered [`CONTROL`].
+    pub fn control<T: From<Heard> + Send + 'static>(
+        socket: &Path,
+        tx: Sender<T>,
+    ) -> anyhow::Result<Self> {
+        Self::connect(socket, None, CONTROL, tx)
+    }
+
+    fn connect<T: From<Heard> + Send + 'static>(
+        socket: &Path,
+        path: Option<&Path>,
+        at: usize,
+        tx: Sender<T>,
+    ) -> anyhow::Result<Self> {
         let out = UnixStream::connect(socket)?;
         let mut lines = Lines::new(out.try_clone()?);
-        let mut project = Project { path: path.to_path_buf(), opened: Value::Null, out, next: 1 };
-        let hello = Call::Hello { client: client_name(), protocol: PROTOCOL };
-        let path_text = path.to_string_lossy().into_owned();
-        let open = Call::Open { path: path_text, rows: ROWS, cols: COLS, raw: false };
-        for call in [hello, open] {
+        let mut project = Project {
+            path: path.map(Path::to_path_buf).unwrap_or_default(),
+            opened: Value::Null,
+            out,
+            next: 1,
+        };
+        let mut calls = vec![Call::Hello { client: client_name(), protocol: PROTOCOL }];
+        if let Some(path) = path {
+            let path = path.to_string_lossy().into_owned();
+            calls.push(Call::Open { path, rows: ROWS, cols: COLS, raw: false });
+        }
+        for call in calls {
             let id = project.call(call)?;
             project.opened = loop {
                 match lines.next()? {

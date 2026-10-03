@@ -18,6 +18,7 @@ pub const GITHUB: &str = "https://github.com";
 /// The longest a device-flow sign-in is waited for.
 const SIGN_IN_WITHIN: Duration = Duration::from_secs(15 * 60);
 
+#[derive(Clone)]
 pub struct Account {
     service: String,
     github: String,

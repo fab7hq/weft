@@ -10,12 +10,14 @@
 pub mod account;
 pub mod agents;
 pub mod daemon;
+pub mod devices;
+pub mod run;
 pub mod socket;
 pub mod store;
 pub mod tunnel;
 pub mod view;
 
-/// Run until told to stop.
+/// Run until told to stop, or the daemon goes.
 pub fn run() -> anyhow::Result<()> {
-    anyhow::bail!("weft remote: not built yet")
+    run::serve(run::Settings::here())
 }

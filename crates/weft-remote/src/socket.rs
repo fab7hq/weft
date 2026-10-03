@@ -121,6 +121,8 @@ struct Queue {
     items: VecDeque<String>,
     /// Frames were dropped since it last emptied.
     stale: bool,
+    /// Close once what is queued is written.
+    finishing: bool,
     closed: bool,
 }
 
@@ -160,6 +162,14 @@ impl Outbox {
         self.0.0.lock().expect("outbox").stale
     }
 
+    /// Close the connection once what is queued has been written: a refusal,
+    /// then the end.
+    pub fn finish(&self) {
+        let (lock, ready) = &*self.0;
+        lock.lock().expect("outbox").finishing = true;
+        ready.notify_one();
+    }
+
     /// Close the connection at once: what is queued is dropped.
     pub fn close(&self) {
         let (lock, ready) = &*self.0;
@@ -180,10 +190,10 @@ impl Outbox {
         loop {
             let (text, emptied) = {
                 let mut q = lock.lock().expect("outbox");
-                while q.items.is_empty() && !q.closed {
+                while q.items.is_empty() && !q.closed && !q.finishing {
                     q = ready.wait(q).expect("outbox");
                 }
-                if q.closed {
+                if q.closed || (q.finishing && q.items.is_empty()) {
                     break;
                 }
                 let text = q.items.pop_front().expect("an item");
