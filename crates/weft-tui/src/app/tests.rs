@@ -1766,39 +1766,45 @@ fn remote_state(a: &mut App, state: &str) {
     }
 }
 
-/// ADR-0023, remote.md §7a: `I` offers what the view offers and asks "Run
-/// this?" first; `N` sends nothing, `Y` sends `install`; `D` picks the
-/// download instead of Homebrew.
+/// ADR-0024, remote.md §7a: turning Remote on lists the tunnels and `Enter`
+/// chooses one; with its program missing `I` asks "Run this?" first, `N`
+/// sends nothing and `Y` sends `install`.
 #[test]
-fn installing_cloudflared_asks_before_it_runs() {
+fn choosing_a_tunnel_then_installing_it_asks_before_it_runs() {
     let mut a = app();
-    press(&mut a, KeyCode::Char('w'));
     press(&mut a, KeyCode::Char('r'));
     press(&mut a, KeyCode::Enter);
     remote_state(&mut a, "starting");
     let mut remote = Remote::on(
         &a,
-        serde_json::json!({"state": "no_cloudflared",
-            "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}),
+        serde_json::json!({"state": "choose",
+            "tunnels": [{"id": "alpha", "title": "Alpha"}, {"id": "cloudflared", "title": "Cloudflare Tunnel"}]}),
     );
-    remote_state(&mut a, "no_cloudflared");
+    remote_state(&mut a, "choose");
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(remote.act(), serde_json::json!({"act": "choose", "tunnel": "cloudflared"}));
 
+    let mut remote = Remote::on(
+        &a,
+        serde_json::json!({"state": "not_installed",
+            "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"},
+            "offer": {"how": "brew", "argv": "brew install cloudflared"}}),
+    );
+    remote_state(&mut a, "not_installed");
     press(&mut a, KeyCode::Char('i'));
-    assert_eq!(a.remote_run.as_deref(), Some("brew"), "asked, not run");
+    assert!(a.remote_run, "asked, not run");
     press(&mut a, KeyCode::Char('n'));
-    assert_eq!(a.remote_run, None);
+    assert!(!a.remote_run);
     // Nothing went: the next act is the look that follows.
     press(&mut a, KeyCode::Enter);
     assert_eq!(remote.act(), serde_json::json!({"act": "look"}));
-
+    // There is one Install: D is not a second way.
+    press(&mut a, KeyCode::Char('d'));
+    assert!(!a.remote_run);
     press(&mut a, KeyCode::Char('i'));
     press(&mut a, KeyCode::Char('y'));
-    assert_eq!(remote.act(), serde_json::json!({"act": "install", "how": "brew"}));
-
-    press(&mut a, KeyCode::Char('d'));
-    assert_eq!(a.remote_run.as_deref(), Some("download"));
-    press(&mut a, KeyCode::Char('y'));
-    assert_eq!(remote.act(), serde_json::json!({"act": "install", "how": "download"}));
+    assert_eq!(remote.act(), serde_json::json!({"act": "install"}));
     assert_eq!(a.modal, Some(Modal::Remote), "the view stays open to show it installing");
 }
 
@@ -1812,8 +1818,12 @@ fn the_remote_views_keys_do_what_its_bar_says() {
     press(&mut a, KeyCode::Enter);
     remote_state(&mut a, "starting");
 
-    let mut remote = Remote::on(&a, serde_json::json!({"state": "no_cloudflared"}));
-    remote_state(&mut a, "no_cloudflared");
+    let mut remote = Remote::on(
+        &a,
+        serde_json::json!({"state": "not_installed",
+            "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"}}),
+    );
+    remote_state(&mut a, "not_installed");
     press(&mut a, KeyCode::Enter);
     assert_eq!(remote.act(), serde_json::json!({"act": "look"}));
 

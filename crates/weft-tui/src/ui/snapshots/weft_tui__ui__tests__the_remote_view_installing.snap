@@ -27,7 +27,7 @@ expression: drawn
                                        │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  REMOTE
- Installing cloudflared…
+ Installing…
    ==> Pouring cloudflared--2026.9.3.arm64_sequoia.bottle.tar.gz
 
 

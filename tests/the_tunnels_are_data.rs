@@ -1,6 +1,7 @@
 //! ADR-0024: a tunnel is an adapter, and the adapter is data (the tool file).
 //! No provider's name, address or command line is in the code that starts a
-//! tunnel or reads its address: the daemon and `weft remote`, outside tests.
+//! tunnel, reads its address or shows it: the daemon, `weft remote` and the
+//! TUI, outside tests.
 
 use std::path::Path;
 
@@ -14,7 +15,8 @@ fn code(dir: &Path, out: &mut Vec<(String, usize, String)>) {
             code(&path, out);
             continue;
         }
-        if path.extension().is_none_or(|e| e != "rs") {
+        // A test module in a file of its own is a test.
+        if path.extension().is_none_or(|e| e != "rs") || path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();
@@ -36,7 +38,7 @@ fn code(dir: &Path, out: &mut Vec<(String, usize, String)>) {
 fn no_tunnel_provider_is_named_in_the_code() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut found = Vec::new();
-    for crate_dir in ["crates/weft-remote/src", "crates/weftd/src"] {
+    for crate_dir in ["crates/weft-remote/src", "crates/weftd/src", "crates/weft-tui/src"] {
         code(&root.join(crate_dir), &mut found);
     }
     assert!(found.is_empty(), "a provider in the code: {found:#?}");

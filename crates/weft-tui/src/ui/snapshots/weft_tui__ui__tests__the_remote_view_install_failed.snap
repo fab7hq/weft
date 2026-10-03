@@ -23,10 +23,10 @@ expression: drawn
                                        │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  REMOTE
- Remote needs cloudflared, Cloudflare's tunnel. It is not on this machine.
- Weft can install it:
+ Cloudflare Tunnel needs cloudflared, which is not on this machine.
+ Install downloads it, for this machine:
 
-   Download it from github.com/cloudflare/cloudflared into ~/.fab7/weft/bin.
+   from github.com/cloudflare/cloudflared into ~/.fab7/weft/bin
 
  The last install did not finish: cloudflared-linux-arm64 does not match GitHub's checksum; nothing installed.
 

@@ -773,19 +773,27 @@ fn the_remote_view_in_each_state() {
     let states = [
         ("the_remote_view_off", serde_json::Value::Null),
         (
-            "the_remote_view_no_cloudflared",
-            serde_json::json!({"state": "no_cloudflared",
-                "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}),
+            "the_remote_view_choose",
+            serde_json::json!({"state": "choose",
+                "tunnels": [{"id": "cloudflared", "title": "Cloudflare Tunnel"}]}),
+        ),
+        (
+            "the_remote_view_not_installed",
+            serde_json::json!({"state": "not_installed",
+                "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"},
+                "offer": {"how": "brew", "argv": "brew install cloudflared"}}),
         ),
         (
             "the_remote_view_download",
-            serde_json::json!({"state": "no_cloudflared",
-                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared", "download": false}}),
+            serde_json::json!({"state": "not_installed",
+                "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"},
+                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared"}}),
         ),
         (
             "the_remote_view_install_failed",
-            serde_json::json!({"state": "no_cloudflared",
-                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared", "download": false},
+            serde_json::json!({"state": "not_installed",
+                "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"},
+                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared"},
                 "failed": "cloudflared-linux-arm64 does not match GitHub's checksum; nothing installed."}),
         ),
         (
@@ -812,11 +820,12 @@ fn the_remote_view_in_each_state() {
     let drawn = screen(&mut a, 120, 32);
     assert!(drawn.contains("Traffic is decrypted at Cloudflare's edge."), "{drawn}");
     // "Run this?", before Weft installs anything.
-    a.session_mut().remote = Some(serde_json::json!({"state": "no_cloudflared",
-        "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}));
-    a.remote_run = Some("brew".into());
+    a.session_mut().remote = Some(serde_json::json!({"state": "not_installed",
+        "tunnel": {"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"},
+        "offer": {"how": "brew", "argv": "brew install cloudflared"}}));
+    a.remote_run = true;
     expect_screen("the_remote_view_run_this", &screen(&mut a, 120, 32));
-    a.remote_run = None;
+    a.remote_run = false;
 }
 
 /// remote.md §8: the question a device asking to be allowed puts in front.

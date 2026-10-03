@@ -339,43 +339,55 @@ fn remote_body(app: &App) -> Vec<String> {
     let s = |k: &str| view.and_then(|v| v[k].as_str()).unwrap_or_default().to_string();
     match view.and_then(|v| v["state"].as_str()).unwrap_or("off") {
         "starting" => vec!["Starting…".into(), String::new()],
-        "no_cloudflared" if app.remote_run.is_some() => {
-            let offer = view.map(|v| v["offer"].clone()).unwrap_or_default();
-            let what = match app.remote_run.as_deref() {
-                Some("brew") => offer["argv"].as_str().unwrap_or_default().to_string(),
-                _ => "Download cloudflared from github.com/cloudflare/cloudflared".to_string(),
-            };
-            let mut lines = vec!["RUN THIS?".into(), format!("  {what}"), String::new()];
-            lines.push(match app.remote_run.as_deref() {
-                Some("brew") => "It installs Cloudflare's tunnel program with Homebrew.".into(),
-                _ => "Into ~/.fab7/weft/bin, checked against GitHub's and Cloudflare's checksums."
-                    .into(),
-            });
+        "choose" => {
+            let mut lines = vec!["Pick how this machine is reached:".into(), String::new()];
+            let tunnels = view.and_then(|v| v["tunnels"].as_array().cloned()).unwrap_or_default();
+            for (i, t) in tunnels.iter().enumerate() {
+                let mark = if i == app.modal_choice { "▸" } else { " " };
+                lines.push(format!(" {mark} {}", t["title"].as_str().unwrap_or_default()));
+            }
             lines.push(String::new());
             lines
         }
-        "no_cloudflared" => {
+        "not_installed" if app.remote_run => {
             let offer = view.map(|v| v["offer"].clone()).unwrap_or_default();
-            let mut lines = vec![
-                "Remote needs cloudflared, Cloudflare's tunnel. It is not on this machine.".into(),
-            ];
+            let tunnel = view.map(|v| v["tunnel"].clone()).unwrap_or_default();
+            let program = tunnel["program"].as_str().unwrap_or_default();
+            let (what, why) = match offer["how"].as_str() {
+                Some("brew") => (
+                    offer["argv"].as_str().unwrap_or_default().to_string(),
+                    format!("It installs {program} with Homebrew."),
+                ),
+                _ => (
+                    format!(
+                        "Download {program} from {}",
+                        offer["from"].as_str().unwrap_or_default()
+                    ),
+                    "Into ~/.fab7/weft/bin, checked against GitHub's checksum and the release's."
+                        .into(),
+                ),
+            };
+            vec!["RUN THIS?".into(), format!("  {what}"), String::new(), why, String::new()]
+        }
+        "not_installed" => {
+            let offer = view.map(|v| v["offer"].clone()).unwrap_or_default();
+            let tunnel = view.map(|v| v["tunnel"].clone()).unwrap_or_default();
+            let (title, program) = (
+                tunnel["title"].as_str().unwrap_or_default(),
+                tunnel["program"].as_str().unwrap_or_default(),
+            );
+            let mut lines = vec![format!("{title} needs {program}, which is not on this machine.")];
             match offer["how"].as_str() {
                 Some("brew") => {
-                    lines.push("Weft can install it:".into());
+                    lines.push("Install runs:".into());
                     lines.push(String::new());
                     lines.push(format!("  {}", offer["argv"].as_str().unwrap_or_default()));
-                    if offer["download"] == true {
-                        lines.push(
-                            "  or download it from github.com/cloudflare/cloudflared, with [D]."
-                                .into(),
-                        );
-                    }
                 }
                 Some(_) => {
-                    lines.push("Weft can install it:".into());
+                    lines.push("Install downloads it, for this machine:".into());
                     lines.push(String::new());
                     lines.push(format!(
-                        "  Download it from {} into ~/.fab7/weft/bin.",
+                        "  from {} into ~/.fab7/weft/bin",
                         offer["from"].as_str().unwrap_or_default()
                     ));
                 }
@@ -388,9 +400,7 @@ fn remote_body(app: &App) -> Vec<String> {
             lines.push(String::new());
             lines
         }
-        "installing" => {
-            vec!["Installing cloudflared…".into(), format!("  {}", s("line")), String::new()]
-        }
+        "installing" => vec!["Installing…".into(), format!("  {}", s("line")), String::new()],
         "signing_in" => vec![
             format!("Enter {} at {}", s("code"), s("url")),
             String::new(),
@@ -427,8 +437,8 @@ fn remote_body(app: &App) -> Vec<String> {
         _ => vec![
             "Use Weft from your phone at weft.getfab7.com.".into(),
             String::new(),
-            "Your phone reaches this machine through a Cloudflare tunnel, and only".into(),
-            "a device you allow here gets in.".into(),
+            "Your phone reaches this machine through a tunnel you pick next, and".into(),
+            "only a device you allow here gets in.".into(),
             String::new(),
         ],
     }

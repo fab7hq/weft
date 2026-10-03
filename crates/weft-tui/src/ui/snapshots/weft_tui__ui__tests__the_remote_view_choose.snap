@@ -22,15 +22,15 @@ expression: drawn
                                        │
                                        │
                                        │
+                                       │
+                                       │
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  REMOTE
- Remote needs cloudflared, Cloudflare's tunnel. It is not on this machine.
- Weft can install it:
+ Pick how this machine is reached:
 
-   brew install cloudflared
-   or download it from github.com/cloudflare/cloudflared, with [D].
+  ▸ Cloudflare Tunnel
 
 
 ───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
-  [I] INSTALL   [D] DOWNLOAD INSTEAD   [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE
+  [↑↓] PICK   [Enter] CHOOSE   [O] TURN OFF   [ESC] CLOSE
  Fab7 says who you are; only this machine says which devices get in.

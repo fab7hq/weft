@@ -22,36 +22,39 @@ impl App {
         let state = self.remote_state().to_string();
         let devices = self.remote_devices();
         // "Run this?" is answered first, and nothing runs without a yes.
-        if let Some(how) = self.remote_run.clone() {
+        if self.remote_run {
             match key.code {
                 event::KeyCode::Char('y' | 'Y') => {
-                    self.remote_act(serde_json::json!({"act": "install", "how": how}));
-                    self.remote_run = None;
+                    self.remote_act(serde_json::json!({"act": "install"}));
+                    self.remote_run = false;
                 }
-                event::KeyCode::Char('n' | 'N') | event::KeyCode::Esc => self.remote_run = None,
+                event::KeyCode::Char('n' | 'N') | event::KeyCode::Esc => self.remote_run = false,
                 _ => {}
             }
             return;
         }
-        let offer = self.remote_view().map(|v| v["offer"].clone()).unwrap_or_default();
+        let view = self.remote_view().cloned().unwrap_or_default();
+        let tunnels = view["tunnels"].as_array().cloned().unwrap_or_default();
+        let rows = if state == "choose" { tunnels.len() } else { devices.len() };
         match key.code {
-            event::KeyCode::Char('i' | 'I') if state == "no_cloudflared" => {
-                if let Some(how) = offer["how"].as_str() {
-                    self.remote_run = Some(how.to_string());
-                }
-            }
-            event::KeyCode::Char('d' | 'D')
-                if state == "no_cloudflared" && offer["download"] == true =>
+            event::KeyCode::Char('i' | 'I')
+                if state == "not_installed" && view["offer"].is_object() =>
             {
-                self.remote_run = Some("download".into());
+                self.remote_run = true;
+            }
+            event::KeyCode::Enter if state == "choose" => {
+                if let Some(id) = tunnels.get(self.modal_choice).and_then(|t| t["id"].as_str()) {
+                    self.remote_act(serde_json::json!({"act": "choose", "tunnel": id}));
+                    self.modal_choice = 0;
+                }
             }
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => {
-                self.modal_choice = (self.modal_choice + 1).min(devices.len().saturating_sub(1))
+                self.modal_choice = (self.modal_choice + 1).min(rows.saturating_sub(1))
             }
             event::KeyCode::Enter => match state.as_str() {
                 "off" => self.remote_act(serde_json::json!({"act": "on"})),
-                "no_cloudflared" => self.remote_act(serde_json::json!({"act": "look"})),
+                "not_installed" => self.remote_act(serde_json::json!({"act": "look"})),
                 "signed_out" => self.remote_act(serde_json::json!({"act": "sign_in"})),
                 _ => {}
             },

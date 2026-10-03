@@ -28,7 +28,7 @@ expression: drawn
  RUN THIS?
    brew install cloudflared
 
- It installs Cloudflare's tunnel program with Homebrew.
+ It installs cloudflared with Homebrew.
 
 
 ───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────

@@ -27,8 +27,8 @@ expression: drawn
  REMOTE
  Use Weft from your phone at weft.getfab7.com.
 
- Your phone reaches this machine through a Cloudflare tunnel, and only
- a device you allow here gets in.
+ Your phone reaches this machine through a tunnel you pick next, and
+ only a device you allow here gets in.
 
 
 ───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
