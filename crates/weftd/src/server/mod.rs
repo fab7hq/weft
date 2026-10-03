@@ -23,6 +23,7 @@ use crate::pane::Pane;
 use crate::turns::Turn;
 
 mod agents;
+mod remote;
 mod screens;
 mod typing;
 
@@ -307,6 +308,8 @@ pub struct Session {
     assume_ready: bool,
     /// The panes clients asked to be sent screens of (`pane.attach`).
     attached: Vec<screens::Attachment>,
+    /// Keeps `weft remote` running while remote access is on.
+    supervisor: remote::Supervisor,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -538,7 +541,9 @@ impl Session {
             outside,
             assume_ready,
             attached: Vec::new(),
+            supervisor: Default::default(),
         };
+        session.remote_from_config();
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
         outcome
@@ -1254,6 +1259,9 @@ impl Session {
                 }
                 self.clients.remote = Some((client, view.clone()));
                 self.clients.broadcast_all(&Out::Remote { view });
+            }
+            Call::Remote { act } if matches!(act["act"].as_str(), Some("on" | "off")) => {
+                return Ok(self.turn_remote(act["act"] == "on"));
             }
             Call::Remote { act } => {
                 let to = self.clients.remote.as_ref().map(|(c, _)| *c);

@@ -293,3 +293,75 @@ fn the_remote_view_and_its_acts_are_relayed() {
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// A daemon in a world of its own, reading `config` as its `config.toml`.
+fn daemon_in(name: &str, config: &str, world: weft::outside::Fixed) -> (PathBuf, PathBuf, PathBuf) {
+    let root = std::env::temp_dir().join(format!("weft-remote-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("config.toml");
+    std::fs::write(&file, config).unwrap();
+    let socket = protocol::private_socket("weft-remote");
+    let (listening, read) = (socket.clone(), file.clone());
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_in(&listening, &read, None, world.shared());
+    });
+    (root, socket, file)
+}
+
+/// D9, D10: `enabled = true` keeps `weft remote` running, restarted with a
+/// 2, 4, 8 … second backoff; turning it off sends `stop` and it is not
+/// started again; an unknown key in `[remote]` is reported as ignored.
+#[test]
+fn the_daemon_keeps_weft_remote_running_while_it_is_turned_on() {
+    let world = weft::outside::Fixed::new();
+    let runs = world.remote_runs();
+    let (root, socket, file) =
+        daemon_in("supervised", "[remote]\nenabled = true\nrelay = \"x\"\n", world);
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let ignored = tui.opened["routing"]["ignored"].clone();
+    assert_eq!(ignored, serde_json::json!(["remote.relay"]));
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    remote.answer(Call::RemoteView { view: serde_json::json!({"state": "on"}) }).unwrap();
+
+    // Each run here ends at once, as a crash would.
+    std::thread::sleep(Duration::from_millis(6_500));
+    let at = runs.lock().unwrap().clone();
+    assert_eq!(at.len(), 3, "started, then again after 2 s and 4 s: {at:?}");
+    let gaps: Vec<_> = at.windows(2).map(|w| w[1] - w[0]).collect();
+    assert!(gaps[0] >= Duration::from_secs(2) && gaps[0] < Duration::from_secs(3), "{gaps:?}");
+    assert!(gaps[1] >= Duration::from_secs(4) && gaps[1] < Duration::from_secs(5), "{gaps:?}");
+
+    tui.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
+    let told = remote.wait_for(|e| match e {
+        Event::RemoteAct { act } => Some(act.clone()),
+        _ => None,
+    });
+    assert_eq!(told, serde_json::json!({"act": "stop"}));
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.contains("enabled = false"), "{text}");
+    std::thread::sleep(Duration::from_millis(9_500));
+    assert_eq!(runs.lock().unwrap().len(), 3, "turned off, so not started again");
+
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Off in `config.toml` starts nothing; `on` from a client turns it on.
+#[test]
+fn weft_remote_starts_when_turned_on_and_not_before() {
+    let world = weft::outside::Fixed::new();
+    let runs = world.remote_runs();
+    let (root, socket, file) = daemon_in("off", "", world);
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(runs.lock().unwrap().is_empty(), "off unless turned on");
+
+    tui.answer(Call::Remote { act: serde_json::json!({"act": "on"}) }).unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(runs.lock().unwrap().len(), 1);
+    assert!(std::fs::read_to_string(&file).unwrap().contains("[remote]\nenabled = true"));
+
+    tui.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}

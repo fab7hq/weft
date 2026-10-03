@@ -30,6 +30,8 @@ pub trait Outside: Send + Sync {
     /// The text of the newest file at `pattern`, where a `*` folder stands
     /// for any one folder: a harness's installed `plugin.json`.
     fn newest(&self, pattern: &Path) -> Option<String>;
+    /// Run `weft remote` until it ends (remote.md D10).
+    fn remote(&self) -> std::io::Result<ExitStatus>;
 }
 
 pub type Shared = Arc<dyn Outside>;
@@ -90,6 +92,15 @@ impl Outside for Machine {
         let newest = found.into_iter().filter(|p| p.is_file()).max_by_key(modified)?;
         std::fs::read_to_string(newest).ok()
     }
+
+    /// This same program, as `weft remote`: the daemon is `weft --serve`.
+    fn remote(&self) -> std::io::Result<ExitStatus> {
+        Command::new(std::env::current_exe()?)
+            .arg("remote")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .status()
+    }
 }
 
 /// A world a test describes: the programs in it and what each answers.
@@ -100,6 +111,8 @@ pub struct Fixed {
     programs: BTreeMap<String, Vec<(Vec<String>, i32, String)>>,
     release: Result<serde_json::Value, String>,
     files: Vec<(std::path::PathBuf, String)>,
+    /// When `weft remote` was started. Each run ends at once, failing.
+    remote_runs: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
 }
 
 impl Default for Fixed {
@@ -108,6 +121,7 @@ impl Default for Fixed {
             programs: BTreeMap::new(),
             release: Err("no release check in this world".into()),
             files: Vec::new(),
+            remote_runs: Arc::default(),
         }
     }
 }
@@ -146,6 +160,11 @@ impl Fixed {
     pub fn file(mut self, path: &str, text: &str) -> Self {
         self.files.push((path.into(), text.to_string()));
         self
+    }
+
+    /// When `weft remote` was started in this world, as it runs.
+    pub fn remote_runs(&self) -> Arc<std::sync::Mutex<Vec<std::time::Instant>>> {
+        Arc::clone(&self.remote_runs)
     }
 
     pub fn shared(self) -> Shared {
@@ -198,6 +217,11 @@ impl Outside for Fixed {
             let tail = asked.get(asked.len().checked_sub(have.len())?..)?;
             tail.iter().zip(&have).all(|(a, h)| a == "*" || a == h).then(|| text.clone())
         })
+    }
+
+    fn remote(&self) -> std::io::Result<ExitStatus> {
+        self.remote_runs.lock().expect("runs").push(std::time::Instant::now());
+        Ok(ExitStatus::from_raw(1 << 8))
     }
 }
 

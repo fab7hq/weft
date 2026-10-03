@@ -27,6 +27,10 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # [harnesses.<harness>]        # this machine: set from Weft's [U] view
 # program = "/path/to/it"      # where its program is, when it is not on PATH
 
+# [remote]                     # Weft from your phone at weft.getfab7.com: W → R
+# enabled = true               # set when you turn it on or off there
+# cloudflared = "/path/to/it"  # when it is not on PATH
+
 [routing]                      # every project; each act optional
 # ask  = "<harness>"          # a harness, as its harness file is named
 # eval = "<harness>"
@@ -64,6 +68,15 @@ pub struct Choice {
     pub program: Option<String>,
 }
 
+/// `[remote]`: Weft from another device (remote.md D9). This machine's only.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Remote {
+    /// The daemon keeps `weft remote` running.
+    pub enabled: bool,
+    /// Where `cloudflared` is, when it is not on `PATH`.
+    pub cloudflared: Option<String>,
+}
+
 /// The file as read.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Config {
@@ -79,6 +92,7 @@ pub struct Config {
     pub leftover: Vec<String>,
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
+    remote: Remote,
 }
 
 /// Parse the file. Nothing readable is nothing set, which is how Weft behaves
@@ -109,6 +123,15 @@ impl Config {
     pub fn program(&self, harness: &str) -> Option<&str> {
         self.harnesses.get(harness).and_then(|c| c.program.as_deref())
     }
+
+    pub fn remote(&self) -> &Remote {
+        &self.remote
+    }
+}
+
+/// `config.toml` with `[remote] enabled` set, the rest as it was.
+pub fn set_remote(text: &str, enabled: bool) -> Result<String, String> {
+    set(text, &["remote"], "enabled", &Value::Bool(enabled))
 }
 
 /// `config.toml` with one key of `[harnesses.<harness>]` set, the rest of the
@@ -117,12 +140,18 @@ impl Config {
 /// result is parsed before it is handed back; a file this cannot edit safely
 /// (a harness set some other way, say) is an error, and the person edits it.
 pub fn set_harness(text: &str, harness: &str, key: &str, value: &Value) -> Result<String, String> {
+    set(text, &["harnesses", harness], key, value)
+}
+
+/// One key of the table at `section` set, as [`set_harness`] says.
+fn set(text: &str, section: &[&str], key: &str, value: &Value) -> Result<String, String> {
+    let name = section.join(".");
     let literal = match value {
         Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
         Value::Bool(b) => b.to_string(),
         other => return Err(format!("{other} is not a value config.toml keeps here")),
     };
-    let header = format!("[harnesses.{harness}]");
+    let header = format!("[{name}]");
     let line = format!("{key} = {literal}");
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let start = lines.iter().position(|l| l.trim() == header);
@@ -151,18 +180,17 @@ pub fn set_harness(text: &str, harness: &str, key: &str, value: &Value) -> Resul
     let mut out = lines.join("\n");
     out.push('\n');
     let parsed = out.parse::<toml::Table>().map_err(|e| {
-        format!("config.toml could not be edited safely ({e}); add `{key}` under [harnesses.{harness}] by hand")
+        format!("config.toml could not be edited safely ({e}); add `{key}` under [{name}] by hand")
     })?;
-    let got = parsed.get("harnesses").and_then(|h| h.get(harness)).and_then(|h| h.get(key));
+    let table = section.iter().try_fold(&parsed, |t, part| t.get(*part)?.as_table());
+    let got = table.and_then(|t| t.get(key));
     let want = match value {
         Value::String(s) => toml::Value::String(s.clone()),
         Value::Bool(b) => toml::Value::Boolean(*b),
         _ => unreachable!(),
     };
     if got != Some(&want) {
-        return Err(format!(
-            "config.toml sets [harnesses.{harness}] some other way; set `{key}` there by hand"
-        ));
+        return Err(format!("config.toml sets [{name}] some other way; set `{key}` there by hand"));
     }
     Ok(out)
 }
@@ -232,6 +260,17 @@ impl Config {
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
                 ("turbo", Value::Bool(on)) => out.turbo = Some(*on),
                 ("projects", _) if at.is_empty() => {}
+                ("remote", Value::Object(r)) if at.is_empty() => {
+                    for (k, v) in r {
+                        match (k.as_str(), v) {
+                            ("enabled", Value::Bool(on)) => self.remote.enabled = *on,
+                            ("cloudflared", Value::String(p)) if !p.is_empty() => {
+                                self.remote.cloudflared = Some(p.clone())
+                            }
+                            _ => self.ignored.push(format!("{here}.{k}")),
+                        }
+                    }
+                }
                 ("harnesses", Value::Object(hs)) if at.is_empty() => {
                     for (name, body) in hs {
                         let path = format!("{here}.{name}");
@@ -387,6 +426,41 @@ mod tests {
         let inline = "harnesses = { codex = { program = \"/x\" } }\n";
         assert!(set_harness(inline, "codex", "program", &json!("/y")).is_err());
         assert_eq!(read_("[harnesses.nowhere]\nprogram = \"/x\"\n").unknown, ["harnesses.nowhere"]);
+    }
+
+    /// `[remote]`: off unless turned on, `cloudflared` where it is when not
+    /// on PATH, any other key reported and ignored (remote.md D9); turned on
+    /// and off by editing the one line.
+    #[test]
+    fn remote_access_is_off_unless_turned_on() {
+        assert_eq!(read_(STARTING).remote(), &Remote::default(), "off in the starting file");
+        let uncommented = STARTING
+            .replace("# [remote]", "[remote]")
+            .replace("# enabled = true", "enabled = true");
+        assert!(read_(&uncommented).remote().enabled, "its own lines work uncommented");
+        let c = read_("[remote]\nenabled = true\ncloudflared = \"/opt/cf\"\nrelay = \"x\"\n");
+        assert!(c.remote().enabled);
+        assert_eq!(c.remote().cloudflared.as_deref(), Some("/opt/cf"));
+        assert_eq!(c.ignored, ["remote.relay"]);
+        assert_eq!(
+            read_("[projects.\"/p\".remote]\nenabled = true\n").ignored,
+            ["projects.\"/p\".remote"]
+        );
+
+        let on = set_remote(STARTING, true).unwrap();
+        assert!(read_(&on).remote().enabled);
+        assert_eq!(
+            on.lines().count(),
+            STARTING.lines().count() + 3,
+            "a blank line and the table, at the end"
+        );
+        let off = set_remote(&on, false).unwrap();
+        assert!(!read_(&off).remote().enabled);
+        assert_eq!(
+            off.lines().filter(|l| l.starts_with("enabled =")).count(),
+            1,
+            "replaced in place"
+        );
     }
 
     #[test]
