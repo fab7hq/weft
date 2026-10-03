@@ -203,6 +203,11 @@ pub enum Event {
     Setup {
         view: Value,
     },
+    /// The person typed into Weft on this machine, at `at` (milliseconds):
+    /// sent to every client, at most once in ten seconds (remote.md D6).
+    Presence {
+        at: i64,
+    },
     /// Each agent's state, as its hooks reported it: one per pane, in order,
     /// and the latest event of every session this project has receipts for.
     Agents {
@@ -433,6 +438,7 @@ impl Event {
             Event::Injected { pane, refusal, unrecorded } => {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
             }
+            Event::Presence { at } => ("presence", json!({"at": at})),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Agents { panes, sessions } => {
@@ -476,6 +482,7 @@ impl Event {
                 payload: un_b64(p.get("payload")?.as_str()?)?,
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
+            "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
             "setup" => Event::Setup { view: p.get("view")?.clone() },
             "agents" => Event::Agents {
@@ -806,6 +813,7 @@ mod tests {
                 payload: b"/plan ship it".to_vec(),
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
+            Event::Presence { at: 1_790_000_000_000 },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },

@@ -180,3 +180,36 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// D6: the TUI's typing is told as `presence`, at most once in ten seconds;
+/// `weft-remote`'s own typing never is.
+#[test]
+fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
+    let (root, socket) = daemon("presence");
+    let mut tui = Client::open(&socket, &root, "weft-tui/0.1.3", true);
+    let pane = sh(&mut tui);
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    let presences = |events: Vec<Event>| {
+        events.into_iter().filter(|e| matches!(e, Event::Presence { .. })).count()
+    };
+
+    remote.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    assert_eq!(
+        presences(remote.events(Duration::from_millis(600))),
+        0,
+        "a device is not the person"
+    );
+
+    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    let at = remote.wait_for(|e| match e {
+        Event::Presence { at } => Some(*at),
+        _ => None,
+    });
+    assert!(at > 1_700_000_000_000, "milliseconds: {at}");
+    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    assert_eq!(presences(remote.events(Duration::from_millis(600))), 0, "once in ten seconds");
+
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}

@@ -40,6 +40,9 @@ use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 /// terminal's state is rebuilt by replaying what remains.
 const REPLAY_LIMIT: usize = 4 * 1024 * 1024;
 
+/// At most one `presence` in this long.
+const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
 struct Slot {
     /// Its id, which is given when it starts and never changed (closing
     /// another pane renumbers nothing a client holds), its harness and
@@ -164,6 +167,10 @@ struct Clients {
     /// Clients that opened their project with `output: "none"`: they are
     /// never sent a pane's raw bytes (remote.md D4).
     quiet: std::collections::HashSet<u64>,
+    /// What each client called itself in its hello.
+    names: HashMap<u64, String>,
+    /// When `presence` was last sent.
+    presence: Option<std::time::Instant>,
 }
 
 impl Clients {
@@ -183,6 +190,24 @@ impl Clients {
         self.sinks.retain(|id, s| {
             watching.get(id) != Some(&project) || weft_proto::send(s, &wire).is_ok()
         });
+    }
+
+    /// Send to every client, whatever project it watches, or none.
+    fn broadcast_all(&mut self, event: &Out) {
+        let wire = Line::Event(event.clone()).encode();
+        self.sinks.retain(|_, s| weft_proto::send(s, &wire).is_ok());
+    }
+
+    /// The person typed into Weft here: say so, at most once in ten seconds.
+    /// Only the TUI's typing counts; a remote device's is not the person at
+    /// the machine (remote.md D6).
+    fn typed(&mut self, client: u64) {
+        let tui = self.names.get(&client).is_some_and(|n| n.starts_with("weft-tui"));
+        if !tui || self.presence.is_some_and(|at| at.elapsed() < PRESENCE_EVERY) {
+            return;
+        }
+        self.presence = Some(std::time::Instant::now());
+        self.broadcast_all(&Out::Presence { at: crate::turns::now_millis() });
     }
 
     /// A pane's bytes, to everyone watching this project who asked for them.
@@ -1026,7 +1051,8 @@ impl Session {
     /// Answers every call. `Answer::Done` ends the session.
     fn request(&mut self, client: u64, call: Call) -> Result<Answer> {
         match call {
-            Call::Hello { protocol, .. } => {
+            Call::Hello { client: name, protocol } => {
+                self.clients.names.insert(client, name);
                 return Ok(if protocol == PROTOCOL {
                     Answer::Ok(serde_json::json!({"protocol": PROTOCOL}))
                 } else {
@@ -1095,6 +1121,7 @@ impl Session {
                 })));
             }
             Call::Input { pane, bytes } => {
+                self.clients.typed(client);
                 if let Some(slot) = self.watched(client).and_then(|(_, p)| p.slot(pane)) {
                     slot.follow(client);
                     if slot.pane.send(&bytes).is_ok() && bytes.contains(&b'\r') {

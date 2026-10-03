@@ -232,7 +232,7 @@ impl Session {
         // The handshake first: a daemon that speaks another protocol says so
         // with a number rather than leaving the client to guess.
         let hello = session.tell(Call::Hello {
-            client: concat!("weft/", env!("CARGO_PKG_VERSION")).to_string(),
+            client: concat!("weft-tui/", env!("CARGO_PKG_VERSION")).to_string(),
             protocol: PROTOCOL,
         })?;
         session.answered(hello)?;
@@ -401,8 +401,8 @@ impl Session {
                     }
                 }
                 // Frames go only to a client that attached, and this one
-                // draws from the pane's own output.
-                Event::Screen { .. } => {}
+                // draws from the pane's own output; presence is its own.
+                Event::Screen { .. } | Event::Presence { .. } => {}
                 Event::Added { pane, harness, spec, turbo } => {
                     if self.index_of(pane).is_none() {
                         self.panes.push(PaneView::new(pane, harness, spec));
