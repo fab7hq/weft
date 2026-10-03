@@ -348,7 +348,7 @@ fn remote_body(app: &App) -> Vec<String> {
         "signing_in" => vec![
             format!("Enter {} at {}", s("code"), s("url")),
             String::new(),
-            "This Mac joins your account. GitHub says who you are; this Mac".into(),
+            "This machine joins your account. GitHub says who you are; this machine".into(),
             "still says which devices get in.".into(),
             String::new(),
         ],
@@ -381,7 +381,7 @@ fn remote_body(app: &App) -> Vec<String> {
         _ => vec![
             "Use Weft from your phone at weft.getfab7.com.".into(),
             String::new(),
-            "Your phone reaches this Mac through a Cloudflare tunnel, and only".into(),
+            "Your phone reaches this machine through a Cloudflare tunnel, and only".into(),
             "a device you allow here gets in.".into(),
             String::new(),
         ],

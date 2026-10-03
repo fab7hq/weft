@@ -1851,6 +1851,7 @@ fn a_device_asking_opens_the_question_by_itself() {
     assert_eq!(a.modal, Some(Modal::Help));
     let _remote = Remote::on(&a, asking("d_3"));
     modal_is(&mut a, allow("d_3"));
-    let _expired = Remote::on(&a, serde_json::json!({"state": "on", "login": "octo", "devices": []}));
+    let _expired =
+        Remote::on(&a, serde_json::json!({"state": "on", "login": "octo", "devices": []}));
     modal_is(&mut a, Some(Modal::Help));
 }

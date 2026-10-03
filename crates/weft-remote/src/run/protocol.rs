@@ -231,8 +231,8 @@ impl Remote {
         Ok(went)
     }
 
-    /// The person typed on the Mac: every agent a device was driving is the
-    /// Mac's again (remote.md §9).
+    /// The person typed on the machine: every agent a device was driving is the
+    /// machine's again (remote.md §9).
     pub(super) fn presence(&mut self) {
         let mut told = Vec::new();
         for c in self.conns.values_mut() {

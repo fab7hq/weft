@@ -73,7 +73,7 @@ impl Machine {
     }
 }
 
-/// What this machine is called, for the person's list of Macs.
+/// What this machine is called, for the person's list of machines.
 pub fn host_name() -> String {
     let said = std::process::Command::new("hostname").arg("-s").output().ok();
     said.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

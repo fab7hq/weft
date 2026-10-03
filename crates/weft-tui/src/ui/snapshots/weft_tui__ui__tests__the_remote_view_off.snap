@@ -27,10 +27,10 @@ expression: drawn
  REMOTE
  Use Weft from your phone at weft.getfab7.com.
 
- Your phone reaches this Mac through a Cloudflare tunnel, and only
+ Your phone reaches this machine through a Cloudflare tunnel, and only
  a device you allow here gets in.
 
 
 ───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
   [Enter] TURN ON   [ESC] CLOSE
- Fab7 says who you are; only this Mac says which devices get in.
+ Fab7 says who you are; only this machine says which devices get in.

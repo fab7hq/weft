@@ -95,7 +95,7 @@ struct Conn {
     watching: Option<(usize, u32)>,
     /// Frames were dropped: nothing but a whole screen until one comes.
     needs_full: bool,
-    /// The agents it has typed into since the Mac last did.
+    /// The agents it has typed into since the machine last did.
     driving: HashSet<(usize, u32)>,
     /// What it last said it shows: in the foreground, and which agent.
     seen: Option<(bool, Option<String>)>,
@@ -156,7 +156,7 @@ struct Remote {
     /// What is waiting on the person, by pending id: its project and the
     /// `pending` message devices are sent.
     pendings: BTreeMap<String, (usize, Value)>,
-    /// When the person last typed on the Mac.
+    /// When the person last typed on the machine.
     last_presence: Option<Instant>,
     /// The VAPID public key a device subscribes with.
     vapid: String,

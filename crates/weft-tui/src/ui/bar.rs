@@ -165,7 +165,7 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             " Weft never changes an agent without asking you first.".into()
         }
         (Some(Modal::Remote), _) => {
-            " Fab7 says who you are; only this Mac says which devices get in.".into()
+            " Fab7 says who you are; only this machine says which devices get in.".into()
         }
         (Some(Modal::Allow { .. }), _) => " A device gets in only after you say yes here.".into(),
         (Some(_), _) => String::new(),

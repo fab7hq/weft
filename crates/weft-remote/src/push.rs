@@ -14,7 +14,7 @@ use web_push_native::jwt_simple::algorithms::{ECDSAP256PublicKeyLike, ES256KeyPa
 use web_push_native::vapid::VapidSignature;
 use web_push_native::{Auth, WebPushBuilder, p256};
 
-/// No key pressed on the Mac for this long, and the person is away.
+/// No key pressed on the machine for this long, and the person is away.
 pub const AWAY: Duration = Duration::from_secs(120);
 /// Who to write to about this sender.
 const CONTACT: &str = "mailto:push@getfab7.com";
@@ -178,7 +178,7 @@ mod tests {
         let none = HashSet::new();
         rules.turns(&[("a".into(), "waiting"), ("b".into(), "working")]);
         assert_eq!(rules.count(), 1);
-        assert!(rules.due(false, &none).is_empty(), "held while the person is at the Mac");
+        assert!(rules.due(false, &none).is_empty(), "held while the person is at the machine");
         let front: HashSet<String> = ["a".to_string()].into();
         assert!(rules.due(true, &front).is_empty(), "not while a device shows it");
         assert_eq!(rules.due(true, &none), ["a"]);
