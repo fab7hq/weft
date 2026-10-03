@@ -23,7 +23,7 @@ impl Seen {
     }
 }
 
-type Routes = Arc<Mutex<HashMap<String, Vec<(u16, String)>>>>;
+type Routes = Arc<Mutex<HashMap<String, Vec<(u16, Vec<u8>)>>>>;
 
 pub struct Fake {
     pub url: String,
@@ -72,16 +72,17 @@ impl Fake {
                         match routes.get_mut(&key) {
                             Some(list) if list.len() > 1 => list.remove(0),
                             Some(list) if !list.is_empty() => list[0].clone(),
-                            _ => (404, "{\"code\":\"not_found\"}".to_string()),
+                            _ => (404, b"{\"code\":\"not_found\"}".to_vec()),
                         }
                     };
                     s.lock().unwrap().push(Seen { method, path, headers, body });
                     let mut out = stream;
                     let _ = write!(
                         out,
-                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{answer}",
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
                         answer.len()
                     );
+                    let _ = out.write_all(&answer);
                 });
             }
         });
@@ -90,8 +91,13 @@ impl Fake {
 
     /// Answer `method path` with these, in turn; the last repeats.
     pub fn route(&self, method: &str, path: &str, answers: &[(u16, &str)]) {
-        let list = answers.iter().map(|(s, a)| (*s, a.to_string())).collect();
+        let list = answers.iter().map(|(s, a)| (*s, a.as_bytes().to_vec())).collect();
         self.routes.lock().unwrap().insert(format!("{method} {path}"), list);
+    }
+
+    /// Answer `method path` with these bytes, always.
+    pub fn route_bytes(&self, method: &str, path: &str, status: u16, body: Vec<u8>) {
+        self.routes.lock().unwrap().insert(format!("{method} {path}"), vec![(status, body)]);
     }
 
     pub fn requests(&self, method: &str, path: &str) -> Vec<Seen> {

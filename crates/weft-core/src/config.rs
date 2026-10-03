@@ -134,6 +134,12 @@ pub fn set_remote(text: &str, enabled: bool) -> Result<String, String> {
     set(text, &["remote"], "enabled", &Value::Bool(enabled))
 }
 
+/// `config.toml` with `[remote] cloudflared` set to where Weft installed it
+/// (ADR-0023), the rest as it was.
+pub fn set_cloudflared(text: &str, path: &str) -> Result<String, String> {
+    set(text, &["remote"], "cloudflared", &Value::String(path.into()))
+}
+
 /// `config.toml` with one key of `[harnesses.<harness>]` set, the rest of the
 /// file as the person wrote it, comments included: the section's line is
 /// replaced, or added to the section, or the section added at the end. The
@@ -461,6 +467,14 @@ mod tests {
             1,
             "replaced in place"
         );
+
+        // Where Weft installed cloudflared (ADR-0023), beside `enabled`.
+        let at = set_cloudflared(&on, "/home/me/.fab7/weft/bin/cloudflared").unwrap();
+        assert_eq!(
+            read_(&at).remote().cloudflared.as_deref(),
+            Some("/home/me/.fab7/weft/bin/cloudflared")
+        );
+        assert!(read_(&at).remote().enabled, "the rest kept");
     }
 
     #[test]
