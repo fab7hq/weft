@@ -285,6 +285,9 @@ pub struct App {
     setup_offered: bool,
     /// What was in front when a device's question opened over it.
     before_allow: Option<Modal>,
+    /// The Remote view's "Run this?": how cloudflared would be installed,
+    /// waiting for the person's yes (ADR-0023).
+    pub remote_run: Option<String>,
     /// How many rows the Eval view had room for, as the last render measured it.
     eval_reach: usize,
     /// How many rows the sidebar had room for, as the last render measured
@@ -746,6 +749,7 @@ impl App {
             setup_asked: false,
             setup_offered: false,
             before_allow: None,
+            remote_run: None,
             list_rows: 1,
             show_work: true,
             focus: Focus::Weft,

@@ -338,13 +338,58 @@ fn remote_body(app: &App) -> Vec<String> {
     let s = |k: &str| view.and_then(|v| v[k].as_str()).unwrap_or_default().to_string();
     match view.and_then(|v| v["state"].as_str()).unwrap_or("off") {
         "starting" => vec!["Starting…".into(), String::new()],
-        "no_cloudflared" => vec![
-            "Install cloudflared: brew install cloudflared".into(),
-            String::new(),
-            "Weft finds it on your PATH, or where [remote] cloudflared says in".into(),
-            "~/.fab7/weft/config.toml. Weft never downloads it.".into(),
-            String::new(),
-        ],
+        "no_cloudflared" if app.remote_run.is_some() => {
+            let offer = view.map(|v| v["offer"].clone()).unwrap_or_default();
+            let what = match app.remote_run.as_deref() {
+                Some("brew") => offer["argv"].as_str().unwrap_or_default().to_string(),
+                _ => "Download cloudflared from github.com/cloudflare/cloudflared".to_string(),
+            };
+            let mut lines = vec!["RUN THIS?".into(), format!("  {what}"), String::new()];
+            lines.push(match app.remote_run.as_deref() {
+                Some("brew") => "It installs Cloudflare's tunnel program with Homebrew.".into(),
+                _ => "Into ~/.fab7/weft/bin, checked against GitHub's and Cloudflare's checksums."
+                    .into(),
+            });
+            lines.push(String::new());
+            lines
+        }
+        "no_cloudflared" => {
+            let offer = view.map(|v| v["offer"].clone()).unwrap_or_default();
+            let mut lines = vec![
+                "Remote needs cloudflared, Cloudflare's tunnel. It is not on this machine.".into(),
+            ];
+            match offer["how"].as_str() {
+                Some("brew") => {
+                    lines.push("Weft can install it:".into());
+                    lines.push(String::new());
+                    lines.push(format!("  {}", offer["argv"].as_str().unwrap_or_default()));
+                    if offer["download"] == true {
+                        lines.push(
+                            "  or download it from github.com/cloudflare/cloudflared, with [D]."
+                                .into(),
+                        );
+                    }
+                }
+                Some(_) => {
+                    lines.push("Weft can install it:".into());
+                    lines.push(String::new());
+                    lines.push(format!(
+                        "  Download it from {} into ~/.fab7/weft/bin.",
+                        offer["from"].as_str().unwrap_or_default()
+                    ));
+                }
+                None => lines.push(s("why")),
+            }
+            if !s("failed").is_empty() {
+                lines.push(String::new());
+                lines.push(format!("The last install did not finish: {}", s("failed")));
+            }
+            lines.push(String::new());
+            lines
+        }
+        "installing" => {
+            vec!["Installing cloudflared…".into(), format!("  {}", s("line")), String::new()]
+        }
         "signing_in" => vec![
             format!("Enter {} at {}", s("code"), s("url")),
             String::new(),

@@ -53,9 +53,18 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         Some(Modal::Remote) => {
             let state = app.remote_view().and_then(|v| v["state"].as_str()).unwrap_or("off");
             let devices = !app.remote_devices().is_empty();
+            let offer = app.remote_view().map(|v| v["offer"].clone()).unwrap_or_default();
             let keys = match state {
+                _ if app.remote_run.is_some() => "  [Y] RUN   [N] NO",
                 "off" => "  [Enter] TURN ON   [ESC] CLOSE",
+                "no_cloudflared" if offer["download"] == true => {
+                    "  [I] INSTALL   [D] DOWNLOAD INSTEAD   [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE"
+                }
+                "no_cloudflared" if offer.is_object() => {
+                    "  [I] INSTALL   [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE"
+                }
                 "no_cloudflared" => "  [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE",
+                "installing" => "  [ESC] CLOSE",
                 "signing_in" => "  [ESC] CANCEL",
                 "signed_out" => "  [Enter] SIGN IN   [O] TURN OFF   [ESC] CLOSE",
                 "on" if devices => "  [↑↓] PICK   [D] REMOVE   [O] TURN OFF   [ESC] CLOSE",

@@ -1766,6 +1766,42 @@ fn remote_state(a: &mut App, state: &str) {
     }
 }
 
+/// ADR-0023, remote.md §7a: `I` offers what the view offers and asks "Run
+/// this?" first; `N` sends nothing, `Y` sends `install`; `D` picks the
+/// download instead of Homebrew.
+#[test]
+fn installing_cloudflared_asks_before_it_runs() {
+    let mut a = app();
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('r'));
+    press(&mut a, KeyCode::Enter);
+    remote_state(&mut a, "starting");
+    let mut remote = Remote::on(
+        &a,
+        serde_json::json!({"state": "no_cloudflared",
+            "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}),
+    );
+    remote_state(&mut a, "no_cloudflared");
+
+    press(&mut a, KeyCode::Char('i'));
+    assert_eq!(a.remote_run.as_deref(), Some("brew"), "asked, not run");
+    press(&mut a, KeyCode::Char('n'));
+    assert_eq!(a.remote_run, None);
+    // Nothing went: the next act is the look that follows.
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(remote.act(), serde_json::json!({"act": "look"}));
+
+    press(&mut a, KeyCode::Char('i'));
+    press(&mut a, KeyCode::Char('y'));
+    assert_eq!(remote.act(), serde_json::json!({"act": "install", "how": "brew"}));
+
+    press(&mut a, KeyCode::Char('d'));
+    assert_eq!(a.remote_run.as_deref(), Some("download"));
+    press(&mut a, KeyCode::Char('y'));
+    assert_eq!(remote.act(), serde_json::json!({"act": "install", "how": "download"}));
+    assert_eq!(a.modal, Some(Modal::Remote), "the view stays open to show it installing");
+}
+
 /// remote.md §12's keys: `Enter` turns it on or looks again, `Esc` cancels
 /// signing in, `D` removes the selected device, `O` turns it off.
 #[test]

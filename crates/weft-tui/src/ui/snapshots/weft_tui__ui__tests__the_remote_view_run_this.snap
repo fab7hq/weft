@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ REMOTE
+ RUN THIS?
+   brew install cloudflared
+
+ It installs Cloudflare's tunnel program with Homebrew.
+
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [Y] RUN   [N] NO
+ Fab7 says who you are; only this machine says which devices get in.

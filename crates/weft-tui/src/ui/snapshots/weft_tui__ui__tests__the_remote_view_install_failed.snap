@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ REMOTE
+ Remote needs cloudflared, Cloudflare's tunnel. It is not on this machine.
+ Weft can install it:
+
+   Download it from github.com/cloudflare/cloudflared into ~/.fab7/weft/bin.
+
+ The last install did not finish: cloudflared-linux-arm64 does not match GitHub's checksum; nothing installed.
+
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [I] INSTALL   [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE
+ Fab7 says who you are; only this machine says which devices get in.

@@ -774,7 +774,23 @@ fn the_remote_view_in_each_state() {
         ("the_remote_view_off", serde_json::Value::Null),
         (
             "the_remote_view_no_cloudflared",
-            serde_json::json!({"state": "no_cloudflared", "install": "brew install cloudflared"}),
+            serde_json::json!({"state": "no_cloudflared",
+                "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}),
+        ),
+        (
+            "the_remote_view_download",
+            serde_json::json!({"state": "no_cloudflared",
+                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared", "download": false}}),
+        ),
+        (
+            "the_remote_view_install_failed",
+            serde_json::json!({"state": "no_cloudflared",
+                "offer": {"how": "download", "from": "github.com/cloudflare/cloudflared", "download": false},
+                "failed": "cloudflared-linux-arm64 does not match GitHub's checksum; nothing installed."}),
+        ),
+        (
+            "the_remote_view_installing",
+            serde_json::json!({"state": "installing", "line": "==> Pouring cloudflared--2026.9.3.arm64_sequoia.bottle.tar.gz"}),
         ),
         (
             "the_remote_view_signing_in",
@@ -795,6 +811,12 @@ fn the_remote_view_in_each_state() {
     }
     let drawn = screen(&mut a, 120, 32);
     assert!(drawn.contains("Traffic is decrypted at Cloudflare's edge."), "{drawn}");
+    // "Run this?", before Weft installs anything.
+    a.session_mut().remote = Some(serde_json::json!({"state": "no_cloudflared",
+        "offer": {"how": "brew", "argv": "brew install cloudflared", "download": true}}));
+    a.remote_run = Some("brew".into());
+    expect_screen("the_remote_view_run_this", &screen(&mut a, 120, 32));
+    a.remote_run = None;
 }
 
 /// remote.md §8: the question a device asking to be allowed puts in front.

@@ -21,7 +21,30 @@ impl App {
     pub(super) fn on_remote_key(&mut self, key: KeyEvent) {
         let state = self.remote_state().to_string();
         let devices = self.remote_devices();
+        // "Run this?" is answered first, and nothing runs without a yes.
+        if let Some(how) = self.remote_run.clone() {
+            match key.code {
+                event::KeyCode::Char('y' | 'Y') => {
+                    self.remote_act(serde_json::json!({"act": "install", "how": how}));
+                    self.remote_run = None;
+                }
+                event::KeyCode::Char('n' | 'N') | event::KeyCode::Esc => self.remote_run = None,
+                _ => {}
+            }
+            return;
+        }
+        let offer = self.remote_view().map(|v| v["offer"].clone()).unwrap_or_default();
         match key.code {
+            event::KeyCode::Char('i' | 'I') if state == "no_cloudflared" => {
+                if let Some(how) = offer["how"].as_str() {
+                    self.remote_run = Some(how.to_string());
+                }
+            }
+            event::KeyCode::Char('d' | 'D')
+                if state == "no_cloudflared" && offer["download"] == true =>
+            {
+                self.remote_run = Some("download".into());
+            }
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => {
                 self.modal_choice = (self.modal_choice + 1).min(devices.len().saturating_sub(1))
