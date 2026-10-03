@@ -1,7 +1,7 @@
-//! Installing `cloudflared` when the person says yes (ADR-0023, remote.md
-//! §7a): by Homebrew when it is there, else Cloudflare's latest release, as
-//! Weft installs itself. The facts are in the tool file,
-//! `~/.fab7/weft/tools/cloudflared.toml`.
+//! Tool files, the adapters for outside programs (ADR-0024), and installing a
+//! tunnel's program when the person says yes (ADR-0023, remote.md §7a): by
+//! Homebrew when it is there, else the adapter's latest GitHub release, as
+//! Weft installs itself. The facts are in `~/.fab7/weft/tools/<id>.toml`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,11 +9,23 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// The tool file, as read.
-#[derive(Debug, Clone, PartialEq)]
+/// A tool file, as read: an adapter for one outside program (ADR-0024).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tool {
+    /// Its file's name: what `[remote] tunnel` names.
+    pub id: String,
+    /// What it is an adapter for: `tunnel`.
+    pub kind: String,
+    /// The name a person reads.
+    pub title: String,
     /// The program's name, found on `PATH`.
     pub program: String,
+    /// What follows the program to start it; `{port}` is the loopback port.
+    pub run: Vec<String>,
+    /// The end of the host its address has.
+    pub address: String,
+    /// Said wherever it is on: what it can see.
+    pub note: Option<String>,
     /// The Homebrew install, when the file names one.
     pub brew: Option<Vec<String>>,
     /// The GitHub repository whose latest release is downloaded.
@@ -23,21 +35,47 @@ pub struct Tool {
 }
 
 impl Tool {
-    /// `tools/cloudflared.toml` under `weft` (`~/.fab7/weft`), or why not.
-    pub fn load(weft: &Path) -> Result<Self, String> {
-        let path = weft.join("tools").join("cloudflared.toml");
-        let text = std::fs::read_to_string(&path).map_err(|_| {
-            "Weft's tool file for cloudflared is missing: run weft update.".to_string()
-        })?;
-        Self::read(&text)
+    /// The tunnel adapters in `weft/tools`, by their file's name: the ones
+    /// that read, and say they are tunnels.
+    pub fn tunnels(weft: &Path) -> Vec<Tool> {
+        let mut found: Vec<Tool> = std::fs::read_dir(weft.join("tools"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let path = e.path();
+                let id = path.file_stem()?.to_str()?.to_string();
+                if path.extension()? != "toml" {
+                    return None;
+                }
+                Tool::read(&id, &std::fs::read_to_string(&path).ok()?).ok()
+            })
+            .filter(|t| t.kind == "tunnel")
+            .collect();
+        found.sort_by(|a, b| a.id.cmp(&b.id));
+        found
     }
 
-    pub fn read(text: &str) -> Result<Self, String> {
-        let broken =
-            || "Weft's tool file for cloudflared cannot be read: run weft update.".to_string();
+    /// The tunnel adapter `id`, if its file is there and reads.
+    pub fn tunnel(weft: &Path, id: &str) -> Option<Tool> {
+        Self::tunnels(weft).into_iter().find(|t| t.id == id)
+    }
+
+    pub fn read(id: &str, text: &str) -> Result<Self, String> {
+        let broken = || format!("Weft's tool file {id}.toml cannot be read: run weft update.");
         let t: toml::Table = text.parse().map_err(|_| broken())?;
-        let program =
-            t.get("program").and_then(toml::Value::as_str).ok_or_else(broken)?.to_string();
+        let s = |k: &str| t.get(k).and_then(toml::Value::as_str).map(str::to_string);
+        let kind = s("kind").ok_or_else(broken)?;
+        let program = s("program").ok_or_else(broken)?;
+        let run: Vec<String> = t
+            .get("run")
+            .and_then(toml::Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
+        let address = s("address").unwrap_or_default();
+        if kind == "tunnel" && (run.is_empty() || address.is_empty()) {
+            return Err(broken());
+        }
         let install = t.get("install").and_then(toml::Value::as_table);
         let brew = install
             .and_then(|i| i.get("brew")?.get("argv")?.as_array().cloned())
@@ -51,7 +89,18 @@ impl Tool {
                 a.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect()
             })
             .unwrap_or_default();
-        Ok(Tool { program, brew, repo, assets })
+        Ok(Tool {
+            id: id.into(),
+            title: s("title").unwrap_or_else(|| program.clone()),
+            kind,
+            program,
+            run,
+            address,
+            note: s("note"),
+            brew,
+            repo,
+            assets,
+        })
     }
 
     /// This machine's asset: `darwin-arm64`, `linux-amd64`, …
@@ -83,13 +132,13 @@ fn hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Cloudflare's latest release, this machine's asset, checked against
+/// The adapter's latest release, this machine's asset, checked against
 /// GitHub's digest and the notes' checksum of the program, written to
 /// `weft/bin/<program>` and named in `weft/config.toml` (remote.md §7a).
 /// Nothing is written unless every check passes. `api` is GitHub's API.
 pub fn download(api: &str, tool: &Tool, weft: &Path) -> Result<PathBuf, String> {
     let asset = tool.asset().ok_or_else(|| {
-        format!("Cloudflare publishes no {} build for {}.", tool.program, machine())
+        format!("{} has no build of {} for {}.", tool.title, tool.program, machine())
     })?;
     let repo = tool.repo.as_deref().ok_or("Weft's tool file names no release to download.")?;
     let http: ureq::Agent =
@@ -134,7 +183,7 @@ pub fn download(api: &str, tool: &Tool, weft: &Path) -> Result<PathBuf, String> 
         if asset.ends_with(".tgz") { unpack(&bytes, &tool.program, weft)? } else { bytes };
     if listed != Some(hex(&program).as_str()) {
         return Err(format!(
-            "{} does not match Cloudflare's checksum in the release's notes; nothing installed.",
+            "{} does not match the checksum in {repo}'s release notes; nothing installed.",
             tool.program
         ));
     }
@@ -150,7 +199,7 @@ pub fn download(api: &str, tool: &Tool, weft: &Path) -> Result<PathBuf, String> 
     std::fs::rename(&new, &path).map_err(|e| e.to_string())?;
     let config = weft.join("config.toml");
     let text = std::fs::read_to_string(&config).unwrap_or_default();
-    let text = weft_core::config::set_cloudflared(&text, &path.to_string_lossy())?;
+    let text = weft_core::config::set_program(&text, &path.to_string_lossy())?;
     std::fs::write(&config, text).map_err(|e| e.to_string())?;
     Ok(path)
 }
@@ -182,14 +231,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_shipped_tool_file_reads() {
+    fn the_shipped_tool_file_is_a_tunnel_adapter() {
         let shipped =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fab7/products/weft/tools");
         let Ok(text) = std::fs::read_to_string(shipped.join("cloudflared.toml")) else {
             return; // a checkout without fab7 beside it
         };
-        let tool = Tool::read(&text).unwrap();
+        let tool = Tool::read("cloudflared", &text).unwrap();
+        assert_eq!((tool.kind.as_str(), tool.title.as_str()), ("tunnel", "Cloudflare Tunnel"));
         assert_eq!(tool.program, "cloudflared");
+        assert!(tool.run.iter().any(|w| w.contains("{port}")), "{:?}", tool.run);
+        assert_eq!(tool.address, ".trycloudflare.com");
+        assert!(tool.note.is_some());
         assert_eq!(
             tool.brew.as_deref(),
             Some(&["brew".to_string(), "install".into(), "cloudflared".into()][..])
@@ -201,23 +254,28 @@ mod tests {
     }
 
     #[test]
-    fn a_file_without_brew_or_a_download_offers_neither() {
-        let tool = Tool::read("program = \"cloudflared\"\n").unwrap();
-        assert_eq!(tool.brew, None);
-        assert_eq!(tool.repo, None);
-        assert!(tool.assets.is_empty());
-        assert_eq!(tool.asset(), None);
-    }
-
-    #[test]
-    fn a_missing_or_broken_file_says_so() {
+    fn the_tunnels_are_the_tool_files_that_say_so_and_read() {
         let dir = std::env::temp_dir().join(format!("wr-tool-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("tools")).unwrap();
-        assert!(Tool::load(&dir).unwrap_err().contains("missing"));
-        std::fs::write(dir.join("tools/cloudflared.toml"), "program = [").unwrap();
-        assert!(Tool::load(&dir).unwrap_err().contains("cannot be read"));
-        std::fs::write(dir.join("tools/cloudflared.toml"), "nothing = 1").unwrap();
-        assert!(Tool::load(&dir).unwrap_err().contains("cannot be read"));
+        assert!(Tool::tunnels(&dir).is_empty());
+        let tunnel = |title: &str| {
+            format!(
+                "kind = \"tunnel\"\ntitle = \"{title}\"\nprogram = \"p\"\nrun = [\"{{port}}\"]\naddress = \".x.net\"\n"
+            )
+        };
+        std::fs::write(dir.join("tools/zeta.toml"), tunnel("Zeta")).unwrap();
+        std::fs::write(dir.join("tools/alpha.toml"), tunnel("Alpha")).unwrap();
+        std::fs::write(dir.join("tools/other.toml"), "kind = \"push\"\nprogram = \"q\"\n").unwrap();
+        std::fs::write(dir.join("tools/broken.toml"), "kind = [").unwrap();
+        std::fs::write(dir.join("tools/half.toml"), "kind = \"tunnel\"\nprogram = \"p\"\n")
+            .unwrap();
+        let ids: Vec<_> = Tool::tunnels(&dir).into_iter().map(|t| (t.id, t.title)).collect();
+        assert_eq!(
+            ids,
+            [("alpha".into(), "Alpha".into()), ("zeta".to_string(), "Zeta".to_string())]
+        );
+        assert_eq!(Tool::tunnel(&dir, "zeta").map(|t| t.address), Some(".x.net".into()));
+        assert_eq!(Tool::tunnel(&dir, "half"), None, "a tunnel without run or address is not one");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

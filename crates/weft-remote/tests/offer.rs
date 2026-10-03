@@ -1,18 +1,19 @@
-//! remote.md §7a, §12 (ADR-0023): with no cloudflared, the view offers to
-//! install it, by Homebrew when it is there, else Cloudflare's release; the
-//! install runs only when asked, and the tunnel starts once it is there.
+//! remote.md §7a, §12 (ADR-0023, ADR-0024): turning Remote on lists the
+//! tunnel adapters until one is chosen; with its program missing there is one
+//! Install, which uses Homebrew when it is there, else the release for this
+//! machine; it runs only when asked, and the tunnel starts once it is there.
 
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{CLOUDFLARED, Fake, Harness};
+use common::{ADAPTER, CLOUDFLARED, Fake, Harness};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use weft_remote::install::machine;
 
-/// Take the configured cloudflared away, keeping it at `<path>.later`.
+/// Take the configured program away, keeping it at `<path>.later`.
 fn hide(dir: &Path) -> (PathBuf, PathBuf) {
     let program = dir.join("cloudflared");
     let later = dir.join("cloudflared.later");
@@ -20,12 +21,12 @@ fn hide(dir: &Path) -> (PathBuf, PathBuf) {
     (later, program)
 }
 
-fn tool_file(dir: &Path, brew: &str) {
-    std::fs::create_dir_all(dir.join("tools")).unwrap();
+/// The adapter with an install: Homebrew's argv (`brew`) and a release asset.
+fn installable(dir: &Path, brew: &str) {
     std::fs::write(
         dir.join("tools/cloudflared.toml"),
         format!(
-            "program = \"cloudflared\"\n[install.brew]\nargv = [\"{brew}\", \"install\", \"cloudflared\"]\n\
+            "{ADAPTER}[install.brew]\nargv = [\"{brew}\", \"install\", \"cloudflared\"]\n\
              [install.download]\nrepo = \"cloudflare/cloudflared\"\n[install.download.assets]\n\"{}\" = \"cloudflared-test\"\n",
             machine()
         ),
@@ -33,7 +34,7 @@ fn tool_file(dir: &Path, brew: &str) {
     .unwrap();
 }
 
-/// A brew that says what it does, then puts cloudflared back where the config says.
+/// A brew that says what it does, then puts the program back where the config says.
 fn fake_brew(dir: &Path, later: &Path, program: &Path) -> PathBuf {
     let brew = dir.join("brew");
     std::fs::write(
@@ -50,28 +51,58 @@ fn fake_brew(dir: &Path, later: &Path, program: &Path) -> PathBuf {
 }
 
 #[test]
-fn brew_is_offered_when_it_is_there_and_runs_only_when_asked() {
+fn with_no_tunnel_chosen_the_adapters_are_listed_and_a_choice_is_kept() {
+    let mut h = Harness::until(
+        "choose",
+        |dir| {
+            let config = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+            let config: String = config
+                .lines()
+                .filter(|l| !l.starts_with("tunnel"))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            std::fs::write(dir.join("config.toml"), config).unwrap();
+            std::fs::write(dir.join("tools/push.toml"), "kind = \"push\"\nprogram = \"p\"\n")
+                .unwrap();
+        },
+        "choose",
+    );
+    assert_eq!(h.tui.view["tunnels"], json!([{"id": "cloudflared", "title": "Cloudflare Tunnel"}]));
+    h.tui.act(json!({"act": "choose", "tunnel": "cloudflared"}));
+    let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
+    assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
+    assert_eq!(on["note"], "traffic is decrypted at Cloudflare's edge", "the adapter's note");
+    let config = std::fs::read_to_string(h.dir.join("config.toml")).unwrap();
+    assert!(config.contains("tunnel = \"cloudflared\""), "{config}");
+}
+
+#[test]
+fn install_uses_brew_when_it_is_there_and_runs_only_when_asked() {
     let mut brew = None;
     let mut h = Harness::until(
-        "offer-brew",
+        "install-brew",
         |dir| {
             let (later, program) = hide(dir);
             let b = fake_brew(dir, &later, &program);
-            tool_file(dir, &b.to_string_lossy());
+            installable(dir, &b.to_string_lossy());
             brew = Some(b);
         },
-        "no_cloudflared",
+        "not_installed",
     );
     let brew = brew.unwrap();
     assert_eq!(
+        h.tui.view["tunnel"],
+        json!({"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"})
+    );
+    assert_eq!(
         h.tui.view["offer"],
-        json!({"how": "brew", "argv": format!("{} install cloudflared", brew.display()), "download": true})
+        json!({"how": "brew", "argv": format!("{} install cloudflared", brew.display())})
     );
     // Nothing runs until asked.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(h.dir.join("cloudflared.later").exists());
 
-    h.tui.act(json!({"act": "install", "how": "brew"}));
+    h.tui.act(json!({"act": "install"}));
     let installing = h.tui.wait_view(|v| v["state"] == "installing");
     assert!(
         installing["line"].as_str().unwrap_or_default().contains("cloudflared"),
@@ -82,7 +113,7 @@ fn brew_is_offered_when_it_is_there_and_runs_only_when_asked() {
 }
 
 #[test]
-fn without_brew_the_release_is_offered_and_downloaded_when_asked() {
+fn without_brew_install_downloads_the_release_for_this_machine() {
     let github = Fake::start();
     let hex = |b: &[u8]| Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect::<String>();
     let program = CLOUDFLARED.as_bytes();
@@ -99,24 +130,24 @@ fn without_brew_the_release_is_offered_and_downloaded_when_asked() {
     );
     github.route_bytes("GET", "/download/cloudflared-test", 200, program.to_vec());
     let mut h = Harness::until_github(
-        "offer-download",
+        "install-download",
         |dir| {
             hide(dir);
-            tool_file(dir, "/nonexistent/brew");
+            installable(dir, "/nonexistent/brew");
         },
-        "no_cloudflared",
+        "not_installed",
         &github.url,
     );
     assert_eq!(
         h.tui.view["offer"],
-        json!({"how": "download", "from": "github.com/cloudflare/cloudflared", "download": false})
+        json!({"how": "download", "from": "github.com/cloudflare/cloudflared"})
     );
-    h.tui.act(json!({"act": "install", "how": "download"}));
+    h.tui.act(json!({"act": "install"}));
     let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
     assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
     let config = std::fs::read_to_string(h.dir.join("config.toml")).unwrap();
     assert!(
-        config.contains(&format!("cloudflared = \"{}\"", h.dir.join("bin/cloudflared").display())),
+        config.contains(&format!("program = \"{}\"", h.dir.join("bin/cloudflared").display())),
         "{config}"
     );
 }
@@ -137,27 +168,27 @@ fn a_download_that_fails_its_check_says_why_and_stays_off() {
     );
     github.route_bytes("GET", "/download/cloudflared-test", 200, b"not it".to_vec());
     let mut h = Harness::until_github(
-        "offer-refused",
+        "install-refused",
         |dir| {
             hide(dir);
-            tool_file(dir, "/nonexistent/brew");
+            installable(dir, "/nonexistent/brew");
         },
-        "no_cloudflared",
+        "not_installed",
         &github.url,
     );
-    h.tui.act(json!({"act": "install", "how": "download"}));
+    h.tui.act(json!({"act": "install"}));
     let refused = h.tui.wait_view(|v| v["failed"].is_string());
-    assert_eq!(refused["state"], "no_cloudflared");
+    assert_eq!(refused["state"], "not_installed");
     assert!(refused["failed"].as_str().unwrap().contains("GitHub's checksum"), "{refused}");
     assert!(!h.dir.join("bin/cloudflared").exists());
 }
 
 #[test]
-fn with_no_tool_file_nothing_is_offered_and_the_view_says_why() {
-    let h = Harness::until("offer-none", |dir| drop(hide(dir)), "no_cloudflared");
+fn an_adapter_with_no_install_says_why() {
+    let h = Harness::until("install-none", |dir| drop(hide(dir)), "not_installed");
     assert!(h.tui.view["offer"].is_null());
     assert!(
-        h.tui.view["why"].as_str().unwrap_or_default().contains("weft update"),
+        h.tui.view["why"].as_str().unwrap_or_default().contains("[remote] program"),
         "{}",
         h.tui.view
     );

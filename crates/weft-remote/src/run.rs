@@ -17,6 +17,7 @@ use crate::account::{Account, Reported, SignIn};
 use crate::agents;
 use crate::daemon::{self, CONTROL, Heard};
 use crate::devices::{self, Devices, Gate};
+use crate::install::Tool;
 use crate::socket::{self, Outbox, Socket};
 use crate::store::{self, Machine};
 use crate::tunnel::{self, Tunnel, TunnelEvent};
@@ -156,6 +157,8 @@ struct Remote {
     reported: Reported,
     cancel: Arc<AtomicBool>,
     tunnel: Option<Tunnel>,
+    /// The tunnel adapter chosen, once it is found.
+    adapter: Option<Tool>,
     /// The loopback port the tunnel carries.
     port: u16,
     /// Calls waiting for the daemon's answer, by project and call id.
@@ -171,12 +174,25 @@ struct Remote {
     pusher: Sender<crate::push::Job>,
 }
 
-/// The tunnel to `port`, if `cloudflared` is where `[remote]` says or on
-/// `PATH`; its events go to the loop.
-fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Option<Tunnel> {
+/// Where the tunnel stands: up, with no adapter chosen, or with the chosen
+/// adapter's program missing (remote.md §7, §7a).
+enum Ready {
+    Up(Tunnel, Tool),
+    Choose(Vec<Tool>),
+    Missing(Tool),
+}
+
+/// The chosen tunnel to `port`, if its program is where `[remote] program`
+/// says or on `PATH`; its events go to the loop.
+fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
     let config = std::fs::read_to_string(weft.join("config.toml")).unwrap_or_default();
     let config = weft_core::config::read(&config, &Default::default());
-    let tunnel = Tunnel::new(tunnel::find(config.remote().cloudflared.as_deref())?);
+    let chosen = config.remote().tunnel.as_deref().and_then(|id| Tool::tunnel(weft, id));
+    let Some(tool) = chosen else { return Ready::Choose(Tool::tunnels(weft)) };
+    let Some(program) = tunnel::find(config.remote().program.as_deref(), &tool.program) else {
+        return Ready::Missing(tool);
+    };
+    let tunnel = Tunnel::new(program, tool.run.clone(), tool.address.clone());
     let events = tunnel.start(port);
     let tx = tx.clone();
     std::thread::spawn(move || {
@@ -186,25 +202,21 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Option<
             }
         }
     });
-    Some(tunnel)
+    Ready::Up(tunnel, tool)
 }
 
-/// How Weft would install `cloudflared` here (remote.md §7a): Homebrew when
-/// it is there, else Cloudflare's release for this machine; or why neither.
-fn offer(weft: &std::path::Path) -> Result<Value, String> {
-    let tool = crate::install::Tool::load(weft)?;
-    let download = tool.repo.is_some() && tool.asset().is_some();
+/// How Install would install the tunnel's program here (remote.md §7a):
+/// Homebrew when it is there, else the release built for this machine; or
+/// why neither.
+fn offer(tool: &Tool) -> Result<Value, String> {
     if let Some(argv) = tool.brew.as_ref().filter(|a| on_path(&a[0])) {
-        return Ok(json!({"how": "brew", "argv": argv.join(" "), "download": download}));
+        return Ok(json!({"how": "brew", "argv": argv.join(" ")}));
     }
-    if download {
-        let repo = tool.repo.unwrap_or_default();
-        return Ok(
-            json!({"how": "download", "from": format!("github.com/{repo}"), "download": false}),
-        );
+    if let (Some(repo), Some(_)) = (&tool.repo, tool.asset()) {
+        return Ok(json!({"how": "download", "from": format!("github.com/{repo}")}));
     }
     Err(format!(
-        "Weft has no way to install {} on {}: put its path in config.toml as [remote] cloudflared.",
+        "Weft has no way to install {} on {}: put its path in config.toml as [remote] program.",
         tool.program,
         crate::install::machine()
     ))
@@ -268,7 +280,6 @@ impl Remote {
         let dir = store::remote_dir(&settings.weft)?;
         let control = daemon::Project::control(&settings.socket, tx.clone())?;
         let port = socket::listen(tx.clone())?;
-        let tunnel = start_tunnel(&settings.weft, port, &tx);
         let ticks = tx.clone();
         std::thread::spawn(move || {
             while ticks.send(Wake::Tick).is_ok() {
@@ -279,8 +290,7 @@ impl Remote {
         let vapid = crate::push::public(&key);
         let pusher = crate::push::sender(key, tx.clone());
         let machine = Machine::load(&dir);
-        let mut view = View { no_cloudflared: tunnel.is_none(), ..View::default() };
-        view.offer = offer(&settings.weft);
+        let mut view = View::default();
         view.login = machine.as_ref().map(|m| m.login.clone());
         let mut remote = Remote {
             devices: Devices::load(&dir),
@@ -298,7 +308,8 @@ impl Remote {
             shown: Value::Null,
             reported: Reported::default(),
             cancel: Arc::default(),
-            tunnel,
+            tunnel: None,
+            adapter: None,
             port,
             calls: HashMap::new(),
             pendings: BTreeMap::new(),
@@ -308,9 +319,7 @@ impl Remote {
             pusher,
         };
         remote.open_projects();
-        if remote.machine.is_none() && !remote.view.no_cloudflared {
-            remote.sign_in();
-        }
+        remote.look();
         remote.publish();
         Ok(remote)
     }
@@ -519,9 +528,22 @@ impl Remote {
             }
             // `cloudflared` was missing: look again, and start if it is there.
             Some("look") if self.tunnel.is_none() => self.look(),
-            // Install it, as the offer said, now the person said yes (§7a).
+            // The tunnel the person picked from the list (ADR-0024).
+            Some("choose") if self.tunnel.is_none() => {
+                if let Some(tool) =
+                    act["tunnel"].as_str().and_then(|id| Tool::tunnel(&self.settings.weft, id))
+                {
+                    let config = self.settings.weft.join("config.toml");
+                    let text = std::fs::read_to_string(&config).unwrap_or_default();
+                    if let Ok(text) = weft_core::config::set_tunnel(&text, &tool.id) {
+                        let _ = std::fs::write(&config, text);
+                    }
+                    self.look();
+                }
+            }
+            // Install it, as the offer says, now the person said yes (§7a).
             Some("install") if self.tunnel.is_none() && self.view.installing.is_none() => {
-                self.install(act["how"].as_str().unwrap_or_default())
+                self.install()
             }
             Some("cancel") => {
                 self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -568,39 +590,51 @@ impl Remote {
         }
     }
 
-    /// `cloudflared` was missing: look again, and start if it is there.
+    /// Where the tunnel stands, again: start it if it can be, else say what
+    /// is missing; sign in once it is up and this machine has not joined.
     fn look(&mut self) {
-        self.tunnel = start_tunnel(&self.settings.weft, self.port, &self.tx);
-        self.view.no_cloudflared = self.tunnel.is_none();
-        self.view.offer = offer(&self.settings.weft);
-        if self.tunnel.is_some() && self.machine.is_none() {
-            self.sign_in();
+        self.view.choose = None;
+        self.view.missing = None;
+        match start_tunnel(&self.settings.weft, self.port, &self.tx) {
+            Ready::Up(tunnel, tool) => {
+                self.view.note = tool.note.clone();
+                self.tunnel = Some(tunnel);
+                self.adapter = Some(tool);
+                if self.machine.is_none() && self.view.signing_in.is_none() {
+                    self.sign_in();
+                }
+            }
+            Ready::Choose(tools) => {
+                self.view.choose =
+                    Some(tools.iter().map(|t| json!({"id": t.id, "title": t.title})).collect());
+            }
+            Ready::Missing(tool) => {
+                self.view.missing =
+                    Some(json!({"id": tool.id, "title": tool.title, "program": tool.program}));
+                self.view.offer = offer(&tool);
+                self.adapter = Some(tool);
+            }
         }
     }
 
-    /// Install `cloudflared` the way the person chose, off the loop.
-    fn install(&mut self, how: &str) {
-        let Ok(tool) = crate::install::Tool::load(&self.settings.weft) else { return };
+    /// Install the chosen tunnel's program as the offer says, off the loop.
+    fn install(&mut self) {
+        let Some(tool) = self.adapter.clone() else { return };
+        let Ok(offer) = offer(&tool) else { return };
         let tx = self.tx.clone();
-        match how {
-            "brew" => {
-                let Some(argv) = tool.brew.clone().filter(|a| on_path(&a[0])) else {
-                    return;
-                };
-                self.view.installing = Some(argv.join(" "));
-                std::thread::spawn(move || {
-                    let _ = tx.send(Wake::Installed(run_brew(&argv, &tx)));
-                });
-            }
-            "download" => {
-                self.view.installing = Some(format!("Downloading {} from GitHub", tool.program));
-                let (github, weft) = (self.settings.github.clone(), self.settings.weft.clone());
-                std::thread::spawn(move || {
-                    let done = crate::install::download(&github, &tool, &weft).map(|_| ());
-                    let _ = tx.send(Wake::Installed(done));
-                });
-            }
-            _ => {}
+        if offer["how"] == "brew" {
+            let argv = tool.brew.clone().unwrap_or_default();
+            self.view.installing = Some(argv.join(" "));
+            std::thread::spawn(move || {
+                let _ = tx.send(Wake::Installed(run_brew(&argv, &tx)));
+            });
+        } else {
+            self.view.installing = Some(format!("Downloading {} from GitHub", tool.program));
+            let (github, weft) = (self.settings.github.clone(), self.settings.weft.clone());
+            std::thread::spawn(move || {
+                let done = crate::install::download(&github, &tool, &weft).map(|_| ());
+                let _ = tx.send(Wake::Installed(done));
+            });
         }
     }
 

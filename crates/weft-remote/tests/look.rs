@@ -1,4 +1,4 @@
-//! remote.md §12: with no `cloudflared`, the view says so;
+//! remote.md §12: with the tunnel's program missing, the view says so;
 //! looking again once it is there starts the tunnel.
 
 mod common;
@@ -17,9 +17,9 @@ fn looking_again_finds_cloudflared_once_it_is_installed() {
             std::fs::rename(&program, &moved).unwrap();
             aside = Some((moved, program));
         },
-        "no_cloudflared",
+        "not_installed",
     );
-    assert!(h.tui.view["offer"].is_null(), "no tool file here: {}", h.tui.view);
+    assert_eq!(h.tui.view["tunnel"]["title"], "Cloudflare Tunnel");
     let (moved, program) = aside.unwrap();
     std::fs::rename(moved, program).unwrap();
     h.tui.act(json!({"act": "look"}));

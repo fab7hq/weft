@@ -27,9 +27,10 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # [harnesses.<harness>]        # this machine: set from Weft's [U] view
 # program = "/path/to/it"      # where its program is, when it is not on PATH
 
-# [remote]                     # Weft from your phone at weft.getfab7.com: W → R
+# [remote]                     # Weft from your phone at weft.getfab7.com: R
 # enabled = true               # set when you turn it on or off there
-# cloudflared = "/path/to/it"  # when it is not on PATH
+# tunnel = "cloudflared"       # the tunnel you picked there, by its tool file
+# program = "/path/to/it"      # where its program is, when it is not on PATH
 
 [routing]                      # every project; each act optional
 # ask  = "<harness>"          # a harness, as its harness file is named
@@ -73,8 +74,10 @@ pub struct Choice {
 pub struct Remote {
     /// The daemon keeps `weft remote` running.
     pub enabled: bool,
-    /// Where `cloudflared` is, when it is not on `PATH`.
-    pub cloudflared: Option<String>,
+    /// The tunnel adapter chosen: a tool file's name (ADR-0024).
+    pub tunnel: Option<String>,
+    /// Where its program is, when it is not on `PATH`.
+    pub program: Option<String>,
 }
 
 /// The file as read.
@@ -134,10 +137,16 @@ pub fn set_remote(text: &str, enabled: bool) -> Result<String, String> {
     set(text, &["remote"], "enabled", &Value::Bool(enabled))
 }
 
-/// `config.toml` with `[remote] cloudflared` set to where Weft installed it
-/// (ADR-0023), the rest as it was.
-pub fn set_cloudflared(text: &str, path: &str) -> Result<String, String> {
-    set(text, &["remote"], "cloudflared", &Value::String(path.into()))
+/// `config.toml` with `[remote] tunnel` set to the adapter chosen (ADR-0024),
+/// the rest as it was.
+pub fn set_tunnel(text: &str, tunnel: &str) -> Result<String, String> {
+    set(text, &["remote"], "tunnel", &Value::String(tunnel.into()))
+}
+
+/// `config.toml` with `[remote] program` set to where Weft installed the
+/// tunnel's program (ADR-0023), the rest as it was.
+pub fn set_program(text: &str, path: &str) -> Result<String, String> {
+    set(text, &["remote"], "program", &Value::String(path.into()))
 }
 
 /// `config.toml` with one key of `[harnesses.<harness>]` set, the rest of the
@@ -270,8 +279,11 @@ impl Config {
                     for (k, v) in r {
                         match (k.as_str(), v) {
                             ("enabled", Value::Bool(on)) => self.remote.enabled = *on,
-                            ("cloudflared", Value::String(p)) if !p.is_empty() => {
-                                self.remote.cloudflared = Some(p.clone())
+                            ("tunnel", Value::String(t)) if !t.is_empty() => {
+                                self.remote.tunnel = Some(t.clone())
+                            }
+                            ("program", Value::String(p)) if !p.is_empty() => {
+                                self.remote.program = Some(p.clone())
                             }
                             _ => self.ignored.push(format!("{here}.{k}")),
                         }
@@ -434,8 +446,8 @@ mod tests {
         assert_eq!(read_("[harnesses.nowhere]\nprogram = \"/x\"\n").unknown, ["harnesses.nowhere"]);
     }
 
-    /// `[remote]`: off unless turned on, `cloudflared` where it is when not
-    /// on PATH, any other key reported and ignored (remote.md D9); turned on
+    /// `[remote]`: off unless turned on, the tunnel chosen and where its
+    /// program is when not on PATH, any other key reported and ignored (remote.md D9); turned on
     /// and off by editing the one line.
     #[test]
     fn remote_access_is_off_unless_turned_on() {
@@ -444,9 +456,12 @@ mod tests {
             .replace("# [remote]", "[remote]")
             .replace("# enabled = true", "enabled = true");
         assert!(read_(&uncommented).remote().enabled, "its own lines work uncommented");
-        let c = read_("[remote]\nenabled = true\ncloudflared = \"/opt/cf\"\nrelay = \"x\"\n");
+        let c = read_(
+            "[remote]\nenabled = true\ntunnel = \"cloudflared\"\nprogram = \"/opt/cf\"\nrelay = \"x\"\n",
+        );
         assert!(c.remote().enabled);
-        assert_eq!(c.remote().cloudflared.as_deref(), Some("/opt/cf"));
+        assert_eq!(c.remote().tunnel.as_deref(), Some("cloudflared"));
+        assert_eq!(c.remote().program.as_deref(), Some("/opt/cf"));
         assert_eq!(c.ignored, ["remote.relay"]);
         assert_eq!(
             read_("[projects.\"/p\".remote]\nenabled = true\n").ignored,
@@ -468,10 +483,13 @@ mod tests {
             "replaced in place"
         );
 
-        // Where Weft installed cloudflared (ADR-0023), beside `enabled`.
-        let at = set_cloudflared(&on, "/home/me/.fab7/weft/bin/cloudflared").unwrap();
+        // The tunnel chosen, and where its program is (ADR-0024), beside `enabled`.
+        let chosen = set_tunnel(&on, "cloudflared").unwrap();
+        assert_eq!(read_(&chosen).remote().tunnel.as_deref(), Some("cloudflared"));
+        let at = set_program(&chosen, "/home/me/.fab7/weft/bin/cloudflared").unwrap();
+        assert_eq!(read_(&at).remote().tunnel.as_deref(), Some("cloudflared"), "the rest kept");
         assert_eq!(
-            read_(&at).remote().cloudflared.as_deref(),
+            read_(&at).remote().program.as_deref(),
             Some("/home/me/.fab7/weft/bin/cloudflared")
         );
         assert!(read_(&at).remote().enabled, "the rest kept");

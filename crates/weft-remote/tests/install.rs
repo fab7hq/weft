@@ -19,10 +19,13 @@ fn hex(bytes: &[u8]) -> String {
 
 fn tool(asset: &str) -> Tool {
     Tool {
+        id: "cloudflared".into(),
+        kind: "tunnel".into(),
+        title: "Cloudflare Tunnel".into(),
         program: "cloudflared".into(),
-        brew: None,
         repo: Some("cloudflare/cloudflared".into()),
         assets: BTreeMap::from([(machine(), asset.to_string())]),
+        ..Tool::default()
     }
 }
 
@@ -98,7 +101,7 @@ fn a_program_asset_is_checked_installed_and_named_in_the_config() {
     use std::os::unix::fs::PermissionsExt;
     assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o755);
     let config = std::fs::read_to_string(weft.path().join("config.toml")).unwrap();
-    assert!(config.contains(&format!("cloudflared = \"{}\"", path.display())), "{config}");
+    assert!(config.contains(&format!("program = \"{}\"", path.display())), "{config}");
     assert!(config.contains("enabled = true"), "the rest kept: {config}");
     // GitHub's API wants a user agent.
     let asked = fake.requests("GET", "/repos/cloudflare/cloudflared/releases/latest");
@@ -152,7 +155,7 @@ fn a_wrong_or_missing_notes_checksum_installs_nothing() {
         let asset = "cloudflared-test-amd64";
         release(&fake, asset, PROGRAM, &format!("sha256:{}", hex(PROGRAM)), notes);
         let why = download(&fake.url, &tool(asset), weft.path()).unwrap_err();
-        assert!(why.contains("Cloudflare's checksum"), "{notes}: {why}");
+        assert!(why.contains("release notes"), "{notes}: {why}");
         assert!(!weft.path().join("bin/cloudflared").exists());
     }
 }
@@ -164,5 +167,6 @@ fn no_asset_for_this_machine_installs_nothing() {
     t.assets.clear();
     let why = download(&fake.url, &t, weft.path()).unwrap_err();
     assert!(why.contains(&machine()), "{why}");
+    assert!(why.contains("Cloudflare Tunnel"), "named by its title: {why}");
     assert!(fake.requests("GET", "/repos/cloudflare/cloudflared/releases/latest").is_empty());
 }

@@ -7,6 +7,11 @@ use std::time::{Duration, Instant};
 
 use weft_remote::tunnel::{Tunnel, TunnelEvent};
 
+/// Cloudflare Tunnel's `run`, as its adapter (the tool file) gives it.
+fn quick() -> Vec<String> {
+    ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:{port}"].map(String::from).to_vec()
+}
+
 const FAKE: &str = r#"#!/bin/sh
 # Where cloudflared prints its address: stderr, inside a box.
 n=$(cat "$0.count" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "$0.count"
@@ -28,7 +33,7 @@ fn each_new_address_is_reported_and_restarts_back_off() {
     std::fs::write(&program, FAKE).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let tunnel = Tunnel::new(program.clone());
+    let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
     let events = tunnel.start(48123);
     let mut seen = Vec::new();
     let deadline = Instant::now() + Duration::from_secs(8);
@@ -66,7 +71,7 @@ fn each_new_address_is_reported_and_restarts_back_off() {
 
 #[test]
 fn the_address_is_the_first_match_of_the_quick_tunnel_pattern() {
-    use weft_remote::tunnel::address;
+    let address = |line: &str| weft_remote::tunnel::address(line, ".trycloudflare.com");
     assert_eq!(
         address("|  https://seating-texas-air-guns.trycloudflare.com    |").as_deref(),
         Some("https://seating-texas-air-guns.trycloudflare.com")
@@ -83,8 +88,8 @@ fn the_address_is_the_first_match_of_the_quick_tunnel_pattern() {
 #[test]
 fn cloudflared_is_where_the_person_said_or_on_path() {
     use weft_remote::tunnel::find;
-    assert_eq!(find(Some("/bin/sh")).as_deref(), Some(std::path::Path::new("/bin/sh")));
-    assert_eq!(find(Some("/no/such/cloudflared")), None, "said, and not there");
+    assert_eq!(find(Some("/bin/sh"), "cloudflared").as_deref(), Some(std::path::Path::new("/bin/sh")));
+    assert_eq!(find(Some("/no/such/cloudflared"), "cloudflared"), None, "said, and not there");
 }
 
 #[test]
@@ -95,12 +100,36 @@ fn dropping_the_tunnel_stops_cloudflared() {
     let script = "#!/bin/sh\necho $$ > \"$0.pid\"\necho '|  https://up-a-while.trycloudflare.com  |' >&2\nexec sleep 30\n";
     std::fs::write(&program, script).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let tunnel = Tunnel::new(program.clone());
+    let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
     let events = tunnel.start(48124);
     assert!(matches!(events.recv_timeout(Duration::from_secs(5)), Ok(TunnelEvent::Address(_))));
     let pid = std::fs::read_to_string(dir.join("cloudflared.pid")).unwrap().trim().to_string();
     drop(tunnel);
     let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
     assert!(!alive, "cloudflared {pid} still running");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// ADR-0024: another adapter, with its own `run` and `address`, is started
+/// and read by its own; nothing of Cloudflare's applies to it.
+#[test]
+fn another_adapter_is_started_and_read_by_its_own_file() {
+    let dir = std::env::temp_dir().join(format!("weft-tunnel-other-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("othertunnel");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\necho \"args: $*\" >> \"$0.args\"\necho 'see https://x.trycloudflare.com' >&2\necho 'ready at https://calm-fox.tunnels.example.net/' >&2\nexec sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = ["expose", "{port}", "--quiet"].map(String::from).to_vec();
+    let tunnel = Tunnel::new(program.clone(), run, ".tunnels.example.net".into());
+    let events = tunnel.start(48124);
+    let first = events.recv_timeout(Duration::from_secs(8)).expect("an address");
+    assert_eq!(first, TunnelEvent::Address("https://calm-fox.tunnels.example.net".into()));
+    let args = std::fs::read_to_string(dir.join("othertunnel.args")).unwrap();
+    assert_eq!(args.lines().next().unwrap(), "args: expose 48124 --quiet");
+    drop(tunnel);
     std::fs::remove_dir_all(&dir).ok();
 }

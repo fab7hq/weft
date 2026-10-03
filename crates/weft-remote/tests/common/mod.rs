@@ -217,6 +217,9 @@ impl Tui {
 }
 
 /// A fake cloudflared: says where it was pointed, prints an address, waits.
+/// The tunnel adapter, as fab7 ships Cloudflare Tunnel's (ADR-0024).
+pub const ADAPTER: &str = "kind = \"tunnel\"\ntitle = \"Cloudflare Tunnel\"\nprogram = \"cloudflared\"\nrun = [\"tunnel\", \"--no-autoupdate\", \"--url\", \"http://127.0.0.1:{port}\"]\naddress = \".trycloudflare.com\"\nnote = \"traffic is decrypted at Cloudflare's edge\"\n";
+
 pub const CLOUDFLARED: &str = "#!/bin/sh\necho \"$*\" > \"$0.args\"\necho '|  https://test-tunnel.trycloudflare.com  |' >&2\nexec sleep 600\n";
 
 impl Harness {
@@ -251,9 +254,14 @@ impl Harness {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         std::fs::write(
             dir.join("config.toml"),
-            format!("[remote]\nenabled = true\ncloudflared = \"{}\"\n", program.display()),
+            format!(
+                "[remote]\nenabled = true\ntunnel = \"cloudflared\"\nprogram = \"{}\"\n",
+                program.display()
+            ),
         )
         .unwrap();
+        std::fs::create_dir_all(dir.join("tools")).unwrap();
+        std::fs::write(dir.join("tools/cloudflared.toml"), ADAPTER).unwrap();
         weft_remote::store::Machine {
             id: "m_1".into(),
             name: "studio".into(),

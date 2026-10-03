@@ -1,7 +1,7 @@
-//! The transport seam (remote.md §7, ADR-0021): start the tunnel to a
-//! loopback port, yield its address, notice it ending, start it again with a
-//! backoff. One implementation, TryCloudflare's quick tunnel; nothing else in
-//! Weft knows which provider is behind it, and no setting chooses one.
+//! The transport seam (remote.md §7, ADR-0021, ADR-0024): start the tunnel to
+//! a loopback port, yield its address, notice it ending, start it again with a
+//! backoff. Which program, how it is started and how its address reads are
+//! the adapter's (its tool file); nothing here knows a provider.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -19,14 +19,14 @@ pub enum TunnelEvent {
     Ended(String),
 }
 
-/// How long `cloudflared` has to print its address.
+/// How long the program has to print its address.
 const ADDRESS_WITHIN: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(2);
 const LONGEST_WAIT: Duration = Duration::from_secs(300);
 
-/// Where `cloudflared` is: where `[remote] cloudflared` says, else on `PATH`.
-/// Weft never downloads it; missing, the view says how to install it.
-pub fn find(configured: Option<&str>) -> Option<PathBuf> {
+/// Where the tunnel's program is: where `[remote] program` says, else on
+/// `PATH` by its name.
+pub fn find(configured: Option<&str>, program: &str) -> Option<PathBuf> {
     let runnable = |p: &Path| {
         use std::os::unix::fs::PermissionsExt;
         p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -35,13 +35,13 @@ pub fn find(configured: Option<&str>) -> Option<PathBuf> {
         return runnable(Path::new(path)).then(|| PathBuf::from(path));
     }
     let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths).map(|d| d.join("cloudflared")).find(|p| runnable(p))
+    std::env::split_paths(&paths).map(|d| d.join(program)).find(|p| runnable(p))
 }
 
-/// The first quick-tunnel address in a line of `cloudflared`'s output:
-/// `https://[a-z0-9-]+\.trycloudflare\.com`, never its own API's host.
-pub fn address(line: &str) -> Option<String> {
-    const SUFFIX: &str = ".trycloudflare.com";
+/// The first address in a line of the program's output: an `https://` URL
+/// whose host is lower-case letters, digits and dashes before `suffix`, and is
+/// not the provider's own `api` host.
+pub fn address(line: &str, suffix: &str) -> Option<String> {
     let mut rest = line;
     while let Some(at) = rest.find("https://") {
         let after = &rest[at + "https://".len()..];
@@ -50,8 +50,8 @@ pub fn address(line: &str) -> Option<String> {
             .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
             .count();
         let host = &after[..host_len];
-        if host_len > 0 && after[host_len..].starts_with(SUFFIX) && host != "api" {
-            return Some(format!("https://{host}{SUFFIX}"));
+        if host_len > 0 && after[host_len..].starts_with(suffix) && host != "api" {
+            return Some(format!("https://{host}{suffix}"));
         }
         rest = after;
     }
@@ -60,13 +60,17 @@ pub fn address(line: &str) -> Option<String> {
 
 pub struct Tunnel {
     program: PathBuf,
+    /// What follows the program; `{port}` is the loopback port.
+    run: Vec<String>,
+    /// The end of the host its address has.
+    suffix: String,
     stopped: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
 }
 
 impl Tunnel {
-    pub fn new(program: PathBuf) -> Self {
-        Tunnel { program, stopped: Arc::default(), child: Arc::default() }
+    pub fn new(program: PathBuf, run: Vec<String>, suffix: String) -> Self {
+        Tunnel { program, run, suffix, stopped: Arc::default(), child: Arc::default() }
     }
 
     /// Keep a tunnel to `127.0.0.1:<port>` up until this is dropped.
@@ -74,11 +78,13 @@ impl Tunnel {
         let (tx, rx) = channel();
         let (program, stopped, slot) =
             (self.program.clone(), self.stopped.clone(), self.child.clone());
+        let args: Vec<String> =
+            self.run.iter().map(|w| w.replace("{port}", &port.to_string())).collect();
+        let suffix = self.suffix.clone();
         std::thread::spawn(move || {
-            let url = format!("http://127.0.0.1:{port}");
             let mut wait = FIRST_WAIT;
             while !stopped.load(Ordering::SeqCst) {
-                let reason = run_once(&program, &url, &slot, &stopped, |a| {
+                let reason = run_once(&program, &args, &suffix, &slot, &stopped, |a| {
                     wait = FIRST_WAIT;
                     tx.send(TunnelEvent::Address(a)).is_ok()
                 });
@@ -103,30 +109,34 @@ impl Drop for Tunnel {
     }
 }
 
-/// One run of `cloudflared`, to its end: why it ended.
+/// One run of the program, to its end: why it ended.
 fn run_once(
     program: &Path,
-    url: &str,
+    args: &[String],
+    suffix: &str,
     slot: &Mutex<Option<Child>>,
     stopped: &AtomicBool,
     mut found: impl FnMut(String) -> bool,
 ) -> String {
+    let name = program
+        .file_name()
+        .map_or_else(|| "the tunnel".into(), |n| n.to_string_lossy().into_owned());
     let started = Command::new(program)
-        .args(["tunnel", "--no-autoupdate", "--url", url])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn();
     let mut child = match started {
         Ok(c) => c,
-        Err(e) => return format!("cloudflared did not start: {e}"),
+        Err(e) => return format!("{name} did not start: {e}"),
     };
     let stderr = child.stderr.take().expect("piped");
     *slot.lock().expect("tunnel") = Some(child);
     if stopped.load(Ordering::SeqCst) {
         return "stopped".into();
     }
-    // Every line is read to the end, so cloudflared never blocks on a full
+    // Every line is read to the end, so the program never blocks on a full
     // pipe; the first address is the one.
     let (lines_tx, lines) = channel();
     std::thread::spawn(move || {
@@ -139,14 +149,14 @@ fn run_once(
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         match lines.recv_timeout(left) {
             Ok(line) => {
-                if let Some(a) = address(&line) {
+                if let Some(a) = address(&line, suffix) {
                     break if found(a) { None } else { Some("nobody is listening") };
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 break Some("no address within 30 seconds");
             }
-            Err(_) => break Some("cloudflared ended before it gave an address"),
+            Err(_) => break Some("it ended before it gave an address"),
         }
     };
     drop(lines);
@@ -164,13 +174,13 @@ fn run_once(
                     slot.take();
                     return match failed {
                         Some(why) => why.to_string(),
-                        None => format!("cloudflared exited ({status})"),
+                        None => format!("{name} exited ({status})"),
                     };
                 }
                 Ok(None) => {}
                 Err(e) => {
                     slot.take();
-                    return format!("cloudflared was lost: {e}");
+                    return format!("{name} was lost: {e}");
                 }
             }
         }

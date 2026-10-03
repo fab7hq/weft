@@ -3,13 +3,14 @@
 
 use serde_json::{Value, json};
 
-/// Said wherever remote access is on (ADR-0021).
-pub const DECRYPTED: &str = "traffic is decrypted at Cloudflare's edge";
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct View {
-    /// `cloudflared` was not found.
-    pub no_cloudflared: bool,
+    /// No tunnel is chosen: the adapters to choose from, `[{id, title}]`.
+    pub choose: Option<Vec<Value>>,
+    /// The chosen tunnel's program was not found: `{id, title, program}`.
+    pub missing: Option<Value>,
+    /// What the tunnel can see, from its adapter, said wherever it is on.
+    pub note: Option<String>,
     /// Signing in: the code and where to enter it.
     pub signing_in: Option<(String, String)>,
     /// Why the last sign-in did not finish.
@@ -23,8 +24,8 @@ pub struct View {
     pub devices: Vec<Value>,
     /// A device asking to be allowed: `{device, name, login}`.
     pub asking: Option<Value>,
-    /// With no `cloudflared`: how Weft would install it (remote.md §7a), or
-    /// why it cannot.
+    /// With the program missing: how Install would install it (remote.md
+    /// §7a), or why it cannot.
     pub offer: Result<Value, String>,
     /// Installing it: the last line it said.
     pub installing: Option<String>,
@@ -33,7 +34,9 @@ pub struct View {
 impl Default for View {
     fn default() -> Self {
         View {
-            no_cloudflared: false,
+            choose: None,
+            missing: None,
+            note: None,
             signing_in: None,
             failed: None,
             login: None,
@@ -51,8 +54,10 @@ impl View {
     pub fn json(&self) -> Value {
         let state = if self.installing.is_some() {
             "installing"
-        } else if self.no_cloudflared {
-            "no_cloudflared"
+        } else if self.choose.is_some() {
+            "choose"
+        } else if self.missing.is_some() {
+            "not_installed"
         } else if self.signing_in.is_some() {
             "signing_in"
         } else if self.login.is_none() {
@@ -71,7 +76,11 @@ impl View {
         if let Some(line) = &self.installing {
             v["line"] = json!(line);
         }
-        if state == "no_cloudflared" {
+        if let Some(tunnels) = &self.choose {
+            v["tunnels"] = json!(tunnels);
+        }
+        if let (Some(tunnel), "not_installed") = (&self.missing, state) {
+            v["tunnel"] = tunnel.clone();
             match &self.offer {
                 Ok(offer) => v["offer"] = offer.clone(),
                 Err(why) => {
@@ -84,7 +93,9 @@ impl View {
             v["login"] = json!(self.login);
             v["address"] = json!(self.address);
             v["tunnel"] = json!(if self.up { "up" } else { "starting" });
-            v["note"] = json!(DECRYPTED);
+            if let Some(note) = &self.note {
+                v["note"] = json!(note);
+            }
             v["devices"] = json!(self.devices);
         }
         if let Some(asking) = &self.asking {
