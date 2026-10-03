@@ -154,6 +154,7 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
         ("B", "sidebar"),
         ("T", "turbo mode"),
         ("W", "the Weft menu"),
+        ("R", "remote"),
         ("U", "update"),
         ("H", "help"),
         ("X", "quit"),

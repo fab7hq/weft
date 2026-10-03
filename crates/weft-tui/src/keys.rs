@@ -81,6 +81,8 @@ pub enum Action {
     WeftMenu,
     /// Turbo mode on or off, for the agents started next.
     Turbo,
+    /// Weft from another device: the Remote view.
+    Remote,
     Ask,
     Eval,
     Seal,
@@ -141,6 +143,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
             'n' => Action::NewAgent,
             'b' => Action::ToggleSidebar,
             'w' => Action::WeftMenu,
+            'r' => Action::Remote,
             't' => Action::Turbo,
             'h' => Action::Help,
             // The Eval view, and in it a change's hunk (`d` as in diff).
@@ -249,6 +252,10 @@ mod tests {
     #[test]
     fn o_opens_another_project() {
         assert_eq!(route(plain(Key::Char('o')), Focus::Weft, Toggle), Action::OpenProject);
+        // Every letter of the W menu works without it, R (Remote) included.
+        assert_eq!(route(plain(Key::Char('r')), Focus::Weft, Toggle), Action::Remote);
+        assert_eq!(route(plain(Key::Char('R')), Focus::Weft, Toggle), Action::Remote);
+        assert_eq!(route(plain(Key::Char('r')), Focus::Agent, Toggle), Action::ToAgent);
         assert_eq!(route(plain(Key::Char('O')), Focus::Weft, Toggle), Action::OpenProject);
         // and never in the agent, where o is just a letter
         assert_eq!(route(plain(Key::Char('o')), Focus::Agent, Toggle), Action::ToAgent);

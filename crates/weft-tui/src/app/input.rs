@@ -76,6 +76,7 @@ impl App {
             Action::OpenProject => self.act(Act::OpenProject),
             Action::WeftMenu => self.act(Act::WeftMenu),
             Action::Turbo => self.act(Act::Turbo),
+            Action::Remote => self.act(Act::Remote),
             Action::Unfold => {
                 self.fold_selected(false);
             }
