@@ -21,7 +21,7 @@ use weft_core::turns::{Session, Turn};
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 2;
+pub const PROTOCOL: u64 = 3;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -63,6 +63,13 @@ pub enum Call {
         pane: u32,
         rows: u16,
         cols: u16,
+    },
+    /// `form: "screen"` sends this client the pane's rendered screen as
+    /// `pane.screen` frames, at most ten a second; `"none"` stops them.
+    /// Watching resizes nothing (remote.md D2).
+    Attach {
+        pane: u32,
+        form: String,
     },
     /// Put a prompt in front of the person. Answers with its pending id;
     /// nothing is typed until that is resolved.
@@ -133,6 +140,17 @@ pub enum Event {
     },
     Output {
         pane: u32,
+        bytes: Vec<u8>,
+    },
+    /// A pane's screen, to the one client that attached to it: escape codes
+    /// that draw the whole screen (`full`) or turn the last frame into this
+    /// one, as of the pane's chunk `seq` (remote.md D3).
+    Screen {
+        pane: u32,
+        seq: u64,
+        full: bool,
+        rows: u16,
+        cols: u16,
         bytes: Vec<u8>,
     },
     Added {
@@ -292,6 +310,7 @@ impl Call {
             Call::Resize { pane, rows, cols } => {
                 ("pane.resize", json!({"pane": pane, "rows": rows, "cols": cols}))
             }
+            Call::Attach { pane, form } => ("pane.attach", json!({"pane": pane, "form": form})),
             Call::Stage { pane, bytes, how, what, why } => (
                 "stage",
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),
@@ -334,6 +353,7 @@ impl Call {
                 rows: n("rows")? as u16,
                 cols: n("cols")? as u16,
             },
+            "pane.attach" => Call::Attach { pane: n("pane")? as u32, form: s("form")? },
             "stage" => Call::Stage {
                 pane: n("pane")? as u32,
                 bytes: bytes("bytes")?,
@@ -378,6 +398,11 @@ impl Event {
             Event::Output { pane, bytes } => {
                 ("pane.output", json!({"pane": pane, "bytes": b64(bytes)}))
             }
+            Event::Screen { pane, seq, full, rows, cols, bytes } => (
+                "pane.screen",
+                json!({"pane": pane, "seq": seq, "full": full, "rows": rows, "cols": cols,
+                       "bytes": b64(bytes)}),
+            ),
             Event::Added { pane, harness, spec, turbo } => (
                 "pane.added",
                 json!({"pane": pane, "harness": harness, "spec": spec, "turbo": turbo}),
@@ -411,6 +436,14 @@ impl Event {
             "pane.output" => {
                 Event::Output { pane: n("pane")? as u32, bytes: un_b64(p.get("bytes")?.as_str()?)? }
             }
+            "pane.screen" => Event::Screen {
+                pane: n("pane")? as u32,
+                seq: n("seq")?,
+                full: p.get("full")?.as_bool()?,
+                rows: n("rows")? as u16,
+                cols: n("cols")? as u16,
+                bytes: un_b64(p.get("bytes")?.as_str()?)?,
+            },
             "pane.added" => Event::Added {
                 pane: n("pane")? as u32,
                 harness: s("harness")?,
@@ -671,6 +704,8 @@ mod tests {
             // Arbitrary bytes, including what JSON cannot hold as text.
             Call::Input { pane: 2, bytes: vec![0x00, 0x1b, 0xff, b'a'] },
             Call::Resize { pane: 1, rows: 24, cols: 80 },
+            Call::Attach { pane: 1, form: "screen".into() },
+            Call::Attach { pane: 1, form: "none".into() },
             Call::Resolve { pending: "pnd_1".into(), yes: false, force: false },
             Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
             Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
@@ -723,6 +758,14 @@ mod tests {
                 }],
             },
             Event::Output { pane: 0, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
+            Event::Screen {
+                pane: 0,
+                seq: 41,
+                full: true,
+                rows: 24,
+                cols: 80,
+                bytes: vec![0x1b, b'[', b'H', 0xe6, 0xbc, 0xa2],
+            },
             Event::Added {
                 pane: 1,
                 harness: "claude-code".into(),

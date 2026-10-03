@@ -24,7 +24,7 @@ fn main() -> anyhow::Result<()> {
     let what = args.next().unwrap_or_else(|| "board".into());
 
     let mut wire = Wire::open(&weft::protocol::socket_path())?;
-    wire.call("hello", json!({"client": "wire/0.1", "protocol": 1}))?;
+    wire.call("hello", json!({"client": "wire/0.1", "protocol": 3}))?;
     // The board and the panes come back in the answer, so there is nothing to
     // wait for and nothing to miss.
     let opened = wire

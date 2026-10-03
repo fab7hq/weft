@@ -396,6 +396,9 @@ impl Session {
                         p.feed(&bytes);
                     }
                 }
+                // Frames go only to a client that attached, and this one
+                // draws from the pane's own output.
+                Event::Screen { .. } => {}
                 Event::Added { pane, harness, spec, turbo } => {
                     if self.index_of(pane).is_none() {
                         self.panes.push(PaneView::new(pane, harness, spec));

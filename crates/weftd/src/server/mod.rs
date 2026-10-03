@@ -23,6 +23,7 @@ use crate::pane::Pane;
 use crate::turns::Turn;
 
 mod agents;
+mod screens;
 mod typing;
 
 use typing::*;
@@ -196,11 +197,11 @@ enum Wake {
         call_id: u64,
         call: Call,
     },
-    /// A chunk a pane printed, numbered by its reader (remote.md D1).
+    /// A chunk a pane printed. Its number stays with the pane: a frame takes
+    /// the number of the screen it reads (`screens.rs`).
     Output {
         project: usize,
         pane: u32,
-        seq: u64,
         bytes: Vec<u8>,
     },
     Exited {
@@ -209,6 +210,8 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
+    /// Time to send screen frames: ten times a second.
+    Frames,
     /// A harness answered what it has installed. Asked off the run loop,
     /// because asking costs a process and panes must not wait on it.
     Readiness {
@@ -248,6 +251,8 @@ pub struct Session {
     /// Handed harnesses through [`Session::serve_with`] are taken as set up
     /// for RingFrame without asking; in a world of its own, a test says so.
     assume_ready: bool,
+    /// The panes clients asked to be sent screens of (`pane.attach`).
+    attached: Vec<screens::Attachment>,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -439,6 +444,12 @@ impl Session {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
         });
+        let frames_tx = tx.clone();
+        std::thread::spawn(move || {
+            while frames_tx.send(Wake::Frames).is_ok() {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        });
         // What the latest release is, asked when the daemon starts and then
         // twice a day, never at every look: the kept answer is what each view
         // reads. A test's daemon, handed its harnesses, reaches no network.
@@ -472,6 +483,7 @@ impl Session {
             harnesses,
             outside,
             assume_ready,
+            attached: Vec::new(),
         };
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
@@ -493,12 +505,14 @@ impl Session {
                         return Ok(());
                     }
                 }
-                Wake::Output { project, pane, seq: _, bytes } => {
+                Wake::Output { project, pane, bytes } => {
                     if let Some(slot) = self.projects.get_mut(project).and_then(|p| p.slot(pane)) {
                         slot.record(&bytes);
                     }
+                    self.printed(project, pane);
                     self.clients.broadcast(project, &Out::Output { pane, bytes });
                 }
+                Wake::Frames => self.frames(),
                 Wake::Exited { project, pane } => {
                     self.clients.broadcast(project, &Out::Exited { pane })
                 }
@@ -1081,6 +1095,7 @@ impl Session {
                     slot.follow(client);
                 }
             }
+            Call::Attach { pane, form } => return Ok(self.attach(client, pane, &form)),
             Call::Stage { pane, bytes, how, what, why } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let id = format!("pnd_{}", self.next_pending);
@@ -1171,6 +1186,7 @@ impl Session {
             // Only the sizes its window drew its agents at are forgotten.
             Call::Detach => {
                 self.clients.sizes.remove(&client);
+                self.attached.retain(|a| a.client != client);
                 for slot in self.projects.iter_mut().flat_map(|p| &mut p.panes) {
                     slot.wants.remove(&client);
                 }
