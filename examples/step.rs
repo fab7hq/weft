@@ -163,6 +163,8 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         RingFrame => "RingFrame",
         PickUp { .. } => "PickUp",
         Locate { .. } => "Locate",
+        Remote => "Remote",
+        Allow { .. } => "Allow",
     }
 }
 

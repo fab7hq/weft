@@ -139,6 +139,8 @@ pub struct Session {
     /// The RingFrame view, as the daemon last reported it.
     /// The RingFrame view, as the daemon last sent it.
     pub setup: Option<weft_core::onboarding::View>,
+    /// `weft remote`'s view, as the daemon relays it (remote.md §12).
+    pub remote: Option<serde_json::Value>,
     /// The Eval record behind each check, by eval id. Read by the daemon so
     /// that drawing a frame opens no file.
     pub records: serde_json::Value,
@@ -216,6 +218,7 @@ impl Session {
             units: Vec::new(),
             readiness: serde_json::json!({}),
             setup: None,
+            remote: None,
             records: serde_json::json!({}),
             boards: 0,
             routing: weft_core::routing::Routing::default(),
@@ -268,6 +271,7 @@ impl Session {
         session.notify = opened.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
         session.turbo = opened.get("turbo").and_then(|v| v.as_bool()).unwrap_or(false);
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
+        session.remote = opened.get("remote").filter(|v| !v.is_null()).cloned();
         if let Some(r) = opened.get("routing") {
             session.routing = weft_core::routing::Routing::of(
                 r.get("acts").cloned().unwrap_or_default(),
@@ -403,7 +407,7 @@ impl Session {
                 // Frames go only to a client that attached, and this one
                 // draws from the pane's own output; presence is its own.
                 Event::Screen { .. } | Event::Presence { .. } | Event::RemoteAct { .. } => {}
-                Event::Remote { .. } => {}
+                Event::Remote { view } => self.remote = Some(view),
                 Event::Added { pane, harness, spec, turbo } => {
                     if self.index_of(pane).is_none() {
                         self.panes.push(PaneView::new(pane, harness, spec));
@@ -520,6 +524,12 @@ impl Session {
     pub fn setup(&mut self, act: &str, harness: &str, path: &str) -> Result<()> {
         let call = Call::Setup { act: act.into(), harness: harness.into(), path: path.into() };
         self.tell(call).map(|_| ())
+    }
+
+    /// An act for `weft remote`: `on` and `off` are the daemon's, the rest
+    /// go to `weft remote` as they are.
+    pub fn remote_act(&mut self, act: serde_json::Value) -> Result<()> {
+        self.tell(Call::Remote { act }).map(|_| ())
     }
 
     /// Yes or no, by id. Whoever answers first answers for everyone.

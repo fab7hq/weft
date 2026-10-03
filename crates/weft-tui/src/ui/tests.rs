@@ -749,6 +749,64 @@ fn help_says_what_enter_does_once_and_update_sits_above_help() {
     assert_eq!(at("U  update") + 1, at("H  help"), "update sits right above help:\n{help}");
     // The Weft menu: the same order, and no turbo, whose switch is on the title bar.
     let menu: Vec<char> = crate::app::WEFT_MENU.iter().map(|(k, ..)| *k).collect();
-    assert_eq!(menu, ['O', 'N', 'B', 'U', 'H', 'X']);
-    assert_eq!(crate::app::WEFT_MENU[3].1, "Update");
+    assert_eq!(menu, ['O', 'N', 'B', 'R', 'U', 'H', 'X']);
+    assert_eq!(crate::app::WEFT_MENU[3].1, "Remote");
+    assert_eq!(crate::app::WEFT_MENU[4].1, "Update");
+}
+
+/// remote.md §12: `W` → `R` shows the remote view `weft remote` publishes,
+/// in each of its states.
+#[test]
+fn the_remote_view_in_each_state() {
+    let mut a = app();
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('r'));
+    assert_eq!(a.modal, Some(crate::app::Modal::Remote));
+    let now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            as i64;
+    let on = |devices: serde_json::Value| {
+        serde_json::json!({"state": "on", "login": "0xnairb",
+            "address": "https://seating-texas-air-guns.trycloudflare.com", "tunnel": "up",
+            "note": "traffic is decrypted at Cloudflare's edge", "devices": devices})
+    };
+    let states = [
+        ("the_remote_view_off", serde_json::Value::Null),
+        (
+            "the_remote_view_no_cloudflared",
+            serde_json::json!({"state": "no_cloudflared", "install": "brew install cloudflared"}),
+        ),
+        (
+            "the_remote_view_signing_in",
+            serde_json::json!({"state": "signing_in", "code": "WXYZ-1234", "url": "github.com/login/device"}),
+        ),
+        ("the_remote_view_on", on(serde_json::json!([]))),
+        (
+            "the_remote_view_devices",
+            on(serde_json::json!([
+                {"id": "d_1", "name": "iPhone", "login": "0xnairb", "last_seen": now - 5 * 60_000},
+                {"id": "d_2", "name": "iPad", "login": "0xnairb", "last_seen": now - 3 * 3_600_000},
+            ])),
+        ),
+    ];
+    for (name, view) in states {
+        a.session_mut().remote = (!view.is_null()).then_some(view);
+        expect_screen(name, &screen(&mut a, 120, 32));
+    }
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("Traffic is decrypted at Cloudflare's edge."), "{drawn}");
+}
+
+/// remote.md §8: the question a device asking to be allowed puts in front.
+#[test]
+fn the_allow_question() {
+    let mut a = app();
+    a.modal = Some(crate::app::Modal::Allow {
+        device: "d_1".into(),
+        name: "iPhone".into(),
+        login: "0xnairb".into(),
+    });
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("Allow \"iPhone\", signed in as 0xnairb?"), "{drawn}");
+    expect_screen("the_allow_question", &drawn);
 }

@@ -33,6 +33,8 @@ pub enum Act {
     ToggleSidebar,
     /// Weft's own operations, gathered out of the bar.
     WeftMenu,
+    /// Weft from another device: the Remote view.
+    Remote,
     /// Turn turbo mode on or off for the agents started next.
     Turbo,
     Help,
@@ -225,6 +227,7 @@ impl Board<'_> {
             | Act::ToggleSidebar
             | Act::OpenProject
             | Act::WeftMenu
+            | Act::Remote
             | Act::ReadyUp
             | Act::Turbo
             | Act::Help

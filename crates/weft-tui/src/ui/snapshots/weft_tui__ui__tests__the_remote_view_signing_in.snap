@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ REMOTE
+ Enter WXYZ-1234 at github.com/login/device
+
+ This Mac joins your account. GitHub says who you are; this Mac
+ still says which devices get in.
+
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [ESC] CANCEL
+ Fab7 says who you are; only this Mac says which devices get in.

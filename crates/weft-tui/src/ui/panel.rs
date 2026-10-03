@@ -30,6 +30,8 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
         Modal::RingFrame => "RINGFRAME".into(),
+        Modal::Remote => "REMOTE".into(),
+        Modal::Allow { .. } => "ALLOW A DEVICE?".into(),
         Modal::Locate { harness, .. } => format!("WHERE IS {}?", harness.to_uppercase()),
         Modal::PickUp { harness, .. } => format!("{} IS NOT RUNNING", harness.to_uppercase()),
     }
@@ -105,6 +107,13 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         }
         Modal::PickUp { .. } => Vec::new(),
         Modal::RingFrame => setup_body(app),
+        Modal::Remote => remote_body(app),
+        Modal::Allow { name, login, .. } => vec![
+            format!("Allow \"{name}\", signed in as {login}?"),
+            String::new(),
+            "It will see your agents here and can type into them.".into(),
+            "Say yes only to a device you are holding.".into(),
+        ],
         Modal::Locate { text, .. } => vec![
             format!("{text}█"),
             String::new(),
@@ -190,6 +199,19 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             vec!["Type it anyway".into(), cancel.into()]
         }
         Modal::OpenProject { .. } => Vec::new(),
+        Modal::Remote if app.remote_view().is_some_and(|v| v["state"] == "on") => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64);
+            app.remote_devices()
+                .iter()
+                .map(|d| {
+                    let s = |k: &str| d[k].as_str().unwrap_or_default().to_string();
+                    let seen = crate::app::ago(d["last_seen"].as_i64().unwrap_or(0), now);
+                    format!("{}  ·  {}  ·  seen {seen}", s("name"), s("login"))
+                })
+                .collect()
+        }
         Modal::RingFrame => app
             .setup_view()
             .map(|v| v.rows.iter().map(|r| clip(&r.line(), 72)).collect())
@@ -308,4 +330,65 @@ fn setup_body(app: &App) -> Vec<String> {
         lines.push(String::new());
     }
     lines
+}
+
+/// What the Remote view says, by the state `weft remote` is in.
+fn remote_body(app: &App) -> Vec<String> {
+    let view = app.remote_view();
+    let s = |k: &str| view.and_then(|v| v[k].as_str()).unwrap_or_default().to_string();
+    match view.and_then(|v| v["state"].as_str()).unwrap_or("off") {
+        "starting" => vec!["Starting…".into(), String::new()],
+        "no_cloudflared" => vec![
+            "Install cloudflared: brew install cloudflared".into(),
+            String::new(),
+            "Weft finds it on your PATH, or where [remote] cloudflared says in".into(),
+            "~/.fab7/weft/config.toml. Weft never downloads it.".into(),
+            String::new(),
+        ],
+        "signing_in" => vec![
+            format!("Enter {} at {}", s("code"), s("url")),
+            String::new(),
+            "This Mac joins your account. GitHub says who you are; this Mac".into(),
+            "still says which devices get in.".into(),
+            String::new(),
+        ],
+        "signed_out" => {
+            let mut lines = vec!["Sign in with GitHub to use Weft from your phone.".into()];
+            if !s("failed").is_empty() {
+                lines.push(format!("The last sign-in did not finish: {}", s("failed")));
+            }
+            lines.push(String::new());
+            lines
+        }
+        "on" => {
+            let tunnel = if s("tunnel") == "up" { "up" } else { "starting" };
+            let mut lines = vec![
+                format!("Open weft.getfab7.com, signed in as {}.", s("login")),
+                format!("Tunnel {tunnel}  {}", s("address")),
+                format!("{}.", capitalized(&s("note"))),
+                String::new(),
+            ];
+            if app.remote_devices().is_empty() {
+                lines.push(
+                    "No device is allowed yet. Open the app on one, and say yes here.".into(),
+                );
+                lines.push(String::new());
+            } else {
+                lines.push("DEVICES".into());
+            }
+            lines
+        }
+        _ => vec![
+            "Use Weft from your phone at weft.getfab7.com.".into(),
+            String::new(),
+            "Your phone reaches this Mac through a Cloudflare tunnel, and only".into(),
+            "a device you allow here gets in.".into(),
+            String::new(),
+        ],
+    }
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |c| c.to_uppercase().chain(chars).collect())
 }

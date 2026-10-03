@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ALLOW A DEVICE?
+ Allow "iPhone", signed in as 0xnairb?
+
+ It will see your agents here and can type into them.
+ Say yes only to a device you are holding.
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [Y] ALLOW   [N] REFUSE
+ A device gets in only after you say yes here.

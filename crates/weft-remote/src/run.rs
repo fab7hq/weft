@@ -148,7 +148,9 @@ struct Remote {
     shown: Value,
     reported: Reported,
     cancel: Arc<AtomicBool>,
-    _tunnel: Option<Tunnel>,
+    tunnel: Option<Tunnel>,
+    /// The loopback port the tunnel carries.
+    port: u16,
     /// Calls waiting for the daemon's answer, by project and call id.
     calls: HashMap<(usize, u64), Asked>,
     /// What is waiting on the person, by pending id: its project and the
@@ -160,6 +162,24 @@ struct Remote {
     vapid: String,
     rules: crate::push::Rules,
     pusher: Sender<crate::push::Job>,
+}
+
+/// The tunnel to `port`, if `cloudflared` is where `[remote]` says or on
+/// `PATH`; its events go to the loop.
+fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Option<Tunnel> {
+    let config = std::fs::read_to_string(weft.join("config.toml")).unwrap_or_default();
+    let config = weft_core::config::read(&config, &Default::default());
+    let tunnel = Tunnel::new(tunnel::find(config.remote().cloudflared.as_deref())?);
+    let events = tunnel.start(port);
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        while let Ok(e) = events.recv() {
+            if tx.send(Wake::Tunnel(e)).is_err() {
+                return;
+            }
+        }
+    });
+    Some(tunnel)
 }
 
 /// Run until told to stop, or the daemon goes.
@@ -174,22 +194,8 @@ impl Remote {
     fn start(settings: Settings, tx: Sender<Wake>) -> anyhow::Result<Self> {
         let dir = store::remote_dir(&settings.weft)?;
         let control = daemon::Project::control(&settings.socket, tx.clone())?;
-        let config = std::fs::read_to_string(settings.weft.join("config.toml")).unwrap_or_default();
-        let config = weft_core::config::read(&config, &Default::default());
-        let cloudflared = tunnel::find(config.remote().cloudflared.as_deref());
         let port = socket::listen(tx.clone())?;
-        let tunnel = cloudflared.map(Tunnel::new);
-        if let Some(t) = &tunnel {
-            let events = t.start(port);
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                while let Ok(e) = events.recv() {
-                    if tx.send(Wake::Tunnel(e)).is_err() {
-                        return;
-                    }
-                }
-            });
-        }
+        let tunnel = start_tunnel(&settings.weft, port, &tx);
         let ticks = tx.clone();
         std::thread::spawn(move || {
             while ticks.send(Wake::Tick).is_ok() {
@@ -218,7 +224,8 @@ impl Remote {
             shown: Value::Null,
             reported: Reported::default(),
             cancel: Arc::default(),
-            _tunnel: tunnel,
+            tunnel,
+            port,
             calls: HashMap::new(),
             pendings: BTreeMap::new(),
             last_presence: None,
@@ -419,6 +426,14 @@ impl Remote {
                 }
                 for conn in self.conns.values().filter(|c| c.device.as_deref() == Some(&device)) {
                     conn.outbox.close();
+                }
+            }
+            // `cloudflared` was missing: look again, and start if it is there.
+            Some("look") if self.tunnel.is_none() => {
+                self.tunnel = start_tunnel(&self.settings.weft, self.port, &self.tx);
+                self.view.no_cloudflared = self.tunnel.is_none();
+                if self.tunnel.is_some() && self.machine.is_none() {
+                    self.sign_in();
                 }
             }
             Some("cancel") => {

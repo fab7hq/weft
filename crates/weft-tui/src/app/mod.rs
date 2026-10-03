@@ -86,6 +86,8 @@ macro_rules! sess {
 mod eval;
 mod input;
 mod notices;
+mod remote;
+pub use remote::ago;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -150,10 +152,11 @@ impl Row {
 
 /// Weft's own operations, in the order the menu lists them.
 /// Turbo mode is not here: its switch is always on the title bar.
-pub const WEFT_MENU: [(char, &str, Act); 6] = [
+pub const WEFT_MENU: [(char, &str, Act); 7] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
+    ('R', "Remote", Act::Remote),
     ('U', "Update", Act::ReadyUp),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
@@ -213,6 +216,15 @@ pub enum Modal {
     StartAgent {
         choice: usize,
     },
+    /// Weft from another device: `weft remote`'s view (remote.md §12).
+    Remote,
+    /// A device asks to be allowed on this machine. Opens by itself, over
+    /// anything, the way NEEDS YOU does (remote.md §8).
+    Allow {
+        device: String,
+        name: String,
+        login: String,
+    },
     /// What the configuration and each harness need to reach RingFrame's
     /// latest release. Nothing runs until `[P]ROCEED`.
     RingFrame,
@@ -271,6 +283,8 @@ pub struct App {
     /// itself at most once a run, when nothing is ready.
     setup_asked: bool,
     setup_offered: bool,
+    /// What was in front when a device's question opened over it.
+    before_allow: Option<Modal>,
     /// How many rows the Eval view had room for, as the last render measured it.
     eval_reach: usize,
     /// How many rows the sidebar had room for, as the last render measured
@@ -635,6 +649,16 @@ impl App {
         &mut self.projects[self.at].session
     }
 
+    /// Where the daemon listens.
+    pub fn socket(&self) -> &std::path::Path {
+        self.projects[self.at].session.socket()
+    }
+
+    /// `weft remote`'s view, as the daemon relays it.
+    pub fn remote_view(&self) -> Option<&serde_json::Value> {
+        self.projects[self.at].session.remote.as_ref()
+    }
+
     pub fn root(&self) -> &std::path::Path {
         &self.projects[self.at].root
     }
@@ -721,6 +745,7 @@ impl App {
             eval_reach: 0,
             setup_asked: false,
             setup_offered: false,
+            before_allow: None,
             list_rows: 1,
             show_work: true,
             focus: Focus::Weft,
@@ -998,6 +1023,7 @@ impl App {
         self.pump_all();
         self.follow_eval();
         self.offer_setup();
+        self.offer_allow();
         if self.units != sess!(self).units {
             self.units = sess!(self).units.clone();
             self.clamp_selection();
@@ -1638,6 +1664,10 @@ impl App {
             }
             Act::WeftMenu => {
                 self.modal = Some(Modal::Weft);
+                self.modal_choice = 0;
+            }
+            Act::Remote => {
+                self.modal = Some(Modal::Remote);
                 self.modal_choice = 0;
             }
             Act::Turbo => self.toggle_turbo(),

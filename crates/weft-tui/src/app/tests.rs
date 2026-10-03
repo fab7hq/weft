@@ -1712,3 +1712,145 @@ mod picker_tests {
         assert_eq!(a.modal_choice, choices - 1, "the same wrap");
     }
 }
+
+/// A stand-in for `weft remote` on the daemon: it publishes a view and hears
+/// the acts the TUI sends it.
+struct Remote {
+    out: std::os::unix::net::UnixStream,
+    lines: weft_proto::Lines<std::os::unix::net::UnixStream>,
+}
+
+impl Remote {
+    fn on(a: &App, view: serde_json::Value) -> Self {
+        use std::io::Write;
+        let socket = a.socket().to_path_buf();
+        let mut out = std::os::unix::net::UnixStream::connect(&socket).expect("daemon");
+        let lines = weft_proto::Lines::new(out.try_clone().unwrap());
+        for (id, call) in [
+            weft_proto::Call::Hello {
+                client: "weft-remote/test".into(),
+                protocol: weft_proto::PROTOCOL,
+            },
+            weft_proto::Call::RemoteView { view },
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out.write_all(&weft_proto::Line::Call { id: id as u64, call }.encode()).unwrap();
+        }
+        Remote { out, lines }
+    }
+
+    /// The next act the TUI sent.
+    fn act(&mut self) -> serde_json::Value {
+        self.out.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        loop {
+            match self.lines.next() {
+                Ok(Some(weft_proto::Line::Event(weft_proto::Event::RemoteAct { act }))) => {
+                    return act;
+                }
+                Ok(Some(_)) => continue,
+                other => panic!("no act: {other:?}"),
+            }
+        }
+    }
+}
+
+/// Pump until the remote view's state is `state`.
+fn remote_state(a: &mut App, state: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while a.session_mut().remote.as_ref().is_none_or(|v| v["state"] != state) {
+        assert!(std::time::Instant::now() < deadline, "{:?}", a.session_mut().remote);
+        a.pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// remote.md §12's keys: `Enter` turns it on or looks again, `Esc` cancels
+/// signing in, `D` removes the selected device, `O` turns it off.
+#[test]
+fn the_remote_views_keys_do_what_its_bar_says() {
+    let mut a = app();
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('r'));
+    press(&mut a, KeyCode::Enter);
+    remote_state(&mut a, "starting");
+
+    let mut remote = Remote::on(&a, serde_json::json!({"state": "no_cloudflared"}));
+    remote_state(&mut a, "no_cloudflared");
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(remote.act(), serde_json::json!({"act": "look"}));
+
+    let mut remote = Remote::on(
+        &a,
+        serde_json::json!({"state": "signing_in", "code": "AB-CD", "url": "github.com/login/device"}),
+    );
+    remote_state(&mut a, "signing_in");
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(remote.act(), serde_json::json!({"act": "cancel"}));
+
+    let devices = serde_json::json!([
+        {"id": "d_1", "name": "iPhone", "login": "octo", "last_seen": 0},
+        {"id": "d_2", "name": "iPad", "login": "octo", "last_seen": 0},
+    ]);
+    let mut remote =
+        Remote::on(&a, serde_json::json!({"state": "on", "login": "octo", "devices": devices}));
+    remote_state(&mut a, "on");
+    assert_eq!(a.modal, Some(Modal::Remote), "still open");
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Char('d'));
+    assert_eq!(remote.act(), serde_json::json!({"act": "remove", "device": "d_2"}));
+    press(&mut a, KeyCode::Char('o'));
+    assert_eq!(
+        remote.act(),
+        serde_json::json!({"act": "stop"}),
+        "turned off: weft remote is told to stop"
+    );
+    remote_state(&mut a, "off");
+}
+
+/// Turn the loop until the open question is `want`.
+fn modal_is(a: &mut App, want: Option<Modal>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while a.modal != want {
+        assert!(std::time::Instant::now() < deadline, "the modal is {:?}", a.modal);
+        let _ = a.turn(Duration::from_millis(20));
+    }
+}
+
+/// remote.md §8, §12: a device asking to be allowed opens the question by
+/// itself on any screen, the agent's included; `Y` and `N` answer it; a
+/// request that goes closes it and puts back what was in front.
+#[test]
+fn a_device_asking_opens_the_question_by_itself() {
+    let mut a = app();
+    let asking = |device: &str| {
+        serde_json::json!({"state": "on", "login": "octo", "devices": [],
+                           "asking": {"device": device, "name": "iPhone", "login": "octo"}})
+    };
+    let allow = |device: &str| {
+        Some(Modal::Allow { device: device.into(), name: "iPhone".into(), login: "octo".into() })
+    };
+    a.focus = Focus::Agent;
+    let mut remote = Remote::on(&a, asking("d_1"));
+    modal_is(&mut a, allow("d_1"));
+    press(&mut a, KeyCode::Char('x'));
+    assert_eq!(a.modal, allow("d_1"), "only Y and N answer it");
+    press(&mut a, KeyCode::Char('y'));
+    assert_eq!(remote.act(), serde_json::json!({"act": "allow", "device": "d_1", "yes": true}));
+    assert_eq!(a.modal, None);
+
+    let mut remote = Remote::on(&a, asking("d_2"));
+    modal_is(&mut a, allow("d_2"));
+    press(&mut a, KeyCode::Char('n'));
+    assert_eq!(remote.act(), serde_json::json!({"act": "allow", "device": "d_2", "yes": false}));
+
+    // Over the help; it expires, and the help is back.
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('h'));
+    assert_eq!(a.modal, Some(Modal::Help));
+    let _remote = Remote::on(&a, asking("d_3"));
+    modal_is(&mut a, allow("d_3"));
+    let _expired = Remote::on(&a, serde_json::json!({"state": "on", "login": "octo", "devices": []}));
+    modal_is(&mut a, Some(Modal::Help));
+}

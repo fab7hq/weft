@@ -50,6 +50,20 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             return plain(&keys);
         }
         Some(Modal::Locate { .. }) => return plain("  [←] BACK"),
+        Some(Modal::Remote) => {
+            let state = app.remote_view().and_then(|v| v["state"].as_str()).unwrap_or("off");
+            let devices = !app.remote_devices().is_empty();
+            let keys = match state {
+                "off" => "  [Enter] TURN ON   [ESC] CLOSE",
+                "no_cloudflared" => "  [Enter] LOOK AGAIN   [O] TURN OFF   [ESC] CLOSE",
+                "signing_in" => "  [ESC] CANCEL",
+                "signed_out" => "  [Enter] SIGN IN   [O] TURN OFF   [ESC] CLOSE",
+                "on" if devices => "  [↑↓] PICK   [D] REMOVE   [O] TURN OFF   [ESC] CLOSE",
+                _ => "  [O] TURN OFF   [ESC] CLOSE",
+            };
+            return plain(keys);
+        }
+        Some(Modal::Allow { .. }) => return plain("  [Y] ALLOW   [N] REFUSE"),
         Some(Modal::PickUp { .. }) => return plain("  [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain("  [ESC] CLOSE"),
         None => {}
@@ -150,6 +164,10 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }
+        (Some(Modal::Remote), _) => {
+            " Fab7 says who you are; only this Mac says which devices get in.".into()
+        }
+        (Some(Modal::Allow { .. }), _) => " A device gets in only after you say yes here.".into(),
         (Some(_), _) => String::new(),
         (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
         (None, Focus::Weft) if app.waiting_here() => format!(

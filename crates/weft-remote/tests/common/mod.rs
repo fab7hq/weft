@@ -222,6 +222,11 @@ impl Harness {
 
     /// The same, after `prepare` has had the Weft folder.
     pub fn with(name: &str, prepare: impl FnOnce(&Path)) -> Self {
+        Self::until(name, prepare, "on")
+    }
+
+    /// The same, until the view's state is `state`.
+    pub fn until(name: &str, prepare: impl FnOnce(&Path), state: &str) -> Self {
         let dir = std::env::temp_dir().join(format!("wr-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("remote")).unwrap();
@@ -262,7 +267,10 @@ impl Harness {
             key: fab7().verifying_key(),
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
-        tui.wait_view(|v| v["state"] == "on");
+        tui.wait_view(|v| v["state"] == state);
+        if state != "on" {
+            return Harness { dir, socket, port: 0, tui };
+        }
         let args = loop {
             if let Ok(a) = std::fs::read_to_string(dir.join("cloudflared.args")) {
                 break a;

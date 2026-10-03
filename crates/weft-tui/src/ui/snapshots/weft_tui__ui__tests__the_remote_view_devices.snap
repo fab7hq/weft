@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+                                       │ ▸ 1 codex    +
+───────────────────────────────────────┼────────────────────────────────────────────────────────────────────────────────
+ ▾ [project] 1 open  ⌫ │█
+   ▾ codex                             │
+                                       │
+ [A]SK for something and Weft writes it│
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+                                       │
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ REMOTE
+ Open weft.getfab7.com, signed in as 0xnairb.
+ Tunnel up  https://seating-texas-air-guns.trycloudflare.com
+ Traffic is decrypted at Cloudflare's edge.
+
+ DEVICES
+   ▸ iPhone  ·  0xnairb  ·  seen 5 min ago
+     iPad  ·  0xnairb  ·  seen 3 h ago
+
+───────────────────────────────────────┴────────────────────────────────────────────────────────────────────────────────
+  [↑↓] PICK   [D] REMOVE   [O] TURN OFF   [ESC] CLOSE
+ Fab7 says who you are; only this Mac says which devices get in.

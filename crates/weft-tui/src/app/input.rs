@@ -172,6 +172,14 @@ impl App {
             }
             return Ok(());
         }
+        if modal == Modal::Remote {
+            self.on_remote_key(key);
+            return Ok(());
+        }
+        if let Modal::Allow { device, .. } = &modal {
+            self.on_allow_key(key, device);
+            return Ok(());
+        }
         if modal == Modal::RingFrame {
             let rows = self.setup_view().map_or(0, |v| v.rows.len());
             match key.code {
@@ -280,7 +288,11 @@ impl App {
         match modal {
             Modal::Help | Modal::Note(_) => self.modal = None,
             // Their keys are their own, above; Enter never reaches here.
-            Modal::Ask { .. } | Modal::RingFrame | Modal::Locate { .. } => {}
+            Modal::Ask { .. }
+            | Modal::RingFrame
+            | Modal::Locate { .. }
+            | Modal::Remote
+            | Modal::Allow { .. } => {}
             Modal::Confirm(pending) => {
                 let pending = pending.clone();
                 self.do_inject(&pending);

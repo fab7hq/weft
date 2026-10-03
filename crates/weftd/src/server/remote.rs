@@ -47,12 +47,18 @@ impl Session {
             Err(why) => return Answer::No("config", why),
         }
         self.supervisor.on.store(on, Ordering::SeqCst);
+        let publisher = self.clients.remote.as_ref().map(|(to, _)| *to);
         if on {
             self.keep_remote_running();
-        } else if let Some((to, _)) = self.clients.remote {
+        } else if let Some(to) = publisher {
             let stop = Out::RemoteAct { act: serde_json::json!({"act": "stop"}) };
             self.clients.send_to(to, &Line::Event(stop));
         }
+        // Until `weft remote` says otherwise, the view is the daemon's: it is
+        // starting, or it is off and its last view is no longer true.
+        let view = serde_json::json!({"state": if on { "starting" } else { "off" }});
+        self.clients.remote = Some((publisher.unwrap_or(u64::MAX), view.clone()));
+        self.clients.broadcast_all(&Out::Remote { view });
         Answer::nothing()
     }
 
