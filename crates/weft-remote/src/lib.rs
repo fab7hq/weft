@@ -11,6 +11,7 @@ pub mod account;
 pub mod agents;
 pub mod daemon;
 pub mod devices;
+pub mod push;
 pub mod run;
 pub mod socket;
 pub mod store;

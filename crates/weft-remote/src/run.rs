@@ -63,6 +63,14 @@ pub enum Wake {
         at: usize,
         pane: u32,
     },
+    /// A push service said a device's subscription is gone.
+    PushGone(crate::push::Gone),
+}
+
+impl From<crate::push::Gone> for Wake {
+    fn from(g: crate::push::Gone) -> Self {
+        Wake::PushGone(g)
+    }
 }
 
 impl From<Heard> for Wake {
@@ -148,6 +156,10 @@ struct Remote {
     pendings: BTreeMap<String, (usize, Value)>,
     /// When the person last typed on the Mac.
     last_presence: Option<Instant>,
+    /// The VAPID public key a device subscribes with.
+    vapid: String,
+    rules: crate::push::Rules,
+    pusher: Sender<crate::push::Job>,
 }
 
 /// Run until told to stop, or the daemon goes.
@@ -184,6 +196,9 @@ impl Remote {
                 std::thread::sleep(Duration::from_secs(1));
             }
         });
+        let key = crate::push::vapid(&dir)?;
+        let vapid = crate::push::public(&key);
+        let pusher = crate::push::sender(key, tx.clone());
         let machine = Machine::load(&dir);
         let mut view = View { no_cloudflared: tunnel.is_none(), ..View::default() };
         view.login = machine.as_ref().map(|m| m.login.clone());
@@ -207,6 +222,9 @@ impl Remote {
             calls: HashMap::new(),
             pendings: BTreeMap::new(),
             last_presence: None,
+            vapid,
+            rules: Default::default(),
+            pusher,
         };
         remote.open_projects();
         if remote.machine.is_none() && !remote.view.no_cloudflared {
@@ -234,6 +252,13 @@ impl Remote {
                 }
                 Wake::Tick => {
                     self.tick();
+                    true
+                }
+                Wake::PushGone(g) => {
+                    if let Some(d) = self.devices.get_mut(&g.device) {
+                        d.push = None;
+                        let _ = self.devices.save();
+                    }
                     true
                 }
                 Wake::Enter { at, pane } => {
@@ -332,6 +357,40 @@ impl Remote {
     fn tell_agents(&mut self) {
         let message = self.agents_message();
         self.to_devices(&message);
+        let turns: Vec<(String, &str)> =
+            self.projects.iter().flatten().flat_map(|o| o.agents.turns()).collect();
+        self.rules.turns(&turns);
+        self.push_due();
+    }
+
+    /// Send what is due (remote.md §10): to every device with pushes on.
+    fn push_due(&mut self) {
+        let away = self.last_presence.is_none_or(|t| t.elapsed() >= crate::push::AWAY);
+        let in_front: HashSet<String> = self
+            .conns
+            .values()
+            .filter_map(|c| match &c.seen {
+                Some((true, Some(agent))) => Some(agent.clone()),
+                _ => None,
+            })
+            .collect();
+        let count = self.rules.count();
+        for agent in self.rules.due(away, &in_front) {
+            let Some((at, pane)) = self.find(&agent) else { continue };
+            let Some(open) = self.projects[at].as_ref() else { continue };
+            let (_, title) = open.agents.harness(pane).unwrap_or_default();
+            let payload = crate::push::payload(&agent, title, &open.agents.name, count);
+            for d in self.devices.list.iter() {
+                if let Some(subscription) = &d.push {
+                    let _ = self.pusher.send(crate::push::Job {
+                        device: d.id.clone(),
+                        subscription: subscription.clone(),
+                        agent: agent.clone(),
+                        payload: payload.clone(),
+                    });
+                }
+            }
+        }
     }
 
     /// Publish the view to the TUI when it changed.
@@ -439,6 +498,7 @@ impl Remote {
             self.refuse(a.conn, "expired");
         }
         self.open_projects();
+        self.push_due();
     }
 
     fn socket(&mut self, s: Socket) {
@@ -518,7 +578,7 @@ impl Remote {
         self.send(
             conn,
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
-                   "vapid": null, "agents": agents, "pendings": pendings}),
+                   "vapid": self.vapid, "agents": agents, "pendings": pendings}),
         );
     }
 

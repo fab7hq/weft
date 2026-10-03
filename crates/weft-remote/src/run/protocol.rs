@@ -341,6 +341,9 @@ impl Remote {
         let foreground =
             m["foreground"].as_bool().ok_or(("bad_request", "foreground or not".to_string()))?;
         let agent = m["agent"].as_str().map(str::to_string);
+        if foreground && let Some(agent) = &agent {
+            self.rules.seen(agent);
+        }
         if let Some(c) = self.conns.get_mut(&conn) {
             c.seen = Some((foreground, agent));
         }
@@ -350,8 +353,10 @@ impl Remote {
     fn push_subscription(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
         let subscription = &m["subscription"];
         let valid = subscription.is_null()
-            || (subscription["endpoint"].as_str().is_some_and(|e| e.starts_with("https://"))
-                && subscription["keys"]["p256dh"].is_string()
+            || (subscription["endpoint"].as_str().is_some_and(|e| {
+                // A push service is https; a recording one in a test, loopback.
+                e.starts_with("https://") || e.starts_with("http://127.0.0.1:")
+            }) && subscription["keys"]["p256dh"].is_string()
                 && subscription["keys"]["auth"].is_string());
         if !valid {
             return Err(("bad_request", "a subscription is an https endpoint and its keys".into()));
