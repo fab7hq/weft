@@ -502,6 +502,16 @@ pub fn output_of(v: &Value) -> Option<(u32, Vec<u8>)> {
     Some((v.get("pane")?.as_u64()? as u32, un_b64(v.get("bytes")?.as_str()?)?))
 }
 
+/// A pending as `project.open` lists it: the shape `pending.added` carries.
+pub fn pending_json(id: &str, pane: u32, what: &str, why: &str, payload: &[u8]) -> Value {
+    json!({"id": id, "pane": pane, "what": what, "why": why, "payload": b64(payload)})
+}
+
+/// Reads one back, as the event it would have been.
+pub fn pending_of(v: &Value) -> Option<Event> {
+    Event::of("pending.added", v)
+}
+
 /// Panes as they go on the wire. One shape, whether in a result or an event.
 pub fn panes_json(panes: &[PaneInfo]) -> Value {
     Value::Array(
@@ -843,6 +853,19 @@ mod tests {
         let mut lines = Lines::new(&wire[..]);
         assert_eq!(lines.next().unwrap(), Some(Line::Event(Event::Exited { pane: 4 })));
         assert_eq!(lines.next().unwrap(), None);
+    }
+
+    #[test]
+    fn a_pending_listed_on_opening_reads_as_the_event_it_was() {
+        let listed = pending_json("pnd_3", 1, "Ready to send", "why", b"/plan \x1b");
+        let event = Event::Pending {
+            id: "pnd_3".into(),
+            pane: 1,
+            what: "Ready to send".into(),
+            why: "why".into(),
+            payload: b"/plan \x1b".to_vec(),
+        };
+        assert_eq!(pending_of(&listed), Some(event));
     }
 
     #[test]

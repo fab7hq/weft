@@ -87,6 +87,10 @@ impl Slot {
 struct Waiting {
     id: String,
     pane: u32,
+    /// What the person is shown, kept for a client that opens the project
+    /// after it was staged (remote.md D5).
+    what: String,
+    why: String,
     payload: Vec<u8>,
     how: weft_core::inject::Handoff,
     /// The Ask whose yes has to be recorded before anything is typed, when the
@@ -1071,6 +1075,13 @@ impl Session {
                     "units": serde_json::to_value(&units).unwrap_or_default(),
                     "records": records,
                     "replay": replay,
+                    // What is already waiting on a person, so a client that
+                    // arrives after it was staged can still answer it.
+                    "pendings": self.projects[at]
+                        .waiting
+                        .iter()
+                        .map(|w| weft_proto::pending_json(&w.id, w.pane, &w.what, &w.why, &w.payload))
+                        .collect::<Vec<_>>(),
                     "readiness": readiness_json(&self.projects[at].readiness),
                     "routing": routing_json(&self.projects[at].routing),
                     "agents": {"panes": agent_panes, "sessions": sessions},
@@ -1119,11 +1130,18 @@ impl Session {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let id = format!("pnd_{}", self.next_pending);
                 self.next_pending += 1;
-                let message =
-                    Out::Pending { id: id.clone(), pane, what, why, payload: bytes.clone() };
+                let message = Out::Pending {
+                    id: id.clone(),
+                    pane,
+                    what: what.clone(),
+                    why: why.clone(),
+                    payload: bytes.clone(),
+                };
                 self.projects[at].waiting.push(Waiting {
                     id: id.clone(),
                     pane,
+                    what,
+                    why,
                     payload: bytes,
                     how,
                     confirm: None,

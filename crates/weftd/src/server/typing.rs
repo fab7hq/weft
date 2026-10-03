@@ -147,16 +147,19 @@ impl Session {
     ) -> Answer {
         let id = format!("pnd_{}", self.next_pending);
         self.next_pending += 1;
+        let (what, why) = (built.asking.what, built.asking.why.join("\n"));
         let message = Out::Pending {
             id: id.clone(),
             pane,
-            what: built.asking.what,
-            why: built.asking.why.join("\n"),
+            what: what.clone(),
+            why: why.clone(),
             payload: built.payload.clone(),
         };
         self.projects[at].waiting.push(Waiting {
             id: id.clone(),
             pane,
+            what,
+            why,
             payload: built.payload,
             how: built.how,
             confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),

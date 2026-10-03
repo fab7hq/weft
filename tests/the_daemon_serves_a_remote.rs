@@ -139,3 +139,44 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// D5: a client that opens the project after a `stage` sees it, and can
+/// resolve it.
+#[test]
+fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
+    let (root, socket) = daemon("pendings");
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let pane = sh(&mut tui);
+    let staged = tui.answer(Call::Stage {
+        pane,
+        bytes: b"echo staged-earlier".to_vec(),
+        how: weft::inject::Handoff::Whole,
+        what: "Ready to send".into(),
+        why: "the exact wording".into(),
+    });
+    let id = staged.unwrap()["pending"].as_str().unwrap().to_string();
+
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    let listed = remote.opened["pendings"].as_array().expect("pendings").clone();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(
+        protocol::pending_of(&listed[0]),
+        Some(Event::Pending {
+            id: id.clone(),
+            pane,
+            what: "Ready to send".into(),
+            why: "the exact wording".into(),
+            payload: b"echo staged-earlier".to_vec(),
+        })
+    );
+
+    remote.answer(Call::Resolve { pending: id.clone(), yes: false, force: false }).unwrap();
+    tui.wait_for(|e| {
+        matches!(e, Event::Resolved { id: got, yes: false } if *got == id).then_some(())
+    });
+    let again = Client::open(&socket, &root, "weft-remote", false);
+    assert_eq!(again.opened["pendings"], serde_json::json!([]), "answered, so gone");
+
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
