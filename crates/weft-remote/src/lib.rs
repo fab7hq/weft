@@ -9,6 +9,7 @@
 
 pub mod agents;
 pub mod daemon;
+pub mod socket;
 pub mod tunnel;
 
 /// Run until told to stop.
