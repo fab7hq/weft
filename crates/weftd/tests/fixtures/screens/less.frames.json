@@ -1,0 +1,72 @@
+{
+  "cols": 80,
+  "frames": [
+    {
+      "alternate": true,
+      "bytes": "G1s/MjVoG1ttG1tIG1tKV2VmdCBzY3JlZW5zOiDmvKLlrZfjga7jg4bjgrnjg4gg7ZWc6rWt7Ja0IOS4reaWhyDigJQgZW1vamkg8J+agOKchSBhbmQgY29tYmluaW5nIMOpzIMNCuKUjOKUgOKUgOKUgOKUgBs9G1s/MWgbWz8yMDA0bA==",
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌────",
+      "full": true
+    },
+    {
+      "alternate": true,
+      "bytes": "4pSA4pSA4pSA4pSA4pSA4pSA4pSQDQrilIIgYm94IOihqCDinJMg4pSCDQrilJTilIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilJgNCmxpbmUgMSDigJQg56ysMeihjCDinJMNCmxpbmUgMiDigJQg56ysMuihjCDinJM=",
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "DQpsaW5lIDMg4oCUIOesrDPooYwg4pyTDQpsaW5lIDQg4oCUIOesrDTooYwg4pyTDQpsaW5lIDUg4oCUIOesrDXooYwg4pyTDQpsaW5lIDYg4oCUIOesrDbooYwg4pyTDQpsaW5lIDcg4oCUIOesrDfooYwg4pyTDQpsaW5lIDg=",
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "IOKAlCDnrKw46KGMIOKckw0KbGluZSA5IOKAlCDnrKw56KGMIOKckw0KbGluZSAxMCDigJQg56ysMTDooYwg4pyTDQpsaW5lIDExIOKAlCDnrKwxMeihjCDinJMNCmxpbmUgMTIg4oCUIOesrDEy6KGMIOKckw0KbGluZSAxMyA=",
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 ",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "4oCUIOesrDEz6KGMIOKckw0KbGluZSAxNCDigJQg56ysMTTooYwg4pyTDQpsaW5lIDE1IOKAlCDnrKwxNeihjCDinJMNCmxpbmUgMTYg4oCUIOesrDE26KGMIOKckw0KbGluZSAxNyDigJQg56ysMTfooYwg4pyTDQpsaW5lIDE=",
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 1",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1tI4pSCIGJveCDooagg4pyTIOKUghtbSw0K4pSUG1sxMEPilJgNCmxpbmUgMSDigJQbW0PnrKwx6KGMIOKckw0KbGluZSAyIOKAlCDnrKwy6KGMIOKckxtbNTs2SDMbWzVDMxtbNjs2SDQbWzVDNBtbNzs2SDUbWzVDNRtbODs2SDYbWzVDNhtbOTs2SDcbWzVDNxtbMTA7Nkg4G1s1QzgbWzExOzZIORtbNUM5G1sxMjs2SDEwIOKAlCDnrKwxMOihjCDinJMbWzEzOzZIMTEg4oCUIOesrDEx6KGMIOKckxtbMTQ7N0gyG1s2QzIbWzE1OzdIMxtbNkMzG1sxNjs3SDQbWzZDNBtbMTc7N0g1G1s2QzUbWzE4OzdINhtbNkM2G1sxOTs3SDcbWzZDNxtbMjA7N0g4G1s2QzgbWzIxOzdIORtbNkM5G1syMjs2SDIwIOKAlCDnrKwyMOihjCDinJMNCmxpbmUgMjEg4oCUIOesrDIx6KGMIOKckw0KbGluZSAy",
+      "contents": "│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 2",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1tIbGluZSA0IOKAlBtbQ+esrDTooYwg4pyTDQpsaW5lIDUg4oCUIOesrDXooYwg4pyTG1szOzZINhtbNUM2G1s0OzZINxtbNUM3G1s1OzZIOBtbNUM4G1s2OzZIORtbNUM5G1s3OzZIMTAg4oCUIOesrDEw6KGMIOKckxtbODs2SDExIOKAlCDnrKwxMeihjCDinJMbWzk7NkgxMiDigJQg56ysMTLooYwg4pyTG1sxMDs2SDEzIOKAlCDnrKwxM+ihjCDinJMbWzExOzZIMTQg4oCUIOesrDE06KGMIOKckxtbMTI7N0g1G1s2QzUbWzEzOzdINhtbNkM2G1sxNDs3SDcbWzZDNxtbMTU7N0g4G1s2QzgbWzE2OzdIORtbNkM5G1sxNzs2SDIwG1s1QzIwG1sxODs2SDIxG1s1QzIxG1sxOTs2SDIyG1s1QzIyG1syMDs2SDIzG1s1QzIzG1syMTs2SDI0G1s1QzI0G1syMjs3SDUbWzZDNRtbMjM7N0g2G1s2QzYbWzI0OzVIG1tL",
+      "contents": "line 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1sxOzZIORtbNUM5G1syOzZIMTAg4oCUIOesrDEw6KGMIOKckxtbMzs2SDExIOKAlCDnrKwxMeihjCDinJMbWzQ7NkgxMiDigJQg56ysMTLooYwg4pyTG1s1OzZIMTMg4oCUIOesrDEz6KGMIOKckxtbNjs2SDE0IOKAlCDnrKwxNOihjCDinJMbWzc7N0g1G1s2QzUbWzg7N0g2G1s2QzYbWzk7N0g3G1s2QzcbWzEwOzdIOBtbNkM4G1sxMTs3SDkbWzZDORtbMTI7NkgyMBtbNUMyMBtbMTM7NkgyMRtbNUMyMRtbMTQ7NkgyMhtbNUMyMhtbMTU7NkgyMxtbNUMyMxtbMTY7NkgyNBtbNUMyNBtbMTc7N0g1G1s2QzUbWzE4OzdINhtbNkM2G1sxOTs3SDcbWzZDNxtbMjA7N0g4G1s2QzgbWzIxOzdIORtbNkM5G1syMjs2SDMwG1s1QzMwG1syMzs2SDMxG1s1QzMxG1syNDszSBtbSw==",
+      "contents": "line 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nli",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1sxOzZIMTQg4oCUIOesrDE06KGMIOKckxtbMjs3SDUbWzZDNRtbMzs3SDYbWzZDNhtbNDs3SDcbWzZDNxtbNTs3SDgbWzZDOBtbNjs3SDkbWzZDORtbNzs2SDIwG1s1QzIwG1s4OzZIMjEbWzVDMjEbWzk7NkgyMhtbNUMyMhtbMTA7NkgyMxtbNUMyMxtbMTE7NkgyNBtbNUMyNBtbMTI7N0g1G1s2QzUbWzEzOzdINhtbNkM2G1sxNDs3SDcbWzZDNxtbMTU7N0g4G1s2QzgbWzE2OzdIORtbNkM5G1sxNzs2SDMwG1s1QzMwG1sxODs2SDMxG1s1QzMxG1sxOTs2SDMyG1s1QzMyG1syMDs2SDMzG1s1QzMzG1syMTs2SDM0G1s1QzM0G1syMjs3SDUbWzZDNRtbMjM7N0g2G1s2QzYNChtbSw==",
+      "contents": "line 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1sxOzdIOBtbNkM4G1syOzdIORtbNkM5G1szOzZIMjAbWzVDMjAbWzQ7NkgyMRtbNUMyMRtbNTs2SDIyG1s1QzIyG1s2OzZIMjMbWzVDMjMbWzc7N0g0G1s2QzQbWzg7N0g1G1s2QzUbWzk7N0g2G1s2QzYbWzEwOzdINxtbNkM3G1sxMTs3SDgbWzZDOBtbMTI7N0g5G1s2QzkbWzEzOzZIMzAbWzVDMzAbWzE0OzZIMzEbWzVDMzEbWzE1OzZIMzIbWzVDMzIbWzE2OzZIMzMbWzVDMzMbWzE3OzdINBtbNkM0G1sxODs3SDUbWzZDNRtbMTk7N0g2G1s2QzYbWzIwOzdINxtbNkM3G1syMTs3SDgbWzZDOBtbMjI7N0g5G1s2QzkbWzIzOzZINDAbWzVDNDANCmxpbmUgNDEg4oCUIOesrDQx6KGMIOKckw==",
+      "contents": "line 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓\nline 37 — 第37行 ✓\nline 38 — 第38行 ✓\nline 39 — 第39行 ✓\nline 40 — 第40行 ✓\nline 41 — 第41行 ✓",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1sxOzZIMjAbWzVDMjAbWzI7NkgyMRtbNUMyMRtbMzs3SDIbWzZDMhtbNDs3SDMbWzZDMxtbNTs3SDQbWzZDNBtbNjs3SDUbWzZDNRtbNzs3SDYbWzZDNhtbODs3SDcbWzZDNxtbOTs3SDgbWzZDOBtbMTA7N0g5G1s2QzkbWzExOzZIMzAbWzVDMzAbWzEyOzZIMzEbWzVDMzEbWzEzOzdIMhtbNkMyG1sxNDs3SDMbWzZDMxtbMTU7N0g0G1s2QzQbWzE2OzdINRtbNkM1G1sxNzs3SDYbWzZDNhtbMTg7N0g3G1s2QzcbWzE5OzdIOBtbNkM4G1syMDs3SDkbWzZDORtbMjE7Nkg0MBtbNUM0MBtbMjI7Nkg0MRtbNUM0MRtbMjM7N0gyG1s2QzINCjobW0s=",
+      "contents": "line 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓\nline 37 — 第37行 ✓\nline 38 — 第38行 ✓\nline 39 — 第39行 ✓\nline 40 — 第40行 ✓\nline 41 — 第41行 ✓\nline 42 — 第42行 ✓\n:",
+      "full": false
+    }
+  ],
+  "rows": 24
+}

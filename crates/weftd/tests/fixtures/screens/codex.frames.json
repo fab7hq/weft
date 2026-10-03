@@ -1,0 +1,84 @@
+{
+  "cols": 100,
+  "frames": [
+    {
+      "alternate": true,
+      "bytes": "G1s/MjVsG1ttG1tIG1tKGz4bWz8xbBtbPzIwMDRoG1s/MTAwMmgbWz8xMDA2aA==",
+      "contents": "",
+      "full": true
+    },
+    {
+      "alternate": true,
+      "bytes": "G1syOzNIG1szODs1Ozc1bT5fIBtbMzk7MW1PcGVuQUkgQ29kZXgbWzJtICh2MC4xNTguMCkbWzM7Nkhsb2FkaW5nG1s1OzNIG1ttG1s/MTAwM2g=",
+      "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1szODs1Ozc1bUEgaHVuY2ggaXMgYSBwZXJmZWN0bHkgcmVzcGVjdGFibGUgc3RhcnRpbmcgcG9pbnQuG1syNzsxSBtbMzk7MW3igLobW0MbWzJtQXNrIENvZGV4IHRvIGRvIGFueXRoaW5n",
+      "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1s/MjVoG1tIG1ttIBtbMzA7M0gbWzFtPxtbQxtbbWZvchtbQ3Nob3J0Y3V0cxtbMjc7M0g=",
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "",
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "",
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1szOzZIG1sybS9ydW5zL3NjcmVlbnMtcTAxL3dzG1syNzszSBtbbQ==",
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "",
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1s/MjVsG1syOzNIG1sxbVVwZGF0G1tDIGF2YWlsYWJsZRtbMjc7M0gbW20bW0sbWzMwOzNIG1tLG1syOzE5SBtbMm0=",
+      "contents": " \n  Update available(v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "IMK3IDAuMTU4LjAg4oaSIDAuMTU5LjMbWzM7M0hSZWxlYXNlIG5vdGVzOiAbWzRtaHR0cHM6Ly9naXRodWIuY29tL29wZW5haS9j",
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/c\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "b2RleC9yZWxlYXNlcy9sYXRlc3QbWzU7MUgbWzE7MjQ7N23igLogMS4gVXBkYXRlIG5vdyAocnVucyBgbnBtIGluc3RhbGwgLWcgQG9wZW5haS9jb2RleGApICAgICAgICAgICAgICAgICAgICAgICA=",
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "ICAgICAgICAgICAgICAgICAgICAgICAgG1s2OzNIG1ttMi4bW0NTa2lwG1s3OzNIMy4bW0NTa2lwG1tDdW50aWwbW0NuZXh0G1tDdmVyc2lvbhtbOTszSBtbMW1lbnRlchtbbQ==",
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                                               \n  2. Skip\n  3. Skip until next version\n\n  enter\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "full": false
+    },
+    {
+      "alternate": true,
+      "bytes": "G1sybSBjb250aW51ZSDCtyAbWzFtZXNjG1sybSBza2lwG1syNzsxSBtbbSA=",
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                                               \n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n ",
+      "full": false
+    }
+  ],
+  "rows": 30
+}
