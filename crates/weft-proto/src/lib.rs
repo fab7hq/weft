@@ -125,6 +125,16 @@ pub enum Call {
     Turbo {
         on: bool,
     },
+    /// `weft remote`'s view, from the client whose hello names it
+    /// `weft-remote`: kept, and sent to every client as `remote` (D8).
+    RemoteView {
+        view: Value,
+    },
+    /// An act for `weft remote` (`{act, …}`), from any other client: passed
+    /// to it unchanged as `remote.act` (D8).
+    Remote {
+        act: Value,
+    },
     /// Yes or no, by id. Whoever answers first answers for everyone.
     Resolve {
         pending: String,
@@ -206,6 +216,15 @@ pub enum Event {
     /// The RingFrame view, as it stands.
     Setup {
         view: Value,
+    },
+    /// `weft remote`'s view, as it last published it.
+    Remote {
+        view: Value,
+    },
+    /// An act a client asked of `weft remote`, as it was asked; sent only to
+    /// `weft remote`.
+    RemoteAct {
+        act: Value,
     },
     /// The person typed into Weft on this machine, at `at` (milliseconds):
     /// sent to every client, at most once in ten seconds (remote.md D6).
@@ -343,6 +362,8 @@ impl Call {
             }
             Call::Available => ("agents.available", json!({})),
             Call::Turbo { on } => ("project.turbo", json!({"on": on})),
+            Call::RemoteView { view } => ("remote.view", json!({"view": view})),
+            Call::Remote { act } => ("remote", act.clone()),
             Call::Resolve { pending, yes, force } => {
                 ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
             }
@@ -405,6 +426,11 @@ impl Call {
             },
             "agents.available" => Call::Available,
             "project.turbo" => Call::Turbo { on: p.get("on")?.as_bool()? },
+            "remote.view" => Call::RemoteView { view: p.get("view")?.clone() },
+            "remote" => {
+                p.get("act")?.as_str()?;
+                Call::Remote { act: p.clone() }
+            }
             "pending.resolve" => {
                 Call::Resolve {
                     pending: s("pending")?,
@@ -450,6 +476,8 @@ impl Event {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
             }
             Event::Presence { at } => ("presence", json!({"at": at})),
+            Event::Remote { view } => ("remote", json!({"view": view})),
+            Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Agents { panes, sessions } => {
@@ -494,6 +522,11 @@ impl Event {
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
+            "remote" => Event::Remote { view: p.get("view")?.clone() },
+            "remote.act" => {
+                p.get("act")?.as_str()?;
+                Event::RemoteAct { act: p.clone() }
+            }
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
             "setup" => Event::Setup { view: p.get("view")?.clone() },
             "agents" => Event::Agents {
@@ -766,6 +799,8 @@ mod tests {
             },
             Call::Available,
             Call::Turbo { on: true },
+            Call::RemoteView { view: json!({"state": "off"}) },
+            Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::Detach,
             Call::Shutdown,
         ] {
@@ -831,6 +866,8 @@ mod tests {
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
+            Event::Remote { view: json!({"state": "on"}) },
+            Event::RemoteAct { act: json!({"act": "stop"}) },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },

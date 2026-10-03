@@ -258,3 +258,38 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+/// D8: `weft-remote` publishes its view and every client hears it; an act
+/// from any other client reaches `weft-remote` unchanged.
+#[test]
+fn the_remote_view_and_its_acts_are_relayed() {
+    let (root, socket) = daemon("relay");
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    let view = serde_json::json!({"state": "on", "address": "https://a-b.trycloudflare.com"});
+
+    assert_eq!(
+        tui.answer(Call::RemoteView { view: view.clone() }),
+        Err("not_remote".into()),
+        "only weft-remote publishes it"
+    );
+    remote.answer(Call::RemoteView { view: view.clone() }).unwrap();
+    let heard = tui.wait_for(|e| match e {
+        Event::Remote { view } => Some(view.clone()),
+        _ => None,
+    });
+    assert_eq!(heard, view);
+    let late = Client::open(&socket, &root, "weft-tui", true);
+    assert_eq!(late.opened["remote"], view, "kept for a client that opens later");
+
+    let act = serde_json::json!({"act": "allow", "device": "d_1", "yes": true});
+    tui.answer(Call::Remote { act: act.clone() }).unwrap();
+    let got = remote.wait_for(|e| match e {
+        Event::RemoteAct { act } => Some(act.clone()),
+        _ => None,
+    });
+    assert_eq!(got, act, "unchanged");
+
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}

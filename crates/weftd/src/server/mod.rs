@@ -174,6 +174,9 @@ struct Clients {
     names: HashMap<u64, String>,
     /// When `presence` was last sent.
     presence: Option<std::time::Instant>,
+    /// `weft remote`'s last view, and the client that published it, which
+    /// is where acts for it go (remote.md D8).
+    remote: Option<(u64, serde_json::Value)>,
 }
 
 impl Clients {
@@ -201,12 +204,17 @@ impl Clients {
         self.sinks.retain(|_, s| weft_proto::send(s, &wire).is_ok());
     }
 
+    fn named(&self, client: u64, name: &str) -> bool {
+        self.names.get(&client).is_some_and(|n| n.starts_with(name))
+    }
+
     /// The person typed into Weft here: say so, at most once in ten seconds.
     /// Only the TUI's typing counts; a remote device's is not the person at
     /// the machine (remote.md D6).
     fn typed(&mut self, client: u64) {
-        let tui = self.names.get(&client).is_some_and(|n| n.starts_with("weft-tui"));
-        if !tui || self.presence.is_some_and(|at| at.elapsed() < PRESENCE_EVERY) {
+        if !self.named(client, "weft-tui")
+            || self.presence.is_some_and(|at| at.elapsed() < PRESENCE_EVERY)
+        {
             return;
         }
         self.presence = Some(std::time::Instant::now());
@@ -1106,6 +1114,7 @@ impl Session {
                     "replay": replay,
                     // What is already waiting on a person, so a client that
                     // arrives after it was staged can still answer it.
+                    "remote": self.clients.remote.as_ref().map(|(_, v)| v),
                     "pendings": self.projects[at]
                         .waiting
                         .iter()
@@ -1238,6 +1247,22 @@ impl Session {
                 // Held while the daemon runs; `config.toml` says where it starts.
                 self.projects[at].turbo = on;
                 return Ok(Answer::Ok(serde_json::json!({"turbo": on})));
+            }
+            Call::RemoteView { view } => {
+                if !self.clients.named(client, "weft-remote") {
+                    return Ok(Answer::No("not_remote", "only weft remote has a view".into()));
+                }
+                self.clients.remote = Some((client, view.clone()));
+                self.clients.broadcast_all(&Out::Remote { view });
+            }
+            Call::Remote { act } => {
+                let to = self.clients.remote.as_ref().map(|(c, _)| *c);
+                match to.filter(|c| self.clients.sinks.contains_key(c)) {
+                    Some(to) => self.clients.send_to(to, &Line::Event(Out::RemoteAct { act })),
+                    None => {
+                        return Ok(Answer::No("remote_off", "weft remote is not running".into()));
+                    }
+                }
             }
             Call::Resolve { pending, yes, force } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
