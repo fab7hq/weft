@@ -717,6 +717,33 @@ fn a_plain_ask_carries_no_marker() {
     assert!(!text.contains("[follow-up"), "got {text:?}");
 }
 
+/// SEND TO is a list of the agents: ↑ ↓ pick one, and Enter asks that one.
+#[test]
+fn send_to_picks_the_agent_with_the_arrows_and_asks_it() {
+    let mut a = recorded(Sent::TakenByAgent);
+    a.add("claude-code", "/bin/cat").expect("a second agent");
+    a.settle();
+    a.set_readiness("claude-code", Readiness::Ready);
+    press(&mut a, KeyCode::Char('a'));
+    let target = |a: &App| match &a.modal {
+        Some(Modal::Ask { target, .. }) => *target,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(target(&a), 0);
+    press(&mut a, KeyCode::Down);
+    assert_eq!(target(&a), 1);
+    press(&mut a, KeyCode::Down);
+    assert_eq!(target(&a), 0, "it wraps");
+    press(&mut a, KeyCode::Up);
+    assert_eq!(target(&a), 1);
+    for c in "new thing".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    press(&mut a, KeyCode::Enter);
+    let Some(Modal::Confirm(p)) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    assert_eq!(a.harness_at(p.pane), Some("claude-code"), "asked of the agent picked");
+}
+
 #[test]
 fn backspace_edits_the_intent() {
     let mut a = app();

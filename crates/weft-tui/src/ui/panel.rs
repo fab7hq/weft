@@ -65,7 +65,7 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         ],
         Modal::Help => help_lines(app).into_iter().chain(routing_lines(app)).collect(),
         Modal::Note(text) => text.lines().map(str::to_string).collect(),
-        Modal::Ask { text, target, follows } => {
+        Modal::Ask { text, follows, .. } => {
             let mut lines = Vec::new();
             if let Some(f) = follows {
                 let head = word("act.follow_up").to_uppercase();
@@ -82,18 +82,7 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
                 Some(last) => last.push('_'),
                 None => lines.push("_".into()),
             }
-            lines.push(String::new());
-            let tabs: Vec<String> = (0..app.pane_count())
-                .map(|i| {
-                    format!(
-                        "{}{} {}",
-                        if i == *target { "▸ " } else { "" },
-                        i + 1,
-                        app.harness_at(i).unwrap_or("agent")
-                    )
-                })
-                .collect();
-            lines.push(format!("{}     {}", word("ask.send_to"), tabs.join("    ")));
+            lines.extend([String::new(), word("ask.send_to").into(), String::new()]);
             lines
         }
         Modal::Confirm(p) => {
@@ -223,6 +212,9 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             word("act.cancel").into(),
         ],
         Modal::StartAgent { .. } => app.fresh_starts().iter().map(|c| c.label.clone()).collect(),
+        Modal::Ask { .. } => (0..app.pane_count())
+            .map(|i| app.harness_at(i).unwrap_or("agent").to_string())
+            .collect(),
         Modal::PickUp { harness, session, .. } => crate::app::pick_up_choices(session.as_ref())
             .into_iter()
             .map(|c| match (c, session) {
@@ -268,8 +260,12 @@ pub(super) fn panel(app: &App, area: Rect) -> Paragraph<'static> {
             th.label(),
         ));
     }
+    let at = match modal {
+        Modal::Ask { target, .. } => *target,
+        _ => app.modal_choice,
+    };
     for (i, choice) in choices.iter().enumerate() {
-        let picked = i == app.modal_choice;
+        let picked = i == at;
         drawn.push(Line::styled(
             format!("   {} {choice}", if picked { "▸" } else { " " }),
             if picked { th.selected() } else { th.label() },

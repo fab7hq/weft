@@ -236,10 +236,11 @@ impl App {
                     text.pop();
                     self.modal = Some(Modal::Ask { text, target, follows });
                 }
-                event::KeyCode::Tab => {
-                    if self.pane_count() > 0 {
-                        target = (target + 1) % self.pane_count();
-                    }
+                // SEND TO is a list, picked as Remote's devices are.
+                event::KeyCode::Up | event::KeyCode::Down => {
+                    let n = self.pane_count().max(1);
+                    let step = if key.code == event::KeyCode::Up { n - 1 } else { 1 };
+                    target = (target + step) % n;
                     self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 event::KeyCode::Char(c) => {

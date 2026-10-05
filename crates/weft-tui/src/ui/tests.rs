@@ -1051,3 +1051,11 @@ fn focus_moves_the_frames_state() {
     let agent = screen(&mut a, 120, 32);
     assert!(agent.contains('┏') && !agent.contains('┌'), "{agent}");
 }
+
+/// T4.1: Ask, empty, with SEND TO a list of the agents.
+#[test]
+fn atlas_t4_1_ask_empty() {
+    let mut a = atlas();
+    press(&mut a, KeyCode::Char('a'));
+    expect_screen("atlas_t4_1", &screen(&mut a, 120, 32));
+}

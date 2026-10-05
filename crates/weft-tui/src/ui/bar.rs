@@ -37,7 +37,10 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             return plain(" [↑↓] PICK   [←] CANCEL");
         }
         Some(Modal::StartAgent { .. }) => return plain(" [↑↓] PICK   [←] CANCEL"),
-        Some(Modal::Ask { .. }) => return plain(&format!(" {}", key_by("←", "act.cancel"))),
+        Some(Modal::Ask { .. }) => {
+            let (to, ask) = (word("ask.send_to"), key_by("Enter", "act.ask"));
+            return plain(&format!(" [↑↓] {to}   {ask}   {}", key_by("←", "act.cancel")));
+        }
         Some(Modal::RingFrame) => {
             // Whether [P]ROCEED has anything to run: nothing is offered that
             // would do nothing.
