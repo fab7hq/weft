@@ -169,6 +169,7 @@ impl Project {
                     "harness": harness,
                     "title": title,
                     "turn": self.turn(i),
+                    "running": p.running,
                     "since": self.since.get(&p.pane).map_or(0, |(_, at)| *at),
                 })
             })
@@ -433,6 +434,11 @@ mod tests {
         assert!(p.heard(&Event::Units { units, records: json!({}) }));
         assert_eq!(works(&p.tree())[0], ("fix login".into(), "evaled".into()));
         assert!(p.heard(&Event::Exited { pane: 4 }));
+        assert_eq!(
+            p.rows()[0]["running"],
+            false,
+            "a device tells an agent that ended from a turn that did"
+        );
         let claude = &p.tree()["harnesses"][0];
         assert_eq!(
             (claude["running"].clone(), claude["agent"].clone(), claude["turn"].clone()),
