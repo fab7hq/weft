@@ -106,6 +106,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.act.keys", "Keys"),
     ("web.agent.back", "Back to the tree"),
     ("web.bar.into", "into {harness}"),
+    ("web.bar.answered", "Answered on the machine"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     (

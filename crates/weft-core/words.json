@@ -54,6 +54,7 @@
   "turn.working": "working",
   "web.act.keys": "Keys",
   "web.agent.back": "Back to the tree",
+  "web.bar.answered": "Answered on the machine",
   "web.bar.into": "into {harness}",
   "web.start.none": "No harness is set up for RingFrame yet. [U]PDATE on {machine} sets one up.",
   "web.start.pick_one": "PICK ONE",
