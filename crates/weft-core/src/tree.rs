@@ -152,15 +152,27 @@ impl TurnWord {
     }
 }
 
-/// Why an act cannot run: a `words` key, and the harness its sentence names.
+/// Why an act cannot run: a `words` key, and the harness and the work its
+/// sentence names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Why {
     pub key: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 impl Why {
+    pub fn new(key: &'static str) -> Self {
+        Why { key, harness: None, title: None }
+    }
+
+    /// A why-not about a work: its sentence may name the work and its harness.
+    pub fn about(key: &'static str, unit: &Unit) -> Self {
+        Why { key, harness: Some(unit.harness.clone()), title: Some(unit.title.clone()) }
+    }
+
     /// Why an act going to this harness cannot run, if it cannot.
     pub fn not_ready(state: Readiness, harness: &str) -> Option<Self> {
         let (key, named) = match state {
@@ -169,11 +181,15 @@ impl Why {
             Readiness::Missing(Gap::Marketplace | Gap::Plugin) => ("why.not_set_up", true),
             Readiness::Unknown => ("why.cannot_ask", true),
         };
-        Some(Why { key, harness: named.then(|| harness.to_string()) })
+        Some(Why { key, harness: named.then(|| harness.to_string()), title: None })
     }
 
     pub fn say(&self) -> String {
-        crate::words::say(self.key, self.harness.as_deref().unwrap_or_default())
+        let named = |v: &Option<String>| v.clone().unwrap_or_default();
+        crate::words::fill(
+            self.key,
+            &[("harness", &named(&self.harness)), ("title", &named(&self.title))],
+        )
     }
 }
 
@@ -437,7 +453,7 @@ mod tests {
             let t = build(&u, &p, &a, &s, &codex_only, OPEN);
             assert_eq!(t.harnesses[0].works[0].eval, None, "claude's work is ready");
             let w = &t.harnesses[1].works[0];
-            let want = Why { key, harness: named.then(|| "codex".to_string()) };
+            let want = Why { key, harness: named.then(|| "codex".to_string()), title: None };
             assert_eq!((w.eval.as_ref(), w.seal.as_ref()), (Some(&want), Some(&want)));
         }
         let w = &build(&u, &p, &a, &s, &|_| Readiness::Missing(Gap::Plugin), OPEN).harnesses[1]

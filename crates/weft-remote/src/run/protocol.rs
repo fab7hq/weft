@@ -15,7 +15,7 @@ const HISTORY: u64 = 2_000;
 const ENTER_AFTER: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// Why a request was refused, for the app.
-type Refusal = (&'static str, String);
+use crate::agents::Refusal;
 
 impl Remote {
     pub(super) fn request(&mut self, conn: u64, m: &Value) {
@@ -249,32 +249,21 @@ impl Remote {
 
     // --- acts and pendings ---------------------------------------------------
 
-    /// Ask, Eval or Seal: each becomes a pending the person answers.
+    /// Ask to an agent, or Eval, Seal, Proceed or Follow up on a work: each
+    /// becomes a pending the person answers.
     fn act_on(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        let (at, pane) = self.agent(m)?;
-        let unit = self.projects[at]
-            .as_ref()
-            .and_then(|o| o.agents.unit_for(pane))
-            .map(|u| u.ask_id.clone());
-        let call = match m["act"].as_str() {
-            Some("ask") => {
-                let text = m["text"].as_str().filter(|t| !t.trim().is_empty());
-                let text = text.ok_or(("bad_request", "an Ask needs its words".to_string()))?;
-                Call::Act {
-                    act: "ask".into(),
-                    unit: None,
-                    pane: Some(pane),
-                    text: Some(text.into()),
-                }
+        let (at, pane) = match m["act"].as_str() {
+            Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
+            _ => {
+                let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
+                let at = self
+                    .projects
+                    .iter()
+                    .position(|o| o.as_ref().is_some_and(|o| o.agents.has_unit(id)));
+                (at.ok_or(("no_unit", format!("{id} is not on the board")))?, None)
             }
-            Some(act @ ("eval" | "seal")) => {
-                let unit =
-                    unit.ok_or(("no_unit", "this agent has no open Ask to check".to_string()))?;
-                let act = if act == "eval" { "check" } else { "decide" };
-                Call::Act { act: act.into(), unit: Some(unit), pane: None, text: None }
-            }
-            _ => return Err(("not_allowed", "the acts are ask, eval and seal".into())),
         };
+        let call = self.projects[at].as_ref().expect("an open project").agents.act(m, pane)?;
         self.ask(at, call, conn, req, Carries::Pending)
     }
 

@@ -8,6 +8,7 @@
 use crate::ledger::{Sent, Unit};
 use crate::readiness::Readiness;
 use crate::routing::Routing;
+use crate::tree::Why;
 
 /// Something the interface offers a key for. One home for whether it can be
 /// used right now, and for the sentence that says what would make it work.
@@ -199,18 +200,16 @@ impl Board<'_> {
 
     /// Everything RingFrame owns waits on the harness the act goes to.
     /// Readiness is per harness: one may be ready while another is not.
-    pub fn not_ready(&self, act: Act) -> Option<crate::tree::Why> {
+    pub fn not_ready(&self, act: Act) -> Option<Why> {
         if !matches!(act, Act::Ask | Act::Proceed | Act::Eval | Act::Seal | Act::FollowUp) {
             return None;
         }
         let name = self.deciding_harness(act)?;
-        crate::tree::Why::not_ready(self.readiness(&name), &name)
+        Why::not_ready(self.readiness(&name), &name)
     }
 
     /// Why an action is not available now, as one sentence. `None` means it is.
     pub fn unavailable(&self, act: Act) -> Option<String> {
-        use crate::words::{fill, say, word};
-        let no_pane = |harness: &str| say("why.no_pane", harness);
         // An Ask this workspace could never finish is refused here rather
         // than after a turn spent composing one.
         if matches!(act, Act::Ask | Act::FollowUp)
@@ -218,13 +217,21 @@ impl Board<'_> {
         {
             return Some(gap.to_string());
         }
-        if let Some(why) = self.not_ready(act) {
-            let mut said = why.say();
-            if why.key == "why.not_set_up" {
-                said.push_str(" [U]PDATE sets it up.");
-            }
-            return Some(said);
+        let why = self.why_not(act)?;
+        let mut said = why.say();
+        if why.key == "why.not_set_up" {
+            said.push_str(" [U]PDATE sets it up.");
         }
+        Some(said)
+    }
+
+    /// Why an action is not available now, as a `words` key and what its
+    /// sentence names. `None` means it is.
+    pub fn why_not(&self, act: Act) -> Option<Why> {
+        if let Some(why) = self.not_ready(act) {
+            return Some(why);
+        }
+        let why = |key| Some(Why::new(key));
         match act {
             Act::NewAgent
             | Act::ToggleSidebar
@@ -235,35 +242,51 @@ impl Board<'_> {
             | Act::Turbo
             | Act::Help
             | Act::Quit => None,
-            Act::Ask => self.panes.is_empty().then(|| word("why.start_an_agent").to_string()),
+            Act::Ask => {
+                if self.panes.is_empty() {
+                    why("why.start_an_agent")
+                } else {
+                    None
+                }
+            }
             Act::FollowUp => match self.selected_unit() {
-                None => Some(word("why.nothing_asked").into()),
-                Some(_) if self.panes.is_empty() => Some(word("why.start_an_agent").into()),
+                None => why("why.nothing_asked"),
+                Some(_) if self.panes.is_empty() => why("why.start_an_agent"),
                 Some(_) => None,
             },
             // [P] sends an Ask's prompt that is waiting to be sent, and does
             // nothing else. Once it went, what happens next is the person's
             // workflow: the one thing offered is a follow-up.
             Act::Proceed => match self.selected_unit() {
-                None => Some(word("why.nothing_asked").into()),
-                Some(u) => match next_step(u) {
-                    Some(Next::Send | Next::Confirm) => {
-                        self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
+                None => why("why.nothing_asked"),
+                Some(u) => {
+                    let about = |key| Some(Why::about(key, u));
+                    match next_step(u) {
+                        Some(Next::Send | Next::Confirm) => self
+                            .pane_for(&u.harness)
+                            .is_none()
+                            .then(|| Why::about("why.no_pane", u)),
+                        None if !u.is_open() => about("why.closed"),
+                        None if u.requested_only => about("why.composing"),
+                        _ => about("why.nothing_to_send"),
                     }
-                    None if !u.is_open() => Some(fill("why.closed", &[("title", &u.title)])),
-                    None if u.requested_only => {
-                        Some(fill("why.composing", &[("title", &u.title), ("harness", &u.harness)]))
-                    }
-                    _ => Some(fill("why.nothing_to_send", &[("title", &u.title)])),
-                },
+                }
             },
             Act::Detail => {
-                self.selected_unit().is_none().then(|| word("why.nothing_asked").to_string())
+                if self.selected_unit().is_none() {
+                    why("why.nothing_asked")
+                } else {
+                    None
+                }
             }
             // Where it goes is the project's to say, and it needs no pane there:
             // the daemon types into an idle one of that harness, or starts one.
             Act::Eval | Act::Seal => {
-                self.selected_unit().is_none().then(|| word("why.nothing_to_work_on").into())
+                if self.selected_unit().is_none() {
+                    why("why.nothing_to_work_on")
+                } else {
+                    None
+                }
             }
         }
     }

@@ -136,7 +136,9 @@ pub fn allowed(call: &Call) -> bool {
         Call::Open { raw, .. } => !raw,
         Call::Attach { form, .. } => form == "screen" || form == "none",
         Call::Input { .. } | Call::Resize { .. } => true,
-        Call::Act { act, .. } => matches!(act.as_str(), "ask" | "check" | "decide"),
+        Call::Act { act, .. } => {
+            matches!(act.as_str(), "ask" | "follow_up" | "send" | "check" | "decide")
+        }
         Call::Resolve { force, .. } => !force,
         Call::Read { what, .. } => what == "eval" || what == "history",
         _ => false,
@@ -179,8 +181,6 @@ mod tests {
             Call::Shutdown,
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Resolve { pending: "pnd_1".into(), yes: true, force: true },
-            Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
-            Call::Act { act: "follow_up".into(), unit: None, pane: Some(0), text: None },
             Call::Read { what: "wording".into(), unit: "ask_1".into(), pane: None, lines: None },
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
@@ -197,6 +197,13 @@ mod tests {
             Call::Act { act: "ask".into(), unit: None, pane: Some(0), text: Some("hi".into()) },
             Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None },
             Call::Act { act: "decide".into(), unit: Some("ask_1".into()), pane: None, text: None },
+            Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
+            Call::Act {
+                act: "follow_up".into(),
+                unit: Some("ask_1".into()),
+                pane: Some(0),
+                text: Some("more".into()),
+            },
             Call::Resolve { pending: "pnd_1".into(), yes: true, force: false },
             Call::Read {
                 what: "history".into(),

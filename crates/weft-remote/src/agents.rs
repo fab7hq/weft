@@ -8,12 +8,15 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use weft_core::board::PaneInfo;
+use weft_core::board::{Act, Board, PaneInfo};
 use weft_core::ledger::Unit;
 use weft_core::readiness::Readiness;
 use weft_core::routing::Routing;
 use weft_core::turns::{Session, Turn};
-use weft_proto::Event;
+use weft_proto::{Call, Event};
+
+/// Why a device's message was refused: a code, and a sentence.
+pub type Refusal = (&'static str, String);
 
 /// The first 12 hex digits of the SHA-256 of a project's path.
 pub fn project_key(path: &Path) -> String {
@@ -209,6 +212,65 @@ impl Project {
         row
     }
 
+    /// Whether an Ask with this id is on this project's board.
+    pub fn has_unit(&self, id: &str) -> bool {
+        self.units.iter().any(|u| u.ask_id == id)
+    }
+
+    /// What a device's act asks the daemon (remote.md §6b): an Ask to the
+    /// agent it names (`pane`), or an act on a work (`unit`). When the act
+    /// cannot run, the refusal's code is the why-not's `words` key.
+    pub fn act(&self, m: &Value, pane: Option<u32>) -> Result<Call, Refusal> {
+        let (act, daemon) = match m["act"].as_str() {
+            Some("ask") => (Act::Ask, "ask"),
+            Some("follow_up") => (Act::FollowUp, "follow_up"),
+            Some("proceed") => (Act::Proceed, "send"),
+            Some("eval") => (Act::Eval, "check"),
+            Some("seal") => (Act::Seal, "decide"),
+            _ => {
+                return Err((
+                    "not_allowed",
+                    "the acts are ask, eval, seal, proceed and follow_up".into(),
+                ));
+            }
+        };
+        let asking = matches!(act, Act::Ask | Act::FollowUp);
+        let text = m["text"].as_str().filter(|t| !t.trim().is_empty()).map(str::to_string);
+        if asking && text.is_none() {
+            return Err(("bad_request", "an Ask needs its words".into()));
+        }
+        let unit = match (act, m["unit"].as_str()) {
+            (Act::Ask, _) => None,
+            (_, Some(id)) => Some(
+                self.units
+                    .iter()
+                    .position(|u| u.ask_id == id)
+                    .ok_or(("no_unit", format!("{id} is not on the board")))?,
+            ),
+            (_, None) => return Err(("bad_request", "an act on a work names its unit".into())),
+        };
+        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
+        let board = Board {
+            units: &self.units,
+            selected: unit.unwrap_or(usize::MAX),
+            panes: &self.panes,
+            focused: pane.and_then(|p| self.panes.iter().position(|x| x.pane == p)).unwrap_or(0),
+            readiness: &ready,
+            routing: &self.routing,
+            workspace_gap: None,
+            agents: &self.turns,
+        };
+        if let Some(why) = board.why_not(act) {
+            return Err((why.key, why.say()));
+        }
+        Ok(Call::Act {
+            act: daemon.into(),
+            unit: unit.map(|i| self.units[i].ask_id.clone()),
+            pane: pane.filter(|_| asking),
+            text: text.filter(|_| asking),
+        })
+    }
+
     /// Each pane's id on the wire and its turn, for push.
     pub fn turns(&self) -> Vec<(String, &'static str)> {
         (0..self.panes.len())
@@ -348,5 +410,69 @@ mod tests {
         let tree = opened().tree();
         assert!(tree.get("folded").is_none() && tree["harnesses"][0].get("folded").is_none());
         assert_eq!(works(&tree).len(), 1, "nothing is folded on the wire");
+    }
+
+    fn act(p: &Project, m: Value) -> Result<Call, Refusal> {
+        p.act(&m, Some(4))
+    }
+
+    fn call(act: &str, unit: Option<&str>, pane: Option<u32>, text: Option<&str>) -> Call {
+        Call::Act {
+            act: act.into(),
+            unit: unit.map(str::to_string),
+            pane,
+            text: text.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn each_act_makes_its_daemon_call() {
+        let mut p = opened();
+        let mut waiting = unit("ask_2", "telemetry");
+        waiting.sent = weft_core::ledger::Sent::ReadyToSend;
+        p.units.push(waiting);
+        for (m, want) in [
+            (
+                json!({"act": "ask", "text": "add /health"}),
+                call("ask", None, Some(4), Some("add /health")),
+            ),
+            (
+                json!({"act": "follow_up", "unit": "ask_1", "text": "and a test"}),
+                call("follow_up", Some("ask_1"), Some(4), Some("and a test")),
+            ),
+            (json!({"act": "eval", "unit": "ask_1"}), call("check", Some("ask_1"), None, None)),
+            (json!({"act": "seal", "unit": "ask_1"}), call("decide", Some("ask_1"), None, None)),
+            (json!({"act": "proceed", "unit": "ask_2"}), call("send", Some("ask_2"), None, None)),
+        ] {
+            assert_eq!(act(&p, m.clone()), Ok(want), "{m}");
+        }
+    }
+
+    #[test]
+    fn an_act_that_cannot_run_is_refused_with_its_why_not() {
+        let mut p = opened();
+        let refused = |p: &Project, m: Value| act(p, m).unwrap_err();
+        assert_eq!(
+            refused(&p, json!({"act": "proceed", "unit": "ask_1"})),
+            (
+                "why.nothing_to_send",
+                "fix login has nothing to send. [F] FOLLOW UP asks for more.".into()
+            )
+        );
+        assert_eq!(refused(&p, json!({"act": "eval", "unit": "ask_9"})).0, "no_unit");
+        assert_eq!(refused(&p, json!({"act": "seal"})).0, "bad_request");
+        assert_eq!(refused(&p, json!({"act": "ask", "text": " "})).0, "bad_request");
+        assert_eq!(refused(&p, json!({"act": "start"})).0, "not_allowed");
+        assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
+        for m in [
+            json!({"act": "eval", "unit": "ask_1"}),
+            json!({"act": "seal", "unit": "ask_1"}),
+            json!({"act": "ask", "text": "x"}),
+        ] {
+            assert_eq!(
+                refused(&p, m),
+                ("why.not_set_up", "claude is not set up for RingFrame.".into())
+            );
+        }
     }
 }
