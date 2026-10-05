@@ -854,7 +854,10 @@ fn the_shared_words_are_spelled_only_in_words() {
         }
         let text = std::fs::read_to_string(&path).unwrap();
         for literal in text.split('"').skip(1).step_by(2) {
-            for (key, word) in weft_core::words::WORDS {
+            // `web.*` is the web app's own wording, not the TUI's.
+            for (key, word) in
+                weft_core::words::WORDS.iter().filter(|(k, _)| !k.starts_with("web."))
+            {
                 // A sentence is found inside a longer string, a word or two
                 // only as a string of its own.
                 let spelled = word.split(['{', '}']).step_by(2).any(|part| {

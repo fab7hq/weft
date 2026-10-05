@@ -372,7 +372,7 @@ fn starts(
         }
         out.push(serde_json::json!({
             "harness": h.name,
-            "label": format!("{} · start fresh", h.name),
+            "label": weft_core::words::say("start.fresh", &h.name),
             "spec": h.spec(),
             "session": serde_json::Value::Null,
         }));

@@ -1336,7 +1336,7 @@ impl App {
         if self.fresh_starts().is_empty() {
             // Only a harness set up for RingFrame is offered: SET UP is where
             // the others are.
-            self.say("No harness is set up for RingFrame yet. [U]PDATE sets one up.");
+            self.say(weft_core::words::word("start.none"));
             return;
         }
         self.modal = Some(Modal::StartAgent { choice: 0 });

@@ -31,6 +31,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("tree.written_down", "Nothing is written down until it is set up."),
     ("start.title", "Start an agent"),
+    ("start.fresh", "{harness} · start fresh"),
+    ("start.none", "No harness is set up for RingFrame yet. [U]PDATE sets one up."),
     // The acts, as a bar or a button names them.
     ("act.ask", "Ask"),
     ("act.eval", "Eval"),
@@ -99,6 +101,12 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
     ("web.why.start_an_agent", "Start an agent first — on {machine}."),
     ("web.why.set_up_on", "Set it up in Weft on {machine}: U."),
+    ("web.start.runs_on", "It runs on {machine}, with your own settings."),
+    ("web.start.pick_one", "PICK ONE"),
+    (
+        "web.start.none",
+        "No harness is set up for RingFrame yet. [U]PDATE on {machine} sets one up.",
+    ),
 ];
 
 /// The word for a key. A key the table does not hold is a bug in the caller,
