@@ -11,6 +11,7 @@ use crate::ledger::Unit;
 use crate::readiness::{Gap, Readiness};
 use crate::routing::Routing;
 use crate::turns::{Session, Turn};
+use crate::workspace::Needs;
 
 /// What one project's rows are built from. Borrowed: the client owns it.
 pub struct Facts<'a> {
@@ -25,6 +26,9 @@ pub struct Facts<'a> {
     pub title: &'a dyn Fn(&str) -> Option<String>,
     pub readiness: &'a dyn Fn(&str) -> Readiness,
     pub routing: &'a Routing,
+    /// What the project still needs before RingFrame is set up in it, if
+    /// it is not.
+    pub setup: Option<Needs>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -37,6 +41,8 @@ pub struct Project {
     pub needs: usize,
     /// `None` when an Ask can be made here, else why not.
     pub ask: Option<Why>,
+    /// `None` when RingFrame is set up here, else the checklist's facts.
+    pub setup: Option<Needs>,
     #[serde(skip)]
     pub folded: bool,
     pub harnesses: Vec<Harness>,
@@ -217,6 +223,7 @@ fn project(at: usize, f: &Facts, folded: &dyn Fn(usize, Option<&str>) -> bool) -
             agents: f.agents,
         }
         .why_not(Act::Ask),
+        setup: f.setup,
         folded: folded(at, None),
         harnesses: Vec::new(),
     };
@@ -372,6 +379,7 @@ mod tests {
             title: &title,
             readiness: ready,
             routing: &routing,
+            setup: None,
         };
         rows(&[facts], folded).remove(0)
     }
@@ -502,6 +510,7 @@ mod tests {
         let t = build(&u, &p, &a, &s, &|_| Readiness::Missing(Gap::Cli), OPEN);
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["project"], "weft");
+        assert_eq!(v["setup"], serde_json::Value::Null, "set up: nothing to say");
         let claude = &v["harnesses"][0];
         assert_eq!(claude["title"], "Claude Code");
         assert_eq!(claude["turn"], "waiting");
@@ -512,5 +521,28 @@ mod tests {
                 "seal": {"key": "why.no_ringframe"}})
         );
         assert!(claude.get("pane").is_none() && claude.get("folded").is_none());
+    }
+
+    #[test]
+    fn a_project_not_set_up_carries_what_it_still_needs() {
+        let routing = Routing::default();
+        let needs = crate::workspace::Needs::refused(Some("workspace.no_git"));
+        let facts = Facts {
+            name: "test",
+            units: &[],
+            panes: &[],
+            agents: &[],
+            sessions: &[],
+            title: &|_| None,
+            readiness: READY,
+            routing: &routing,
+            setup: Some(needs),
+        };
+        let t = rows(&[facts], OPEN).remove(0);
+        assert_eq!(t.setup, Some(needs));
+        assert_eq!(
+            serde_json::to_value(&t).unwrap()["setup"],
+            serde_json::json!({"ringframe": true, "git": false, "commit": false})
+        );
     }
 }

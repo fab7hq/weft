@@ -15,6 +15,7 @@ use weft_core::readiness::Readiness;
 use weft_core::routing::Routing;
 use weft_core::sessions::Recorded;
 use weft_core::turns::{Session, Turn};
+use weft_core::workspace::Needs;
 use weft_proto::{Call, Event};
 
 /// Why a device's message was refused: a code, and a sentence.
@@ -56,6 +57,9 @@ pub struct Project {
     resumes: Vec<(String, Recorded)>,
     /// The harness files, as the daemon read them: how to resume a session.
     files: Harnesses,
+    /// What the project still needs before RingFrame is set up in it, if it
+    /// is not.
+    setup: Option<Needs>,
 }
 
 impl Project {
@@ -87,6 +91,7 @@ impl Project {
             starts: Vec::new(),
             resumes: Vec::new(),
             files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
+            setup: serde_json::from_value(answer["setup"].clone()).unwrap_or_default(),
         };
         p.stamp(now());
         p
@@ -118,6 +123,7 @@ impl Project {
             }
             Event::Units { units, .. } => self.units = units.clone(),
             Event::Readiness { states } => self.readiness = states.clone(),
+            Event::Workspace { setup, .. } => self.setup = *setup,
             _ => return false,
         }
         self.stamp(now());
@@ -199,6 +205,7 @@ impl Project {
             title: &title,
             readiness: &ready,
             routing: &self.routing,
+            setup: self.setup,
         };
         let project = weft_core::tree::rows(&[facts], &|_, _| false).remove(0);
         let mut row = serde_json::to_value(&project).unwrap_or_default();
@@ -519,6 +526,21 @@ mod tests {
         let work = &p.tree()["harnesses"][0]["works"][0];
         assert_eq!(work["eval"], json!({"key": "why.not_set_up", "harness": "claude"}));
         assert_eq!(work["seal"], work["eval"]);
+    }
+
+    #[test]
+    fn the_tree_says_what_a_project_needs_until_ringframe_is_set_up_in_it() {
+        use weft_core::workspace::Needs;
+        assert_eq!(opened().tree()["setup"], Value::Null, "set up");
+        let answer = json!({"panes": [], "units": [], "readiness": {},
+            "setup": {"ringframe": true, "git": false, "commit": false}});
+        let mut p = Project::opened(Path::new("/work/test"), &answer);
+        assert_eq!(p.tree()["setup"], answer["setup"]);
+        let no_commit = Needs::refused(Some("workspace.no_commit"));
+        assert!(p.heard(&Event::Workspace { setup: Some(no_commit), gap: None }));
+        assert_eq!(p.tree()["setup"], json!({"ringframe": true, "git": true, "commit": false}));
+        assert!(p.heard(&Event::Workspace { setup: None, gap: None }));
+        assert_eq!(p.tree()["setup"], Value::Null, "set up as soon as it all held");
     }
 
     #[test]

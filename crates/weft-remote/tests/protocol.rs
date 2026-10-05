@@ -61,6 +61,7 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     let tree = &welcome["tree"];
     assert_eq!(tree.as_array().map(Vec::len), Some(1), "{tree}");
     assert_eq!((tree[0]["project"].clone(), tree[0]["open"].clone()), (json!("work"), json!(1)));
+    assert!(tree[0].get("setup").is_some(), "whether RingFrame is set up here: {tree}");
     let sh = &tree[0]["harnesses"][0];
     assert_eq!(
         (sh["harness"].clone(), sh["agent"].clone(), sh["running"].clone()),

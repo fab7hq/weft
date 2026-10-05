@@ -217,6 +217,12 @@ pub enum Event {
     Setup {
         view: Value,
     },
+    /// Whether RingFrame is set up in this project, what it still needs if
+    /// not, and why an Ask could not finish here, asked again with it.
+    Workspace {
+        setup: Option<weft_core::workspace::Needs>,
+        gap: Option<String>,
+    },
     /// `weft remote`'s view, as it last published it.
     Remote {
         view: Value,
@@ -480,6 +486,7 @@ impl Event {
             Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
+            Event::Workspace { setup, gap } => ("workspace", json!({"setup": setup, "gap": gap})),
             Event::Agents { panes, sessions } => {
                 ("agents", json!({"panes": panes, "sessions": sessions}))
             }
@@ -529,6 +536,10 @@ impl Event {
             }
             "readiness" => Event::Readiness { states: p.get("states")?.clone() },
             "setup" => Event::Setup { view: p.get("view")?.clone() },
+            "workspace" => Event::Workspace {
+                setup: serde_json::from_value(p.get("setup")?.clone()).ok()?,
+                gap: s("gap"),
+            },
             "agents" => Event::Agents {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
                 sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
@@ -872,6 +883,11 @@ mod tests {
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },
             Event::Setup { view: json!({"rows": []}) },
+            Event::Workspace {
+                setup: Some(weft_core::workspace::Needs::refused(Some("workspace.no_commit"))),
+                gap: Some("no commit yet".into()),
+            },
+            Event::Workspace { setup: None, gap: None },
             Event::Agents {
                 panes: vec![Some(Turn::TurnEnded), None],
                 sessions: vec![Session {

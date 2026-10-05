@@ -124,11 +124,6 @@ impl Session {
         resumed: Option<String>,
     ) -> Option<u32> {
         let p = self.projects.get_mut(project)?;
-        // The agent's hooks write only into a workspace that exists. Without
-        // RingFrame, or outside Git, `init` refuses and the hooks record nothing.
-        if !p.root.join(".fab7/rf").is_dir() {
-            let _ = crate::ringframe::init(self.outside.as_ref(), &p.root);
-        }
         let cwd = p.root.to_string_lossy().into_owned();
         // Turbo mode, when this project's config turns it on: the harness's
         // own flags, after the person's own.

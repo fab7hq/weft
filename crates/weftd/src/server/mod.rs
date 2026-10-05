@@ -47,6 +47,10 @@ const HISTORY_MAX: usize = 2_000;
 /// At most one `presence` in this long.
 const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How often a project RingFrame is not set up in is asked again, while a
+/// person works through its checklist.
+const RECHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+
 struct Slot {
     /// Its id, which is given when it starts and never changed (closing
     /// another pane renumbers nothing a client holds), its harness and
@@ -144,6 +148,11 @@ struct Project {
     /// last told of it.
     turns: crate::turns::Turns,
     agents: Option<Agents>,
+    /// What this project still needs before RingFrame is set up in it, if it
+    /// is not; when that was last asked, and whether it is being asked now.
+    setup: Option<weft_core::workspace::Needs>,
+    asked: std::time::Instant,
+    asking: bool,
 }
 
 impl Project {
@@ -288,6 +297,12 @@ enum Wake {
         harness: String,
         program: String,
     },
+    /// RingFrame was asked again to set a project up, and this is what it
+    /// still needs, if anything.
+    Workspace {
+        project: usize,
+        setup: Option<weft_core::workspace::Needs>,
+    },
 }
 
 pub struct Session {
@@ -396,13 +411,13 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
 }
 
 /// Whether an Ask could finish here at all, asked of RingFrame.
-fn workspace_gap(out: &dyn crate::outside::Outside, root: &Path) -> serde_json::Value {
+fn workspace_gap(out: &dyn crate::outside::Outside, root: &Path) -> Option<String> {
     match crate::ringframe::ask_preflight(out, root) {
-        Ok(()) => serde_json::Value::Null,
+        Ok(()) => None,
         // Not installed is said elsewhere, once.
-        Err(crate::ringframe::Error::NotInstalled) => serde_json::Value::Null,
+        Err(crate::ringframe::Error::NotInstalled) => None,
         Err(crate::ringframe::Error::Refused { message, .. }) => {
-            serde_json::json!(weft_core::offers::first_line(&message))
+            Some(weft_core::offers::first_line(&message).to_string())
         }
     }
 }
@@ -601,6 +616,7 @@ impl Session {
                             .with_programs(|n| (n == harness).then(|| program.clone()));
                     }
                 }
+                Wake::Workspace { project, setup } => self.set_up(project, setup),
             }
         }
         Ok(())
@@ -959,6 +975,7 @@ impl Session {
     /// state has.
     fn follow_the_record(&mut self) {
         for at in 0..self.projects.len() {
+            self.recheck(at);
             self.type_what_started(at);
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
@@ -971,6 +988,35 @@ impl Session {
                 self.clients.broadcast(at, &Out::Agents { panes, sessions });
             }
         }
+    }
+
+    /// While RingFrame is not set up in a project, ask it again every few
+    /// seconds, off the run loop, so each line of the checklist turns as the
+    /// person fixes it, and the project is set up as soon as they all hold.
+    fn recheck(&mut self, at: usize) {
+        let p = &mut self.projects[at];
+        if p.setup.is_none() || p.asking || p.asked.elapsed() < RECHECK_EVERY {
+            return;
+        }
+        p.asking = true;
+        let (tx, out, root) = (self.tx.clone(), self.outside.clone(), p.root.clone());
+        std::thread::spawn(move || {
+            let setup = crate::ringframe::set_up(out.as_ref(), &root);
+            let _ = tx.send(Wake::Workspace { project: at, setup });
+        });
+    }
+
+    /// What RingFrame said when it was asked again: told to the project's
+    /// clients when it moved, with the Ask's gap asked again beside it.
+    fn set_up(&mut self, at: usize, setup: Option<weft_core::workspace::Needs>) {
+        let Some(p) = self.projects.get_mut(at) else { return };
+        (p.asking, p.asked) = (false, std::time::Instant::now());
+        if p.setup == setup {
+            return;
+        }
+        p.setup = setup;
+        let gap = workspace_gap(self.outside.as_ref(), &p.root);
+        self.clients.broadcast(at, &Out::Workspace { setup, gap });
     }
 
     /// The projects open here, beside `config.toml`, for a window's picker.
@@ -1027,6 +1073,9 @@ impl Session {
                 let config = crate::routing::read_at(&self.config, &harnesses);
                 // Where the person said a harness's program is, when not on PATH.
                 let harnesses = harnesses.with_programs(|n| config.program(n).map(str::to_string));
+                // Set up for RingFrame on the way in, when it can be: the
+                // person is not asked, and the tree says what is missing.
+                let setup = crate::ringframe::set_up(self.outside.as_ref(), &root);
                 self.projects.push(Project {
                     opened: crate::turns::now_millis(),
                     routing: config.routing(&root),
@@ -1053,6 +1102,9 @@ impl Session {
                     harnesses,
                     unread,
                     agents: None,
+                    setup,
+                    asked: std::time::Instant::now(),
+                    asking: false,
                 });
                 let at = self.projects.len() - 1;
                 // A map a daemon before this one left names panes that are gone.
@@ -1135,6 +1187,8 @@ impl Session {
                     "unread": &self.projects[at].unread,
                     // Why this workspace could not finish an Ask, if it could not.
                     "gap": workspace_gap(self.outside.as_ref(), &self.projects[at].root),
+                    // What it still needs before RingFrame is set up in it.
+                    "setup": self.projects[at].setup,
                 })));
             }
             Call::Input { pane, bytes } => {

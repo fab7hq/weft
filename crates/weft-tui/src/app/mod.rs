@@ -327,9 +327,6 @@ pub struct App {
     /// One sentence saying why the key just pressed did nothing. Never a
     /// dialog: an unavailable action explains itself and stays on the bar.
     hint: Option<String>,
-    /// Whether the CLI that owns the record is installed. Asked once: it is a
-    /// property of the machine, not of the frame being drawn.
-    record_available: bool,
     /// Why this workspace could not finish an Ask, if it could not. Asked once
     /// for the same reason, and re-asked after an `[U]PDATE`.
     workspace_gap: Option<String>,
@@ -416,10 +413,10 @@ impl App {
         sess!(self).unrecorded.clone()
     }
 
-    /// Whether there is a `ringframe` to read a record from. Weft still runs
-    /// panes without one; it just has nothing to show on the board.
-    pub fn record_available(&self) -> bool {
-        self.record_available
+    /// What this project still needs before RingFrame is set up in it, if
+    /// it is not. Weft still runs panes meanwhile; nothing is recorded.
+    pub fn needs(&self) -> Option<weft_core::workspace::Needs> {
+        sess!(self).needs
     }
 
     /// The Eval record behind a check, as the daemon read it. Nothing opens a
@@ -600,6 +597,7 @@ impl App {
                 title: &titles[at],
                 readiness: &ready,
                 routing: &self.routing,
+                setup: p.session.needs,
             })
             .collect();
         let folded = |at: usize, harness: Option<&str>| match harness {
@@ -759,7 +757,6 @@ impl App {
             quit: false,
             stop_agents_on_quit: false,
             hint: None,
-            record_available: true,
             workspace_gap: None,
             readiness: std::collections::HashMap::new(),
             announced: std::collections::HashSet::new(),
@@ -1031,10 +1028,6 @@ impl App {
         }
         self.routing = sess!(self).routing.clone();
         self.workspace_gap = sess!(self).gap.clone();
-        // A missing CLI is the same answer for every harness, so any one of
-        // them saying so is the machine saying so.
-        self.record_available =
-            !sess!(self).readiness.as_object().is_some_and(|m| m.values().any(|v| v == "no_cli"));
         // A name in the routing file that is not a harness Weft knows. Said
         // once, on the way in: an act routed nowhere would otherwise just look
         // unavailable for no reason anyone could see.

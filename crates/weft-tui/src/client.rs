@@ -149,6 +149,9 @@ pub struct Session {
     /// What this project routes, and what an Ask could not finish here.
     pub routing: weft_core::routing::Routing,
     pub gap: Option<String>,
+    /// What this project still needs before RingFrame is set up in it, if
+    /// it is not, as the daemon last asked RingFrame.
+    pub needs: Option<weft_core::workspace::Needs>,
     /// What is waiting on a person, newest last. The daemon's, not this
     /// client's: another client may answer one of these.
     pub waiting: Vec<Staged>,
@@ -223,6 +226,7 @@ impl Session {
             boards: 0,
             routing: weft_core::routing::Routing::default(),
             gap: None,
+            needs: None,
             waiting: Vec::new(),
             told: None,
             turns: Vec::new(),
@@ -271,6 +275,8 @@ impl Session {
         session.notify = opened.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
         session.turbo = opened.get("turbo").and_then(|v| v.as_bool()).unwrap_or(false);
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
+        session.needs =
+            opened.get("setup").and_then(|v| serde_json::from_value(v.clone()).ok()).flatten();
         session.remote = opened.get("remote").filter(|v| !v.is_null()).cloned();
         if let Some(r) = opened.get("routing") {
             session.routing = weft_core::routing::Routing::opened(r);
@@ -430,6 +436,7 @@ impl Session {
                 }
                 Event::Readiness { states } => self.readiness = states,
                 Event::Setup { view } => self.setup = serde_json::from_value(view).ok(),
+                Event::Workspace { setup, gap } => (self.needs, self.gap) = (setup, gap),
                 Event::Agents { panes, sessions } => {
                     self.set_turns(panes);
                     self.turns = sessions;

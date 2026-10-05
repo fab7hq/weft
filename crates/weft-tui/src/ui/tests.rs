@@ -966,6 +966,62 @@ fn atlas_t9_7_start_an_agent() {
     expect_screen("atlas_t9_7", &screen(&mut a, 120, 32));
 }
 
+/// A project RingFrame refuses to set up, as `ringframe init` says why.
+fn not_set_up(scratch: &str, folder: &str, code: &str) -> App {
+    let said = format!(r#"{{"error": "{code}", "detail": "RingFrame's words"}}"#);
+    let world = crate::app::tests::set_up(|w| w.answers("ringframe", &["init"], 2, &said));
+    let (root, session) = crate::app::tests::test_session_at(scratch, folder, world);
+    let mut a = App::with_session(root, crate::keys::Toggle, session);
+    a.settle();
+    a
+}
+
+/// T2.4: RingFrame is not set up here yet; the checklist says what it needs.
+#[test]
+fn atlas_t2_4_ringframe_not_set_up_here() {
+    let mut a = not_set_up("weft-atlas", "weft", "workspace.no_git");
+    expect_screen("atlas_t2_4", &screen(&mut a, 120, 32));
+}
+
+/// Each line is RingFrame's answer, and the checklist goes as soon as the
+/// project is set up: Weft asks again while it is not.
+#[test]
+fn the_checklist_follows_ringframe_until_the_project_is_set_up() {
+    let mut a = not_set_up("weft-app-unset", "", "workspace.no_commit");
+    let drawn = screen(&mut a, 120, 32);
+    for line in [
+        "RingFrame is not set up here yet.",
+        "✓ ringframe is installed",
+        "✓ a Git repository",
+        "✗ a first commit   commit once",
+        "Weft sets it up as soon as these hold.",
+    ] {
+        assert!(drawn.contains(line), "{line}: {drawn}");
+    }
+    // RingFrame set it up: the workspace is there.
+    std::fs::create_dir_all(a.root().join(".fab7/rf")).expect("the workspace");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while a.needs().is_some() && std::time::Instant::now() < deadline {
+        let _ = a.turn(std::time::Duration::from_millis(100));
+    }
+    let drawn = screen(&mut a, 120, 32);
+    assert!(!drawn.contains("RingFrame is not set up here yet."), "{drawn}");
+    assert!(drawn.contains("Nothing asked for yet."), "{drawn}");
+}
+
+/// Under the agents already running, the checklist takes the place of what
+/// to ask; with no ringframe, its first line is the one to fix.
+#[test]
+fn the_checklist_sits_under_the_agents_and_names_a_missing_ringframe() {
+    let mut a = app();
+    a.session_mut().needs = Some(weft_core::workspace::Needs::refused(None));
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("✗ ringframe is installed"), "{drawn}");
+    assert!(drawn.contains("run Weft's installer again"), "{drawn}");
+    assert!(drawn.contains("? a Git repository"), "{drawn}");
+    assert!(!drawn.contains("[A]SK for something"), "{drawn}");
+}
+
 /// What claude shows in the Atlas's cards, typed into its pane's emulator.
 const CLAUDE_AT_WORK: &str = " ● Read(src/login.rs)\r\n ● Update(src/login.rs)\r\n   └  Updated src/login.rs with 12 additions and 3 removals\r\n ● Running cargo test…\r\n   test login::rejects_expired ... ok\r\n   test login::refreshes_token ... ok\r\n\r\n ✻ Thinking… (esc to interrupt)\r\n\r\n ❯\x1b[?25l";
 

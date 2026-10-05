@@ -26,3 +26,4 @@ pub mod sync;
 pub mod tree;
 pub mod turns;
 pub mod words;
+pub mod workspace;

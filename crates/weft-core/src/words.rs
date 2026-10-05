@@ -23,8 +23,15 @@ pub const WORDS: &[(&str, &str)] = &[
     ("title.needs_you", "needs you"),
     ("tree.not_running", "not running"),
     ("tree.nothing_asked", "Nothing asked for yet."),
-    ("tree.no_ringframe", "No ringframe on PATH, so there is no record to read."),
-    ("tree.install_ringframe", "The agents still run here. Install ringframe to see the work."),
+    // A project RingFrame is not set up in yet: what it still needs.
+    ("tree.not_set_up", "RingFrame is not set up here yet."),
+    ("tree.has_ringframe", "ringframe is installed"),
+    ("tree.ringframe_how", "run Weft's installer again"),
+    ("tree.has_git", "a Git repository"),
+    ("tree.git_how", "git init"),
+    ("tree.has_commit", "a first commit"),
+    ("tree.commit_how", "commit once"),
+    ("tree.sets_it_up", "Weft sets it up as soon as these hold."),
     (
         "tree.runs_either_way",
         "Your agent runs here either way. Nothing is written down until it is set up.",

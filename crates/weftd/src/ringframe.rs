@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::outside::Outside;
 
 use serde_json::Value;
+use weft_core::workspace::Needs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -58,11 +59,24 @@ fn json(out: &dyn Outside, project: &Path, args: &[&str]) -> Result<Value, Error
 /// RingFrame's own exit code for "refused by a rule", as its help documents.
 const REFUSED_BY_A_RULE: i32 = 2;
 
-/// Set the project up for RingFrame, as a person would with `ringframe init`.
-/// A hook never makes the workspace; Weft does, through the CLI, before it
-/// starts an agent whose hooks will record into it.
-pub fn init(out: &dyn Outside, project: &Path) -> Result<(), Error> {
-    run(out, project, &["init"]).map(|_| ())
+/// Set the project up for RingFrame, as a person would with `ringframe init`,
+/// and say what it still needs if RingFrame refused. A hook never makes the
+/// workspace; Weft does, through the CLI, when the project opens. One that is
+/// there already is not asked about again.
+pub fn set_up(outside: &dyn Outside, project: &Path) -> Option<Needs> {
+    if project.join(".fab7/rf").is_dir() {
+        return None;
+    }
+    let root = project.to_string_lossy();
+    let Ok(out) = outside.run("ringframe", &["--workspace", root.as_ref(), "init"], None) else {
+        return Some(Needs::refused(None));
+    };
+    if out.status.success() {
+        return None;
+    }
+    // The refusal is RingFrame's JSON on stdout, whatever it also says on stderr.
+    let said: Value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    Some(Needs::refused(Some(said["error"].as_str().unwrap_or_default())))
 }
 
 pub fn installed(out: &dyn Outside) -> bool {
@@ -233,6 +247,27 @@ mod tests {
         let got = run_program(&Fixed::new(), "ringframe", Path::new("/tmp"), &["ask", "list"]);
         assert_eq!(got, Err(Error::NotInstalled));
         assert!(!installed(&Fixed::new()));
+    }
+
+    #[test]
+    fn setting_a_project_up_says_what_ringframe_refused_with() {
+        use weft_core::workspace::Needs;
+        let dir = std::env::temp_dir().join(format!("weft-set-up-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let refusing = |code: &str| {
+            let said = format!(r#"{{"error": "{code}", "detail": "RingFrame's words"}}"#);
+            Fixed::new().answers("ringframe", &["init"], 2, &said)
+        };
+        assert_eq!(set_up(&Fixed::new(), &dir), Some(Needs::refused(None)), "no ringframe");
+        for code in ["workspace.no_git", "workspace.no_commit"] {
+            assert_eq!(set_up(&refusing(code), &dir), Some(Needs::refused(Some(code))));
+        }
+        let done = Fixed::new().answers("ringframe", &["init"], 0, "{}");
+        assert_eq!(set_up(&done, &dir), None, "set up");
+        // A workspace that is there is not set up again: nothing is asked.
+        std::fs::create_dir_all(dir.join(".fab7/rf")).unwrap();
+        assert_eq!(set_up(&Fixed::new(), &dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

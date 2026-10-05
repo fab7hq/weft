@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                [T]URBO OFF   NO AGENT RUNNING
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+                                            │
+ ▾ weft                                     │     ┃   ╹   ┃
+   RingFrame is not set up here yet.        │   ━╸┃╺━━━━━╸┃╺━    ╻   ╻  ┏━━╸  ┏━━╸  ╺┳╸
+   ✓ ringframe is installed                 │     ╹   ╻   ╹      ┃   ┃  ┃     ┃      ┃
+   ✗ a Git repository   git init            │   ━━━━━╸┃╺━━━━━•   ┃ ╻ ┃  ┣━━   ┣━━•   ┃
+   ✗ a first commit     commit once         │     ╻   ╹   ╻      ┃ ┃ ┃  ┃     ┃      ┃
+   Weft sets it up as soon as these hold.   │   ━╸┃╺━━━━━╸┃╺━    ┗━┻━┛  ┗━━╸  ╹      ╹
+                                            │     ┃   ╻   ┃
+                                            │
+                                            │   [N] starts an agent.
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ [A]SK   [E]VAL   [S]EAL                                                                                       [W]EFT ⌄
+ [H]ELP lists every key.

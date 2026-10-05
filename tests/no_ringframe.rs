@@ -1,5 +1,6 @@
 //! With no `ringframe` on `PATH`, panes still run and the board says plainly
-//! that there is no record to read. Gate W1, "prerequisite absent".
+//! what RingFrame needs before it can be set up here: ringframe first. Gate
+//! W1, "prerequisite absent".
 //!
 //! Its own test binary because it edits the process environment, which is
 //! global: one test, one process, no race with anything else.
@@ -13,7 +14,7 @@ use weft::protocol;
 use weft::server;
 
 #[test]
-fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
+fn without_the_cli_the_agents_still_run_and_the_board_says_what_is_missing() {
     // SAFETY: this binary holds exactly one test, so nothing else is reading
     // the environment while it is changed.
     unsafe {
@@ -32,27 +33,23 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
     while !protocol::is_live(&socket) && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let session = Session::connect(&socket, &root, 24, 80).expect("connect");
+    let session = Session::connect(&socket, &root, 32, 120).expect("connect");
     let mut app = App::with_session(root.clone(), Toggle, session);
+    // Whether the CLI is there is the daemon's answer: it asked RingFrame to
+    // set the project up as it opened, and nothing ran.
+    let needs = app.needs().expect("not set up");
+    assert!(!needs.ringframe, "no ringframe is on PATH here");
 
     app.add("codex", "/bin/cat").expect("a pane still runs");
     app.settle();
-    // What the harness is short of follows a moment after its pane.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while app.record_available() && std::time::Instant::now() < deadline {
-        app.turn(std::time::Duration::from_millis(20)).expect("a turn");
-    }
     assert_eq!(app.pane_count(), 1, "the runtime does not depend on the CLI");
-    // Whether the CLI is there is the daemon's answer, and it asks when a pane
-    // starts — because asking costs a process, and opening a project must not.
-    assert!(!app.record_available(), "no ringframe is on PATH here");
 
-    let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+    let mut terminal = Terminal::new(TestBackend::new(120, 32)).expect("terminal");
     terminal.draw(|frame| weft::ui::draw(frame, &mut app)).expect("draw");
     let buffer = terminal.backend().buffer().clone();
-    let drawn: String = (0..24)
+    let drawn: String = (0..32)
         .map(|y| {
-            (0..80)
+            (0..120)
                 .map(|x| buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "))
                 .collect::<String>()
         })
@@ -60,10 +57,10 @@ fn without_the_cli_the_agents_still_run_and_the_board_says_why_it_is_empty() {
         .join("\n");
 
     // Said plainly, and said about the record rather than about the agent:
-    // the pane above is running, and the board below it is empty because
-    // there is nothing writing one, not because nothing has happened.
-    assert!(drawn.contains("RingFrame is not installed."), "{drawn}");
-    assert!(drawn.contains("Nothing is written down"), "{drawn}");
+    // the agent beside it is running, and the board is empty because nothing
+    // is writing one, not because nothing has happened.
+    assert!(drawn.contains("RingFrame is not set up here yet."), "{drawn}");
+    assert!(drawn.contains("✗ ringframe is installed"), "{drawn}");
     assert!(drawn.contains("codex"), "the agent is still on the tab row: {drawn}");
     std::fs::remove_dir_all(&root).ok();
 }

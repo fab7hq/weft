@@ -16,6 +16,16 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     // only for a project with no agent and nothing asked.
     if app.units().is_empty() && app.pane_count() == 0 {
         lines.push(Line::raw(""));
+        // RingFrame is not set up here: what it still needs, under the project.
+        if let Some(needs) = app.needs() {
+            lines.push(Line::styled(format!(" ▾ {}", app.project_name()), th.label()));
+            lines.extend(
+                checklist(&needs, width)
+                    .into_iter()
+                    .map(|l| Line::styled(format!(" {l}"), th.label())),
+            );
+            return Paragraph::new(lines);
+        }
         if let Some((name, state)) = app.not_ready() {
             lines.push(Line::styled(
                 format!(" {}", state.say(&name).unwrap_or_default()),
@@ -25,20 +35,9 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
             lines.push(Line::styled(format!(" {}", word("tree.runs_either_way")), th.label()));
             return Paragraph::new(lines);
         }
-        let (said, next) = if app.record_available() && app.pane_count() == 0 {
-            // When the agent area is beside the list, it says how to start one.
-            (
-                word("tree.nothing_asked"),
-                if beside_agent { "" } else { "[N] starts an agent to ask." },
-            )
-        } else if app.record_available() {
-            (word("tree.nothing_asked"), "[A]SK for something and Weft writes it down.")
-        } else {
-            // RingFrame owns the record. Without it there is nothing to read,
-            // and saying so is better than an empty list that looks settled.
-            (word("tree.no_ringframe"), word("tree.install_ringframe"))
-        };
-        lines.push(Line::styled(format!(" {said}"), th.label()));
+        // When the agent area is beside the list, it says how to start one.
+        let next = if beside_agent { "" } else { "[N] starts an agent to ask." };
+        lines.push(Line::styled(format!(" {}", word("tree.nothing_asked")), th.label()));
         if !next.is_empty() {
             lines.push(Line::raw(""));
             lines.push(Line::styled(format!(" {next}"), th.label()));
@@ -64,14 +63,12 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     }
     // An agent open and nothing asked yet: say what comes next under it.
     if app.units().is_empty() {
-        let next: Vec<String> = match app.not_ready() {
-            Some((name, state)) => {
+        let next: Vec<String> = match (app.needs(), app.not_ready()) {
+            (Some(needs), _) => checklist(&needs, width),
+            (None, Some((name, state))) => {
                 vec![state.say(&name).unwrap_or_default(), word("tree.written_down").into()]
             }
-            None if app.record_available() => {
-                vec!["[A]SK for something and Weft writes it down.".into()]
-            }
-            None => vec![word("tree.no_ringframe").into()],
+            (None, None) => vec!["[A]SK for something and Weft writes it down.".into()],
         };
         if lines.len() + 1 + next.len() <= room {
             lines.push(Line::raw(""));
@@ -79,6 +76,29 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
         }
     }
     Paragraph::new(lines)
+}
+
+/// What RingFrame still needs before it is set up here, a line each under
+/// its project, with how to make a line hold beside it, or under it where
+/// the list is too narrow. Weft sets the project up as soon as they all hold.
+fn checklist(needs: &weft_core::workspace::Needs, width: usize) -> Vec<String> {
+    let lines = needs.lines();
+    // Each fix starts in one column, three after the longest line that has one.
+    let at =
+        lines.iter().filter(|l| l.how.is_some()).map(|l| cells(l.say())).max().unwrap_or(0) + 3;
+    let mut out = vec![format!("  {}", word("tree.not_set_up"))];
+    for line in &lines {
+        let (mark, said) = (line.mark, line.say());
+        match line.how() {
+            Some(how) if 5 + at + cells(how) <= width => {
+                out.push(format!("  {mark} {}{how}", padded(said, at)))
+            }
+            Some(how) => out.extend([format!("  {mark} {said}"), format!("    {how}")]),
+            None => out.push(format!("  {mark} {said}")),
+        }
+    }
+    out.push(format!("  {}", word("tree.sets_it_up")));
+    out
 }
 
 /// One row of the sidebar. `▾` and `▸` mark the levels that hold something;
