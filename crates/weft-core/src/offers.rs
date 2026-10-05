@@ -71,7 +71,7 @@ pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
 
 /// Running Check or Decide, in whichever harness this project routes it to.
 pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Asking {
-    let mut why = vec![format!("Weft will type  {command}  into {into}.")];
+    let mut why = vec![crate::words::fill("bar.will_type", &[("command", command), ("harness", into)])];
     if skill == "eval" {
         why.push("Weft has gathered the change. The agent will run RingFrame's".into());
         why.push("judging tasks on it; none of the judges did the work.".into());
@@ -95,7 +95,7 @@ pub fn asking(command: &str, harness: &str) -> Asking {
     Asking {
         what: format!("Ready to ask {harness}"),
         why: vec![
-            format!("Weft will type  {command}  into {harness}."),
+            crate::words::fill("bar.will_type", &[("command", command), ("harness", harness)]),
             crate::words::word("ask.which_approach").into(),
         ],
     }

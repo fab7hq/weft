@@ -48,6 +48,7 @@ pub const WORDS: &[(&str, &str)] = &[
     // Asking, and the bars that ask before Weft types.
     ("ask.title", "What do you want done?"),
     ("ask.send_to", "SEND TO"),
+    ("bar.will_type", "Weft will type  {command}  into {harness}."),
     ("ask.which_approach", "The agent will ask you which approach to take, in its own pane."),
     ("not_ready.title", "The agent has not said it is ready"),
     (

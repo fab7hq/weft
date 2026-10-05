@@ -14,6 +14,7 @@
   "ask.send_to": "SEND TO",
   "ask.title": "What do you want done?",
   "ask.which_approach": "The agent will ask you which approach to take, in its own pane.",
+  "bar.will_type": "Weft will type  {command}  into {harness}.",
   "eval.judging": "judging",
   "eval.met": "met",
   "eval.not_met": "not met",
