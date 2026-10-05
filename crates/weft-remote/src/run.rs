@@ -123,6 +123,10 @@ enum Carries {
     Pending,
     Text,
     Record,
+    /// The agent `start` made, by its id.
+    Agent,
+    /// What can be started: the machine's own call, answered to no device.
+    Starts,
 }
 
 /// A device waiting for the person's yes on this machine.
@@ -402,6 +406,7 @@ impl Remote {
                 let listed: Vec<Value> =
                     client.opened["pendings"].as_array().cloned().unwrap_or_default();
                 self.projects.push(Some(Open { client, agents }));
+                self.look_for_starts(at);
                 for p in listed.iter().filter_map(weft_proto::pending_of) {
                     self.pending_added(at, p);
                 }
@@ -442,6 +447,9 @@ impl Remote {
                 }
             }
             Heard::Event(at, event) => {
+                if matches!(event, Event::Readiness { .. }) {
+                    self.look_for_starts(at);
+                }
                 let changed = self
                     .projects
                     .get_mut(at)
@@ -460,6 +468,20 @@ impl Remote {
             self.projects.iter().flatten().map(|o| &o.agents).collect();
         let rows: Vec<Value> = open.iter().flat_map(|p| p.rows()).collect();
         json!({"type": "agents", "agents": rows})
+    }
+
+    /// Ask the daemon what this project can start: once it opens, and when a
+    /// harness's readiness changes.
+    fn look_for_starts(&mut self, at: usize) {
+        if let Some(id) = self.call(at, Call::Available) {
+            self.calls
+                .insert((at, id), Asked { conn: 0, req: Value::Null, carries: Carries::Starts });
+        }
+    }
+
+    /// What the person can start, across every open project.
+    fn harnesses(&self) -> Vec<Value> {
+        self.projects.iter().flatten().flat_map(|o| o.agents.harnesses()).collect()
     }
 
     /// Every open project's rows of the tree (remote.md §6b).
@@ -764,7 +786,7 @@ impl Remote {
             conn,
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
                    "vapid": self.vapid, "agents": agents, "tree": self.tree(),
-                   "pendings": pendings}),
+                   "harnesses": self.harnesses(), "pendings": pendings}),
         );
     }
 

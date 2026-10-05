@@ -26,6 +26,7 @@ impl Remote {
             Some("keys") => self.keys(conn, m, &req),
             Some("text") => self.text(conn, m, &req),
             Some("act") => self.act_on(conn, m, &req),
+            Some("start") => self.start_agent(conn, m, &req),
             Some("resolve") => self.resolve(conn, m, &req),
             Some("read") => self.read(conn, m, &req),
             Some("seen") => self.seen(conn, m),
@@ -77,6 +78,17 @@ impl Remote {
 
     pub(super) fn answered(&mut self, at: usize, id: u64, answer: Result<Value, (String, String)>) {
         let Some(asked) = self.calls.remove(&(at, id)) else { return };
+        if asked.carries == Carries::Starts {
+            let changed = match (&answer, self.projects.get_mut(at).and_then(Option::as_mut)) {
+                (Ok(v), Some(o)) => o.agents.available(v),
+                _ => false,
+            };
+            if changed {
+                let harnesses = self.harnesses();
+                self.to_devices(&json!({"type": "harnesses", "harnesses": harnesses}));
+            }
+            return;
+        }
         match answer {
             Ok(v) => {
                 let mut ok = json!({"type": "ok", "req": asked.req});
@@ -85,6 +97,11 @@ impl Remote {
                     Carries::Pending => ok["pending"] = v["pending"].clone(),
                     Carries::Text => ok["text"] = v["text"].clone(),
                     Carries::Record => ok["record"] = v,
+                    Carries::Agent => {
+                        let pane = v["pane"].as_u64().unwrap_or_default() as u32;
+                        ok["agent"] = self.agent_id(at, pane).into();
+                    }
+                    Carries::Starts => {}
                 }
                 self.send(asked.conn, ok);
             }
@@ -265,6 +282,19 @@ impl Remote {
         };
         let call = self.projects[at].as_ref().expect("an open project").agents.act(m, pane)?;
         self.ask(at, call, conn, req, Carries::Pending)
+    }
+
+    /// Start a fresh agent of a harness the project offers (remote.md §6b).
+    fn start_agent(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
+        let (project, harness) = (m["project"].as_str(), m["harness"].as_str());
+        let (Some(project), Some(harness)) = (project, harness) else {
+            return Err(("bad_request", "start names a project and a harness".into()));
+        };
+        let at =
+            self.projects.iter().position(|o| o.as_ref().is_some_and(|o| o.agents.name == project));
+        let at = at.ok_or(("no_project", format!("{project} is not open here")))?;
+        let call = self.projects[at].as_ref().expect("an open project").agents.start(harness)?;
+        self.ask(at, call, conn, req, Carries::Agent)
     }
 
     fn resolve(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {

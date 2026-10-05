@@ -47,6 +47,9 @@ pub struct Project {
     /// What each harness is short of, by the daemon's word.
     readiness: Value,
     routing: Routing,
+    /// The harnesses the person can start here, fresh, and each one's
+    /// command line, as `agents.available` last answered.
+    starts: Vec<(String, String)>,
 }
 
 impl Project {
@@ -75,6 +78,7 @@ impl Project {
                 .unwrap_or_default(),
             readiness: answer["readiness"].clone(),
             routing: Routing::opened(&answer["routing"]),
+            starts: Vec::new(),
         };
         p.stamp(now());
         p
@@ -210,6 +214,44 @@ impl Project {
             at["agent"] = h.pane.map(|p| agent_id(&self.key, p)).into();
         }
         row
+    }
+
+    /// Take what `agents.available` answered; whether it changed.
+    pub fn available(&mut self, answer: &Value) -> bool {
+        let starts: Vec<(String, String)> = answer["starts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|s| s["session"].is_null())
+            .filter_map(|s| {
+                Some((s["harness"].as_str()?.to_string(), s["spec"].as_str()?.to_string()))
+            })
+            .collect();
+        let changed = starts != self.starts;
+        self.starts = starts;
+        changed
+    }
+
+    /// This project's rows of the `harnesses` message: what can be started.
+    pub fn harnesses(&self) -> Vec<Value> {
+        self.starts
+            .iter()
+            .map(|(h, _)| {
+                let title = self.titles.get(h).map_or(h.as_str(), String::as_str);
+                json!({"project": self.name, "harness": h, "title": title})
+            })
+            .collect()
+    }
+
+    /// The call that starts a fresh agent of `harness` here, with the command
+    /// line the daemon offered for it and never one a device sent.
+    pub fn start(&self, harness: &str) -> Result<Call, Refusal> {
+        let (_, spec) = self
+            .starts
+            .iter()
+            .find(|(h, _)| h == harness)
+            .ok_or(("no_harness", format!("{harness} cannot be started in {}", self.name)))?;
+        Ok(Call::StartAgent { harness: harness.into(), spec: spec.clone(), session: None })
     }
 
     /// Whether an Ask with this id is on this project's board.
@@ -474,5 +516,28 @@ mod tests {
                 ("why.not_set_up", "claude is not set up for RingFrame.".into())
             );
         }
+    }
+
+    #[test]
+    fn a_device_starts_only_what_the_daemon_offers_fresh() {
+        let mut p = opened();
+        let answer = json!({"starts": [
+            {"harness": "claude", "label": "claude · pick up", "spec": "claude --resume s_1", "session": {"id": "s_1"}},
+            {"harness": "claude", "label": "claude · start fresh", "spec": "claude", "session": null},
+            {"harness": "codex", "label": "codex · start fresh", "spec": "codex", "session": null}]});
+        assert!(p.available(&answer));
+        assert!(!p.available(&answer), "the same list is no change");
+        assert_eq!(
+            p.harnesses(),
+            [
+                json!({"project": "weft", "harness": "claude", "title": "Claude Code"}),
+                json!({"project": "weft", "harness": "codex", "title": "codex"})
+            ]
+        );
+        assert_eq!(
+            p.start("codex"),
+            Ok(Call::StartAgent { harness: "codex".into(), spec: "codex".into(), session: None })
+        );
+        assert_eq!(p.start("sh").unwrap_err().0, "no_harness");
     }
 }

@@ -76,6 +76,33 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
 }
 
 #[test]
+fn a_device_starts_only_a_harness_the_machine_offers() {
+    let mut h = Harness::start("start");
+    let _shell = h.shell("work");
+    let (mut first, _) = h.allowed("d_1");
+    first.agents(1);
+    let (mut d, welcome) = h.allowed("d_2");
+    // No harness file here is set up for RingFrame, so none can be started.
+    assert_eq!(welcome["harnesses"], json!([]), "{welcome}");
+    for (n, (start, code)) in [
+        (json!({"type": "start", "project": "work", "harness": "sh", "req": 1}), "no_harness"),
+        (json!({"type": "start", "project": "elsewhere", "harness": "sh", "req": 2}), "no_project"),
+        (json!({"type": "start", "harness": "sh", "req": 3}), "bad_request"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        d.send(start.clone());
+        let answer = d.answer(n as i64 + 1);
+        assert_eq!(
+            (answer["type"].clone(), answer["code"].clone()),
+            (json!("error"), json!(code)),
+            "{start}"
+        );
+    }
+}
+
+#[test]
 fn every_req_gets_ok_or_error() {
     let mut h = Harness::start("reqs");
     let _shell = h.shell("work");
