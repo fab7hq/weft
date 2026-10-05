@@ -80,7 +80,7 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
         }
         if let Some(right) = geo.right {
-            agent(frame, app, right, geo.list.is_some());
+            agent(frame, app, right);
         }
     }
 

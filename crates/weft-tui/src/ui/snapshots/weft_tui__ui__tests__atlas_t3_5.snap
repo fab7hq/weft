@@ -5,32 +5,32 @@ expression: drawn
  ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
                                             │ ▸ 1 claude    2 codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
- ▾ weft                           2 open  ⌫ │ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-   ▾ claude                                 │ ┃ ● Running cargo test…                                                  ┃
-      fix login             working · ASKED │ ┃   test login::rejects_expired ... ok                                   ┃
-      telemetry                      ASKING │ ┃   test login::refreshes_token ... ok                                   ┃
-   ▾ codex                                  │ ┃   test result: ok. 163 passed; 0 failed                                ┃
-      health endpoint   turn ended · EVALED │ ┃ ● Update(src/login.rs)                                                 ┃
-      readme fix        turn ended · SEALED │ ┃   └  Updated src/login.rs                                              ┃
-                                            │ ┃ …                                                                      ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┃                                                                        ┃
-                                            │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ ▾ weft                           2 open  ⌫ │┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ▾ claude                                 │┃ ● Running cargo test…                                                   ┃
+      fix login             working · ASKED │┃   test login::rejects_expired ... ok                                    ┃
+      telemetry                      ASKING │┃   test login::refreshes_token ... ok                                    ┃
+   ▾ codex                                  │┃   test result: ok. 163 passed; 0 failed                                 ┃
+      health endpoint   turn ended · EVALED │┃ ● Update(src/login.rs)                                                  ┃
+      readme fix        turn ended · SEALED │┃   └  Updated src/login.rs                                               ┃
+                                            │┃ …                                                                       ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┃                                                                         ┃
+                                            │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
    Ctrl+]  BACK TO WEFT
  Every other key goes to the agent, Esc included.

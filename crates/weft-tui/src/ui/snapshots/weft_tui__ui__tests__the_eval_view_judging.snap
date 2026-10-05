@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  1
+ EVAL · health endpoint                                                                                           evl_2
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ EVAL judging · map 1 of 1 · reduce 1 of 2 · confirm —
+ BY STEP
+ FINDINGS
+   unclaimed rewrite: commit 94d7989 ("Follow-up work") rewrites lines of 758156f (7)
+ UNEXPLAINED CHANGES
+   · src/telemetry.rs  w_t                                                  unexplained: posts the project path outside
+ ▾ Phase 1 · plans/app/plan.md                                                                                2 judging
+   … 7  A failed send is told.                                                                   met, so far · 1 change
+   … 8  Keep the log short.                                                                          judging · 1 change
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [↑↓] MOVE   [D] THE CHANGE   [TAB] BY FILE                                                                 [ESC] CLOSE
+ [H]ELP lists every key.

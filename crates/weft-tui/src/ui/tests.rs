@@ -648,6 +648,7 @@ fn the_eval_view_reads_requirements_first_then_a_step_its_change_and_by_file() {
             && drawn.contains("+let mut unrecorded = None;"),
         "{drawn}"
     );
+    expect_screen("the_eval_view_change", &drawn);
     press(&mut a, KeyCode::Esc);
     press(&mut a, KeyCode::Esc);
     press(&mut a, KeyCode::Tab);
@@ -664,6 +665,7 @@ fn a_running_eval_shows_what_is_in_as_so_far() {
     assert!(drawn.contains("judging · map 1 of 1 · reduce 1 of 2 · confirm —"), "{drawn}");
     assert!(drawn.contains("met, so far"), "{drawn}");
     assert!(drawn.contains("judging · 1 change"), "{drawn}");
+    expect_screen("the_eval_view_judging", &drawn);
 }
 
 #[test]
