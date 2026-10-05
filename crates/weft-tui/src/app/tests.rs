@@ -54,10 +54,23 @@ pub(crate) fn test_session(name: &str) -> (PathBuf, crate::client::Session) {
 }
 
 pub(crate) fn test_session_in(name: &str, world: World) -> (PathBuf, crate::client::Session) {
+    test_session_at(&format!("weft-app-{name}"), "", world)
+}
+
+/// A project folder named `folder` (a scratch one when empty) in a scratch
+/// directory of its own, with a daemon for it.
+pub(crate) fn test_session_at(
+    scratch: &str,
+    folder: &str,
+    world: World,
+) -> (PathBuf, crate::client::Session) {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    let root = std::env::temp_dir().join(format!("weft-app-{name}-{}-{n}", std::process::id()));
+    let mut root = std::env::temp_dir().join(format!("{scratch}-{}-{n}", std::process::id()));
+    if !folder.is_empty() {
+        root.push(folder);
+    }
     std::fs::create_dir_all(&root).expect("root");
     // A real workspace is a Git repository with a commit, which is what
     // RingFrame requires before it will compile an Ask. A fixture that is

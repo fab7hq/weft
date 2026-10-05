@@ -3011,6 +3011,7 @@ version = "0.1.3"
 dependencies = [
  "anyhow",
  "crossterm",
+ "insta",
  "ratatui",
  "serde_json",
  "sha2 0.10.9",

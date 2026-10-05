@@ -1,0 +1,35 @@
+---
+source: src/main.rs
+expression: "drawn.join(\"\\n\")"
+---
+ ╸┃╺ WEFT
+
+   Open a project
+   █
+   The path of a repository to work in.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  [Enter] OPEN   [X] QUIT

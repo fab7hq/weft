@@ -112,9 +112,9 @@ pub(super) fn sidebar_row(
         Row::Harness { name, folded, waiting, running, turbo, .. } => {
             // The badge of an agent asking for input: the one thing NEEDS YOU is.
             let tail = match waiting {
-                0 => "   ".to_string(),
-                1 => "● needs your input  ".to_string(),
-                n => format!("● {n} need your input  "),
+                0 => String::new(),
+                1 => "● needs your input".to_string(),
+                n => format!("● {n} need your input"),
             };
             let gone =
                 if *running { String::new() } else { format!(" · {}", word("tree.not_running")) };
@@ -135,7 +135,7 @@ pub(super) fn sidebar_row(
             // agent asking, and that is its harness's row. The agent's state
             // shows when its session reported one; nothing rather than a guess.
             let agent = turn.map(|t| format!("{} · ", t.say()));
-            let state = format!("{}{}  ", agent.unwrap_or_default(), word.say());
+            let state = format!("{}{}", agent.unwrap_or_default(), word.say());
             let head = format!("      {}", unit.title);
             let room = width.saturating_sub(cells(&state) + 1);
             Line::from(vec![

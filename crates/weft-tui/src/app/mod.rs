@@ -463,6 +463,11 @@ impl App {
         self.routing = routing;
     }
 
+    /// Test seam: what the daemon would offer to start.
+    pub fn set_starts(&mut self, starts: Vec<Start>) {
+        self.starts = starts;
+    }
+
     pub fn set_readiness(&mut self, harness: &str, state: Readiness) {
         self.readiness.insert(harness.to_string(), state);
     }
@@ -944,11 +949,8 @@ impl App {
     fn show_pick_up(&mut self, harness: String, then: Option<Act>) {
         // Picked up only where it is set up: otherwise SET UP is where it goes.
         if !self.readiness(&harness).is_ready() {
-            let title =
-                sess!(self).harnesses.find(&harness).map_or(harness.clone(), |h| h.title.clone());
-            self.say(format!(
-                "{title} is not set up for RingFrame. [W] → Set up a harness sets it up."
-            ));
+            let said = weft_core::words::say("why.not_set_up", &harness);
+            self.say(format!("{said} [U]PDATE sets it up."));
             return;
         }
         let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
@@ -1312,10 +1314,7 @@ impl App {
         if self.fresh_starts().is_empty() {
             // Only a harness set up for RingFrame is offered: SET UP is where
             // the others are.
-            self.say(
-                "No harness is set up for RingFrame yet. [W] → Set up a harness lists them, \
-                 and sets one up.",
-            );
+            self.say("No harness is set up for RingFrame yet. [U]PDATE sets one up.");
             return;
         }
         self.modal = Some(Modal::StartAgent { choice: 0 });

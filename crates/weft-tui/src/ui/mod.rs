@@ -84,12 +84,14 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
         }
     }
 
+    // A panel closes the body: the divider ends on the rule above it.
+    let mut ends = geo.body_divider;
     if let (Some(rule_area), Some(panel_area)) = (geo.panel_rule, geo.panel) {
-        frame.render_widget(rule(rule_area.width, None, '─', th), rule_area);
+        frame.render_widget(rule(rule_area.width, ends.take(), '┴', th), rule_area);
         frame.render_widget(panel(app, panel_area), panel_area);
     }
 
-    frame.render_widget(rule(geo.bottom_rule.width, geo.body_divider, '┴', th), geo.bottom_rule);
+    frame.render_widget(rule(geo.bottom_rule.width, ends, '┴', th), geo.bottom_rule);
     frame.render_widget(action_bar(app, geo.actions.width), geo.actions);
     frame.render_widget(hint(app), geo.hint);
 }
@@ -135,7 +137,7 @@ fn geometry(app: &App, area: Rect) -> Geo {
     // A bottom-anchored panel keeps the row it is about in view above it.
     let (content, panel_rule, panel) = match panel_lines(app) {
         Some(lines) => {
-            let wanted = (lines.len() as u16 + 1).min(body.height.saturating_sub(3));
+            let wanted = (lines.len() as u16).min(body.height.saturating_sub(3));
             let split = RLayout::default()
                 .direction(Direction::Vertical)
                 .constraints([

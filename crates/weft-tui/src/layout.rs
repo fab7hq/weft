@@ -1,14 +1,14 @@
 //! Responsive layout.
 //!
-//! The pane never drops below 80 columns, which is what the harnesses
-//! assume. Below the threshold there is one surface at a time — the sidebar
-//! *or* the agent.
+//! Beside the list, the pane never drops below 75 columns: its frame and the
+//! harness's 72 inside it. Below the threshold there is one surface at a time
+//! — the sidebar *or* the agent.
 
 /// The narrowest the work list is ever drawn.
 pub const LIST_MIN: u16 = 30;
 /// The widest it grows to; past this the extra columns go to the pane.
 pub const LIST_MAX: u16 = 44;
-pub const MIN_PANE_WIDTH: u16 = 80;
+pub const MIN_PANE_WIDTH: u16 = 75;
 /// Below this, one surface at a time.
 pub const SPLIT_THRESHOLD: u16 = 112;
 
@@ -44,9 +44,9 @@ mod tests {
     }
 
     #[test]
-    fn a_comfortable_laptop_draws_the_screen_the_spec_drew() {
-        // Screen 4 of the spec, at 120 columns: list 39, pane 80.
-        assert_eq!(for_width(120), Layout::Split { list: 39, pane: 80 });
+    fn a_comfortable_laptop_draws_the_screen_the_atlas_drew() {
+        // At 120 columns, as every TUI card of the Atlas: list 44, pane 75.
+        assert_eq!(for_width(120), Layout::Split { list: 44, pane: 75 });
     }
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_is_never_narrower_than_eighty_when_the_list_is_beside_it() {
+    fn a_pane_is_never_narrower_than_its_least_when_the_list_is_beside_it() {
         for width in 1u16..400 {
             if let Layout::Split { pane, .. } = for_width(width) {
                 assert!(pane >= MIN_PANE_WIDTH, "width {width} gave pane {pane}");

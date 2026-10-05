@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 claude    2 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           2 open  ⌫ │█
+   ▾ claude                                 │
+      fix login               ready · ASKED │
+   ▾ codex                                  │
+      health endpoint   turn ended · EVALED │
+ ▾ docs                           1 open  ⌫ │
+   ▾ claude                                 │
+      readme fix                      ASKED │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ START AN AGENT
+ It runs here, with your own settings.
+
+   ▸ claude · start fresh
+     codex · start fresh
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [↑↓] PICK   [←] CANCEL
+ It runs here, with your own settings.

@@ -344,7 +344,7 @@ fn side_by_side_puts_the_list_left_and_never_squeezes_the_pane() {
     let mut a = judged();
     expect_screen("side_by_side", &screen(&mut a, 120, 32));
     let Layout::Split { list, pane } = layout::for_width(120) else { panic!() };
-    assert_eq!((list, pane), (39, 80), "the spec's own screen 4");
+    assert_eq!((list, pane), (44, 75), "as the Atlas draws it");
 }
 
 #[test]
@@ -871,4 +871,90 @@ fn the_shared_words_are_spelled_only_in_words() {
         }
     }
     assert!(found.is_empty(), "{found:#?}");
+}
+
+// --- the Atlas: each changed screen, set up with its card's sample ---------
+
+/// The Atlas's sample, as its TUI cards show it: project weft, with claude
+/// (ready) and codex (its turn ended) running; fix login of claude, ASKED;
+/// health endpoint of codex, EVALED.
+fn atlas() -> App {
+    use weft_core::turns::{Session, Turn};
+    let (root, session) =
+        crate::app::tests::test_session_at("weft-atlas", "weft", crate::app::tests::set_up(|w| w));
+    let mut a = App::with_session(root, crate::keys::Toggle, session);
+    a.add("claude", "/bin/cat").expect("claude");
+    a.add("codex", "/bin/cat").expect("codex");
+    a.settle();
+    for h in ["claude", "codex"] {
+        a.set_readiness(h, weft_core::readiness::Readiness::Ready);
+    }
+    let mut fix = unit(Sent::TakenByAgent);
+    (fix.ask_id, fix.title, fix.harness) = ("ask_1".into(), "fix login".into(), "claude".into());
+    fix.session_ref = Some("s_claude".into());
+    let mut health = unit(Sent::Arrived { exact: true });
+    (health.ask_id, health.session_ref) = ("ask_3".into(), Some("s_codex".into()));
+    health.check = Some(Check {
+        eval_id: "evl_2".into(),
+        verdict: Verdict::DoesntMatch,
+        agreement: 0.67,
+        judged_by: Some("codex".into()),
+    });
+    a.set_units(vec![fix, health]);
+    let receipt = |h: &str, latest| Session {
+        harness: h.into(),
+        id: format!("s_{h}"),
+        first: 0,
+        latest,
+        at: 0,
+    };
+    a.session_mut().turns = vec![receipt("claude", Turn::Ready), receipt("codex", Turn::TurnEnded)];
+    a.session_mut().set_turns(vec![Some(Turn::Ready), Some(Turn::TurnEnded)]);
+    a
+}
+
+/// T1.8: an update waiting says what to do about it.
+#[test]
+fn atlas_t1_8_an_update_waiting() {
+    let mut a = atlas();
+    let _ = a.newer.set("0.1.1".into());
+    expect_screen("atlas_t1_8", &screen(&mut a, 120, 32));
+}
+
+/// The Atlas's sample with its second project: docs, with claude running and
+/// readme fix asked of it.
+fn atlas_with_docs() -> App {
+    let mut a = atlas();
+    let docs = a.root().with_file_name("docs");
+    std::fs::create_dir_all(&docs).expect("docs");
+    a.open_project(&docs.to_string_lossy());
+    a.add("claude", "/bin/cat").expect("claude in docs");
+    a.settle();
+    let mut readme = unit(Sent::TakenByAgent);
+    (readme.ask_id, readme.title, readme.harness) =
+        ("ask_4".into(), "readme fix".into(), "claude".into());
+    a.set_units(vec![readme]);
+    // Back to weft, where the card has the keys.
+    a.focus = Focus::Weft;
+    // A frame first: the arrows keep the selection in the rows it drew.
+    let _ = screen(&mut a, 120, 32);
+    a.selected = 1;
+    press(&mut a, KeyCode::Up);
+    assert_eq!(a.project_name(), "weft");
+    a
+}
+
+/// T9.7: N starts an agent; each set-up harness starts fresh.
+#[test]
+fn atlas_t9_7_start_an_agent() {
+    let mut a = atlas_with_docs();
+    let fresh = |h: &str| crate::app::Start {
+        harness: h.into(),
+        label: format!("{h} · start fresh"),
+        spec: "/bin/cat".into(),
+        session: None,
+    };
+    a.set_starts(vec![fresh("claude"), fresh("codex")]);
+    a.modal = Some(Modal::StartAgent { choice: 0 });
+    expect_screen("atlas_t9_7", &screen(&mut a, 120, 32));
 }

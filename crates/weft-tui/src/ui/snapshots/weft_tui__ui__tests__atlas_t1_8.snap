@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                            ↑ [U]PDATE   [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 claude    2 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           2 open  ⌫ │█
+   ▾ claude                                 │
+      fix login               ready · ASKED │
+   ▾ codex                                  │
+      health endpoint   turn ended · EVALED │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+                                            │
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ [A]SK   [E]VAL   [S]EAL                                                                                       [W]EFT ⌄
+ Weft 0.1.1 is out - update to use the latest version

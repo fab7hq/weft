@@ -14,8 +14,6 @@ use weft::server;
 /// `projects.json`, which is read and never written here.
 fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std::path::PathBuf>> {
     use crossterm::event::{self, Event, KeyCode};
-    use ratatui::text::Line;
-    use ratatui::widgets::Paragraph;
 
     let offered = offered_projects(
         &std::fs::read_to_string(weft::routing::file().with_file_name("projects.json"))
@@ -25,11 +23,8 @@ fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std:
     let mut picked = 0usize;
     let mut said: Option<String> = None;
     loop {
-        let lines = picker_lines(&typed, said.as_deref(), &offered, picked);
-        terminal.draw(|frame| {
-            let lines: Vec<Line> = lines.iter().map(|l| Line::raw(l.clone())).collect();
-            frame.render_widget(Paragraph::new(lines), frame.area());
-        })?;
+        let (lines, keys) = picker_lines(&typed, said.as_deref(), &offered, picked);
+        terminal.draw(|frame| draw_picker(frame, &lines, &keys))?;
         let Event::Key(key) = event::read()? else { continue };
         if !key.is_press() {
             continue;
@@ -72,23 +67,23 @@ fn offered_projects(text: &str) -> Vec<std::path::PathBuf> {
     weft::projects::read(text).into_iter().map(|p| p.path).filter(|p| p.is_dir()).collect()
 }
 
-/// What the first screen says: the path being typed, and the projects open
-/// in Weft to pick from instead.
+/// What the first screen says, under the window's mark: the path being
+/// typed, and the projects open in Weft to pick from instead; and its keys.
 fn picker_lines(
     typed: &str,
     said: Option<&str>,
     offered: &[std::path::PathBuf],
     picked: usize,
-) -> Vec<String> {
+) -> (Vec<String>, String) {
     let mut lines = vec![
-        " ▚▞ WEFT".to_string(),
         String::new(),
         "   Open a project".into(),
-        String::new(),
         format!("   {typed}█"),
-        String::new(),
         "   The path of a repository to work in.".into(),
     ];
+    if let Some(why) = said {
+        lines.push(format!("   {why}"));
+    }
     if !offered.is_empty() {
         lines.push(String::new());
         lines.push("   Or one open in Weft:".into());
@@ -97,17 +92,48 @@ fn picker_lines(
             lines.push(format!("   {mark} {}", p.display()));
         }
     }
-    if let Some(why) = said {
-        lines.push(String::new());
-        lines.push(format!("   {why}"));
-    }
-    lines.push(String::new());
-    lines.push(if offered.is_empty() {
-        "  [Enter] OPEN   [X] QUIT".into()
+    let keys = if offered.is_empty() {
+        "  [Enter] OPEN   [X] QUIT"
     } else {
-        "  [↑↓] PICK   [Enter] OPEN   [X] QUIT".into()
-    });
-    lines
+        "  [↑↓] PICK   [Enter] OPEN   [X] QUIT"
+    };
+    (lines, keys.into())
+}
+
+/// The picker: the mark and WEFT as the window draws them, its lines, and
+/// its keys on the bar at the bottom, over the hint line.
+fn draw_picker(frame: &mut ratatui::Frame, lines: &[String], keys: &str) {
+    use ratatui::layout::{Constraint, Layout};
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::Paragraph;
+    let th = weft::theme::Theme::default();
+    let [body, rule, bar, _hint] = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(frame.area());
+    let lit = Style::default().fg(th.accent());
+    let mut text = vec![Line::from(vec![
+        Span::raw(" "),
+        Span::styled("╸", lit),
+        Span::styled("┃", Style::default().fg(th.warp())),
+        Span::styled("╺ ", lit),
+        Span::styled("WEFT", lit.add_modifier(Modifier::BOLD)),
+    ])];
+    text.extend(lines.iter().enumerate().map(|(i, l)| match i {
+        1 => Line::styled(l.clone(), th.title()),
+        3 => Line::styled(l.clone(), th.label()),
+        _ => Line::raw(l.clone()),
+    }));
+    frame.render_widget(Paragraph::new(text), body);
+    frame.render_widget(
+        Paragraph::new(Line::styled("─".repeat(rule.width as usize), th.rule())),
+        rule,
+    );
+    frame.render_widget(Paragraph::new(Line::styled(keys.to_string(), th.label())), bar);
 }
 
 /// Stop capturing the mouse and pastes, which `ratatui::restore` leaves on.
@@ -311,12 +337,29 @@ mod tests {
         let text = weft::projects::write(&[open[0].clone(), gone]);
         let offered = offered_projects(&text);
         assert_eq!(offered, std::slice::from_ref(&here), "one that is gone is not offered");
-        let drawn = picker_lines("", None, &offered, 0).join("\n");
-        assert!(drawn.contains(&format!("▸ {}", here.display())), "{drawn}");
-        assert!(drawn.contains("[↑↓] PICK"), "{drawn}");
-        let typing = picker_lines("/else", None, &offered, 0).join("\n");
-        assert!(!typing.contains('▸'), "a typed path is what Enter opens: {typing}");
-        assert!(!picker_lines("", None, &[], 0).join("\n").contains("PICK"));
+        let (drawn, keys) = picker_lines("", None, &offered, 0);
+        assert!(drawn.join("\n").contains(&format!("▸ {}", here.display())), "{drawn:?}");
+        assert!(keys.contains("[↑↓] PICK"), "{keys}");
+        let (typing, _) = picker_lines("/else", None, &offered, 0);
+        assert!(!typing.join("\n").contains('▸'), "a typed path is what Enter opens: {typing:?}");
+        assert!(!picker_lines("", None, &[], 0).1.contains("PICK"));
+    }
+
+    /// T1.2: the picker as the Atlas draws it, the window's mark over it.
+    #[test]
+    fn atlas_t1_2_the_project_picker() {
+        let (lines, keys) = picker_lines("", None, &[], 0);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 32)).expect("terminal");
+        terminal.draw(|frame| draw_picker(frame, &lines, &keys)).expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let drawn: Vec<String> = (0..32)
+            .map(|y| {
+                let row: String = (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect();
+                row.trim_end().to_string()
+            })
+            .collect();
+        insta::assert_snapshot!("atlas_t1_2", drawn.join("\n"));
     }
 
     #[test]
