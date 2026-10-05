@@ -124,32 +124,32 @@ pub fn asking(command: &str, harness: &str) -> Asking {
 pub fn judges_read(record: &crate::record::Record, check: &crate::ledger::Check) -> Vec<String> {
     let mut lines = vec![
         format!(
-            "judged by {} · recorded as {}, {:.2}",
+            "  judged by {} · recorded as {}, {:.2}",
             record.judged_by().join(" and "),
             check.verdict.recorded(),
             check.agreement
         ),
-        format!("{} judges checked the work · none of them did it", record.judges.len()),
+        format!("  {} judges checked the work · none of them did it", record.judges.len()),
     ];
     if let Some((judged, total)) = record.windows_judged {
-        lines.push(format!("{judged} of {total} changes judged"));
+        lines.push(format!("  {judged} of {total} changes judged"));
     }
     if record.fabrications > 0 {
         lines.push(format!(
-            "{} citations a judge gave were not in their source, and were not counted",
+            "  {} citations a judge gave were not in their source, and were not counted",
             record.fabrications
         ));
     }
-    lines.push(String::new());
     for j in &record.judges {
-        lines.push(format!("JUDGE      {} · {} · {}", j.angle, j.host, j.model));
+        let judge = crate::words::word("eval.judge");
+        lines.push(format!("  {judge:<11}{} · {} · {}", j.angle, j.host, j.model));
     }
+    lines.push(String::new());
     for item in &record.items {
-        lines.push(String::new());
         lines.push(format!("{} {}", mark_for(item.plain_majority()), item.text));
-        lines.push(format!("  {} · {}", item.plain_majority(), record.agreed_on(item)));
+        lines.push(format!("    {} · {}", item.plain_majority(), record.agreed_on(item)));
         for r in &item.reasons {
-            lines.push(format!("  {r}"));
+            lines.push(format!("    {r}"));
         }
     }
     if !record.unexplained.is_empty() {
@@ -185,38 +185,34 @@ pub fn seal_read(unit: &crate::ledger::Unit, checked: &serde_json::Value) -> Vec
             let verdict = e.get("verdict").and_then(serde_json::Value::as_str).unwrap_or("?");
             let confidence = e.get("confidence").and_then(serde_json::Value::as_f64);
             lines.push(match confidence {
-                Some(c) => format!("ON THE EVAL   recorded as {verdict}, {c:.2} agreed"),
-                None => format!("ON THE EVAL   recorded as {verdict}"),
+                Some(c) => format!("  ON THE EVAL   recorded as {verdict}, {c:.2} agreed"),
+                None => format!("  ON THE EVAL   recorded as {verdict}"),
             });
         }
         // A Seal may close work no judge looked at. That is allowed, and
         // saying so is the point of reading the receipt.
-        _ => lines.push("ON THE EVAL   none — this was sealed without an Eval".into()),
+        _ => lines.push("  ON THE EVAL   none — this was sealed without an Eval".into()),
     }
     if let Some(id) = str_at("seal_id") {
-        lines.push(format!("RECEIPT       {id}"));
+        lines.push(format!("  RECEIPT       {id}"));
     }
 
-    lines.push(String::new());
     let codes: Vec<&str> = checked
         .get("codes")
         .and_then(serde_json::Value::as_array)
         .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
         .unwrap_or_default();
-    if codes.is_empty() {
-        lines.push("The receipt still matches what RingFrame wrote.".into());
+    let moved = checked.get("subject_matches").and_then(serde_json::Value::as_bool) == Some(false);
+    if codes.is_empty() && !moved {
+        lines.push("  The receipt still matches what RingFrame wrote.".into());
     } else {
-        lines.push("THE RECEIPT NO LONGER HOLDS".into());
-        for c in codes {
-            lines.push(format!("  {}", said_plainly(c)));
+        lines.push("  THE RECEIPT NO LONGER HOLDS".into());
+        lines.extend(codes.into_iter().map(|c| format!("  {}", said_plainly(c))));
+        if moved {
+            lines.push("  the work has moved on since it was sealed".into());
         }
     }
-    if checked.get("subject_matches").and_then(serde_json::Value::as_bool) == Some(false) {
-        lines.push("  the work has moved on since it was sealed".into());
-    }
-
-    lines.push(String::new());
-    lines.push("A Seal records what was decided. It does not make the work right.".into());
+    lines.push("  A Seal records what was decided. It does not make the work right.".into());
     lines
 }
 
@@ -266,11 +262,13 @@ fn ask_state(unit: &crate::ledger::Unit) -> &'static str {
 /// the Seal that closed it. Three sections in the order they happen, so there
 /// is one place to read instead of three keys to find.
 ///
-/// Each part is `None` when it has not happened, and the section says so
-/// rather than being left out — a missing section reads as a gap in the
-/// record, and an act that has not happened is not a gap.
+/// Until the prompt goes, the Ask is the one section. After, each part is
+/// `None` when it has not happened, and the section says so rather than being
+/// left out — a missing section reads as a gap in the record, and an act that
+/// has not happened is not a gap.
 pub fn detail_read(
     unit: &crate::ledger::Unit,
+    source: Option<&str>,
     prompt: Option<&str>,
     record: Option<&crate::record::Record>,
     seal: Option<&serde_json::Value>,
@@ -278,19 +276,32 @@ pub fn detail_read(
 ) -> Vec<String> {
     let mut out = vec![detail_headline(unit), format!("  {}", provenance(unit)), String::new()];
 
+    // What the person wrote, then what the harness made of it. A part that is
+    // not on disk is said in its place.
+    let went = sent(unit);
     out.push(format!("ASK {}", ask_state(unit)));
-    // Asked and not composed: what there is, is what the person wrote.
-    if unit.requested_only {
-        out.push("  You asked:".into());
-    }
-    match prompt {
-        Some(text) => out.extend(text.lines().map(|l| format!("  {l}"))),
-        None if unit.requested_only => out.push("  what you asked is not on disk".into()),
-        None => out.push("  the prompt is not on disk".into()),
+    match source {
+        Some(text) => {
+            out.push("  You asked:".into());
+            out.extend(text.lines().map(|l| format!("  {l}")));
+        }
+        None => out.push("  what you asked is not on disk".into()),
     }
     if unit.requested_only {
-        out.push(String::new());
         out.push(format!("  {} has not composed its prompt yet.", unit.harness));
+    } else {
+        match prompt {
+            Some(text) => {
+                let how = if went { "sent" } else { "composed" };
+                out.push(format!("  The prompt {} {how}:", unit.harness));
+                out.extend(text.lines().map(|l| format!("  {l}")));
+            }
+            None => out.push("  the prompt is not on disk".into()),
+        }
+    }
+    // Until its prompt goes, the Ask is all there is to read.
+    if !went {
+        return out;
     }
 
     out.push(String::new());
@@ -305,7 +316,7 @@ pub fn detail_read(
                 unit.eval_state().unwrap_or_default()
             ));
             match record {
-                Some(r) => out.extend(judges_read(r, check).into_iter().map(indent)),
+                Some(r) => out.extend(judges_read(r, check)),
                 None => out.push("  that check's record is not on disk".into()),
             }
         }
@@ -333,7 +344,7 @@ pub fn detail_read(
                 act_state(true),
                 unit.seal_state().unwrap_or_else(|| "sealed".into())
             ));
-            out.extend(seal_read(unit, checked).into_iter().skip(2).map(indent));
+            out.extend(seal_read(unit, checked).into_iter().skip(2));
         }
         None => out.push(format!("SEAL {}", act_state(false))),
     }
@@ -352,6 +363,14 @@ pub struct Detail {
     pub proceed: bool,
     /// It has an Eval to view.
     pub eval_view: bool,
+    /// The Eval as recorded, `drifted, 0.67`, once it is judged.
+    pub recorded: Option<String>,
+    /// Whether the Seal's receipt still holds, once it is sealed.
+    pub holds: Option<bool>,
+    /// The harness a gathered change's debate would run in.
+    pub debate_in: Option<String>,
+    /// The id a follow-up on it carries.
+    pub follows: String,
 }
 
 /// One act's section: `ask`, `eval` or `seal`, where it stands (`DONE`,
@@ -362,19 +381,23 @@ pub struct Section {
     pub state: String,
     pub aside: String,
     pub lines: Vec<String>,
+    /// Open at first: the Ask until it is sent, else the latest act that
+    /// ran, and any section whose record is not on disk.
+    pub open: bool,
 }
 
 /// [`detail_read`], in sections: the same lines the TUI shows, so the two
 /// cannot say different things.
 pub fn detail(
     unit: &crate::ledger::Unit,
+    source: Option<&str>,
     prompt: Option<&str>,
     record: Option<&crate::record::Record>,
     seal: Option<&serde_json::Value>,
     debate_in: Option<&str>,
 ) -> Detail {
     let mut sections: Vec<Section> = Vec::new();
-    for line in detail_read(unit, prompt, record, seal, debate_in).into_iter().skip(3) {
+    for line in detail_read(unit, source, prompt, record, seal, debate_in).into_iter().skip(3) {
         let heading = ["ASK", "EVAL", "SEAL"].iter().find_map(|act| {
             let (state, aside) = line.strip_prefix(act)?.strip_prefix(" [")?.split_once(']')?;
             Some(Section {
@@ -382,6 +405,7 @@ pub fn detail(
                 state: state.into(),
                 aside: aside.trim().into(),
                 lines: Vec::new(),
+                open: false,
             })
         });
         match (heading, sections.last_mut()) {
@@ -390,10 +414,22 @@ pub fn detail(
             (None, None) => {}
         }
     }
+    let latest = if unit.sealed.is_some() {
+        "seal"
+    } else if unit.check.is_some() || unit.gathered.is_some() {
+        "eval"
+    } else {
+        ""
+    };
+    let missing =
+        [(source.is_none() || prompt.is_none() && sent(unit), "ask"), (record.is_none(), "eval")];
     for s in &mut sections {
         while s.lines.last().is_some_and(String::is_empty) {
             s.lines.pop();
         }
+        s.open = s.act == latest
+            || s.act == "ask" && !sent(unit)
+            || s.state == "DONE" && missing.iter().any(|&(gone, act)| gone && act == s.act);
     }
     Detail {
         title: unit.title.clone(),
@@ -405,16 +441,30 @@ pub fn detail(
             Some(crate::board::Next::Send | crate::board::Next::Confirm)
         ),
         eval_view: unit.check.is_some() || unit.gathered.is_some(),
+        recorded: unit
+            .check
+            .as_ref()
+            .map(|c| format!("{}, {:.2}", c.verdict.recorded(), c.agreement)),
+        holds: seal.map(|c| {
+            let codes = c.get("codes").and_then(serde_json::Value::as_array);
+            codes.is_none_or(|c| c.is_empty())
+                && c.get("subject_matches").and_then(serde_json::Value::as_bool) != Some(false)
+        }),
+        debate_in: unit.gathered.as_ref().and(debate_in).map(str::to_string),
+        follows: crate::board::follow_up_of(unit).to_string(),
     }
 }
 
-fn indent(line: String) -> String {
-    if line.is_empty() { line } else { format!("  {line}") }
+/// Whether the Ask's prompt went to its agent.
+fn sent(unit: &crate::ledger::Unit) -> bool {
+    use crate::ledger::Sent;
+    !unit.requested_only && !matches!(unit.sent, Sent::NotSent | Sent::ReadyToSend)
 }
 
 /// Where a unit's fields came from, in the terms the record uses.
 fn provenance(unit: &crate::ledger::Unit) -> String {
-    let mut parts = vec![format!("asked {}", unit.asked_at), unit.sent_phrase().to_string()];
+    let how = if unit.cancelled && !sent(unit) { "cancelled" } else { unit.sent_phrase() };
+    let mut parts = vec![format!("asked {}", unit.asked_at), how.to_string()];
     if let Some(c) = &unit.check {
         parts.push(format!("judged by {}", c.judged_by.clone().unwrap_or_else(|| "?".into())));
     }
@@ -430,21 +480,79 @@ mod tests {
 
     use crate::ledger::{Sent, Unit};
 
-    /// Asked and not yet composed: the view says ASKING, and shows what the
-    /// person asked, since there is no prompt yet.
+    /// The Ask section, as T5.1–T5.4 and T5.10 draw it: what the person
+    /// asked, then the prompt the harness composed or sent; each part that is
+    /// not on disk is said in its place.
     #[test]
-    fn an_ask_still_being_composed_shows_what_was_asked() {
+    fn the_ask_says_what_you_asked_then_the_prompt_composed_or_sent() {
+        let ask = |u: &Unit, source, prompt| {
+            let lines = super::detail_read(u, source, prompt, None, None, None);
+            let at = lines.iter().position(|l| l.starts_with("ASK [") && l.len() < 14).unwrap();
+            let end = lines[at..].iter().position(String::is_empty).map_or(lines.len(), |n| at + n);
+            lines[at..end].to_vec()
+        };
         let mut u = sealed("accepted");
-        u.sealed = None;
-        u.seal_id = None;
-        u.sealed_at = None;
-        u.check = None;
+        (u.sealed, u.seal_id, u.sealed_at, u.check) = (None, None, None, None);
+
         u.requested_only = true;
-        let lines = super::detail_read(&u, Some("fix the login bug"), None, None, None);
-        assert!(lines[0].starts_with("ASK [ASKING]"), "{lines:?}");
-        assert!(lines.contains(&"ASK [ASKING]".to_string()), "{lines:?}");
-        assert!(lines.contains(&"  fix the login bug".to_string()), "{lines:?}");
-        assert!(lines.iter().any(|l| l.contains("has not composed its prompt yet")), "{lines:?}");
+        u.harness = "claude".into();
+        assert_eq!(
+            ask(&u, Some("Count how often /health is called, per hour"), None),
+            [
+                "ASK [ASKING]",
+                "  You asked:",
+                "  Count how often /health is called, per hour",
+                "  claude has not composed its prompt yet.",
+            ]
+        );
+
+        u.requested_only = false;
+        u.harness = "codex".into();
+        u.sent = Sent::ReadyToSend;
+        let source = Some("Read the build number");
+        assert_eq!(
+            ask(&u, source, Some("Implement /health\nAdd a test")),
+            [
+                "ASK [DONE]",
+                "  You asked:",
+                "  Read the build number",
+                "  The prompt codex composed:",
+                "  Implement /health",
+                "  Add a test",
+            ]
+        );
+        u.sent = Sent::Arrived { exact: true };
+        assert_eq!(ask(&u, source, Some("Implement /health"))[3], "  The prompt codex sent:");
+        assert_eq!(
+            ask(&u, None, None),
+            ["ASK [DONE]", "  what you asked is not on disk", "  the prompt is not on disk"]
+        );
+    }
+
+    /// The Seal section, as T5.7 and T5.8 draw it: one block, no gaps.
+    #[test]
+    fn the_seal_reads_as_one_block() {
+        let held = json!({"seal_id": "rcp_7f3a2c", "codes": [], "subject_matches": true,
+            "eval": {"verdict": "aligned", "confidence": 1.0}});
+        assert_eq!(
+            super::seal_read(&sealed("accepted"), &held)[2..],
+            [
+                "  ON THE EVAL   recorded as aligned, 1.00 agreed",
+                "  RECEIPT       rcp_7f3a2c",
+                "  The receipt still matches what RingFrame wrote.",
+                "  A Seal records what was decided. It does not make the work right.",
+            ]
+        );
+        let moved = json!({"seal_id": "rcp_7f3a2c", "codes": [], "subject_matches": false});
+        let lines = super::seal_read(&sealed("accepted"), &moved);
+        assert!(
+            lines.windows(2).any(|w| w
+                == [
+                    "  THE RECEIPT NO LONGER HOLDS",
+                    "  the work has moved on since it was sealed"
+                ]),
+            "{lines:?}"
+        );
     }
 
     /// A device's Details are the TUI's lines, in their three sections.
@@ -454,12 +562,28 @@ mod tests {
         let mut waiting = sealed("accepted");
         (waiting.sealed, waiting.seal_id, waiting.sealed_at) = (None, None, None);
         waiting.sent = Sent::ReadyToSend;
-        let d =
-            super::detail(&waiting, Some("Refresh the token\nbefore it expires"), None, None, None);
+        let d = super::detail(
+            &waiting,
+            None,
+            Some("Refresh the token\nbefore it expires"),
+            None,
+            None,
+            None,
+        );
         let heads: Vec<(&str, &str)> =
             d.sections.iter().map(|s| (s.act.as_str(), s.state.as_str())).collect();
-        assert_eq!(heads, [("ask", "DONE"), ("eval", "HAVEN'T RUN"), ("seal", "HAVEN'T RUN")]);
-        assert_eq!(d.sections[0].lines, ["Refresh the token", "before it expires"]);
+        // Until it is sent, the Ask is the one section, and open.
+        assert_eq!(heads, [("ask", "DONE")]);
+        assert!(d.sections[0].open);
+        assert_eq!(
+            d.sections[0].lines,
+            [
+                "what you asked is not on disk",
+                "The prompt codex composed:",
+                "Refresh the token",
+                "before it expires"
+            ]
+        );
         assert!(d.proceed && !d.eval_view);
         assert_eq!(d.provenance, super::provenance(&waiting));
 
@@ -472,7 +596,12 @@ mod tests {
             agreement: 0.67,
             judged_by: Some("codex".into()),
         });
-        let d = super::detail(&judged, Some("p"), None, None, None);
+        let d = super::detail(&judged, Some("s"), Some("p"), None, None, None);
+        let open: Vec<bool> = d.sections.iter().map(|s| s.open).collect();
+        // Sent, the Ask folds; the Eval ran last, and its record is missing.
+        assert_eq!(open, [false, true, false]);
+        assert_eq!(d.recorded.as_deref(), Some("drifted, 0.67"));
+        assert_eq!(d.follows, "evl_2");
         assert_eq!(d.sections[1].state, "DONE");
         assert_eq!(d.sections[1].aside, judged.eval_state().unwrap());
         assert_eq!(d.sections[1].lines, ["that check's record is not on disk"]);
@@ -481,7 +610,10 @@ mod tests {
         // Sealed: the receipt, as the TUI reads it.
         let checked = json!({"seal_id": "rcp_7f3a2c", "codes": [], "subject_matches": true,
             "eval": {"verdict": "aligned", "confidence": 1.0}});
-        let d = super::detail(&sealed("accepted"), Some("p"), None, Some(&checked), None);
+        let d =
+            super::detail(&sealed("accepted"), Some("s"), Some("p"), None, Some(&checked), None);
+        assert_eq!(d.holds, Some(true));
+        assert!(d.sections[2].open);
         assert_eq!(
             (d.sections[2].state.as_str(), d.sections[2].aside.as_str()),
             ("DONE", "accepted")
@@ -520,13 +652,13 @@ mod tests {
         u.sealed = None;
         u.seal_id = None;
         u.gathered = Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "codex".into() });
-        let lines = super::detail_read(&u, None, None, None, Some("claude-code"));
+        let lines = super::detail_read(&u, None, None, None, None, Some("claude-code"));
         assert!(lines[0].contains("EVAL [GATHERED]"), "{lines:?}");
         let at = lines.iter().position(|l| l == "EVAL [GATHERED]").expect("the section");
         assert_eq!(lines[at + 1], "  gathered by codex");
         assert_eq!(lines[at + 2], "  [E]VAL  debate in claude-code");
         u.gathered = Some(crate::ledger::Gathered { eval_id: "evl_1".into(), by: "weft".into() });
-        let lines = super::detail_read(&u, None, None, None, Some("claude-code"));
+        let lines = super::detail_read(&u, None, None, None, None, Some("claude-code"));
         assert!(lines.iter().any(|l| l == "  gathered by Weft"), "{lines:?}");
     }
 

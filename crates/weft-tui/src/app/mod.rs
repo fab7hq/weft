@@ -1177,9 +1177,11 @@ impl App {
         let Some(unit) = self.selected_unit().cloned() else { return };
         // A part that will not come back is a fact about the record, not a
         // reason to refuse the view: the section says so and the rest opens.
-        // Asked and not composed yet: what the person asked is what there is.
-        let part = if unit.requested_only { "source" } else { "wording" };
-        let mut reads = vec![(Part::Prompt, part, unit.ask_id.clone())];
+        // What the person asked, and the prompt once one is composed.
+        let mut reads = vec![(Part::Source, "source", unit.ask_id.clone())];
+        if !unit.requested_only {
+            reads.push((Part::Prompt, "wording", unit.ask_id.clone()));
+        }
         if let Some(c) = &unit.check {
             reads.push((Part::Record, "judges", c.eval_id.clone()));
         }
@@ -1193,7 +1195,8 @@ impl App {
                 left += 1;
             }
         }
-        self.reading = Some(Reading { unit, prompt: None, record: None, seal: None, left });
+        self.reading =
+            Some(Reading { unit, source: None, prompt: None, record: None, seal: None, left });
         if left == 0 {
             self.finish_reading();
         }
@@ -1206,6 +1209,9 @@ impl App {
         r.left = r.left.saturating_sub(1);
         if let Ok(v) = answer {
             match part {
+                Part::Source => {
+                    r.source = v.get("text").and_then(|t| t.as_str()).map(str::to_string)
+                }
                 Part::Prompt => {
                     r.prompt = v.get("text").and_then(|t| t.as_str()).map(str::to_string)
                 }
@@ -1223,6 +1229,7 @@ impl App {
         self.detail = Some(Detail {
             lines: weft_core::offers::detail_read(
                 &r.unit,
+                r.source.as_deref(),
                 r.prompt.as_deref(),
                 r.record.as_ref(),
                 r.seal.as_ref(),
@@ -1759,6 +1766,7 @@ enum Then {
 /// A part of the detail view.
 #[derive(Clone, Copy)]
 enum Part {
+    Source,
     Prompt,
     Record,
     Seal,
@@ -1774,6 +1782,7 @@ enum Opening {
 /// The detail view, while its parts are read.
 struct Reading {
     unit: Unit,
+    source: Option<String>,
     prompt: Option<String>,
     record: Option<weft_core::record::Record>,
     seal: Option<serde_json::Value>,

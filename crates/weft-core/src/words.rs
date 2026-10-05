@@ -45,6 +45,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("act.send_anyway", "Send anyway"),
     ("act.resume", "Resume"),
     ("act.start", "Start"),
+    ("act.close", "Close"),
     // Asking, and the bars that ask before Weft types.
     ("ask.title", "What do you want done?"),
     ("ask.send_to", "SEND TO"),
@@ -77,6 +78,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval.unsettled", "unsettled"),
     ("eval.judging", "judging"),
     ("eval.so_far", "{state}, so far"),
+    ("eval.judge", "JUDGE"),
     ("eval_view.by_step", "By step"),
     ("eval_view.by_file", "By file"),
     ("eval_view.a_step", "A step"),
@@ -107,6 +109,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.agent.back", "Back to the tree"),
     ("web.bar.into", "into {harness}"),
     ("web.bar.answered", "Answered on the machine"),
+    ("web.detail.as_typed", "the prompt as typed"),
+    ("web.detail.debate_in", "Eval on the tree runs the debate in {harness}."),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     (

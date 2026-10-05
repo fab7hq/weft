@@ -133,6 +133,7 @@ enum Carries {
 /// The daemon's reads one device read is gathered from.
 #[derive(Clone, Copy, PartialEq)]
 enum Part {
+    Source,
     Prompt,
     Record,
     Seal,
@@ -150,6 +151,7 @@ struct Gathering {
     at: usize,
     unit: weft_core::ledger::Unit,
     left: usize,
+    source: Option<String>,
     prompt: Option<String>,
     record: Option<weft_core::record::Record>,
     seal: Option<Value>,

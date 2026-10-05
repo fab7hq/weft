@@ -385,8 +385,10 @@ impl Remote {
         // The Details are the Ask, the Eval and the Seal, each read as the TUI
         // reads it; the Eval view is the one running, else the last closed.
         let reads: Vec<(Part, &str, String)> = if what == Some("detail") {
-            let prompt = if unit.requested_only { "source" } else { "wording" };
-            let mut reads = vec![(Part::Prompt, prompt, unit.ask_id.clone())];
+            let mut reads = vec![(Part::Source, "source", unit.ask_id.clone())];
+            if !unit.requested_only {
+                reads.push((Part::Prompt, "wording", unit.ask_id.clone()));
+            }
             reads.extend(unit.check.as_ref().map(|c| (Part::Record, "judges", c.eval_id.clone())));
             reads.extend(unit.seal_id.as_ref().map(|s| (Part::Seal, "seal", s.clone())));
             reads
@@ -410,6 +412,7 @@ impl Remote {
                 at,
                 unit,
                 left: 0,
+                source: None,
                 prompt: None,
                 record: None,
                 seal: None,
@@ -445,6 +448,7 @@ impl Remote {
         let text =
             |v: &Option<Value>| v.as_ref().and_then(|v| v["text"].as_str()).map(str::to_string);
         match part {
+            Part::Source => r.source = text(&answer),
             Part::Prompt => r.prompt = text(&answer),
             Part::Record => r.record = answer.and_then(|v| serde_json::from_value(v).ok()),
             Part::Seal => r.seal = answer,
@@ -485,6 +489,7 @@ impl Remote {
                 let Some(open) = self.projects.get(r.at).and_then(Option::as_ref) else { return };
                 ok["detail"] = open.agents.detail(
                     &r.unit,
+                    r.source.as_deref(),
                     r.prompt.as_deref(),
                     r.record.as_ref(),
                     r.seal.as_ref(),

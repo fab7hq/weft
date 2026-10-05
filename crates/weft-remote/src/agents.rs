@@ -328,13 +328,14 @@ impl Project {
     pub fn detail(
         &self,
         unit: &Unit,
+        source: Option<&str>,
         prompt: Option<&str>,
         record: Option<&weft_core::record::Record>,
         seal: Option<&Value>,
     ) -> Value {
         let at = self.units.iter().position(|u| u.ask_id == unit.ask_id);
         let debate = self.board(at, None, |b| b.deciding_harness(Act::Eval));
-        let d = weft_core::offers::detail(unit, prompt, record, seal, debate.as_deref());
+        let d = weft_core::offers::detail(unit, source, prompt, record, seal, debate.as_deref());
         serde_json::to_value(d).unwrap_or_default()
     }
 
@@ -620,9 +621,11 @@ mod tests {
         let mut u = unit("ask_1", "fix login");
         u.gathered =
             Some(weft_core::ledger::Gathered { eval_id: "evl_2".into(), by: "weft".into() });
+        u.sent = weft_core::ledger::Sent::Arrived { exact: true };
         p.units = vec![u.clone()];
-        let d = p.detail(&u, Some("Refresh the token"), None, None);
+        let d = p.detail(&u, Some("Refresh it"), Some("Refresh the token"), None, None);
         assert_eq!(d["sections"][1]["state"], "GATHERED");
+        assert_eq!(d["debate_in"], "claude");
         assert!(d["sections"][1]["lines"].to_string().contains("debate in claude"), "{d}");
         assert_eq!((d["proceed"].clone(), d["eval_view"].clone()), (json!(false), json!(true)));
     }
