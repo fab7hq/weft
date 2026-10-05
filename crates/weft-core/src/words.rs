@@ -154,7 +154,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.settings.this_device", "This device"),
     ("web.settings.name", "Name, as your machines show it"),
     ("web.settings.notifications", "Notifications from {machine}"),
-    ("web.settings.notifications_when", "When an agent needs you and you are away from your machine"),
+    (
+        "web.settings.notifications_when",
+        "When an agent needs you and you are away from your machine",
+    ),
     ("web.settings.machines", "Machines"),
     ("web.settings.connected", "connected"),
     ("web.settings.account", "Account · {login}"),

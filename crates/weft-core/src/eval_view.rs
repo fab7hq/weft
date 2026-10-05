@@ -789,7 +789,8 @@ pub fn numbered(text: &str, quotes: &[String]) -> Vec<Line> {
 
 /// The lines a change holds, `L88–L97`, on the new side unless it only removes.
 pub fn range(lines: &[Line]) -> Option<String> {
-    let side: Vec<u32> = lines.iter().filter(|l| !l.text.starts_with('-')).filter_map(|l| l.n).collect();
+    let side: Vec<u32> =
+        lines.iter().filter(|l| !l.text.starts_with('-')).filter_map(|l| l.n).collect();
     let side = if side.is_empty() { lines.iter().filter_map(|l| l.n).collect() } else { side };
     let (a, b) = (*side.iter().min()?, *side.iter().max()?);
     Some(if a == b { format!("L{a}") } else { format!("L{a}–L{b}") })
