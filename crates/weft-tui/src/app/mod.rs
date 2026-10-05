@@ -21,7 +21,7 @@ use crate::ledger::Unit;
 use crate::theme::Theme;
 pub use weft_core::board::Act;
 use weft_core::board::{Board, Next, PaneInfo};
-pub use weft_core::offers::{PickUp, pick_up_choices, say_handoff};
+pub use weft_core::offers::say_handoff;
 use weft_core::readiness::Readiness;
 use weft_core::sessions::Recorded;
 
@@ -194,13 +194,8 @@ pub struct Follows {
 pub enum Modal {
     Quit,
     Help,
-    /// The agent has not reported that it is ready, which is the only state
-    /// Weft types into on its own: `why` says what it reported instead.
-    /// Typing is the person's to allow, and the default.
-    SendAnyway {
-        pending: Pending,
-        why: &'static str,
-    },
+    /// A confirmation: one question, on the bar, Cancel beside its act.
+    Bar(Bar),
     /// Take a project out of this window. Nothing is stopped and nothing is
     /// deleted, which the panel says, because "close" is the word people
     /// expect to end an agent.
@@ -226,8 +221,6 @@ pub enum Modal {
         target: usize,
         follows: Option<Follows>,
     },
-    /// Weft is about to type something. Always shown first.
-    Confirm(Pending),
     /// Something did not work, said plainly.
     Note(String),
     /// Pick an agent to start. Weft starts none on its own.
@@ -246,13 +239,23 @@ pub enum Modal {
     /// What the configuration and each harness need to reach RingFrame's
     /// latest release. Nothing runs until `[P]ROCEED`.
     RingFrame,
+}
+
+/// The questions a confirmation bar asks. Enter is the act, ← cancels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Bar {
+    /// Weft is about to type something. Always shown first.
+    Send(Pending),
+    /// The agent has not reported that it is ready, which is the only state
+    /// Weft types into on its own: `why` says what it reported instead.
+    /// Typing is the person's to allow.
+    SendAnyway { pending: Pending, why: &'static str },
     /// Work whose agent is not running: resume the session it was asked in,
-    /// or start fresh, then carry on with `then`.
-    PickUp {
-        harness: String,
-        session: Option<Recorded>,
-        then: Option<Act>,
-    },
+    /// then carry on with `then`.
+    Resume { harness: String, session: Recorded, then: Option<Act> },
+    /// Work whose agent is not running and nothing to resume: a fresh agent
+    /// is `[N]`, as everywhere.
+    NothingToResume { harness: String },
 }
 
 /// The two reading surfaces. Siblings, not a stack: `P` from the judges
@@ -365,6 +368,12 @@ impl App {
     /// Number of panes in the session, which is what the UI counts.
     pub fn pane_count(&self) -> usize {
         sess!(self).panes.len()
+    }
+
+    /// The panes whose agent is running, in order: the tabs, and where an
+    /// Ask can go.
+    pub fn running_panes(&self) -> Vec<usize> {
+        (0..self.pane_count()).filter(|&i| sess!(self).panes[i].running).collect()
     }
 
     pub fn harness_at(&self, i: usize) -> Option<&str> {
@@ -962,7 +971,10 @@ impl App {
             self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.clone())
         });
         self.modal_choice = 0;
-        self.modal = Some(Modal::PickUp { harness, session, then });
+        self.modal = Some(Modal::Bar(match session {
+            Some(session) => Bar::Resume { harness, session, then },
+            None => Bar::NothingToResume { harness },
+        }));
     }
 
     /// Start the harness where it left off or fresh, then carry on. Weft runs
@@ -1091,7 +1103,7 @@ impl App {
         // (ADR-0013). Anything else is the person's to allow; sending is the
         // default, since they asked for it a key ago.
         if let Err(why) = weft_core::turns::may_type(self.pane_turn(pending.pane)) {
-            self.modal = Some(Modal::SendAnyway { pending: pending.clone(), why });
+            self.modal = Some(Modal::Bar(Bar::SendAnyway { pending: pending.clone(), why }));
             self.modal_choice = 0;
             return;
         }
@@ -1310,6 +1322,16 @@ impl App {
         self.look_for_agents(Opening::Picker);
     }
 
+    /// `[N]` with nothing to resume: the picker, on that harness.
+    fn start_fresh(&mut self, harness: &str) {
+        self.modal = None;
+        self.open_agent_picker();
+        if let Some(i) = self.fresh_starts().iter().position(|s| s.harness == harness) {
+            self.modal = Some(Modal::StartAgent { choice: i });
+            self.modal_choice = i;
+        }
+    }
+
     fn open_agent_picker(&mut self) {
         if self.fresh_starts().is_empty() {
             // Only a harness set up for RingFrame is offered: SET UP is where
@@ -1361,13 +1383,13 @@ impl App {
             return;
         };
         let Some(pane) = s.index_of(w.pane) else { return };
-        self.modal = Some(Modal::Confirm(Pending {
+        self.modal = Some(Modal::Bar(Bar::Send(Pending {
             staged: w.id,
             pane,
             payload: w.payload,
             what: w.what,
             why: w.why.lines().map(str::to_string).collect(),
-        }));
+        })));
         self.modal_choice = 0;
     }
 

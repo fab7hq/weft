@@ -110,7 +110,7 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
     }
     let mut tabs = Vec::new();
 
-    for i in 0..app.pane_count() {
+    for (n, i) in app.running_panes().into_iter().enumerate() {
         let active = i == app.pane_focus;
         let waiting = app.waiting(i);
         let harness = app.harness_at(i).unwrap_or("agent").to_string();
@@ -120,7 +120,7 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
         let text = format!(
             "{}{} {}{}{}{}",
             if active { "▸ " } else { "" },
-            i + 1,
+            n + 1,
             harness,
             if turbo { " ⚡" } else { "" },
             if waiting { " ●" } else { "" },

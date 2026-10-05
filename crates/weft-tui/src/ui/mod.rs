@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
-use crate::app::{Act, App, Modal, Target};
+use crate::app::{Act, App, Bar, Modal, Target};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::theme::{Theme, pair};

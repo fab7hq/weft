@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
-use weft::app::{App, Modal};
+use weft::app::{App, Bar, Modal};
 use weft::client::Session;
 use weft::keys::Toggle;
 
@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
 
     // [S]END asks first, always. What it is about to type is the observation.
     press(&mut app, KeyCode::Char('s'));
-    let Some(Modal::Confirm(pending)) = app.modal.clone() else {
+    let Some(Modal::Bar(Bar::Send(pending))) = app.modal.clone() else {
         return done(json!({
             "outcome": "not-offered",
             "hint": app.hint_text(),

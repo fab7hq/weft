@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 claude    2 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           2 open  ⌫ │ ┌────────────────────────────────────────────────────────────────────────┐
+   ▾ claude                                 │ │ ❯                                                                      │
+      fix login               ready · ASKED │ │                                                                        │
+   ▾ codex                                  │ │                                                                        │
+      health endpoint   turn ended · EVALED │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ └────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ READY TO ASK CLAUDE
+ Weft will type  /rf:ask  into claude.
+ The agent will ask you which approach to take, in its own pane.
+
+ Read the build number from the environment and show it on /health
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [←] CANCEL   [Enter] SEND
+ Weft never types into an agent without asking you first.

@@ -24,7 +24,15 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     match &app.modal {
         // `Enter` does what is picked everywhere; [H]ELP says so once, and no
         // bar spends its room on it.
-        Some(Modal::Confirm(_)) => return plain(&format!(" {}", key_by("←", "act.cancel"))),
+        Some(Modal::Bar(bar)) => {
+            let act = match bar {
+                Bar::Send(_) => key_by("Enter", "act.send"),
+                Bar::SendAnyway { .. } => key_by("Enter", "act.send_anyway"),
+                Bar::Resume { .. } => key_by("Enter", "act.resume"),
+                Bar::NothingToResume { .. } => "[N] NEW AGENT".into(),
+            };
+            return plain(&format!(" {}   {act}", key_by("←", "act.cancel")));
+        }
         Some(Modal::Quit) => return plain(" [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Weft) => return plain(" [↑↓] PICK   [ESC] CLOSE"),
         Some(Modal::CloseProject { .. }) => {
@@ -32,9 +40,6 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         }
         Some(Modal::OpenProject { .. }) => {
             return plain(&format!(" {}", key_by("←", "act.cancel")));
-        }
-        Some(Modal::SendAnyway { .. }) => {
-            return plain(" [↑↓] PICK   [←] CANCEL");
         }
         Some(Modal::StartAgent { .. }) => return plain(" [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Ask { .. }) => {
@@ -74,7 +79,6 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             return plain(keys);
         }
         Some(Modal::Allow { .. }) => return plain(" [Y] ALLOW   [N] REFUSE"),
-        Some(Modal::PickUp { .. }) => return plain(" [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Help) | Some(Modal::Note(_)) => return plain(" [ESC] CLOSE"),
         None => {}
     }
@@ -174,14 +178,17 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         (Some(Modal::Quit), _) => {
             " Nothing you asked for is lost either way. It is all written down.".into()
         }
-        (Some(Modal::Confirm(_)), _) => {
+        (Some(Modal::Bar(Bar::Send(_))), _) => {
             " Weft never types into an agent without asking you first.".into()
         }
+        (Some(Modal::Bar(Bar::SendAnyway { .. })), _) => String::new(),
         (Some(Modal::Ask { .. }), _) => {
             format!(" {}", word("ask.which_approach"))
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
-        (Some(Modal::PickUp { .. }), _) => format!(" {}", word("resume.either_way")),
+        (Some(Modal::Bar(Bar::Resume { .. } | Bar::NothingToResume { .. })), _) => {
+            format!(" {}", word("resume.either_way"))
+        }
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }

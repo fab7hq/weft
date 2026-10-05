@@ -31,7 +31,7 @@ pub struct Facts<'a> {
 pub struct Project {
     #[serde(rename = "project")]
     pub name: String,
-    /// Agents running.
+    /// Agents started here, running or not.
     pub open: usize,
     /// Agents asking their person for input.
     pub needs: usize,
@@ -202,7 +202,7 @@ pub fn rows(projects: &[Facts], folded: &dyn Fn(usize, Option<&str>) -> bool) ->
 fn project(at: usize, f: &Facts, folded: &dyn Fn(usize, Option<&str>) -> bool) -> Project {
     let mut out = Project {
         name: f.name.to_string(),
-        open: crate::turns::open(f.panes),
+        open: f.panes.len(),
         needs: crate::turns::asking(f.panes, f.agents, None),
         folded: folded(at, None),
         harnesses: Vec::new(),
@@ -238,7 +238,7 @@ fn project(at: usize, f: &Facts, folded: &dyn Fn(usize, Option<&str>) -> bool) -
                 .iter()
                 .enumerate()
                 .filter(|(_, u)| u.harness == name)
-                .map(|(i, u)| work(f, i, u))
+                .map(|(i, u)| work(f, i, u, running))
                 .collect()
         };
         out.harnesses.push(Harness {
@@ -256,7 +256,9 @@ fn project(at: usize, f: &Facts, folded: &dyn Fn(usize, Option<&str>) -> bool) -
     out
 }
 
-fn work(f: &Facts, at: usize, unit: &Unit) -> Work {
+/// A work's row. Its agent's turn shows only while an agent of its harness
+/// runs: a stopped agent's last receipt is not where it stands.
+fn work(f: &Facts, at: usize, unit: &Unit, running: bool) -> Work {
     let board = Board {
         units: f.units,
         selected: at,
@@ -272,7 +274,7 @@ fn work(f: &Facts, at: usize, unit: &Unit) -> Work {
         at,
         title: unit.title.clone(),
         word: Word::of(unit),
-        turn: crate::turns::state_of(unit, f.sessions).map(TurnWord::from),
+        turn: crate::turns::state_of(unit, f.sessions).filter(|_| running).map(TurnWord::from),
         eval: board.not_ready(Act::Eval),
         seal: board.not_ready(Act::Seal),
     }
@@ -421,7 +423,8 @@ mod tests {
         let codex = &t.harnesses[1];
         assert!(!codex.running);
         assert_eq!((codex.pane, codex.turn), (None, None));
-        assert_eq!(t.open, 1);
+        assert_eq!(t.open, 2, "every agent started here, running or not");
+        assert_eq!(codex.works[0].turn, None, "no turn while no agent of it runs");
         let closed: Vec<Unit> = u.into_iter().filter(|u| u.harness == "claude").collect();
         let t = build(&closed, &p, &a, &s, READY, OPEN);
         assert_eq!(t.harnesses.len(), 1, "codex has no agent and nothing open");

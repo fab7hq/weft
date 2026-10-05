@@ -392,13 +392,6 @@ fn the_wheel_scrolls_the_agent_only_while_it_has_the_keys() {
 }
 
 #[test]
-fn resuming_is_offered_only_when_the_record_names_a_session() {
-    assert_eq!(pick_up_choices(None), vec![PickUp::Fresh]);
-    let known = Recorded { id: "01a0bdb6".into(), at: 0, last: String::new() };
-    assert_eq!(pick_up_choices(Some(&known)), vec![PickUp::Resume, PickUp::Fresh]);
-}
-
-#[test]
 fn open_work_with_no_agent_offers_the_session_it_was_asked_in() {
     let mut a = app();
     let mut u = unit(Sent::TakenByAgent);
@@ -407,10 +400,35 @@ fn open_work_with_no_agent_offers_the_session_it_was_asked_in() {
     a.set_units(vec![u]);
     a.selected = a.rows().iter().position(|r| matches!(r, Row::Action { .. })).expect("row");
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::PickUp { harness, session: Some(s), then: None }) = a.modal.clone() else {
-        panic!("the choice, naming its own session: {:?}", a.modal)
+    let Some(Modal::Bar(Bar::Resume { harness, session: s, then: None })) = a.modal.clone() else {
+        panic!("the bar, naming its own session: {:?}", a.modal)
     };
     assert_eq!((harness.as_str(), s.id.as_str()), ("claude-code", "dfffa9be"));
+}
+
+/// No session on record: nothing to resume, and N is a fresh agent (T4.13),
+/// with the picker on that harness; ← goes back.
+#[test]
+fn with_nothing_to_resume_n_starts_a_fresh_agent() {
+    let mut a = app();
+    let mut u = unit(Sent::TakenByAgent);
+    (u.harness, u.session_ref) = ("claude-code".into(), None);
+    a.set_units(vec![u]);
+    a.selected = a.rows().iter().position(|r| matches!(r, Row::Action { .. })).expect("row");
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(a.modal, Some(Modal::Bar(Bar::NothingToResume { .. }))), "{:?}", a.modal);
+    press(&mut a, KeyCode::Left);
+    assert!(a.modal.is_none(), "← goes back");
+    press(&mut a, KeyCode::Enter);
+    let fresh = |h: &str| Start {
+        harness: h.into(),
+        label: format!("{h} · start fresh"),
+        spec: "/bin/cat".into(),
+        session: None,
+    };
+    a.set_starts(vec![fresh("codex"), fresh("claude-code")]);
+    press(&mut a, KeyCode::Char('n'));
+    assert_eq!(a.modal, Some(Modal::StartAgent { choice: 1 }), "the picker, on claude-code");
 }
 
 #[test]
@@ -649,7 +667,7 @@ fn a_typed_intent_becomes_a_confirmation_not_an_injection() {
         press(&mut a, KeyCode::Char(c));
     }
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::Confirm(p)) = a.modal.clone() else {
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else {
         panic!("expected a confirmation, got {:?}", a.modal)
     };
     let text = String::from_utf8(p.payload).unwrap();
@@ -690,7 +708,7 @@ fn follow_up_payload(mut a: App, intent: &str) -> String {
         press(&mut a, KeyCode::Char(c));
     }
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::Confirm(p)) = a.modal.clone() else {
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else {
         panic!("expected a confirmation, got {:?}", a.modal)
     };
     String::from_utf8(p.payload).unwrap()
@@ -712,7 +730,7 @@ fn a_plain_ask_carries_no_marker() {
         press(&mut a, KeyCode::Char(c));
     }
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::Confirm(p)) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else { panic!("{:?}", a.modal) };
     let text = String::from_utf8(p.payload).unwrap();
     assert!(!text.contains("[follow-up"), "got {text:?}");
 }
@@ -740,8 +758,26 @@ fn send_to_picks_the_agent_with_the_arrows_and_asks_it() {
         press(&mut a, KeyCode::Char(c));
     }
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::Confirm(p)) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else { panic!("{:?}", a.modal) };
     assert_eq!(a.harness_at(p.pane), Some("claude-code"), "asked of the agent picked");
+}
+
+/// A confirmation is a bar: Enter sends, ← cancels and takes it off the
+/// daemon's queue.
+#[test]
+fn the_send_bar_sends_on_enter_and_cancels_on_left() {
+    for (key, sent) in [(KeyCode::Enter, true), (KeyCode::Left, false)] {
+        let mut a = recorded(Sent::TakenByAgent);
+        press(&mut a, KeyCode::Char('a'));
+        for c in "new thing".chars() {
+            press(&mut a, KeyCode::Char(c));
+        }
+        press(&mut a, KeyCode::Enter);
+        assert!(matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))), "{:?}", a.modal);
+        press(&mut a, key);
+        assert!(a.modal.is_none(), "{key:?}: {:?}", a.modal);
+        assert_eq!(a.focus == Focus::Agent, sent, "{key:?}: sending goes where the keys went");
+    }
 }
 
 #[test]
@@ -763,7 +799,7 @@ fn eval_and_seal_always_confirm_before_typing() {
         gather_on_record(&a, &["ask_1"]);
         a.settle();
         press(&mut a, KeyCode::Char(key));
-        let Some(Modal::Confirm(p)) = a.modal.clone() else {
+        let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else {
             panic!("{key} must confirm first, got {:?}", a.modal)
         };
         let text = String::from_utf8(p.payload).unwrap();
@@ -783,14 +819,12 @@ fn an_agent_asking_its_person_is_asked_about_first_and_can_be_overruled() {
     a.session_mut().set_turns(vec![Some(weft_core::turns::Turn::Waiting)]);
     assert!(a.waiting(0));
     a.do_inject(&pending_for(0));
-    let Some(Modal::SendAnyway { why, .. }) = a.modal.clone() else {
+    let Some(Modal::Bar(Bar::SendAnyway { why, .. })) = a.modal.clone() else {
         panic!("it must ask first, got {:?}", a.modal)
     };
     assert_eq!(why, "the agent is asking you something");
-    assert_eq!(a.modal_choice, 0, "Type it anyway is the default");
-    press(&mut a, KeyCode::Down);
-    assert_eq!(a.modal_choice, 1, "Cancel is one key away");
-    press(&mut a, KeyCode::Enter);
+    // ← cancels; Enter is SEND ANYWAY.
+    press(&mut a, KeyCode::Left);
     assert!(a.modal.is_none(), "{:?}", a.modal);
 }
 
@@ -818,16 +852,12 @@ fn an_agent_that_has_not_said_it_is_ready_is_asked_about_first() {
         let mut a = recorded(Sent::ReadyToSend);
         a.session_mut().set_turns(vec![state]);
         a.do_inject(&pending_for(0));
-        let Some(Modal::SendAnyway { why: said, .. }) = a.modal.clone() else {
+        let Some(Modal::Bar(Bar::SendAnyway { why: said, .. })) = a.modal.clone() else {
             panic!("{state:?} must ask first, got {:?}", a.modal)
         };
         assert_eq!(said, why);
         let drawn = crate::ui::panel_text(&a).join("\n");
         assert!(drawn.contains(why), "{drawn}");
-        assert!(drawn.contains("Type it anyway"), "{drawn}");
-        // Only an agent asking is one the person would answer instead.
-        let answer = drawn.contains("Cancel — I will answer the agent");
-        assert_eq!(answer, state == Some(Turn::Waiting), "{drawn}");
     }
     for state in [Turn::Ready, Turn::TurnEnded] {
         let mut a = recorded(Sent::ReadyToSend);
@@ -1166,7 +1196,12 @@ fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
     press(&mut a, KeyCode::Enter); // the row's detail view
     assert!(a.detail().is_some(), "the detail view is open");
     press(&mut a, KeyCode::Char('p'));
-    assert!(matches!(a.modal, Some(Modal::Confirm(_))), "{:?} / {:?}", a.modal, a.hint_text());
+    assert!(
+        matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))),
+        "{:?} / {:?}",
+        a.modal,
+        a.hint_text()
+    );
     press(&mut a, KeyCode::Enter);
     assert!(a.modal.is_none(), "{:?}", a.modal);
     assert!(a.detail().is_none(), "the detail view closed");
@@ -1183,7 +1218,12 @@ fn a_send_ringframe_would_not_record_is_said() {
     });
     let mut a = recorded_in(Sent::ReadyToSend, refuses);
     press(&mut a, KeyCode::Char('p'));
-    assert!(matches!(a.modal, Some(Modal::Confirm(_))), "{:?} / {:?}", a.modal, a.hint_text());
+    assert!(
+        matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))),
+        "{:?} / {:?}",
+        a.modal,
+        a.hint_text()
+    );
     press(&mut a, KeyCode::Enter);
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     while std::time::Instant::now() < deadline && a.session_mut().unrecorded.is_none() {
@@ -1270,7 +1310,7 @@ fn cancelling_a_confirmation_types_nothing() {
     gather_on_record(&a, &["ask_1"]);
     a.settle();
     press(&mut a, KeyCode::Char('e'));
-    assert!(matches!(a.modal, Some(Modal::Confirm(_))));
+    assert!(matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))));
     press(&mut a, KeyCode::Left); // [←] CANCEL
     assert!(a.modal.is_none());
     assert_eq!(a.focus, Focus::Weft, "cancelling never moves you into the agent");
@@ -1320,7 +1360,7 @@ fn a_unit_whose_agent_is_not_open_is_not_silently_dropped() {
     u.harness = "claude-code".into();
     a.set_units(vec![u]);
     press(&mut a, KeyCode::Char('e'));
-    let Some(Modal::PickUp { harness, then, .. }) = a.modal.clone() else {
+    let Some(Modal::Bar(Bar::Resume { harness, then, .. })) = a.modal.clone() else {
         panic!("the missing agent is offered, not refused: {:?}", a.modal)
     };
     assert_eq!((harness.as_str(), then), ("claude-code", Some(Act::Eval)));

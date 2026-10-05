@@ -56,14 +56,17 @@ impl App {
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
             // Picking an agent hands it the keys, as Enter on its harness does.
             Action::NextPane => {
-                if self.pane_count() > 0 {
-                    self.pane_focus = (self.pane_focus + 1) % self.pane_count();
+                let running = self.running_panes();
+                if !running.is_empty() {
+                    let next =
+                        running.iter().position(|&i| i == self.pane_focus).map_or(0, |at| at + 1);
+                    self.pane_focus = running[next % running.len()];
                     self.focus = Focus::Agent;
                 }
             }
+            // The tab's digit: the tabs are the agents running.
             Action::PickPane(n) => {
-                let i = (n as usize).saturating_sub(1);
-                if i < self.pane_count() {
+                if let Some(&i) = self.running_panes().get((n as usize).saturating_sub(1)) {
                     self.pane_focus = i;
                     self.focus = Focus::Agent;
                 }
@@ -238,9 +241,11 @@ impl App {
                 }
                 // SEND TO is a list, picked as Remote's devices are.
                 event::KeyCode::Up | event::KeyCode::Down => {
-                    let n = self.pane_count().max(1);
+                    let running = self.running_panes();
+                    let n = running.len().max(1);
+                    let at = running.iter().position(|&i| i == target).unwrap_or(0);
                     let step = if key.code == event::KeyCode::Up { n - 1 } else { 1 };
-                    target = (target + step) % n;
+                    target = running.get((at + step) % n).copied().unwrap_or(target);
                     self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 event::KeyCode::Char(c) => {
@@ -256,10 +261,8 @@ impl App {
             Modal::Quit => 3,
             Modal::Weft => WEFT_MENU.len(),
             Modal::CloseProject { .. } => 2,
-            Modal::SendAnyway { .. } => 2,
             Modal::OpenProject { .. } => 1,
             Modal::StartAgent { .. } => self.fresh_starts().len().max(1),
-            Modal::PickUp { session, .. } => pick_up_choices(session.as_ref()).len(),
             _ => 1,
         };
         match key.code {
@@ -279,13 +282,20 @@ impl App {
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
                 // A question nobody is going to answer is taken off the
                 // daemon's queue, not left there for another client.
-                Modal::Confirm(p) => {
+                Modal::Bar(Bar::Send(p)) => {
                     let id = p.staged.clone();
                     let _ = sess!(self).resolve(&id, false, false);
                     self.modal = None;
                 }
                 _ => self.modal = None,
             },
+            event::KeyCode::Char('n' | 'N')
+                if matches!(modal, Modal::Bar(Bar::NothingToResume { .. })) =>
+            {
+                if let Modal::Bar(Bar::NothingToResume { harness }) = &modal {
+                    self.start_fresh(harness);
+                }
+            }
             event::KeyCode::Enter => self.confirm_modal(&modal),
             _ => {}
         }
@@ -301,27 +311,24 @@ impl App {
             | Modal::Locate { .. }
             | Modal::Remote
             | Modal::Allow { .. } => {}
-            Modal::Confirm(pending) => {
+            Modal::Bar(Bar::Send(pending)) => {
                 let pending = pending.clone();
                 self.do_inject(&pending);
             }
-            Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
-            Modal::PickUp { harness, session, then } => {
-                let (harness, session, then) = (harness.clone(), session.clone(), *then);
-                match pick_up_choices(session.as_ref()).get(self.modal_choice) {
-                    Some(PickUp::Resume) => self.pick_up(&harness, session.as_ref(), then),
-                    _ => self.pick_up(&harness, None, then),
-                }
-            }
-            // Its own keyboard, handled above.
-            Modal::OpenProject { .. } => {}
-            Modal::SendAnyway { pending, .. } => {
+            Modal::Bar(Bar::SendAnyway { pending, .. }) => {
                 let pending = pending.clone();
                 self.modal = None;
-                if self.modal_choice == 0 {
-                    self.do_inject_forcing(&pending, true);
-                }
+                self.do_inject_forcing(&pending, true);
             }
+            Modal::Bar(Bar::Resume { harness, session, then }) => {
+                let (harness, session, then) = (harness.clone(), session.clone(), *then);
+                self.pick_up(&harness, Some(&session), then);
+            }
+            // Its key is [N], above.
+            Modal::Bar(Bar::NothingToResume { .. }) => {}
+            Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
+            // Its own keyboard, handled above.
+            Modal::OpenProject { .. } => {}
             Modal::CloseProject { name } => {
                 self.modal = None;
                 if self.modal_choice == 0

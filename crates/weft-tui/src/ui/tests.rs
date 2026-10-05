@@ -334,8 +334,7 @@ fn the_confirmation_is_anchored_to_the_bottom_with_the_row_still_in_view() {
         .position(|l| l.contains("EVAL THIS WORK"))
         .unwrap_or_else(|| panic!("the panel:\n{drawn}"));
     assert!(row < panel, "the row it is about stays above it:\n{drawn}");
-    assert!(!lines[22].contains("[Enter]"), "{}", lines[22]);
-    assert!(lines[22].contains("[←] CANCEL"), "{}", lines[22]);
+    assert!(lines[22].contains("[←] CANCEL   [Enter] SEND"), "the bar: {}", lines[22]);
     assert!(lines[23].contains("never types into an agent without asking"), "{}", lines[23]);
 }
 
@@ -1058,4 +1057,63 @@ fn atlas_t4_1_ask_empty() {
     let mut a = atlas();
     press(&mut a, KeyCode::Char('a'));
     expect_screen("atlas_t4_1", &screen(&mut a, 120, 32));
+}
+
+/// A pending as the daemon stages it, on the pane at `pane`.
+fn staged(pane: usize, asking: weft_core::offers::Asking, payload: &str) -> crate::app::Pending {
+    crate::app::Pending {
+        staged: "pnd_1".into(),
+        pane,
+        payload: payload.as_bytes().to_vec(),
+        what: asking.what,
+        why: asking.why,
+    }
+}
+
+/// T4.5: the confirmation is a bar, CANCEL beside SEND.
+#[test]
+fn atlas_t4_5_the_bar_ready_to_ask() {
+    let mut a = atlas();
+    let asking = weft_core::offers::asking("/rf:ask", "claude");
+    let pending =
+        staged(0, asking, "Read the build number from the environment and show it on /health");
+    a.modal = Some(Modal::Bar(Bar::Send(pending)));
+    expect_screen("atlas_t4_5", &screen(&mut a, 120, 32));
+}
+
+/// T4.11: the agent has not said it is ready: CANCEL beside SEND ANYWAY.
+#[test]
+fn atlas_t4_11_the_bar_send_anyway() {
+    let mut a = atlas();
+    let asking = weft_core::offers::asking("/rf:ask", "claude");
+    let pending = staged(0, asking, "Read the build number");
+    let why = weft_core::words::word(weft_core::turns::WORKING);
+    a.modal = Some(Modal::Bar(Bar::SendAnyway { pending, why }));
+    expect_screen("atlas_t4_11", &screen(&mut a, 120, 32));
+}
+
+/// The Atlas's sample with codex no longer running.
+fn atlas_codex_gone() -> App {
+    let mut a = atlas();
+    a.session_mut().panes[1].running = false;
+    a
+}
+
+/// T4.12: work whose agent is not running: CANCEL beside RESUME.
+#[test]
+fn atlas_t4_12_the_bar_resume() {
+    let mut a = atlas_codex_gone();
+    let at = 14 * 3_600_000 + 2 * 60_000;
+    let last = "Implement /health: read BUILD_NUMBER from the environment at startup".to_string();
+    let session = weft_core::sessions::Recorded { id: "s_codex".into(), at, last };
+    a.modal = Some(Modal::Bar(Bar::Resume { harness: "codex".into(), session, then: None }));
+    expect_screen("atlas_t4_12", &screen(&mut a, 120, 32));
+}
+
+/// T4.13: nothing to resume: no Start fresh, a fresh agent is N.
+#[test]
+fn atlas_t4_13_the_bar_nothing_to_resume() {
+    let mut a = atlas_codex_gone();
+    a.modal = Some(Modal::Bar(Bar::NothingToResume { harness: "codex".into() }));
+    expect_screen("atlas_t4_13", &screen(&mut a, 120, 32));
 }

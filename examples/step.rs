@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
     if let Some(weft::app::Modal::Ask { text, .. }) = app.modal.as_ref() {
         println!("  the ask box holds: {text:?}");
     }
-    if let Some(weft::app::Modal::Confirm(p)) = app.modal.as_ref() {
+    if let Some(weft::app::Modal::Bar(weft::app::Bar::Send(p))) = app.modal.as_ref() {
         println!("  about to type: {:?}", String::from_utf8_lossy(&p.payload));
     }
     if let Some(hint) = app.hint_text() {
@@ -155,13 +155,14 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Weft => "Weft",
         CloseProject { .. } => "CloseProject",
         OpenProject { .. } => "OpenProject",
-        SendAnyway { .. } => "SendAnyway",
         Ask { .. } => "Ask",
-        Confirm(_) => "Confirm",
+        Bar(weft::app::Bar::Send(_)) => "Send",
+        Bar(weft::app::Bar::SendAnyway { .. }) => "SendAnyway",
+        Bar(weft::app::Bar::Resume { .. }) => "Resume",
+        Bar(weft::app::Bar::NothingToResume { .. }) => "NothingToResume",
         Note(_) => "Note",
         StartAgent { .. } => "StartAgent",
         RingFrame => "RingFrame",
-        PickUp { .. } => "PickUp",
         Locate { .. } => "Locate",
         Remote => "Remote",
         Allow { .. } => "Allow",

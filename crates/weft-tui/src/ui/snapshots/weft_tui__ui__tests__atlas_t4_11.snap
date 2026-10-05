@@ -1,0 +1,35 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 claude    2 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           2 open  ⌫ │ ┌────────────────────────────────────────────────────────────────────────┐
+   ▾ claude                                 │ │ ❯                                                                      │
+      fix login               ready · ASKED │ │                                                                        │
+   ▾ codex                                  │ │                                                                        │
+      health endpoint   turn ended · EVALED │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ │                                                                        │
+                                            │ └────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ THE AGENT HAS NOT SAID IT IS READY
+ Weft did not type it: the agent is working.
+ Weft types on its own only into an agent that has said it is
+ ready. If you can see it is, say so and Weft will type.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [←] CANCEL   [Enter] SEND ANYWAY

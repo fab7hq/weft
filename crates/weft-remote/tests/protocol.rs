@@ -71,7 +71,7 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     let pane = agent.as_str().unwrap().rsplit_once('-').unwrap().1.parse().unwrap();
     shell.tui.call(weft_proto::Call::Input { pane, bytes: b"exit\r".to_vec() });
     let ended = d.next_of("tree");
-    assert_eq!(ended["tree"][0]["open"], 0, "{ended}");
+    assert_eq!(ended["tree"][0]["open"], 1, "started here, and no longer running: {ended}");
     assert_eq!(ended["tree"][0]["harnesses"], json!([]), "no agent and nothing open: no row");
 }
 

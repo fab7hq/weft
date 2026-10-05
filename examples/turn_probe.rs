@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
-use weft::app::{App, Modal};
+use weft::app::{App, Bar, Modal};
 use weft::client::Session;
 use weft::keys::Toggle;
 use weft::turns::Turn;
@@ -81,7 +81,7 @@ fn main() -> anyhow::Result<()> {
     }
     // [P]ROCEED on a confirmed handoff is the send, and it asks first.
     press(&mut app, KeyCode::Char('p'));
-    let Some(Modal::Confirm(pending)) = app.modal.clone() else {
+    let Some(Modal::Bar(Bar::Send(pending))) = app.modal.clone() else {
         // Weft will not act for a harness whose readiness it cannot read. The
         // person then types the prompt into the agent themselves, which is
         // what the probe does, so the hooks are still exercised.
@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
     let mut seen = Seen::from(&app);
     press(&mut app, KeyCode::Enter);
     let mut forced = None;
-    if let Some(Modal::SendAnyway { why, .. }) = &app.modal {
+    if let Some(Modal::Bar(Bar::SendAnyway { why, .. })) = &app.modal {
         // Weft asked instead of typing. Only an agent that never said it was
         // ready is typed into anyway, the way its person would; asking about
         // one that did would be Weft's state failing, which is the outcome.

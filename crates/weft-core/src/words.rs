@@ -63,6 +63,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("resume.title", "{harness} is not running"),
     ("resume.session", "Resume the session this was asked in"),
     ("resume.either_way", "Your work is in the record either way."),
+    ("resume.nothing", "Nothing to resume: the session this was asked in is not on record."),
+    ("resume.fresh", "[N] starts a fresh {harness}."),
     ("agent.ended", "{harness} has ended. Its work is still on the list."),
     // The Eval view.
     ("eval.met", "met"),
