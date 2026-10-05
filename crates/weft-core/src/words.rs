@@ -44,6 +44,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("act.send", "Send"),
     ("act.send_anyway", "Send anyway"),
     ("act.resume", "Resume"),
+    ("act.start", "Start"),
     // Asking, and the bars that ask before Weft types.
     ("ask.title", "What do you want done?"),
     ("ask.send_to", "SEND TO"),
@@ -101,6 +102,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
     ("web.why.start_an_agent", "Start an agent first — on {machine}."),
     ("web.why.set_up_on", "Set it up in Weft on {machine}: U."),
+    ("web.act.keys", "Keys"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     (
