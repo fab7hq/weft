@@ -282,7 +282,19 @@ impl Remote {
                 (at.ok_or(("no_unit", format!("{id} is not on the board")))?, None)
             }
         };
-        let call = self.projects[at].as_ref().expect("an open project").agents.act(m, pane)?;
+        let agents = &self.projects[at].as_ref().expect("an open project").agents;
+        // No agent of the work's harness runs: say so, with what could be resumed.
+        if let Some(harness) = agents.missing(m) {
+            let session = m["unit"]
+                .as_str()
+                .and_then(|id| agents.unit(id))
+                .and_then(|u| agents.session_of(u));
+            let message = weft_core::words::say("resume.title", &harness);
+            self.send(conn, json!({"type": "error", "req": req, "code": "not_running", "message": message,
+                                   "harness": harness, "session": session.map(|s| json!({"at": s.at, "last": s.last}))}));
+            return Ok(true);
+        }
+        let call = agents.act(m, pane)?;
         self.ask(at, call, conn, req, Carries::Pending)
     }
 
@@ -295,24 +307,52 @@ impl Remote {
         let at =
             self.projects.iter().position(|o| o.as_ref().is_some_and(|o| o.agents.name == project));
         let at = at.ok_or(("no_project", format!("{project} is not open here")))?;
-        let call = self.projects[at].as_ref().expect("an open project").agents.start(harness)?;
+        let agents = &self.projects[at].as_ref().expect("an open project").agents;
+        // A work's: resume the session it was asked in (M4.12).
+        let call = match m["unit"].as_str() {
+            Some(unit) => agents.resume(harness, unit)?,
+            None => agents.start(harness)?,
+        };
         self.ask(at, call, conn, req, Carries::Agent)
     }
 
+    /// Yes or no. Weft types on its own only into an agent that has said it is
+    /// ready: a yes for one that has not is refused with why, and only then may
+    /// the device say to send it anyway (`force`).
     fn resolve(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        if m.get("force").is_some() {
-            return Err(("not_allowed", "a device never forces".into()));
-        }
         let id = m["pending"].as_str().ok_or(("bad_request", "no pending".to_string()))?;
         let yes = m["yes"].as_bool().ok_or(("bad_request", "yes or no".to_string()))?;
-        let at = self
+        let force = m["force"].as_bool().unwrap_or(false);
+        if force && !self.not_ready.contains(id) {
+            return Err(("not_allowed", "send anyway follows not_ready".into()));
+        }
+        let (at, pane) = self
             .pendings
             .get(id)
-            .map(|(at, _)| *at)
+            .map(|(at, p)| {
+                (
+                    *at,
+                    p["agent"]
+                        .as_str()
+                        .and_then(|a| a.rsplit_once('-'))
+                        .and_then(|(_, n)| n.parse::<u32>().ok()),
+                )
+            })
             .ok_or(("gone", "that was already answered".to_string()))?;
+        if yes && !force {
+            let turn = self.projects[at].as_ref().zip(pane).and_then(|(o, p)| o.agents.turn_of(p));
+            if let Err(why) = weft_core::turns::may_type(turn) {
+                self.not_ready.insert(id.to_string());
+                return Err((
+                    "not_ready",
+                    weft_core::words::fill("not_typed.why", &[("why", why)]),
+                ));
+            }
+        }
+        self.not_ready.remove(id);
         self.ask(
             at,
-            Call::Resolve { pending: id.into(), yes, force: false },
+            Call::Resolve { pending: id.into(), yes, force: force && yes },
             conn,
             req,
             Carries::Nothing,

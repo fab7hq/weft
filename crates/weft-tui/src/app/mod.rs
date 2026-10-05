@@ -962,14 +962,12 @@ impl App {
             self.say(format!("{said} [U]PDATE sets it up."));
             return;
         }
-        let own = self.selected_unit().filter(|u| u.harness == harness).and_then(|u| {
-            let id = u.session_ref.clone()?;
-            let at = weft_core::turns::millis(&u.asked_at).unwrap_or_default();
-            Some(Recorded { id, at, last: u.title.clone() })
-        });
-        let session = own.or_else(|| {
-            self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.clone())
-        });
+        let latest =
+            self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.as_ref());
+        let session = weft_core::offers::resume_session(
+            self.selected_unit().filter(|u| u.harness == harness),
+            latest,
+        );
         self.modal_choice = 0;
         self.modal = Some(Modal::Bar(match session {
             Some(session) => Bar::Resume { harness, session, then },

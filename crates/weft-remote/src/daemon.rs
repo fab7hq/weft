@@ -128,9 +128,9 @@ impl Project {
 }
 
 /// The calls `weft remote` may make (remote.md §4), and its own handshake
-/// and view; a fresh `agent.start` with the command line the daemon offered.
-/// Never `agent.close`, `stage`, `setup`,
-/// `project.turbo`, `shutdown`, `unit.confirm`, or `force: true`.
+/// and view; `agent.start` with the command line the daemon's harness file
+/// gives. Never `agent.close`, `stage`, `setup`, `project.turbo`, `shutdown` or
+/// `unit.confirm`; `force: true` only as protocol.rs allows it.
 pub fn allowed(call: &Call) -> bool {
     match call {
         Call::Hello { .. } | Call::RemoteView { .. } => true,
@@ -138,12 +138,15 @@ pub fn allowed(call: &Call) -> bool {
         Call::Attach { form, .. } => form == "screen" || form == "none",
         Call::Input { .. } | Call::Resize { .. } => true,
         Call::Available => true,
-        // A fresh agent, with the command line the daemon offered.
-        Call::StartAgent { session, .. } => session.is_none(),
+        // A fresh agent, or a work's session resumed, with the command line
+        // the daemon's harness file gives: never one a device sent.
+        Call::StartAgent { .. } => true,
         Call::Act { act, .. } => {
             matches!(act.as_str(), "ask" | "follow_up" | "send" | "check" | "decide")
         }
-        Call::Resolve { force, .. } => !force,
+        // A device may send anyway only after weft remote said its agent is
+        // not ready (protocol.rs).
+        Call::Resolve { .. } => true,
         // The reads a device's Details and Eval view are gathered from.
         Call::Read { what, .. } => {
             matches!(
@@ -189,11 +192,9 @@ mod tests {
             Call::Turbo { on: true },
             Call::Shutdown,
             Call::ConfirmAsk { unit: "ask_1".into() },
-            Call::Resolve { pending: "pnd_1".into(), yes: true, force: true },
             Call::Read { what: "ledger".into(), unit: "ask_1".into(), pane: None, lines: None },
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
-            Call::StartAgent { harness: "sh".into(), spec: "sh".into(), session: Some("s".into()) },
             Call::Detach,
         ];
         for call in never {
@@ -214,6 +215,12 @@ mod tests {
                 text: Some("more".into()),
             },
             Call::Resolve { pending: "pnd_1".into(), yes: true, force: false },
+            Call::Resolve { pending: "pnd_1".into(), yes: true, force: true },
+            Call::StartAgent {
+                harness: "sh".into(),
+                spec: "sh resume s".into(),
+                session: Some("s".into()),
+            },
             Call::Available,
             Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None },
             Call::Read {

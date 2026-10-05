@@ -9,9 +9,11 @@ use std::path::Path;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use weft_core::board::{Act, Board, PaneInfo};
+use weft_core::harness::Harnesses;
 use weft_core::ledger::Unit;
 use weft_core::readiness::Readiness;
 use weft_core::routing::Routing;
+use weft_core::sessions::Recorded;
 use weft_core::turns::{Session, Turn};
 use weft_proto::{Call, Event};
 
@@ -50,6 +52,10 @@ pub struct Project {
     /// The harnesses the person can start here, fresh, and each one's
     /// command line, as `agents.available` last answered.
     starts: Vec<(String, String)>,
+    /// The latest session of each harness the daemon offers to pick up.
+    resumes: Vec<(String, Recorded)>,
+    /// The harness files, as the daemon read them: how to resume a session.
+    files: Harnesses,
 }
 
 impl Project {
@@ -79,6 +85,8 @@ impl Project {
             readiness: answer["readiness"].clone(),
             routing: Routing::opened(&answer["routing"]),
             starts: Vec::new(),
+            resumes: Vec::new(),
+            files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
         };
         p.stamp(now());
         p
@@ -213,6 +221,19 @@ impl Project {
                 Some((s["harness"].as_str()?.to_string(), s["spec"].as_str()?.to_string()))
             })
             .collect();
+        self.resumes = answer["starts"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| {
+                let (h, r) = (s["harness"].as_str()?, &s["session"]);
+                let last = r["last"].as_str()?.to_string();
+                Some((
+                    h.to_string(),
+                    Recorded { id: r["id"].as_str()?.to_string(), at: r["at"].as_i64()?, last },
+                ))
+            })
+            .collect();
         let changed = starts != self.starts;
         self.starts = starts;
         changed
@@ -227,6 +248,49 @@ impl Project {
                 json!({"project": self.name, "harness": h, "title": title})
             })
             .collect()
+    }
+
+    /// The session a work's agent would resume, as the TUI picks one up.
+    pub fn session_of(&self, unit: &Unit) -> Option<Recorded> {
+        let latest = self.resumes.iter().find(|(h, _)| *h == unit.harness).map(|(_, s)| s);
+        weft_core::offers::resume_session(Some(unit), latest)
+    }
+
+    /// The harness an act on this work has to happen in, when no agent of it runs.
+    pub fn missing(&self, m: &Value) -> Option<String> {
+        let act = match m["act"].as_str()? {
+            "eval" => Act::Eval,
+            "seal" => Act::Seal,
+            "proceed" => Act::Proceed,
+            _ => return None,
+        };
+        let at = self.units.iter().position(|u| Some(u.ask_id.as_str()) == m["unit"].as_str())?;
+        self.board(Some(at), None, |b| b.missing_agent(act))
+    }
+
+    /// An agent's turn, as its hooks reported it.
+    pub fn turn_of(&self, pane: u32) -> Option<Turn> {
+        let i = self.panes.iter().position(|p| p.pane == pane)?;
+        self.turns.get(i).copied().flatten()
+    }
+
+    /// The call that resumes a work's session with its harness's own resume
+    /// command (`claude --resume <id>`, `codex resume <id>`), as the TUI's
+    /// pick-up runs it.
+    pub fn resume(&self, harness: &str, unit: &str) -> Result<Call, Refusal> {
+        let unit = self.unit(unit).ok_or(("no_unit", format!("{unit} is not on the board")))?;
+        let s = self
+            .session_of(unit)
+            .ok_or(("no_session", weft_core::words::word("resume.nothing").to_string()))?;
+        let h = self
+            .files
+            .find(harness)
+            .ok_or(("no_harness", format!("Weft does not know how to start {harness}.")))?;
+        Ok(Call::StartAgent {
+            harness: harness.into(),
+            spec: h.resume_spec(&s.id),
+            session: Some(s.id),
+        })
     }
 
     /// The call that starts a fresh agent of `harness` here, with the command
@@ -561,5 +625,33 @@ mod tests {
         assert_eq!(d["sections"][1]["state"], "GATHERED");
         assert!(d["sections"][1]["lines"].to_string().contains("debate in claude"), "{d}");
         assert_eq!((d["proceed"].clone(), d["eval_view"].clone()), (json!(false), json!(true)));
+    }
+
+    #[test]
+    fn work_whose_agent_is_gone_is_resumed_in_its_own_session() {
+        let mut answer = json!({
+            "panes": [{"pane": 4, "harness": "claude", "spec": "claude", "running": false}],
+            "agents": {"panes": [null], "sessions": []},
+            "harnesses": [{"name": "claude", "title": "Claude Code", "program": "claude", "resume": ["--resume"]}],
+            "units": [unit("ask_1", "fix login")],
+        });
+        answer["harnesses"][0] = serde_json::to_value(
+            weft_core::harness::fixture::harnesses().find("claude-code").unwrap(),
+        )
+        .unwrap();
+        answer["harnesses"][0]["name"] = json!("claude");
+        let p = Project::opened(Path::new("/work/weft"), &answer);
+        assert_eq!(p.missing(&json!({"act": "eval", "unit": "ask_1"})).as_deref(), Some("claude"));
+        assert_eq!(p.missing(&json!({"act": "ask", "text": "x"})), None, "an Ask names its agent");
+        let s = p.session_of(p.unit("ask_1").unwrap()).expect("the session it was asked in");
+        assert_eq!((s.id.as_str(), s.last.as_str()), ("s_1", "fix login"));
+        let Ok(Call::StartAgent { harness, spec, session }) = p.resume("claude", "ask_1") else {
+            panic!()
+        };
+        assert_eq!((harness.as_str(), session.as_deref()), ("claude", Some("s_1")));
+        assert!(spec.ends_with(" s_1"), "the harness file's resume command line: {spec}");
+        let mut none = unit("ask_2", "telemetry");
+        none.session_ref = None;
+        assert_eq!(p.session_of(&none), None, "nothing to resume");
     }
 }

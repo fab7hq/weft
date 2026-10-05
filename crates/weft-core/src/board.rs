@@ -125,8 +125,9 @@ impl Board<'_> {
         self.units.get(self.selected)
     }
 
+    /// A running agent of this harness: a stopped one takes no act.
     fn pane_for(&self, harness: &str) -> Option<usize> {
-        self.panes.iter().position(|p| p.harness == harness)
+        self.panes.iter().position(|p| p.running && p.harness == harness)
     }
 
     /// Agents running in this project, as the title bar counts them: OPEN

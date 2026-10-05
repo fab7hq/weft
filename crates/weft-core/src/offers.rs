@@ -22,6 +22,22 @@ pub fn say_handoff(how: &Handoff, harness: &str) -> Option<String> {
     }
 }
 
+/// The session picking work back up resumes: the one it was asked in, when
+/// the record names one, else its harness's latest on record.
+pub fn resume_session(
+    unit: Option<&crate::ledger::Unit>,
+    latest: Option<&crate::sessions::Recorded>,
+) -> Option<crate::sessions::Recorded> {
+    let own = unit.and_then(|u| {
+        Some(crate::sessions::Recorded {
+            id: u.session_ref.clone()?,
+            at: crate::turns::millis(&u.asked_at).unwrap_or_default(),
+            last: u.title.clone(),
+        })
+    });
+    own.or_else(|| latest.cloned())
+}
+
 /// A refusal's first line: RingFrame says what is wrong, then what to do, and
 /// a hint has room for the first half.
 pub fn first_line(message: &str) -> String {
@@ -71,7 +87,8 @@ pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
 
 /// Running Check or Decide, in whichever harness this project routes it to.
 pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Asking {
-    let mut why = vec![crate::words::fill("bar.will_type", &[("command", command), ("harness", into)])];
+    let mut why =
+        vec![crate::words::fill("bar.will_type", &[("command", command), ("harness", into)])];
     if skill == "eval" {
         why.push("Weft has gathered the change. The agent will run RingFrame's".into());
         why.push("judging tasks on it; none of the judges did the work.".into());
