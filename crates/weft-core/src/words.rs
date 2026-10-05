@@ -150,6 +150,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.refused.not_owner", "This machine belongs to another account."),
     ("web.refused.busy", "Your machine was asked too often. Try again in a few minutes."),
     ("web.refused.other", "Your machine refused this device."),
+    (
+        "web.refused.version",
+        "This page and Weft on your machine are different versions. Reload this page; if it stays, update Weft on your machine.",
+    ),
     ("web.settings.back", "Back"),
     ("web.settings.this_device", "This device"),
     ("web.settings.name", "Name, as your machines show it"),

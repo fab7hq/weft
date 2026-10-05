@@ -80,3 +80,19 @@ fn a_device_that_is_not_allowed_is_refused_at_hello() {
     d.send(json!({"type": "watch", "agent": null}));
     assert!(d.closed_within(Duration::from_secs(1)), "nothing before hello");
 }
+
+/// A page that speaks another version of the protocol is told so, at hello
+/// and at pair, and the person is never asked.
+#[test]
+fn another_version_is_refused_as_such() {
+    let mut h = Harness::start("version");
+    let mut d = h.device();
+    d.send(json!({"type": "hello", "v": 1, "device": "d_old", "token": "t"}));
+    assert_eq!(d.next(), json!({"type": "refused", "code": "version"}));
+    let views = h.tui.views(Duration::from_millis(300));
+    let mut d = h.device();
+    d.send(json!({"type": "pair", "v": 1, "device": "d_old", "name": "Phone", "assertion": good("d_old")}));
+    assert_eq!(d.next(), json!({"type": "refused", "code": "version"}));
+    let views: Vec<_> = views.into_iter().chain(h.tui.views(Duration::from_millis(500))).collect();
+    assert!(views.iter().all(|v| v["asking"].is_null()), "{views:?}");
+}

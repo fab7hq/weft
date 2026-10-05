@@ -809,7 +809,11 @@ impl Remote {
     fn hello(&mut self, conn: u64, m: &Value) {
         let (device, token) =
             (m["device"].as_str().unwrap_or(""), m["token"].as_str().unwrap_or(""));
-        if m["v"] != VERSION || !self.devices.admits(device, token) {
+        // A page from another version is told so, rather than forgotten.
+        if m["v"] != VERSION {
+            return self.refuse(conn, "version");
+        }
+        if !self.devices.admits(device, token) {
             return self.refuse(conn, "unknown_device");
         }
         if let Some(d) = self.devices.get_mut(device) {
@@ -831,6 +835,9 @@ impl Remote {
     }
 
     fn pair(&mut self, conn: u64, m: &Value) {
+        if m["v"] != VERSION {
+            return self.refuse(conn, "version");
+        }
         let Some(machine) = &self.machine else { return self.refuse(conn, "not_owner") };
         let now = agents::now() / 1000;
         let checked = devices::check(
@@ -848,11 +855,7 @@ impl Remote {
             // A stranger's request never reaches the person.
             return self.refuse(conn, "not_owner");
         };
-        if m["v"] != VERSION
-            || name.is_empty()
-            || self.asking.is_some()
-            || !self.gate.may_ask(Instant::now())
-        {
+        if name.is_empty() || self.asking.is_some() || !self.gate.may_ask(Instant::now()) {
             return self.refuse(conn, "busy");
         }
         self.asking =
