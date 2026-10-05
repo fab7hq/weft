@@ -43,6 +43,10 @@ The docs, and the scenarios that draw Weft's screens for them, live in
 change to what Weft draws shows up there when the pin moves. `examples/` holds
 probes that check one mechanism against a real harness, by hand.
 
+`crates/weft-core/words.json` holds the words the TUI and the web app share,
+generated from `weft_core::words`; `cargo test` fails when it is stale, and
+`WEFT_WRITE_WORDS=1 cargo test -p weft-core --test words_json` writes it again.
+
 `./bin/reinstall-local` builds both binaries, installs them, syncs RingFrame's
 configuration and Weft's harness files (`~/.fab7/weft/harnesses/`) from a `fab7`
 checkout beside this one, and restarts the daemon, so a change is tested as
