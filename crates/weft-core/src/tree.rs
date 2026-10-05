@@ -35,6 +35,8 @@ pub struct Project {
     pub open: usize,
     /// Agents asking their person for input.
     pub needs: usize,
+    /// `None` when an Ask can be made here, else why not.
+    pub ask: Option<Why>,
     #[serde(skip)]
     pub folded: bool,
     pub harnesses: Vec<Harness>,
@@ -204,6 +206,17 @@ fn project(at: usize, f: &Facts, folded: &dyn Fn(usize, Option<&str>) -> bool) -
         name: f.name.to_string(),
         open: f.panes.len(),
         needs: crate::turns::asking(f.panes, f.agents, None),
+        ask: Board {
+            units: f.units,
+            selected: usize::MAX,
+            panes: f.panes,
+            focused: f.panes.iter().position(|p| p.running).unwrap_or(0),
+            readiness: f.readiness,
+            routing: f.routing,
+            workspace_gap: None,
+            agents: f.agents,
+        }
+        .why_not(Act::Ask),
         folded: folded(at, None),
         harnesses: Vec::new(),
     };
@@ -465,6 +478,22 @@ mod tests {
             w.eval.as_ref().map(Why::say).as_deref(),
             Some("codex is not set up for RingFrame.")
         );
+    }
+
+    #[test]
+    fn a_project_says_why_an_ask_cannot_be_made_there() {
+        let (u, p, a, s) = weft();
+        assert_eq!(build(&u, &p, &a, &s, READY, OPEN).ask, None);
+        let unset = |h: &str| {
+            if h == "claude" { Readiness::Missing(Gap::Plugin) } else { Readiness::Ready }
+        };
+        let t = build(&u, &p, &a, &s, &unset, OPEN);
+        assert_eq!(
+            t.ask,
+            Some(Why { key: "why.not_set_up", harness: Some("claude".into()), title: None })
+        );
+        let t = build(&u, &[], &[], &s, READY, OPEN);
+        assert_eq!(t.ask, Some(Why::new("why.start_an_agent")));
     }
 
     #[test]

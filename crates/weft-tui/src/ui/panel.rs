@@ -28,7 +28,7 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Note(_) => "WEFT".into(),
         Modal::Ask { .. } => word("ask.title").to_uppercase(),
         Modal::Bar(Bar::Send(p)) => p.what.to_uppercase(),
-        Modal::StartAgent { .. } => "START AN AGENT".into(),
+        Modal::StartAgent { .. } => word("start.title").to_uppercase(),
         Modal::RingFrame => "RINGFRAME".into(),
         Modal::Remote => "REMOTE".into(),
         Modal::Allow { .. } => "ALLOW A DEVICE?".into(),

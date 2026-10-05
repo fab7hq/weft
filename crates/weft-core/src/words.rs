@@ -30,6 +30,7 @@ pub const WORDS: &[(&str, &str)] = &[
         "Your agent runs here either way. Nothing is written down until it is set up.",
     ),
     ("tree.written_down", "Nothing is written down until it is set up."),
+    ("start.title", "Start an agent"),
     // The acts, as a bar or a button names them.
     ("act.ask", "Ask"),
     ("act.eval", "Eval"),
@@ -91,6 +92,13 @@ pub const WORDS: &[(&str, &str)] = &[
     ("why.nothing_to_send", "{title} has nothing to send. [F] FOLLOW UP asks for more."),
     ("why.no_eval", "No Eval of this work yet: [E]VAL starts one."),
     ("why.nothing_needs_you", "Nothing needs your input."),
+    // The web app's own wording of the same things: a screen, not keys
+    // (the owner, 2026-10-05), the same on a phone and a desktop.
+    ("web.turn.waiting", "waiting"),
+    ("web.tree.needs_you", "● needs you"),
+    ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
+    ("web.why.start_an_agent", "Start an agent first — on {machine}."),
+    ("web.why.set_up_on", "Set it up in Weft on {machine}: U."),
 ];
 
 /// The word for a key. A key the table does not hold is a bug in the caller,
