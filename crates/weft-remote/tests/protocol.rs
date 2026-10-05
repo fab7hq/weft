@@ -50,6 +50,32 @@ fn nothing_the_never_sent_list_names_reaches_the_daemon() {
 }
 
 #[test]
+fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
+    let mut h = Harness::start("tree");
+    let mut shell = h.shell("work");
+    let (mut first, _) = h.allowed("d_1");
+    first.agents(1);
+    // Once the project is open, a device is welcomed with its tree.
+    let (mut d, welcome) = h.allowed("d_2");
+    let agent = welcome["agents"][0]["agent"].clone();
+    let tree = &welcome["tree"];
+    assert_eq!(tree.as_array().map(Vec::len), Some(1), "{tree}");
+    assert_eq!((tree[0]["project"].clone(), tree[0]["open"].clone()), (json!("work"), json!(1)));
+    let sh = &tree[0]["harnesses"][0];
+    assert_eq!(
+        (sh["harness"].clone(), sh["agent"].clone(), sh["running"].clone()),
+        (json!("sh"), agent.clone(), json!(true))
+    );
+    assert_eq!(sh["works"], json!([]), "nothing asked yet");
+
+    let pane = agent.as_str().unwrap().rsplit_once('-').unwrap().1.parse().unwrap();
+    shell.tui.call(weft_proto::Call::Input { pane, bytes: b"exit\r".to_vec() });
+    let ended = d.next_of("tree");
+    assert_eq!(ended["tree"][0]["open"], 0, "{ended}");
+    assert_eq!(ended["tree"][0]["harnesses"], json!([]), "no agent and nothing open: no row");
+}
+
+#[test]
 fn every_req_gets_ok_or_error() {
     let mut h = Harness::start("reqs");
     let _shell = h.shell("work");

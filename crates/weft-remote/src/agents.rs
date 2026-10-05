@@ -10,7 +10,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use weft_core::board::PaneInfo;
 use weft_core::ledger::Unit;
-use weft_core::turns::Turn;
+use weft_core::readiness::Readiness;
+use weft_core::routing::Routing;
+use weft_core::turns::{Session, Turn};
 use weft_proto::Event;
 
 /// The first 12 hex digits of the SHA-256 of a project's path.
@@ -35,8 +37,13 @@ pub struct Project {
     titles: HashMap<String, String>,
     /// Each pane's turn as last listed, and since when (milliseconds).
     since: HashMap<u32, (&'static str, i64)>,
-    /// The board, for the Ask an Eval or a Seal from a device is about.
+    /// The board, for the tree and the Ask an act from a device is about.
     units: Vec<Unit>,
+    /// The sessions the hooks reported, for a work's own turn.
+    sessions: Vec<Session>,
+    /// What each harness is short of, by the daemon's word.
+    readiness: Value,
+    routing: Routing,
 }
 
 impl Project {
@@ -61,6 +68,10 @@ impl Project {
             titles,
             since: HashMap::new(),
             units: serde_json::from_value(answer["units"].clone()).unwrap_or_default(),
+            sessions: serde_json::from_value(answer["agents"]["sessions"].clone())
+                .unwrap_or_default(),
+            readiness: answer["readiness"].clone(),
+            routing: Routing::opened(&answer["routing"]),
         };
         p.stamp(now());
         p
@@ -86,8 +97,12 @@ impl Project {
                 Some(p) => p.running = false,
                 None => return false,
             },
-            Event::Agents { panes, .. } => self.turns = panes.clone(),
+            Event::Agents { panes, sessions } => {
+                self.turns = panes.clone();
+                self.sessions = sessions.clone();
+            }
             Event::Units { units, .. } => self.units = units.clone(),
+            Event::Readiness { states } => self.readiness = states.clone(),
             _ => return false,
         }
         self.stamp(now());
@@ -168,6 +183,32 @@ impl Project {
             .collect()
     }
 
+    /// This project's row of the `tree` message: weft-core's rows, nothing
+    /// folded (folding is the device's own), each harness naming the agent
+    /// a tap on it opens.
+    pub fn tree(&self) -> Value {
+        let title = |h: &str| self.titles.get(h).cloned();
+        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
+        let facts = weft_core::tree::Facts {
+            name: &self.name,
+            units: &self.units,
+            panes: &self.panes,
+            agents: &self.turns,
+            sessions: &self.sessions,
+            title: &title,
+            readiness: &ready,
+            routing: &self.routing,
+        };
+        let project = weft_core::tree::rows(&[facts], &|_, _| false).remove(0);
+        let mut row = serde_json::to_value(&project).unwrap_or_default();
+        for (h, at) in
+            project.harnesses.iter().zip(row["harnesses"].as_array_mut().into_iter().flatten())
+        {
+            at["agent"] = h.pane.map(|p| agent_id(&self.key, p)).into();
+        }
+        row
+    }
+
     /// Each pane's id on the wire and its turn, for push.
     pub fn turns(&self) -> Vec<(String, &'static str)> {
         (0..self.panes.len())
@@ -208,5 +249,104 @@ mod tests {
         assert_eq!(key, project_key(Path::new("/Users/me/work/thing")), "the same every time");
         assert_ne!(key, project_key(Path::new("/Users/me/work/other")));
         assert_eq!(agent_id("3f9a1c07b2de", 4), "3f9a1c07b2de-4");
+    }
+
+    fn unit(id: &str, title: &str) -> Unit {
+        Unit {
+            ask_id: id.into(),
+            title: title.into(),
+            harness: "claude".into(),
+            session_ref: Some("s_1".into()),
+            confirmed: true,
+            sent: weft_core::ledger::Sent::TakenByAgent,
+            ..Default::default()
+        }
+    }
+
+    fn opened() -> Project {
+        let answer = json!({
+            "panes": [{"pane": 4, "harness": "claude", "spec": "claude", "running": true}],
+            "agents": {"panes": ["waiting"], "sessions": [
+                {"harness": "claude", "id": "s_1", "first": 0, "latest": "working", "at": 0}]},
+            "harnesses": [{"name": "claude", "title": "Claude Code"}],
+            "units": [unit("ask_1", "fix login")],
+            "readiness": {"claude": "ready"},
+        });
+        Project::opened(Path::new("/work/weft"), &answer)
+    }
+
+    fn works(tree: &Value) -> Vec<(String, String)> {
+        tree["harnesses"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|h| h["works"].as_array().cloned().unwrap_or_default())
+            .map(|w| {
+                (w["title"].as_str().unwrap().to_string(), w["word"].as_str().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_tree_names_each_harnesss_agent_and_each_works_word() {
+        let p = opened();
+        let tree = p.tree();
+        assert_eq!(
+            (tree["project"].clone(), tree["open"].clone(), tree["needs"].clone()),
+            (json!("weft"), json!(1), json!(1))
+        );
+        let claude = &tree["harnesses"][0];
+        assert_eq!(claude["agent"], agent_id(&p.key, 4));
+        assert_eq!(
+            (claude["title"].clone(), claude["turn"].clone()),
+            (json!("Claude Code"), json!("waiting"))
+        );
+        assert_eq!(claude["works"][0]["turn"], "working", "the work's own session");
+        assert_eq!(
+            (claude["works"][0]["eval"].clone(), claude["works"][0]["seal"].clone()),
+            (Value::Null, Value::Null)
+        );
+    }
+
+    #[test]
+    fn a_unit_added_an_eval_recorded_and_an_agent_ending_change_the_tree() {
+        let mut p = opened();
+        let mut units = vec![unit("ask_1", "fix login"), unit("ask_2", "telemetry")];
+        assert!(p.heard(&Event::Units { units: units.clone(), records: json!({}) }));
+        assert_eq!(
+            works(&p.tree()),
+            [("fix login".into(), "asked".into()), ("telemetry".into(), "asked".into())]
+        );
+        units[0].check = Some(weft_core::ledger::Check {
+            eval_id: "evl_1".into(),
+            verdict: weft_core::ledger::Verdict::Matches,
+            agreement: 1.0,
+            judged_by: None,
+        });
+        assert!(p.heard(&Event::Units { units, records: json!({}) }));
+        assert_eq!(works(&p.tree())[0], ("fix login".into(), "evaled".into()));
+        assert!(p.heard(&Event::Exited { pane: 4 }));
+        let claude = &p.tree()["harnesses"][0];
+        assert_eq!(
+            (claude["running"].clone(), claude["agent"].clone(), claude["turn"].clone()),
+            (json!(false), Value::Null, Value::Null)
+        );
+        assert_eq!(works(&p.tree()).len(), 2, "its open work stays");
+    }
+
+    #[test]
+    fn a_harness_not_set_up_is_why_eval_and_seal_cannot_run() {
+        let mut p = opened();
+        assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
+        let work = &p.tree()["harnesses"][0]["works"][0];
+        assert_eq!(work["eval"], json!({"key": "why.not_set_up", "harness": "claude"}));
+        assert_eq!(work["seal"], work["eval"]);
+    }
+
+    #[test]
+    fn a_device_folds_its_own_tree() {
+        let tree = opened().tree();
+        assert!(tree.get("folded").is_none() && tree["harnesses"][0].get("folded").is_none());
+        assert_eq!(works(&tree).len(), 1, "nothing is folded on the wire");
     }
 }

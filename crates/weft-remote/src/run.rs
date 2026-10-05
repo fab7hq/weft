@@ -154,6 +154,8 @@ struct Remote {
     projects: Vec<Option<Open>>,
     view: View,
     shown: Value,
+    /// The tree devices were last sent.
+    told_tree: Value,
     reported: Reported,
     cancel: Arc<AtomicBool>,
     tunnel: Option<Tunnel>,
@@ -306,6 +308,7 @@ impl Remote {
             projects: Vec::new(),
             view,
             shown: Value::Null,
+            told_tree: Value::Null,
             reported: Reported::default(),
             cancel: Arc::default(),
             tunnel: None,
@@ -459,9 +462,19 @@ impl Remote {
         json!({"type": "agents", "agents": rows})
     }
 
+    /// Every open project's rows of the tree (remote.md §6b).
+    fn tree(&self) -> Value {
+        self.projects.iter().flatten().map(|o| o.agents.tree()).collect()
+    }
+
     fn tell_agents(&mut self) {
         let message = self.agents_message();
         self.to_devices(&message);
+        let tree = self.tree();
+        if tree != self.told_tree {
+            self.to_devices(&json!({"type": "tree", "tree": tree}));
+            self.told_tree = tree;
+        }
         let turns: Vec<(String, &str)> =
             self.projects.iter().flatten().flat_map(|o| o.agents.turns()).collect();
         self.rules.turns(&turns);
@@ -750,7 +763,8 @@ impl Remote {
         self.send(
             conn,
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
-                   "vapid": self.vapid, "agents": agents, "pendings": pendings}),
+                   "vapid": self.vapid, "agents": agents, "tree": self.tree(),
+                   "pendings": pendings}),
         );
     }
 

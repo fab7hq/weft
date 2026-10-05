@@ -273,13 +273,7 @@ impl Session {
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
         session.remote = opened.get("remote").filter(|v| !v.is_null()).cloned();
         if let Some(r) = opened.get("routing") {
-            session.routing = weft_core::routing::Routing::of(
-                r.get("acts").cloned().unwrap_or_default(),
-                r.get("unknown").cloned().unwrap_or_default(),
-                r.get("ignored").cloned().unwrap_or_default(),
-                r.get("leftover").cloned().unwrap_or_default(),
-                r.get("eval_stages").cloned().unwrap_or_default(),
-            );
+            session.routing = weft_core::routing::Routing::opened(r);
         }
         for chunk in opened.get("replay").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
             if let Some((pane, bytes)) = weft_proto::output_of(chunk)

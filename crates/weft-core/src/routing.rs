@@ -36,6 +36,18 @@ pub struct Routing {
 
 impl Routing {
     /// From what a daemon reports, rather than from the file.
+    /// The routing `project.open` answered with.
+    pub fn opened(r: &serde_json::Value) -> Self {
+        let field = |k: &str| r.get(k).cloned().unwrap_or_default();
+        Self::of(
+            field("acts"),
+            field("unknown"),
+            field("ignored"),
+            field("leftover"),
+            field("eval_stages"),
+        )
+    }
+
     pub fn of(
         acts: serde_json::Value,
         unknown: serde_json::Value,

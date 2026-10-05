@@ -22,7 +22,7 @@ use crate::theme::Theme;
 pub use weft_core::board::Act;
 use weft_core::board::{Board, Next, PaneInfo};
 pub use weft_core::offers::{PickUp, pick_up_choices, say_handoff};
-use weft_core::readiness::{Gap, Readiness};
+use weft_core::readiness::Readiness;
 use weft_core::sessions::Recorded;
 
 /// What Weft is about to type, and where. Shown before anything is sent.
@@ -425,7 +425,7 @@ impl App {
         if let Some(local) = self.readiness.get(harness) {
             return *local;
         }
-        readiness_of(sess!(self).readiness.get(harness).and_then(|v| v.as_str()))
+        Readiness::of_word(sess!(self).readiness.get(harness).and_then(|v| v.as_str()))
     }
 
     /// What this project routes, for showing. Empty when it routes nothing.
@@ -1786,17 +1786,6 @@ fn facts_of(s: &Session) -> (Vec<PaneInfo>, Vec<Option<weft_core::turns::Turn>>)
         })
         .collect();
     (panes, s.panes.iter().map(|p| p.turn).collect())
-}
-
-/// Readiness as the daemon words it.
-fn readiness_of(word: Option<&str>) -> Readiness {
-    match word {
-        Some("ready") => Readiness::Ready,
-        Some("no_cli") => Readiness::Missing(Gap::Cli),
-        Some("no_marketplace") => Readiness::Missing(Gap::Marketplace),
-        Some("no_plugin") => Readiness::Missing(Gap::Plugin),
-        _ => Readiness::Unknown,
-    }
 }
 
 /// A refusal from the daemon, as one sentence for the person.

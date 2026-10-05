@@ -44,6 +44,17 @@ impl Readiness {
         matches!(self, Readiness::Missing(Gap::Marketplace | Gap::Plugin))
     }
 
+    /// Readiness as the daemon words it; anything else is `Unknown`.
+    pub fn of_word(word: Option<&str>) -> Self {
+        match word {
+            Some("ready") => Readiness::Ready,
+            Some("no_cli") => Readiness::Missing(Gap::Cli),
+            Some("no_marketplace") => Readiness::Missing(Gap::Marketplace),
+            Some("no_plugin") => Readiness::Missing(Gap::Plugin),
+            _ => Readiness::Unknown,
+        }
+    }
+
     /// One sentence, in plain words, naming the harness it is about.
     pub fn say(self, harness: &str) -> Option<String> {
         match self {
