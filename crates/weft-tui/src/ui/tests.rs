@@ -39,11 +39,11 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
 fn a_turbo_rows_badge_is_right_aligned() {
     let mut a = app();
     crate::app::tests::agent_says(&mut a, "codex", "fixture", "waiting");
-    let row = a.rows().iter().find(|r| matches!(r, crate::app::Row::Harness { .. })).cloned();
-    let row = row.expect("the harness row");
-    let plain = sidebar_row(&a, &row, false, 40).width();
+    let harness =
+        |a: &App| a.rows().iter().find(|r| matches!(r, crate::app::Row::Harness { .. })).cloned();
+    let plain = sidebar_row(&a, &harness(&a).expect("the harness row"), false, 40).width();
     a.session_mut().panes[0].turbo = true;
-    let turbo = sidebar_row(&a, &row, false, 40);
+    let turbo = sidebar_row(&a, &harness(&a).expect("the harness row"), false, 40);
     assert!(turbo.spans.iter().any(|s| s.content.contains('⚡')), "{turbo:?}");
     assert_eq!(turbo.width(), plain, "the badge ends where it did");
 }

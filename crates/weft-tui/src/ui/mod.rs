@@ -14,7 +14,6 @@ use tui_term::widget::PseudoTerminal;
 use crate::app::{Act, App, Modal, Target};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
-use crate::ledger::Unit;
 use crate::theme::{Theme, pair};
 
 mod agent;

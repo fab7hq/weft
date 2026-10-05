@@ -117,7 +117,7 @@ pub(super) fn sidebar_row(
                 Span::styled("⌫".to_string(), th.label()),
             ])
         }
-        Row::Harness { project, name, folded, waiting, running } => {
+        Row::Harness { name, folded, waiting, running, turbo, .. } => {
             // The badge of an agent asking for input: the one thing NEEDS YOU is.
             let tail = match waiting {
                 0 => "   ".to_string(),
@@ -126,7 +126,7 @@ pub(super) fn sidebar_row(
             };
             let gone = if *running { "" } else { " · not running" };
             // ⚡: an agent of it runs in turbo mode, as its tab says too.
-            let turbo = if app.harness_turbo(*project, name) { " ⚡" } else { "" };
+            let turbo = if *turbo { " ⚡" } else { "" };
             let head = format!("   {} {name}{turbo}{gone}", if *folded { "▸" } else { "▾" });
             let room = width.saturating_sub(cells(&tail) + 1);
             Line::from(vec![
@@ -134,17 +134,15 @@ pub(super) fn sidebar_row(
                 Span::styled(tail, th.needs_you()),
             ])
         }
-        Row::Action { project, unit } => {
+        Row::Action { project, unit, word, turn } => {
             // The row's own project, not the focused one: a unit in the
             // background was being drawn from whichever board was in front.
             let Some(unit) = app.units_of(*project).get(*unit) else { return Line::raw("") };
             // Where the Ask stands, and never an alarm: what needs you is an
-            // agent asking, and that is its harness's row.
-            let word = row_state(unit);
-            // The agent's state, when its session reported one; nothing
-            // rather than a guess when it did not.
-            let agent = app.unit_turn(*project, unit).map(|t| format!("{} · ", t.plain()));
-            let state = format!("{}{word}  ", agent.unwrap_or_default());
+            // agent asking, and that is its harness's row. The agent's state
+            // shows when its session reported one; nothing rather than a guess.
+            let agent = turn.map(|t| format!("{} · ", t.say()));
+            let state = format!("{}{}  ", agent.unwrap_or_default(), word.say());
             let head = format!("      {}", unit.title);
             let room = width.saturating_sub(cells(&state) + 1);
             Line::from(vec![
@@ -152,25 +150,5 @@ pub(super) fn sidebar_row(
                 Span::styled(state, th.label()),
             ])
         }
-    }
-}
-
-/// Where a unit stands, in one word: the furthest act that has happened, in
-/// the past tense.
-///
-/// The same three acts the detail view names, so the sidebar and the view
-/// teach one vocabulary between them rather than two.
-pub(super) fn row_state(unit: &Unit) -> &'static str {
-    if unit.cancelled {
-        "CANCELLED"
-    } else if unit.requested_only {
-        // Asked, and its prompt still being composed: under way, not done.
-        "ASKING"
-    } else if unit.sealed.is_some() {
-        "SEALED"
-    } else if unit.check.is_some() {
-        "EVALED"
-    } else {
-        "ASKED"
     }
 }

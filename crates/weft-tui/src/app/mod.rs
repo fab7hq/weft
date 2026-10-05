@@ -114,9 +114,27 @@ fn shellexpand(typed: &str) -> String {
 /// than stored, so there is one source of truth and nothing to keep in step.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
-    Project { project: usize, name: String, folded: bool, open: usize, waiting: usize },
-    Harness { project: usize, name: String, folded: bool, waiting: usize, running: bool },
-    Action { project: usize, unit: usize },
+    Project {
+        project: usize,
+        name: String,
+        folded: bool,
+        open: usize,
+        waiting: usize,
+    },
+    Harness {
+        project: usize,
+        name: String,
+        folded: bool,
+        waiting: usize,
+        running: bool,
+        turbo: bool,
+    },
+    Action {
+        project: usize,
+        unit: usize,
+        word: weft_core::tree::Word,
+        turn: Option<weft_core::tree::TurnWord>,
+    },
 }
 
 impl Row {
@@ -496,15 +514,6 @@ impl App {
         });
     }
 
-    /// Whether any agent of this harness in a project runs in turbo mode.
-    pub fn harness_turbo(&self, project: usize, harness: &str) -> bool {
-        self.projects[project]
-            .session
-            .panes
-            .iter()
-            .any(|p| p.running && p.turbo && p.harness == harness)
-    }
-
     /// Whether a pane's agent is running in turbo mode.
     pub fn pane_turbo(&self, pane: usize) -> bool {
         sess!(self).panes.get(pane).is_some_and(|p| p.running && p.turbo)
@@ -513,24 +522,6 @@ impl App {
     /// A pane's agent state, as its hooks reported it. None is not ready.
     pub fn pane_turn(&self, pane: usize) -> Option<weft_core::turns::Turn> {
         sess!(self).panes.get(pane).and_then(|p| p.turn)
-    }
-
-    /// The agent state of a unit of work, from the session the ledger names
-    /// for it.
-    pub fn unit_turn(&self, project: usize, unit: &Unit) -> Option<weft_core::turns::Turn> {
-        let turns = if project == self.at {
-            &sess!(self).turns
-        } else {
-            &self.projects[project].session.turns
-        };
-        weft_core::turns::state_of(unit, turns)
-    }
-
-    /// A project's agents asking their person for input, of one harness or
-    /// of all of them. This is NEEDS YOU, and nothing else is.
-    pub fn agents_waiting(&self, project: usize, harness: Option<&str>) -> usize {
-        let (panes, states) = facts_of(&self.projects[project].session);
-        weft_core::turns::asking(&panes, &states, harness)
     }
 
     /// The facts a decision reads, borrowed from the state that holds them.
@@ -577,60 +568,54 @@ impl App {
     }
 
     fn list(&self) -> Vec<Row> {
+        let facts: Vec<_> = self.projects.iter().map(|p| (p, facts_of(&p.session))).collect();
+        let titles: Vec<_> = facts
+            .iter()
+            .map(|(p, _)| move |name: &str| p.session.harnesses.find(name).map(|h| h.title.clone()))
+            .collect();
+        let ready = |h: &str| self.readiness(h);
+        let projects: Vec<_> = facts
+            .iter()
+            .enumerate()
+            .map(|(at, (p, (panes, agents)))| weft_core::tree::Facts {
+                name: &p.name,
+                units: self.units_of(at),
+                panes,
+                agents,
+                sessions: &p.session.turns,
+                title: &titles[at],
+                readiness: &ready,
+                routing: &self.routing,
+            })
+            .collect();
+        let folded = |at: usize, harness: Option<&str>| match harness {
+            None => self.folded.contains(&self.projects[at].name),
+            Some(name) => self.folded.contains(&format!("{at}\u{0}{name}")),
+        };
         let mut out = Vec::new();
-        for (at, p) in self.projects.iter().enumerate() {
-            let units = self.units_of(at);
-            let waiting = self.agents_waiting(at, None);
-            // The agents running, as the title bar counts them.
-            let open = weft_core::turns::open(&facts_of(&p.session).0);
-            let folded = self.folded.contains(&p.name);
-            out.push(Row::Project { project: at, name: p.name.clone(), folded, open, waiting });
-            if folded {
-                continue;
-            }
-            // Harnesses by the name a person reads, A to Z, as every list of
-            // them is: the tree does not reshuffle itself as work arrives.
-            // An agent with nothing asked of it yet still has a row, so
-            // there is somewhere to say it needs your input.
-            let mut seen: Vec<&str> = Vec::new();
-            let running = p.session.panes.iter().map(|pane| pane.harness.as_str());
-            for name in units.iter().map(|u| u.harness.as_str()).chain(running) {
-                if !seen.contains(&name) {
-                    seen.push(name);
-                }
-            }
-            let title = |name: &str| {
-                p.session.harnesses.find(name).map_or(name.to_string(), |h| h.title.clone())
-            };
-            seen.sort_by_key(|name| title(name).to_lowercase());
-            for name in seen {
-                let running =
-                    p.session.panes.iter().any(|pane| pane.running && pane.harness == name);
-                let open = units.iter().any(|u| u.harness == name && u.is_open());
-                // Nothing to go back to: no agent, and nothing left open.
-                if !running && !open {
-                    continue;
-                }
-                let key = format!("{at}\u{0}{name}");
-                let folded = self.folded.contains(&key);
-                let waiting = self.agents_waiting(at, Some(name));
+        for (at, p) in weft_core::tree::rows(&projects, &folded).into_iter().enumerate() {
+            out.push(Row::Project {
+                project: at,
+                name: p.name,
+                folded: p.folded,
+                open: p.open,
+                waiting: p.needs,
+            });
+            for h in p.harnesses {
                 out.push(Row::Harness {
                     project: at,
-                    name: name.to_string(),
-                    folded,
-                    waiting,
-                    running,
+                    name: h.harness,
+                    folded: h.folded,
+                    waiting: h.needs,
+                    running: h.running,
+                    turbo: h.turbo,
                 });
-                if folded {
-                    continue;
-                }
-                out.extend(
-                    units
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, u)| u.harness == name)
-                        .map(|(i, _)| Row::Action { project: at, unit: i }),
-                );
+                out.extend(h.works.into_iter().map(|w| Row::Action {
+                    project: at,
+                    unit: w.at,
+                    word: w.word,
+                    turn: w.turn,
+                }));
             }
         }
         out

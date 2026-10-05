@@ -197,6 +197,16 @@ impl Board<'_> {
         self.pane_for(&name).is_none().then_some(name)
     }
 
+    /// Everything RingFrame owns waits on the harness the act goes to.
+    /// Readiness is per harness: one may be ready while another is not.
+    pub fn not_ready(&self, act: Act) -> Option<crate::tree::Why> {
+        if !matches!(act, Act::Ask | Act::Proceed | Act::Eval | Act::Seal | Act::FollowUp) {
+            return None;
+        }
+        let name = self.deciding_harness(act)?;
+        crate::tree::Why::not_ready(self.readiness(&name), &name)
+    }
+
     /// Why an action is not available now, as one sentence. `None` means it is.
     pub fn unavailable(&self, act: Act) -> Option<String> {
         let no_pane =
@@ -208,19 +218,8 @@ impl Board<'_> {
         {
             return Some(gap.to_string());
         }
-        // Everything RingFrame owns waits on the harness that owns the work.
-        // Readiness is per harness: one may be ready while another is not.
-        if matches!(act, Act::Ask | Act::Proceed | Act::Eval | Act::Seal | Act::FollowUp)
-            && let Some(name) = self.deciding_harness(act)
-        {
-            let state = self.readiness(&name);
-            if !state.is_ready() {
-                let mut say = state.say(&name).unwrap_or_default();
-                if state.can_be_set_up() {
-                    say.push_str(" [U]PDATE sets it up.");
-                }
-                return Some(say);
-            }
+        if let Some(why) = self.not_ready(act) {
+            return Some(why.say());
         }
         match act {
             Act::NewAgent
