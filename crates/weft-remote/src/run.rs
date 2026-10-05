@@ -26,7 +26,7 @@ use crate::view::View;
 mod protocol;
 
 /// The remote protocol's version.
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 /// How long the person has to answer a device asking to be allowed.
 const ASK_WITHIN: Duration = Duration::from_secs(120);
 

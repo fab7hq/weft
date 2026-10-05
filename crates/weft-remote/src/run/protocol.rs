@@ -1,5 +1,5 @@
-//! The remote protocol, version 1, from a device that said hello (remote.md
-//! §4, §6, §9). Each message becomes only the call §4 allows, or is refused
+//! The remote protocol, version 2, from a device that said hello (remote.md
+//! §4, §6b, §9). Each message becomes only the call §4 allows, or is refused
 //! here; a message with a `req` always gets `ok` or `error`.
 
 use base64ct::{Base64, Encoding};

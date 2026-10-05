@@ -40,7 +40,7 @@ pub struct Project {
     titles: HashMap<String, String>,
     /// Each pane's turn as last listed, and since when (milliseconds).
     since: HashMap<u32, (&'static str, i64)>,
-    /// The board, for the tree and the Ask an act from a device is about.
+    /// The board: the tree, and the works a device acts on.
     units: Vec<Unit>,
     /// The sessions the hooks reported, for a work's own turn.
     sessions: Vec<Session>,
@@ -128,16 +128,6 @@ impl Project {
         Some((p.harness.as_str(), title))
     }
 
-    /// The Ask a device's Eval or Seal for this pane is about: the latest of
-    /// its harness's here that is neither cancelled nor sealed. The board has
-    /// no pane for an Ask, so this is the nearest the record says.
-    pub fn unit_for(&self, pane: u32) -> Option<&Unit> {
-        let (harness, _) = self.harness(pane)?;
-        self.units.iter().rev().find(|u| {
-            u.harness == harness && !u.cancelled && u.sealed.is_none() && !u.requested_only
-        })
-    }
-
     /// The turn a device is shown for the pane at `i`.
     fn turn(&self, i: usize) -> &'static str {
         if !self.panes[i].running {
@@ -173,19 +163,14 @@ impl Project {
             .map(|i| {
                 let p = &self.panes[i];
                 let (harness, title) = self.harness(p.pane).unwrap_or_default();
-                let mut row = json!({
+                json!({
                     "agent": agent_id(&self.key, p.pane),
                     "project": self.name,
                     "harness": harness,
                     "title": title,
                     "turn": self.turn(i),
                     "since": self.since.get(&p.pane).map_or(0, |(_, at)| *at),
-                });
-                if let Some(u) = self.unit_for(p.pane) {
-                    let eval = u.check.as_ref().map(|c| c.eval_id.clone());
-                    row["unit"] = json!({"id": u.ask_id, "title": u.title, "eval": eval});
-                }
-                row
+                })
             })
             .collect()
     }
