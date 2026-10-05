@@ -342,6 +342,74 @@ pub fn detail_read(
     out
 }
 
+/// The Details a device draws: the TUI's, in its sections.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Detail {
+    pub title: String,
+    pub harness: String,
+    /// Where its fields came from: asked when, sent how, judged by whom.
+    pub provenance: String,
+    pub sections: Vec<Section>,
+    /// A prompt waits to be sent: Proceed applies.
+    pub proceed: bool,
+    /// It has an Eval to view.
+    pub eval_view: bool,
+}
+
+/// One act's section: `ask`, `eval` or `seal`, where it stands (`DONE`,
+/// `HAVEN'T RUN`, `ASKING`, `GATHERED`), what is said beside that, and its lines.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Section {
+    pub act: String,
+    pub state: String,
+    pub aside: String,
+    pub lines: Vec<String>,
+}
+
+/// [`detail_read`], in sections: the same lines the TUI shows, so the two
+/// cannot say different things.
+pub fn detail(
+    unit: &crate::ledger::Unit,
+    prompt: Option<&str>,
+    record: Option<&crate::record::Record>,
+    seal: Option<&serde_json::Value>,
+    debate_in: Option<&str>,
+) -> Detail {
+    let mut sections: Vec<Section> = Vec::new();
+    for line in detail_read(unit, prompt, record, seal, debate_in).into_iter().skip(3) {
+        let heading = ["ASK", "EVAL", "SEAL"].iter().find_map(|act| {
+            let (state, aside) = line.strip_prefix(act)?.strip_prefix(" [")?.split_once(']')?;
+            Some(Section {
+                act: act.to_lowercase(),
+                state: state.into(),
+                aside: aside.trim().into(),
+                lines: Vec::new(),
+            })
+        });
+        match (heading, sections.last_mut()) {
+            (Some(s), _) => sections.push(s),
+            (None, Some(s)) => s.lines.push(line.strip_prefix("  ").unwrap_or(&line).to_string()),
+            (None, None) => {}
+        }
+    }
+    for s in &mut sections {
+        while s.lines.last().is_some_and(String::is_empty) {
+            s.lines.pop();
+        }
+    }
+    Detail {
+        title: unit.title.clone(),
+        harness: unit.harness.clone(),
+        provenance: provenance(unit),
+        sections,
+        proceed: matches!(
+            crate::board::next_step(unit),
+            Some(crate::board::Next::Send | crate::board::Next::Confirm)
+        ),
+        eval_view: unit.check.is_some() || unit.gathered.is_some(),
+    }
+}
+
 fn indent(line: String) -> String {
     if line.is_empty() { line } else { format!("  {line}") }
 }
@@ -379,6 +447,56 @@ mod tests {
         assert!(lines.contains(&"ASK [ASKING]".to_string()), "{lines:?}");
         assert!(lines.contains(&"  fix the login bug".to_string()), "{lines:?}");
         assert!(lines.iter().any(|l| l.contains("has not composed its prompt yet")), "{lines:?}");
+    }
+
+    /// A device's Details are the TUI's lines, in their three sections.
+    #[test]
+    fn details_are_the_tuis_lines_in_sections() {
+        // Waiting for the person's yes: Proceed applies, nothing to view.
+        let mut waiting = sealed("accepted");
+        (waiting.sealed, waiting.seal_id, waiting.sealed_at) = (None, None, None);
+        waiting.sent = Sent::ReadyToSend;
+        let d =
+            super::detail(&waiting, Some("Refresh the token\nbefore it expires"), None, None, None);
+        let heads: Vec<(&str, &str)> =
+            d.sections.iter().map(|s| (s.act.as_str(), s.state.as_str())).collect();
+        assert_eq!(heads, [("ask", "DONE"), ("eval", "HAVEN'T RUN"), ("seal", "HAVEN'T RUN")]);
+        assert_eq!(d.sections[0].lines, ["Refresh the token", "before it expires"]);
+        assert!(d.proceed && !d.eval_view);
+        assert_eq!(d.provenance, super::provenance(&waiting));
+
+        // Judged: its section says the verdict beside DONE; nothing to send.
+        let mut judged = waiting.clone();
+        judged.sent = Sent::Arrived { exact: true };
+        judged.check = Some(crate::ledger::Check {
+            eval_id: "evl_2".into(),
+            verdict: crate::ledger::Verdict::DoesntMatch,
+            agreement: 0.67,
+            judged_by: Some("codex".into()),
+        });
+        let d = super::detail(&judged, Some("p"), None, None, None);
+        assert_eq!(d.sections[1].state, "DONE");
+        assert_eq!(d.sections[1].aside, judged.eval_state().unwrap());
+        assert_eq!(d.sections[1].lines, ["that check's record is not on disk"]);
+        assert!(!d.proceed && d.eval_view);
+
+        // Sealed: the receipt, as the TUI reads it.
+        let checked = json!({"seal_id": "rcp_7f3a2c", "codes": [], "subject_matches": true,
+            "eval": {"verdict": "aligned", "confidence": 1.0}});
+        let d = super::detail(&sealed("accepted"), Some("p"), None, Some(&checked), None);
+        assert_eq!(
+            (d.sections[2].state.as_str(), d.sections[2].aside.as_str()),
+            ("DONE", "accepted")
+        );
+        assert!(
+            d.sections[2].lines.contains(&"RECEIPT       rcp_7f3a2c".to_string()),
+            "{:?}",
+            d.sections[2].lines
+        );
+        assert_eq!(
+            d.sections[2].lines.last().unwrap(),
+            "A Seal records what was decided. It does not make the work right."
+        );
     }
 
     fn sealed(disposition: &str) -> Unit {

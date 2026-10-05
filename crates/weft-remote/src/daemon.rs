@@ -144,7 +144,13 @@ pub fn allowed(call: &Call) -> bool {
             matches!(act.as_str(), "ask" | "follow_up" | "send" | "check" | "decide")
         }
         Call::Resolve { force, .. } => !force,
-        Call::Read { what, .. } => what == "eval" || what == "history",
+        // The reads a device's Details and Eval view are gathered from.
+        Call::Read { what, .. } => {
+            matches!(
+                what.as_str(),
+                "history" | "wording" | "source" | "judges" | "seal" | "eval" | "window"
+            )
+        }
         _ => false,
     }
 }
@@ -184,7 +190,7 @@ mod tests {
             Call::Shutdown,
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Resolve { pending: "pnd_1".into(), yes: true, force: true },
-            Call::Read { what: "wording".into(), unit: "ask_1".into(), pane: None, lines: None },
+            Call::Read { what: "ledger".into(), unit: "ask_1".into(), pane: None, lines: None },
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
             Call::StartAgent { harness: "sh".into(), spec: "sh".into(), session: Some("s".into()) },
@@ -217,6 +223,8 @@ mod tests {
                 lines: Some(2000),
             },
             Call::Read { what: "eval".into(), unit: "ev_1".into(), pane: None, lines: None },
+            Call::Read { what: "wording".into(), unit: "ask_1".into(), pane: None, lines: None },
+            Call::Read { what: "window".into(), unit: "ev_1/w_1".into(), pane: None, lines: None },
         ];
         for call in may {
             assert!(allowed(&call), "{call:?}");

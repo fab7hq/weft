@@ -122,11 +122,40 @@ enum Carries {
     Nothing,
     Pending,
     Text,
-    Record,
     /// The agent `start` made, by its id.
     Agent,
     /// What can be started: the machine's own call, answered to no device.
     Starts,
+    /// One part of a read being gathered, by its gathering.
+    Part(u64, Part),
+}
+
+/// The daemon's reads one device read is gathered from.
+#[derive(Clone, Copy, PartialEq)]
+enum Part {
+    Prompt,
+    Record,
+    Seal,
+    View,
+    /// The hunk of the view's change at this index.
+    Hunk(usize),
+}
+
+/// A device's read of a work (remote.md §6b), answered once every part the
+/// daemon was asked for is in. A part that did not come back is said where it
+/// would be, as the TUI says it.
+struct Gathering {
+    conn: u64,
+    req: Value,
+    at: usize,
+    unit: weft_core::ledger::Unit,
+    left: usize,
+    prompt: Option<String>,
+    record: Option<weft_core::record::Record>,
+    seal: Option<Value>,
+    /// The Eval view, for `read eval_view`.
+    view: Option<weft_core::eval_view::EvalView>,
+    hunks: BTreeMap<String, String>,
 }
 
 /// A device waiting for the person's yes on this machine.
@@ -169,6 +198,9 @@ struct Remote {
     port: u16,
     /// Calls waiting for the daemon's answer, by project and call id.
     calls: HashMap<(usize, u64), Asked>,
+    /// Reads of a work being gathered, by id.
+    gathering: HashMap<u64, Gathering>,
+    next_gathering: u64,
     /// What is waiting on the person, by pending id: its project and the
     /// `pending` message devices are sent.
     pendings: BTreeMap<String, (usize, Value)>,
@@ -319,6 +351,8 @@ impl Remote {
             adapter: None,
             port,
             calls: HashMap::new(),
+            gathering: HashMap::new(),
+            next_gathering: 0,
             pendings: BTreeMap::new(),
             last_presence: None,
             vapid,

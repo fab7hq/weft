@@ -254,9 +254,38 @@ impl Project {
         Ok(Call::StartAgent { harness: harness.into(), spec: spec.clone(), session: None })
     }
 
-    /// Whether an Ask with this id is on this project's board.
-    pub fn has_unit(&self, id: &str) -> bool {
-        self.units.iter().any(|u| u.ask_id == id)
+    /// The Ask with this id, if it is on this project's board.
+    pub fn unit(&self, id: &str) -> Option<&Unit> {
+        self.units.iter().find(|u| u.ask_id == id)
+    }
+
+    /// A rule's answer about this board, with `unit` selected and `pane` in front.
+    fn board<T>(&self, unit: Option<usize>, pane: Option<u32>, f: impl FnOnce(Board) -> T) -> T {
+        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
+        f(Board {
+            units: &self.units,
+            selected: unit.unwrap_or(usize::MAX),
+            panes: &self.panes,
+            focused: pane.and_then(|p| self.panes.iter().position(|x| x.pane == p)).unwrap_or(0),
+            readiness: &ready,
+            routing: &self.routing,
+            workspace_gap: None,
+            agents: &self.turns,
+        })
+    }
+
+    /// A work's Details, as the TUI draws them, from the parts the daemon read.
+    pub fn detail(
+        &self,
+        unit: &Unit,
+        prompt: Option<&str>,
+        record: Option<&weft_core::record::Record>,
+        seal: Option<&Value>,
+    ) -> Value {
+        let at = self.units.iter().position(|u| u.ask_id == unit.ask_id);
+        let debate = self.board(at, None, |b| b.deciding_harness(Act::Eval));
+        let d = weft_core::offers::detail(unit, prompt, record, seal, debate.as_deref());
+        serde_json::to_value(d).unwrap_or_default()
     }
 
     /// What a device's act asks the daemon (remote.md §6b): an Ask to the
@@ -291,18 +320,7 @@ impl Project {
             ),
             (_, None) => return Err(("bad_request", "an act on a work names its unit".into())),
         };
-        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
-        let board = Board {
-            units: &self.units,
-            selected: unit.unwrap_or(usize::MAX),
-            panes: &self.panes,
-            focused: pane.and_then(|p| self.panes.iter().position(|x| x.pane == p)).unwrap_or(0),
-            readiness: &ready,
-            routing: &self.routing,
-            workspace_gap: None,
-            agents: &self.turns,
-        };
-        if let Some(why) = board.why_not(act) {
+        if let Some(why) = self.board(unit, pane, |b| b.why_not(act)) {
             return Err((why.key, why.say()));
         }
         Ok(Call::Act {
@@ -539,5 +557,18 @@ mod tests {
             Ok(Call::StartAgent { harness: "codex".into(), spec: "codex".into(), session: None })
         );
         assert_eq!(p.start("sh").unwrap_err().0, "no_harness");
+    }
+
+    #[test]
+    fn a_works_details_say_where_its_debate_runs() {
+        let mut p = opened();
+        let mut u = unit("ask_1", "fix login");
+        u.gathered =
+            Some(weft_core::ledger::Gathered { eval_id: "evl_2".into(), by: "weft".into() });
+        p.units = vec![u.clone()];
+        let d = p.detail(&u, Some("Refresh the token"), None, None);
+        assert_eq!(d["sections"][1]["state"], "GATHERED");
+        assert!(d["sections"][1]["lines"].to_string().contains("debate in claude"), "{d}");
+        assert_eq!((d["proceed"].clone(), d["eval_view"].clone()), (json!(false), json!(true)));
     }
 }

@@ -485,7 +485,8 @@ pub enum Mode {
     Files,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RowKind {
     /// A section's heading: FINDINGS, UNEXPLAINED CHANGES, a reading.
     Heading,
@@ -497,7 +498,7 @@ pub enum RowKind {
     Change,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Row {
     pub kind: RowKind,
     /// What picking it opens or folds: `g:<part>`, `s:<step>`, `f:<path>`,
@@ -688,6 +689,42 @@ pub fn step_rows(view: &EvalView, id: &str) -> Vec<Row> {
     out
 }
 
+/// The whole view as a device draws it, every level read at once: the list
+/// by step and by file, each step's rows, and each change's lines with the
+/// ones a judge quoted lit. `hunks` holds the text of each change read.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Payload {
+    pub eval_id: String,
+    pub closed: bool,
+    pub header: String,
+    pub by_step: Vec<Row>,
+    pub by_file: Vec<Row>,
+    pub steps: BTreeMap<String, Vec<Row>>,
+    pub changes: BTreeMap<String, Vec<(String, bool)>>,
+}
+
+pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
+    let open = BTreeSet::new();
+    Payload {
+        eval_id: view.eval_id.clone(),
+        closed: view.closed,
+        header: view.header(),
+        by_step: rows(view, Mode::Steps, &open),
+        by_file: rows(view, Mode::Files, &open),
+        steps: view
+            .groups
+            .iter()
+            .flat_map(|g| &g.steps)
+            .map(|s| (s.id.clone(), step_rows(view, &s.id)))
+            .collect(),
+        changes: view
+            .changes
+            .iter()
+            .filter_map(|c| Some((c.window.clone(), hunk_lines(hunks.get(&c.window)?, &c.quotes))))
+            .collect(),
+    }
+}
+
 /// A change's hunk, each line with whether a judge's quote is on it.
 pub fn hunk_lines(text: &str, quotes: &[String]) -> Vec<(String, bool)> {
     let squash = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -847,6 +884,26 @@ mod tests {
             ["let mut unrecorded = None;"],
             "a cited quote is kept on its change"
         );
+    }
+
+    #[test]
+    fn a_device_gets_every_level_of_the_view_at_once() {
+        let v = built(None, &[map_output()], &["evl_1~m1", "evl_1~r1"], &["evl_1~m1"]);
+        let hunks: BTreeMap<String, String> =
+            [("w_t".to_string(), "@@ -1 +1 @@\n+post(collect.example.com)\n".to_string())].into();
+        let p = payload(&v, &hunks);
+        assert_eq!(p.header, "judging · map 1 of 1 · reduce 0 of 1 · confirm —");
+        assert_eq!(p.by_step, rows(&v, Mode::Steps, &BTreeSet::new()));
+        assert_eq!(
+            p.by_file.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "w_t"]
+        );
+        assert_eq!(p.steps[S7], step_rows(&v, S7));
+        assert_eq!(p.steps[S8][0].aside, "judging");
+        assert_eq!(p.changes.keys().collect::<Vec<_>>(), ["w_t"], "a change not read has no lines");
+        assert_eq!(p.changes["w_t"][1], ("+post(collect.example.com)".into(), true));
+        let wire = serde_json::to_value(&p).unwrap();
+        assert_eq!(wire["by_step"][0]["kind"], "heading");
     }
 
     #[test]

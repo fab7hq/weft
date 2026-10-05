@@ -6,7 +6,7 @@ use base64ct::{Base64, Encoding};
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use super::{Asked, Carries, Remote, Wake};
+use super::{Asked, Carries, Gathering, Part, Remote, Wake};
 use crate::agents;
 
 /// How many lines of history a device is sent.
@@ -78,6 +78,9 @@ impl Remote {
 
     pub(super) fn answered(&mut self, at: usize, id: u64, answer: Result<Value, (String, String)>) {
         let Some(asked) = self.calls.remove(&(at, id)) else { return };
+        if let Carries::Part(g, part) = asked.carries {
+            return self.gathered(g, part, answer.ok());
+        }
         if asked.carries == Carries::Starts {
             let changed = match (&answer, self.projects.get_mut(at).and_then(Option::as_mut)) {
                 (Ok(v), Some(o)) => o.agents.available(v),
@@ -96,12 +99,11 @@ impl Remote {
                     Carries::Nothing => {}
                     Carries::Pending => ok["pending"] = v["pending"].clone(),
                     Carries::Text => ok["text"] = v["text"].clone(),
-                    Carries::Record => ok["record"] = v,
                     Carries::Agent => {
                         let pane = v["pane"].as_u64().unwrap_or_default() as u32;
                         ok["agent"] = self.agent_id(at, pane).into();
                     }
-                    Carries::Starts => {}
+                    Carries::Starts | Carries::Part(..) => {}
                 }
                 self.send(asked.conn, ok);
             }
@@ -276,7 +278,7 @@ impl Remote {
                 let at = self
                     .projects
                     .iter()
-                    .position(|o| o.as_ref().is_some_and(|o| o.agents.has_unit(id)));
+                    .position(|o| o.as_ref().is_some_and(|o| o.agents.unit(id).is_some()));
                 (at.ok_or(("no_unit", format!("{id} is not on the board")))?, None)
             }
         };
@@ -318,29 +320,138 @@ impl Remote {
     }
 
     fn read(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        let (at, pane) = self.agent(m)?;
-        match m["what"].as_str() {
-            Some("history") => {
-                let call = Call::Read {
-                    what: "history".into(),
-                    unit: String::new(),
-                    pane: Some(pane),
-                    lines: Some(HISTORY),
-                };
-                self.ask(at, call, conn, req, Carries::Text)
-            }
-            Some("eval") => {
-                let eval = self.projects[at]
-                    .as_ref()
-                    .and_then(|o| o.agents.unit_for(pane))
-                    .and_then(|u| u.check.as_ref())
-                    .map(|c| c.eval_id.clone())
-                    .ok_or(("no_record", "this agent's Ask has no Eval".to_string()))?;
-                let call = Call::Read { what: "eval".into(), unit: eval, pane: None, lines: None };
-                self.ask(at, call, conn, req, Carries::Record)
-            }
-            _ => Err(("not_allowed", "a device reads eval or history".into())),
+        let what = m["what"].as_str();
+        if what == Some("history") {
+            let (at, pane) = self.agent(m)?;
+            let call = Call::Read {
+                what: "history".into(),
+                unit: String::new(),
+                pane: Some(pane),
+                lines: Some(HISTORY),
+            };
+            return self.ask(at, call, conn, req, Carries::Text);
         }
+        if !matches!(what, Some("detail" | "eval_view")) {
+            return Err(("not_allowed", "a device reads history, detail or eval_view".into()));
+        }
+        if req.is_null() {
+            return Err(("bad_request", "a read is answered by its req".into()));
+        }
+        let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
+        let found = self.projects.iter().enumerate().find_map(|(at, o)| {
+            o.as_ref().and_then(|o| o.agents.unit(id)).map(|u| (at, u.clone()))
+        });
+        let (at, unit) = found.ok_or(("no_unit", format!("{id} is not on the board")))?;
+        // The Details are the Ask, the Eval and the Seal, each read as the TUI
+        // reads it; the Eval view is the one running, else the last closed.
+        let reads: Vec<(Part, &str, String)> = if what == Some("detail") {
+            let prompt = if unit.requested_only { "source" } else { "wording" };
+            let mut reads = vec![(Part::Prompt, prompt, unit.ask_id.clone())];
+            reads.extend(unit.check.as_ref().map(|c| (Part::Record, "judges", c.eval_id.clone())));
+            reads.extend(unit.seal_id.as_ref().map(|s| (Part::Seal, "seal", s.clone())));
+            reads
+        } else {
+            let eval = unit
+                .gathered
+                .as_ref()
+                .map(|g| &g.eval_id)
+                .or(unit.check.as_ref().map(|c| &c.eval_id));
+            let eval =
+                eval.ok_or(("why.no_eval", weft_core::words::word("why.no_eval").to_string()))?;
+            vec![(Part::View, "eval", eval.clone())]
+        };
+        let g = self.next_gathering;
+        self.next_gathering += 1;
+        self.gathering.insert(
+            g,
+            Gathering {
+                conn,
+                req: req.clone(),
+                at,
+                unit,
+                left: 0,
+                prompt: None,
+                record: None,
+                seal: None,
+                view: None,
+                hunks: Default::default(),
+            },
+        );
+        for (part, what, id) in reads {
+            self.read_part(g, part, what, id);
+        }
+        Ok(true)
+    }
+
+    /// Ask the daemon for one part of a gathering.
+    fn read_part(&mut self, g: u64, part: Part, what: &str, unit: String) {
+        let Some(at) = self.gathering.get(&g).map(|r| r.at) else { return };
+        let call = Call::Read { what: what.into(), unit, pane: None, lines: None };
+        if let Some(id) = self.call(at, call) {
+            self.calls.insert(
+                (at, id),
+                Asked { conn: 0, req: Value::Null, carries: Carries::Part(g, part) },
+            );
+            if let Some(r) = self.gathering.get_mut(&g) {
+                r.left += 1;
+            }
+        }
+    }
+
+    /// A part is in; once all are, the device is answered.
+    fn gathered(&mut self, g: u64, part: Part, answer: Option<Value>) {
+        let Some(r) = self.gathering.get_mut(&g) else { return };
+        r.left = r.left.saturating_sub(1);
+        let text =
+            |v: &Option<Value>| v.as_ref().and_then(|v| v["text"].as_str()).map(str::to_string);
+        match part {
+            Part::Prompt => r.prompt = text(&answer),
+            Part::Record => r.record = answer.and_then(|v| serde_json::from_value(v).ok()),
+            Part::Seal => r.seal = answer,
+            Part::Hunk(i) => {
+                let window =
+                    r.view.as_ref().and_then(|v| v.changes.get(i)).map(|c| c.window.clone());
+                if let (Some(w), Some(t)) = (window, text(&answer)) {
+                    r.hunks.insert(w, t);
+                }
+            }
+            Part::View => {
+                let Some(view) = answer
+                    .and_then(|v| serde_json::from_value::<weft_core::eval_view::EvalView>(v).ok())
+                else {
+                    let r = self.gathering.remove(&g).expect("a gathering");
+                    return self.error(r.conn, &r.req, "no_record", "that Eval is not on disk");
+                };
+                let windows: Vec<String> =
+                    view.changes.iter().map(|c| format!("{}/{}", view.eval_id, c.window)).collect();
+                r.view = Some(view);
+                for (i, w) in windows.into_iter().enumerate() {
+                    self.read_part(g, Part::Hunk(i), "window", w);
+                }
+            }
+        }
+        if self.gathering.get(&g).is_some_and(|r| r.left > 0) {
+            return;
+        }
+        let Some(r) = self.gathering.remove(&g) else { return };
+        let mut ok = json!({"type": "ok", "req": r.req});
+        match &r.view {
+            Some(view) => {
+                ok["eval_view"] =
+                    serde_json::to_value(weft_core::eval_view::payload(view, &r.hunks))
+                        .unwrap_or_default()
+            }
+            None => {
+                let Some(open) = self.projects.get(r.at).and_then(Option::as_ref) else { return };
+                ok["detail"] = open.agents.detail(
+                    &r.unit,
+                    r.prompt.as_deref(),
+                    r.record.as_ref(),
+                    r.seal.as_ref(),
+                );
+            }
+        }
+        self.send(r.conn, ok);
     }
 
     /// A pending, as devices are sent it: `text` is exactly what will be

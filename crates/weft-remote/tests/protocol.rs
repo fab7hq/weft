@@ -120,6 +120,8 @@ fn every_req_gets_ok_or_error() {
         (json!({"type": "read", "agent": agent, "what": "history", "req": 9}), "ok"),
         (json!({"type": "read", "agent": agent, "what": "eval", "req": 10}), "error"),
         (json!({"type": "nonsense", "req": 11}), "error"),
+        (json!({"type": "read", "what": "detail", "unit": "ask_404", "req": 12}), "error"),
+        (json!({"type": "read", "what": "eval_view", "req": 13}), "error"),
     ];
     for (n, (request, want)) in requests.iter().enumerate() {
         d.send(request.clone());
