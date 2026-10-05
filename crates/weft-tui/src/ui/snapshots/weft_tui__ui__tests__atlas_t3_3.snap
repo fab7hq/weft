@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 claude    2 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           2 open  ⌫ │ ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+   ▾ claude                                 │ ┃ ● Read(src/login.rs)                                                   ┃
+      fix login             working · ASKED │ ┃ ● Update(src/login.rs)                                                 ┃
+      telemetry                      ASKING │ ┃   └  Updated src/login.rs with 12 additions and 3 removals             ┃
+   ▾ codex                                  │ ┃ ● Running cargo test…                                                  ┃
+      health endpoint   turn ended · EVALED │ ┃   test login::rejects_expired ... ok                                   ┃
+      readme fix        turn ended · SEALED │ ┃   test login::refreshes_token ... ok                                   ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃ ✻ Thinking… (esc to interrupt)                                         ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃ ❯                                                                      ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┃                                                                        ┃
+                                            │ ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+   Ctrl+]  BACK TO WEFT
+ Every other key goes to the agent, Esc included.

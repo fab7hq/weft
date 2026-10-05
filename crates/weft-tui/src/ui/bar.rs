@@ -19,7 +19,7 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     let plain = |text: &str| Paragraph::new(Line::styled(text.to_string(), th.label()));
     if app.focus == Focus::Agent {
         // One key is Weft's in the agent: the way back.
-        return plain(&format!(" {}  BACK TO WEFT", app.toggle.label()));
+        return plain(&format!("   {}  BACK TO WEFT", app.toggle.label()));
     }
     match &app.modal {
         // `Enter` does what is picked everywhere; [H]ELP says so once, and no

@@ -2,14 +2,32 @@
 
 use super::*;
 
-pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
+/// The agent's pane, in a frame that is its state: grey while Weft has the
+/// keys, blue and heavy while the agent has them. Beside the list it stands a
+/// column off the divider.
+pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect, beside: bool) {
     if app.pane_count() == 0 {
         frame.render_widget(no_agent(app, area), area);
         return;
     }
+    let th = app.theme;
+    let area = if beside {
+        Rect { x: area.x + 1, width: area.width.saturating_sub(1), ..area }
+    } else {
+        area
+    };
+    let block = if app.focus == Focus::Agent {
+        Block::bordered()
+            .border_type(BorderType::Thick)
+            .border_style(Style::default().fg(th.warp()))
+    } else {
+        Block::bordered().border_style(th.rule())
+    };
+    let inside = block.inner(area);
+    frame.render_widget(block, area);
     let focus = app.pane_focus;
-    app.with_pane_screen(focus, area.height, area.width, |screen| {
-        frame.render_widget(PseudoTerminal::new(screen).block(Block::default()), area);
+    app.with_pane_screen(focus, inside.height, inside.width, |screen| {
+        frame.render_widget(PseudoTerminal::new(screen), inside);
     });
 }
 

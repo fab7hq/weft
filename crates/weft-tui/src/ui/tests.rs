@@ -910,6 +910,9 @@ fn atlas() -> App {
     };
     a.session_mut().turns = vec![receipt("claude", Turn::Ready), receipt("codex", Turn::TurnEnded)];
     a.session_mut().set_turns(vec![Some(Turn::Ready), Some(Turn::TurnEnded)]);
+    // claude at its prompt, as the cards draw it.
+    let _ = screen(&mut a, 120, 32);
+    a.session_mut().panes[0].feed(" ❯\x1b[?25l".as_bytes());
     a
 }
 
@@ -957,4 +960,94 @@ fn atlas_t9_7_start_an_agent() {
     a.set_starts(vec![fresh("claude"), fresh("codex")]);
     a.modal = Some(Modal::StartAgent { choice: 0 });
     expect_screen("atlas_t9_7", &screen(&mut a, 120, 32));
+}
+
+/// What claude shows in the Atlas's cards, typed into its pane's emulator.
+const CLAUDE_AT_WORK: &str = " ● Read(src/login.rs)\r\n ● Update(src/login.rs)\r\n   └  Updated src/login.rs with 12 additions and 3 removals\r\n ● Running cargo test…\r\n   test login::rejects_expired ... ok\r\n   test login::refreshes_token ... ok\r\n\r\n ✻ Thinking… (esc to interrupt)\r\n\r\n ❯\x1b[?25l";
+
+/// The Atlas's sample while claude works: fix login working, telemetry
+/// still being asked, and claude's screen in its pane.
+fn atlas_at_work() -> App {
+    use weft_core::turns::{Session, Turn};
+    let mut a = atlas();
+    let mut units = a.units().to_vec();
+    let mut telemetry = unit(Sent::NotSent);
+    (telemetry.ask_id, telemetry.title, telemetry.harness) =
+        ("ask_2".into(), "telemetry".into(), "claude".into());
+    telemetry.requested_only = true;
+    let mut readme = units[1].clone();
+    (readme.ask_id, readme.title, readme.sealed) =
+        ("ask_4".into(), "readme fix".into(), Some("accepted".into()));
+    units.insert(1, telemetry);
+    units.push(readme);
+    a.set_units(units);
+    let receipt = |h: &str, latest| Session {
+        harness: h.into(),
+        id: format!("s_{h}"),
+        first: 0,
+        latest,
+        at: 0,
+    };
+    a.session_mut().turns =
+        vec![receipt("claude", Turn::Working), receipt("codex", Turn::TurnEnded)];
+    a.session_mut().set_turns(vec![Some(Turn::Working), Some(Turn::TurnEnded)]);
+    let _ = screen(&mut a, 120, 32);
+    a.session_mut().panes[0].feed(format!("\x1b[2J\x1b[H{CLAUDE_AT_WORK}").as_bytes());
+    a
+}
+
+/// T3.1: Weft has the keys; the pane's frame is grey.
+#[test]
+fn atlas_t3_1_the_agent_inactive() {
+    let mut a = atlas_at_work();
+    a.focus = Focus::Weft;
+    expect_screen("atlas_t3_1", &screen(&mut a, 120, 32));
+}
+
+/// T3.3: the agent has the keys; its frame is blue.
+#[test]
+fn atlas_t3_3_the_agent_active() {
+    let mut a = atlas_at_work();
+    a.focus = Focus::Agent;
+    expect_screen("atlas_t3_3", &screen(&mut a, 120, 32));
+}
+
+/// T3.5: scrolled back, the pane reads its history inside the same blue
+/// frame, and nothing on screen says READING or LIVE.
+#[test]
+fn atlas_t3_5_the_agent_scrolled_back() {
+    let mut a = atlas_at_work();
+    let earlier = " ● Running cargo test…\r\n   test login::rejects_expired ... ok\r\n   test login::refreshes_token ... ok\r\n   test result: ok. 163 passed; 0 failed\r\n ● Update(src/login.rs)\r\n   └  Updated src/login.rs\r\n …\r\n";
+    let p = &mut a.session_mut().panes[0];
+    p.feed(format!("\x1b[2J\x1b[H{earlier}{}{CLAUDE_AT_WORK}", "\r\n".repeat(17)).as_bytes());
+    for _ in 0..40 {
+        let top = p.with_screen(|s| s.contents().lines().next().unwrap_or_default().to_string());
+        if top == " ● Running cargo test…" {
+            break;
+        }
+        p.scroll(1);
+    }
+    a.focus = Focus::Agent;
+    let drawn = screen(&mut a, 120, 32);
+    assert!(!drawn.contains("READING") && !drawn.contains("LIVE"), "{drawn}");
+    expect_screen("atlas_t3_5", &drawn);
+}
+
+/// Focus moves the frame's state: light while Weft has the keys, heavy
+/// while the agent has them.
+#[test]
+fn focus_moves_the_frames_state() {
+    let mut a = atlas_at_work();
+    a.focus = Focus::Weft;
+    let weft = screen(&mut a, 120, 32);
+    assert!(weft.contains('┌') && !weft.contains('┏'), "{weft}");
+    // Enter on its harness, a tab's digit or Tab gives the agent the keys.
+    for key in [KeyCode::Enter, KeyCode::Char('2'), KeyCode::Tab] {
+        a.focus = Focus::Weft;
+        a.selected = 1;
+        press(&mut a, key);
+        assert_eq!(a.focus, Focus::Agent, "{key:?}");
+    }
+    let agent = screen(&mut a, 120, 32);
+    assert!(agent.contains('┏') && !agent.contains('┌'), "{agent}");
 }

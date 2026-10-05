@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout as RLayout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 use tui_term::widget::PseudoTerminal;
 
 use crate::app::{Act, App, Modal, Target};
@@ -80,7 +80,7 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
         }
         if let Some(right) = geo.right {
-            agent(frame, app, right);
+            agent(frame, app, right, geo.list.is_some());
         }
     }
 

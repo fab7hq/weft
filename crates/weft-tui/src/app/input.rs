@@ -54,15 +54,18 @@ impl App {
             Action::Back => self.back(),
             Action::NextNeedsYou => self.next_needs_you(),
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
+            // Picking an agent hands it the keys, as Enter on its harness does.
             Action::NextPane => {
                 if self.pane_count() > 0 {
                     self.pane_focus = (self.pane_focus + 1) % self.pane_count();
+                    self.focus = Focus::Agent;
                 }
             }
             Action::PickPane(n) => {
                 let i = (n as usize).saturating_sub(1);
                 if i < self.pane_count() {
                     self.pane_focus = i;
+                    self.focus = Focus::Agent;
                 }
             }
             Action::Ask => self.act(Act::Ask),
@@ -135,7 +138,10 @@ impl App {
                 self.focus = Focus::Weft;
                 self.select_row(row);
             }
-            Target::Tab(pane) => self.pane_focus = pane,
+            Target::Tab(pane) => {
+                self.pane_focus = pane;
+                self.focus = Focus::Agent;
+            }
         }
     }
 
