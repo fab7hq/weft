@@ -42,10 +42,11 @@ pub(super) fn eval_view(app: &mut App, area: Rect) -> Paragraph<'static> {
         return Paragraph::new(lines);
     }
     let under = match (e.top(), e.mode) {
-        (Layer::Step { .. }, _) => " A STEP".to_string(),
-        (_, Mode::Steps) => " BY STEP".to_string(),
-        (_, Mode::Files) => " BY FILE".to_string(),
+        (Layer::Step { .. }, _) => "eval_view.a_step",
+        (_, Mode::Steps) => "eval_view.by_step",
+        (_, Mode::Files) => "eval_view.by_file",
     };
+    let under = format!(" {}", word(under).to_uppercase());
     lines.push(Line::styled(under, th.label()));
     let rows = e.rows();
     let (cursor, offset) = (e.cursor(), e.offset());

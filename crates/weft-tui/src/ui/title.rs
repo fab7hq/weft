@@ -43,12 +43,14 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
         // The counts keep their place whichever surface has the keys: they
         // are facts about the work, not about where you are.
         (_, _) => {
-            let mut spans =
-                vec![Span::styled(pair("open", &app.open_count().to_string()), th.label())];
+            let mut spans = vec![Span::styled(
+                pair(word("title.open"), &app.open_count().to_string()),
+                th.label(),
+            )];
             if app.needs_you() > 0 {
                 spans.push(Span::raw("   "));
                 spans.push(Span::styled(
-                    pair("needs you", &app.needs_you().to_string()),
+                    pair(word("title.needs_you"), &app.needs_you().to_string()),
                     th.needs_you(),
                 ));
             }

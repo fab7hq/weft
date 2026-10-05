@@ -209,8 +209,8 @@ impl Board<'_> {
 
     /// Why an action is not available now, as one sentence. `None` means it is.
     pub fn unavailable(&self, act: Act) -> Option<String> {
-        let no_pane =
-            |harness: &str| format!("No {harness} pane is open, so there is nowhere to send this.");
+        use crate::words::{fill, say, word};
+        let no_pane = |harness: &str| say("why.no_pane", harness);
         // An Ask this workspace could never finish is refused here rather
         // than after a turn spent composing one.
         if matches!(act, Act::Ask | Act::FollowUp)
@@ -219,7 +219,11 @@ impl Board<'_> {
             return Some(gap.to_string());
         }
         if let Some(why) = self.not_ready(act) {
-            return Some(why.say());
+            let mut said = why.say();
+            if why.key == "why.not_set_up" {
+                said.push_str(" [U]PDATE sets it up.");
+            }
+            return Some(said);
         }
         match act {
             Act::NewAgent
@@ -231,46 +235,35 @@ impl Board<'_> {
             | Act::Turbo
             | Act::Help
             | Act::Quit => None,
-            Act::Ask => {
-                (self.panes.is_empty()).then(|| "Start an agent first — [N]EW AGENT.".to_string())
-            }
+            Act::Ask => self.panes.is_empty().then(|| word("why.start_an_agent").to_string()),
             Act::FollowUp => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
-                Some(_) if self.panes.is_empty() => {
-                    Some("Start an agent first — [N]EW AGENT.".into())
-                }
+                None => Some(word("why.nothing_asked").into()),
+                Some(_) if self.panes.is_empty() => Some(word("why.start_an_agent").into()),
                 Some(_) => None,
             },
             // [P] sends an Ask's prompt that is waiting to be sent, and does
             // nothing else. Once it went, what happens next is the person's
             // workflow: the one thing offered is a follow-up.
             Act::Proceed => match self.selected_unit() {
-                None => Some("Nothing has been asked for yet.".into()),
+                None => Some(word("why.nothing_asked").into()),
                 Some(u) => match next_step(u) {
                     Some(Next::Send | Next::Confirm) => {
                         self.pane_for(&u.harness).is_none().then(|| no_pane(&u.harness))
                     }
-                    None if !u.is_open() => {
-                        Some(format!("{} is closed. [F] FOLLOW UP asks again.", u.title))
+                    None if !u.is_open() => Some(fill("why.closed", &[("title", &u.title)])),
+                    None if u.requested_only => {
+                        Some(fill("why.composing", &[("title", &u.title), ("harness", &u.harness)]))
                     }
-                    None if u.requested_only => Some(format!(
-                        "{} is still being composed in {}. There is nothing to send yet.",
-                        u.title, u.harness
-                    )),
-                    _ => Some(format!(
-                        "{} has nothing to send. [F] FOLLOW UP asks for more.",
-                        u.title
-                    )),
+                    _ => Some(fill("why.nothing_to_send", &[("title", &u.title)])),
                 },
             },
-            Act::Detail => self
-                .selected_unit()
-                .is_none()
-                .then(|| "Nothing has been asked for yet.".to_string()),
+            Act::Detail => {
+                self.selected_unit().is_none().then(|| word("why.nothing_asked").to_string())
+            }
             // Where it goes is the project's to say, and it needs no pane there:
             // the daemon types into an idle one of that harness, or starts one.
             Act::Eval | Act::Seal => {
-                self.selected_unit().is_none().then(|| "Nothing to work on yet.".into())
+                self.selected_unit().is_none().then(|| word("why.nothing_to_work_on").into())
             }
         }
     }

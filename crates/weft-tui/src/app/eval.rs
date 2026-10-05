@@ -128,7 +128,7 @@ impl App {
     /// `[V]`: open the Eval view of the selected work.
     pub(super) fn open_eval_view(&mut self) {
         let Some((eval_id, title)) = self.eval_of_selected() else {
-            self.hint = Some("No Eval of this work yet: [E]VAL starts one.".into());
+            self.hint = Some(weft_core::words::word("why.no_eval").into());
             return;
         };
         self.detail = None;

@@ -122,11 +122,11 @@ pub fn open(panes: &[crate::board::PaneInfo]) -> usize {
     panes.iter().filter(|p| p.running).count()
 }
 
-/// Why Weft will not type into an agent on its own. The person may still say
-/// to type anyway.
-pub const WORKING: &str = "the agent is working";
-pub const ASKING: &str = "the agent is asking you something";
-pub const UNKNOWN: &str = "Weft can't tell whether the agent is ready";
+/// Why Weft will not type into an agent on its own, as `words` keys. The
+/// person may still say to type anyway.
+pub const WORKING: &str = "not_ready.working";
+pub const ASKING: &str = "not_ready.asking";
+pub const UNKNOWN: &str = "not_ready.unknown";
 
 /// May Weft type into an agent in this state? Only after `ready` or
 /// `turn_ended`: Weft recognises ready rather than every way of being
@@ -134,9 +134,9 @@ pub const UNKNOWN: &str = "Weft can't tell whether the agent is ready";
 pub fn may_type(state: Option<Turn>) -> Result<(), &'static str> {
     match state {
         Some(Turn::Ready | Turn::TurnEnded) => Ok(()),
-        Some(Turn::Working) => Err(WORKING),
-        Some(Turn::Waiting) => Err(ASKING),
-        None => Err(UNKNOWN),
+        Some(Turn::Working) => Err(crate::words::word(WORKING)),
+        Some(Turn::Waiting) => Err(crate::words::word(ASKING)),
+        None => Err(crate::words::word(UNKNOWN)),
     }
 }
 
@@ -400,7 +400,7 @@ mod tests {
         let units = project(&[asked("ask_1", "s1")]);
         assert_eq!(state_of(&units[0], &[]), None);
         assert_eq!(pane_states(&[started(0, 0)], &[]), vec![None]);
-        assert_eq!(may_type(None), Err(UNKNOWN));
+        assert_eq!(may_type(None), Err(crate::words::word(UNKNOWN)));
     }
 
     /// §6 test 4: Weft types on its own after `ready` and `turn_ended`, and

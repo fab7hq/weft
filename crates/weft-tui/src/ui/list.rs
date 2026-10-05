@@ -22,28 +22,21 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
                 th.label(),
             ));
             lines.push(Line::raw(""));
-            lines.push(Line::styled(
-                " Your agent runs here either way. Nothing is written down until it is set up."
-                    .to_string(),
-                th.label(),
-            ));
+            lines.push(Line::styled(format!(" {}", word("tree.runs_either_way")), th.label()));
             return Paragraph::new(lines);
         }
         let (said, next) = if app.record_available() && app.pane_count() == 0 {
             // When the agent area is beside the list, it says how to start one.
             (
-                "Nothing asked for yet.",
+                word("tree.nothing_asked"),
                 if beside_agent { "" } else { "[N] starts an agent to ask." },
             )
         } else if app.record_available() {
-            ("Nothing asked for yet.", "[A]SK for something and Weft writes it down.")
+            (word("tree.nothing_asked"), "[A]SK for something and Weft writes it down.")
         } else {
             // RingFrame owns the record. Without it there is nothing to read,
             // and saying so is better than an empty list that looks settled.
-            (
-                "No ringframe on PATH, so there is no record to read.",
-                "The agents still run here. Install ringframe to see the work.",
-            )
+            (word("tree.no_ringframe"), word("tree.install_ringframe"))
         };
         lines.push(Line::styled(format!(" {said}"), th.label()));
         if !next.is_empty() {
@@ -72,14 +65,13 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     // An agent open and nothing asked yet: say what comes next under it.
     if app.units().is_empty() {
         let next: Vec<String> = match app.not_ready() {
-            Some((name, state)) => vec![
-                state.say(&name).unwrap_or_default(),
-                "Nothing is written down until it is set up.".into(),
-            ],
+            Some((name, state)) => {
+                vec![state.say(&name).unwrap_or_default(), word("tree.written_down").into()]
+            }
             None if app.record_available() => {
                 vec!["[A]SK for something and Weft writes it down.".into()]
             }
-            None => vec!["No ringframe on PATH, so there is no record to read.".into()],
+            None => vec![word("tree.no_ringframe").into()],
         };
         if lines.len() + 1 + next.len() <= room {
             lines.push(Line::raw(""));
@@ -105,7 +97,7 @@ pub(super) fn sidebar_row(
     };
     match row {
         Row::Project { name, folded, open, waiting, .. } => {
-            let mut tail = if *open == 1 { "1 open".to_string() } else { format!("{open} open") };
+            let mut tail = format!("{open} {}", word("title.open"));
             if *waiting > 0 {
                 tail.push_str(&format!(" · {waiting} ●"));
             }
@@ -124,7 +116,8 @@ pub(super) fn sidebar_row(
                 1 => "● needs your input  ".to_string(),
                 n => format!("● {n} need your input  "),
             };
-            let gone = if *running { "" } else { " · not running" };
+            let gone =
+                if *running { String::new() } else { format!(" · {}", word("tree.not_running")) };
             // ⚡: an agent of it runs in turbo mode, as its tab says too.
             let turbo = if *turbo { " ⚡" } else { "" };
             let head = format!("   {} {name}{turbo}{gone}", if *folded { "▸" } else { "▾" });

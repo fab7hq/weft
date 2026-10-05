@@ -5,12 +5,10 @@ use super::*;
 /// A refusal from the daemon, in words that say what to do about it.
 pub(super) fn refused(code: &str) -> String {
     match code {
-        "ModeNotEntered" => {
-            "Weft did not type it: the agent never showed the command as on.".into()
-        }
-        "NoProcess" => "Weft did not type it: that agent is not running.".into(),
-        "InjectionInFlight" => "Weft did not type it: it is still typing the last one.".into(),
-        other => format!("Weft did not type it: {other}"),
+        "ModeNotEntered" => word("not_typed.mode_not_entered").into(),
+        "NoProcess" => word("not_typed.no_process").into(),
+        "InjectionInFlight" => word("not_typed.in_flight").into(),
+        other => fill("not_typed.why", &[("why", other.trim_end_matches('.'))]),
     }
 }
 
@@ -26,18 +24,20 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     match &app.modal {
         // `Enter` does what is picked everywhere; [H]ELP says so once, and no
         // bar spends its room on it.
-        Some(Modal::Confirm(_)) => return plain("  [←] CANCEL"),
+        Some(Modal::Confirm(_)) => return plain(&format!("  {}", key_by("←", "act.cancel"))),
         Some(Modal::Quit) => return plain("  [↑↓] PICK   [←] CANCEL"),
         Some(Modal::Weft) => return plain("  [↑↓] PICK   [ESC] CLOSE"),
         Some(Modal::CloseProject { .. }) => {
             return plain("  [↑↓] PICK   [←] CANCEL");
         }
-        Some(Modal::OpenProject { .. }) => return plain("  [←] CANCEL"),
+        Some(Modal::OpenProject { .. }) => {
+            return plain(&format!("  {}", key_by("←", "act.cancel")));
+        }
         Some(Modal::SendAnyway { .. }) => {
             return plain("  [↑↓] PICK   [←] CANCEL");
         }
         Some(Modal::StartAgent { .. }) => return plain("  [↑↓] PICK   [←] CANCEL"),
-        Some(Modal::Ask { .. }) => return plain("  [←] CANCEL"),
+        Some(Modal::Ask { .. }) => return plain(&format!("  {}", key_by("←", "act.cancel"))),
         Some(Modal::RingFrame) => {
             // Whether [P]ROCEED has anything to run: nothing is offered that
             // would do nothing.
@@ -84,7 +84,12 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             crate::app::Layer::Step { .. } => "  [↑↓] MOVE   [D] THE CHANGE".to_string(),
             crate::app::Layer::List { .. } => format!(
                 "  [↑↓] MOVE   [D] THE CHANGE   [TAB] {}",
-                if e.mode == weft_core::eval_view::Mode::Steps { "BY FILE" } else { "BY STEP" }
+                word(if e.mode == weft_core::eval_view::Mode::Steps {
+                    "eval_view.by_file"
+                } else {
+                    "eval_view.by_step"
+                })
+                .to_uppercase()
             ),
         };
         let back = if e.layers.len() > 1 { "[ESC] BACK " } else { "[ESC] CLOSE " };
@@ -99,13 +104,14 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         // sent. Once it went, what happens next is the person's: the one
         // thing offered is a follow-up.
         let mut left = vec![Span::raw("  ")];
-        let proceed = app.proceeds().then_some(("[P]ROCEED", Act::Proceed));
-        for (label, act) in proceed.into_iter().chain([("[F] FOLLOW UP", Act::FollowUp)]) {
-            left.push(key(app, label, act));
+        let proceed = app.proceeds().then(|| (key_in("act.proceed"), Act::Proceed));
+        let follow_up = (key_by("F", "act.follow_up"), Act::FollowUp);
+        for (label, act) in proceed.into_iter().chain([follow_up]) {
+            left.push(key(app, &label, act));
             left.push(Span::raw("   "));
         }
         if app.has_eval_view() {
-            left.push(Span::styled("[V] EVAL VIEW   ", th.label()));
+            left.push(Span::styled(format!("{}   ", key_by("V", "act.eval_view")), th.label()));
         }
         left.push(Span::styled("[↑↓] SCROLL", th.label()));
         return Paragraph::new(spread(left, vec![Span::styled("[ESC] CLOSE ", th.label())], width));
@@ -115,12 +121,14 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     // are in the `[W]` menu, which is not an act on the record.
     let mut spans = vec![Span::raw("  ")];
     for (i, (label, act)) in
-        [("[A]SK", Act::Ask), ("[E]VAL", Act::Eval), ("[S]EAL", Act::Seal)].into_iter().enumerate()
+        [("act.ask", Act::Ask), ("act.eval", Act::Eval), ("act.seal", Act::Seal)]
+            .into_iter()
+            .enumerate()
     {
         if i > 0 {
             spans.push(Span::raw("   "));
         }
-        spans.push(key(app, label, act));
+        spans.push(key(app, &key_in(label), act));
     }
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
     Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width))
@@ -164,10 +172,10 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             " Weft never types into an agent without asking you first.".into()
         }
         (Some(Modal::Ask { .. }), _) => {
-            " The agent will ask you which approach to take, in its own pane.".into()
+            format!(" {}", word("ask.which_approach"))
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
-        (Some(Modal::PickUp { .. }), _) => " Your work is in the record either way.".into(),
+        (Some(Modal::PickUp { .. }), _) => format!(" {}", word("resume.either_way")),
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }

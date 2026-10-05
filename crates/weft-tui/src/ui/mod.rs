@@ -15,6 +15,7 @@ use crate::app::{Act, App, Modal, Target};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::theme::{Theme, pair};
+use weft_core::words::{fill, say, word};
 
 mod agent;
 mod bar;
@@ -260,6 +261,18 @@ fn clip(s: &str, n: usize) -> String {
         out.push('…');
     }
     out
+}
+
+/// An act's key inside its word, as the bar names it: `[A]SK`.
+fn key_in(act: &str) -> String {
+    let w = word(act).to_uppercase();
+    let first = w.chars().next().map_or(0, char::len_utf8);
+    format!("[{}]{}", &w[..first], &w[first..])
+}
+
+/// An act's key beside its word: `[F] FOLLOW UP`, `[←] CANCEL`.
+fn key_by(key: &str, act: &str) -> String {
+    format!("[{key}] {}", word(act).to_uppercase())
 }
 
 /// Break a line to a width without touching what it contains. Prefers the

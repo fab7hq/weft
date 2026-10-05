@@ -23,17 +23,17 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Weft => "WEFT".into(),
         Modal::CloseProject { .. } => "CLOSE THIS PROJECT?".into(),
         Modal::OpenProject { .. } => "OPEN A PROJECT".into(),
-        Modal::SendAnyway { .. } => "THE AGENT HAS NOT SAID IT IS READY".into(),
+        Modal::SendAnyway { .. } => word("not_ready.title").to_uppercase(),
         Modal::Help => "KEYS".into(),
         Modal::Note(_) => "WEFT".into(),
-        Modal::Ask { .. } => "WHAT DO YOU WANT DONE?".into(),
+        Modal::Ask { .. } => word("ask.title").to_uppercase(),
         Modal::Confirm(p) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => "START AN AGENT".into(),
         Modal::RingFrame => "RINGFRAME".into(),
         Modal::Remote => "REMOTE".into(),
         Modal::Allow { .. } => "ALLOW A DEVICE?".into(),
         Modal::Locate { harness, .. } => format!("WHERE IS {}?", harness.to_uppercase()),
-        Modal::PickUp { harness, .. } => format!("{} IS NOT RUNNING", harness.to_uppercase()),
+        Modal::PickUp { harness, .. } => say("resume.title", harness).to_uppercase(),
     }
     .to_string()
 }
@@ -42,13 +42,12 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         // The menu is its choices; there is nothing to say above them.
         Modal::Weft => Vec::new(),
-        Modal::SendAnyway { why, .. } => vec![
-            format!("Weft did not type it: {why}."),
-            String::new(),
-            "Weft types on its own only into an agent that has said it is".into(),
-            "ready. If you can see it is, say so and Weft will type.".into(),
-            String::new(),
-        ],
+        Modal::SendAnyway { why, .. } => {
+            let mut lines = vec![fill("not_typed.why", &[("why", why)]), String::new()];
+            lines.extend(fold(word("not_ready.why"), 62).iter().map(|l| l.trim_end().to_string()));
+            lines.push(String::new());
+            lines
+        }
         Modal::OpenProject { text } => {
             vec![format!("{text}█"), String::new(), "The path of a repository to open.".into()]
         }
@@ -69,7 +68,8 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
         Modal::Ask { text, target, follows } => {
             let mut lines = Vec::new();
             if let Some(f) = follows {
-                lines.push(format!("FOLLOW UP  {} · {}", f.title, f.carries));
+                let head = word("act.follow_up").to_uppercase();
+                lines.push(format!("{head}  {} · {}", f.title, f.carries));
                 lines.push(String::new());
             }
             // Folded, not wrapped: `wrap` rejoins words with single spaces, so
@@ -93,7 +93,7 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
                     )
                 })
                 .collect();
-            lines.push(format!("SEND TO     {}", tabs.join("    ")));
+            lines.push(format!("{}     {}", word("ask.send_to"), tabs.join("    ")));
             lines
         }
         Modal::Confirm(p) => {
@@ -190,14 +190,14 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             .iter()
             .map(|(key, label, _)| format!("[{key}]  {label}"))
             .collect(),
-        Modal::CloseProject { .. } => vec!["Close it".into(), "Cancel".into()],
+        Modal::CloseProject { .. } => vec!["Close it".into(), word("act.cancel").into()],
         Modal::SendAnyway { why, .. } => {
-            let cancel = if *why == weft_core::turns::ASKING {
-                "Cancel — I will answer the agent"
+            let cancel = if *why == word(weft_core::turns::ASKING) {
+                format!("{} — I will answer the agent", word("act.cancel"))
             } else {
-                "Cancel"
+                word("act.cancel").into()
             };
-            vec!["Type it anyway".into(), cancel.into()]
+            vec!["Type it anyway".into(), cancel]
         }
         Modal::OpenProject { .. } => Vec::new(),
         Modal::Remote if app.remote_view().is_some_and(|v| v["state"] == "on") => {
@@ -220,17 +220,15 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
         Modal::Quit => vec![
             "Quit, leave the agents running".into(),
             "Quit and stop the agents".into(),
-            "Cancel".into(),
+            word("act.cancel").into(),
         ],
         Modal::StartAgent { .. } => app.fresh_starts().iter().map(|c| c.label.clone()).collect(),
         Modal::PickUp { harness, session, .. } => crate::app::pick_up_choices(session.as_ref())
             .into_iter()
             .map(|c| match (c, session) {
                 (crate::app::PickUp::Resume, Some(s)) => {
-                    let mut said = format!(
-                        "Resume the session this was asked in · {}",
-                        crate::sessions::clock(s.at)
-                    );
+                    let mut said =
+                        format!("{} · {}", word("resume.session"), crate::sessions::clock(s.at));
                     // A harness with no prompt hook has no last prompt to show.
                     if !s.last.is_empty() {
                         said.push_str(&format!(" · {}", s.last));

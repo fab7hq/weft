@@ -14,6 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::words::{fill, word};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct EvalView {
     pub eval_id: String,
@@ -95,11 +97,11 @@ impl State {
 
     pub fn words(&self) -> String {
         match self {
-            State::Met => "met".into(),
-            State::NotMet => "not met".into(),
-            State::Unsettled => "unsettled".into(),
-            State::Judging => "judging".into(),
-            State::Read(v) => format!("{}, so far", v.replace('_', " ")),
+            State::Met => word("eval.met").into(),
+            State::NotMet => word("eval.not_met").into(),
+            State::Unsettled => word("eval.unsettled").into(),
+            State::Judging => word("eval.judging").into(),
+            State::Read(v) => fill("eval.so_far", &[("state", &v.replace('_', " "))]),
         }
     }
 }
@@ -563,10 +565,10 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
             let open = !folded.contains(&key);
             let count = |f: fn(&State) -> bool| g.steps.iter().filter(|s| f(&s.state)).count();
             let tally: Vec<String> = [
-                (count(|s| *s == State::Met), "met"),
-                (count(|s| *s == State::NotMet), "not met"),
-                (count(|s| *s == State::Unsettled), "unsettled"),
-                (count(|s| matches!(s, State::Judging | State::Read(_))), "judging"),
+                (count(|s| *s == State::Met), word("eval.met")),
+                (count(|s| *s == State::NotMet), word("eval.not_met")),
+                (count(|s| *s == State::Unsettled), word("eval.unsettled")),
+                (count(|s| matches!(s, State::Judging | State::Read(_))), word("eval.judging")),
             ]
             .iter()
             .filter(|(n, _)| *n > 0)

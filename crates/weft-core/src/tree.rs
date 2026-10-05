@@ -444,7 +444,7 @@ mod tests {
             .works[0];
         assert_eq!(
             w.eval.as_ref().map(Why::say).as_deref(),
-            Some("codex is not set up for RingFrame. [U]PDATE sets it up.")
+            Some("codex is not set up for RingFrame.")
         );
     }
 

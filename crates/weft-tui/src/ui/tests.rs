@@ -841,3 +841,34 @@ fn the_allow_question() {
     assert!(drawn.contains("Allow \"iPhone\", signed in as 0xnairb?"), "{drawn}");
     expect_screen("the_allow_question", &drawn);
 }
+
+/// A word both clients show is spelled once, in `weft_core::words`: no string
+/// in the drawing code holds one, as written or as the bar shouts it.
+#[test]
+fn the_shared_words_are_spelled_only_in_words() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui");
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "rs") || path.ends_with("tests.rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap();
+        for literal in text.split('"').skip(1).step_by(2) {
+            for (key, word) in weft_core::words::WORDS {
+                // A sentence is found inside a longer string, a word or two
+                // only as a string of its own.
+                let spelled = word.split(['{', '}']).step_by(2).any(|part| {
+                    let part = part.trim();
+                    let held =
+                        |w: &str| if part.len() > 16 { literal.contains(w) } else { literal == w };
+                    !part.is_empty() && (held(part) || held(&part.to_uppercase()))
+                });
+                if spelled {
+                    found.push(format!("{}: {key} in \"{literal}\"", path.display()));
+                }
+            }
+        }
+    }
+    assert!(found.is_empty(), "{found:#?}");
+}

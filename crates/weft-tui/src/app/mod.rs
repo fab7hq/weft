@@ -1552,7 +1552,7 @@ impl App {
             pane.map(|pane| (at, pane))
         });
         let Some((at, pane)) = elsewhere else {
-            self.say("Nothing needs your input.");
+            self.say(weft_core::words::word("why.nothing_needs_you"));
             return;
         };
         self.at = at;

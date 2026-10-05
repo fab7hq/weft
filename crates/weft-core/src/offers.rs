@@ -115,7 +115,7 @@ pub fn asking(command: &str, harness: &str) -> Asking {
         what: format!("Ready to ask {harness}"),
         why: vec![
             format!("Weft will type  {command}  into {harness}."),
-            "The agent will ask you which approach to take, in its own pane.".into(),
+            crate::words::word("ask.which_approach").into(),
         ],
     }
 }

@@ -57,6 +57,6 @@ impl App {
         let harness = self.harness_at(pane).unwrap_or("the agent").to_string();
         // The work is in the record, so the pane goes and the row says so.
         self.close_pane(pane);
-        self.say(format!("{harness} has ended. Its work is still on the list."));
+        self.say(weft_core::words::say("agent.ended", &harness));
     }
 }
