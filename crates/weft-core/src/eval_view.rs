@@ -544,16 +544,21 @@ fn change_row(c: &Change, depth: u8, with_path: bool) -> Row {
     }
 }
 
+/// A section's heading, as the TUI draws it.
+fn heading(key: &str) -> String {
+    word(key).to_uppercase()
+}
+
 /// The view's main list, with the folded parts or files closed.
 pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> {
     let mut out = Vec::new();
     if mode == Mode::Steps {
         if !view.findings.is_empty() {
-            out.push(Row::text(RowKind::Heading, 0, "FINDINGS"));
+            out.push(Row::text(RowKind::Heading, 0, heading("eval_view.findings")));
             out.extend(view.findings.iter().map(|f| Row::text(RowKind::Text, 1, f.clone())));
         }
         if !view.unexplained.is_empty() {
-            out.push(Row::text(RowKind::Heading, 0, "UNEXPLAINED CHANGES"));
+            out.push(Row::text(RowKind::Heading, 0, heading("eval_view.unexplained")));
             out.extend(
                 view.unexplained
                     .iter()
@@ -636,11 +641,11 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
     }
     if mode == Mode::Steps {
         if !view.checks.is_empty() {
-            out.push(Row::text(RowKind::Heading, 0, "CHECKS RINGFRAME RAN"));
+            out.push(Row::text(RowKind::Heading, 0, heading("eval_view.checks")));
             out.extend(view.checks.iter().map(|c| Row::text(RowKind::Text, 1, c.clone())));
         }
         if !view.limitations.is_empty() {
-            out.push(Row::text(RowKind::Heading, 0, "LIMITATIONS"));
+            out.push(Row::text(RowKind::Heading, 0, heading("eval_view.limitations")));
             out.extend(view.limitations.iter().map(|l| Row::text(RowKind::Text, 1, l.clone())));
         }
     }
@@ -663,11 +668,11 @@ pub fn step_rows(view: &EvalView, id: &str) -> Vec<Row> {
         out.push(Row::text(RowKind::Text, 1, format!("Done when: {}", st.done_when)));
     }
     if !st.findings.is_empty() {
-        out.push(Row::text(RowKind::Heading, 0, "FOUND"));
+        out.push(Row::text(RowKind::Heading, 0, heading("eval_view.found")));
         out.extend(st.findings.iter().map(|f| Row::text(RowKind::Text, 1, f.clone())));
     }
     if !st.readings.is_empty() {
-        out.push(Row::text(RowKind::Heading, 0, "READINGS"));
+        out.push(Row::text(RowKind::Heading, 0, heading("eval_view.readings")));
         for r in &st.readings {
             let said = if r.reason.is_empty() { &r.missing } else { &r.reason };
             let mut row = Row::text(
@@ -684,7 +689,12 @@ pub fn step_rows(view: &EvalView, id: &str) -> Vec<Row> {
             }
         }
     }
-    out.push(Row::text(RowKind::Heading, 0, format!("CHANGES ({})", st.changes.len())));
+    let n = st.changes.len().to_string();
+    out.push(Row::text(
+        RowKind::Heading,
+        0,
+        fill("eval_view.changes", &[("n", &n)]).to_uppercase(),
+    ));
     out.extend(st.changes.iter().filter_map(|w| view.change(w)).map(|c| change_row(c, 1, true)));
     out
 }
@@ -700,29 +710,89 @@ pub struct Payload {
     pub by_step: Vec<Row>,
     pub by_file: Vec<Row>,
     pub steps: BTreeMap<String, Vec<Row>>,
-    pub changes: BTreeMap<String, Vec<(String, bool)>>,
+    pub changes: BTreeMap<String, Vec<Line>>,
+}
+
+/// One line of a change, with its number on the side it is on.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Line {
+    pub n: Option<u32>,
+    pub text: String,
+    /// A judge quoted it.
+    pub lit: bool,
 }
 
 pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
     let open = BTreeSet::new();
+    let changes: BTreeMap<String, Vec<Line>> = view
+        .changes
+        .iter()
+        .filter_map(|c| Some((c.window.clone(), numbered(hunks.get(&c.window)?, &c.quotes))))
+        .collect();
+    // A change is named by the lines it holds, where they were read.
+    let named = |mut rows: Vec<Row>| {
+        for r in &mut rows {
+            let Some(w) = r.key.strip_prefix("c:") else { continue };
+            if let Some(at) = changes.get(w).and_then(|l| range(l)) {
+                r.text = r.text.replace(w, &at);
+            }
+        }
+        rows
+    };
     Payload {
         eval_id: view.eval_id.clone(),
         closed: view.closed,
         header: view.header(),
-        by_step: rows(view, Mode::Steps, &open),
-        by_file: rows(view, Mode::Files, &open),
+        by_step: named(rows(view, Mode::Steps, &open)),
+        by_file: named(rows(view, Mode::Files, &open)),
         steps: view
             .groups
             .iter()
             .flat_map(|g| &g.steps)
-            .map(|s| (s.id.clone(), step_rows(view, &s.id)))
+            .map(|s| (s.id.clone(), named(step_rows(view, &s.id))))
             .collect(),
-        changes: view
-            .changes
-            .iter()
-            .filter_map(|c| Some((c.window.clone(), hunk_lines(hunks.get(&c.window)?, &c.quotes))))
-            .collect(),
+        changes,
     }
+}
+
+/// A change's lines without the window's own `---` and `@@` headings, each
+/// numbered from its hunk: a removed line on the old side, the rest on the new.
+pub fn numbered(text: &str, quotes: &[String]) -> Vec<Line> {
+    let (mut old, mut new) = (0u32, 0u32);
+    let at = |h: &str, side: char| {
+        h.split_whitespace()
+            .find_map(|p| p.strip_prefix(side))
+            .and_then(|p| p.split(',').next()?.parse().ok())
+    };
+    let mut out = Vec::new();
+    for (line, lit) in hunk_lines(text, quotes) {
+        if line.starts_with("--- ") {
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            (old, new) = (at(&line, '-').unwrap_or(old), at(&line, '+').unwrap_or(new));
+            continue;
+        }
+        let n = match line.chars().next() {
+            Some('-') => (old += 1, old - 1).1,
+            Some('+') => (new += 1, new - 1).1,
+            Some(' ') => (old += 1, new += 1, new - 1).2,
+            _ => {
+                out.push(Line { n: None, text: line, lit });
+                continue;
+            }
+        };
+        out.push(Line { n: Some(n), text: line, lit });
+    }
+    out
+}
+
+/// The lines a change holds, `L88–L97`, on the new side unless it only removes.
+pub fn range(lines: &[Line]) -> Option<String> {
+    let side: Vec<u32> = lines.iter().filter(|l| !l.text.starts_with('-')).filter_map(|l| l.n).collect();
+    let side = if side.is_empty() { lines.iter().filter_map(|l| l.n).collect() } else { side };
+    let (a, b) = (*side.iter().min()?, *side.iter().max()?);
+    Some(if a == b { format!("L{a}") } else { format!("L{a}–L{b}") })
 }
 
 /// A change's hunk, each line with whether a judge's quote is on it.
@@ -893,17 +963,33 @@ mod tests {
             [("w_t".to_string(), "@@ -1 +1 @@\n+post(collect.example.com)\n".to_string())].into();
         let p = payload(&v, &hunks);
         assert_eq!(p.header, "judging · map 1 of 1 · reduce 0 of 1 · confirm —");
-        assert_eq!(p.by_step, rows(&v, Mode::Steps, &BTreeSet::new()));
+        assert_eq!(p.by_step.len(), rows(&v, Mode::Steps, &BTreeSet::new()).len());
+        // A change not read keeps its window's id.
         assert_eq!(
             p.by_file.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
-            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "w_t"]
+            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "L1"]
         );
         assert_eq!(p.steps[S7], step_rows(&v, S7));
         assert_eq!(p.steps[S8][0].aside, "judging");
         assert_eq!(p.changes.keys().collect::<Vec<_>>(), ["w_t"], "a change not read has no lines");
-        assert_eq!(p.changes["w_t"][1], ("+post(collect.example.com)".into(), true));
+        assert_eq!(
+            p.changes["w_t"],
+            [Line { n: Some(1), text: "+post(collect.example.com)".into(), lit: true }]
+        );
+        // A change read is named by its lines, not its window's id.
+        assert!(p.by_step.iter().any(|r| r.text == "src/telemetry.rs  L1"), "{:?}", p.by_step);
         let wire = serde_json::to_value(&p).unwrap();
         assert_eq!(wire["by_step"][0]["kind"], "heading");
+    }
+
+    #[test]
+    fn a_change_is_numbered_on_the_side_each_line_is_on() {
+        let text = "--- src/send.rs\n@@ -88 +88 @@\n fn send() {\n-    let _ = w();\n+    if let Err(e) = w() {\n+        return Err(e);\n+    }\n     Ok(())\n";
+        let lines = numbered(text, &[]);
+        let n: Vec<Option<u32>> = lines.iter().map(|l| l.n).collect();
+        assert_eq!(n, [Some(88), Some(89), Some(89), Some(90), Some(91), Some(92)]);
+        assert_eq!(lines[1].text, "-    let _ = w();");
+        assert_eq!(range(&lines).as_deref(), Some("L88–L92"));
     }
 
     #[test]
