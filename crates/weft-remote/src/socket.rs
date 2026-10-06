@@ -40,10 +40,8 @@ pub fn listen<T: From<Socket> + Send + 'static>(tx: Sender<T>) -> std::io::Resul
     let listener = TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     std::thread::spawn(move || {
-        let mut next = 1u64;
-        for stream in listener.incoming().flatten() {
-            let (id, tx) = (next, tx.clone());
-            next += 1;
+        for (id, stream) in (1u64..).zip(listener.incoming().flatten()) {
+            let tx = tx.clone();
             std::thread::spawn(move || serve(id, stream, tx));
         }
     });
@@ -55,6 +53,8 @@ fn config() -> WebSocketConfig {
 }
 
 /// Upgrade `GET /ws` from the app's Origin; refuse anything else.
+// The shape is tungstenite's handshake callback's, error and all.
+#[allow(clippy::result_large_err)]
 fn check(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
     let refuse = |status: u16| {
         let mut r = ErrorResponse::new(None);
@@ -182,9 +182,9 @@ impl Outbox {
     }
 
     /// The writer thread: one message at a time, until closed.
-    fn write<S: std::io::Read + Write>(self, mut ws: WebSocket<S>, drained: impl Fn() -> bool)
+    fn write<S>(self, mut ws: WebSocket<S>, drained: impl Fn() -> bool)
     where
-        S: AsShutdown,
+        S: std::io::Read + Write + AsShutdown,
     {
         let (lock, ready) = &*self.0;
         loop {

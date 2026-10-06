@@ -13,6 +13,9 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 
 use weft_core::inject::{self, Handoff, PaneState, Refusal, Step};
 
+/// Where a pane's output goes, numbered, once someone asks for the stream.
+type Tap = Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>;
+
 pub struct Pane {
     pub title: String,
     parser: Arc<Mutex<vt100::Parser>>,
@@ -22,7 +25,7 @@ pub struct Pane {
     seq: Arc<AtomicU64>,
     /// Installed only when someone asks for the stream, so a pane nobody is
     /// listening to never accumulates output it will not be asked for.
-    tap: Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>,
+    tap: Tap,
     master: Box<dyn MasterPty + Send>,
     /// Shared with the reader, which answers the harness's cursor-position
     /// queries as a terminal would.
@@ -87,7 +90,7 @@ impl Pane {
 
         let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
         let seq = Arc::new(AtomicU64::new(0));
-        let tap: Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>> = Arc::new(Mutex::new(None));
+        let tap: Tap = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
         let sink = Arc::clone(&parser);

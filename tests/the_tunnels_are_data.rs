@@ -16,7 +16,9 @@ fn code(dir: &Path, out: &mut Vec<(String, usize, String)>) {
             continue;
         }
         // A test module in a file of its own is a test.
-        if path.extension().is_none_or(|e| e != "rs") || path.file_name().is_some_and(|n| n == "tests.rs") {
+        if path.extension().is_none_or(|e| e != "rs")
+            || path.file_name().is_some_and(|n| n == "tests.rs")
+        {
             continue;
         }
         let text = std::fs::read_to_string(&path).unwrap();

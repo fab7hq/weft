@@ -333,8 +333,7 @@ impl Remote {
         let vapid = crate::push::public(&key);
         let pusher = crate::push::sender(key, tx.clone());
         let machine = Machine::load(&dir);
-        let mut view = View::default();
-        view.login = machine.as_ref().map(|m| m.login.clone());
+        let view = View { login: machine.as_ref().map(|m| m.login.clone()), ..Default::default() };
         let mut remote = Remote {
             devices: Devices::load(&dir),
             epoch: devices::random_token(),
@@ -475,9 +474,7 @@ impl Remote {
             Heard::Event(_, Event::Presence { .. }) => self.presence(),
             Heard::Event(CONTROL, _) => {}
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
-            Heard::Event(at, Event::Screen { pane, seq, full, rows, cols, bytes }) => {
-                self.screen(at, pane, seq, full, rows, cols, &bytes)
-            }
+            Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
             Heard::Event(at, Event::Pending { id, pane, what, why, payload }) => {
                 self.pending_added(at, Event::Pending { id, pane, what, why, payload })
             }

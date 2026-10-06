@@ -160,19 +160,11 @@ impl Remote {
         }
     }
 
-    pub(super) fn screen(
-        &mut self,
-        at: usize,
-        pane: u32,
-        seq: u64,
-        full: bool,
-        rows: u16,
-        cols: u16,
-        bytes: &[u8],
-    ) {
+    pub(super) fn screen(&mut self, at: usize, screen: Event) {
+        let Event::Screen { pane, seq, full, rows, cols, bytes } = screen else { return };
         let message =
             json!({"type": "screen", "agent": self.agent_id(at, pane), "seq": seq, "full": full,
-                             "rows": rows, "cols": cols, "bytes": Base64::encode_string(bytes)})
+                             "rows": rows, "cols": cols, "bytes": Base64::encode_string(&bytes)})
             .to_string();
         for c in self.conns.values_mut().filter(|c| c.watching == Some((at, pane))) {
             if c.needs_full && !full {
