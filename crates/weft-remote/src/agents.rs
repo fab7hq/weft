@@ -213,6 +213,11 @@ impl Project {
             project.harnesses.iter().zip(row["harnesses"].as_array_mut().into_iter().flatten())
         {
             at["agent"] = h.pane.map(|p| agent_id(&self.key, p)).into();
+            // Not running: what a tap on it would resume (M2.9), else nothing.
+            if h.pane.is_none() {
+                let s = weft_core::offers::resume_session(None, self.latest(&h.harness));
+                at["session"] = s.map(|s| json!({"at": s.at, "last": s.last})).into();
+            }
         }
         row
     }
@@ -259,8 +264,13 @@ impl Project {
 
     /// The session a work's agent would resume, as the TUI picks one up.
     pub fn session_of(&self, unit: &Unit) -> Option<Recorded> {
-        let latest = self.resumes.iter().find(|(h, _)| *h == unit.harness).map(|(_, s)| s);
-        weft_core::offers::resume_session(Some(unit), latest)
+        weft_core::offers::resume_session(Some(unit), self.latest(&unit.harness))
+    }
+
+    /// The harness's latest session on record, what a tap on a harness that
+    /// runs no agent resumes (M2.9), as the TUI's Enter on it does.
+    fn latest(&self, harness: &str) -> Option<&Recorded> {
+        self.resumes.iter().find(|(h, _)| h == harness).map(|(_, s)| s)
     }
 
     /// The harness an act on this work has to happen in, when no agent of it runs.
@@ -284,11 +294,17 @@ impl Project {
     /// The call that resumes a work's session with its harness's own resume
     /// command (`claude --resume <id>`, `codex resume <id>`), as the TUI's
     /// pick-up runs it.
-    pub fn resume(&self, harness: &str, unit: &str) -> Result<Call, Refusal> {
-        let unit = self.unit(unit).ok_or(("no_unit", format!("{unit} is not on the board")))?;
-        let s = self
-            .session_of(unit)
-            .ok_or(("no_session", weft_core::words::word("resume.nothing").to_string()))?;
+    /// A work's session, or with no work the harness's latest.
+    pub fn resume(&self, harness: &str, unit: Option<&str>) -> Result<Call, Refusal> {
+        let session = match unit {
+            Some(id) => self
+                .unit(id)
+                .ok_or(("no_unit", format!("{id} is not on the board")))
+                .map(|u| self.session_of(u))?,
+            None => weft_core::offers::resume_session(None, self.latest(harness)),
+        };
+        let s =
+            session.ok_or(("no_session", weft_core::words::word("resume.nothing").to_string()))?;
         let h = self
             .files
             .find(harness)
@@ -665,12 +681,13 @@ mod tests {
         )
         .unwrap();
         answer["harnesses"][0]["name"] = json!("claude");
-        let p = Project::opened(Path::new("/work/weft"), &answer);
+        let mut p = Project::opened(Path::new("/work/weft"), &answer);
         assert_eq!(p.missing(&json!({"act": "eval", "unit": "ask_1"})).as_deref(), Some("claude"));
         assert_eq!(p.missing(&json!({"act": "ask", "text": "x"})), None, "an Ask names its agent");
         let s = p.session_of(p.unit("ask_1").unwrap()).expect("the session it was asked in");
         assert_eq!((s.id.as_str(), s.last.as_str()), ("s_1", "fix login"));
-        let Ok(Call::StartAgent { harness, spec, session }) = p.resume("claude", "ask_1") else {
+        let Ok(Call::StartAgent { harness, spec, session }) = p.resume("claude", Some("ask_1"))
+        else {
             panic!()
         };
         assert_eq!((harness.as_str(), session.as_deref()), ("claude", Some("s_1")));
@@ -678,5 +695,17 @@ mod tests {
         let mut none = unit("ask_2", "telemetry");
         none.session_ref = None;
         assert_eq!(p.session_of(&none), None, "nothing to resume");
+
+        // A tap on the harness itself (M2.9): its latest session, as the TUI's
+        // Enter on a harness that runs no agent picks it up.
+        assert_eq!(p.resume("claude", None).unwrap_err().0, "no_session", "none on record yet");
+        assert_eq!(p.tree()["harnesses"][0]["session"], Value::Null);
+        p.available(&json!({"starts": [
+            {"harness": "claude", "spec": "claude --resume s_9", "session": {"id": "s_9", "at": 5, "last": "telemetry"}},
+            {"harness": "claude", "spec": "claude", "session": null}]}));
+        let Ok(Call::StartAgent { spec, session, .. }) = p.resume("claude", None) else { panic!() };
+        assert_eq!(session.as_deref(), Some("s_9"));
+        assert!(spec.ends_with(" s_9"), "{spec}");
+        assert_eq!(p.tree()["harnesses"][0]["session"], json!({"at": 5, "last": "telemetry"}));
     }
 }

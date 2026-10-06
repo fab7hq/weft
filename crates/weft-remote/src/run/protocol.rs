@@ -300,10 +300,12 @@ impl Remote {
             self.projects.iter().position(|o| o.as_ref().is_some_and(|o| o.agents.name == project));
         let at = at.ok_or(("no_project", format!("{project} is not open here")))?;
         let agents = &self.projects[at].as_ref().expect("an open project").agents;
-        // A work's: resume the session it was asked in (M4.12).
-        let call = match m["unit"].as_str() {
-            Some(unit) => agents.resume(harness, unit)?,
-            None => agents.start(harness)?,
+        // A work's: resume the session it was asked in (M4.12); `resume` with
+        // no work: the harness's latest (M2.9); else a fresh agent.
+        let call = match (m["unit"].as_str(), m["resume"].as_bool()) {
+            (Some(unit), _) => agents.resume(harness, Some(unit))?,
+            (None, Some(true)) => agents.resume(harness, None)?,
+            _ => agents.start(harness)?,
         };
         self.ask(at, call, conn, req, Carries::Agent)
     }
