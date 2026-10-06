@@ -66,28 +66,38 @@ pub struct Tunnel {
     suffix: String,
     stopped: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
+    /// Where the running program's pid is kept, for the next weft remote to
+    /// stop it if this one is killed before it can.
+    pid: Option<PathBuf>,
 }
 
 impl Tunnel {
     pub fn new(program: PathBuf, run: Vec<String>, suffix: String) -> Self {
-        Tunnel { program, run, suffix, stopped: Arc::default(), child: Arc::default() }
+        Tunnel { program, run, suffix, stopped: Arc::default(), child: Arc::default(), pid: None }
+    }
+
+    /// Keep the running program's pid in `file`.
+    pub fn keeping_pid(mut self, file: PathBuf) -> Self {
+        self.pid = Some(file);
+        self
     }
 
     /// Keep a tunnel to `127.0.0.1:<port>` up until this is dropped.
     pub fn start(&self, port: u16) -> Receiver<TunnelEvent> {
         let (tx, rx) = channel();
-        let (program, stopped, slot) =
-            (self.program.clone(), self.stopped.clone(), self.child.clone());
+        let (program, stopped, slot, pid) =
+            (self.program.clone(), self.stopped.clone(), self.child.clone(), self.pid.clone());
         let args: Vec<String> =
             self.run.iter().map(|w| w.replace("{port}", &port.to_string())).collect();
         let suffix = self.suffix.clone();
         std::thread::spawn(move || {
             let mut wait = FIRST_WAIT;
             while !stopped.load(Ordering::SeqCst) {
-                let reason = run_once(&program, &args, &suffix, &slot, &stopped, |a| {
-                    wait = FIRST_WAIT;
-                    tx.send(TunnelEvent::Address(a)).is_ok()
-                });
+                let reason =
+                    run_once(&program, &args, &suffix, &slot, &stopped, pid.as_deref(), |a| {
+                        wait = FIRST_WAIT;
+                        tx.send(TunnelEvent::Address(a)).is_ok()
+                    });
                 if stopped.load(Ordering::SeqCst) || tx.send(TunnelEvent::Ended(reason)).is_err() {
                     break;
                 }
@@ -106,6 +116,32 @@ impl Drop for Tunnel {
             let _ = child.kill();
             let _ = child.wait();
         }
+        if let Some(file) = &self.pid {
+            let _ = std::fs::remove_file(file);
+        }
+    }
+}
+
+/// Stop the program a killed weft remote left running, by the pid it kept in
+/// `file`, if that pid is still `program` and not a process that took its
+/// number since.
+pub fn stop_left(file: &Path, program: &Path) {
+    let Some(pid) = std::fs::read_to_string(file).ok().and_then(|p| p.trim().parse::<u32>().ok())
+    else {
+        return;
+    };
+    let _ = std::fs::remove_file(file);
+    let pid = pid.to_string();
+    let args = Command::new("ps").args(["-p", &pid, "-o", "args="]).output();
+    let name = program.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let ours = args.is_ok_and(|o| {
+        String::from_utf8_lossy(&o.stdout)
+            .split_whitespace()
+            .take(2)
+            .any(|w| Path::new(w).file_name().is_some_and(|n| n.to_string_lossy() == name))
+    });
+    if ours && !name.is_empty() {
+        let _ = Command::new("kill").arg(&pid).status();
     }
 }
 
@@ -116,6 +152,7 @@ fn run_once(
     suffix: &str,
     slot: &Mutex<Option<Child>>,
     stopped: &AtomicBool,
+    pid: Option<&Path>,
     mut found: impl FnMut(String) -> bool,
 ) -> String {
     let name = program
@@ -132,6 +169,9 @@ fn run_once(
         Err(e) => return format!("{name} did not start: {e}"),
     };
     let stderr = child.stderr.take().expect("piped");
+    if let Some(file) = pid {
+        let _ = std::fs::write(file, child.id().to_string());
+    }
     *slot.lock().expect("tunnel") = Some(child);
     if stopped.load(Ordering::SeqCst) {
         return "stopped".into();

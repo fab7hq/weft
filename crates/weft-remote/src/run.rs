@@ -13,7 +13,7 @@ use ed25519_dalek::VerifyingKey;
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use crate::account::{Account, Reported, SignIn};
+use crate::account::{Account, Report, Reported, SignIn};
 use crate::agents;
 use crate::daemon::{self, CONTROL, Heard};
 use crate::devices::{self, Devices, Gate};
@@ -73,6 +73,8 @@ pub enum Wake {
     Installing(String),
     /// Installing cloudflared ended, or why it failed.
     Installed(Result<(), String>),
+    /// The service said this machine is no longer on an account.
+    Left,
 }
 
 impl From<crate::push::Gone> for Wake {
@@ -235,7 +237,10 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
     let Some(program) = tunnel::find(config.remote().program.as_deref(), &tool.program) else {
         return Ready::Missing(tool);
     };
-    let tunnel = Tunnel::new(program, tool.run.clone(), tool.address.clone());
+    // A tunnel a killed weft remote left running is stopped first.
+    let kept = weft.join("remote").join("tunnel.pid");
+    tunnel::stop_left(&kept, &program);
+    let tunnel = Tunnel::new(program, tool.run.clone(), tool.address.clone()).keeping_pid(kept);
     let events = tunnel.start(port);
     let tx = tx.clone();
     std::thread::spawn(move || {
@@ -410,6 +415,10 @@ impl Remote {
                         }
                         Err(why) => self.view.failed = Some(why),
                     }
+                    true
+                }
+                Wake::Left => {
+                    self.left();
                     true
                 }
                 Wake::Enter { at, pane } => {
@@ -727,11 +736,25 @@ impl Remote {
         if !self.reported.is_new(address) {
             return;
         }
-        let account = self.settings.account.clone();
+        let (account, tx) = (self.settings.account.clone(), self.tx.clone());
         let address = address.to_string();
         std::thread::spawn(move || {
-            let _ = account.report(&machine, &address);
+            if account.report(&machine, &address) == Ok(Report::NotOnAnAccount) {
+                let _ = tx.send(Wake::Left);
+            }
         });
+    }
+
+    /// Removed from the account on the web (D1.6): forget its place there and
+    /// join again as a machine that never had, so W → R shows the code.
+    fn left(&mut self) {
+        self.machine = None;
+        let _ = std::fs::remove_file(self.dir.join("machine.toml"));
+        self.view.login = None;
+        self.reported = Reported::default();
+        if self.tunnel.is_some() && self.view.signing_in.is_none() {
+            self.sign_in();
+        }
     }
 
     // --- devices ---------------------------------------------------------

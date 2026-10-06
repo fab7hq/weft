@@ -5,7 +5,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
-use weft_remote::tunnel::{Tunnel, TunnelEvent};
+use weft_remote::tunnel::{self, Tunnel, TunnelEvent};
 
 /// Cloudflare Tunnel's `run`, as its adapter (the tool file) gives it.
 fn quick() -> Vec<String> {
@@ -134,5 +134,42 @@ fn another_adapter_is_started_and_read_by_its_own_file() {
     let args = std::fs::read_to_string(dir.join("othertunnel.args")).unwrap();
     assert_eq!(args.lines().next().unwrap(), "args: expose 48124 --quiet");
     drop(tunnel);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A weft remote killed by a signal never drops its tunnel: the program it
+/// started is left running. The next one stops it from the pid it kept.
+#[test]
+fn a_tunnel_left_by_a_killed_weft_remote_is_stopped_by_the_next() {
+    let dir = std::env::temp_dir().join(format!("weft-tunnel-left-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("cloudflared");
+    // Not exec: the process keeps the program's name, as cloudflared's does.
+    let script = "#!/bin/sh\necho '|  https://left-over.trycloudflare.com  |' >&2\nsleep 30\n";
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let kept = dir.join("tunnel.pid");
+    let left = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into())
+        .keeping_pid(kept.clone());
+    let events = left.start(48125);
+    assert!(matches!(events.recv_timeout(Duration::from_secs(5)), Ok(TunnelEvent::Address(_))));
+    let pid = std::fs::read_to_string(&kept).unwrap().trim().to_string();
+    // Killed: no drop, so nothing stops it.
+    std::mem::forget(left);
+    let alive = |pid: &str| {
+        std::process::Command::new("kill").args(["-0", pid]).status().unwrap().success()
+    };
+    assert!(alive(&pid));
+    tunnel::stop_left(&kept, &program);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while alive(&pid) {
+        assert!(Instant::now() < deadline, "the left tunnel {pid} still runs");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!kept.exists());
+    // A pid that is not this program's is never touched.
+    std::fs::write(&kept, std::process::id().to_string()).unwrap();
+    tunnel::stop_left(&kept, &program);
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -7,7 +7,7 @@ mod common;
 use std::sync::atomic::AtomicBool;
 
 use common::Fake;
-use weft_remote::account::{Account, Reported, SignIn};
+use weft_remote::account::{Account, Report, Reported, SignIn};
 use weft_remote::store::Machine;
 use weft_remote::view::View;
 
@@ -122,4 +122,30 @@ fn a_refused_sign_in_says_why() {
         },
     );
     assert_eq!(said.as_deref(), Some("GitHub said access_denied"));
+}
+
+/// A machine removed from the account on the web (D1.6) is told so when it
+/// next reports an address, rather than the answer going unread.
+#[test]
+fn a_machine_removed_from_the_account_is_told_so() {
+    let service = Fake::start();
+    service.route(
+        "PUT",
+        "/api/machine/address",
+        &[(401, r#"{"code":"unknown_machine","message":"This machine is not on an account."}"#)],
+    );
+    let account = Account::at(&service.url, "http://127.0.0.1:9");
+    let machine = Machine {
+        id: "m_1".into(),
+        name: "studio".into(),
+        github_id: 42,
+        login: "octo".into(),
+        token: "mt_gone".into(),
+    };
+    assert_eq!(
+        account.report(&machine, "https://a-b.trycloudflare.com"),
+        Ok(Report::NotOnAnAccount)
+    );
+    service.route("PUT", "/api/machine/address", &[(204, "")]);
+    assert_eq!(account.report(&machine, "https://a-b.trycloudflare.com"), Ok(Report::Taken));
 }

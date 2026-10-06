@@ -246,6 +246,19 @@ impl Harness {
         state: &str,
         github: &str,
     ) -> Self {
+        Self::until_at(name, prepare, state, github, "http://127.0.0.1:9", "http://127.0.0.1:9")
+    }
+
+    /// The same, with GitHub's API at `github`, and Fab7's account service and
+    /// GitHub's sign-in at `service` and `login`.
+    pub fn until_at(
+        name: &str,
+        prepare: impl FnOnce(&Path),
+        state: &str,
+        github: &str,
+        service: &str,
+        login: &str,
+    ) -> Self {
         let dir = std::env::temp_dir().join(format!("wr-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("remote")).unwrap();
@@ -287,7 +300,7 @@ impl Harness {
         let settings = weft_remote::run::Settings {
             weft: dir.clone(),
             socket: socket.clone(),
-            account: weft_remote::account::Account::at("http://127.0.0.1:9", "http://127.0.0.1:9"),
+            account: weft_remote::account::Account::at(service, login),
             key: fab7().verifying_key(),
             github: github.to_string(),
         };

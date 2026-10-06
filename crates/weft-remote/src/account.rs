@@ -18,6 +18,14 @@ pub const GITHUB: &str = "https://github.com";
 /// The longest a device-flow sign-in is waited for.
 const SIGN_IN_WITHIN: Duration = Duration::from_secs(15 * 60);
 
+/// What the service did with an address a machine reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Report {
+    Taken,
+    /// The machine was removed from its account (on the web, D1.6).
+    NotOnAnAccount,
+}
+
 #[derive(Clone)]
 pub struct Account {
     service: String,
@@ -143,10 +151,11 @@ impl Account {
     }
 
     /// `PUT /api/machine/address`.
-    pub fn report(&self, machine: &Machine, address: &str) -> Result<(), String> {
+    pub fn report(&self, machine: &Machine, address: &str) -> Result<Report, String> {
         let url = format!("{}/api/machine/address", self.service);
         match self.json("PUT", &url, Some(&machine.token), Some(json!({"address": address})))? {
-            (200 | 204, _) => Ok(()),
+            (200 | 204, _) => Ok(Report::Taken),
+            (401, said) if said["code"] == "unknown_machine" => Ok(Report::NotOnAnAccount),
             (status, said) => Err(format!("the address was not taken ({status}): {said}")),
         }
     }
