@@ -2052,7 +2052,7 @@ mod tests {
         let run = super::run(&["--version".to_string()], &mut none);
         assert_eq!(run.code, 0);
         assert_eq!(run.out, format!("ringframe {VERSION}\n"));
-        assert!(VERSION.starts_with("0.1."), "the Rust era starts at 0.1.0: {VERSION}");
+        assert!(!VERSION.starts_with("0.0."), "the Rust era starts at 0.1.0: {VERSION}");
     }
 
     #[test]
