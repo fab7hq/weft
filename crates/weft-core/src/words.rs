@@ -143,7 +143,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.machines.no_address", "has not reported an address yet"),
     ("web.machines.remove", "Remove"),
     ("web.machines.remove_sure", "Remove {machine} from your account?"),
-    ("web.machines.remove_what", "{machine} leaves this list. Weft on {machine} is not touched; it joins again with W → R."),
+    (
+        "web.machines.remove_what",
+        "{machine} leaves this list. Weft on {machine} is not touched; it joins again with W → R.",
+    ),
     ("web.add.title", "Add a machine"),
     ("web.add.signed_in", "Signed in as {login}"),
     ("web.add.none", "No machine is on your account yet. On the machine where Weft runs:"),
@@ -181,7 +184,27 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.settings.sign_out_everywhere", "Sign out everywhere"),
     ("web.settings.forget", "Forget this device"),
     ("web.settings.delete", "Delete my account"),
-    ("web.settings.delete_sure", "Delete my account and its machines"),
+    // Each act that leaves asks first: the question, then what it does.
+    ("web.settings.sign_out_ask", "Sign out of Weft here?"),
+    (
+        "web.settings.sign_out_what",
+        "You sign out on this device. It stays allowed on your machines, so signing in again opens them.",
+    ),
+    ("web.settings.everywhere_ask", "Sign out everywhere?"),
+    (
+        "web.settings.everywhere_what",
+        "Every phone and browser signed in as {login} signs out. Each stays allowed on your machines.",
+    ),
+    ("web.settings.forget_ask", "Forget this device?"),
+    (
+        "web.settings.forget_what",
+        "This device drops its name, its tokens and its notifications. The next time it opens a machine, the machine asks you to allow it again.",
+    ),
+    ("web.settings.delete_ask", "Delete your account?"),
+    (
+        "web.settings.delete_what",
+        "Your account, its sign-ins and its machines leave Weft's service, on every device. Weft on your machines is not touched; projects, setup, turbo and Remote stay there.",
+    ),
     (
         "web.settings.stays",
         "Projects, setup, turbo and Remote stay on your machine. Signing out keeps this device allowed on your machines; remove it there with W → R.",
