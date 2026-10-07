@@ -78,7 +78,7 @@ impl PaneView {
     }
 
     /// The wheel as a terminal sends it to an agent that asked for mouse
-    /// reports (as Codex does in its full screen): button 64 up, 65 down, at
+    /// reports (a full-screen agent does): button 64 up, 65 down, at
     /// `column`, `row` of its screen, 1-based. None when it did not ask.
     pub fn wheel(&self, up: bool, column: u16, row: u16) -> Option<Vec<u8>> {
         let screen = self.parser.screen();
