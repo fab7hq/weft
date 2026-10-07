@@ -153,6 +153,11 @@ struct Project {
     setup: Option<weft_core::workspace::Needs>,
     asked: std::time::Instant,
     asking: bool,
+    /// Closed: no window had it open and none of its agents was running when
+    /// the last one left. Its place in the list stays, so every other
+    /// project keeps its number; the next window to open its path gets a new
+    /// one.
+    closed: bool,
 }
 
 impl Project {
@@ -256,6 +261,8 @@ impl Clients {
 /// the panes, so nothing needs a lock held across a blocking read.
 enum Wake {
     Client(UnixStream),
+    /// A client's connection ended, with or without saying Detach.
+    Left(u64),
     Request {
         client: u64,
         call_id: u64,
@@ -569,6 +576,7 @@ impl Session {
         while let Ok(event) = rx.recv() {
             match event {
                 Wake::Client(stream) => self.accept(stream),
+                Wake::Left(client) => self.left(client),
                 Wake::Request { client, call_id, call } => {
                     // Every call is answered, so a client never waits on one
                     // the daemon quietly dropped.
@@ -593,7 +601,9 @@ impl Session {
                 }
                 Wake::Tick => self.follow_the_record(),
                 Wake::Checked => {
-                    for at in 0..self.projects.len() {
+                    let open: Vec<usize> =
+                        (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
+                    for at in open {
                         self.setup(at, "look", "", "");
                     }
                 }
@@ -633,9 +643,10 @@ impl Session {
                 let Line::Call { id: call_id, call } = line else { continue };
                 let leaving = call == Call::Detach;
                 if tx.send(Wake::Request { client: id, call_id, call }).is_err() || leaving {
-                    return;
+                    break;
                 }
             }
+            let _ = tx.send(Wake::Left(id));
         });
     }
 
@@ -976,6 +987,9 @@ impl Session {
     /// state has.
     fn follow_the_record(&mut self) {
         for at in 0..self.projects.len() {
+            if self.projects[at].closed {
+                continue;
+            }
             self.recheck(at);
             self.type_what_started(at);
             if self.projects[at].ledger.refresh() {
@@ -1025,6 +1039,7 @@ impl Session {
         let open: Vec<_> = self
             .projects
             .iter()
+            .filter(|p| !p.closed)
             .map(|p| weft_core::projects::Opened { path: p.root.clone(), opened: p.opened })
             .collect();
         write_whole(
@@ -1055,6 +1070,51 @@ impl Session {
         self.clients.watching.get(&client).copied()
     }
 
+    /// A client's connection ended. A client leaving is not the session
+    /// ending: its agents keep running. Only what was its own is forgotten,
+    /// and a project it leaves with no window and no agent running closes.
+    fn left(&mut self, client: u64) {
+        let had = self.clients.watching.remove(&client);
+        self.clients.sinks.remove(&client);
+        self.clients.sizes.remove(&client);
+        self.clients.quiet.remove(&client);
+        self.clients.names.remove(&client);
+        self.attached.retain(|a| a.client != client);
+        for slot in self.projects.iter_mut().flat_map(|p| &mut p.panes) {
+            slot.wants.remove(&client);
+        }
+        if let Some(at) = had {
+            self.close_if_idle(at);
+        }
+    }
+
+    /// Close a project no client has open and none of whose agents runs: it
+    /// stays listed only while there is someone or something in it. `weft
+    /// remote` opens every listed project for the devices, so it does not
+    /// count; its connection to a closed project ends, and it lets go of the
+    /// project too.
+    fn close_if_idle(&mut self, at: usize) {
+        let windows = self
+            .clients
+            .watching
+            .iter()
+            .any(|(c, p)| *p == at && !self.clients.named(*c, "weft-remote"));
+        let Some(p) = self.projects.get_mut(at).filter(|p| !p.closed) else { return };
+        if windows || p.panes.iter_mut().any(|s| s.pane.running()) {
+            return;
+        }
+        p.closed = true;
+        let others: Vec<u64> =
+            self.clients.watching.iter().filter(|(_, p)| **p == at).map(|(c, _)| *c).collect();
+        for c in others {
+            if let Some(s) = self.clients.sinks.remove(&c) {
+                let _ = s.shutdown(std::net::Shutdown::Both);
+            }
+            self.clients.watching.remove(&c);
+        }
+        self.write_projects();
+    }
+
     /// The project this client is watching, and its panes.
     fn watched(&mut self, client: u64) -> Option<(usize, &mut Project)> {
         let at = self.project_of(client)?;
@@ -1063,7 +1123,7 @@ impl Session {
 
     /// The project at this path, opened if this is the first client to ask.
     fn project_at(&mut self, root: PathBuf) -> usize {
-        match self.projects.iter().position(|p| p.root == root) {
+        match self.projects.iter().position(|p| p.root == root && !p.closed) {
             Some(at) => at,
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
@@ -1106,6 +1166,7 @@ impl Session {
                     setup,
                     asked: std::time::Instant::now(),
                     asking: false,
+                    closed: false,
                 });
                 let at = self.projects.len() - 1;
                 // A map a daemon before this one left names panes that are gone.
@@ -1349,14 +1410,8 @@ impl Session {
                 self.type_it(at, w, force);
             }
             // A client leaving is not the session ending. That is the point.
-            // Only the sizes its window drew its agents at are forgotten.
-            Call::Detach => {
-                self.clients.sizes.remove(&client);
-                self.attached.retain(|a| a.client != client);
-                for slot in self.projects.iter_mut().flat_map(|p| &mut p.panes) {
-                    slot.wants.remove(&client);
-                }
-            }
+            // What it is done with is when its connection ends (`left`).
+            Call::Detach => {}
             Call::Shutdown => return Ok(Answer::Done),
         }
         Ok(Answer::nothing())

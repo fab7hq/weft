@@ -46,6 +46,11 @@ impl Client {
 
     /// Attach from a window of this size.
     fn attach_at(socket: &PathBuf, project: &Path, rows: u16, cols: u16) -> Self {
+        Self::attach_as(socket, project, rows, cols, "test")
+    }
+
+    /// Attach as a client that calls itself `name` in its hello.
+    fn attach_as(socket: &PathBuf, project: &Path, rows: u16, cols: u16, name: &str) -> Self {
         let deadline = Instant::now() + Duration::from_secs(5);
         let stream = loop {
             if let Ok(s) = UnixStream::connect(socket) {
@@ -56,7 +61,7 @@ impl Client {
         };
         let frames = Lines::new(stream.try_clone().expect("clone"));
         let mut c = Client { stream, frames, next: 1, opened: serde_json::json!({}) };
-        c.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("hello");
+        c.answer(Call::Hello { client: name.into(), protocol: PROTOCOL }).expect("hello");
         c.opened = c
             .answer(Call::Open {
                 rows,
@@ -252,6 +257,64 @@ fn an_agent_keeps_working_while_no_client_is_attached() {
     );
 
     second.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn a_project_closes_when_its_last_client_leaves_and_no_agent_runs() {
+    let root = std::env::temp_dir().join(format!("weft-closes-{}", std::process::id()));
+    let (busy, idle) = (root.join("busy"), root.join("idle"));
+    for p in [&busy, &idle] {
+        std::fs::create_dir_all(p).expect("project");
+    }
+    let socket = protocol::private_socket("weft-detach");
+    let listening = socket.clone();
+    let config = root.join("config.toml");
+    std::thread::spawn(move || {
+        let _ = server::Session::serve(&listening, &config);
+    });
+    let listed = || {
+        let text = std::fs::read_to_string(root.join("projects.json")).unwrap_or_default();
+        (text.contains("/busy\""), text.contains("/idle\""))
+    };
+
+    // A window in each project; an agent runs in one.
+    let mut a = Client::attach(&socket, &busy);
+    a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    std::thread::sleep(Duration::from_millis(300));
+    let mut b = Client::attach(&socket, &idle);
+    // `weft remote` opens every listed project; it keeps none open.
+    let mut remote = Client::attach_as(&socket, &idle, 24, 80, "weft-remote/0.2.0");
+    let _remote_busy = Client::attach_as(&socket, &busy, 24, 80, "weft-remote/0.2.0");
+    assert_eq!(listed(), (true, true));
+
+    // Both windows leave.
+    a.send(Call::Detach);
+    drop(a);
+    b.send(Call::Detach);
+    drop(b);
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        listed(),
+        (true, false),
+        "the project with an agent running stays; the other closes"
+    );
+    // Already shut, on some systems setting a timeout on it is refused.
+    let _ = remote.stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let ended = loop {
+        match remote.frames.next() {
+            Ok(Some(_)) => continue,
+            Ok(None) => break true,
+            Err(_) => break false,
+        }
+    };
+    assert!(ended, "weft remote's connection to the closed project ends");
+
+    // The next window to open it opens it again.
+    let mut c = Client::attach(&socket, &idle);
+    assert!(c.hello().is_empty());
+    assert_eq!(listed(), (true, true));
+    c.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
