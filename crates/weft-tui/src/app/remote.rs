@@ -33,6 +33,21 @@ impl App {
             }
             return;
         }
+        // "Remove it?" too: a device is removed only on a yes.
+        if let Some(id) = self.remote_removing.clone() {
+            match key.code {
+                event::KeyCode::Char('y' | 'Y') => {
+                    self.remote_act(serde_json::json!({"act": "remove", "device": id}));
+                    self.remote_removing = None;
+                    self.modal_choice = self.modal_choice.saturating_sub(1);
+                }
+                event::KeyCode::Char('n' | 'N') | event::KeyCode::Esc => {
+                    self.remote_removing = None
+                }
+                _ => {}
+            }
+            return;
+        }
         let view = self.remote_view().cloned().unwrap_or_default();
         let tunnels = view["tunnels"].as_array().cloned().unwrap_or_default();
         let rows = if state == "choose" { tunnels.len() } else { devices.len() };
@@ -63,8 +78,7 @@ impl App {
             }
             event::KeyCode::Char('d' | 'D') if state == "on" => {
                 if let Some(id) = devices.get(self.modal_choice).and_then(|d| d["id"].as_str()) {
-                    self.remote_act(serde_json::json!({"act": "remove", "device": id}));
-                    self.modal_choice = self.modal_choice.saturating_sub(1);
+                    self.remote_removing = Some(id.to_string());
                 }
             }
             event::KeyCode::Esc if state == "signing_in" => {

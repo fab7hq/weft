@@ -65,6 +65,7 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             let offer = app.remote_view().map(|v| v["offer"].clone()).unwrap_or_default();
             let keys = match state {
                 _ if app.remote_run => " [Y] RUN   [N] NO",
+                _ if app.remote_removing.is_some() => " [Y] PROCEED   [N] CANCEL",
                 "off" => " [Enter] TURN ON   [ESC] CLOSE",
                 "choose" => " [↑↓] PICK   [Enter] CHOOSE   [O] TURN OFF   [ESC] CLOSE",
                 "not_installed" if offer.is_object() => {

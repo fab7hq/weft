@@ -403,6 +403,22 @@ fn remote_body(app: &App) -> Vec<String> {
             lines.push(String::new());
             lines
         }
+        "on" if app.remote_removing.is_some() => {
+            let id = app.remote_removing.as_deref().unwrap_or_default();
+            let devices = app.remote_devices();
+            let name = devices
+                .iter()
+                .find(|d| d["id"].as_str() == Some(id))
+                .and_then(|d| d["name"].as_str())
+                .unwrap_or("this device");
+            vec![
+                format!("REMOVE {name}?"),
+                String::new(),
+                "Its connections close at once. To come back it asks again,".into(),
+                "and you say yes here.".into(),
+                String::new(),
+            ]
+        }
         "on" => {
             let tunnel = if s("tunnel") == "up" { "up" } else { "starting" };
             let mut lines = vec![

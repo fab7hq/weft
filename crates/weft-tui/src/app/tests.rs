@@ -1954,7 +1954,13 @@ fn the_remote_views_keys_do_what_its_bar_says() {
     remote_state(&mut a, "on");
     assert_eq!(a.modal, Some(Modal::Remote), "still open");
     press(&mut a, KeyCode::Down);
+    // D asks first (T8.16): N keeps it, Y removes it.
     press(&mut a, KeyCode::Char('d'));
+    assert_eq!(a.remote_removing.as_deref(), Some("d_2"), "asked, not removed");
+    press(&mut a, KeyCode::Char('n'));
+    assert_eq!(a.remote_removing, None);
+    press(&mut a, KeyCode::Char('d'));
+    press(&mut a, KeyCode::Char('y'));
     assert_eq!(remote.act(), serde_json::json!({"act": "remove", "device": "d_2"}));
     press(&mut a, KeyCode::Char('o'));
     assert_eq!(

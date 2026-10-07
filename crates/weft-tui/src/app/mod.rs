@@ -311,6 +311,9 @@ pub struct App {
     /// The Remote view's "Run this?" is up: Install waits for the person's
     /// yes (ADR-0023, ADR-0024).
     pub remote_run: bool,
+    /// The Remote view's "Remove it?" is up for this device: D asks first,
+    /// as the web app's Remove does (T8.16).
+    pub remote_removing: Option<String>,
     /// How many rows the Eval view had room for, as the last render measured it.
     eval_reach: usize,
     /// How many rows the sidebar had room for, as the last render measured
@@ -749,6 +752,7 @@ impl App {
             setup_offered: false,
             before_allow: None,
             remote_run: false,
+            remote_removing: None,
             list_rows: 1,
             show_work: true,
             focus: Focus::Weft,
