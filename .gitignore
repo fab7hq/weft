@@ -5,3 +5,10 @@
 # one machine's record, not the product's.
 /.fab7
 /.claude
+
+# Secrets and local tool output never belong here.
+.env*
+*.pem
+*.key
+.DS_Store
+.playwright-mcp/

@@ -749,7 +749,7 @@ mod where_it_listens {
         // Found by the W3 probe: an isolated host environment puts TMPDIR deep
         // enough that the socket path overran sun_path and no session started.
         let deep = std::path::Path::new(
-            "/Users/someone/Documents/works/fab7/sandbox/hostlab/hosts/claude/g30/runtime/tmp",
+            "/Users/someone/Documents/projects/example/sandbox/hosts/harness/run30/runtime/tmp",
         );
         let path = socket_path_in(deep, "7e1ede271e5eceef.sock".into());
         assert!(
