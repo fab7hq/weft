@@ -77,7 +77,7 @@
   "web.add.title": "Add a machine",
   "web.agent.back": "Back to the tree",
   "web.agent.message": "Message {harness}…",
-  "web.agent.message_ended": "Message",
+  "web.agent.message_box": "Message",
   "web.agent.nothing_scrolled": "Nothing of {harness}'s has scrolled away yet.",
   "web.agent.own_history": "{harness} keeps its own history: press {key} in the agent to read it.",
   "web.allow.browser": "Allow this browser on your machine",

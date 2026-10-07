@@ -211,8 +211,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("web.settings.privacy", "Privacy"),
     ("web.menu.settings", "Settings…"),
-    // The agent's pane (M3.6, M3.7): whose history, and an ended agent's box.
-    ("web.agent.message_ended", "Message"),
+    // The agent's pane (M3.6, M3.7): whose history, and the message box's own name.
+    ("web.agent.message_box", "Message"),
     ("web.agent.nothing_scrolled", "Nothing of {harness}'s has scrolled away yet."),
     (
         "web.agent.own_history",
