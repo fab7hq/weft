@@ -23,7 +23,7 @@ thread carried across it.
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
+curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | sh
 ```
 
 Then run `weft` in a repository. Everything else, from setting up your harness

@@ -294,20 +294,46 @@ fn is_newer(tag: &str) -> bool {
     parts(tag.trim_start_matches('v')) > parts(env!("CARGO_PKG_VERSION"))
 }
 
-/// Replace this Weft with the latest release. Restarting is the person's.
+/// A release's tag, and nothing else: `v`, then numbers and dots.
+fn is_release_tag(tag: &str) -> bool {
+    tag.strip_prefix('v')
+        .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
+}
+
+/// Replace this Weft with the latest release, with that release's own
+/// installer, pinned to it: never `main`'s, which no release has vouched for.
+/// Restarting is the person's.
 fn update() -> Result<()> {
     let now = env!("CARGO_PKG_VERSION");
     let Some(tag) = latest_release() else {
         anyhow::bail!("could not reach the latest release");
     };
+    if !is_release_tag(&tag) {
+        anyhow::bail!("the latest release is not tagged as one: {tag}");
+    }
     if !is_newer(&tag) {
         println!("weft {now} is the latest");
         return Ok(());
     }
     println!("weft {now} → {tag}");
-    let installer =
-        format!("curl -fsSL https://raw.githubusercontent.com/{REPO}/main/install.sh | sh");
-    if !std::process::Command::new("sh").args(["-c", &installer]).status()?.success() {
+    // Downloaded whole before it runs, in a folder of the person's own.
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    let dir = std::path::PathBuf::from(home).join(".fab7/weft/update");
+    std::fs::create_dir_all(&dir)?;
+    let script = dir.join("install.sh");
+    let url = format!("https://github.com/{REPO}/releases/download/{tag}/install.sh");
+    let got = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "60", "-o"])
+        .arg(&script)
+        .arg(&url)
+        .status()?;
+    if !got.success() {
+        let _ = std::fs::remove_dir_all(&dir);
+        anyhow::bail!("{tag} publishes no installer");
+    }
+    let ran = std::process::Command::new("sh").arg(&script).env("WEFT_VERSION", &tag).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    if !ran?.success() {
         anyhow::bail!("the installer did not finish");
     }
     println!("\nRestart Weft to use it: `weft stop`, then `weft`.");
@@ -320,6 +346,16 @@ mod tests {
 
     /// What the panic hook writes before the terminal is restored: mouse
     /// capture and bracketed paste off, which `ratatui::restore` leaves on.
+    #[test]
+    fn only_a_release_tag_is_updated_to() {
+        for tag in ["v0.2.0", "v1.10.3"] {
+            assert!(is_release_tag(tag), "{tag}");
+        }
+        for tag in ["0.2.0", "v", "v0.2.0;rm -rf ~", "v0.2.0-rc1", "main", "v0.2.0 "] {
+            assert!(!is_release_tag(tag), "{tag:?}");
+        }
+    }
+
     #[test]
     fn letting_go_of_the_terminal_turns_off_the_mouse_and_pastes() {
         let mut out = Vec::new();

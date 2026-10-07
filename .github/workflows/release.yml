@@ -11,8 +11,16 @@ on:
 
 # `install.sh` downloads what this publishes. Nothing is built on a user's
 # machine, so a platform missing here is a platform nobody can install on.
+#
+# What ships is built from the tag itself, with no cache from another run,
+# every action pinned to a commit, and a provenance attestation for each
+# archive (`gh attestation verify <archive> --repo fab7hq/weft`). Only the job
+# that publishes may write.
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -30,26 +38,35 @@ jobs:
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
       - name: Install the musl toolchain
         # Statically linked, so one Linux build runs on every distribution
         # rather than tracking a glibc version.
         if: endsWith(matrix.target, '-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - run: cargo build --release --locked --target ${{ matrix.target }} --bin weft --bin ringframe
+      - run: cargo build --release --locked --target "$TARGET" --bin weft --bin ringframe
+        env:
+          TARGET: ${{ matrix.target }}
 
       - name: Pack and checksum
         id: pack
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -eu
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          archive="fab7-$tag-${{ matrix.target }}.tar.gz"
-          out=target/${{ matrix.target }}/release
+          case "$TAG" in
+              v[0-9]*) ;;
+              *) echo "not a release tag: $TAG"; exit 1 ;;
+          esac
+          archive="fab7-$TAG-$TARGET.tar.gz"
+          out="target/$TARGET/release"
           # Flat, because install.sh extracts the names directly.
           tar -czf "$archive" -C "$out" weft ringframe
           if command -v sha256sum >/dev/null 2>&1; then
@@ -62,11 +79,13 @@ jobs:
       - name: Check what was built actually runs
         # A cross-built binary that cannot start is worse than no binary.
         if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-musl'
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
-          ./target/${{ matrix.target }}/release/ringframe --version
-          ./target/${{ matrix.target }}/release/weft --help > /dev/null
+          "./target/$TARGET/release/ringframe" --version
+          "./target/$TARGET/release/weft" --help > /dev/null
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.target }}
           path: |
@@ -77,8 +96,18 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+          sparse-checkout: install.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           merge-multiple: true
       - name: Refuse a partial release
@@ -87,11 +116,19 @@ jobs:
           set -eu
           count=$(ls -1 fab7-*.tar.gz | wc -l | tr -d ' ')
           [ "$count" -eq 4 ] || { echo "only $count of 4 platforms built"; exit 1; }
-          ls -l fab7-*
-      - uses: softprops/action-gh-release@v2
+          ls -l fab7-* install.sh
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          subject-path: |
+            fab7-*.tar.gz
+            install.sh
+      # `weft update` and the README run this release's own install.sh, never
+      # main's.
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ env.TAG }}
           files: |
             fab7-*.tar.gz
             fab7-*.tar.gz.sha256
+            install.sh
           fail_on_unmatched_files: true

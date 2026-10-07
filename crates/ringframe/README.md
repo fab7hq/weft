@@ -26,7 +26,7 @@ what RingFrame wrote and never writes `.fab7/rf/` itself.
 The binary installs beside `weft`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/fab7hq/weft/main/install.sh | sh
+curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | sh
 ```
 
 It is driven by skills rather than typed by hand — `rf:ask`, `rf:eval` and
