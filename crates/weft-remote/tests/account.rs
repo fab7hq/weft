@@ -87,13 +87,15 @@ fn an_address_change_makes_exactly_one_put() {
         token: "mt_secret".into(),
     };
     let mut reported = Reported::default();
+    let now = std::time::Instant::now();
     for address in [
         "https://a-b.trycloudflare.com",
         "https://a-b.trycloudflare.com",
         "https://c-d.trycloudflare.com",
     ] {
-        if reported.is_new(address) {
+        if reported.due(address, now) {
             account.report(&machine, address).unwrap();
+            reported.taken(address, now);
         }
     }
     let puts = service.requests("PUT", "/api/machine/address");
@@ -148,4 +150,28 @@ fn a_machine_removed_from_the_account_is_told_so() {
     );
     service.route("PUT", "/api/machine/address", &[(204, "")]);
     assert_eq!(account.report(&machine, "https://a-b.trycloudflare.com"), Ok(Report::Taken));
+}
+
+#[test]
+fn an_address_that_did_not_arrive_is_sent_again_and_told_again_after_a_sleep() {
+    use std::time::{Duration, Instant};
+    let a = "https://a-b.trycloudflare.com";
+    let t0 = Instant::now();
+    let mut reported = Reported::default();
+    assert!(reported.due(a, t0));
+    assert!(!reported.due(a, t0), "one on its way at a time");
+    // No network yet: tried again, after a wait that grows.
+    reported.failed(t0);
+    assert!(!reported.due(a, t0 + Duration::from_secs(1)));
+    assert!(reported.due(a, t0 + Duration::from_secs(2)));
+    reported.failed(t0 + Duration::from_secs(2));
+    assert!(!reported.due(a, t0 + Duration::from_secs(5)));
+    assert!(reported.due(a, t0 + Duration::from_secs(6)));
+    reported.taken(a, t0 + Duration::from_secs(6));
+    assert!(!reported.due(a, t0 + Duration::from_secs(60)), "taken, and still fresh");
+    assert!(reported.due(a, t0 + Duration::from_secs(6 + 600)), "told again now and then");
+    reported.taken(a, t0 + Duration::from_secs(606));
+    // Woken from sleep: told again at once.
+    reported.again();
+    assert!(reported.due(a, t0 + Duration::from_secs(607)));
 }

@@ -13,7 +13,7 @@ use ed25519_dalek::VerifyingKey;
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use crate::account::{Account, Report, Reported, SignIn};
+use crate::account::{Account, Probe, Report, Reported, SignIn};
 use crate::agents;
 use crate::daemon::{self, CONTROL, Heard};
 use crate::devices::{self, Devices, Gate};
@@ -75,6 +75,10 @@ pub enum Wake {
     Installed(Result<(), String>),
     /// The service said this machine is no longer on an account.
     Left,
+    /// What became of a report of this address.
+    Reported(String, Result<Report, String>),
+    /// What this address answered from outside.
+    Probed(String, Probe),
 }
 
 impl From<crate::push::Gone> for Wake {
@@ -92,6 +96,31 @@ impl From<Heard> for Wake {
 impl From<Socket> for Wake {
     fn from(s: Socket) -> Self {
         Wake::Socket(s)
+    }
+}
+
+/// A tick that comes this late means the machine slept in between.
+const SLEPT: Duration = Duration::from_secs(15);
+/// A new name is not looked at from outside for this long: until it is known
+/// everywhere, a lookup of it can say it does not exist.
+const NEW_NAME: Duration = Duration::from_secs(120);
+/// How often the tunnel is looked at while it answers.
+const LOOK_EVERY: Duration = Duration::from_secs(60);
+/// Looks in a row that find it gone before it is started again.
+const GONE_TIMES: u32 = 3;
+
+/// The tunnel seen from outside (remote.md §7).
+struct Health {
+    last_tick: Instant,
+    next_look: Instant,
+    looking: bool,
+    gone: u32,
+}
+
+impl Health {
+    fn new() -> Self {
+        let now = Instant::now();
+        Health { last_tick: now, next_look: now + NEW_NAME, looking: false, gone: 0 }
     }
 }
 
@@ -197,6 +226,9 @@ struct Remote {
     /// The tree devices were last sent.
     told_tree: Value,
     reported: Reported,
+    /// The tunnel seen from outside: when to look next, a look on its way,
+    /// and how many looks in a row found it gone.
+    health: Health,
     cancel: Arc<AtomicBool>,
     tunnel: Option<Tunnel>,
     /// The tunnel adapter chosen, once it is found.
@@ -358,6 +390,7 @@ impl Remote {
             shown: Value::Null,
             told_tree: Value::Null,
             reported: Reported::default(),
+            health: Health::new(),
             cancel: Arc::default(),
             tunnel: None,
             adapter: None,
@@ -396,6 +429,14 @@ impl Remote {
                 }
                 Wake::Tick => {
                     self.tick();
+                    true
+                }
+                Wake::Reported(address, said) => {
+                    self.reported(&address, said);
+                    true
+                }
+                Wake::Probed(address, seen) => {
+                    self.probed(&address, seen);
                     true
                 }
                 Wake::PushGone(g) => {
@@ -668,9 +709,7 @@ impl Remote {
                 self.view.login = Some(machine.login.clone());
                 let _ = machine.save(&self.dir);
                 self.machine = Some(machine);
-                if let Some(address) = self.view.address.clone() {
-                    self.report(&address);
-                }
+                self.report();
             }
             SignIn::Failed(why) => {
                 self.view.signing_in = None;
@@ -730,27 +769,92 @@ impl Remote {
     fn tunnel(&mut self, event: TunnelEvent) {
         match event {
             TunnelEvent::Address(address) => {
-                self.view.address = Some(address.clone());
+                self.view.address = Some(address);
                 self.view.up = true;
-                self.report(&address);
+                // A new name is looked at once it is known everywhere.
+                self.health.next_look = Instant::now() + NEW_NAME;
+                self.health.gone = 0;
+                self.report();
             }
             TunnelEvent::Ended(_) => self.view.up = false,
         }
     }
 
-    /// Tell the service a new address, off the loop.
-    fn report(&mut self, address: &str) {
+    /// Tell the service the address when it does not have it, off the loop;
+    /// one that did not arrive is tried again.
+    fn report(&mut self) {
         let Some(machine) = self.machine.clone() else { return };
-        if !self.reported.is_new(address) {
+        let Some(address) = self.view.address.clone().filter(|_| self.view.up) else { return };
+        if !self.reported.due(&address, Instant::now()) {
             return;
         }
         let (account, tx) = (self.settings.account.clone(), self.tx.clone());
-        let address = address.to_string();
         std::thread::spawn(move || {
-            if account.report(&machine, &address) == Ok(Report::NotOnAnAccount) {
-                let _ = tx.send(Wake::Left);
-            }
+            let said = account.report(&machine, &address);
+            let _ = tx.send(Wake::Reported(address, said));
         });
+    }
+
+    fn reported(&mut self, address: &str, said: Result<Report, String>) {
+        match said {
+            Ok(Report::Taken) => self.reported.taken(address, Instant::now()),
+            Ok(Report::NotOnAnAccount) => self.left(),
+            Err(_) => self.reported.failed(Instant::now()),
+        }
+    }
+
+    /// Look at the tunnel from outside now and then, and at once after the
+    /// machine wakes: a quick tunnel Cloudflare dropped while it slept still
+    /// runs here and still shows its address, but carries nothing.
+    fn look_at_tunnel(&mut self, now: Instant) {
+        let h = &mut self.health;
+        if now.duration_since(h.last_tick) > SLEPT {
+            // Awake again, perhaps on another network: tell the service the
+            // address again and look at the tunnel.
+            self.reported.again();
+            h.next_look = h.next_look.min(now);
+        }
+        h.last_tick = now;
+        let Some(address) = self.view.address.clone().filter(|_| self.view.up) else { return };
+        if h.looking || now < h.next_look {
+            return;
+        }
+        h.looking = true;
+        let (account, tx) = (self.settings.account.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let seen = account.probe(&address);
+            let _ = tx.send(Wake::Probed(address, seen));
+        });
+    }
+
+    fn probed(&mut self, address: &str, seen: Probe) {
+        let now = Instant::now();
+        let h = &mut self.health;
+        h.looking = false;
+        if self.view.address.as_deref() != Some(address) {
+            return;
+        }
+        match seen {
+            Probe::Up => {
+                h.gone = 0;
+                h.next_look = now + LOOK_EVERY;
+            }
+            Probe::Offline => {
+                h.gone = 0;
+                h.next_look = now + Duration::from_secs(15);
+            }
+            Probe::Gone => {
+                h.gone += 1;
+                h.next_look = now + Duration::from_secs(20);
+                if h.gone >= GONE_TIMES {
+                    h.gone = 0;
+                    self.view.up = false;
+                    if let Some(t) = &self.tunnel {
+                        t.recycle();
+                    }
+                }
+            }
+        }
     }
 
     /// Removed from the account on the web (D1.6): forget its place there and
@@ -768,6 +872,8 @@ impl Remote {
     // --- devices ---------------------------------------------------------
 
     fn tick(&mut self) {
+        self.look_at_tunnel(Instant::now());
+        self.report();
         if self.asking.as_ref().is_some_and(|a| a.since.elapsed() >= ASK_WITHIN) {
             let a = self.asking.take().expect("asking");
             self.refuse(a.conn, "expired");

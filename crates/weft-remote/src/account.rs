@@ -205,23 +205,95 @@ impl Account {
     }
 }
 
+impl Account {
+    /// Ask the tunnel's public address for something only Weft answers: a
+    /// plain GET of `/ws` is Weft's 404. Anything else came from Cloudflare.
+    pub fn probe(&self, address: &str) -> Probe {
+        let get = |url: &str| {
+            let request =
+                http::Request::builder().method("GET").uri(url).body(String::new()).ok()?;
+            self.http.run(request).ok().map(|r| r.status().as_u16())
+        };
+        match get(&format!("{}/ws", address.trim_end_matches('/'))) {
+            Some(404) => Probe::Up,
+            Some(_) => Probe::Gone,
+            // No answer at all: a name Cloudflare dropped, or no network. The
+            // service tells which.
+            None if get(&self.service).is_some() => Probe::Gone,
+            None => Probe::Offline,
+        }
+    }
+}
+
 impl Default for Account {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// The last address the service was told, so only a new one is sent.
+/// How long an address the service took stands before it is told again, so a
+/// service that lost it, or never got it, has it back.
+pub const REPORT_AGAIN: Duration = Duration::from_secs(10 * 60);
+/// The longest wait between tries when the service cannot be reached.
+const REPORT_WAIT_MOST: Duration = Duration::from_secs(60);
+
+/// What the service holds of this machine's address: the last one it took,
+/// one on its way, and when to try again after a report that did not arrive
+/// (no network yet after a laptop wakes, the service down).
 #[derive(Default)]
-pub struct Reported(Option<String>);
+pub struct Reported {
+    taken: Option<(String, Instant)>,
+    sending: bool,
+    retry_at: Option<Instant>,
+    failures: u32,
+}
 
 impl Reported {
-    /// Whether `address` is new, noting it if so.
-    pub fn is_new(&mut self, address: &str) -> bool {
-        if self.0.as_deref() == Some(address) {
+    /// Whether to send `address` now: one the service has not taken, or took
+    /// a while ago, with nothing on its way and no wait to keep. Noted as on
+    /// its way when it is.
+    pub fn due(&mut self, address: &str, now: Instant) -> bool {
+        let fresh = self
+            .taken
+            .as_ref()
+            .is_some_and(|(a, at)| a == address && now.duration_since(*at) < REPORT_AGAIN);
+        if self.sending || fresh || self.retry_at.is_some_and(|t| now < t) {
             return false;
         }
-        self.0 = Some(address.to_string());
+        self.sending = true;
         true
     }
+
+    /// The service took `address`.
+    pub fn taken(&mut self, address: &str, now: Instant) {
+        *self = Reported { taken: Some((address.to_string(), now)), ..Default::default() };
+    }
+
+    /// It did not arrive: try again, waiting longer each time, up to a minute.
+    pub fn failed(&mut self, now: Instant) {
+        self.sending = false;
+        self.failures += 1;
+        let wait = Duration::from_secs(2u64.saturating_pow(self.failures.min(6)));
+        self.retry_at = Some(now + wait.min(REPORT_WAIT_MOST));
+    }
+
+    /// Tell it again at once: the machine was asleep, and the network it woke
+    /// on may be another.
+    pub fn again(&mut self) {
+        self.taken = None;
+        self.retry_at = None;
+        self.failures = 0;
+    }
+}
+
+/// What the tunnel's public address answered from outside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    /// Weft's own answer came back through it.
+    Up,
+    /// The internet answers, but not through the tunnel: Cloudflare no longer
+    /// has it (a quick tunnel dropped while the machine slept).
+    Gone,
+    /// Nothing answers: this machine is offline, and a new tunnel would not help.
+    Offline,
 }

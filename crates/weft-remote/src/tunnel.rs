@@ -109,6 +109,16 @@ impl Tunnel {
     }
 }
 
+impl Tunnel {
+    /// End the running program so it starts again with a new address: one
+    /// that runs but that Cloudflare no longer carries is no use to anyone.
+    pub fn recycle(&self) {
+        if let Some(child) = self.child.lock().ok().as_mut().and_then(|c| c.as_mut()) {
+            let _ = child.kill();
+        }
+    }
+}
+
 impl Drop for Tunnel {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
