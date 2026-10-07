@@ -203,7 +203,7 @@ impl Unit {
     }
 
     pub fn eval_state(&self) -> Option<String> {
-        self.check.as_ref().map(|c| format!("{}, {:.2} agreed", c.verdict.plain(), c.agreement))
+        self.check.as_ref().map(|c| format!("{}, {} agreed", c.verdict.plain(), score(c.agreement)))
     }
 
     pub fn seal_state(&self) -> Option<String> {
@@ -446,8 +446,27 @@ fn basis_asks(data: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// A score as the Atlas writes it: two places, a trailing 0 dropped (1.0, 0.67, 0.5).
+pub fn score(value: f64) -> String {
+    let two = format!("{value:.2}");
+    match two.strip_suffix('0') {
+        Some(one) => one.to_string(),
+        None => two,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// A score as the Atlas writes it (T5.6, M5.7): two places, a trailing 0 dropped.
+    #[test]
+    fn a_score_reads_as_the_atlas_writes_it() {
+        assert_eq!(
+            [1.0, 0.67, 0.5, 0.0, 0.333].map(super::score),
+            ["1.0", "0.67", "0.5", "0.0", "0.33"]
+        );
+    }
+
     use super::*;
     use crate::board::Next;
     use serde_json::json;

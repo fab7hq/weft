@@ -446,7 +446,7 @@ impl EvalView {
             format!(
                 "{} · confidence {} · drift: commission {}, omission {}",
                 self.verdict.as_deref().unwrap_or("closed"),
-                self.confidence.map_or("—".to_string(), |c| format!("{c:.2}")),
+                self.confidence.map_or("—".to_string(), crate::ledger::score),
                 pct(self.commission),
                 pct(self.omission)
             )

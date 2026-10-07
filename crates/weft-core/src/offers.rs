@@ -124,10 +124,10 @@ pub fn asking(command: &str, harness: &str) -> Asking {
 pub fn judges_read(record: &crate::record::Record, check: &crate::ledger::Check) -> Vec<String> {
     let mut lines = vec![
         format!(
-            "  judged by {} · recorded as {}, {:.2}",
+            "  judged by {} · recorded as {}, {}",
             record.judged_by().join(" and "),
             check.verdict.recorded(),
-            check.agreement
+            crate::ledger::score(check.agreement)
         ),
         format!("  {} judges checked the work · none of them did it", record.judges.len()),
     ];
@@ -185,7 +185,10 @@ pub fn seal_read(unit: &crate::ledger::Unit, checked: &serde_json::Value) -> Vec
             let verdict = e.get("verdict").and_then(serde_json::Value::as_str).unwrap_or("?");
             let confidence = e.get("confidence").and_then(serde_json::Value::as_f64);
             lines.push(match confidence {
-                Some(c) => format!("  ON THE EVAL   recorded as {verdict}, {c:.2} agreed"),
+                Some(c) => format!(
+                    "  ON THE EVAL   recorded as {verdict}, {} agreed",
+                    crate::ledger::score(c)
+                ),
                 None => format!("  ON THE EVAL   recorded as {verdict}"),
             });
         }
@@ -444,7 +447,7 @@ pub fn detail(
         recorded: unit
             .check
             .as_ref()
-            .map(|c| format!("{}, {:.2}", c.verdict.recorded(), c.agreement)),
+            .map(|c| format!("{}, {}", c.verdict.recorded(), crate::ledger::score(c.agreement))),
         holds: seal.map(|c| {
             let codes = c.get("codes").and_then(serde_json::Value::as_array);
             codes.is_none_or(|c| c.is_empty())
@@ -537,7 +540,7 @@ mod tests {
         assert_eq!(
             super::seal_read(&sealed("accepted"), &held)[2..],
             [
-                "  ON THE EVAL   recorded as aligned, 1.00 agreed",
+                "  ON THE EVAL   recorded as aligned, 1.0 agreed",
                 "  RECEIPT       rcp_7f3a2c",
                 "  The receipt still matches what RingFrame wrote.",
                 "  A Seal records what was decided. It does not make the work right.",
