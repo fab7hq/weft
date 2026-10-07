@@ -984,7 +984,14 @@ impl App {
             return;
         };
         let spec = match session {
-            Some(s) => h.resume_spec(&s.id),
+            Some(s) => match h.resume_spec(&s.id) {
+                Some(spec) => spec,
+                None => {
+                    self.modal =
+                        Some(Modal::Note(weft_core::words::word("resume.nothing").to_string()));
+                    return;
+                }
+            },
             None => h.spec(),
         };
         let resumes = session.map(|s| s.id.as_str());

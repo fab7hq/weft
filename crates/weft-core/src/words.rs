@@ -72,6 +72,10 @@ pub const WORDS: &[(&str, &str)] = &[
         "Weft did not type it: the agent never showed the command as on.",
     ),
     ("not_typed.no_process", "Weft did not type it: that agent is not running."),
+    (
+        "not_typed.control_characters",
+        "Weft did not type it: it holds control characters a terminal would act on.",
+    ),
     ("not_typed.in_flight", "Weft did not type it: it is still typing the last one."),
     ("resume.title", "{harness} is not running"),
     ("resume.session", "Resume the session this was asked in"),

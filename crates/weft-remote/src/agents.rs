@@ -321,11 +321,10 @@ impl Project {
             .files
             .find(harness)
             .ok_or(("no_harness", format!("Weft does not know how to start {harness}.")))?;
-        Ok(Call::StartAgent {
-            harness: harness.into(),
-            spec: h.resume_spec(&s.id),
-            session: Some(s.id),
-        })
+        let spec = h
+            .resume_spec(&s.id)
+            .ok_or(("no_session", weft_core::words::word("resume.nothing").to_string()))?;
+        Ok(Call::StartAgent { harness: harness.into(), spec, session: Some(s.id) })
     }
 
     /// The call that starts a fresh agent of `harness` here, with the command

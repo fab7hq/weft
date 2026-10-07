@@ -377,11 +377,12 @@ fn starts(
     let ready =
         |h: &&weft_core::harness::Harness| readiness.get(&h.name).is_some_and(|r| r.is_ready());
     for h in harnesses.iter().filter(|h| out_there.on_path(&h.program)).filter(ready) {
-        if let Some(s) = crate::sessions::latest(root, &h.name) {
+        let latest = crate::sessions::latest(root, &h.name);
+        if let Some((s, spec)) = latest.and_then(|s| h.resume_spec(&s.id).map(|spec| (s, spec))) {
             out.push(serde_json::json!({
                 "harness": h.name,
                 "label": format!("{} · pick up where you left off", h.name),
-                "spec": h.resume_spec(&s.id),
+                "spec": spec,
                 "session": {"id": s.id, "at": s.at, "last": s.last},
             }));
         }

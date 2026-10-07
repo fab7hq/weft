@@ -26,6 +26,9 @@ fn read(harness: &str, dir: &Path) -> Option<Recorded> {
     // The id is the directory's, not the receipt's: the directory is what the
     // hook keyed on, and a receipt that disagreed with it would be the bug.
     let id = dir.file_name()?.to_str()?.to_string();
+    if !is_id(&id) {
+        return None;
+    }
     let turns = std::fs::read_to_string(dir.join("turns.jsonl")).unwrap_or_default();
     let turns = weft_core::turns::read(harness, &id, &turns);
     let prompt = receipts(&dir.join("prompts.jsonl")).pop();
@@ -78,6 +81,22 @@ mod tests {
         assert_eq!(found.id, "newer");
         assert_eq!(found.last, "$rf:ask two");
         assert_eq!(clock(found.at), "09:30");
+    }
+
+    #[test]
+    fn a_folder_named_like_flags_is_not_a_session() {
+        // A cloned repository can ship any folder here; its name would be
+        // words on the resume command line.
+        let tmp = workspace("case");
+        receipt(&tmp, "codex", "c1", "2026-09-20T07:00:00.000Z", "$rf:ask one");
+        receipt(
+            &tmp,
+            "codex",
+            "--last --dangerously-bypass-approvals-and-sandbox",
+            "2099-01-01T00:00:00.000Z",
+            "x",
+        );
+        assert_eq!(latest(&tmp, "codex").map(|s| s.id), Some("c1".into()));
     }
 
     #[test]

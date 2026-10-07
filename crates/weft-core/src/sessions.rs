@@ -8,6 +8,18 @@
 //! Weft reads that directory and never writes it. A session with no receipt is
 //! a session Weft cannot name, and it says so rather than guessing.
 
+/// Whether a session id is only an id: letters, digits, `.`, `_` and `-`,
+/// not starting with `-`. The ids come from a project's files (a receipt
+/// directory's name, a ledger's `session_ref`), which a cloned repository can
+/// write; anything else could become words of its own on the resume command
+/// line, a flag among them.
+pub fn is_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && !id.starts_with('-')
+        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// A session a harness recorded a prompt in, here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {

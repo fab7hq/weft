@@ -281,6 +281,17 @@ impl Pane {
     /// changes is whether the host reads the command. Typed, it does; inside a
     /// folded paste, it does not.
     pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
+        // Only what can be said is typed: a prompt read from a project's files
+        // could otherwise end its own paste and press keys (`!`, Enter).
+        let command = match how {
+            Handoff::EnterMode { command, .. } | Handoff::TypeCommand { command, .. } => {
+                Some(command)
+            }
+            Handoff::Whole => None,
+        };
+        if !inject::sayable(payload) || command.is_some_and(|c| !inject::is_command(c)) {
+            return Err(Refusal::ControlCharacters);
+        }
         if let Handoff::EnterMode { command, active, .. } = how {
             // The mode first, on its own, and only believed when the host says
             // so. A mode switch is handled by the TUI and submits no prompt, so

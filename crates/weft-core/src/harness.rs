@@ -142,12 +142,15 @@ impl Harness {
     }
 
     /// The command line that opens a recorded session again, exactly as a
-    /// person would type it.
-    pub fn resume_spec(&self, session: &str) -> String {
+    /// person would type it; none for an id that is not only an id.
+    pub fn resume_spec(&self, session: &str) -> Option<String> {
+        if !crate::sessions::is_id(session) {
+            return None;
+        }
         let mut words = vec![self.spec()];
         words.extend(self.resume.iter().cloned());
         words.push(session.to_string());
-        words.join(" ")
+        Some(words.join(" "))
     }
 
     /// The command line that starts it fresh: the program and its `args`.
@@ -282,7 +285,7 @@ mod tests {
         p["args"] = serde_json::json!(["agent"]);
         let h = Harness::of("via", &p).expect("a harness");
         assert_eq!(h.spec(), "launcher agent");
-        assert_eq!(h.resume_spec("s1"), "launcher agent resume s1");
+        assert_eq!(h.resume_spec("s1").as_deref(), Some("launcher agent resume s1"));
         assert_eq!(h.argv(&h.list), ["agent", "plugin", "list", "--json"]);
         let all = Harnesses(vec![h]).with_programs(|_| Some("/opt/launcher".into()));
         let moved = all.find("via").unwrap();
@@ -348,13 +351,30 @@ mod tests {
         assert_eq!(
             all.find("claude-code")
                 .expect("claude")
-                .resume_spec("883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"),
-            "claude --resume 883b9d12-5745-4ffa-9aac-eaaeb7e0dd47"
+                .resume_spec("883b9d12-5745-4ffa-9aac-eaaeb7e0dd47")
+                .as_deref(),
+            Some("claude --resume 883b9d12-5745-4ffa-9aac-eaaeb7e0dd47")
         );
         assert_eq!(
-            all.find("codex").expect("codex").resume_spec("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"),
-            "codex resume 01a0bdb6-1d1f-79c2-84b0-8b03496d7db0"
+            all.find("codex")
+                .expect("codex")
+                .resume_spec("01a0bdb6-1d1f-79c2-84b0-8b03496d7db0")
+                .as_deref(),
+            Some("codex resume 01a0bdb6-1d1f-79c2-84b0-8b03496d7db0")
         );
+        // A session id from a project's files that is more than an id never
+        // becomes words on the command line.
+        let codex = all.find("codex").expect("codex");
+        for bad in [
+            "--last --dangerously-bypass-approvals-and-sandbox",
+            "x --dangerously-skip-permissions",
+            "-x",
+            "a;b",
+            "a b",
+            "",
+        ] {
+            assert_eq!(codex.resume_spec(bad), None, "{bad:?}");
+        }
     }
 
     #[test]
@@ -451,7 +471,7 @@ mod tests {
         assert!(unread.is_empty());
         let h = all.for_program("zed-agent").expect("offered");
         assert_eq!(h.name, "zed-agent", "named by its file");
-        assert_eq!(h.resume_spec("t1"), "zed-agent --thread t1");
+        assert_eq!(h.resume_spec("t1").as_deref(), Some("zed-agent --thread t1"));
         assert_eq!(all.titles(), "Claude Code or Zed Agent");
     }
 

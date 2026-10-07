@@ -37,6 +37,7 @@
   "not_ready.unknown": "Weft can't tell whether the agent is ready",
   "not_ready.why": "Weft types on its own only into an agent that has said it is ready. If you can see it is, say so and Weft will type.",
   "not_ready.working": "the agent is working",
+  "not_typed.control_characters": "Weft did not type it: it holds control characters a terminal would act on.",
   "not_typed.in_flight": "Weft did not type it: it is still typing the last one.",
   "not_typed.mode_not_entered": "Weft did not type it: the agent never showed the command as on.",
   "not_typed.no_process": "Weft did not type it: that agent is not running.",
