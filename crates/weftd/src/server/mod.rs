@@ -1305,6 +1305,8 @@ impl Session {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // Held while the daemon runs; `config.toml` says where it starts.
                 self.projects[at].turbo = on;
+                // Every client of the project, a device's tree among them.
+                self.clients.broadcast(at, &Out::Turbo { on });
                 return Ok(Answer::Ok(serde_json::json!({"turbo": on})));
             }
             Call::RemoteView { view } => {

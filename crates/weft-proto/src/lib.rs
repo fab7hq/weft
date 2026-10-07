@@ -234,6 +234,10 @@ pub enum Event {
     },
     /// The person typed into Weft on this machine, at `at` (milliseconds):
     /// sent to every client, at most once in ten seconds (remote.md D6).
+    /// A project's turbo switch changed: agents started from now on run so.
+    Turbo {
+        on: bool,
+    },
     Presence {
         at: i64,
     },
@@ -482,6 +486,7 @@ impl Event {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
             }
             Event::Presence { at } => ("presence", json!({"at": at})),
+            Event::Turbo { on } => ("turbo", json!({"on": on})),
             Event::Remote { view } => ("remote", json!({"view": view})),
             Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
@@ -529,6 +534,7 @@ impl Event {
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
+            "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
             "remote" => Event::Remote { view: p.get("view")?.clone() },
             "remote.act" => {
                 p.get("act")?.as_str()?;
@@ -877,6 +883,7 @@ mod tests {
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
+            Event::Turbo { on: true },
             Event::Remote { view: json!({"state": "on"}) },
             Event::RemoteAct { act: json!({"act": "stop"}) },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },

@@ -424,6 +424,8 @@ impl Session {
                 }
                 // Frames go only to a client that attached, and this one
                 // draws from the pane's own output; presence is its own.
+                // Another window switched it: this one says so too.
+                Event::Turbo { on } => self.turbo = on,
                 Event::Screen { .. } | Event::Presence { .. } | Event::RemoteAct { .. } => {}
                 Event::Remote { view } => self.remote = Some(view),
                 Event::Added { pane, harness, spec, turbo } => {

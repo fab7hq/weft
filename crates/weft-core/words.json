@@ -144,6 +144,7 @@
   "web.start.runs_on": "It runs on {machine}, with your own settings.",
   "web.tree.ask_for_something": "Ask for something and Weft writes it down.",
   "web.tree.needs_you": "● needs you",
+  "web.turbo": "turbo",
   "web.turn.waiting": "waiting",
   "web.why.not_connected": "Not connected to the machine.",
   "web.why.set_up_on": "Set it up in Weft on {machine}: U.",

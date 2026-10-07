@@ -211,6 +211,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("web.settings.privacy", "Privacy"),
     ("web.menu.settings", "Settings…"),
+    // The header's pill while a project starts agents in turbo mode (M2.9).
+    ("web.turbo", "turbo"),
     ("web.push.home_screen", "Add Weft to your Home Screen first"),
     (
         "web.push.home_screen_how",

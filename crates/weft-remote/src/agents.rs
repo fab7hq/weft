@@ -60,6 +60,8 @@ pub struct Project {
     /// What the project still needs before RingFrame is set up in it, if it
     /// is not.
     setup: Option<Needs>,
+    /// Whether agents started here from now on run in turbo mode.
+    turbo: bool,
 }
 
 impl Project {
@@ -92,6 +94,7 @@ impl Project {
             resumes: Vec::new(),
             files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
             setup: serde_json::from_value(answer["setup"].clone()).unwrap_or_default(),
+            turbo: answer["turbo"].as_bool().unwrap_or(false),
         };
         p.stamp(now());
         p
@@ -124,6 +127,7 @@ impl Project {
             Event::Units { units, .. } => self.units = units.clone(),
             Event::Readiness { states } => self.readiness = states.clone(),
             Event::Workspace { setup, .. } => self.setup = *setup,
+            Event::Turbo { on } => self.turbo = *on,
             _ => return false,
         }
         self.stamp(now());
@@ -219,6 +223,7 @@ impl Project {
                 at["session"] = s.map(|s| json!({"at": s.at, "last": s.last})).into();
             }
         }
+        row["turbo"] = self.turbo.into();
         row
     }
 
@@ -628,6 +633,17 @@ mod tests {
                 ("why.not_set_up", "claude is not set up for RingFrame.".into())
             );
         }
+    }
+
+    /// The header's ⚡ turbo (M2.9): the project's switch, as opened and as
+    /// switched since, from the TUI or another window.
+    #[test]
+    fn the_tree_says_whether_the_project_starts_agents_in_turbo() {
+        let p = Project::opened(Path::new("/work/weft"), &json!({"turbo": true}));
+        assert_eq!(p.tree()["turbo"], true);
+        let mut p = p;
+        assert!(p.heard(&Event::Turbo { on: false }), "a change a device sees");
+        assert_eq!(p.tree()["turbo"], false);
     }
 
     #[test]
