@@ -211,6 +211,13 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("web.settings.privacy", "Privacy"),
     ("web.menu.settings", "Settings…"),
+    // The agent's pane (M3.6, M3.7): whose history, and an ended agent's box.
+    ("web.agent.message_ended", "Message"),
+    ("web.agent.nothing_scrolled", "Nothing of {harness}'s has scrolled away yet."),
+    (
+        "web.agent.own_history",
+        "{harness} keeps its own history: press {key} in the agent to read it.",
+    ),
     // The header's pill while a project starts agents in turbo mode (M2.9).
     ("web.turbo", "turbo"),
     ("web.push.home_screen", "Add Weft to your Home Screen first"),
