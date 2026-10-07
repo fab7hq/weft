@@ -85,3 +85,46 @@ fn typing_on_the_mac_takes_the_keys_back() {
     d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 2}));
     assert_eq!(d.next_of("control")["by"], "you");
 }
+
+/// What arrives up to the first whole screen of `agent`: the messages' types,
+/// and that screen.
+fn up_to_a_screen(d: &mut common::Device, agent: &str) -> (Vec<String>, serde_json::Value) {
+    let mut seen = Vec::new();
+    loop {
+        let m = d.next();
+        if m["type"] == "screen" && m["agent"] == agent && m["full"] == true {
+            return (seen, m);
+        }
+        seen.push(m["type"].as_str().unwrap_or_default().to_string());
+    }
+}
+
+/// Opening an agent while nobody has used the Mac for a while: the device's
+/// size, and the keys, so its terminal fills its pane (remote.md §9).
+#[test]
+fn opening_an_agent_while_the_mac_is_away_takes_the_devices_size() {
+    let mut h = Harness::start("watch-away");
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    d.send(json!({"type": "watch", "agent": agent, "rows": 30, "cols": 40}));
+    let (seen, screen) = up_to_a_screen(&mut d, &agent);
+    assert!(seen.contains(&"control".to_string()), "the keys are the device's: {seen:?}");
+    assert_eq!((screen["rows"].clone(), screen["cols"].clone()), (json!(30), json!(40)));
+}
+
+/// While someone is using the Mac, watching keeps the Mac's size and keys.
+#[test]
+fn opening_an_agent_while_the_mac_is_in_use_keeps_its_size() {
+    let mut h = Harness::start("watch-here");
+    let mut shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    // The TUI's typing, as presence.
+    shell.tui.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
+    std::thread::sleep(Duration::from_millis(300));
+    d.send(json!({"type": "watch", "agent": agent, "rows": 30, "cols": 40}));
+    let (seen, screen) = up_to_a_screen(&mut d, &agent);
+    assert!(!seen.contains(&"control".to_string()), "{seen:?}");
+    assert_eq!((screen["rows"].clone(), screen["cols"].clone()), (json!(24), json!(80)));
+}

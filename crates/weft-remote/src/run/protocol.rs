@@ -102,6 +102,9 @@ impl Remote {
                     Carries::Agent => {
                         let pane = v["pane"].as_u64().unwrap_or_default() as u32;
                         ok["agent"] = self.agent_id(at, pane).into();
+                        if let Some(c) = self.conns.get_mut(&asked.conn) {
+                            c.started.insert((at, pane));
+                        }
                     }
                     Carries::Starts | Carries::Part(..) => {}
                 }
@@ -141,6 +144,15 @@ impl Remote {
             self.unwatch(conn, was);
         }
         if let Some((at, pane)) = next {
+            // Nobody at the Mac, or an agent this device started: the device's
+            // size and the keys, so it fills the device's pane (remote.md §9).
+            let mine = self.conns.get(&conn).is_some_and(|c| c.started.contains(&(at, pane)));
+            if let (Some(rows), Some(cols)) = (dimension(m, "rows"), dimension(m, "cols"))
+                && (self.away() || mine)
+            {
+                self.call(at, Call::Resize { pane, rows, cols });
+                self.drive(conn, at, pane);
+            }
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.needs_full = true;
             }
@@ -192,8 +204,7 @@ impl Remote {
     /// device's first key (remote.md §9).
     fn size(&mut self, m: &Value) -> Result<bool, Refusal> {
         let (at, pane) = self.agent(m)?;
-        let n = |k: &str| m[k].as_u64().filter(|n| (2..=1000).contains(n)).map(|n| n as u16);
-        let (Some(rows), Some(cols)) = (n("rows"), n("cols")) else {
+        let (Some(rows), Some(cols)) = (dimension(m, "rows"), dimension(m, "cols")) else {
             return Err(("bad_request", "a size is rows and cols".into()));
         };
         self.call(at, Call::Resize { pane, rows, cols });
@@ -537,4 +548,9 @@ impl Remote {
         }
         Ok(false)
     }
+}
+
+/// A size's rows or cols, as a device sends them.
+fn dimension(m: &Value, key: &str) -> Option<u16> {
+    m[key].as_u64().filter(|n| (2..=1000).contains(n)).map(|n| n as u16)
 }

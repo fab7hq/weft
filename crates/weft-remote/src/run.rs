@@ -107,6 +107,8 @@ struct Conn {
     needs_full: bool,
     /// The agents it has typed into since the machine last did.
     driving: HashSet<(usize, u32)>,
+    /// The agents it started or resumed: opening one takes its size.
+    started: HashSet<(usize, u32)>,
     /// What it last said it shows: in the foreground, and which agent.
     seen: Option<(bool, Option<String>)>,
 }
@@ -551,7 +553,7 @@ impl Remote {
 
     /// Send what is due (remote.md §10): to every device with pushes on.
     fn push_due(&mut self) {
-        let away = self.last_presence.is_none_or(|t| t.elapsed() >= crate::push::AWAY);
+        let away = self.away();
         let in_front: HashSet<String> = self
             .conns
             .values()
@@ -577,6 +579,11 @@ impl Remote {
                 }
             }
         }
+    }
+
+    /// Nobody has typed on the Mac for a while (remote.md §9, §10).
+    fn away(&self) -> bool {
+        self.last_presence.is_none_or(|t| t.elapsed() >= crate::push::AWAY)
     }
 
     /// Publish the view to the TUI when it changed.
