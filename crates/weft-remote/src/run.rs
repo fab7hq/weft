@@ -121,11 +121,12 @@ struct Asked {
     carries: Carries,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum Carries {
     Nothing,
     Pending,
-    Text,
+    /// A history, with the key its harness keeps the rest behind.
+    History(Option<String>),
     /// The agent `start` made, by its id.
     Agent,
     /// What can be started: the machine's own call, answered to no device.

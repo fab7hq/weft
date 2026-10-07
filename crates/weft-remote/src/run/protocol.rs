@@ -98,7 +98,10 @@ impl Remote {
                 match asked.carries {
                     Carries::Nothing => {}
                     Carries::Pending => ok["pending"] = v["pending"].clone(),
-                    Carries::Text => ok["text"] = v["text"].clone(),
+                    Carries::History(key) => {
+                        ok["text"] = v["text"].clone();
+                        ok["transcript"] = key.into();
+                    }
                     Carries::Agent => {
                         let pane = v["pane"].as_u64().unwrap_or_default() as u32;
                         ok["agent"] = self.agent_id(at, pane).into();
@@ -374,7 +377,8 @@ impl Remote {
                 pane: Some(pane),
                 lines: Some(HISTORY),
             };
-            return self.ask(at, call, conn, req, Carries::Text);
+            let key = self.projects[at].as_ref().and_then(|o| o.agents.transcript(pane));
+            return self.ask(at, call, conn, req, Carries::History(key));
         }
         if !matches!(what, Some("detail" | "eval_view")) {
             return Err(("not_allowed", "a device reads history, detail or eval_view".into()));

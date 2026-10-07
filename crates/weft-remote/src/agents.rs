@@ -139,6 +139,13 @@ impl Project {
         self.panes.iter().any(|p| p.pane == pane)
     }
 
+    /// The key the pane's harness keeps its own history behind (M3.6), from
+    /// its harness file; none for one that prints into the terminal's.
+    pub fn transcript(&self, pane: u32) -> Option<String> {
+        let (harness, _) = self.harness(pane)?;
+        self.files.find(harness)?.transcript.clone()
+    }
+
     /// The pane's harness id and title.
     pub fn harness(&self, pane: u32) -> Option<(&str, &str)> {
         let p = self.panes.iter().find(|p| p.pane == pane)?;
@@ -633,6 +640,21 @@ mod tests {
                 ("why.not_set_up", "claude is not set up for RingFrame.".into())
             );
         }
+    }
+
+    /// M3.6: whose history is behind which key, from the harness's own file.
+    #[test]
+    fn an_agent_names_the_key_its_own_history_is_behind() {
+        let files = weft_core::harness::fixture::harnesses();
+        let answer = json!({
+            "panes": [{"pane": 1, "harness": "codex", "spec": "codex", "running": true},
+                      {"pane": 2, "harness": "claude-code", "spec": "claude", "running": true}],
+            "harnesses": [serde_json::to_value(files.find("codex").unwrap()).unwrap(),
+                          serde_json::to_value(files.find("claude-code").unwrap()).unwrap()],
+        });
+        let p = Project::opened(Path::new("/work/weft"), &answer);
+        assert_eq!(p.transcript(1).as_deref(), Some("Ctrl+T"));
+        assert_eq!(p.transcript(2), None, "it prints inline: the terminal keeps its history");
     }
 
     /// The header's ⚡ turbo (M2.9): the project's switch, as opened and as
