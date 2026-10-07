@@ -19,6 +19,7 @@ pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
         Block::bordered().border_style(th.rule())
     };
     let inside = block.inner(area);
+    app.hits.push((inside, crate::app::Target::Screen(app.pane_focus)));
     frame.render_widget(block, area);
     let focus = app.pane_focus;
     app.with_pane_screen(focus, inside.height, inside.width, |screen| {

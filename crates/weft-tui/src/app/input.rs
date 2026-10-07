@@ -108,6 +108,20 @@ impl App {
         if self.focus != Focus::Agent {
             return;
         }
+        // An agent that asked for mouse reports scrolls itself, as in any
+        // terminal: the wheel goes to it, where the mouse is on its screen.
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        let (column, row) = self
+            .hits
+            .iter()
+            .find(|(area, t)| *t == Target::Screen(self.pane_focus) && area.contains(at))
+            .map_or((1, 1), |(area, _)| (m.column - area.x + 1, m.row - area.y + 1));
+        let report =
+            sess!(self).panes.get(self.pane_focus).and_then(|p| p.wheel(delta > 0, column, row));
+        if let Some(bytes) = report {
+            let _ = self.input(self.pane_focus, &bytes);
+            return;
+        }
         let Some(p) = sess!(self).panes.get_mut(self.pane_focus) else { return };
         let before = p.scroll_offset();
         p.scroll(delta);
@@ -145,6 +159,8 @@ impl App {
                 self.pane_focus = pane;
                 self.focus = Focus::Agent;
             }
+            // The wheel's place on an agent's screen; a click there is the agent's own.
+            Target::Screen(_) => {}
         }
     }
 

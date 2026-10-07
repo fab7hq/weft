@@ -391,6 +391,36 @@ fn the_wheel_scrolls_the_agent_only_while_it_has_the_keys() {
     assert!(a.hint_text().is_some(), "in the agent it is Weft's, and says why nothing moved");
 }
 
+/// An agent that asked for mouse reports, as Codex does in its full screen,
+/// gets the wheel as a terminal sends it; Weft scrolls nothing of its own.
+#[test]
+fn the_wheel_goes_to_an_agent_that_asked_for_mouse_reports() {
+    let mut a = app();
+    a.focus = Focus::Agent;
+    // `cat` sends back what it is given: the agent turns on SGR mouse reports.
+    a.input(0, b"\x1b[?1000h\x1b[?1006h\n").expect("typed");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !a.wants_the_mouse(0) {
+        assert!(std::time::Instant::now() < deadline, "the agent never asked for the mouse");
+        a.pump();
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let wheel = |kind| MouseEvent { kind, column: 0, row: 0, modifiers: KeyModifiers::NONE };
+    a.on_mouse(wheel(MouseEventKind::ScrollUp));
+    a.on_mouse(wheel(MouseEventKind::ScrollDown));
+    assert!(a.hint_text().is_none(), "nothing to explain: the agent scrolls itself");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        a.pump();
+        let text = a.pane_text(0).unwrap_or_default();
+        if text.contains("[<64;") && text.contains("[<65;") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no wheel report reached the agent: {text}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 #[test]
 fn open_work_with_no_agent_offers_the_session_it_was_asked_in() {
     let mut a = app();

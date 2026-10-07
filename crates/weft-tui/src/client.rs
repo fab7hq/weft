@@ -77,6 +77,24 @@ impl PaneView {
         screen.set_scrollback((at + delta).max(0) as usize);
     }
 
+    /// The wheel as a terminal sends it to an agent that asked for mouse
+    /// reports (as Codex does in its full screen): button 64 up, 65 down, at
+    /// `column`, `row` of its screen, 1-based. None when it did not ask.
+    pub fn wheel(&self, up: bool, column: u16, row: u16) -> Option<Vec<u8>> {
+        let screen = self.parser.screen();
+        if screen.mouse_protocol_mode() == vt100::MouseProtocolMode::None {
+            return None;
+        }
+        let button: u16 = if up { 64 } else { 65 };
+        Some(match screen.mouse_protocol_encoding() {
+            vt100::MouseProtocolEncoding::Sgr => {
+                format!("\x1b[<{button};{column};{row}M").into_bytes()
+            }
+            _ => [b"\x1b[M".as_slice(), &[button, column, row].map(|n| (32 + n.min(223)) as u8)]
+                .concat(),
+        })
+    }
+
     pub fn scroll_offset(&self) -> usize {
         self.parser.screen().scrollback()
     }

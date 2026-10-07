@@ -44,6 +44,8 @@ pub enum Target {
     Row(usize),
     /// An agent's tab, by pane.
     Tab(usize),
+    /// Where an agent's screen is drawn, by pane.
+    Screen(usize),
     /// The turbo switch in the title bar.
     Turbo,
 }
@@ -1719,6 +1721,11 @@ impl App {
         sess!(self).units = units.clone();
         self.units = units;
         self.clamp_selection();
+    }
+
+    /// Whether the agent in this pane asked for mouse reports.
+    pub fn wants_the_mouse(&self, pane: usize) -> bool {
+        sess!(self).panes.get(pane).is_some_and(|p| p.wheel(true, 1, 1).is_some())
     }
 
     pub fn input(&mut self, pane: usize, bytes: &[u8]) -> Result<()> {
