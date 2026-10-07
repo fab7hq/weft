@@ -27,8 +27,11 @@ toml = "1.1.6"
 tungstenite = "0.30.0"
 # HTTPS to the account service, GitHub and push services.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
-# Web Push's encryption and VAPID, without its own HTTP.
-web-push-native = "0.5.0"
+# Web Push's encryption, without its own HTTP. Its VAPID feature is off: it
+# brings jwt-simple and, through it, the rsa crate (RUSTSEC-2023-0071); the
+# ES256 JWT is signed here with p256.
+web-push-native = { version = "0.5.0", default-features = false }
+p256 = { version = "0.13.2", features = ["ecdsa", "pkcs8", "pem"] }
 weft-core = { path = "../weft-core" }
 weft-proto = { path = "../weft-proto" }
 
