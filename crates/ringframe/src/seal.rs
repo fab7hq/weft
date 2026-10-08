@@ -149,8 +149,8 @@ pub fn create(
         || json!({"kind": "human", "id": "local-user", "authority": "interactive"}),
     );
     let mut codes: Vec<String> = Vec::new();
-    let asks = ask::open_asks(ws)?;
-    let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
+    let mut asks = ask::open_asks(ws)?;
+    let mut ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
     if ask_ids.is_empty() {
         codes.push("seal.no_open_ask".into());
     }
@@ -178,6 +178,11 @@ pub fn create(
                 if !ask_ids.iter().any(|a| basis.contains(a)) {
                     codes.push("seal.eval_unrelated".into());
                     record = None;
+                } else {
+                    // A Seal on an Eval seals that round: the open Asks it
+                    // covers, and none asked since (Weft ADR-0029 D8).
+                    asks.retain(|a| basis.contains(&str_of(a, "ask_id")));
+                    ask_ids.retain(|a| basis.contains(a));
                 }
             }
         }
@@ -374,6 +379,25 @@ mod tests {
             assert_eq!(chk["subject_matches"], true);
             assert_eq!(chk["eval"]["verdict"], "aligned");
             assert_eq!(chk["basis"], json!({"asks": [a, b]}));
+        });
+    }
+
+    #[test]
+    fn a_seal_on_an_eval_closes_exactly_the_asks_it_covers() {
+        // Weft ADR-0029 D8: Seal on "Eval 3" seals that round; an Ask asked
+        // since stays open for the next Eval.
+        eval_bench(|ws| {
+            let (a, b, rec) = judged(ws, ["yes", "yes", "yes"]);
+            let later = confirm_ask(ws, "Third", b"third\n", b"Third.\n");
+            let later = str_of(&later, "ask_id");
+            let eval_id = str_of(&rec, "eval_id");
+            let receipt = create(ws, "accepted", Some(&eval_id), None, None).unwrap();
+            assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
+            assert_eq!(receipt["eval"]["eval_id"], rec["eval_id"]);
+            let open: Vec<String> =
+                ask::open_asks(ws).unwrap().iter().map(|x| str_of(x, "ask_id")).collect();
+            assert_eq!(open, [later], "the Ask asked after the Eval stays open");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }
 
