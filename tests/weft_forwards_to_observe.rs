@@ -133,6 +133,20 @@ fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
         },
     );
     let spec = format!("/bin/sh {spec}");
+    // A session that is not only an id is never passed on.
+    support::signal(
+        &socket,
+        weft_core::signal::Sent {
+            harness: "claude-code".into(),
+            hook: "UserPromptSubmit".into(),
+            session: "--json".into(),
+            workspace: Some(root.to_string_lossy().into_owned()),
+            state: Some("working".into()),
+            forward: Some("prompt".into()),
+            prompt: Some("/rf:ask not an id".into()),
+            ..Default::default()
+        },
+    );
     call(3, Call::StartAgent { harness: "claude-code".into(), spec, session: None });
 
     let calls = || std::fs::read_to_string(log.join("calls")).unwrap_or_default();
@@ -164,5 +178,6 @@ fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
         "byte for byte"
     );
     assert!(!calls().contains("elsewhere") && !calls().contains("SECRET"), "{}", calls());
+    assert!(!calls().contains("--session --json"), "{}", calls());
     call(4, Call::Shutdown);
 }

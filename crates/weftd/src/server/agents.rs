@@ -128,7 +128,11 @@ impl Session {
         let (tx, harness_name) = (self.tx.clone(), harness.to_string());
         let size = self.clients.sizes.get(&client).copied().unwrap_or((24, 80));
         // Its hooks tell this daemon what it is doing, from inside this pane.
-        let token = new_token();
+        let Some(token) = new_token() else {
+            let refusal = Some("the system gave no randomness for the pane's token".into());
+            self.clients.broadcast(project, &Out::Injected { pane: id, refusal, unrecorded: None });
+            return None;
+        };
         let env = [
             ("WEFT_PANE", id.to_string()),
             ("WEFT_PANE_TOKEN", token.clone()),
@@ -180,6 +184,12 @@ impl Session {
     /// project its workspace is in, and changes no pane. Accepted, it is
     /// recorded in Weft's receipts; anything else is dropped unrecorded.
     pub(super) fn signal(&mut self, sent: weft_core::signal::Sent) {
+        // A session or harness that is not only an id names no file and is
+        // passed to no one (D7): both become paths and arguments.
+        use weft_core::sessions::is_id;
+        if !is_id(&sent.session) || !is_id(&sent.harness) {
+            return;
+        }
         let (at, root) = match sent.pane {
             Some(pane) => {
                 let token = sent.token.as_deref().unwrap_or_default();
@@ -190,11 +200,13 @@ impl Session {
                             .any(|s| s.map.pane == pane && s.token == token && !token.is_empty())
                 });
                 let Some(at) = found else { return };
+                // Everything the agent runs inherits the token: a session of
+                // another harness started inside the pane is recorded, and
+                // takes the pane from no one.
                 let p = &mut self.projects[at];
                 let mut map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-                if crate::turns::signalled(&mut map, pane, &sent.session)
-                    && weft_core::sessions::is_id(&sent.session)
-                {
+                let ours = map.iter().any(|m| m.pane == pane && m.harness == sent.harness);
+                if ours && crate::turns::signalled(&mut map, pane, &sent.session) {
                     for (slot, m) in p.panes.iter_mut().zip(map) {
                         slot.map = m;
                     }
@@ -231,19 +243,20 @@ impl Session {
     }
 }
 
-/// 128 random bits, as hex.
-fn new_token() -> String {
+/// 128 random bits, as hex, or none when the system gives none: a pane is
+/// never started with a token anyone could guess.
+fn new_token() -> Option<String> {
     use std::io::Read as _;
     let mut bytes = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut bytes);
-    }
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).ok()?;
+    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The project a workspace path is in: the nearest folder at or above it
-/// that holds `.fab7/`, looking no higher than its Git repository, else the
-/// path itself (ADR-0030 D3). A path that is not an absolute folder is none.
+/// The project a workspace path is in, as RingFrame resolves a workspace: the
+/// nearest folder at or above it that holds a record (`.fab7/rf/`), looking
+/// no higher than its Git repository, else the path itself (ADR-0030 D3). A
+/// path that is not an absolute folder is none. `~/.fab7/` alone, which
+/// every machine with Weft has, makes no project.
 fn project_of(path: &str) -> Option<PathBuf> {
     let path = Path::new(path);
     if !path.is_absolute() {
@@ -251,7 +264,7 @@ fn project_of(path: &str) -> Option<PathBuf> {
     }
     let path = path.canonicalize().ok().filter(|p| p.is_dir())?;
     for dir in path.ancestors() {
-        if dir.join(".fab7").is_dir() {
+        if dir.join(".fab7").join("rf").is_dir() {
             return Some(dir.to_path_buf());
         }
         if dir.join(".git").exists() {

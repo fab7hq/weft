@@ -172,6 +172,42 @@ fn a_signal_moves_only_the_pane_whose_token_it_carries_and_outlives_the_daemon()
     c.agents_until(|panes, _| panes.first() == Some(&Some(Turn::Waiting)));
     let lines = std::fs::read_to_string(receipt(&config, &root, "s1")).unwrap();
     assert!(!lines.contains("turn_ended"), "{lines}");
+
+    // A session another harness runs inside the pane (it inherits the token)
+    // is that harness's, and takes the pane from no one.
+    let mut nested = state("turn_ended", "n1", &root);
+    nested.harness = "claude-code".into();
+    nested.pane = Some(0);
+    nested.token = Some(var("WEFT_PANE_TOKEN"));
+    support::signal(&socket, nested);
+    c.agents_until(|_, sessions| sessions.iter().any(|s| s.id == "n1"));
+    let map: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(root.join(".fab7/weft/panes.json")).unwrap())
+            .unwrap();
+    assert_eq!(map["panes"][0]["session"]["session"], "s1", "still the pane's own session");
+
+    // A session or harness that is not only an id names no file anywhere.
+    let mut escape = state("waiting", "../../escape", &root);
+    escape.harness = "../codex".into();
+    support::signal(&socket, escape);
+    // A folder under one that holds `.fab7/` but no record is its own project.
+    let outer = home.path().join("outer");
+    let inner = outer.join("inner");
+    std::fs::create_dir_all(outer.join(".fab7/weft")).unwrap();
+    std::fs::create_dir_all(&inner).unwrap();
+    let inner = inner.canonicalize().unwrap();
+    support::signal(&socket, state("working", "i1", &inner));
+    let mine = receipt(&config, &inner, "i1");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !mine.exists() {
+        assert!(Instant::now() < deadline, "the inner project's receipt never came");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let base = weft::receipts::base_of(&config);
+    let walked = std::process::Command::new("find").arg(&base).output().unwrap();
+    let walked = String::from_utf8_lossy(&walked.stdout);
+    assert!(!walked.contains("escape"), "{walked}");
+    assert!(!home.path().join("escape").exists() && !base.join("escape").exists());
     c.send(Call::Shutdown);
 
     // Started again, the daemon reads every session's state from its receipts.

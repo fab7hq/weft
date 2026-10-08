@@ -70,7 +70,8 @@ pub fn prune(base: &Path, now: i64) {
                 let last =
                     text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).next_back();
                 let at = last.and_then(|l| weft_core::turns::millis(l["time"].as_str()?));
-                if at.is_none_or(|at| now - at > KEEP_MILLIS) {
+                // A file with no time read yet may be one being written now.
+                if at.is_some_and(|at| now - at > KEEP_MILLIS) {
                     let _ = std::fs::remove_file(&file);
                 }
             }
