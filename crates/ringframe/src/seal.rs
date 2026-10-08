@@ -180,7 +180,7 @@ pub fn create(
                     record = None;
                 } else {
                     // A Seal on an Eval seals that round: the open Asks it
-                    // covers, and none asked since (Weft ADR-0029 D8).
+                    // covers, and none asked since.
                     asks.retain(|a| basis.contains(&str_of(a, "ask_id")));
                     ask_ids.retain(|a| basis.contains(a));
                 }

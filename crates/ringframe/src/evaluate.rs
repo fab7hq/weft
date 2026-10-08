@@ -330,8 +330,8 @@ pub const NOTHING_OBSERVED: &str =
     "no prompt or tool was observed: nothing ran `ringframe observe`";
 
 /// Who observed these Asks' submissions, in words ("submission observed by
-/// weft"); or, when nothing was observed in this workspace at all, that
-/// nothing was.
+/// <name>", the name `observe --by` gave); or, when nothing was observed in
+/// this workspace at all, that nothing was.
 pub fn observed_limits(ws: &Workspace, ask_ids: &[String]) -> Result<Vec<String>, EvalError> {
     let events = store::events(ws)?;
     let observers: BTreeSet<String> = events

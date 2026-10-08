@@ -5,6 +5,8 @@
 //! Its own test binary because it puts a stand-in `ringframe` first on PATH,
 //! which is global: one test, one process.
 
+mod support;
+
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -81,6 +83,7 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
     std::fs::write(&ledger, format!("{compiled}\n")).expect("ledger");
 
     let socket = protocol::private_socket("weft-gathers");
+    let agent = support::agent(&support::agents_dir(&socket));
     let listening = socket.clone();
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
@@ -106,16 +109,11 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
     );
     call(
         &mut stream,
-        Call::StartAgent { harness: "sh".into(), spec: "/bin/cat".into(), session: None },
+        Call::StartAgent { harness: "sh".into(), spec: agent.clone(), session: None },
     );
     wait(&mut frames, &stream, |e| matches!(e, Event::Added { .. }).then_some(()));
     // The agent says it is ready, as its hook would: a free agent to debate in.
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("time");
-    let receipt = root.join(".fab7/rf/sessions/sh/s1");
-    std::fs::create_dir_all(&receipt).expect("session dir");
-    let line = serde_json::json!({"event": "ready", "session_id": "s1",
-                                  "time": weft::turns::stamp(ms.as_millis() as i64)});
-    std::fs::write(receipt.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
+    support::pane_says(&socket, &support::agents_dir(&socket), &root, "sh", 0, "s1", "ready");
     wait(&mut frames, &stream, |e| match e {
         Event::Agents { panes, .. }
             if panes.first().copied().flatten() == Some(weft::turns::Turn::Ready) =>

@@ -101,11 +101,22 @@ fn an_agents_state_appears_only_once_its_receipt_is_written() {
         assert!(!drawn.contains(phrase), "no receipt, yet the row said {phrase:?}:\n{drawn}");
     }
 
-    let dir = root.join(".fab7/rf/sessions/codex/c1");
-    std::fs::create_dir_all(&dir).expect("session dir");
-    let line = json!({"event": "turn_ended", "session_id": "c1",
-                      "time": "2026-09-19T14:05:00.000Z"});
-    std::fs::write(dir.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
+    // The session's hook says its turn ended, from a harness Weft did not start.
+    let socket = std::fs::read_to_string(root.with_extension("socket")).expect("socket path");
+    let sent = weft_core::signal::Sent {
+        harness: "codex".into(),
+        hook: "Hook".into(),
+        session: "c1".into(),
+        workspace: Some(root.to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        ..Default::default()
+    };
+    let line = weft::protocol::Line::Event(weft::protocol::Event::Signal(Box::new(sent)));
+    std::io::Write::write_all(
+        &mut std::os::unix::net::UnixStream::connect(socket).expect("the daemon"),
+        &line.encode(),
+    )
+    .expect("sent");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut drawn = String::new();
     while std::time::Instant::now() < deadline && !drawn.contains("turn ended") {
@@ -166,6 +177,9 @@ fn board(events: &[Value]) -> (PathBuf, App) {
 
     let socket = protocol::private_socket("weft-board");
     let _ = std::fs::remove_file(&socket);
+    // Where a test signals this daemon, beside the project rather than in it.
+    std::fs::write(root.with_extension("socket"), socket.to_string_lossy().as_bytes())
+        .expect("socket path");
     let listening = socket.clone();
     std::thread::spawn(move || {
         let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));

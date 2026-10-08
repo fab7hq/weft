@@ -108,7 +108,6 @@ impl Session {
                     Err(r) => Some(format!("{r:?}")),
                     Ok(a) if !a.submitted => Some(withheld(&a)),
                     Ok(_) => {
-                        slot.map.enter(crate::turns::now_millis());
                         // Sent on the person's yes: their submission, on
                         // record, so the Ask moves on to its Eval even
                         // where no hook sees it arrive. When RingFrame will

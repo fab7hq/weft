@@ -247,6 +247,9 @@ pub enum Event {
         panes: Vec<Option<Turn>>,
         sessions: Vec<Session>,
     },
+    /// One hook, from `weft signal` to the daemon (ADR-0030 D1): sent one way
+    /// on a connection of its own, and answered by nothing.
+    Signal(Box<weft_core::signal::Sent>),
 }
 
 /// One line on the wire: a call, its answer, or an event.
@@ -495,6 +498,7 @@ impl Event {
             Event::Agents { panes, sessions } => {
                 ("agents", json!({"panes": panes, "sessions": sessions}))
             }
+            Event::Signal(sent) => ("signal", serde_json::to_value(sent).unwrap_or_default()),
         }
     }
 
@@ -550,6 +554,7 @@ impl Event {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
                 sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
             },
+            "signal" => Event::Signal(Box::new(serde_json::from_value(p.clone()).ok()?)),
             "injected" => Event::Injected {
                 pane: n("pane")? as u32,
                 refusal: p.get("refusal")?.as_str().map(str::to_string),
@@ -905,6 +910,18 @@ mod tests {
                     at: 2,
                 }],
             },
+            Event::Signal(Box::new(weft_core::signal::Sent {
+                harness: "claude-code".into(),
+                hook: "Stop".into(),
+                session: "s1".into(),
+                workspace: Some("/w".into()),
+                state: Some("turn_ended".into()),
+                pid: Some(4821),
+                pid_start: Some("1790000000.120000".into()),
+                pane: Some(2),
+                token: Some("0f".repeat(16)),
+                ..Default::default()
+            })),
         ] {
             roundtrip(Line::Event(event));
         }

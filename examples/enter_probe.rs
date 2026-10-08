@@ -15,7 +15,7 @@ fn main() -> anyhow::Result<()> {
     let extra: Vec<String> = parts.map(str::to_string).collect();
     let argv: Vec<&str> = extra.iter().map(String::as_str).collect();
 
-    let mut pane = Pane::spawn_args("probe", &program, &argv, &cwd, 40, 120)?;
+    let mut pane = Pane::spawn_args("probe", &program, &argv, &cwd, &[], 40, 120)?;
     std::thread::sleep(Duration::from_secs(12));
 
     // Clear whatever startup panels are up, the way a person would.

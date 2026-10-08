@@ -68,7 +68,7 @@ impl Pane {
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
-        Self::spawn_args(title, program, &[], cwd, rows, cols)
+        Self::spawn_args(title, program, &[], cwd, &[], rows, cols)
     }
 
     pub fn spawn_args(
@@ -76,6 +76,7 @@ impl Pane {
         program: &str,
         args: &[&str],
         cwd: &str,
+        env: &[(&str, String)],
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
@@ -85,6 +86,9 @@ impl Pane {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.cwd(cwd);
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
 
@@ -517,7 +521,7 @@ mod tests {
         let script =
             "printf 'abc\\033[6n'; IFS= read -r -t 3 -d R reply; printf ' got=%s;' \"${reply#*[}\"";
         let mut pane =
-            Pane::spawn_args("test", "bash", &["-c", script], "/tmp", 24, 80).expect("spawn");
+            Pane::spawn_args("test", "bash", &["-c", script], "/tmp", &[], 24, 80).expect("spawn");
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let text = pane.with_screen(|s| s.contents());
         assert!(text.contains("got=1;4;"), "the cursor sat after `abc`, row 1 column 4: {text:?}");

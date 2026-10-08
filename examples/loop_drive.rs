@@ -136,7 +136,7 @@ fn main() -> anyhow::Result<()> {
 
     let bin = concat!(env!("CARGO_MANIFEST_DIR"), "/target/debug/weft");
     // Weft takes the project and the agents to run as arguments.
-    let pane = Pane::spawn_args("weft", bin, &[&project, &harness], &project, 40, 120)?;
+    let pane = Pane::spawn_args("weft", bin, &[&project, &harness], &project, &[], 40, 120)?;
     let mut d = Drive { pane, project: project.clone() };
 
     d.wait_screen("in Weft", 25);

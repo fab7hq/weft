@@ -25,6 +25,9 @@ update = ["plugin", "install", "https://github.com/fab7hq/fab7/tree/main/product
 # Taking it out again, for a local reinstall. It keeps no cache: an install
 # replaces the plugin exactly.
 uninstall = ["plugin", "uninstall", "rf"]
+# Its listing gives no version: the installed plugin's own plugin.json does,
+# under ~/.gemini/config/plugins (agy 1.2.12), beside the configuration home.
+manifest = "../config/plugins/rf/plugin.json"
 
 [plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
 installed = ["imports"]
@@ -33,3 +36,24 @@ name = "name"
 on = []
 # What `list` prints, instead of JSON, when nothing is installed.
 none = "No imported plugins."
+
+# What each of its hooks means to Weft (ADR-0030 D4). RingFrame's plugin registers
+# these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
+# two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
+# `ringframe observe` (D9).
+# A PreToolUse answered without a decision is a deny (agy 1.2.12,
+# ringframe-weft-waiting-q01), so that hook answers allow. Its payload's tool
+# field is not recorded yet: its hook file registers PreToolUse and
+# PostToolUse for ask_question only, and these rows name no tool. Its hooks
+# run from the plugin's own directory and name no cwd: the workspace is the
+# first of `workspacePaths`; there is no session_id.
+[signal]
+session = "conversationId"
+workspace = "workspacePaths"
+reply = "{}"
+on = [
+  { hook = "PreInvocation", state = "working" },
+  { hook = "PreToolUse",    state = "waiting", reply = '{"decision":"allow"}' },
+  { hook = "PostToolUse",   state = "working" },
+  { hook = "Stop",          state = "turn_ended" },
+]

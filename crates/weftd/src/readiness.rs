@@ -97,6 +97,7 @@ mod tests {
             turbo: Vec::new(),
             manifest: None,
             beta: false,
+            signal: None,
         }
     }
 

@@ -12,7 +12,11 @@ use std::path::Path;
 
 /// What each crate may depend on, and the plain reason.
 const ALLOWED: &[(&str, &[&str], &str)] = &[
-    ("weft-core", &["serde", "serde_json", "toml"], "the rules parse and decide; they do not do"),
+    (
+        "weft-core",
+        &["serde", "serde_json", "sha2", "toml"],
+        "the rules parse, hash and decide; they do not do",
+    ),
     (
         "weft-proto",
         &["serde_json", "weft-core"],
@@ -20,8 +24,17 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     ),
     (
         "weftd",
-        &["anyhow", "portable-pty", "serde_json", "vt100", "weft-core", "weft-proto"],
-        "the daemon does: panes, files, processes",
+        &[
+            "anyhow",
+            "libc",
+            "portable-pty",
+            "serde_json",
+            "toml",
+            "vt100",
+            "weft-core",
+            "weft-proto",
+        ],
+        "the daemon does: panes, files, processes (libc reads a hook's harness process)",
     ),
     (
         "weft-tui",
@@ -249,7 +262,9 @@ fn the_client_counts_nothing_that_needs_you_itself() {
 
 /// RingFrame is not aware of Weft: its code says what RingFrame does and who
 /// may call it, a person or a tool, and its shipped product, when the fab7
-/// checkout is beside this one, says the same.
+/// checkout is beside this one, says the same. Only its plugins' hooks run
+/// `weft signal`, through the `weft-signal` shim, because one release
+/// installs both (RingFrame ADR-0022 D8, Weft ADR-0030).
 #[test]
 fn ringframe_names_no_weft() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -266,9 +281,10 @@ fn ringframe_names_no_weft() {
     }
     let mut shipped = Vec::new();
     walk(&here.join("../fab7/products/ringframe"), &mut shipped);
-    for path in shipped {
+    for path in shipped.into_iter().filter(|p| !p.ends_with("weft-signal")) {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        for line in text.lines().filter(|l| l.to_lowercase().contains("weft")) {
+        let hook = |l: &str| l.contains("weft-signal") || l.contains("weft signal");
+        for line in text.lines().filter(|l| l.to_lowercase().contains("weft") && !hook(l)) {
             found.push(format!("{}: {}", path.display(), line.trim()));
         }
     }

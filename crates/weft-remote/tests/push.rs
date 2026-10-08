@@ -12,20 +12,27 @@ use serde_json::{Value, json};
 use web_push_native::p256;
 use weft_proto::Call;
 
-/// The agent's hook says it is in this state now.
+/// The agent's hook says it is in this state now, as `weft signal` would
+/// send it from inside its pane.
 fn agent_says(project: &Path, event: &str) {
-    let dir = project.join(".fab7/rf/sessions/sh/s1");
-    std::fs::create_dir_all(&dir).unwrap();
-    let ms =
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
-    let line =
-        json!({"event": event, "session_id": "s1", "time": weft_core::turns::stamp(ms as i64)});
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(dir.join("turns.jsonl"))
-        .unwrap();
-    writeln!(f, "{line}").unwrap();
+    let told = project.with_extension("pane");
+    while !told.exists() {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let text = std::fs::read_to_string(told).unwrap();
+    let (token, socket) = text.split_once('\n').unwrap();
+    let sent = weft_core::signal::Sent {
+        harness: "sh".into(),
+        hook: "Hook".into(),
+        session: "s1".into(),
+        workspace: Some(project.to_string_lossy().into_owned()),
+        state: Some(event.into()),
+        pane: Some(0),
+        token: Some(token.into()),
+        ..Default::default()
+    };
+    let line = weft_proto::Line::Event(weft_proto::Event::Signal(Box::new(sent))).encode();
+    std::os::unix::net::UnixStream::connect(socket.trim()).unwrap().write_all(&line).unwrap();
     std::thread::sleep(Duration::from_millis(20));
 }
 

@@ -13,5 +13,6 @@ pub use weft_core::{board, harness as harness_table, inject, offers, projects, t
 pub use weft_proto as protocol;
 pub use weft_tui::{app, client, encode, keys, layout, theme, ui};
 pub use weftd::{
-    acts, harness, ledger, outside, pane, readiness, record, ringframe, routing, server, sessions,
+    acts, harness, ledger, outside, pane, readiness, receipts, record, ringframe, routing, server,
+    sessions,
 };

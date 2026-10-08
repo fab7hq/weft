@@ -34,3 +34,24 @@ installed = ["installed"]
 available = ["available"]
 name = "id"
 on = ["enabled"]
+
+# What each of its hooks means to Weft (ADR-0030 D4). RingFrame's plugin registers
+# these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
+# two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
+# `ringframe observe` (D9).
+[signal]
+session = "session_id"
+workspace = "cwd"
+prompt = "prompt"
+tool = "tool_name"
+command = "tool_input.command"
+on = [
+  { hook = "SessionStart",                             state = "ready" },
+  { hook = "UserPromptSubmit",                         state = "working", forward = "prompt" },
+  { hook = "PreToolUse",  tool = "AskUserQuestion",    state = "waiting" },
+  { hook = "PermissionRequest",                        state = "waiting" },
+  { hook = "PostToolUse",                              state = "working", forward = "tool", outcome = "succeeded" },
+  { hook = "PostToolUseFailure",                       state = "working", forward = "tool", outcome = "failed" },
+  { hook = "Stop",                                     state = "turn_ended" },
+  { hook = "SessionEnd",                               state = "ended" },
+]

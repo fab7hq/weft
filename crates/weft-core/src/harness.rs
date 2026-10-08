@@ -71,6 +71,10 @@ pub struct Harness {
     /// not been tested as fully as the rest.
     #[serde(default)]
     pub beta: bool,
+    /// What each of its hooks means (`[signal]`, ADR-0030 D4). Without it the
+    /// harness gives no state and forwards nothing.
+    #[serde(default)]
+    pub signal: Option<crate::signal::Signal>,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -127,6 +131,7 @@ impl Harness {
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
             beta: p["beta"].as_bool().unwrap_or(false),
+            signal: crate::signal::Signal::of(&p["signal"]),
         })
     }
 

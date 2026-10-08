@@ -8,7 +8,7 @@ fn main() -> anyhow::Result<()> {
     let prog = parts.next().unwrap().to_string();
     let extra: Vec<String> = parts.map(str::to_string).collect();
     let argv: Vec<&str> = extra.iter().map(String::as_str).collect();
-    let pane = Pane::spawn_args("probe", &prog, &argv, &cwd, 40, 120)?;
+    let pane = Pane::spawn_args("probe", &prog, &argv, &cwd, &[], 40, 120)?;
     std::thread::sleep(std::time::Duration::from_secs(10));
     pane.with_screen(|s| {
         println!(

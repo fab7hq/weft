@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
     let filler = "Say only the word ACK and nothing else. ".repeat(40);
     let prompt = format!("{} {}", delivery.mode.clone().unwrap(), &filler[..1400]);
 
-    let mut pane = Pane::spawn_args(prog.as_str(), &prog, &[], &cwd, 32, 100)?;
+    let mut pane = Pane::spawn_args(prog.as_str(), &prog, &[], &cwd, &[], 32, 100)?;
     std::thread::sleep(std::time::Duration::from_secs(7));
     let attempt = pane.inject_as(prompt.as_bytes(), &how).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     println!("attempt:  {attempt:?}");

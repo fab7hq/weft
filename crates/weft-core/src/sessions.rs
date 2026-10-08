@@ -1,12 +1,17 @@
-//! The harness sessions RingFrame has a record of, in this workspace.
+//! The harness sessions Weft has a receipt for, in a project.
 //!
-//! A harness owns its own session and both supported harnesses can open one
-//! again by id. Weft owns neither, so it does not keep one: it reads the id
-//! out of the receipt RingFrame's hook already wrote, under
-//! `<project>/.fab7/rf/sessions/<harness>/<id>/`.
-//!
-//! Weft reads that directory and never writes it. A session with no receipt is
-//! a session Weft cannot name, and it says so rather than guessing.
+//! A harness owns its own session and can open one again by id. Weft keeps
+//! only the id, the events its hooks signalled and the harness process, in
+//! its own receipts (ADR-0030 D7): `~/.fab7/weft/sessions/<project key>/
+//! <harness>/<id>.jsonl`. A session with no receipt is a session Weft cannot
+//! name, and it says so rather than guessing.
+
+/// A project's key: the first 12 hex digits of the SHA-256 of its path.
+pub fn project_key(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
 
 /// Whether a session id is only an id: letters, digits, `.`, `_` and `-`,
 /// not starting with `-`. The ids come from a project's files (a receipt
@@ -20,14 +25,14 @@ pub fn is_id(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// A session a harness recorded a prompt in, here.
+/// A session a harness ran here, as Weft's receipts recorded it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recorded {
     pub id: String,
     /// When it was last used, in milliseconds since the epoch.
     pub at: i64,
-    /// The first line of that prompt, so the person can see what they would be
-    /// reopening rather than being shown an opaque id.
+    /// The first line of its last prompt, when one is known. Weft's receipts
+    /// keep nothing from the conversation, so it is empty from them.
     pub last: String,
 }
 

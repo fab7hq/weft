@@ -1,19 +1,22 @@
 //! An agent's state, as its harness's hooks reported it.
 //!
-//! RingFrame's plugin records four plain events per session, the same for
-//! every harness, in `<project>/.fab7/rf/sessions/<harness>/<id>/turns.jsonl`
-//! ([ADR-0013], turn-state.md). Weft reads them and never writes them, and it
-//! reads nothing off the screen: a state is a recorded report or it is none.
+//! Each hook runs `weft signal`, and weftd records what its harness file's
+//! `[signal]` says the hook means: four events about the turn and one about
+//! the session, the same for every harness, one line per change in Weft's own
+//! receipts, `~/.fab7/weft/sessions/<project key>/<harness>/<id>.jsonl`
+//! ([ADR-0013], [ADR-0030], turn-state.md). Weft reads nothing off the screen:
+//! a state is a recorded report or it is none.
 //!
 //! [ADR-0013]: ../../../plans/weft/adr/0013-the-agents-turn-is-a-hook-fact.md
+//! [ADR-0030]: ../../../plans/weft/adr/0030-weft-owns-the-hooks.md
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ledger::Unit;
 
-/// The four events. Which hook stands for each is the plugin's to say; Weft
-/// never knows a hook's name.
+/// The five events. Which hook stands for each is the harness file's to
+/// say; Weft's code never knows a hook's name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Turn {
@@ -25,6 +28,8 @@ pub enum Turn {
     Waiting,
     /// The turn ended. Never "done": that is an Eval and a Seal.
     TurnEnded,
+    /// The session ended: its harness said so (ADR-0029 D11).
+    Ended,
 }
 
 impl Turn {
@@ -34,6 +39,7 @@ impl Turn {
             "working" => Some(Turn::Working),
             "waiting" => Some(Turn::Waiting),
             "turn_ended" => Some(Turn::TurnEnded),
+            "ended" => Some(Turn::Ended),
             _ => None,
         }
     }
@@ -45,6 +51,7 @@ impl Turn {
             Turn::Working => "working",
             Turn::Waiting => "waiting for you",
             Turn::TurnEnded => "turn ended",
+            Turn::Ended => "ended",
         }
     }
 }
@@ -136,7 +143,7 @@ pub fn may_type(state: Option<Turn>) -> Result<(), &'static str> {
         Some(Turn::Ready | Turn::TurnEnded) => Ok(()),
         Some(Turn::Working) => Err(crate::words::word(WORKING)),
         Some(Turn::Waiting) => Err(crate::words::word(ASKING)),
-        None => Err(crate::words::word(UNKNOWN)),
+        Some(Turn::Ended) | None => Err(crate::words::word(UNKNOWN)),
     }
 }
 
@@ -155,26 +162,14 @@ pub fn state_of(unit: &Unit, sessions: &[Session]) -> Option<Turn> {
     session_of(unit, sessions).map(|s| s.latest)
 }
 
-/// What was last done to a pane that a receipt would answer: Weft started
-/// it, which its `ready` follows, or someone pressed Enter in it, which a
-/// `working` follows, or the `ready` of a new session (as `/clear` starts).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Poke {
-    /// In milliseconds since the epoch.
-    pub at: i64,
-    pub enter: bool,
-}
-
 /// How a pane came to run its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum How {
     /// Weft started the pane to resume it.
     Resumed,
-    /// Its `ready` answered the pane's start.
-    AfterStart,
-    /// Its `ready` or `working` answered an Enter in the pane.
-    AfterEnter,
+    /// A signal from inside the pane, carrying the pane's token, named it.
+    Signalled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -194,9 +189,6 @@ pub struct Started {
     /// When Weft started it, in milliseconds since the epoch.
     pub at: i64,
     pub session: Option<Bound>,
-    /// The latest start or Enter that no receipt has answered yet.
-    #[serde(skip)]
-    pub poke: Option<Poke>,
     #[serde(skip)]
     pub running: bool,
 }
@@ -210,58 +202,21 @@ impl Started {
             harness: harness.into(),
             spec: spec.into(),
             at,
-            poke: resumed.is_none().then_some(Poke { at, enter: false }),
             session: resumed.map(|session| Bound { session, how: How::Resumed }),
             running: true,
         }
     }
-
-    /// Someone pressed Enter in it: the person, or Weft sending on their yes.
-    pub fn enter(&mut self, at: i64) {
-        self.poke = Some(Poke { at, enter: true });
-    }
 }
 
-/// How long a start or an Enter waits for the receipt that answers it. A
-/// harness says `ready` seconds after it starts and `working` at once after
-/// an Enter; one nothing answered by then, such as an Enter in an empty
-/// composer, answers nothing later.
-pub const ANSWERED_WITHIN: i64 = 30_000;
-
-/// A session's new receipt, and what it binds (turn-state.md §4).
-///
-/// Its own pane's start or Enter is answered by it. A session no pane runs
-/// goes to the one running pane of its harness whose unanswered start or
-/// Enter came before this receipt; that pane takes it, as a pane that
-/// starts a new session does. When two panes could have, only this session
-/// stays unbound, until a later receipt of it answers one of them alone.
-/// A binding is decided here once and kept. True when the map changed.
-pub fn heard(panes: &mut [Started], s: &Session) -> bool {
-    let theirs = |p: &Started| p.running && p.harness == s.harness;
-    let runs = |p: &Started| p.session.as_ref().is_some_and(|b| b.session == s.id);
-    if let Some(p) = panes.iter_mut().find(|p| theirs(p) && runs(p)) {
-        if p.poke.is_some_and(|k| k.at <= s.at) {
-            p.poke = None;
-        }
+/// A signal from inside pane `pane` named `session`: that pane runs it now,
+/// as a pane that starts a new session does (ADR-0030 D2). True when the map
+/// changed.
+pub fn signalled(panes: &mut [Started], pane: u32, session: &str) -> bool {
+    let Some(p) = panes.iter_mut().find(|p| p.pane == pane) else { return false };
+    if p.session.as_ref().is_some_and(|b| b.session == session) {
         return false;
     }
-    let answers = |k: Poke| {
-        k.at <= s.at
-            && s.at - k.at <= ANSWERED_WITHIN
-            && match s.latest {
-                Turn::Ready => true,
-                Turn::Working => k.enter,
-                _ => false,
-            }
-    };
-    let could: Vec<usize> = (0..panes.len())
-        .filter(|&i| theirs(&panes[i]) && panes[i].poke.is_some_and(answers))
-        .collect();
-    let [one] = could[..] else { return false };
-    let p = &mut panes[one];
-    let how =
-        if p.poke.take().is_some_and(|k| k.enter) { How::AfterEnter } else { How::AfterStart };
-    p.session = Some(Bound { session: s.id.clone(), how });
+    p.session = Some(Bound { session: session.to_string(), how: How::Signalled });
     true
 }
 
@@ -276,8 +231,7 @@ pub fn pane_states(panes: &[Started], sessions: &[Session]) -> Vec<Option<Turn>>
         .collect()
 }
 
-/// The shape RingFrame writes a time in, for a test that writes receipts.
-#[cfg(any(test, feature = "fixtures"))]
+/// A time in the shape every receipt carries: `YYYY-MM-DDTHH:MM:SS.mmmZ`.
 pub fn stamp(millis: i64) -> String {
     // Howard Hinnant's civil-from-days.
     let (days, rem) = (millis.div_euclid(86_400_000), millis.rem_euclid(86_400_000));
@@ -426,32 +380,18 @@ mod tests {
         p.session.as_ref().map(|b| (b.session.as_str(), b.how))
     }
 
+    /// ADR-0030 D2: a pane's session is the one its own signal names.
     #[test]
-    fn a_ready_after_a_start_binds_that_pane_and_a_session_from_before_it_binds_none() {
-        let mut panes = [started(0, 1000)];
-        assert!(!heard(&mut panes, &receipt("old", Turn::TurnEnded, 500)), "before every pane");
-        assert!(heard(&mut panes, &receipt("a", Turn::Ready, 1800)));
-        assert_eq!(bound(&panes[0]), Some(("a", How::AfterStart)));
-        assert_eq!(panes[0].poke, None, "answered");
-    }
-
-    #[test]
-    fn two_panes_started_together_each_get_their_own_state_once_each_is_typed_into() {
+    fn a_signal_naming_a_pane_binds_its_session_to_that_pane() {
         let mut panes = [started(0, 1000), started(1, 1010)];
-        // Either `ready` could be either pane's.
-        assert!(!heard(&mut panes, &receipt("a", Turn::Ready, 2000)));
-        assert!(!heard(&mut panes, &receipt("b", Turn::Ready, 2100)));
-        assert_eq!((bound(&panes[0]), bound(&panes[1])), (None, None));
-        // A `working` answers an Enter, and only one pane had one.
-        panes[1].enter(5000);
-        let b = receipt("b", Turn::Working, 5100);
-        assert!(heard(&mut panes, &b));
-        panes[0].enter(6000);
-        let a = receipt("a", Turn::Working, 6100);
-        assert!(heard(&mut panes, &a));
-        assert_eq!(bound(&panes[0]), Some(("a", How::AfterEnter)));
-        assert_eq!(bound(&panes[1]), Some(("b", How::AfterEnter)));
-        assert_eq!(pane_states(&panes, &[a, b]), vec![Some(Turn::Working), Some(Turn::Working)]);
+        assert!(signalled(&mut panes, 1, "b"));
+        assert!(signalled(&mut panes, 0, "a"));
+        assert_eq!(bound(&panes[0]), Some(("a", How::Signalled)));
+        assert_eq!(bound(&panes[1]), Some(("b", How::Signalled)));
+        assert!(!signalled(&mut panes, 0, "a"), "already its own");
+        let (a, b) = (receipt("a", Turn::Working, 6100), receipt("b", Turn::Waiting, 6200));
+        assert_eq!(pane_states(&panes, &[a, b]), vec![Some(Turn::Working), Some(Turn::Waiting)]);
+        assert!(!signalled(&mut panes, 7, "c"), "no such pane");
     }
 
     #[test]
@@ -459,26 +399,10 @@ mod tests {
         let spec = "claude --resume old --model opus --effort high";
         let mut panes = [Started::new(0, "claude-code", spec, 5000, Some("old".into()))];
         assert_eq!(bound(&panes[0]), Some(("old", How::Resumed)));
-        let old = receipt("old", Turn::Ready, 5500);
-        assert!(!heard(&mut panes, &old), "already its own");
-        assert_eq!(pane_states(&panes, &[old]), vec![Some(Turn::Ready)]);
-    }
-
-    #[test]
-    fn an_ambiguous_session_leaves_every_other_pane_bound() {
-        let mut panes = [started(0, 1000), started(1, 3000), started(2, 3005)];
-        let a = receipt("a", Turn::Ready, 1500);
-        assert!(heard(&mut panes, &a));
-        // The person types in the first while two more start.
-        panes[0].enter(3002);
-        let b = receipt("b", Turn::Ready, 4000);
-        assert!(!heard(&mut panes, &b), "three panes could have started it");
-        assert_eq!(bound(&panes[0]), Some(("a", How::AfterStart)), "nothing was taken away");
-        let busy = receipt("a", Turn::Working, 4100);
+        assert!(!signalled(&mut panes, 0, "old"), "already its own");
         assert_eq!(
-            pane_states(&panes, &[busy, b]),
-            vec![Some(Turn::Working), None, None],
-            "the bound pane keeps its state"
+            pane_states(&panes, &[receipt("old", Turn::Ready, 5500)]),
+            vec![Some(Turn::Ready)]
         );
     }
 
@@ -486,29 +410,28 @@ mod tests {
     fn a_pane_that_starts_a_new_session_takes_it() {
         // `/clear` starts a new session in the same pane.
         let mut panes = [started(0, 1000)];
-        assert!(heard(&mut panes, &receipt("a", Turn::Ready, 1500)));
-        panes[0].enter(9000);
-        assert!(heard(&mut panes, &receipt("c", Turn::Ready, 9300)));
-        assert_eq!(bound(&panes[0]), Some(("c", How::AfterEnter)));
+        assert!(signalled(&mut panes, 0, "a"));
+        assert!(signalled(&mut panes, 0, "c"));
+        assert_eq!(bound(&panes[0]), Some(("c", How::Signalled)));
     }
 
     #[test]
-    fn an_enter_nothing_answered_is_forgotten_rather_than_blocking_the_next_pane() {
-        let later = 2000 + ANSWERED_WITHIN;
-        let mut panes = [started(0, 1000), started(1, later + 1000)];
-        panes[0].enter(2000); // an empty composer: no receipt follows
-        assert!(heard(&mut panes, &receipt("b", Turn::Ready, later + 1500)));
-        assert_eq!(bound(&panes[1]).map(|b| b.0), Some("b"));
-    }
-
-    #[test]
-    fn a_pane_that_is_not_running_has_no_state_and_takes_nothing() {
+    fn a_pane_that_is_not_running_has_no_state() {
         let mut p = started(0, 10);
         p.running = false;
         let mut panes = [p];
-        let a = receipt("a", Turn::Ready, 12);
-        assert!(!heard(&mut panes, &a));
-        assert_eq!(pane_states(&panes, &[a]), vec![None]);
+        signalled(&mut panes, 0, "a");
+        assert_eq!(pane_states(&panes, &[receipt("a", Turn::Ready, 12)]), vec![None]);
+    }
+
+    #[test]
+    fn a_session_that_ended_is_its_fifth_event() {
+        assert_eq!(Turn::recorded("ended"), Some(Turn::Ended));
+        let text =
+            [line("working", "s1", T0), line("ended", "s1", "2026-09-27T10:00:09.000Z")].concat();
+        assert_eq!(read("claude-code", "s1", &text).unwrap().latest, Turn::Ended);
+        assert!(may_type(Some(Turn::Ended)).is_err(), "nothing to type into");
+        assert!(!is_asking(Some(Turn::Ended)));
     }
 
     #[test]

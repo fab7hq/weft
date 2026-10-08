@@ -22,6 +22,7 @@ pub mod readiness;
 pub mod record;
 pub mod routing;
 pub mod sessions;
+pub mod signal;
 pub mod sync;
 pub mod tree;
 pub mod turns;

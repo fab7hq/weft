@@ -44,28 +44,14 @@ impl Session {
             .collect()
     }
 
-    /// Each pane's state and every session's latest event, re-read from the
-    /// receipts. A new receipt may bind its session to a pane, once.
+    /// Each pane's state and every session's latest event, re-read from
+    /// Weft's own receipts. A pane's session is the one its signals named.
     pub(super) fn agents_of(&mut self, at: usize) -> Agents {
+        let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
-        let heard = p.turns.refresh(&p.root);
-        let mut map: Vec<crate::turns::Started> = p
-            .panes
-            .iter_mut()
-            .map(|slot| {
-                slot.map.running = slot.pane.running();
-                slot.map.clone()
-            })
-            .collect();
-        let mut moved = false;
-        for s in &heard {
-            moved |= crate::turns::heard(&mut map, s);
-        }
-        for (slot, m) in p.panes.iter_mut().zip(map) {
-            slot.map = m;
-        }
-        if moved {
-            self.write_map(at);
+        p.turns.refresh(&dir);
+        for slot in p.panes.iter_mut() {
+            slot.map.running = slot.pane.running();
         }
         let p = &self.projects[at];
         let sessions = p.turns.sessions();
@@ -141,7 +127,14 @@ impl Session {
         p.next_pane += 1;
         let (tx, harness_name) = (self.tx.clone(), harness.to_string());
         let size = self.clients.sizes.get(&client).copied().unwrap_or((24, 80));
-        match Pane::spawn_args(harness, &program, &argv, &cwd, size.0, size.1) {
+        // Its hooks tell this daemon what it is doing, from inside this pane.
+        let token = new_token();
+        let env = [
+            ("WEFT_PANE", id.to_string()),
+            ("WEFT_PANE_TOKEN", token.clone()),
+            ("WEFT_SOCKET", self.socket.to_string_lossy().into_owned()),
+        ];
+        match Pane::spawn_args(harness, &program, &argv, &cwd, &env, size.0, size.1) {
             Ok(mut pane) => {
                 // Every byte a pane prints goes to the session, which records
                 // it for replay and forwards it to whoever is attached.
@@ -162,6 +155,7 @@ impl Session {
                     size,
                     wants: HashMap::from([(client, size)]),
                     turbo,
+                    token,
                 });
                 self.write_map(project);
                 self.clients.broadcast(
@@ -179,4 +173,89 @@ impl Session {
             }
         }
     }
+
+    /// One hook, as `weft signal` sent it (ADR-0030 D2, D3, D7). An event
+    /// naming a pane counts only with that pane's token, and then its session
+    /// is the pane's. One naming no pane is a session no pane holds, in the
+    /// project its workspace is in, and changes no pane. Accepted, it is
+    /// recorded in Weft's receipts; anything else is dropped unrecorded.
+    pub(super) fn signal(&mut self, sent: weft_core::signal::Sent) {
+        let (at, root) = match sent.pane {
+            Some(pane) => {
+                let token = sent.token.as_deref().unwrap_or_default();
+                let found = self.projects.iter().position(|p| {
+                    !p.closed
+                        && p.panes
+                            .iter()
+                            .any(|s| s.map.pane == pane && s.token == token && !token.is_empty())
+                });
+                let Some(at) = found else { return };
+                let p = &mut self.projects[at];
+                let mut map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
+                if crate::turns::signalled(&mut map, pane, &sent.session)
+                    && weft_core::sessions::is_id(&sent.session)
+                {
+                    for (slot, m) in p.panes.iter_mut().zip(map) {
+                        slot.map = m;
+                    }
+                    self.write_map(at);
+                }
+                (Some(at), self.projects[at].root.clone())
+            }
+            None => {
+                let Some(root) = sent.workspace.as_deref().and_then(project_of) else { return };
+                // An open project is keyed by the path it was opened at.
+                let at = self
+                    .projects
+                    .iter()
+                    .position(|p| !p.closed && p.root.canonicalize().is_ok_and(|r| r == root));
+                let root = at.map_or(root, |at| self.projects[at].root.clone());
+                // A session a pane holds is that pane's: only its own signals move it.
+                let held = at.is_some_and(|at| {
+                    self.projects[at].panes.iter().any(|s| {
+                        s.map.running
+                            && s.map.session.as_ref().is_some_and(|b| b.session == sent.session)
+                    })
+                });
+                if held {
+                    return;
+                }
+                (at, root)
+            }
+        };
+        let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
+        if let Some(at) = at {
+            self.tell_agents(at);
+        }
+    }
+}
+
+/// 128 random bits, as hex.
+fn new_token() -> String {
+    use std::io::Read as _;
+    let mut bytes = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        let _ = f.read_exact(&mut bytes);
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The project a workspace path is in: the nearest folder at or above it
+/// that holds `.fab7/`, looking no higher than its Git repository, else the
+/// path itself (ADR-0030 D3). A path that is not an absolute folder is none.
+fn project_of(path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = path.canonicalize().ok().filter(|p| p.is_dir())?;
+    for dir in path.ancestors() {
+        if dir.join(".fab7").is_dir() {
+            return Some(dir.to_path_buf());
+        }
+        if dir.join(".git").exists() {
+            break;
+        }
+    }
+    Some(path)
 }

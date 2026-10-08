@@ -420,7 +420,21 @@ impl Harness {
         // It never reads a pane's bytes: a client that does not read them
         // would stall the daemon's broadcast.
         tui.call(Call::Open { path, rows: 24, cols: 80, raw: false });
-        tui.call(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+        // A shell that first writes where it runs, as weftd told it, beside
+        // the project: `<project>.pane` holds its token and the socket.
+        let agent = project.with_extension("sh");
+        std::fs::write(
+            &agent,
+            "#!/bin/sh\nprintf '%s\\n%s\\n' \"$WEFT_PANE_TOKEN\" \"$WEFT_SOCKET\" > \"${0%.sh}.tmp\"\n\
+             mv \"${0%.sh}.tmp\" \"${0%.sh}.pane\"\nexec /bin/sh\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Through `/bin/sh`: a script just written may still be open in a
+        // process another thread is forking, and executing it then fails.
+        let spec = format!("/bin/sh {}", agent.display());
+        tui.call(Call::StartAgent { harness: "sh".into(), spec, session: None });
         Shell { tui, project }
     }
 }

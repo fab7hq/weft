@@ -68,6 +68,9 @@ struct Slot {
     /// Started in turbo mode: its harness's turbo flags were added to the
     /// command line it was asked for, which `spec` keeps as it was.
     turbo: bool,
+    /// `$WEFT_PANE_TOKEN`: 128 random bits, kept here and nowhere else. A
+    /// signal naming this pane counts only with it (ADR-0030 D2).
+    token: String,
 }
 
 impl Slot {
@@ -310,10 +313,17 @@ enum Wake {
         project: usize,
         setup: Option<weft_core::workspace::Needs>,
     },
+    /// A hook, from `weft signal` (ADR-0030).
+    Signal(Box<weft_core::signal::Sent>),
 }
 
 pub struct Session {
     projects: Vec<Project>,
+    /// The socket this daemon listens on, which every harness it starts is
+    /// told as `$WEFT_SOCKET`.
+    socket: PathBuf,
+    /// Weft's own session receipts, beside `config` (ADR-0030 D7).
+    receipts: PathBuf,
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
@@ -376,7 +386,7 @@ impl Answer {
 /// offered by SET UP, not here: an agent started in it would record nothing.
 fn starts(
     out_there: &dyn crate::outside::Outside,
-    root: &Path,
+    receipts: &Path,
     harnesses: &weft_core::harness::Harnesses,
     readiness: &HashMap<String, weft_core::readiness::Readiness>,
 ) -> serde_json::Value {
@@ -384,7 +394,7 @@ fn starts(
     let ready =
         |h: &&weft_core::harness::Harness| readiness.get(&h.name).is_some_and(|r| r.is_ready());
     for h in harnesses.iter().filter(|h| out_there.on_path(&h.program)).filter(ready) {
-        let latest = crate::sessions::latest(root, &h.name);
+        let latest = crate::sessions::latest(receipts, &h.name);
         if let Some((s, spec)) = latest.and_then(|s| h.resume_spec(&s.id).map(|spec| (s, spec))) {
             out.push(serde_json::json!({
                 "harness": h.name,
@@ -451,6 +461,19 @@ fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> 
 }
 
 /// Write a file whole or not at all, so a reader never sees half of one.
+/// A folder only this user can reach: made 0700, and refused when another
+/// user owns it.
+fn private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if std::fs::metadata(dir)?.uid() != unsafe { libc::geteuid() } {
+        anyhow::bail!("{} belongs to another user", dir.display());
+    }
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
 fn write_whole(path: &Path, text: String) {
     let part = path.with_extension("json.part");
     if let Some(dir) = path.parent() {
@@ -499,12 +522,18 @@ impl Session {
         outside: crate::outside::Shared,
         assume_ready: bool,
     ) -> Result<()> {
+        // Only this user may reach the daemon: its folder is 0700 and theirs,
+        // and the socket 0600 (ADR-0030 D2).
         if let Some(dir) = socket.parent() {
-            std::fs::create_dir_all(dir)?;
+            private_dir(dir)?;
         }
         // A socket left by a server that died is not a live server.
         let _ = std::fs::remove_file(socket);
         let listener = UnixListener::bind(socket)?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))?;
+        }
         // Whoever started this daemon waits for this line rather than
         // polling the socket.
         {
@@ -545,6 +574,15 @@ impl Session {
                 }
             });
         }
+        // Weft's receipts are pruned when it starts and once a day after.
+        let receipts = crate::receipts::base_of(config);
+        let pruned = receipts.clone();
+        std::thread::spawn(move || {
+            loop {
+                crate::receipts::prune(&pruned, crate::turns::now_millis());
+                std::thread::sleep(std::time::Duration::from_secs(24 * 60 * 60));
+            }
+        });
         let accept_tx = tx.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
@@ -556,6 +594,8 @@ impl Session {
 
         let mut session = Session {
             projects: Vec::new(),
+            socket: socket.to_path_buf(),
+            receipts,
             clients: Clients::default(),
             tx,
             next_pending: 1,
@@ -632,6 +672,7 @@ impl Session {
                     }
                 }
                 Wake::Workspace { project, setup } => self.set_up(project, setup),
+                Wake::Signal(sent) => self.signal(*sent),
             }
         }
         Ok(())
@@ -644,6 +685,10 @@ impl Session {
         std::thread::spawn(move || {
             let mut lines = Lines::new(reading);
             while let Ok(Some(line)) = lines.next() {
+                if let Line::Event(Out::Signal(sent)) = line {
+                    let _ = tx.send(Wake::Signal(sent));
+                    continue;
+                }
                 let Line::Call { id: call_id, call } = line else { continue };
                 let leaving = call == Call::Detach;
                 if tx.send(Wake::Request { client: id, call_id, call }).is_err() || leaving {
@@ -1000,12 +1045,17 @@ impl Session {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
             }
-            let agents = self.agents_of(at);
-            if self.projects[at].agents.as_ref() != Some(&agents) {
-                self.projects[at].agents = Some(agents.clone());
-                let (panes, sessions) = agents;
-                self.clients.broadcast(at, &Out::Agents { panes, sessions });
-            }
+            self.tell_agents(at);
+        }
+    }
+
+    /// Tell a project's clients each agent's state, when it moved.
+    fn tell_agents(&mut self, at: usize) {
+        let agents = self.agents_of(at);
+        if self.projects[at].agents.as_ref() != Some(&agents) {
+            self.projects[at].agents = Some(agents.clone());
+            let (panes, sessions) = agents;
+            self.clients.broadcast(at, &Out::Agents { panes, sessions });
         }
     }
 
@@ -1261,9 +1311,7 @@ impl Session {
                 self.clients.typed(client);
                 if let Some(slot) = self.watched(client).and_then(|(_, p)| p.slot(pane)) {
                     slot.follow(client);
-                    if slot.pane.send(&bytes).is_ok() && bytes.contains(&b'\r') {
-                        slot.map.enter(crate::turns::now_millis());
-                    }
+                    let _ = slot.pane.send(&bytes);
                 }
             }
             Call::StartAgent { harness, spec, session } => {
@@ -1364,7 +1412,8 @@ impl Session {
                     self.look_at(at, &name);
                 }
                 let p = &self.projects[at];
-                let found = starts(self.outside.as_ref(), &p.root, &p.harnesses, &p.readiness);
+                let receipts = crate::receipts::project_dir(&self.receipts, &p.root);
+                let found = starts(self.outside.as_ref(), &receipts, &p.harnesses, &p.readiness);
                 return Ok(Answer::Ok(serde_json::json!({"starts": found})));
             }
             Call::Turbo { on } => {

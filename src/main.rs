@@ -160,6 +160,17 @@ fn main() -> Result<()> {
     // outlives whatever asked for it.
     // Weft from another device: started by the daemon while remote access is
     // on (remote.md §5).
+    // Every hook of every harness (ADR-0030): answers the hook, tells the
+    // daemon, and exits 0 whatever happens, so no hook fails a harness's turn.
+    if first.as_deref() == Some("signal") {
+        std::panic::set_hook(Box::new(|_| {}));
+        let args: Vec<String> = args.collect();
+        let _ = std::panic::catch_unwind(|| {
+            let at = weftd::signal::Where::from_env();
+            weftd::signal::run(&args, &mut std::io::stdin().lock(), &mut std::io::stdout(), &at)
+        });
+        std::process::exit(0);
+    }
     if first.as_deref() == Some("remote") {
         return weft_remote::run();
     }
@@ -205,6 +216,7 @@ fn main() -> Result<()> {
         println!("Agents run in a background session that outlives this window.");
         println!("Closing Weft leaves them working; `weft stop` ends them.\n");
         println!("`weft update` installs the latest Weft and RingFrame.");
+        println!("`weft signal <harness> <hook>` is what a harness's hooks run.");
         return Ok(());
     }
 

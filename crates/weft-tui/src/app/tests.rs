@@ -121,8 +121,9 @@ pub(crate) fn app() -> App {
 /// the world about each harness.
 pub(crate) fn app_in(world: World) -> App {
     let (root, session) = test_session_in("codex", world);
+    let agent = agent_program(&root.with_extension("agents"));
     let mut a = App::with_session(root, Toggle, session);
-    a.add("codex", "/bin/cat").expect("spawn");
+    a.add("codex", &agent).expect("spawn");
     asked(&mut a);
     agent_says(&mut a, "codex", "fixture", "ready");
     a
@@ -143,25 +144,49 @@ pub(crate) fn asked(a: &mut App) {
     }
 }
 
-/// Now, as a receipt writes it.
-fn now() -> String {
-    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("t");
-    weft_core::turns::stamp(ms.as_millis() as i64)
+/// An agent that behaves as `cat` and writes the pane variables weftd gave
+/// it to `<dir>/pane-<id>`, so a test can signal as its hooks would.
+pub(crate) fn agent_program(dir: &std::path::Path) -> String {
+    std::fs::create_dir_all(dir).expect("agent dir");
+    let path = dir.join("agent.sh");
+    let script = "#!/bin/sh\n\
+        d=$(dirname \"$0\")\n\
+        printf '%s\\n%s\\n' \"$WEFT_PANE_TOKEN\" \"$WEFT_SOCKET\" > \"$d/pane-$WEFT_PANE.tmp\"\n\
+        mv \"$d/pane-$WEFT_PANE.tmp\" \"$d/pane-$WEFT_PANE\"\n\
+        exec cat\n";
+    std::fs::write(&path, script).expect("agent script");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    // Through `/bin/sh`: a script just written may still be open in a process
+    // another test thread is forking, and executing it then fails as busy.
+    format!("/bin/sh {}", path.display())
 }
 
-/// A hook's receipt, written where RingFrame's plugin writes it, now, and
-/// waited for until the daemon has read it.
+/// What the first agent's hook would signal, sent as `weft signal` sends it,
+/// and waited for until the daemon has taken it.
 pub(crate) fn agent_says(a: &mut App, harness: &str, session: &str, event: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    while std::time::Instant::now() < deadline && a.session_mut().panes.is_empty() {
+    use std::io::Write;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let told = a.root().with_extension("agents").join("pane-0");
+    while std::time::Instant::now() < deadline && !told.exists() {
         a.session_mut().pump();
         std::thread::sleep(Duration::from_millis(10));
     }
-    let dir = a.root().join(".fab7/rf/sessions").join(harness).join(session);
-    std::fs::create_dir_all(&dir).expect("session dir");
-    let line = serde_json::json!({"event": event, "session_id": session,
-                                  "time": now()});
-    std::fs::write(dir.join("turns.jsonl"), format!("{line}\n")).expect("receipt");
+    let text = std::fs::read_to_string(&told).expect("the agent said where it is");
+    let (token, socket) = text.split_once('\n').expect("token and socket");
+    let sent = weft_core::signal::Sent {
+        harness: harness.into(),
+        hook: "Hook".into(),
+        session: session.into(),
+        workspace: Some(a.root().to_string_lossy().into_owned()),
+        state: Some(event.into()),
+        pane: Some(0),
+        token: Some(token.into()),
+        ..Default::default()
+    };
+    let line = weft_proto::Line::Event(weft_proto::Event::Signal(Box::new(sent))).encode();
+    let mut stream = std::os::unix::net::UnixStream::connect(socket.trim()).expect("the daemon");
+    stream.write_all(&line).expect("sent");
     let want = weft_core::turns::Turn::recorded(event);
     while std::time::Instant::now() < deadline && a.pane_turn(0) != want {
         a.session_mut().pump();
@@ -478,17 +503,34 @@ fn the_latest_recorded_session_is_found_for_picking_up() {
     // `starts()` only offers a harness that is on this machine; in this
     // world, Codex is.
     let mut a = app();
-    let root = a.root().to_path_buf();
-    let dir = root.join(".fab7/rf/sessions/codex/01a0bdb6");
-    std::fs::create_dir_all(&dir).expect("dir");
-    let line = serde_json::json!({
-        "session_id": "01a0bdb6", "time": "2026-09-20T07:27:14.769Z",
-        "prompt": "$rf:ask research crypto trading", "cwd": root.to_string_lossy(),
-    });
-    std::fs::write(dir.join("prompts.jsonl"), format!("{line}\n")).expect("receipt");
-    a.refresh_for_test();
+    // A session run in a terminal: its hook signals with no pane.
+    let told = a.root().with_extension("agents").join("pane-0");
+    let socket = std::fs::read_to_string(told).expect("the agent said where it is");
+    let socket = socket.lines().nth(1).expect("the socket").to_string();
+    let sent = weft_core::signal::Sent {
+        harness: "codex".into(),
+        hook: "Hook".into(),
+        session: "01a0bdb6".into(),
+        workspace: Some(a.root().to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        ..Default::default()
+    };
+    let line = weft_proto::Line::Event(weft_proto::Event::Signal(Box::new(sent))).encode();
+    std::io::Write::write_all(
+        &mut std::os::unix::net::UnixStream::connect(socket).expect("the daemon"),
+        &line,
+    )
+    .expect("sent");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut starts = a.starts();
+    while std::time::Instant::now() < deadline
+        && starts.iter().filter(|c| c.harness == "codex").count() < 2
+    {
+        std::thread::sleep(Duration::from_millis(20));
+        a.refresh_for_test();
+        starts = a.starts();
+    }
 
-    let starts = a.starts();
     let codex: Vec<_> = starts.iter().filter(|c| c.harness == "codex").collect();
     assert_eq!(codex.len(), 2, "pick it up, or start fresh");
     assert_eq!(codex[0].spec, "codex resume 01a0bdb6", "picking it up comes first");

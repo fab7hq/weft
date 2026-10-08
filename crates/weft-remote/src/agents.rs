@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use weft_core::board::{Act, Board, PaneInfo};
 use weft_core::harness::Harnesses;
 use weft_core::ledger::Unit;
@@ -21,11 +20,9 @@ use weft_proto::{Call, Event};
 /// Why a device's message was refused: a code, and a sentence.
 pub type Refusal = (&'static str, String);
 
-/// The first 12 hex digits of the SHA-256 of a project's path.
-pub fn project_key(path: &Path) -> String {
-    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
-    digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
-}
+/// The first 12 hex digits of the SHA-256 of a project's path, as Weft's
+/// own receipts key a project.
+pub use weft_core::sessions::project_key;
 
 /// An agent's id on the remote wire: `3f9a1c07b2de-4`.
 pub fn agent_id(key: &str, pane: u32) -> String {
@@ -161,7 +158,7 @@ impl Project {
         match self.turns.get(i).copied().flatten() {
             Some(Turn::Working) => "working",
             Some(Turn::Waiting) => "waiting",
-            Some(Turn::TurnEnded) => "ended",
+            Some(Turn::TurnEnded | Turn::Ended) => "ended",
             // Started and heard nothing yet, or said it is at its input.
             Some(Turn::Ready) | None => "ready",
         }

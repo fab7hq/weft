@@ -140,7 +140,7 @@ impl From<Turn> for TurnWord {
             Turn::Ready => TurnWord::Ready,
             Turn::Working => TurnWord::Working,
             Turn::Waiting => TurnWord::Waiting,
-            Turn::TurnEnded => TurnWord::Ended,
+            Turn::TurnEnded | Turn::Ended => TurnWord::Ended,
         }
     }
 }

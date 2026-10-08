@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     let exe = parts.next().unwrap_or(&program).to_string();
     let args: Vec<String> = parts.map(str::to_string).collect();
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let mut pane = Pane::spawn_args("probe", &exe, &argv, &cwd, 40, 120)?;
+    let mut pane = Pane::spawn_args("probe", &exe, &argv, &cwd, &[], 40, 120)?;
     std::thread::sleep(std::time::Duration::from_secs(seconds));
 
     let running = pane.running();
