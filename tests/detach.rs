@@ -267,6 +267,13 @@ fn a_project_closes_when_its_last_client_leaves_and_no_agent_runs() {
     for p in [&busy, &idle] {
         std::fs::create_dir_all(p).expect("project");
     }
+    // What an earlier daemon left listed is not open in this one.
+    std::fs::create_dir_all(&root).expect("root");
+    std::fs::write(
+        root.join("projects.json"),
+        r#"{"projects":[{"path":"/gone/before","opened":1}]}"#,
+    )
+    .expect("left over");
     let socket = protocol::private_socket("weft-detach");
     let listening = socket.clone();
     let config = root.join("config.toml");
@@ -280,6 +287,11 @@ fn a_project_closes_when_its_last_client_leaves_and_no_agent_runs() {
 
     // A window in each project; an agent runs in one.
     let mut a = Client::attach(&socket, &busy);
+    let left_over = std::fs::read_to_string(root.join("projects.json")).unwrap_or_default();
+    assert!(
+        !left_over.contains("/gone/before"),
+        "a new daemon starts with none listed: {left_over}"
+    );
     a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
     std::thread::sleep(Duration::from_millis(300));
     let mut b = Client::attach(&socket, &idle);

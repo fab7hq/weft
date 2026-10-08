@@ -566,6 +566,10 @@ impl Session {
             attached: Vec::new(),
             supervisor: Default::default(),
         };
+        // The list is of the projects open in this daemon: a new one has none
+        // yet, whatever an earlier one left there, so `weft remote` opens
+        // nothing a window has not.
+        session.write_projects();
         session.remote_from_config();
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
