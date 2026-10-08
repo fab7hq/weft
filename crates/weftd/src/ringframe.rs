@@ -79,6 +79,37 @@ pub fn set_up(outside: &dyn Outside, project: &Path) -> Option<Needs> {
     Some(Needs::refused(Some(said["error"].as_str().unwrap_or_default())))
 }
 
+/// One `ringframe observe` call, as weftd forwards a signal (ADR-0030 D9).
+/// Weft writes no record itself: RingFrame decides what the fact means.
+pub fn observe(
+    out: &dyn Outside,
+    project: &Path,
+    call: &weft_core::signal::Forward,
+) -> Result<(), Error> {
+    let project = project.to_string_lossy();
+    let argv: Vec<&str> = ["--workspace", project.as_ref()]
+        .into_iter()
+        .chain(call.args.iter().map(String::as_str))
+        .collect();
+    let said = match &call.input {
+        Some(input) => out.run_input("ringframe", &argv, input.as_bytes()),
+        None => out.run("ringframe", &argv, None),
+    };
+    let said = said.map_err(|_| Error::NotInstalled)?;
+    if said.status.success() {
+        return Ok(());
+    }
+    // Only the code: nothing a prompt said is logged.
+    Err(Error::Refused { code: said.status.code().unwrap_or(-1), message: String::new() })
+}
+
+/// The tools RingFrame makes something of for this harness, its profile's
+/// `[observe]`, or none when RingFrame cannot say.
+pub fn observe_tools(out: &dyn Outside, project: &Path, host: &str) -> Option<Value> {
+    let v = json(out, project, &["profile", "show", "--host", host, "--json"]).ok()?;
+    Some(v.get("observe").cloned().unwrap_or(Value::Null))
+}
+
 pub fn installed(out: &dyn Outside) -> bool {
     out.run("ringframe", &["--version"], None).is_ok()
 }

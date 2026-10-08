@@ -132,6 +132,43 @@ impl Signal {
     }
 }
 
+/// One call to `ringframe observe` (ADR-0030 D9): its arguments after
+/// `--workspace <project>`, and what it reads on stdin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Forward {
+    pub args: Vec<String>,
+    pub input: Option<String>,
+}
+
+/// What weftd passes RingFrame for this signal, if anything: a forwarded
+/// prompt, byte for byte; a forwarded tool only when the harness's profile's
+/// `[observe]` (as `ringframe profile show` gives it) names it as its
+/// `delivery_tool` or `shell_tool`. Turn states are never forwarded.
+pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
+    let head = |what: &str| -> Vec<String> {
+        ["observe", what, "--by", "weft", "--host", &sent.harness, "--session", &sent.session]
+            .map(str::to_string)
+            .to_vec()
+    };
+    match sent.forward.as_deref()? {
+        "prompt" => Some(Forward { args: head("prompt"), input: Some(sent.prompt.clone()?) }),
+        "tool" => {
+            let tool = sent.tool.as_deref()?;
+            let named = |key: &str| observe.get(key).and_then(Value::as_str) == Some(tool);
+            if !named("delivery_tool") && !named("shell_tool") {
+                return None;
+            }
+            let mut args = head("tool");
+            args.extend(["--tool".into(), tool.into(), "--outcome".into(), sent.outcome.clone()?]);
+            if let Some(command) = &sent.command {
+                args.extend(["--command".into(), command.clone()]);
+            }
+            Some(Forward { args, input: None })
+        }
+        _ => None,
+    }
+}
+
 /// The text at a dotted payload path; for a list, its first entry.
 pub fn text_at(payload: &Value, path: &str) -> Option<String> {
     let mut v = payload;
@@ -241,6 +278,43 @@ mod tests {
         assert_eq!(s.reply("PreToolUse", &payload), Some(r#"{"decision":"allow"}"#));
         assert_eq!(s.reply("NoSuchHook", &payload), Some("{}"), "the table's, with no row");
         assert_eq!(signal("claude-code").reply("Stop", &payload), None);
+    }
+
+    #[test]
+    fn a_typed_prompt_is_forwarded_byte_for_byte_and_a_state_never() {
+        let s = signal("claude-code");
+        let typed = "/rf:ask fix the login bug\n  with spaces  ";
+        let payload = json!({"session_id": "s1", "cwd": "/w", "prompt": typed});
+        let sent = s.sent("claude-code", "UserPromptSubmit", &payload).unwrap();
+        let f = forward(&sent, &json!(null)).expect("a prompt goes");
+        assert_eq!(
+            f.args,
+            ["observe", "prompt", "--by", "weft", "--host", "claude-code", "--session", "s1"]
+        );
+        assert_eq!(f.input.as_deref(), Some(typed));
+        let stopped = s.sent("claude-code", "Stop", &payload).unwrap();
+        assert_eq!(forward(&stopped, &json!(null)), None, "a turn state is never forwarded");
+    }
+
+    #[test]
+    fn a_tool_is_forwarded_only_when_the_profile_names_it() {
+        let s = signal("claude-code");
+        let observe = json!({"delivery_tool": "EnterPlanMode", "shell_tool": "Bash"});
+        let ran = |tool: &str, hook: &str| {
+            let payload = json!({"session_id": "s1", "cwd": "/w", "tool_name": tool,
+                                 "tool_input": {"command": "npm test"}});
+            s.sent("claude-code", hook, &payload).unwrap()
+        };
+        let shell = forward(&ran("Bash", "PostToolUseFailure"), &observe).expect("the shell tool");
+        assert_eq!(
+            shell.args[8..],
+            ["--tool", "Bash", "--outcome", "failed", "--command", "npm test"].map(String::from)
+        );
+        assert_eq!(shell.input, None);
+        let plan = forward(&ran("EnterPlanMode", "PostToolUse"), &observe).expect("delivery");
+        assert_eq!(plan.args[8..12], ["--tool", "EnterPlanMode", "--outcome", "succeeded"]);
+        assert_eq!(forward(&ran("Write", "PostToolUse"), &observe), None, "another tool");
+        assert_eq!(forward(&ran("Bash", "PostToolUse"), &json!({})), None, "a profile naming none");
     }
 
     #[test]

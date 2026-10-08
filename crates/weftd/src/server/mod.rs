@@ -324,6 +324,8 @@ pub struct Session {
     socket: PathBuf,
     /// Weft's own session receipts, beside `config` (ADR-0030 D7).
     receipts: PathBuf,
+    /// What signals forward to `ringframe observe`, one queue per project.
+    forwarders: crate::forward::Forwarders,
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
@@ -596,6 +598,7 @@ impl Session {
             projects: Vec::new(),
             socket: socket.to_path_buf(),
             receipts,
+            forwarders: crate::forward::Forwarders::new(outside.clone()),
             clients: Clients::default(),
             tx,
             next_pending: 1,

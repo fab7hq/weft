@@ -227,6 +227,7 @@ impl Session {
         if let Some(at) = at {
             self.tell_agents(at);
         }
+        self.forwarders.send(&root, sent);
     }
 }
 

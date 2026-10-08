@@ -6,6 +6,7 @@
 //! [`weft_core`]; nothing is decided twice.
 
 pub mod acts;
+pub mod forward;
 pub mod harness;
 pub mod ledger;
 pub mod onboarding;

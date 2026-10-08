@@ -19,6 +19,8 @@ use crate::harness::runnable;
 pub trait Outside: Send + Sync {
     /// Run a program to its end and hand back what it said.
     fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<Output>;
+    /// Run a program with `input` on its stdin, to its end.
+    fn run_input(&self, program: &str, args: &[&str], input: &[u8]) -> std::io::Result<Output>;
     /// Whether a harness's program is on this machine: on `PATH`, or where
     /// the person said it is (an absolute path).
     fn on_path(&self, program: &str) -> bool;
@@ -51,6 +53,22 @@ impl Outside for Machine {
             command.current_dir(dir);
         }
         command.output()
+    }
+
+    fn run_input(&self, program: &str, args: &[&str], input: &[u8]) -> std::io::Result<Output> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().expect("piped");
+        let written = stdin.write_all(input);
+        drop(stdin);
+        let out = child.wait_with_output()?;
+        written.map(|_| out)
     }
 
     fn on_path(&self, program: &str) -> bool {
@@ -192,6 +210,10 @@ impl Outside for Fixed {
             stdout: stdout.into_bytes(),
             stderr: Vec::new(),
         })
+    }
+
+    fn run_input(&self, program: &str, args: &[&str], _input: &[u8]) -> std::io::Result<Output> {
+        self.run(program, args, None)
     }
 
     fn on_path(&self, program: &str) -> bool {
