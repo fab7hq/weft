@@ -15,15 +15,13 @@ fallback = "human_handoff"
 
 # What the ringframe CLI reads about this harness. How to start it, resume it and
 # set its plugin up is not RingFrame's: those are in the harness's own file for
-# the tool that runs it. No text to match on its screen: an agent's state comes
-# from the plugin's hooks.
+# the tool that runs it. No text to match on its screen: an agent's state is
+# Weft's, from its harness file's [signal] (Weft ADR-0030).
 # The name a person reads, in the handoff the CLI writes.
 title = "Codex"
 # The folder names this harness's files go by in a repository (its plugin
 # folder): how an Eval links a step that names the harness to its files.
 path_names = ["codex"]
-# The hook payload's session id.
-session_field = "session_id"
 
 [routing]
 precedence = ["native_goal", "native_review", "native_plan", "native_direct"]

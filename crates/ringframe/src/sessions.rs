@@ -1,4 +1,4 @@
-//! Bounded, prunable hook captures under `.fab7/rf/sessions/<host>/<session>/`.
+//! Bounded, prunable observed prompts under `.fab7/rf/sessions/<host>/<session>/`.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -124,19 +124,17 @@ pub fn log(
     f.write_all(&line)
 }
 
-/// Store a `/rf:` or `$rf:` invocation in full; every other prompt as digest
-/// and byte count only, never its text.
-pub fn capture(
+/// Store a prompt someone observed (`ringframe observe prompt`): a `/rf:` or
+/// `$rf:` invocation in full, every other prompt as digest and byte count
+/// only, never its text. `by` is whoever observed it.
+pub fn observe_prompt(
     ws: &Workspace,
     host: &str,
-    payload: &Value,
+    session: &str,
+    prompt: &str,
     host_version: Option<&str>,
+    by: &str,
 ) -> std::io::Result<Option<Value>> {
-    let prompt = payload.get("prompt").and_then(Value::as_str).unwrap_or_default();
-    // Read once: the session field and the skill prefix are both its.
-    let profile = crate::profiles::of(host).unwrap_or_default();
-    let session = crate::profiles::session_of(&profile, payload);
-    let session = session.as_str();
     if prompt.is_empty() || session.is_empty() {
         return Ok(None);
     }
@@ -146,52 +144,19 @@ pub fn capture(
         "session_id": session,
         "sha256": digest::sha256_bytes(data),
         "bytes": data.len(),
-        "cwd": payload.get("cwd").cloned().unwrap_or(Value::Null),
-        "permission_mode": payload.get("permission_mode").cloned().unwrap_or(Value::Null),
         "host_version": version.map_or(Value::Null, |v| Value::String(v.to_string())),
+        "observed_by": by,
     });
-    let prefix = profile["invocation_prefix"].as_str().map(str::to_string);
+    let prefix = crate::profiles::fact(host, "invocation_prefix");
     if prefix.as_ref().is_some_and(|p| prompt.starts_with(p)) {
         rec["prompt"] = Value::String(prompt.to_string());
     }
     log(ws, host, session, "prompts.jsonl", &rec)?;
     // An Ask is on record the moment it is asked. A workspace that cannot
-    // hold one refuses it here as compile would later; the hook stays silent.
+    // hold one refuses it here as compile would later; observing stays silent.
     if let Some(intent) = prefix.and_then(|p| ask_intent(&p, prompt)) {
-        let _ = crate::ask::request(ws, host, Some(session), intent.as_bytes(), "prompt_hook");
+        let _ = crate::ask::request(ws, host, Some(session), intent.as_bytes(), by);
     }
-    Ok(Some(rec))
-}
-
-/// The four events an agent's state is made of, the same for every host
-/// (ADR-0017). Which hook stands for which is the plugin's to say.
-pub const TURN_EVENTS: [&str; 4] = ["ready", "working", "waiting", "turn_ended"];
-
-/// Append one event to the session's `turns.jsonl`: the event, the session
-/// id and the time, and nothing from the conversation. A payload with no
-/// session, an event that is not one of the four, or one that repeats the
-/// session's last records nothing: the file records changes, not every tool
-/// call.
-pub fn turn(
-    ws: &Workspace,
-    host: &str,
-    payload: &Value,
-    event: &str,
-) -> std::io::Result<Option<Value>> {
-    let profile = crate::profiles::of(host).unwrap_or_default();
-    let session = crate::profiles::session_of(&profile, payload);
-    let session = session.as_str();
-    if session.is_empty() || !TURN_EVENTS.contains(&event) {
-        return Ok(None);
-    }
-    let path = ws.rf_dir().join("sessions").join(host).join(session).join("turns.jsonl");
-    let last = std::fs::read_to_string(&path).unwrap_or_default();
-    let last = last.lines().last().and_then(|l| serde_json::from_str::<Value>(l).ok());
-    if last.is_some_and(|l| l["event"] == event) {
-        return Ok(None);
-    }
-    let rec = json!({"event": event, "session_id": session});
-    log(ws, host, session, "turns.jsonl", &rec)?;
     Ok(Some(rec))
 }
 
@@ -296,9 +261,14 @@ mod tests {
     use super::*;
     use crate::testing::{repo, ws_for};
 
-    fn payload(prompt: &str, session: &str) -> Value {
-        json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": "/w",
-               "permission_mode": "default", "prompt": prompt})
+    fn capture(
+        ws: &Workspace,
+        host: &str,
+        prompt: &str,
+        session: &str,
+        version: Option<&str>,
+    ) -> std::io::Result<Option<Value>> {
+        observe_prompt(ws, host, session, prompt, version, "weft")
     }
 
     fn prompts(ws: &Workspace, host: &str, session: &str) -> String {
@@ -314,17 +284,15 @@ mod tests {
         crate::testing::with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let other =
-                capture(&ws, "claude-code", &payload("hello there", "s1"), None).unwrap().unwrap();
+            let other = capture(&ws, "claude-code", "hello there", "s1", None).unwrap().unwrap();
             assert!(other["sha256"].is_string());
             assert_eq!(other["bytes"], 11);
             assert!(other.get("prompt").is_none(), "the text must never be stored");
             assert!(!prompts(&ws, "claude-code", "s1").contains("hello there"));
 
-            let rec =
-                capture(&ws, "claude-code", &payload("/rf:ask fix the login bug", "s1"), None)
-                    .unwrap()
-                    .unwrap();
+            let rec = capture(&ws, "claude-code", "/rf:ask fix the login bug", "s1", None)
+                .unwrap()
+                .unwrap();
             assert!(rec["sha256"].is_string());
             assert_eq!(rec["bytes"], "/rf:ask fix the login bug".len());
             let text = prompts(&ws, "claude-code", "s1");
@@ -341,7 +309,7 @@ mod tests {
         crate::testing::with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            capture(&ws, "claude-code", &payload("/rf:ask fix the login bug", "s1"), None).unwrap();
+            capture(&ws, "claude-code", "/rf:ask fix the login bug", "s1", None).unwrap();
             let got = |s: Option<&str>, b: &[u8]| source_verified(&ws, "claude-code", s, b);
             assert_eq!(got(Some("s1"), b"fix the login bug\n"), ("exact".into(), None));
             assert_eq!(
@@ -362,7 +330,8 @@ mod tests {
             let rec = capture(
                 &ws,
                 "claude-code",
-                &payload("/rf:ask fix the login bug", "sA"),
+                "/rf:ask fix the login bug",
+                "sA",
                 Some("2.1.263 (Claude Code)\n"),
             )
             .unwrap()
@@ -373,7 +342,7 @@ mod tests {
                 Some(json!({"session_ref": "sA", "host_version": "2.1.263 (Claude Code)"}))
             );
             assert_eq!(resolve_session(&ws, "claude-code", b"something else", WINDOW), None);
-            capture(&ws, "claude-code", &payload("/rf:ask fix the login bug", "sB"), None).unwrap();
+            capture(&ws, "claude-code", "/rf:ask fix the login bug", "sB", None).unwrap();
             // Two sessions carry the same intent, so neither can be claimed.
             assert_eq!(resolve_session(&ws, "claude-code", b"fix the login bug", WINDOW), None);
         });
@@ -385,14 +354,10 @@ mod tests {
         crate::testing::with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let rec = capture(
-                &ws,
-                "codex",
-                &payload("$rf:ask fix the login bug", "c1"),
-                Some("codex-cli 0.153.4"),
-            )
-            .unwrap()
-            .unwrap();
+            let rec =
+                capture(&ws, "codex", "$rf:ask fix the login bug", "c1", Some("codex-cli 0.153.4"))
+                    .unwrap()
+                    .unwrap();
             assert_eq!(rec["prompt"], "$rf:ask fix the login bug");
             assert_eq!(
                 source_verified(&ws, "codex", Some("c1"), b"fix the login bug\n"),
@@ -402,72 +367,8 @@ mod tests {
                 resolve_session(&ws, "codex", b"fix the login bug", WINDOW),
                 Some(json!({"session_ref": "c1", "host_version": "codex-cli 0.153.4"}))
             );
-            let plain =
-                capture(&ws, "codex", &payload("$rfx not ours", "c1"), None).unwrap().unwrap();
+            let plain = capture(&ws, "codex", "$rfx not ours", "c1", None).unwrap().unwrap();
             assert!(plain.get("prompt").is_none());
-        });
-    }
-
-    #[test]
-    fn a_turn_receipt_carries_the_event_the_session_and_the_time_and_nothing_else() {
-        // Profiles are read from the config home, which is per process.
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let hook = json!({"hook_event_name": "Stop", "session_id": "s1", "cwd": "/w",
-                              "prompt": "never kept", "last_assistant_message": "never kept"});
-            let rec = turn(&ws, "claude-code", &hook, "turn_ended").unwrap().unwrap();
-            assert_eq!(rec, json!({"event": "turn_ended", "session_id": "s1"}));
-            turn(&ws, "claude-code", &hook, "ready").unwrap();
-            let text =
-                std::fs::read_to_string(ws.rf_dir().join("sessions/claude-code/s1/turns.jsonl"))
-                    .unwrap();
-            let lines: Vec<Value> =
-                text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-            assert_eq!(lines.len(), 2, "appended, one line per event");
-            let keys: Vec<&String> = lines[0].as_object().unwrap().keys().collect();
-            assert_eq!(keys, ["event", "session_id", "time"]);
-            assert_eq!(lines[1]["event"], "ready");
-            assert!(!text.contains("never kept"), "nothing from the conversation");
-            // Prompt captures stay where they are.
-            assert!(!ws.rf_dir().join("sessions/claude-code/s1/prompts.jsonl").exists());
-        });
-    }
-
-    /// `turns.jsonl` records changes: an event that repeats the session's
-    /// last, as every tool call's `working` does, is not written again.
-    #[test]
-    fn an_event_that_repeats_the_last_is_not_recorded_again() {
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let hook = json!({"session_id": "s1"});
-            assert!(turn(&ws, "claude-code", &hook, "working").unwrap().is_some());
-            assert_eq!(turn(&ws, "claude-code", &hook, "working").unwrap(), None, "a repeat");
-            assert!(turn(&ws, "claude-code", &hook, "waiting").unwrap().is_some());
-            assert!(turn(&ws, "claude-code", &hook, "working").unwrap().is_some(), "a change");
-            let text =
-                std::fs::read_to_string(ws.rf_dir().join("sessions/claude-code/s1/turns.jsonl"))
-                    .unwrap();
-            let events: Vec<String> = text
-                .lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
-                .collect();
-            assert_eq!(events, [r#""working""#, r#""waiting""#, r#""working""#]);
-        });
-    }
-
-    #[test]
-    fn a_turn_with_no_session_or_an_event_that_is_not_one_of_the_four_records_nothing() {
-        // Profiles are read from the config home, which is per process.
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let none = json!({"hook_event_name": "Stop"});
-            assert_eq!(turn(&ws, "claude-code", &none, "turn_ended").unwrap(), None);
-            let hook = json!({"session_id": "s1"});
-            assert_eq!(turn(&ws, "claude-code", &hook, "done").unwrap(), None);
-            assert!(!ws.rf_dir().join("sessions/claude-code/s1").exists());
         });
     }
 

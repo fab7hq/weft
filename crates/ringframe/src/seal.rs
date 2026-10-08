@@ -232,6 +232,7 @@ pub fn create(
             "the subject changed after the Eval; its verdict describes an earlier state".into(),
         );
     }
+    limits.extend(evaluate::observed_limits(ws, &ask_ids)?);
     let time = sessions::now();
     let mut receipt = json!({"schema": "ringframe.seal/1", "seal_id": seal_id});
     for (k, v) in base.as_object().into_iter().flatten() {
@@ -336,6 +337,25 @@ mod tests {
 
     fn strings_at(v: &Value, key: &str) -> Vec<String> {
         strings(v, key)
+    }
+
+    /// ADR-0022 §7: a Seal's receipt says who observed its Asks, or that
+    /// nothing was.
+    #[test]
+    fn a_seal_names_who_observed_its_asks_or_that_nothing_was() {
+        eval_bench(|ws| {
+            confirm_ask(ws, "t", b"s\n", b"p\n");
+            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let limits = strings_at(&receipt, "limitations");
+            assert!(limits.contains(&crate::evaluate::NOTHING_OBSERVED.to_string()), "{limits:?}");
+        });
+        eval_bench(|ws| {
+            confirm_ask(ws, "t", b"s\n", b"p\n");
+            crate::observe::prompt(ws, "weft", "claude-code", "s1", "p\n", None).unwrap();
+            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let limits = strings_at(&receipt, "limitations");
+            assert!(limits.contains(&"submission observed by weft".to_string()), "{limits:?}");
+        });
     }
 
     #[test]

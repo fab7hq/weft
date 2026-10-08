@@ -90,19 +90,11 @@ pub fn of(host: &str) -> Result<Value, ConfigError> {
     for_host(&serde_json::json!({"name": host}))
 }
 
-/// One of a host's facts, read from its profile: `title`, `session_field`,
+/// One of a host's facts, read from its profile: `title`,
 /// `invocation_prefix`. None when it names none, or there is no profile to
 /// read.
 pub fn fact(host: &str, key: &str) -> Option<String> {
     of(host).ok()?.get(key)?.as_str().map(str::to_string)
-}
-
-/// The session a hook payload names, by the field its host's profile says.
-pub fn session_of(profile: &Value, payload: &Value) -> String {
-    profile["session_field"]
-        .as_str()
-        .and_then(|f| payload.get(f)?.as_str().map(str::to_string))
-        .unwrap_or_default()
 }
 
 pub fn capability<'a>(profile: &'a Value, cap_id: &str) -> Option<&'a Value> {

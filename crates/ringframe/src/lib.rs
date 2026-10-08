@@ -13,6 +13,7 @@ pub mod documents;
 pub mod evaluate;
 pub mod evidence;
 pub mod ids;
+pub mod observe;
 pub mod output;
 pub mod profiles;
 pub mod schema;

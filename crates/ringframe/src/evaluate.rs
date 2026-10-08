@@ -324,6 +324,37 @@ fn validate_agents(agents: &Value) -> Result<(), EvalError> {
     Ok(())
 }
 
+/// What a brief or a Seal says when no prompt and no tool was observed at
+/// all (ADR-0022 §7).
+pub const NOTHING_OBSERVED: &str =
+    "no prompt or tool was observed: nothing ran `ringframe observe`";
+
+/// Who observed these Asks' submissions, in words ("submission observed by
+/// weft"); or, when nothing was observed in this workspace at all, that
+/// nothing was.
+pub fn observed_limits(ws: &Workspace, ask_ids: &[String]) -> Result<Vec<String>, EvalError> {
+    let events = store::events(ws)?;
+    let observers: BTreeSet<String> = events
+        .iter()
+        .filter(|e| e["type"] == "ask.submission" && e["data"]["state"] == "observed")
+        .filter(|e| ask_ids.contains(&str_of(e, "id")))
+        .map(|e| str_of(&e["data"], "observed_by"))
+        .filter(|by| !by.is_empty())
+        .collect();
+    let mut out: Vec<String> =
+        observers.iter().map(|by| format!("submission observed by {by}")).collect();
+    let prompts = std::fs::read_dir(ws.rf_dir().join("sessions"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|host| std::fs::read_dir(host.path()).into_iter().flatten().flatten())
+        .any(|session| session.path().join("prompts.jsonl").is_file());
+    if out.is_empty() && !prompts && !events.iter().any(|e| e["type"] == "tool.fact") {
+        out.push(NOTHING_OBSERVED.to_string());
+    }
+    Ok(out)
+}
+
 /// How many prompts that were neither `/rf:` invocations nor observed Ask
 /// submissions bear on this Eval.
 ///
@@ -578,6 +609,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         limitations
             .push("no tool facts were recorded; the result of a command cannot be judged".into());
     }
+    limitations.extend(observed_limits(ws, &ask_ids)?);
     if !stale.is_empty() {
         limitations.push(format!(
             "{} of the recorded commands ran against other work than the subject and are not listed",
@@ -1125,23 +1157,23 @@ fn delta(current: &Value, previous: Option<&Value>) -> Value {
     })
 }
 
-/// What the working agent ran, as the harness's own post-tool hook saw it: the
-/// command, whether it succeeded, and the subject it ran against. Output is
-/// never read, and RingFrame decides nothing about what the command was for.
-/// Only while some Ask is open, and never for RingFrame's own commands.
-///
-/// Which hook fired, and so whether the command succeeded, is the plugin's to
-/// say (`--outcome`): the CLI names no hook and no tool.
+/// What the working agent ran, as someone saw it (`ringframe observe tool` on
+/// the host's shell tool): the command, whether it succeeded, and the subject
+/// it ran against. Output is never read, and RingFrame decides nothing about
+/// what the command was for. Only while some Ask is open, and never for
+/// RingFrame's own commands. Whether it succeeded, and who saw it, are the
+/// caller's to say.
 pub fn record_fact(
     ws: &Workspace,
     host: &str,
+    session: &str,
     outcome: &str,
-    payload: &Value,
+    command: &str,
+    by: &str,
 ) -> Result<Option<Value>, EvalError> {
     if !["succeeded", "failed"].contains(&outcome) {
         return Ok(None);
     }
-    let command = str_of(&payload["tool_input"], "command");
     let first = command.split_whitespace().next();
     if first.is_none() || first == Some("ringframe") {
         return Ok(None);
@@ -1156,11 +1188,7 @@ pub fn record_fact(
         "command": command, "outcome": outcome,
         "subject": {"kind": kind, "ref": reference, "sha256": sha,
                     "content": worktree_content(ws)?},
-        "host": host, "session_ref": crate::profiles::session_of(
-            &crate::profiles::of(host).unwrap_or_default(),
-            payload,
-        ),
-        "tool_use_id": str_of(payload, "tool_use_id"),
+        "host": host, "session_ref": session, "observed_by": by,
     });
     let actor = json!({"kind": "agent", "id": host});
     let ev = event("tool.fact", &ids::new_id("fct"), Some(&actor), data, Vec::new())?;
@@ -1721,14 +1749,9 @@ mod tests {
             // Three plain prompts after Ask B, one observed submission of A's
             // prompt (not counted), one /rf: invocation (not counted).
             let say = |text: &str| {
-                crate::sessions::capture(
-                    ws,
-                    "claude-code",
-                    &json!({"session_id": "s9", "prompt": text}),
-                    None,
-                )
-                .unwrap()
-                .unwrap()
+                crate::sessions::observe_prompt(ws, "claude-code", "s9", text, None, "weft")
+                    .unwrap()
+                    .unwrap()
             };
             say("please also update the docs");
             say("run the tests");
@@ -1824,13 +1847,8 @@ mod tests {
 
             // Two plain prompts, then a commit, then the next Ask.
             for text in ["also update the docs", "and drop the cache bit"] {
-                crate::sessions::capture(
-                    ws,
-                    "claude-code",
-                    &json!({"session_id": "s9", "prompt": text}),
-                    None,
-                )
-                .unwrap();
+                crate::sessions::observe_prompt(ws, "claude-code", "s9", text, None, "weft")
+                    .unwrap();
             }
             commit(&ws.root, &[("docs/notes.md", Some("edited by chat\n"))], "chat edit");
             crate::testing::confirm_ask(ws, "Next", b"do the next thing\n", b"Do it.\n");
@@ -1858,11 +1876,13 @@ mod tests {
         // still starts at the first open Ask, exactly as before.
         eval_bench(|ws| {
             two_asks_and_work(ws);
-            crate::sessions::capture(
+            crate::sessions::observe_prompt(
                 ws,
                 "claude-code",
-                &json!({"session_id": "s9", "prompt": "a plain prompt"}),
+                "s9",
+                "a plain prompt",
                 None,
+                "weft",
             )
             .unwrap();
             let out = open_eval(ws, Open::default()).unwrap();
@@ -2623,27 +2643,17 @@ mod tests {
         assert_eq!(rename_target("plain.rs"), "plain.rs");
     }
 
-    /// A hook payload in the documented hook-input shape, carrying output
-    /// that must never reach the ledger.
-    fn hook(event_name: &str, tool: &str, command: &str) -> Value {
-        json!({"session_id": "s1", "cwd": "/ignored", "hook_event_name": event_name,
-               "tool_name": tool, "tool_input": {"command": command},
-               "tool_response": {"stdout": "SECRET-OUT", "stderr": "SECRET-ERR"},
-               "tool_use_id": "toolu_1"})
+    /// A shell command someone saw run in session `s1`, as `observe tool`
+    /// passes it.
+    fn fact(ws: &Workspace, outcome: &str, command: &str) -> Option<Value> {
+        record_fact(ws, "claude-code", "s1", outcome, command, "weft").unwrap()
     }
 
     #[test]
     fn a_shell_command_during_open_work_is_a_fact_about_the_subject() {
         eval_bench(|ws| {
             two_asks_and_work(ws);
-            let ok = record_fact(
-                ws,
-                "claude-code",
-                "succeeded",
-                &hook("PostToolUse", "Bash", "npm test"),
-            )
-            .unwrap()
-            .unwrap();
+            let ok = fact(ws, "succeeded", "npm test").unwrap();
             let (kind, reference) = default_subject(ws).unwrap();
             let sha = subject_digest(ws, &kind, &reference).unwrap();
             assert_eq!(ok["type"], "tool.fact");
@@ -2653,19 +2663,10 @@ mod tests {
                 json!({"command": "npm test", "outcome": "succeeded",
                        "subject": {"kind": kind, "ref": reference, "sha256": sha,
                                    "content": worktree_content(ws).unwrap()},
-                       "host": "claude-code", "session_ref": "s1", "tool_use_id": "toolu_1"})
+                       "host": "claude-code", "session_ref": "s1", "observed_by": "weft"})
             );
-            let failed = record_fact(
-                ws,
-                "claude-code",
-                "failed",
-                &hook("PostToolUseFailure", "Bash", "npm test"),
-            )
-            .unwrap()
-            .unwrap();
+            let failed = fact(ws, "failed", "npm test").unwrap();
             assert_eq!(failed["data"]["outcome"], "failed");
-            let ledger = std::fs::read_to_string(ws.rf_dir().join("ledger.jsonl")).unwrap();
-            assert!(!ledger.contains("SECRET"), "no output reaches the ledger");
             let facts =
                 store::events(ws).unwrap().iter().filter(|e| e["type"] == "tool.fact").count();
             assert_eq!(facts, 2);
@@ -2685,15 +2686,9 @@ mod tests {
     /// `npm test` (of `outcome`) on the edited tree, then an open Eval.
     fn with_facts(ws: &Workspace, outcome: &str) -> Facts {
         let (a, _, _) = two_asks_and_work(ws);
-        let stale =
-            record_fact(ws, "claude-code", "succeeded", &hook("PostToolUse", "Bash", "npm test"))
-                .unwrap()
-                .unwrap();
+        let stale = fact(ws, "succeeded", "npm test").unwrap();
         std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n").unwrap();
-        let hook_name = if outcome == "succeeded" { "PostToolUse" } else { "PostToolUseFailure" };
-        let fresh = record_fact(ws, "claude-code", outcome, &hook(hook_name, "Bash", "npm test"))
-            .unwrap()
-            .unwrap();
+        let fresh = fact(ws, outcome, "npm test").unwrap();
         let out = open_eval(ws, Open::default()).unwrap();
         Facts {
             eval_id: str_of(&out, "eval_id"),
@@ -2755,14 +2750,7 @@ mod tests {
                 two_asks_and_work(ws);
                 std::fs::write(ws.root.join("src/uptime.js"), "export const uptime = () => 2;\n")
                     .unwrap();
-                let tested = record_fact(
-                    ws,
-                    "claude-code",
-                    "succeeded",
-                    &hook("PostToolUse", "Bash", "npm test"),
-                )
-                .unwrap()
-                .unwrap();
+                let tested = fact(ws, "succeeded", "npm test").unwrap();
                 assert_eq!(tested["data"]["subject"]["kind"], "worktree");
                 commit(&ws.root, extra, "tested work");
                 let out = open_eval(ws, Open::default()).unwrap();
@@ -3172,21 +3160,43 @@ mod tests {
         });
     }
 
+    /// ADR-0022 §7: the brief names who observed a submission, and says so
+    /// when nothing ran `ringframe observe` at all.
+    #[test]
+    fn a_brief_names_who_observed_and_says_when_nothing_was() {
+        let limits = |ws: &Workspace| {
+            let out = open_eval(ws, Open::default()).unwrap();
+            array_of(&brief_of(ws, &out), "limitations")
+                .iter()
+                .map(str_of_value)
+                .collect::<Vec<_>>()
+        };
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            let got = limits(ws);
+            assert!(got.contains(&NOTHING_OBSERVED.to_string()), "{got:?}");
+            assert!(!got.iter().any(|l| l.starts_with("submission observed by")), "{got:?}");
+        });
+        eval_bench(|ws| {
+            two_asks_and_work(ws);
+            crate::observe::prompt(ws, "weft", "claude-code", "s1", "Skip the cache.\n", None)
+                .unwrap();
+            let got = limits(ws);
+            assert!(got.contains(&"submission observed by weft".to_string()), "{got:?}");
+            assert!(!got.contains(&NOTHING_OBSERVED.to_string()), "{got:?}");
+        });
+    }
+
     #[test]
     fn nothing_else_is_a_fact() {
         eval_bench(|ws| {
-            let none = |p: Value| {
-                assert_eq!(record_fact(ws, "claude-code", "succeeded", &p).unwrap(), None)
-            };
-            none(hook("PostToolUse", "Bash", "npm test"));
+            assert_eq!(fact(ws, "succeeded", "npm test"), None, "no Ask is open");
             crate::testing::confirm_ask(ws, "t", b"s\n", b"p\n");
-            none(hook("PostToolUse", "Bash", "ringframe eval open"));
-            none(hook("PostToolUse", "Bash", "  ringframe ask list --json"));
-            none(hook("PostToolUse", "Bash", ""));
-            // Which hooks and tools count is the plugin's matcher; an outcome
-            // that is neither of the two is nothing.
-            let fired = hook("PostToolUse", "Bash", "npm test");
-            assert_eq!(record_fact(ws, "claude-code", "", &fired).unwrap(), None);
+            assert_eq!(fact(ws, "succeeded", "ringframe eval open"), None);
+            assert_eq!(fact(ws, "succeeded", "  ringframe ask list --json"), None);
+            assert_eq!(fact(ws, "succeeded", ""), None);
+            // An outcome that is neither of the two is nothing.
+            assert_eq!(fact(ws, "", "npm test"), None);
             assert!(store::events(ws).unwrap().iter().all(|e| e["type"] != "tool.fact"));
         });
     }

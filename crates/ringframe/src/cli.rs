@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::ask::{AskError, NeedsInput};
 use crate::seal::SealError;
 use crate::workspace::Workspace;
-use crate::{VERSION, ask, deltas, evaluate, output, profiles, seal, sessions, store, workspace};
+use crate::{VERSION, ask, deltas, evaluate, output, profiles, seal, store, workspace};
 
 /// What one invocation produced. The tests drive this directly, so nothing
 /// here touches the real streams.
@@ -84,13 +84,9 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         }
         ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
         ("ask", Some("copy")) => s(&["--ask"], &["--body"], &["--ask"], false, NONE),
-        ("ask", Some("delivery")) => s(
-            &["--ask", "--state", "--reason", "--host"],
-            &["--from-hook", "--handoff"],
-            NONE,
-            false,
-            NONE,
-        ),
+        ("ask", Some("delivery")) => {
+            s(&["--ask", "--state", "--reason"], &["--handoff"], &["--ask"], false, NONE)
+        }
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => s(
@@ -160,22 +156,27 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             true,
             NONE,
         ),
-        ("sessions", Some("capture")) => {
-            s(&["--host", "--host-version"], NONE, &["--host"], false, NONE)
-        }
-        ("sessions", Some("turn")) => {
-            s(&["--host", "--event"], &["--from-hook"], &["--host", "--event"], false, NONE)
-        }
-        ("fact", None) => {
-            s(&["--host", "--outcome"], &["--from-hook"], &["--host", "--outcome"], false, NONE)
-        }
+        ("observe", Some("prompt")) => s(
+            &["--by", "--host", "--session", "--host-version"],
+            NONE,
+            &["--by", "--host", "--session"],
+            false,
+            NONE,
+        ),
+        ("observe", Some("tool")) => s(
+            &["--by", "--host", "--session", "--tool", "--outcome", "--command"],
+            NONE,
+            &["--by", "--host", "--session", "--tool", "--outcome"],
+            false,
+            NONE,
+        ),
         _ => None,
     }
 }
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 35] = [
+const SURFACE: [(&str, Option<&str>); 34] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -206,9 +207,8 @@ const SURFACE: [(&str, Option<&str>); 35] = [
     ("ledger", Some("verify")),
     ("deltas", Some("domains")),
     ("deltas", Some("render")),
-    ("sessions", Some("capture")),
-    ("sessions", Some("turn")),
-    ("fact", None),
+    ("observe", Some("prompt")),
+    ("observe", Some("tool")),
     // Listed last because they are not commands.
     ("--version", None),
     ("--help", None),
@@ -272,17 +272,13 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("ledger", _) => "re-check every event and every published artifact",
         ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
         ("deltas", Some("render")) => "the directives that apply to one classification",
-        ("sessions", Some("capture")) => {
-            "store a hook's prompt payload; reads the payload on stdin"
+        ("observe", Some("prompt")) => {
+            "a prompt --by someone saw submitted in --session; reads its bytes on stdin and \
+             keeps them only for a RingFrame invocation"
         }
-        ("sessions", Some("turn")) => {
-            "--from-hook: record the agent's state, --event ready, working, waiting or \
-             turn_ended; reads a hook payload on stdin and keeps only its session"
-        }
-        ("fact", None) => {
-            "--from-hook --outcome succeeded|failed: record the agent's shell command and \
-             whether it succeeded, against the subject; reads a post-tool hook payload on \
-             stdin and never its output"
+        ("observe", Some("tool")) => {
+            "a tool --by someone saw run in --session, --outcome succeeded|failed; the \
+             profile's [observe] says what it means: a delivery, a tool fact, or nothing"
         }
         ("--version", None) => "print the version",
         ("--help", None) => "print this",
@@ -345,22 +341,11 @@ fn command_help(cmd: &str, sub: Option<&str>, spec: &Spec) -> String {
 
 /// Which commands take a subcommand at all.
 fn takes_sub(cmd: &str) -> bool {
-    matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "sessions")
+    matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "observe")
 }
 
-const COMMANDS: [&str; 11] = [
-    "init",
-    "sync",
-    "profile",
-    "ask",
-    "eval",
-    "seal",
-    "ledger",
-    "deltas",
-    "sessions",
-    "fact",
-    "--version",
-];
+const COMMANDS: [&str; 10] =
+    ["init", "sync", "profile", "ask", "eval", "seal", "ledger", "deltas", "observe", "--version"];
 
 struct Parsed {
     cmd: String,
@@ -506,6 +491,7 @@ fn parse(argv: &[String]) -> Result<Parsed, Usage> {
         ("--disposition", &seal::DISPOSITIONS[..]),
         ("--subject-kind", &evaluate::KINDS[..]),
         ("--state", &["delivery_failed", "unavailable"][..]),
+        ("--outcome", &["succeeded", "failed"][..]),
     ] {
         if let Some(v) = out.one(flag)
             && !allowed.contains(&v)
@@ -553,57 +539,11 @@ fn links_of(items: &[String]) -> Vec<Value> {
         .collect()
 }
 
-/// A hook payload names the project it fired in; without an explicit
-/// `--workspace` that is the workspace, not wherever the hook process happens
-/// to be.
-/// A hook's payload, from stdin, and the workspace it names: how every
-/// `--from-hook` command starts. What is wrong is said with the workspace
-/// to say it in.
-fn hook_input(
-    ns: &Parsed,
-    ws: Workspace,
-    read_stdin: &mut dyn FnMut() -> String,
-) -> Result<(Workspace, Value), (Workspace, String)> {
-    let payload: Value = match serde_json::from_str(&read_stdin()) {
-        Ok(v) => v,
-        Err(e) => return Err((ws, e.to_string())),
-    };
-    let host = ns.one("--host").unwrap_or_default();
-    match hook_workspace(ns.workspace.as_ref(), ws, host, &payload) {
-        Ok(ws) => Ok((ws, payload)),
-        Err(e) => Err((workspace::resolve(None, None).expect("cwd"), e)),
-    }
-}
-
-/// What a hook answers in a repository with no workspace: nothing recorded,
-/// and why. A hook never creates the workspace; `ringframe init` does.
+/// What `observe` answers in a repository with no workspace: nothing
+/// recorded, and why. It never creates the workspace; `ringframe init` does.
 fn not_initialized(ws: Workspace, key: &str) -> (Workspace, Outcome) {
     let out = json!({key: false, "reason": workspace::uninitialized(&ws)});
     (ws, Outcome::Ok(0, out))
-}
-
-fn hook_workspace(
-    explicit: Option<&PathBuf>,
-    ws: Workspace,
-    host: &str,
-    payload: &Value,
-) -> Result<Workspace, String> {
-    // Where the payload names its workspace is the host's profile's to say:
-    // `cwd` unless it says otherwise, and the first of a list.
-    let field = profiles::fact(host, "workspace_field").unwrap_or_else(|| "cwd".into());
-    let named = match &payload[field.as_str()] {
-        Value::Array(all) => all.first().and_then(Value::as_str),
-        other => other.as_str(),
-    };
-    let cwd = named.unwrap_or_default();
-    if explicit.is_none() && !cwd.is_empty() {
-        let path = Path::new(cwd);
-        if !path.is_absolute() || !path.is_dir() {
-            return Err("hook cwd must be an existing absolute directory".into());
-        }
-        return workspace::resolve(Some(path), None).map_err(|e| e.to_string());
-    }
-    Ok(ws)
 }
 
 /// Every outcome a command can end in, before it is rendered.
@@ -813,7 +753,7 @@ fn dispatch(
             out["plans"] = json!(workspace::plans(&ws));
             (ws, Outcome::Ok(0, out))
         }
-        ("ask", Some(what)) => ask_command(ns, ws, actor, what, read_stdin),
+        ("ask", Some(what)) => ask_command(ns, ws, actor, what),
         ("deltas", Some(what)) => deltas_command(ns, ws, what),
         ("eval", Some("list")) => match evaluate::list_records(&ws) {
             Ok(evals) => (ws, Outcome::Ok(0, json!({"evals": evals}))),
@@ -1009,100 +949,34 @@ fn dispatch(
             }
             Err(e) => (ws, Outcome::Error(e.code, e.detail)),
         },
-        ("sessions", Some("capture")) => {
-            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
-                Ok(read) => read,
-                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
-            };
-            if !ws.exists() {
-                return not_initialized(ws, "captured");
-            }
-            let host = ns.one("--host").unwrap_or_default();
-            let rec = match sessions::capture(&ws, host, &payload, ns.one("--host-version")) {
-                Ok(r) => r,
-                Err(e) => return (ws, Outcome::Error("sessions.io".into(), e.to_string())),
-            };
-            let mut submission = Value::Null;
-            if let Some(rec) = &rec
-                && rec.get("prompt").is_none()
-            {
-                // A hook must never fail the host turn.
-                let session = rec["session_id"].as_str().unwrap_or_default();
-                let sha = rec["sha256"].as_str().unwrap_or_default();
-                // Which hook saw it is the payload's to say; the CLI names none.
-                let hook = payload.get("hook_event_name").and_then(Value::as_str);
-                let observed_by = hook.map_or("hook".to_string(), |h| format!("hook:{h}"));
-                if let Ok(Some(s)) =
-                    ask::submission_from_capture(&ws, host, session, sha, &observed_by)
-                {
-                    submission = s;
-                }
-            }
-            let mut out = json!({"captured": rec.is_some()});
-            for (k, v) in rec.iter().flat_map(|r| r.as_object().into_iter().flatten()) {
-                out[k] = v.clone();
-            }
-            out["submission"] = submission;
-            (ws, Outcome::Ok(0, out))
-        }
-        ("sessions", Some("turn")) => {
-            if !ns.has("--from-hook") {
-                bail!(Outcome::UsageDetail(
-                    "a turn is only recorded from a hook: --from-hook".into()
-                ));
-            }
-            let event = ns.one("--event").unwrap_or_default();
-            if !sessions::TURN_EVENTS.contains(&event) {
-                bail!(Outcome::UsageDetail(format!(
-                    "--event is one of {}",
-                    sessions::TURN_EVENTS.join(", ")
-                )));
-            }
-            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
-                Ok(read) => read,
-                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
-            };
+        ("observe", Some(what)) => {
             if !ws.exists() {
                 return not_initialized(ws, "recorded");
             }
-            let host = ns.one("--host").unwrap_or_default();
-            match sessions::turn(&ws, host, &payload, event) {
-                Ok(rec) => {
-                    let mut out = json!({"recorded": rec.is_some()});
-                    for (k, v) in rec.iter().flat_map(|r| r.as_object().into_iter().flatten()) {
-                        out[k] = v.clone();
-                    }
-                    (ws, Outcome::Ok(0, out))
-                }
-                Err(e) => (ws, Outcome::Error("sessions.io".into(), e.to_string())),
-            }
-        }
-        ("fact", None) => {
-            if !ns.has("--from-hook") {
-                bail!(Outcome::UsageDetail(
-                    "a fact is only recorded from a hook: --from-hook".into()
-                ));
-            }
-            let (ws, payload) = match hook_input(ns, ws, read_stdin) {
-                Ok(read) => read,
-                Err((ws, e)) => return (ws, Outcome::UsageDetail(e)),
+            let one = |flag| ns.one(flag).unwrap_or_default();
+            let (by, host, session) = (one("--by"), one("--host"), one("--session"));
+            let out = if what == "prompt" {
+                crate::observe::prompt(
+                    &ws,
+                    by,
+                    host,
+                    session,
+                    &read_stdin(),
+                    ns.one("--host-version"),
+                )
+            } else {
+                crate::observe::tool(
+                    &ws,
+                    by,
+                    host,
+                    session,
+                    one("--tool"),
+                    one("--outcome"),
+                    ns.one("--command"),
+                )
             };
-            if !ws.exists() {
-                return not_initialized(ws, "recorded");
-            }
-            let host = ns.one("--host").unwrap_or_default();
-            match evaluate::record_fact(
-                &ws,
-                host,
-                ns.one("--outcome").unwrap_or_default(),
-                &payload,
-            ) {
-                Ok(Some(ev)) => {
-                    let out = json!({"recorded": true, "fact_id": ev["id"],
-                                     "outcome": ev["data"]["outcome"]});
-                    (ws, Outcome::Ok(0, out))
-                }
-                Ok(None) => (ws, Outcome::Ok(0, json!({"recorded": false}))),
+            match out {
+                Ok(v) => (ws, Outcome::Ok(0, v)),
                 Err(e) => (ws, from_ask_error(e)),
             }
         }
@@ -1110,13 +984,7 @@ fn dispatch(
     }
 }
 
-fn ask_command(
-    ns: &Parsed,
-    ws: Workspace,
-    actor: Value,
-    what: &str,
-    read_stdin: &mut dyn FnMut() -> String,
-) -> (Workspace, Outcome) {
+fn ask_command(ns: &Parsed, ws: Workspace, actor: Value, what: &str) -> (Workspace, Outcome) {
     macro_rules! done {
         ($e:expr) => {
             match $e {
@@ -1187,33 +1055,6 @@ fn ask_command(
             }
         }
         "delivery" => {
-            if ns.has("--from-hook") {
-                // A hook must never fail the host turn.
-                let unrecorded = |ws, error: String| {
-                    (ws, Outcome::Ok(0, json!({"recorded": false, "error": error})))
-                };
-                let (ws, payload) = match hook_input(ns, ws, read_stdin) {
-                    Ok(read) => read,
-                    Err((ws, e)) => return unrecorded(ws, e),
-                };
-                if !ws.exists() {
-                    return not_initialized(ws, "recorded");
-                }
-                let host = ns.one("--host").unwrap_or_default();
-                return match ask::delivery_from_hook(&ws, host, &payload) {
-                    Ok(rec) => {
-                        let mut out = json!({"recorded": rec.is_some()});
-                        for (k, v) in rec.iter().flat_map(|r| r.as_object().into_iter().flatten()) {
-                            out[k] = v.clone();
-                        }
-                        (ws, Outcome::Ok(0, out))
-                    }
-                    Err(e) => unrecorded(ws, e.to_string()),
-                };
-            }
-            if id.is_empty() {
-                return (ws, Outcome::UsageDetail("--ask is required unless --from-hook".into()));
-            }
             if ns.has("--handoff") {
                 return match ask::delivery_handoff(&ws, &id) {
                     Ok((text, _)) => (ws, Outcome::Text(text)),
@@ -1413,58 +1254,61 @@ mod tests {
         });
     }
 
+    /// RingFrame's CLI reads no hook (ADR-0022): the commands that read a
+    /// payload are gone, and `observe` names who saw what it records.
     #[test]
-    fn a_turn_from_a_hook_is_written_and_read_back() {
+    fn no_command_reads_a_hook_payload_and_observe_names_its_observer() {
         cli(|c| {
-            let payload = format!(
-                r#"{{"hook_event_name":"SessionStart","session_id":"s1","source":"startup","cwd":"{}"}}"#,
-                c.root.display()
-            );
-            let turn = |event: &str| {
-                let args = ["sessions", "turn", "--from-hook", "--host", "claude-code", "--event"];
-                let mut args: Vec<&str> = args.to_vec();
-                args.push(event);
-                c.piped(&args, &payload)
-            };
-            let (code, out, _) = turn("ready");
-            assert_eq!(code, 0);
-            assert_eq!(out["recorded"], true);
-            assert_eq!(out["event"], "ready");
-            assert_eq!(out["session_id"], "s1");
-            let (code, _, _) = turn("turn_ended");
-            assert_eq!(code, 0);
-            let text = std::fs::read_to_string(
-                c.root.join(".fab7/rf/sessions/claude-code/s1/turns.jsonl"),
-            )
-            .unwrap();
-            let events: Vec<String> = text
-                .lines()
-                .map(|l| serde_json::from_str::<Value>(l).unwrap()["event"].to_string())
-                .collect();
-            assert_eq!(events, ["\"ready\"", "\"turn_ended\""]);
-
-            // Only the four events, and only from a hook.
-            let (code, _, _) = turn("done");
-            assert_eq!(code, 1, "an event that is not one of the four is a usage error");
-            let (code, _, _) = c.piped(
-                &["sessions", "turn", "--host", "claude-code", "--event", "ready"],
-                &payload,
-            );
-            assert_eq!(code, 1, "a turn is only recorded from a hook");
+            for gone in [
+                &["sessions", "capture", "--host", "claude-code"][..],
+                &["sessions", "turn", "--from-hook", "--host", "claude-code", "--event", "ready"],
+                &["fact", "--from-hook", "--host", "claude-code", "--outcome", "succeeded"],
+                &["ask", "delivery", "--from-hook", "--host", "claude-code"],
+            ] {
+                let (code, _, _) = c.piped(gone, r#"{"session_id":"s1","prompt":"x"}"#);
+                assert_eq!(code, 1, "{gone:?} is gone");
+            }
+            for (cmd, sub) in SURFACE {
+                if let Some(spec) = spec(cmd, sub) {
+                    assert!(!spec.bools.contains(&"--from-hook"), "{cmd} {sub:?}");
+                }
+            }
+            let (code, _, err) = c
+                .piped(&["observe", "prompt", "--host", "claude-code", "--session", "s1"], "hello");
+            assert_eq!(code, 1, "--by is required");
+            assert!(err.contains("--by"), "{err}");
+            let tool = ["observe", "tool", "--by", "weft", "--host", "claude-code"];
+            let mut bad = tool.to_vec();
+            bad.extend(["--session", "s1", "--tool", "Bash", "--outcome", "maybe"]);
+            assert_eq!(c.go(&bad).0, 1, "an outcome is succeeded or failed");
         });
+    }
+
+    /// `observe` never creates a workspace: in a repository with none it says
+    /// so, records nothing, and exits 0.
+    #[test]
+    fn observe_in_a_repository_with_no_record_records_nothing() {
+        let repo = crate::testing::repo();
+        let c = Cli { root: repo.path().to_path_buf() };
+        let (code, out, _) = c.piped(
+            &["observe", "prompt", "--by", "weft", "--host", "claude-code", "--session", "s1"],
+            "/rf:ask fix login",
+        );
+        assert_eq!(code, 0);
+        assert_eq!(out["recorded"], false);
+        assert!(out["reason"].is_string(), "{out}");
+        assert!(!repo.path().join(".fab7").exists());
     }
 
     #[test]
     fn ask_confirm_show_delivery_flow() {
         cli(|c| {
-            let payload = format!(
-                r#"{{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"/rf:ask fix login","cwd":"{}"}}"#,
-                c.root.display()
-            );
-            let (code, out, _) =
-                c.piped(&["sessions", "capture", "--host", "claude-code"], &payload);
+            let observe = ["observe", "prompt", "--by", "weft", "--host", "claude-code"];
+            let mut args = observe.to_vec();
+            args.extend(["--session", "s1"]);
+            let (code, out, _) = c.piped(&args, "/rf:ask fix login");
             assert_eq!(code, 0);
-            assert_eq!(out["captured"], true);
+            assert_eq!(out["recorded"], true);
 
             let out = c.confirm("stage-1", "Login", "s1", "native_plan");
             let keys: BTreeMap<String, Value> =
@@ -1476,15 +1320,27 @@ mod tests {
             assert_eq!(out["source_verified"], "exact");
             let ask_id = out["ask_id"].as_str().unwrap().to_string();
 
-            let hook = r#"{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"EnterPlanMode","tool_use_id":"t1","tool_response":{"ok":1}}"#;
-            let (code, out, _) =
-                c.piped(&["ask", "delivery", "--from-hook", "--host", "claude-code"], hook);
+            let delivered = [
+                "observe",
+                "tool",
+                "--by",
+                "weft",
+                "--host",
+                "claude-code",
+                "--session",
+                "s1",
+                "--tool",
+                "EnterPlanMode",
+                "--outcome",
+                "succeeded",
+            ];
+            let (code, out, _) = c.go(&delivered);
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], true);
+            assert_eq!(out["kind"], "delivery");
             assert_eq!(out["state"], "native_accepted");
-            // Never fails the host turn.
-            let (code, out, _) =
-                c.piped(&["ask", "delivery", "--from-hook", "--host", "claude-code"], hook);
+            // Delivered once; a second sighting records nothing and still exits 0.
+            let (code, out, _) = c.go(&delivered);
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], false);
 
@@ -1675,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_of_a_pasted_prompt_records_an_observed_submission() {
+    fn an_observed_pasted_prompt_records_an_observed_submission() {
         cli(|c| {
             let staged = c.staged("stage-1");
             let (code, out, _) = c.go(&[
@@ -1696,13 +1552,12 @@ mod tests {
             ]);
             assert_eq!(code, 0);
             let id = out["ask_id"].as_str().unwrap().to_string();
-            let payload = format!(
-                r#"{{"hook_event_name":"UserPromptSubmit","session_id":"c9","prompt":"Fix login.\n","cwd":"{}"}}"#,
-                c.root.display()
+            let (code, cap, _) = c.piped(
+                &["observe", "prompt", "--by", "weft", "--host", "codex", "--session", "c9"],
+                "Fix login.\n",
             );
-            let (code, cap, _) = c.piped(&["sessions", "capture", "--host", "codex"], &payload);
             assert_eq!(code, 0);
-            assert_eq!(cap["captured"], true);
+            assert_eq!(cap["recorded"], true);
             assert_eq!(cap["submission"]["ask_id"], id);
             assert_eq!(cap["submission"]["state"], "observed");
             let (_, listed, _) = c.go(&["ask", "list", "--json"]);
@@ -1712,26 +1567,33 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_records_a_shell_command_as_a_fact() {
+    fn an_observed_shell_command_is_a_fact() {
         eval_bench(|ws| {
             let c = Cli { root: ws.root.clone() };
             two_asks_and_work(ws);
-            let payload = format!(
-                r#"{{"hook_event_name":"PostToolUse","session_id":"s9","tool_name":"Bash","tool_input":{{"command":"npm test"}},"tool_response":{{"stdout":"ok"}},"tool_use_id":"t1","cwd":"{}"}}"#,
-                c.root.display()
-            );
-            let (code, out, _) = c.piped(
-                &["fact", "--from-hook", "--host", "claude-code", "--outcome", "succeeded"],
-                &payload,
-            );
+            let fact = |command: &str| {
+                c.go(&[
+                    "observe",
+                    "tool",
+                    "--by",
+                    "weft",
+                    "--host",
+                    "claude-code",
+                    "--session",
+                    "s9",
+                    "--tool",
+                    "Bash",
+                    "--outcome",
+                    "succeeded",
+                    "--command",
+                    command,
+                ])
+            };
+            let (code, out, _) = fact("npm test");
             assert_eq!(code, 0, "{out}");
             assert_eq!(out["recorded"], true);
             assert_eq!(out["outcome"], "succeeded");
-            let skipped = payload.replace("npm test", "ringframe ask list");
-            let (code, out, _) = c.piped(
-                &["fact", "--from-hook", "--host", "claude-code", "--outcome", "succeeded"],
-                &skipped,
-            );
+            let (code, out, _) = fact("ringframe ask list");
             assert_eq!(code, 0);
             assert_eq!(out["recorded"], false);
         });
@@ -2146,60 +2008,6 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_in_a_subdirectory_writes_into_the_workspace_above_and_makes_none() {
-        for host_name in ["codex", "claude-code"] {
-            eval_bench(|ws| {
-                let project = ws.root.join("test");
-                std::fs::create_dir_all(&project).unwrap();
-                let payload = format!(
-                    r#"{{"cwd":"{}","session_id":"nested","prompt":"/rf:ask fix login"}}"#,
-                    project.display()
-                );
-                let mut read = || payload.clone();
-                let run = super::run(
-                    &["sessions".into(), "capture".into(), "--host".into(), host_name.into()],
-                    &mut read,
-                );
-                assert_eq!(run.code, 0, "{}", run.err);
-                let prompts = format!("sessions/{host_name}/nested/prompts.jsonl");
-                assert!(ws.rf_dir().join(prompts).exists());
-                assert!(!project.join(".fab7").exists(), "a hook made a workspace of its own");
-            });
-        }
-    }
-
-    #[test]
-    fn a_hook_with_no_workspace_records_nothing_and_makes_none() {
-        with_config_home(|_| {
-            let repo = crate::testing::repo();
-            let root = repo.path();
-            let payload = format!(
-                r#"{{"cwd":"{}","session_id":"s1","prompt":"/rf:ask fix login"}}"#,
-                root.display()
-            );
-            for argv in [
-                vec!["sessions", "capture", "--host", "claude-code"],
-                vec![
-                    "sessions",
-                    "turn",
-                    "--from-hook",
-                    "--host",
-                    "claude-code",
-                    "--event",
-                    "ready",
-                ],
-            ] {
-                let mut read = || payload.clone();
-                let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
-                let run = super::run(&argv, &mut read);
-                assert_eq!(run.code, 0, "a hook never fails the turn: {}", run.err);
-                assert!(run.out.contains("false"), "nothing is recorded: {}", run.out);
-            }
-            assert!(!root.join(".fab7").exists(), "only `ringframe init` makes a workspace");
-        });
-    }
-
-    #[test]
     fn init_makes_the_private_workspace_and_an_ask_needs_it() {
         with_config_home(|_| {
             let repo = crate::testing::repo();
@@ -2409,7 +2217,7 @@ mod tests {
     /// started, resumed and set up is not RingFrame's.
     #[test]
     fn a_profile_carries_the_harness_and_unknown_carries_none() {
-        const FACTS: [&str; 3] = ["title", "session_field", "invocation_prefix"];
+        const FACTS: [&str; 2] = ["title", "invocation_prefix"];
         cli(|c| {
             for host in ["claude-code", "codex"] {
                 let (code, out, _) = c.go(&["profile", "show", "--host", host, "--json"]);
@@ -2420,19 +2228,28 @@ mod tests {
                 for k in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
                     assert!(out[k].is_null(), "{host} carries {k}");
                 }
+                // No payload field: RingFrame reads no hook (ADR-0022).
+                for k in ["session_field", "workspace_field"] {
+                    assert!(out[k].is_null(), "{host} carries {k}");
+                }
             }
+            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--json"]);
+            assert_eq!(
+                out["observe"],
+                json!({"delivery_tool": "EnterPlanMode", "shell_tool": "Bash"})
+            );
+            let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--json"]);
+            assert!(out["observe"].is_null(), "codex names no tool");
             let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
-            for k in &FACTS[..2] {
-                assert!(out[k].is_null(), "unknown carries {k}");
-            }
+            assert!(out["title"].is_null(), "unknown carries a title");
             let (code, _, _) = c.go(&["profile", "list", "--json"]);
             assert_ne!(code, 0, "no command lists harnesses for another program");
         });
     }
 
     /// harness-profile.md §5.3, the CLI's half: a made-up third harness is
-    /// read from its profile alone, its session field, its prefix and its
-    /// title, with no change to the program.
+    /// read from its profile alone, its prefix and its title, with no change
+    /// to the program.
     #[test]
     fn a_made_up_third_harness_is_read_from_its_profile_alone() {
         cli(|c| {
@@ -2444,8 +2261,6 @@ surface = "native-tui"
 invocation_prefix = "@rf:"
 fallback = "human_handoff"
 title = "Zed Agent"
-session_field = "threadId"
-workspace_field = "workspaceRoots"
 
 [routing]
 precedence = ["native_direct"]
@@ -2466,25 +2281,15 @@ limitations = []
 "#;
             std::fs::write(home.join(".fab7/rf/config/harnesses/zed-agent.toml"), zed).unwrap();
 
-            let payload = format!(r#"{{"threadId":"z1","cwd":"{}"}}"#, c.root.display());
-            let turn =
-                ["sessions", "turn", "--from-hook", "--host", "zed-agent", "--event", "ready"];
-            let (code, out, _) = c.piped(&turn, &payload);
-            assert_eq!(
-                (code, &out["recorded"], &out["session_id"]),
-                (0, &json!(true), &json!("z1"))
-            );
-            let asked = format!(
-                r#"{{"threadId":"z1","prompt":"@rf:ask fix it","cwd":"{}"}}"#,
-                c.root.display()
-            );
-            let (_, out, _) = c.piped(&["sessions", "capture", "--host", "zed-agent"], &asked);
-            assert_eq!(out["captured"], true);
-            let other = format!(
-                r#"{{"threadId":"z1","prompt":"/rf:ask fix it","cwd":"{}"}}"#,
-                c.root.display()
-            );
-            c.piped(&["sessions", "capture", "--host", "zed-agent"], &other);
+            let observe = |prompt: &str| {
+                let argv = ["observe", "prompt", "--by", "weft", "--host", "zed-agent"];
+                let mut argv = argv.to_vec();
+                argv.extend(["--session", "z1"]);
+                c.piped(&argv, prompt)
+            };
+            let (_, out, _) = observe("@rf:ask fix it");
+            assert_eq!(out["recorded"], true);
+            observe("/rf:ask fix it");
             let kept = std::fs::read_to_string(
                 c.root.join(".fab7/rf/sessions/zed-agent/z1/prompts.jsonl"),
             )
@@ -2493,22 +2298,6 @@ limitations = []
                 kept.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
             assert_eq!(stored[0]["prompt"], "@rf:ask fix it", "its own prefix is its invocation");
             assert!(stored[1]["prompt"].is_null(), "another harness's prefix is only a prompt");
-            // A session field the profile does not name is not a session.
-            let wrong = format!(r#"{{"session_id":"z2","cwd":"{}"}}"#, c.root.display());
-            let (_, out, _) = c.piped(&turn, &wrong);
-            assert_eq!(out["recorded"], false);
-            // And its workspace is where its profile's field says, the first
-            // of a list, as a hook run from anywhere reports it.
-            let argv: Vec<String> = turn.iter().map(|a| a.to_string()).collect();
-            let rooted =
-                format!(r#"{{"threadId":"z3","workspaceRoots":["{}"]}}"#, c.root.display());
-            let run = super::run(&argv, &mut || rooted.clone());
-            assert_eq!(run.code, 0, "{} {}", run.out, run.err);
-            assert!(
-                c.root.join(".fab7/rf/sessions/zed-agent/z3/turns.jsonl").is_file(),
-                "{}",
-                run.out
-            );
         });
     }
 
@@ -2529,7 +2318,6 @@ limitations = []
                 "continuation",
                 "limitations",
                 "requires_explicit_request_for_effects",
-                "receipt",
                 "prompt_prefix",
                 "prompt_prefix_kind",
                 "prompt_prefix_active",
@@ -2802,7 +2590,7 @@ mod the_marketplace_contract {
     /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
     /// Taken from `fab7/products/ringframe/`, and checked against it below
     /// when that tree happens to be beside this one.
-    const CALLED: [(&str, Option<&str>); 22] = [
+    const CALLED: [(&str, Option<&str>); 20] = [
         ("init", None),
         ("profile", Some("show")),
         ("deltas", Some("domains")),
@@ -2823,8 +2611,6 @@ mod the_marketplace_contract {
         ("eval", Some("show")),
         ("seal", Some("create")),
         ("seal", Some("check")),
-        ("sessions", Some("capture")),
-        ("sessions", Some("turn")),
     ];
 
     #[test]

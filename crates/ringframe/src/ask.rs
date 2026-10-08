@@ -11,7 +11,7 @@ use crate::workspace::Workspace;
 use crate::{config, deltas, digest, ids, profiles, schema, sessions, store, workspace};
 
 /// How far back a `PostToolUse` hook may reach for the Ask it belongs to.
-const HOOK_WINDOW_MS: i64 = 30 * 60 * 1000;
+const DELIVERY_WINDOW_MS: i64 = 30 * 60 * 1000;
 
 /// The root is named because a handoff is submitted by hand, and nothing
 /// stops it being submitted somewhere else. The prompt's paths are relative
@@ -1153,33 +1153,25 @@ fn append_delivery(
     Ok(out)
 }
 
-/// The receipt the Ask's capability declares it is captured by.
-fn captured_by(compiled: &Value) -> Value {
-    let d = &compiled["data"];
-    profiles::for_host(&d["host"])
-        .ok()
-        .and_then(|p| profiles::capability(&p, &str_of(d, "selected_capability")).cloned())
-        .and_then(|cap| cap.get("receipt")?.get("captured_by").cloned())
-        .unwrap_or(Value::Null)
-}
-
-/// Record `native_accepted` (or `delivery_failed`) from a post-tool
-/// payload; never raise.
+/// Record `native_accepted` (or `delivery_failed`) when the host's delivery
+/// tool was seen to run in a session (`ringframe observe tool`); never raise.
 ///
-/// The plugin runs this from the hook its capability's receipt names; the CLI
-/// names no hook, and the session is read from the field the host's profile
-/// names.
-pub fn delivery_from_hook(
+/// The Ask it delivers is the one confirmed in that session, routed to
+/// native dispatch through this tool, not delivered yet, and compiled within
+/// the window. Anything else records nothing, and says why beside the
+/// session's prompts. The receipt names who saw the tool run (`by`).
+pub fn delivery_observed(
     ws: &Workspace,
     host: &str,
-    payload: &Value,
+    session: &str,
+    tool: &str,
+    failed: bool,
+    by: &str,
 ) -> Result<Option<Value>, AskError> {
-    let session = profiles::session_of(&profiles::of(host).unwrap_or_default(), payload);
     if session.is_empty() {
         return Ok(None);
     }
-    let tool = str_of(payload, "tool_name");
-    let cutoff = sessions::now_millis() - HOOK_WINDOW_MS;
+    let cutoff = sessions::now_millis() - DELIVERY_WINDOW_MS;
     let mut candidates: Vec<(String, Value)> = Vec::new();
     for (ask_id, rec) in by_id(ws)? {
         let Some(c) = rec.compiled.clone() else { continue };
@@ -1208,7 +1200,7 @@ pub fn delivery_from_hook(
         let _ = sessions::log(
             ws,
             host,
-            &session,
+            session,
             "delivery-skipped.jsonl",
             &json!({
                 "reason": if candidates.is_empty() { "no_candidate" } else { "ambiguous" },
@@ -1219,27 +1211,7 @@ pub fn delivery_from_hook(
         return Ok(None);
     }
     let (ask_id, compiled) = candidates.remove(0);
-    let response = payload.get("tool_response").cloned().unwrap_or(Value::Null);
-    let error = response.get("error").filter(|v| !v.is_null()).cloned();
-    let failed =
-        response.is_object() && (error.is_some() || response.get("is_error") == Some(&json!(true)));
-    let receipt = json!({
-        "tool": tool, "tool_use_id": payload.get("tool_use_id").cloned().unwrap_or(Value::Null),
-        "session_id": session, "response_sha256": digest::sha256_bytes(&store::canonical(&response)),
-        "captured_by": captured_by(&compiled),
-    });
-    let limitations = if failed {
-        vec![format!(
-            "tool error: {}",
-            error
-                .as_ref()
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .unwrap_or_else(|| { error.map_or("None".to_string(), |e| e.to_string()) })
-        )]
-    } else {
-        Vec::new()
-    };
+    let receipt = json!({"tool": tool, "session_id": session, "captured_by": by});
     Ok(Some(append_delivery(
         ws,
         &ask_id,
@@ -1249,7 +1221,7 @@ pub fn delivery_from_hook(
             mechanism: json!("capability_activate"),
             state: if failed { "delivery_failed" } else { "native_accepted" },
             receipt,
-            limitations,
+            limitations: Vec::new(),
         },
         None,
     )?))
@@ -1682,9 +1654,7 @@ mod tests {
         prompt: &str,
         version: Option<&str>,
     ) -> Value {
-        sessions::capture(ws, host, &json!({"session_id": session, "prompt": prompt}), version)
-            .unwrap()
-            .unwrap()
+        sessions::observe_prompt(ws, host, session, prompt, version, "weft").unwrap().unwrap()
     }
 
     /// One Ask by id, as `ask list` reports it.
@@ -2308,14 +2278,6 @@ mod tests {
         });
     }
 
-    fn hook(session: &str, error: bool, tool: &str) -> Value {
-        json!({
-            "hook_event_name": "PostToolUse", "session_id": session, "tool_name": tool,
-            "tool_use_id": "toolu_1", "tool_input": {},
-            "tool_response": if error { json!({"error": "denied"}) } else { json!({"ok": true}) }
-        })
-    }
-
     #[test]
     fn confirm_resolves_session_and_version_from_capture() {
         bench(|ws| {
@@ -2342,10 +2304,13 @@ mod tests {
             assert_eq!(host["version"], "2.1.263 (Claude Code)");
             assert_eq!(host["version_source"], "capture");
             assert_eq!(host["profile_id"], "claude-code");
-            let rec = delivery_from_hook(
+            let rec = delivery_observed(
                 ws,
                 "claude-code",
-                &hook("hook-session", false, "EnterPlanMode"),
+                "hook-session",
+                "EnterPlanMode",
+                false,
+                "weft",
             )
             .unwrap()
             .unwrap();
@@ -2514,23 +2479,25 @@ mod tests {
     }
 
     #[test]
-    fn delivery_from_hook_records_native_accepted_once() {
+    fn an_observed_delivery_tool_records_native_accepted_once() {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let rec = delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+            let rec = delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
                 .unwrap()
                 .unwrap();
             assert_eq!(rec["state"], "native_accepted");
             assert_eq!(rec["ask_id"], out["ask_id"]);
             let last = events(ws).pop().unwrap();
             assert_eq!(last["type"], "ask.delivery");
-            assert_eq!(last["data"]["receipt"]["tool_use_id"], "toolu_1");
-            assert_eq!(last["data"]["receipt"]["captured_by"], "hook:PostToolUse");
+            assert_eq!(
+                last["data"]["receipt"],
+                json!({"tool": "EnterPlanMode", "session_id": "s1", "captured_by": "weft"})
+            );
             assert_eq!(last["data"]["qualification"]["id"], "ringframe-ask-plan-q04");
             // Already delivered: skip, and log why.
             assert!(
-                delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+                delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
                     .unwrap()
                     .is_none()
             );
@@ -2544,11 +2511,11 @@ mod tests {
     }
 
     #[test]
-    fn delivery_from_hook_error_records_failed() {
+    fn an_observed_failed_delivery_tool_records_failed() {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let rec = delivery_from_hook(ws, "claude-code", &hook("s1", true, "EnterPlanMode"))
+            let rec = delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", true, "weft")
                 .unwrap()
                 .unwrap();
             assert_eq!(rec["state"], "delivery_failed");
@@ -2556,17 +2523,17 @@ mod tests {
     }
 
     #[test]
-    fn delivery_from_hook_ignores_other_sessions_tools_and_ambiguity() {
+    fn an_observed_delivery_tool_ignores_other_sessions_tools_and_ambiguity() {
         bench(|ws| {
             let out = compiled(ws);
             confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
             assert!(
-                delivery_from_hook(ws, "claude-code", &hook("other", false, "EnterPlanMode"))
+                delivery_observed(ws, "claude-code", "other", "EnterPlanMode", false, "weft")
                     .unwrap()
                     .is_none()
             );
             assert!(
-                delivery_from_hook(ws, "claude-code", &hook("s1", false, "Write"))
+                delivery_observed(ws, "claude-code", "s1", "Write", false, "weft")
                     .unwrap()
                     .is_none()
             );
@@ -2580,7 +2547,7 @@ mod tests {
             )
             .unwrap();
             assert!(
-                delivery_from_hook(ws, "claude-code", &hook("s1", false, "EnterPlanMode"))
+                delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
                     .unwrap()
                     .is_none()
             );

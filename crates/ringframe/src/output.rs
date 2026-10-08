@@ -41,11 +41,9 @@ fn capability(data: &Value) -> Value {
             "prompt_prefix_active",
         ],
     );
-    for (field, keys) in [
-        ("confirmation", ["tool", "requires_feature"]),
-        ("activation", ["mechanism", "tool"]),
-        ("receipt", ["captured_by", "tool"]),
-    ] {
+    for (field, keys) in
+        [("confirmation", ["tool", "requires_feature"]), ("activation", ["mechanism", "tool"])]
+    {
         let source = data.get(field).cloned().unwrap_or_else(|| json!({}));
         let mut value = Map::new();
         for k in keys {
@@ -106,8 +104,9 @@ fn seal_view(data: &Value) -> Value {
     out
 }
 
-fn capture(data: &Value) -> Value {
-    let mut result = pick(data, &["captured"]);
+fn observed(data: &Value) -> Value {
+    let mut result =
+        pick(data, &["recorded", "reason", "kind", "ask_id", "state", "fact_id", "outcome"]);
     match data.get("submission") {
         Some(s) if !s.is_null() => {
             result["submission"] = pick(s, &["ask_id", "state"]);
@@ -165,7 +164,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("ask", Some("submitted")) => pick(d, &["ask_id", "state", "as_modified"]),
         ("ask", Some("delivery")) => {
             if d.is_object() {
-                pick(d, &["ask_id", "mode", "state", "recorded", "error"])
+                pick(d, &["ask_id", "mode", "state"])
             } else {
                 d.clone()
             }
@@ -180,9 +179,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("eval", Some("submit")) => pick(d, &["task_id", "state", "attempt", "errors", "left"]),
         ("eval", Some("void")) => pick(d, &["eval_id", "state", "reason"]),
         ("seal", Some("create")) => seal_view(d),
-        ("sessions", Some("capture")) => capture(d),
-        ("fact", None) => pick(d, &["recorded", "fact_id", "outcome"]),
-        ("sessions", Some("turn")) => pick(d, &["recorded", "event", "session_id"]),
+        ("observe", _) => observed(d),
         ("sessions", Some("prune")) => pick(d, &["removed"]),
         ("export", None) => pick(d, &["ask_id", "out", "files"]),
         _ => return None,
