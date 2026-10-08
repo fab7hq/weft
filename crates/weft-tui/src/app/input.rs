@@ -370,8 +370,13 @@ impl App {
                     self.quit = true;
                 }
                 1 => {
+                    // The agents of the projects in this window, not the
+                    // daemon: another window's agents keep running.
                     self.stop_agents_on_quit = true;
-                    sess!(self).shutdown();
+                    for open in &mut self.projects {
+                        open.session.stop_agents();
+                        open.session.detach();
+                    }
                     self.quit = true;
                 }
                 _ => self.modal = None,

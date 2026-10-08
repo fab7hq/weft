@@ -319,6 +319,42 @@ fn a_project_closes_when_its_last_client_leaves_and_no_agent_runs() {
 }
 
 #[test]
+fn a_window_that_stops_its_agents_stops_only_its_own() {
+    let root = std::env::temp_dir().join(format!("weft-stops-own-{}", std::process::id()));
+    let (mine, theirs) = (root.join("mine"), root.join("theirs"));
+    for p in [&mine, &theirs] {
+        std::fs::create_dir_all(p).expect("project");
+    }
+    let socket = protocol::private_socket("weft-detach");
+    let listening = socket.clone();
+    let config = root.join("config.toml");
+    std::thread::spawn(move || {
+        let _ = server::Session::serve(&listening, &config);
+    });
+    let mut a = Client::attach(&socket, &mine);
+    a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    let mut b = Client::attach(&socket, &theirs);
+    b.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Quit and stop the agents, as the TUI does: its own panes, then leave.
+    a.send(Call::CloseAgent { pane: 0 });
+    a.send(Call::Detach);
+    drop(a);
+    std::thread::sleep(Duration::from_millis(400));
+
+    let mut again = Client::attach(&socket, &theirs);
+    let panes = again.hello();
+    assert_eq!(panes.len(), 1, "the other project's agent is still there");
+    assert!(panes[0].running, "and still running");
+    let listed = std::fs::read_to_string(root.join("projects.json")).unwrap_or_default();
+    assert!(!listed.contains("/mine\""), "the stopped project closed: {listed}");
+    drop(b);
+    again.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn two_clients_see_the_same_session_at_once() {
     let (root, socket) = session("two");
 

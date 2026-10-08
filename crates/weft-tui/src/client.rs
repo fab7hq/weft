@@ -585,6 +585,15 @@ impl Session {
     pub fn shutdown(&mut self) {
         let _ = self.tell(Call::Shutdown);
     }
+
+    /// Stop every agent of this project, and only this project's: the
+    /// daemon, and every other project in it, go on.
+    pub fn stop_agents(&mut self) {
+        let ids: Vec<u32> = self.panes.iter().map(|p| p.id).collect();
+        for pane in ids.into_iter().rev() {
+            let _ = self.tell(Call::CloseAgent { pane });
+        }
+    }
 }
 
 /// Start the daemon, detached from this process so it survives the client that
