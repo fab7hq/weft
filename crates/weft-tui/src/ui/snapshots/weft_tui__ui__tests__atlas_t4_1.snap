@@ -5,17 +5,17 @@ expression: drawn
  ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
                                             │ ▸ 1 claude    2 codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
- ▾ weft                           2 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
-   ▾ claude                                 ││ ❯                                                                       │
-      fix login               ready · ASKED ││                                                                         │
-   ▾ codex                                  ││                                                                         │
-      health endpoint   turn ended · EVALED ││                                                                         │
+ ▾ weft                           1 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
+                                            ││ ❯                                                                       │
+  AGENTS                2 running · 0 ended ││                                                                         │
+  ● claude fix login            ready 11:29 ││                                                                         │
+  ● codex  health endpo…   turn ended 10:52 ││                                                                         │
                                             ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
+  WORK                                      ││                                                                         │
+  ▾ Open · since Eval 1                   1 ││                                                                         │
+    fix login         claude          ASKED ││                                                                         │
+  ▾ Eval 1 · drifted · 0.67 · not sealed  1 ││                                                                         │
+    health endpoint   codex                 ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
@@ -29,8 +29,8 @@ expression: drawn
 
  SEND TO
 
-   ▸ claude
-     codex
+     claude
+   ▸ codex
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  [↑↓] SEND TO   [Enter] ASK   [←] CANCEL
  The agent will ask you which approach to take, in its own pane.

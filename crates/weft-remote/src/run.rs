@@ -26,7 +26,7 @@ use crate::view::View;
 mod protocol;
 
 /// The remote protocol's version.
-pub const VERSION: u64 = 2;
+pub const VERSION: u64 = 3;
 /// How long the person has to answer a device asking to be allowed.
 const ASK_WITHIN: Duration = Duration::from_secs(120);
 
@@ -169,25 +169,31 @@ enum Carries {
 enum Part {
     Source,
     Prompt,
-    Record,
     Seal,
     View,
     /// The hunk of the view's change at this index.
     Hunk(usize),
 }
 
-/// A device's read of a work (remote.md §6b), answered once every part the
-/// daemon was asked for is in. A part that did not come back is said where it
-/// would be, as the TUI says it.
+/// What a read gathers parts for: a work's Details, a Seal's (with the page
+/// of its Asks after `after`), or an Eval's view.
+enum Gather {
+    Work(Box<weft_core::ledger::Unit>),
+    Seal { id: String, after: Option<String> },
+    EvalView,
+}
+
+/// A device's read (remote.md §6c), answered once every part the daemon was
+/// asked for is in. A part that did not come back is said where it would
+/// be, as the TUI says it.
 struct Gathering {
     conn: u64,
     req: Value,
     at: usize,
-    unit: weft_core::ledger::Unit,
+    of: Gather,
     left: usize,
     source: Option<String>,
     prompt: Option<String>,
-    record: Option<weft_core::record::Record>,
     seal: Option<Value>,
     /// The Eval view, for `read eval_view`.
     view: Option<weft_core::eval_view::EvalView>,

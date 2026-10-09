@@ -6,18 +6,18 @@ expression: drawn
                                             │ ▸ 1 claude    2 codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
  ▾ weft                           2 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
-   ▾ claude                                 ││ ● Read(src/login.rs)                                                    │
-      fix login             working · ASKED ││ ● Update(src/login.rs)                                                  │
-      telemetry                      ASKING ││   └  Updated src/login.rs with 12 additions and 3 removals              │
-   ▾ codex                                  ││ ● Running cargo test…                                                   │
-      health endpoint   turn ended · EVALED ││   test login::rejects_expired ... ok                                    │
-      readme fix        turn ended · SEALED ││   test login::refreshes_token ... ok                                    │
-                                            ││                                                                         │
-                                            ││ ✻ Thinking… (esc to interrupt)                                          │
-                                            ││                                                                         │
-                                            ││ ❯                                                                       │
-                                            ││                                                                         │
-                                            ││                                                                         │
+                                            ││ ● Read(src/login.rs)                                                    │
+  AGENTS                2 running · 0 ended ││ ● Update(src/login.rs)                                                  │
+  ● claude fix login          working 11:31 ││   └  Updated src/login.rs with 12 additions and 3 removals              │
+  ● codex  health endpo…   turn ended 10:52 ││ ● Running cargo test…                                                   │
+                                            ││   test login::rejects_expired ... ok                                    │
+  WORK                                      ││   test login::refreshes_token ... ok                                    │
+  ▾ Open · since Eval 1                   2 ││                                                                         │
+    telemetry         claude         ASKING ││ ✻ Thinking… (esc to interrupt)                                          │
+    fix login         claude          ASKED ││                                                                         │
+  ▾ Eval 1 · drifted · 0.67 · not sealed  1 ││ ❯                                                                       │
+    health endpoint   codex                 ││                                                                         │
+  ▸ Sealed · 1 seal                       1 ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │

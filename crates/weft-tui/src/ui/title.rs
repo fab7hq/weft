@@ -92,6 +92,22 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
 
     // The detail view, and the Eval view, replace the tabs with the unit
     // they are about.
+    // A Details view's header is its breadcrumb; the part picked is marked.
+    if let Some(d) = app.detail().filter(|d| d.picked_crumb().is_some()) {
+        let picked = d.picked_crumb();
+        let back = format!("{} ", d.harness);
+        for (i, (part, _)) in d.crumbs.iter().enumerate() {
+            if i > 0 {
+                push(&mut spans, &mut col, "  ›  ".into(), th.title());
+            }
+            let style = if Some(i) == picked { th.selected() } else { th.title() };
+            push(&mut spans, &mut col, part.clone(), style);
+        }
+        let room = geo.tabs.width.saturating_sub(col + cells(&back) as u16);
+        push(&mut spans, &mut col, " ".repeat(room as usize), th.title());
+        push(&mut spans, &mut col, back, th.label());
+        return (Line::from(spans), Vec::new());
+    }
     let about = app
         .eval_screen()
         .map(|e| (format!("EVAL · {}", e.title), format!("{} ", e.eval_id)))

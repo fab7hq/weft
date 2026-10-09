@@ -33,9 +33,11 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Remote => "REMOTE".into(),
         Modal::Allow { .. } => "ALLOW A DEVICE?".into(),
         Modal::Locate { harness, .. } => format!("WHERE IS {}?", harness.to_uppercase()),
-        Modal::Bar(Bar::Resume { harness, .. } | Bar::NothingToResume { harness }) => {
-            say("resume.title", harness).to_uppercase()
-        }
+        Modal::Bar(Bar::Resume { harness, session, .. }) => fill(
+            "resume.ask",
+            &[("harness", harness), ("session", weft_core::sessions::short(session))],
+        )
+        .to_uppercase(),
     }
     .to_string()
 }
@@ -49,17 +51,14 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
             lines.extend(fold(word("not_ready.why"), 62).iter().map(|l| l.trim_end().to_string()));
             lines
         }
-        Modal::Bar(Bar::Resume { session, .. }) => {
-            let mut said =
-                format!("{} · {}", word("resume.session"), crate::sessions::clock(session.at));
-            // A harness with no prompt hook has no last prompt to show.
-            if !session.last.is_empty() {
-                said.push_str(&format!(" · \"{}\"", clip(&session.last, 28)));
+        Modal::Bar(Bar::Resume { harness, quiet, .. }) => {
+            let mut said = vec![say("resume.how", harness)];
+            // Weft cannot tell whether it still runs somewhere: say when it
+            // was last active, so the person knows what they resume (D11).
+            if let Some(at) = quiet {
+                said.push(fill("resume.quiet", &[("time", at)]));
             }
-            vec![said]
-        }
-        Modal::Bar(Bar::NothingToResume { harness }) => {
-            vec![word("resume.nothing").into(), say("resume.fresh", harness)]
+            said
         }
         Modal::OpenProject { text } => {
             vec![format!("{text}█"), String::new(), "The path of a repository to open.".into()]

@@ -5,24 +5,24 @@ expression: drawn
  ╸┃╺ WEFT                                                 [T]URBO OFF   OPEN  1
  ▸ 1 codex    +
 ────────────────────────────────────────────────────────────────────────────────
-   ↑ 5 above
-      unit 3                                                              ASKED
-      unit 4                                                              ASKED
-      unit 5                                                              ASKED
-      unit 6                                                              ASKED
-      unit 7                                                              ASKED
-      unit 8                                                              ASKED
-      unit 9                                                              ASKED
-      unit 10                                                             ASKED
-      unit 11                                                             ASKED
-      unit 12                                                             ASKED
-      unit 13                                                             ASKED
-      unit 14                                                             ASKED
-      unit 15                                                             ASKED
-      unit 16                                                             ASKED
-      unit 17                                                             ASKED
-      unit 18                                                             ASKED
-      unit 19                                                             ASKED
+   ↑ 10 above
+    unit 16   codex                                                       ASKED
+    unit 15   codex                                                       ASKED
+    unit 14   codex                                                       ASKED
+    unit 13   codex                                                       ASKED
+    unit 12   codex                                                       ASKED
+    unit 11   codex                                                       ASKED
+    unit 10   codex                                                       ASKED
+    unit 9    codex                                                       ASKED
+    unit 8    codex                                                       ASKED
+    unit 7    codex                                                       ASKED
+    unit 6    codex                                                       ASKED
+    unit 5    codex                                                       ASKED
+    unit 4    codex                                                       ASKED
+    unit 3    codex                                                       ASKED
+    unit 2    codex                                                       ASKED
+    unit 1    codex                                                       ASKED
+    unit 0    codex                                                       ASKED
 ────────────────────────────────────────────────────────────────────────────────
  [A]SK   [E]VAL   [S]EAL                                               [W]EFT ⌄
  [H]ELP lists every key.

@@ -11,6 +11,11 @@ impl App {
             return self.on_modal_key(key);
         }
         self.hint = None;
+        self.landed = true;
+        // The earlier sessions' search takes what is typed into it.
+        if self.focus == Focus::Weft && self.search_key(&key) {
+            return Ok(());
+        }
         let chord = chord_of(key);
         // Esc is the agent's, except where a view of Weft's own is open.
         let closing = key.code == event::KeyCode::Esc
@@ -38,7 +43,7 @@ impl App {
             }
             Action::Pick(delta) => {
                 if self.detail.is_some() {
-                    self.scroll_detail(delta as i32);
+                    self.move_in_detail(delta as i32);
                 } else {
                     self.pick(delta);
                 }
@@ -47,7 +52,9 @@ impl App {
                 if self.waiting_here() {
                     // [Enter] ANSWER IT: the person answers, never Weft.
                     self.focus = Focus::Agent;
-                } else if self.detail.is_none() {
+                } else if self.detail.is_some() {
+                    self.follow_link();
+                } else {
                     self.open_row();
                 }
             }
@@ -82,7 +89,12 @@ impl App {
             Action::OpenProject => self.act(Act::OpenProject),
             Action::WeftMenu => self.act(Act::WeftMenu),
             Action::Turbo => self.act(Act::Turbo),
-            Action::Remote => self.act(Act::Remote),
+            // In a session's Details, R resumes it (T11.5).
+            Action::Remote => {
+                if !self.ask_to_resume() {
+                    self.act(Act::Remote)
+                }
+            }
             Action::Unfold => {
                 self.fold_selected(false);
             }
@@ -305,13 +317,6 @@ impl App {
                 }
                 _ => self.modal = None,
             },
-            event::KeyCode::Char('n' | 'N')
-                if matches!(modal, Modal::Bar(Bar::NothingToResume { .. })) =>
-            {
-                if let Modal::Bar(Bar::NothingToResume { harness }) = &modal {
-                    self.start_fresh(harness);
-                }
-            }
             event::KeyCode::Enter => self.confirm_modal(&modal),
             _ => {}
         }
@@ -336,12 +341,10 @@ impl App {
                 self.modal = None;
                 self.do_inject_forcing(&pending, true);
             }
-            Modal::Bar(Bar::Resume { harness, session, then }) => {
-                let (harness, session, then) = (harness.clone(), session.clone(), *then);
-                self.pick_up(&harness, Some(&session), then);
+            Modal::Bar(Bar::Resume { harness, session, .. }) => {
+                let (harness, session) = (harness.clone(), session.clone());
+                self.resume(&harness, &session);
             }
-            // Its key is [N], above.
-            Modal::Bar(Bar::NothingToResume { .. }) => {}
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             // Its own keyboard, handled above.
             Modal::OpenProject { .. } => {}

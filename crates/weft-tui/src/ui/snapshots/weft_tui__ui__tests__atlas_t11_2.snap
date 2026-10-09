@@ -1,0 +1,35 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                          [T]URBO OFF   OPEN  3   NEEDS YOU  1
+ fix login  ›  not evaluated yet                                                                                 claude
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ASK [DONE]
+   asked 2026-10-08 11:29 · sent · claude is waiting for you
+   You asked:
+   Refresh the token before it expires, not after
+   The prompt claude composed:
+   In src/login.rs refresh the session token 60 s before expiry, and retry once on a 401
+   before signing the person out …
+   How it was sent:
+   sent · word for word
+   Session:
+   claude · 11:29  ›
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [F] FOLLOW UP   [↑↓] SCROLL                                                                                [ESC] CLOSE

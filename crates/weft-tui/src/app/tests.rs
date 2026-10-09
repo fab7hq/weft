@@ -194,9 +194,16 @@ pub(crate) fn agent_says(a: &mut App, harness: &str, session: &str, event: &str)
     }
 }
 
+/// Select the first work in the tree, as the arrows would.
+pub(crate) fn on_work(a: &mut App) {
+    assert!(a.select(|r| matches!(r, Row::Ask { .. })), "a work in the tree: {:?}", a.rows());
+}
+
+/// One work on the board, selected.
 fn with_unit(sent: Sent) -> App {
     let mut a = app();
     a.set_units(vec![unit(sent)]);
+    on_work(&mut a);
     a
 }
 
@@ -340,10 +347,7 @@ fn an_agent_that_quits_closes_its_pane_and_keeps_its_work() {
     assert!(a.modal.is_none(), "no panel: the row says it");
     assert_eq!(a.focus, Focus::Weft, "keystrokes never go to a dead process");
     assert!(a.hint_text().is_some_and(|h| h.contains("still on the list")));
-    assert!(
-        a.rows().iter().any(|r| matches!(r, Row::Harness { running: false, .. })),
-        "its work stays, marked not running"
-    );
+    assert!(a.rows().iter().any(|r| matches!(r, Row::Ask { .. })), "its work stays listed");
 }
 
 /// The loop blocks on one channel that the terminal and the daemon both
@@ -446,56 +450,23 @@ fn the_wheel_goes_to_an_agent_that_asked_for_mouse_reports() {
     }
 }
 
+/// Enter on an Ask opens its Details (T11.2): the Ask only, under a
+/// breadcrumb of where it stands; ← goes back to the tree.
 #[test]
-fn open_work_with_no_agent_offers_the_session_it_was_asked_in() {
+fn enter_on_an_ask_opens_its_details_and_back_goes_to_the_tree() {
     let mut a = app();
     let mut u = unit(Sent::TakenByAgent);
     u.harness = "claude-code".into();
-    u.session_ref = Some("dfffa9be".into());
     a.set_units(vec![u]);
-    a.selected = a.rows().iter().position(|r| matches!(r, Row::Action { .. })).expect("row");
+    a.selected = a.rows().iter().position(|r| matches!(r, Row::Ask { .. })).expect("row");
     press(&mut a, KeyCode::Enter);
-    let Some(Modal::Bar(Bar::Resume { harness, session: s, then: None })) = a.modal.clone() else {
-        panic!("the bar, naming its own session: {:?}", a.modal)
-    };
-    assert_eq!((harness.as_str(), s.id.as_str()), ("claude-code", "dfffa9be"));
-}
-
-/// No session on record: nothing to resume, and N is a fresh agent (T4.13),
-/// with the picker on that harness; ← goes back.
-#[test]
-fn with_nothing_to_resume_n_starts_a_fresh_agent() {
-    let mut a = app();
-    let mut u = unit(Sent::TakenByAgent);
-    (u.harness, u.session_ref) = ("claude-code".into(), None);
-    a.set_units(vec![u]);
-    a.selected = a.rows().iter().position(|r| matches!(r, Row::Action { .. })).expect("row");
-    press(&mut a, KeyCode::Enter);
-    assert!(matches!(a.modal, Some(Modal::Bar(Bar::NothingToResume { .. }))), "{:?}", a.modal);
+    let d = a.detail().expect("its Details");
+    assert_eq!(d.view, View::Work("ask_1".into()));
+    assert_eq!(d.title, "health endpoint  ›  not evaluated yet");
+    assert!(d.lines[0].starts_with("ASK ["), "{:?}", d.lines);
+    assert!(!d.lines.iter().any(|l| l.starts_with("EVAL") || l.starts_with("SEAL")), "no round");
     press(&mut a, KeyCode::Left);
-    assert!(a.modal.is_none(), "← goes back");
-    press(&mut a, KeyCode::Enter);
-    let fresh = |h: &str| Start {
-        harness: h.into(),
-        label: format!("{h} · start fresh"),
-        spec: "/bin/cat".into(),
-        session: None,
-    };
-    a.set_starts(vec![fresh("codex"), fresh("claude-code")]);
-    press(&mut a, KeyCode::Char('n'));
-    assert_eq!(a.modal, Some(Modal::StartAgent { choice: 1 }), "the picker, on claude-code");
-}
-
-#[test]
-fn a_harness_with_nothing_open_and_no_agent_is_not_listed() {
-    let mut a = app();
-    let mut u = unit(Sent::TakenByAgent);
-    u.harness = "claude-code".into();
-    u.sealed = Some("accepted".into());
-    a.set_units(vec![u]);
-    assert!(
-        !a.rows().iter().any(|r| matches!(r, Row::Harness { name, .. } if name == "claude-code"))
-    );
+    assert!(a.detail().is_none() && a.modal.is_none());
 }
 
 /// A session on record is never offered as "the latest" (ADR-0029 D4, the
@@ -534,7 +505,7 @@ fn a_session_on_record_is_never_offered_as_the_latest() {
     a.refresh_for_test();
     let codex: Vec<_> = a.starts().iter().filter(|c| c.harness == "codex").collect();
     assert_eq!(codex.len(), 1, "start fresh, and nothing else");
-    assert_eq!((codex[0].spec.as_str(), codex[0].session.is_none()), ("codex", true));
+    assert_eq!(codex[0].spec, "codex");
 }
 
 #[test]
@@ -542,7 +513,6 @@ fn a_harness_with_no_receipt_here_is_offered_fresh_only() {
     let mut a = app();
     a.refresh_for_test();
     for c in a.starts() {
-        assert!(c.session.is_none(), "nothing is on record in a new workspace");
         assert!(!c.spec.contains("resume"), "and nothing is invented: {}", c.spec);
     }
 }
@@ -604,6 +574,7 @@ fn send_is_offered_for_an_ask_nobody_answered() {
     u.confirmed = false;
     u.unanswered = true;
     a.set_units(vec![u]);
+    on_work(&mut a);
     assert_eq!(a.unavailable(Act::Proceed), None, "proceeding is the person's yes");
 }
 
@@ -637,6 +608,7 @@ fn readiness_is_asked_of_the_harness_the_act_will_go_to() {
     // The point of routing: Eval going to Claude Code needs Claude Code
     // set up, whatever the work was done in.
     let mut a = routed(&[("eval", "claude-code")]);
+    on_work(&mut a);
     a.set_readiness("codex", Readiness::Ready);
     a.set_readiness("claude-code", Readiness::Missing(Gap::Plugin));
     let said = a.unavailable(Act::Eval).expect("a reason");
@@ -649,6 +621,7 @@ fn readiness_is_asked_of_the_harness_the_act_will_go_to() {
 fn a_routed_act_with_no_pane_is_still_offered() {
     // The daemon starts a pane of the routed harness when none is free.
     let mut a = routed(&[("eval", "claude-code")]);
+    on_work(&mut a);
     a.set_readiness("claude-code", Readiness::Ready);
     assert_eq!(a.unavailable(Act::Eval), None);
 }
@@ -773,6 +746,7 @@ fn recorded_and_evaluated() -> App {
 }
 
 fn follow_up_payload(mut a: App, intent: &str) -> String {
+    on_work(&mut a);
     press(&mut a, KeyCode::Char('f'));
     for c in intent.chars() {
         press(&mut a, KeyCode::Char(c));
@@ -874,6 +848,13 @@ fn eval_and_seal_always_confirm_before_typing() {
             recorded_and_evaluated()
         };
         a.settle();
+        a.take_the_board();
+        // Eval acts on Open, Seal on an Eval (ADR-0029 D5).
+        let on = |r: &Row| match key {
+            'e' => matches!(r, Row::Open { .. }),
+            _ => matches!(r, Row::Eval { .. }),
+        };
+        assert!(a.select(on), "{key}: {:?}", a.rows());
         press(&mut a, KeyCode::Char(key));
         let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else {
             panic!("{key} must confirm first, got {:?}", a.modal)
@@ -943,23 +924,17 @@ fn an_agent_that_has_not_said_it_is_ready_is_asked_about_first() {
     }
 }
 
-/// §6 test 1, drawn: the row carries the agent's state from its receipt.
+/// §6 test 1, drawn: an agent's row carries its state from its receipt;
+/// Asks under a round carry none (D6).
 #[test]
-fn the_row_of_an_ask_shows_its_agents_state() {
-    use weft_core::sessions::{Row, State};
-    use weft_core::turns::Turn;
+fn an_agents_row_shows_its_state_from_its_receipt() {
     let mut a = with_unit(Sent::Arrived { exact: true });
-    let before = crate::ui::sidebar_text(&a);
-    assert!(!before.contains("working"), "no receipt, no state: {before}");
-    a.session_mut().sessions = vec![Row::of(
-        "codex",
-        "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0",
-        State::Running,
-        Some(Turn::Working),
-        1,
-    )];
-    let after = crate::ui::sidebar_text(&a);
-    assert!(after.contains("working · ASKED"), "{after}");
+    agent_says(&mut a, "codex", "fixture", "working");
+    let rows = crate::ui::sidebar_text(&a);
+    let agent = rows.lines().find(|l| l.contains("● codex")).expect("its row");
+    assert!(agent.contains("working"), "{rows}");
+    let work = rows.lines().find(|l| l.contains("health endpoint")).expect("the work");
+    assert!(!work.contains("working"), "{rows}");
 }
 
 /// NEEDS YOU is an agent asking its person for input, and nothing
@@ -975,12 +950,13 @@ fn only_an_agent_asking_for_input_needs_you_and_space_goes_to_it() {
     press(&mut a, KeyCode::Char(' '));
     assert_eq!(a.hint_text(), Some("Nothing needs your input."));
     assert!(a.detail().is_none(), "Space opens no Ask");
-    assert!(!crate::ui::sidebar_text(&a).contains('●'), "{}", crate::ui::sidebar_text(&a));
+    let rows = crate::ui::sidebar_text(&a);
+    assert!(!rows.contains("waiting for you") && !rows.contains("· 1 ●"), "{rows}");
 
     agent_says(&mut a, "codex", "fixture", "waiting");
     assert_eq!(a.needs_you(), 1);
     let rows = crate::ui::sidebar_text(&a);
-    let badge = rows.lines().find(|l| l.contains("needs your input")).expect("a badge");
+    let badge = rows.lines().find(|l| l.contains("waiting for you")).expect("its row");
     assert!(badge.contains("codex") && !badge.contains("ASKED"), "{rows}");
     press(&mut a, KeyCode::Char(' '));
     assert_eq!(a.pane_focus, 0);
@@ -999,13 +975,14 @@ fn space_into_a_folded_project_opens_it_to_the_agent_asking() {
     press(&mut a, KeyCode::Char(' '));
     let rows = a.rows();
     assert!(
-        matches!(&rows[a.selected], Row::Harness { name, .. } if name == "codex"),
+        matches!(&rows[a.selected], Row::Agent { agent, .. } if agent.harness == "codex"),
         "{:?} at {}",
         rows,
         a.selected
     );
+    let at = a.selected;
     press(&mut a, KeyCode::Down);
-    assert!(matches!(a.rows()[a.selected], Row::Action { .. }), "the arrow moved on from it");
+    assert!(a.selected != at && a.rows()[a.selected].selectable(), "the arrow moved on from it");
 }
 
 /// The list shows an agent the moment it is opened, before anything is
@@ -1014,8 +991,8 @@ fn space_into_a_folded_project_opens_it_to_the_agent_asking() {
 fn an_agent_is_on_the_list_and_counted_as_soon_as_it_is_opened() {
     let mut a = app();
     let screen = drawn(&mut a);
-    assert!(screen.contains("▾ codex"), "drawn before anything is asked:\n{screen}");
-    assert!(screen.contains("1 open"), "{screen}");
+    assert!(screen.contains("● codex"), "drawn before anything is asked:\n{screen}");
+    assert!(screen.contains("0 open"), "no Ask is Open yet: {screen}");
     assert_eq!(a.open_count(), 1);
     a.set_units(vec![unit(Sent::ReadyToSend), unit(Sent::Arrived { exact: true })]);
     assert_eq!(a.open_count(), 1, "Asks are not agents");
@@ -1049,8 +1026,9 @@ fn an_ask_recorded_as_asked_is_on_the_list_and_its_view_shows_the_words() {
     }
     a.take_the_board();
     let rows = crate::ui::sidebar_text(&a);
-    let row = rows.lines().find(|l| l.contains("fix the login bug")).expect("the row");
-    assert!(row.contains("ASKING"), "{rows}");
+    let row = rows.lines().find(|l| l.contains("fix the login bug") && l.contains("ASKING"));
+    assert!(row.is_some(), "{rows}");
+    on_work(&mut a);
     press(&mut a, KeyCode::Enter);
     let lines = a.detail().expect("its view").lines.clone();
     assert!(lines.contains(&"ASK [ASKING]".to_string()), "{lines:?}");
@@ -1065,7 +1043,7 @@ fn an_agent_with_no_asks_still_has_a_row_for_its_badge() {
     let mut a = app();
     agent_says(&mut a, "codex", "fixture", "waiting");
     let rows = crate::ui::sidebar_text(&a);
-    assert!(rows.lines().any(|l| l.contains("codex") && l.contains("needs your input")), "{rows}");
+    assert!(rows.lines().any(|l| l.contains("codex") && l.contains("waiting for you")), "{rows}");
 }
 
 /// ADR-0017: an agent the person is not looking at that starts asking
@@ -1270,6 +1248,7 @@ fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
         Sent::ReadyToSend,
         set_up(|w| w.answers("ringframe", &["ask", "copy"], 0, "Ship it.\n")),
     );
+    on_work(&mut a);
     press(&mut a, KeyCode::Enter); // the row's detail view
     assert!(a.detail().is_some(), "the detail view is open");
     press(&mut a, KeyCode::Char('p'));
@@ -1294,6 +1273,7 @@ fn a_send_ringframe_would_not_record_is_said() {
             .answers("ringframe", &["ask", "copy"], 0, "Ship it.\n")
     });
     let mut a = recorded_in(Sent::ReadyToSend, refuses);
+    on_work(&mut a);
     press(&mut a, KeyCode::Char('p'));
     assert!(
         matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))),
@@ -1330,16 +1310,6 @@ fn turbo_mode_is_switched_by_its_key_or_a_click_and_shown_in_the_title() {
     assert!(!a.turbo(), "a click switches it back");
 }
 
-/// A harness row says which harness has an agent running in turbo mode.
-#[test]
-fn a_harness_running_in_turbo_mode_carries_its_badge() {
-    let mut a = app();
-    assert!(!crate::ui::sidebar_text(&a).contains('⚡'));
-    a.session_mut().panes[0].turbo = true;
-    let rows = crate::ui::sidebar_text(&a);
-    assert!(rows.lines().any(|l| l.contains("codex") && l.contains('⚡')), "{rows}");
-}
-
 /// An agent started in turbo mode says so on its tab, and only it.
 #[test]
 fn an_agent_in_turbo_mode_says_so_on_its_tab() {
@@ -1359,8 +1329,6 @@ fn an_agent_that_exited_carries_no_running_badge() {
     a.session_mut().panes[0].running = false;
     let tabs = drawn(&mut a).lines().nth(1).unwrap_or("").to_string();
     assert!(!tabs.contains('⚡'), "{tabs}");
-    let rows = crate::ui::sidebar_text(&a);
-    assert!(rows.lines().any(|l| l.contains("codex") && l.contains("not running")), "{rows}");
 }
 
 /// The owner's case: an Ask sent through Weft, which no hook saw arrive.
@@ -1373,6 +1341,7 @@ fn a_sent_ask_is_never_sent_again_by_proceed() {
     a.set_units(vec![u]);
     agent_says(&mut a, "codex", "fixture", "turn_ended");
     assert_eq!(a.needs_you(), 0, "a finished turn asks nothing");
+    on_work(&mut a);
     press(&mut a, KeyCode::Char('p'));
     assert!(a.modal.is_none(), "{:?}", a.modal);
     assert_eq!(
@@ -1386,6 +1355,8 @@ fn cancelling_a_confirmation_types_nothing() {
     let mut a = recorded(Sent::TakenByAgent);
     gather_on_record(&a, &["ask_1"]);
     a.settle();
+    a.take_the_board();
+    assert!(a.select(|r| matches!(r, Row::Open { .. })), "Open: {:?}", a.rows());
     press(&mut a, KeyCode::Char('e'));
     assert!(matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))));
     press(&mut a, KeyCode::Left); // [←] CANCEL
@@ -1398,6 +1369,8 @@ fn confirming_types_it_and_puts_you_in_the_agent() {
     let mut a = recorded(Sent::TakenByAgent);
     gather_on_record(&a, &["ask_1"]);
     a.settle();
+    a.take_the_board();
+    assert!(a.select(|r| matches!(r, Row::Open { .. })), "Open: {:?}", a.rows());
     press(&mut a, KeyCode::Char('e'));
     press(&mut a, KeyCode::Enter);
     assert!(a.modal.is_none());
@@ -1409,19 +1382,21 @@ fn an_unavailable_action_explains_itself_in_the_hint_and_opens_nothing() {
     let mut a = app();
     press(&mut a, KeyCode::Char('e'));
     assert!(a.modal.is_none(), "never a dialog: {:?}", a.modal);
-    assert_eq!(a.hint_text(), Some("Nothing to work on yet."));
+    assert_eq!(a.hint_text(), Some("Select Open to Eval its Asks."));
 }
 
 #[test]
 fn proceed_does_the_step_the_selected_row_is_actually_waiting_on() {
     // A confirmed Ask nobody has submitted: there is a step to take, so
     // the verb is live. What it then types is the send path's own test.
-    let a = recorded(Sent::ReadyToSend);
+    let mut a = recorded(Sent::ReadyToSend);
+    on_work(&mut a);
     assert_eq!(a.unavailable(Act::Proceed), None);
 
     // An Ask that was compiled and never answered is waiting on the
     // harness's chooser, not on the person, so there is nothing to send.
     let mut a = recorded(Sent::NotSent);
+    on_work(&mut a);
     press(&mut a, KeyCode::Char('p'));
     assert!(a.modal.is_none(), "{:?}", a.modal);
     assert_eq!(
@@ -1430,24 +1405,35 @@ fn proceed_does_the_step_the_selected_row_is_actually_waiting_on() {
     );
 }
 
+/// Each act acts where it applies (ADR-0029 D5): pressed on another row it
+/// says what to select, in the cards' words.
 #[test]
-fn a_unit_whose_agent_is_not_open_is_not_silently_dropped() {
-    let mut a = app();
-    let mut u = unit(Sent::Arrived { exact: true });
-    u.harness = "claude-code".into();
-    a.set_units(vec![u]);
-    press(&mut a, KeyCode::Char('e'));
-    let Some(Modal::Bar(Bar::Resume { harness, then, .. })) = a.modal.clone() else {
-        panic!("the missing agent is offered, not refused: {:?}", a.modal)
-    };
-    assert_eq!((harness.as_str(), then), ("claude-code", Some(Act::Eval)));
+fn an_act_pressed_on_a_row_it_does_not_act_on_says_what_to_select() {
+    let mut a = with_unit(Sent::Arrived { exact: true });
+    let row = |a: &App, f: &dyn Fn(&Row) -> bool| a.rows().iter().position(f).expect("row");
+    a.selected = row(&a, &|r| matches!(r, Row::Ask { .. }));
+    for (key, said) in [
+        ('e', "Select Open to Eval its Asks."),
+        ('s', "Select an Eval to Seal it."),
+        ('a', "Select an agent to Ask."),
+    ] {
+        press(&mut a, KeyCode::Char(key));
+        assert_eq!(a.hint_text(), Some(said), "{key}");
+        assert!(a.modal.is_none());
+    }
+    a.selected = row(&a, &|r| matches!(r, Row::Open { .. }));
+    press(&mut a, KeyCode::Char('a'));
+    assert_eq!(a.hint_text(), Some("Select an agent to Ask."));
+    press(&mut a, KeyCode::Char('s'));
+    assert_eq!(a.hint_text(), Some("Select an Eval to Seal it."));
 }
 
 #[test]
 fn enter_unfolds_what_is_closed_and_acts_on_what_is_open() {
     let mut a = with_unit(Sent::Arrived { exact: true });
     // The selection lands on the work, so the first `[Enter]` opens it.
-    assert!(matches!(a.rows()[a.selected], Row::Action { .. }));
+    a.selected = a.rows().iter().position(|r| matches!(r, Row::Ask { .. })).expect("work");
+    assert!(matches!(a.rows()[a.selected], Row::Ask { .. }));
     press(&mut a, KeyCode::Enter);
     assert!(a.detail().is_some(), "an action opens its detail view");
     press(&mut a, KeyCode::Left);
@@ -1504,8 +1490,12 @@ fn the_verb_is_live_when_there_is_a_step_and_dim_when_there_is_not() {
 
     let mut a = app();
     let mut sealed = unit(Sent::Arrived { exact: true });
-    sealed.sealed = Some("accepted".into());
+    (sealed.sealed, sealed.seal_id) = (Some("accepted".into()), Some("sel_1".into()));
     a.set_units(vec![sealed]);
+    // Sealed, it is under its Seal, in no round to act on: its Details are
+    // where Proceed is pressed.
+    a.open_view(View::Work("ask_1".into()));
+    a.settle();
     assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("FOLLOW UP")));
 }
 
@@ -1532,7 +1522,7 @@ fn two_projects_are_two_groups_and_neither_reads_the_other() {
     let work = a
         .rows()
         .iter()
-        .position(|r| matches!(r, Row::Action { project: 0, .. }))
+        .position(|r| matches!(r, Row::Ask { project: 0, .. }))
         .expect("the first project's work");
     a.selected = work;
     a.follow_the_selection();
@@ -1557,7 +1547,11 @@ fn a_project_closes_out_of_the_window_and_leaves_the_rest() {
     assert!(matches!(a.modal, Some(Modal::CloseProject { .. })), "it asks first");
     press(&mut a, KeyCode::Enter);
     assert_eq!(a.rows().iter().filter(|r| matches!(r, Row::Project { .. })).count(), 1);
-    assert_eq!(a.selected_unit().map(|u| u.title.clone()), Some("health endpoint".into()));
+    assert!(
+        a.rows()
+            .iter()
+            .any(|r| matches!(r, Row::Ask { ask, .. } if ask.title == "health endpoint"))
+    );
 }
 
 #[test]
@@ -1576,13 +1570,20 @@ fn arrows_move_through_every_level_of_the_tree() {
     second.ask_id = "ask_2".into();
     second.title = "second".into();
     a.set_units(vec![unit(Sent::NotSent), second]);
-    // project, harness, two actions
-    assert_eq!(a.rows().len(), 4);
+    // project, AGENTS and its agent, WORK, Open and its two Asks; the
+    // arrows step over the gaps and the headings.
+    let kinds: Vec<_> = a.rows().iter().map(|r| r.selectable()).collect();
+    assert_eq!(kinds, [true, false, false, true, false, false, true, true, true]);
     a.selected = 0;
     press(&mut a, KeyCode::Down);
-    assert_eq!(a.selected, 1);
+    assert!(matches!(a.rows()[a.selected], Row::Agent { .. }));
+    press(&mut a, KeyCode::Down);
+    assert!(matches!(a.rows()[a.selected], Row::Open { .. }));
+    press(&mut a, KeyCode::Up);
     press(&mut a, KeyCode::Up);
     assert_eq!(a.selected, 0);
+    press(&mut a, KeyCode::Up);
+    assert!(matches!(a.rows()[a.selected], Row::Ask { .. }), "it wraps");
 }
 
 #[test]
@@ -1605,7 +1606,7 @@ fn readiness_follows_the_harness_that_owns_the_work() {
     a.selected = a
         .rows()
         .iter()
-        .position(|r| matches!(r, Row::Action { unit, .. } if a.units()[*unit].harness == "codex"))
+        .position(|r| matches!(r, Row::Ask { unit, .. } if a.units()[*unit].harness == "codex"))
         .expect("the codex row");
     let blocked = a.unavailable(Act::Eval).expect("codex is not set up");
     assert!(blocked.contains("codex is not set up"), "{blocked}");
@@ -1615,7 +1616,7 @@ fn readiness_follows_the_harness_that_owns_the_work() {
         .rows()
         .iter()
         .position(
-            |r| matches!(r, Row::Action { unit, .. } if a.units()[*unit].harness == "claude-code"),
+            |r| matches!(r, Row::Ask { unit, .. } if a.units()[*unit].harness == "claude-code"),
         )
         .expect("the claude-code row");
     a.selected = claude;
@@ -1838,6 +1839,7 @@ mod start_tests {
             sent: Sent::ReadyToSend,
             ..Default::default()
         }]);
+        on_work(&mut a);
         a.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)).expect("key");
         a.settle();
         assert!(

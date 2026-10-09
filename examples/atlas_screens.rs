@@ -2,9 +2,9 @@
 //! for the owner to compare with the cards:
 //!   cargo run --example atlas_screens -- [out dir, default target/atlas-screens]
 //!
-//! The screens are the TUI's snapshot tests (`atlas_t4_5` is T4.5; the detail
-//! view is T5.6): `cargo test` fails unless each is exactly what the TUI draws
-//! from its fixture, so these files are the screens as built.
+//! The screens are the TUI's snapshot tests (`atlas_t4_5` is T4.5,
+//! `atlas_t11_3` T11.3): `cargo test` fails unless each is exactly what the
+//! TUI draws from its fixture, so these files are the screens as built.
 
 use std::path::Path;
 
@@ -29,11 +29,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `…__atlas_t4_11` is T4.11; the detail view is T5.6.
+/// `…__atlas_t4_11` is T4.11.
 fn screen_id(name: &str) -> Option<String> {
-    if name.ends_with("__the_detail_view") {
-        return Some("T5.6".into());
-    }
     let (_, at) = name.rsplit_once("__atlas_t")?;
     let (section, screen) = at.split_once('_')?;
     Some(format!("T{section}.{screen}"))

@@ -111,6 +111,16 @@ impl App {
 
     /// The Eval of the selected work: the one running, else the last closed.
     fn eval_of_selected(&self) -> Option<(String, String)> {
+        // An Eval's Details, or an Eval's round in the tree: that Eval.
+        let n = |id: &str| {
+            let e = sess!(self).rounds.record.evals.iter().find(|e| e.id == id)?;
+            Some((id.to_string(), fill("tree.eval", &[("n", &e.n.to_string())])))
+        };
+        match (self.detail().map(|d| &d.view), self.rows().get(self.selected)) {
+            (Some(View::Eval(id)), _) => return n(id),
+            (None, Some(Row::Eval { group, .. })) => return n(&group.eval),
+            _ => {}
+        }
         let u = self.selected_unit()?;
         let id = u
             .gathered

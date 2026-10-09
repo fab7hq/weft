@@ -13,6 +13,12 @@ use ratatui::backend::TestBackend;
 fn expect_screen(name: &str, drawn: &str) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(r"weft-app-[a-z]+-\d+-\d+ *", "[project] ");
+    // A live daemon's sessions carry the time the test ran; the Atlas's
+    // samples hold their clock still and keep theirs.
+    if !name.starts_with("atlas_") {
+        settings
+            .add_filter(r"(ready|working|turn ended|waiting for you|ended) \d\d:\d\d", "$1 --:--");
+    }
     settings.bind(|| insta::assert_snapshot!(name, drawn));
 }
 
@@ -33,25 +39,11 @@ fn screen(app: &mut App, width: u16, height: u16) -> String {
         .join("\n")
 }
 
-/// Every column is measured in cells, so a row carrying `⚡` ends where
-/// every other row does and its badge stays on the right.
-#[test]
-fn a_turbo_rows_badge_is_right_aligned() {
-    let mut a = app();
-    crate::app::tests::agent_says(&mut a, "codex", "fixture", "waiting");
-    let harness =
-        |a: &App| a.rows().iter().find(|r| matches!(r, crate::app::Row::Harness { .. })).cloned();
-    let plain = sidebar_row(&a, &harness(&a).expect("the harness row"), false, 40).width();
-    a.session_mut().panes[0].turbo = true;
-    let turbo = sidebar_row(&a, &harness(&a).expect("the harness row"), false, 40);
-    assert!(turbo.spans.iter().any(|s| s.content.contains('⚡')), "{turbo:?}");
-    assert_eq!(turbo.width(), plain, "the badge ends where it did");
-}
-
 #[test]
 fn a_follow_up_says_what_it_follows() {
     let mut a = app();
     a.set_units(vec![unit(Sent::TakenByAgent)]);
+    crate::app::tests::on_work(&mut a);
     press(&mut a, KeyCode::Char('f'));
     let drawn = screen(&mut a, 120, 32);
     assert!(drawn.contains("FOLLOW UP  health endpoint · ask_1"), "{drawn}");
@@ -166,10 +158,9 @@ fn six_units_in_two_projects_fit_on_one_screen() {
         more.push(u);
     }
     a.set_units(more);
-    // Two project rows, two harness rows, six units: ten lines in a body
-    // with room for twenty, and none of them elided. The old row was four
-    // to five lines per unit, which did not fit at two units.
-    assert_eq!(a.rows().len(), 10, "{:?}", a.rows());
+    // Two projects, six works, one line each, none elided.
+    let asks = a.rows().iter().filter(|r| matches!(r, crate::app::Row::Ask { .. })).count();
+    assert_eq!(asks, 6, "{:?}", a.rows());
     expect_screen("six_units_in_two_projects", &screen(&mut a, 80, 24));
 }
 
@@ -188,13 +179,11 @@ fn a_row_is_one_line_saying_what_and_where_it_stands() {
     let mut a = judged();
     let drawn = screen(&mut a, 80, 24);
     let row = drawn.lines().find(|l| l.contains("health endpoint")).expect("the row");
-    // Whose it is is the level above, not repeated on every child.
-    assert!(drawn.lines().any(|l| l.contains("▾ codex")), "{drawn}");
-    // The furthest act, named as the bar names it, and never an alarm.
-    // What the judges said is a section of the detail view, not four
-    // more lines here.
-    assert!(row.contains("EVALED") && !row.contains('●'), "{row}");
-    assert!(!drawn.contains("DOESN'T MATCH"), "the verdict is not on the row:\n{drawn}");
+    // Its harness is on the row; under an Eval its round says its state
+    // (D6), and the verdict is the round's, said once.
+    assert!(row.contains("codex") && !row.contains("EVALED") && !row.contains('●'), "{row}");
+    assert!(drawn.contains("Eval 1 · drifted · 0.67"), "{drawn}");
+    assert!(!drawn.contains("DOESN'T MATCH"), "{drawn}");
 }
 
 #[test]
@@ -208,9 +197,10 @@ fn an_ask_row_carries_no_dot_even_when_its_prompt_is_ready() {
 #[test]
 fn every_verdict_names_the_host_that_produced_it() {
     let mut a = judged();
+    assert!(a.select(|r| matches!(r, crate::app::Row::Eval { .. })));
     press(&mut a, KeyCode::Enter);
     let read = a.detail().expect("the view").lines.join("\n");
-    assert!(read.contains("judged by codex"), "{read}");
+    assert!(read.contains("JUDGED BY   codex · gpt-5.6-luna"), "{read}");
     // Agreement, never a score.
     assert!(read.contains("agreed"), "{read}");
     assert!(!read.contains("confidence"), "{read}");
@@ -265,24 +255,28 @@ fn hiding_the_work_list_gives_the_agent_the_whole_width() {
     expect_screen("the_list_hidden", &screen(&mut a, 120, 32));
 }
 
+/// A work's Details block the screen and hold its Ask alone (D3): no Eval
+/// or Seal section, however far it has gone.
 #[test]
-fn the_detail_view_blocks_and_holds_all_three_acts() {
-    // One unit and one decision. Nothing behind it is reachable, which is
-    // what keeps the bar's acts and `[P]ROCEED` from both being live.
-    // Judged, it has nothing to send: [F] FOLLOW UP is the one way on.
+fn a_works_details_block_and_hold_its_ask_alone() {
     let mut a = judged();
+    let health =
+        |r: &crate::app::Row| matches!(r, crate::app::Row::Ask { ask, .. } if ask.unit == "ask_1");
+    assert!(a.select(health));
     press(&mut a, KeyCode::Enter);
-    let lines = &a.detail().expect("the view").lines;
-    for section in ["ASK", "EVAL", "SEAL"] {
-        assert!(lines.iter().any(|l| l.starts_with(section)), "{section} is missing from the view");
-    }
-    expect_screen("the_detail_view", &screen(&mut a, 120, 32));
+    let d = a.detail().expect("the view");
+    assert_eq!(d.title, "health endpoint  ›  Eval 1 drifted  ›  not sealed");
+    assert!(d.lines.iter().any(|l| l.starts_with("ASK [")));
+    assert!(!d.lines.iter().any(|l| l.starts_with("EVAL") || l.starts_with("SEAL")));
+    let drawn = screen(&mut a, 120, 32);
+    assert!(!drawn.lines().nth(5).unwrap_or("").contains('│'), "nothing beside it:\n{drawn}");
 }
 
 #[test]
 fn a_reading_too_wide_for_the_view_folds_rather_than_being_cut() {
     let mut a = judged();
-    press(&mut a, KeyCode::Enter);
+    let said = "CHANGED WITH NO JUDGE ABLE TO TIE IT TO WHAT YOU ASKED";
+    a.open_view_read(crate::app::View::Work("ask_1".into()), Some(said), None, None);
     // Narrow enough that the longest reason cannot sit on one line. This
     // is where the exact wording is read, so nothing may be lost off the
     // right-hand edge.
@@ -305,6 +299,7 @@ fn a_reading_too_wide_for_the_view_folds_rather_than_being_cut() {
 #[test]
 fn scrolling_past_the_last_line_stops_there_instead_of_emptying_the_panel() {
     let mut a = judged();
+    assert!(a.select(|r| matches!(r, crate::app::Row::Eval { .. })));
     press(&mut a, KeyCode::Enter);
     // A short panel, so there is somewhere to scroll to.
     let _ = screen(&mut a, 120, 14);
@@ -632,6 +627,7 @@ fn judged_v2(closed: bool) -> App {
 #[test]
 fn the_eval_view_reads_requirements_first_then_a_step_its_change_and_by_file() {
     let mut a = judged_v2(true);
+    crate::app::tests::on_work(&mut a);
     press(&mut a, KeyCode::Char('v'));
     assert!(a.eval_screen().is_some(), "[V] opens the Eval view");
     expect_screen("the_eval_view", &screen(&mut a, 120, 32));
@@ -660,6 +656,7 @@ fn the_eval_view_reads_requirements_first_then_a_step_its_change_and_by_file() {
 #[test]
 fn a_running_eval_shows_what_is_in_as_so_far() {
     let mut a = judged_v2(false);
+    crate::app::tests::on_work(&mut a);
     press(&mut a, KeyCode::Char('v'));
     let drawn = screen(&mut a, 120, 32);
     assert!(drawn.contains("judging · map 1 of 1 · reduce 1 of 2 · confirm —"), "{drawn}");
@@ -930,14 +927,40 @@ fn atlas() -> App {
         judged_by: Some("codex".into()),
     });
     a.set_units(vec![fix, health]);
-    let receipt = |h: &str, latest| Row::of(h, &format!("s_{h}"), State::Running, Some(latest), 0);
-    a.session_mut().sessions =
-        vec![receipt("claude", Turn::Ready), receipt("codex", Turn::TurnEnded)];
+    a.set_clock(AT_11_35, 0);
+    a.session_mut().sessions = vec![
+        bound(&a, 0, "s_claude", Some(Turn::Ready), 6, Some("fix login")),
+        bound(&a, 1, "s_codex", Some(Turn::TurnEnded), 43, Some("health endpoint")),
+    ];
+    let _ = (Row::of, State::Running);
     a.session_mut().set_turns(vec![Some(Turn::Ready), Some(Turn::TurnEnded)]);
     // claude at its prompt, as the cards draw it.
     let _ = screen(&mut a, 120, 32);
     a.session_mut().panes[0].feed(" ❯\x1b[?25l".as_bytes());
     a
+}
+
+/// 2026-10-08 11:35 UTC, a Thursday: the cards' "now".
+const AT_11_35: i64 = 1_791_459_300_000;
+
+/// A session running in pane `pane`, its last change `ago` minutes before
+/// 11:35, as weftd's index would hold it.
+fn bound(
+    a: &App,
+    pane: usize,
+    id: &str,
+    turn: Option<weft_core::turns::Turn>,
+    ago: i64,
+    title: Option<&str>,
+) -> weft_core::sessions::Row {
+    let p = &a.session().panes[pane];
+    let at = AT_11_35 - ago * 60_000;
+    let mut r =
+        weft_core::sessions::Row::of(&p.harness, id, weft_core::sessions::State::Running, turn, at);
+    r.pane = Some(p.id);
+    r.title = title.map(str::to_string);
+    r.asks = usize::from(title.is_some());
+    r
 }
 
 /// T1.8: an update waiting says what to do about it.
@@ -979,7 +1002,6 @@ fn atlas_t9_7_start_an_agent() {
         harness: h.into(),
         label: format!("{h} · start fresh"),
         spec: "/bin/cat".into(),
-        session: None,
     };
     a.set_starts(vec![fresh("claude"), fresh("codex")]);
     a.modal = Some(Modal::StartAgent { choice: 0 });
@@ -1059,12 +1081,15 @@ fn atlas_at_work() -> App {
     let mut readme = units[1].clone();
     (readme.ask_id, readme.title, readme.sealed) =
         ("ask_4".into(), "readme fix".into(), Some("accepted".into()));
+    readme.seal_id = Some("sel_4".into());
     units.insert(1, telemetry);
     units.push(readme);
     a.set_units(units);
-    let receipt = |h: &str, latest| Row::of(h, &format!("s_{h}"), State::Running, Some(latest), 0);
-    a.session_mut().sessions =
-        vec![receipt("claude", Turn::Working), receipt("codex", Turn::TurnEnded)];
+    a.session_mut().sessions = vec![
+        bound(&a, 0, "s_claude", Some(Turn::Working), 4, Some("fix login")),
+        bound(&a, 1, "s_codex", Some(Turn::TurnEnded), 43, Some("health endpoint")),
+    ];
+    let _ = (Row::of, State::Running);
     a.session_mut().set_turns(vec![Some(Turn::Working), Some(Turn::TurnEnded)]);
     let _ = screen(&mut a, 120, 32);
     a.session_mut().panes[0].feed(format!("\x1b[2J\x1b[H{CLAUDE_AT_WORK}").as_bytes());
@@ -1119,7 +1144,7 @@ fn focus_moves_the_frames_state() {
     // Enter on its harness, a tab's digit or Tab gives the agent the keys.
     for key in [KeyCode::Enter, KeyCode::Char('2'), KeyCode::Tab] {
         a.focus = Focus::Weft;
-        a.selected = 1;
+        assert!(a.select(|r| matches!(r, crate::app::Row::Agent { .. })));
         press(&mut a, key);
         assert_eq!(a.focus, Focus::Agent, "{key:?}");
     }
@@ -1168,28 +1193,384 @@ fn atlas_t4_11_the_bar_send_anyway() {
     expect_screen("atlas_t4_11", &screen(&mut a, 120, 32));
 }
 
-/// The Atlas's sample with codex no longer running.
-fn atlas_codex_gone() -> App {
-    let mut a = atlas();
-    a.session_mut().panes[1].running = false;
+// --- Section 11: agents and rounds (ADR-0029) -------------------------------
+
+/// A session of the 11.x sample, ended or past, `day` days before the 8th.
+fn past(
+    harness: &str,
+    id: &str,
+    title: Option<&str>,
+    asks: usize,
+    day: i64,
+    hm: (i64, i64),
+) -> weft_core::sessions::Row {
+    let at = AT_11_35 - (11 * 60 + 35) * 60_000 - day * 86_400_000 + (hm.0 * 60 + hm.1) * 60_000;
+    let mut r =
+        weft_core::sessions::Row::of(harness, id, weft_core::sessions::State::Ended, None, at);
+    r.title = title.map(str::to_string);
+    r.asks = asks;
+    r
+}
+
+/// The 11.x cards' sample: weft with three agents running (claude waiting,
+/// codex working, codex whose turn ended), fifteen ended, Open since Eval 3,
+/// Eval 3 not sealed, and four Seals over thirty-one Asks.
+fn atlas11() -> App {
+    use weft_core::rounds::{Eval, Named, Record, Round, Rounds, Seal, Sealed};
+    use weft_core::turns::Turn;
+    let (root, session) = crate::app::tests::test_session_at(
+        "weft-atlas11",
+        "weft",
+        crate::app::tests::set_up(|w| w),
+    );
+    let mut a = App::with_session(root, crate::keys::Toggle, session);
+    a.add("claude", "/bin/cat").expect("claude");
+    a.add("codex", "/bin/cat").expect("codex");
+    a.add("codex", "/bin/cat").expect("codex again");
+    a.settle();
+    settle_agents(&mut a);
+    for h in ["claude", "codex"] {
+        a.set_readiness(h, weft_core::readiness::Readiness::Ready);
+    }
+    let check = Check {
+        eval_id: "evl_3".into(),
+        verdict: Verdict::Matches,
+        agreement: 0.67,
+        judged_by: Some("codex".into()),
+    };
+    let work = |id: &str, title: &str, harness: &str, at: &str, sent: Sent| {
+        let mut u = unit(sent);
+        (u.ask_id, u.title, u.harness, u.asked_at) =
+            (id.into(), title.into(), harness.into(), at.into());
+        u
+    };
+    let mut fix =
+        work("ask_1", "fix login", "claude", "2026-10-08T11:29:00Z", Sent::Arrived { exact: true });
+    fix.session_ref = Some("k1".into());
+    let mut telemetry = work("ask_2", "telemetry", "claude", "2026-10-08T11:20:00Z", Sent::NotSent);
+    telemetry.requested_only = true;
+    let mut health = work(
+        "ask_3",
+        "health endpoint",
+        "codex",
+        "2026-10-08T10:40:00Z",
+        Sent::Arrived { exact: true },
+    );
+    (health.check, health.session_ref) = (Some(check.clone()), Some("c2".into()));
+    let mut build = work(
+        "ask_4",
+        "build number",
+        "codex",
+        "2026-10-08T10:30:00Z",
+        Sent::Arrived { exact: true },
+    );
+    build.check = Some(check);
+    let mut readme = work(
+        "ask_5",
+        "readme fix",
+        "claude",
+        "2026-10-07T09:00:00Z",
+        Sent::Arrived { exact: true },
+    );
+    (readme.sealed, readme.seal_id, readme.session_ref) =
+        (Some("accepted".into()), Some("sel_4".into()), Some(ENDED_CLAUDE.into()));
+    readme.check = Some(Check {
+        eval_id: "evl_2".into(),
+        verdict: Verdict::Matches,
+        agreement: 1.0,
+        judged_by: Some("codex".into()),
+    });
+    let mut docs =
+        work("ask_6", "docs links", "codex", "2026-10-07T08:00:00Z", Sent::Arrived { exact: true });
+    (docs.sealed, docs.seal_id, docs.check) =
+        (Some("accepted".into()), Some("sel_4".into()), readme.check.clone());
+    a.set_units(vec![fix, telemetry, health, build, readme, docs]);
+
+    let evals = (1..=3)
+        .map(|n| Eval {
+            id: format!("evl_{n}"),
+            n,
+            opened_at: String::new(),
+            asks: match n {
+                3 => vec!["ask_3".into(), "ask_4".into()],
+                2 => vec!["ask_5".into(), "ask_6".into()],
+                _ => Vec::new(),
+            },
+            verdict: Some(Verdict::Matches),
+            agreement: Some(if n == 3 { 0.67 } else { 1.0 }),
+            judged_by: Some("codex".into()),
+            completed_at: Some("2026-10-08T11:05:00Z".into()),
+            voided: false,
+        })
+        .collect();
+    let seals = (1..=4)
+        .map(|n| Seal {
+            id: format!("sel_{n}"),
+            n,
+            at: "2026-10-07T18:40:00Z".into(),
+            disposition: "accepted".into(),
+            by: "you".into(),
+            eval: (n >= 3).then(|| format!("evl_{}", n - 2)),
+        })
+        .collect();
+    let sealed = |n: usize, asks: Vec<String>| Sealed {
+        seal: format!("sel_{n}"),
+        n,
+        decision: "accepted".into(),
+        at: String::new(),
+        by: "you".into(),
+        eval: (n >= 3).then(|| Named { id: format!("evl_{}", n - 2), n: n - 2 }),
+        asks,
+    };
+    let many = |k: usize| (0..k).map(|i| format!("old_{i}")).collect::<Vec<_>>();
+    a.session_mut().rounds = Rounds {
+        judging: Vec::new(),
+        open: vec!["ask_1".into(), "ask_2".into()],
+        since: Some(3),
+        evals: vec![Round {
+            eval: "evl_3".into(),
+            n: 3,
+            judging: false,
+            verdict: Some(Verdict::Matches),
+            agreement: Some(0.67),
+            asks: vec!["ask_3".into(), "ask_4".into()],
+            sealed: None,
+        }],
+        seals: vec![
+            sealed(4, vec!["ask_5".into(), "ask_6".into()]),
+            sealed(3, many(9)),
+            sealed(2, many(11)),
+            sealed(1, many(9)),
+        ],
+        record: Record { evals, seals },
+    };
+    // The record as the daemon reads it and sends it.
+    let judges = weft_core::record::Record::parse(&serde_json::json!({
+        "eval_id": "evl_3", "verdict": "aligned", "confidence": 0.67,
+        "judgements": [
+            {"judge": {"angle": "coverage", "host": "codex", "model": "gpt-5.6-terra"}},
+            {"judge": {"angle": "drift", "host": "codex", "model": "gpt-5.6-terra"}}],
+        "items": [
+            {"text": "/health returns the build number and the uptime", "majority": "yes", "agreement": 1.0},
+            {"text": "the build number comes from the git tag, not a literal \"dev\"", "majority": "yes", "agreement": 1.0}],
+        "checks": [{"command": "cargo test", "outcome": "succeeded", "seconds": 12}]
+    }))
+    .expect("a record");
+    a.set_records(serde_json::json!({"evl_3": judges}));
+    a.set_clock(AT_11_35, 0);
+    let mut sessions = vec![
+        bound(&a, 1, "c1", Some(Turn::Working), 4, None),
+        bound(&a, 0, "k1", Some(Turn::Waiting), 6, Some("fix login")),
+        bound(&a, 2, "c2", Some(Turn::TurnEnded), 43, Some("health endpoint")),
+    ];
+    let mut ended = past("claude", ENDED_CLAUDE, Some("readme fix"), 1, 0, (9, 12));
+    ended.started = ended.last - 14 * 60_000;
+    sessions.push(ended);
+    sessions.push(past("codex", "a0c7e1d2", Some("lint pass"), 2, 0, (8, 30)));
+    sessions.push(past("claude", "f3b8d9e0", None, 0, 0, (8, 2)));
+    for (h, id, title, asks, day, hm) in [
+        ("codex", "1a9e40c3", Some("flaky test"), 3, 0, (7, 40)),
+        ("claude", "77d0b2e1", None, 0, 0, (7, 15)),
+        ("claude", "c41f9a07", Some("token refresh"), 2, 1, (18, 22)),
+        ("codex", "5be2d8f4", Some("cli --help text"), 1, 1, (16, 5)),
+        ("codex", "09ad3e6b", Some("readme badge"), 1, 1, (14, 40)),
+        ("claude", "e7c2105a", Some("login form errors"), 4, 1, (10, 13)),
+        ("claude", "3f8b6c21", Some("pane resize glitch"), 2, 2, (17, 48)),
+        ("codex", "a6d4e9f0", Some("config.toml loader"), 3, 2, (15, 2)),
+        ("codex", "2c90b7e5", None, 0, 2, (9, 31)),
+        ("claude", "8e15f3ad", Some("notify on waiting"), 1, 3, (19, 20)),
+        ("codex", "b47a0c62", Some("tunnel picker"), 2, 3, (14, 55)),
+        ("claude", "61dd8e93", Some("project picker typing"), 1, 3, (10, 7)),
+    ] {
+        sessions.push(past(h, id, title, asks, day, hm));
+    }
+    a.session_mut().sessions = sessions;
+    a.session_mut().set_turns(vec![
+        Some(Turn::Waiting),
+        Some(Turn::Working),
+        Some(Turn::TurnEnded),
+    ]);
+    let _ = screen(&mut a, 120, 32);
+    a.session_mut().panes[0].feed(CLAUDE_ASKS.as_bytes());
+    let _ = screen(&mut a, 120, 32);
+    assert!(
+        a.select(|r| matches!(r, crate::app::Row::Agent { agent, .. } if agent.session == "k1"))
+    );
     a
 }
 
-/// T4.12: work whose agent is not running: CANCEL beside RESUME.
+/// The ended claude session of the 11.x sample: `s 883b9d12`.
+const ENDED_CLAUDE: &str = "883b9d12-4c1e-4f0a-9d2e-7a1b3c5d6e7f";
+
+/// What claude shows in T11.1, asking to make an edit.
+const CLAUDE_ASKS: &str = "\x1b[2J\x1b[H ● Write(src/login.rs)\r\n Do you want to make this edit to login.rs?\r\n ❯ 1. Yes\r\n   2. Yes, and don't ask again this session\r\n   3. No, and tell Claude what to do differently (esc)\x1b[?25l";
+
+/// T11.1: AGENTS and WORK.
 #[test]
-fn atlas_t4_12_the_bar_resume() {
-    let mut a = atlas_codex_gone();
-    let at = 14 * 3_600_000 + 2 * 60_000;
-    let last = "Implement /health: read BUILD_NUMBER from the environment at startup".to_string();
-    let session = weft_core::sessions::Recorded { id: "s_codex".into(), at, last };
-    a.modal = Some(Modal::Bar(Bar::Resume { harness: "codex".into(), session, then: None }));
-    expect_screen("atlas_t4_12", &screen(&mut a, 120, 32));
+fn atlas_t11_1_agents_and_rounds() {
+    let mut a = atlas11();
+    expect_screen("atlas_t11_1", &screen(&mut a, 120, 32));
 }
 
-/// T4.13: nothing to resume: no Start fresh, a fresh agent is N.
+/// T11.2: a work's Details, its Ask only.
 #[test]
-fn atlas_t4_13_the_bar_nothing_to_resume() {
-    let mut a = atlas_codex_gone();
-    a.modal = Some(Modal::Bar(Bar::NothingToResume { harness: "codex".into() }));
-    expect_screen("atlas_t4_13", &screen(&mut a, 120, 32));
+fn atlas_t11_2_a_work() {
+    let mut a = atlas11();
+    a.open_view_read(
+        crate::app::View::Work("ask_1".into()),
+        Some("Refresh the token before it expires, not after"),
+        Some("In src/login.rs refresh the session token 60 s before expiry, and retry once on a 401\nbefore signing the person out …"),
+        None,
+    );
+    expect_screen("atlas_t11_2", &screen(&mut a, 120, 32));
+}
+
+/// T11.3: an Eval, once.
+#[test]
+fn atlas_t11_3_an_eval() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Eval("evl_3".into()), None, None, None);
+    expect_screen("atlas_t11_3", &screen(&mut a, 120, 32));
+}
+
+/// T11.4: a Seal, once.
+#[test]
+fn atlas_t11_4_a_seal() {
+    let mut a = atlas11();
+    let held = serde_json::json!({"seal_id": "rcp_7f3a2c", "codes": [], "subject_matches": true});
+    a.open_view_read(crate::app::View::Seal("sel_4".into()), None, None, Some(held));
+    expect_screen("atlas_t11_4", &screen(&mut a, 120, 32));
+}
+
+/// T11.5: a session that has ended.
+#[test]
+fn atlas_t11_5_a_session() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Session(ENDED_CLAUDE.into()), None, None, None);
+    expect_screen("atlas_t11_5", &screen(&mut a, 120, 32));
+}
+
+/// T11.6: the earlier sessions, by day.
+#[test]
+fn atlas_t11_6_earlier_sessions() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Earlier, None, None, None);
+    expect_screen("atlas_t11_6", &screen(&mut a, 120, 32));
+}
+
+/// T11.1's keys: Enter on each kind of row goes where the card says.
+#[test]
+fn enter_on_each_row_goes_where_t11_1_says() {
+    use crate::app::{Row, View};
+    let mut a = atlas11();
+    let view = |a: &App| a.detail().map(|d| d.view.clone());
+    // A running agent: its pane.
+    press(&mut a, KeyCode::Enter);
+    assert_eq!((a.focus, a.pane_focus), (Focus::Agent, 0), "k1 runs in the first pane");
+    a.focus = Focus::Weft;
+    type Pick<'a> = &'a dyn Fn(&Row) -> bool;
+    let cases: [(Pick, View); 4] = [
+        (
+            &|r| matches!(r, Row::Agent { agent, .. } if agent.session == ENDED_CLAUDE),
+            View::Session(ENDED_CLAUDE.into()),
+        ),
+        (&|r| matches!(r, Row::Earlier { .. }), View::Earlier),
+        (&|r| matches!(r, Row::Ask { ask, .. } if ask.unit == "ask_1"), View::Work("ask_1".into())),
+        (&|r| matches!(r, Row::Eval { .. }), View::Eval("evl_3".into())),
+    ];
+    for (pick, want) in cases {
+        assert!(a.select(pick), "{want:?}");
+        press(&mut a, KeyCode::Enter);
+        assert_eq!(view(&a), Some(want));
+        press(&mut a, KeyCode::Left);
+        assert_eq!(view(&a), None, "← goes back to the tree");
+    }
+    // Sealed unfolds into its Seals, and a Seal opens.
+    assert!(a.select(|r| matches!(r, Row::Sealed { .. })));
+    press(&mut a, KeyCode::Enter);
+    let seals = a.rows().iter().filter(|r| matches!(r, Row::Seal { .. })).count();
+    assert_eq!(seals, 4);
+    assert!(a.select(|r| matches!(r, Row::Seal { seal, .. } if seal.n == 4)));
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(view(&a), Some(View::Seal("sel_4".into())));
+    // A session another program runs reads the same; Enter says what Weft
+    // cannot do to it (D9).
+    a.close_all_details();
+    a.session_mut().sessions[0].pane = None;
+    assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session == "c1")));
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.hint_text(),
+        Some("codex runs in another program: Weft can't show it or type into it.")
+    );
+    assert_eq!(a.focus, Focus::Weft);
+}
+
+/// T11.1: Ask on an ended agent says how to Ask it (D12.4); Seal on Eval 3
+/// asks before typing; Seal in a sealed Eval's Details says so (D12.6).
+#[test]
+fn acts_on_the_sample_say_why_in_the_cards_words() {
+    use crate::app::{Row, View};
+    let mut a = atlas11();
+    assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session == ENDED_CLAUDE)));
+    press(&mut a, KeyCode::Char('a'));
+    assert_eq!(a.hint_text(), Some("claude has ended: resume this session to Ask it."));
+    a.open_view_read(View::Eval("evl_2".into()), None, None, None);
+    press(&mut a, KeyCode::Char('s'));
+    assert_eq!(a.hint_text(), Some("Eval 2 is sealed already."));
+    assert!(a.modal.is_none(), "the act stays, and says why");
+}
+
+/// T11.5: R asks first, naming the id; yes asks the daemon for that id.
+#[test]
+fn r_asks_to_resume_the_id_shown_and_yes_resumes_that_id() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Session(ENDED_CLAUDE.into()), None, None, None);
+    press(&mut a, KeyCode::Char('r'));
+    let Some(Modal::Bar(Bar::Resume { session, harness, quiet })) = a.modal.clone() else {
+        panic!("it asks first: {:?}", a.modal)
+    };
+    assert_eq!((session.as_str(), harness.as_str(), quiet), (ENDED_CLAUDE, "claude", None));
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("RESUME CLAUDE ON S 883B9D12?"), "{drawn}");
+    press(&mut a, KeyCode::Enter);
+    // This sample's daemon has never heard of the session, so it refuses
+    // that id, by name: nothing else was asked for.
+    let Some(Modal::Note(said)) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    assert!(said.contains(ENDED_CLAUDE), "{said}");
+}
+
+/// T11.2: Enter on a running session goes to its pane.
+#[test]
+fn enter_on_a_running_sessions_line_goes_to_its_pane() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Work("ask_1".into()), None, None, None);
+    press(&mut a, KeyCode::Enter);
+    assert_eq!((a.focus, a.pane_focus), (Focus::Agent, 0));
+    assert!(a.detail().is_none(), "the Details close as the keys go to the agent");
+}
+
+/// T11.6: `/` narrows the list as it is typed, and keeps its groups.
+#[test]
+fn search_narrows_the_earlier_sessions_and_keeps_the_groups() {
+    let mut a = atlas11();
+    a.open_view_read(crate::app::View::Earlier, None, None, None);
+    press(&mut a, KeyCode::Char('/'));
+    for c in "token".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    let d = a.detail().expect("the list");
+    assert_eq!(d.lines[0], "SEARCH  token");
+    assert_eq!(d.lines[1], "YESTERDAY  1");
+    assert!(d.lines[2].contains("token refresh") && d.lines.len() == 3, "{:?}", d.lines);
+    for c in [KeyCode::Backspace; 5] {
+        press(&mut a, c);
+    }
+    press(&mut a, KeyCode::Char('c'));
+    press(&mut a, KeyCode::Char('o'));
+    let groups: Vec<_> =
+        a.detail().unwrap().lines.iter().filter(|l| !l.starts_with(' ')).cloned().collect();
+    assert_eq!(groups, ["SEARCH  co", "TODAY  1", "YESTERDAY  2", "THIS WEEK  3"], "codex");
+    press(&mut a, KeyCode::Enter);
+    assert!(!a.detail().unwrap().typing, "Enter ends the search; the list stays narrowed");
 }

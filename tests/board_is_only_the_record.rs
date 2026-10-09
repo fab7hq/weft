@@ -22,15 +22,10 @@ use weft::protocol;
 use weft::server;
 
 /// Words the screen may use only once a particular event is in the ledger.
-const SAYS_A_VERDICT: &[&str] = &[
-    "MATCHES WHAT YOU ASKED",
-    "DOESN'T MATCH WHAT YOU ASKED",
-    "NOT ENOUGH PROOF",
-    "judges agreed",
-    "judged by",
-    "recorded as",
-];
-const SAYS_A_DECISION: &[&str] = &["SEALED", "accepted", "rejected", "parked", "dropped"];
+const SAYS_A_VERDICT: &[&str] =
+    &["aligned", "drifted", "not enough proof", "agreed", "judged", "Eval 1"];
+const SAYS_A_DECISION: &[&str] =
+    &["SEALED", "Sealed", "Seal 1", "accepted", "rejected", "parked", "dropped"];
 const SAYS_A_RECEIPT: &[&str] = &["word for word", "sent, reworded"];
 
 #[test]
@@ -61,13 +56,13 @@ fn each_field_appears_only_once_its_own_event_is_written() {
     let with_verdict = [with_receipt.clone(), vec![evaluated("evl_1", "ask_1")]].concat();
     let with_decision = [with_verdict.clone(), vec![sealed("sea_1", "ask_1")]].concat();
 
-    // The row says which act is waiting; the verdict and the decision are
-    // sections of the detail view. Both are screens, and neither may say a
+    // The work's Details say how it was sent; its round, in the tree and in
+    // its breadcrumb, says the verdict and the decision. Neither may say a
     // thing before its event exists.
     for (events, expected, not_yet) in [
         (with_receipt, "word for word", SAYS_A_VERDICT),
-        (with_verdict, "doesn't match what you asked", SAYS_A_DECISION),
-        (with_decision, "accepted", &[] as &[&str]),
+        (with_verdict, "Eval 1 · drifted", SAYS_A_DECISION),
+        (with_decision, "Sealed · 1 seal", &[] as &[&str]),
     ] {
         let (root, mut app) = board(&events);
         let row = screen(&mut app, 100, 30);
@@ -91,7 +86,8 @@ fn each_field_appears_only_once_its_own_event_is_written() {
 /// one is written for the session the ledger names.
 #[test]
 fn an_agents_state_appears_only_once_its_receipt_is_written() {
-    const SAYS_A_STATE: &[&str] = &["ready ·", "working", "waiting for you", "turn ended"];
+    const SAYS_A_STATE: &[&str] =
+        &["AGENTS", "ready", "working", "waiting for you", "turn ended", "last active"];
     let mut asked = compiled("ask_1", "health endpoint", "codex");
     asked["data"]["host"] =
         json!({"name": "codex", "session_ref": "c1", "session_ref_source": "capture"});
@@ -119,12 +115,15 @@ fn an_agents_state_appears_only_once_its_receipt_is_written() {
     .expect("sent");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut drawn = String::new();
-    while std::time::Instant::now() < deadline && !drawn.contains("turn ended") {
+    while std::time::Instant::now() < deadline && !drawn.contains("last active") {
         app.pump();
         drawn = screen(&mut app, 100, 30);
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    assert!(drawn.contains("turn ended · ASKED"), "{drawn}");
+    // Run in another program, with no process its receipt names: its state
+    // cannot be known, so it reads when it was last active (ADR-0029 D11).
+    let row = drawn.lines().find(|l| l.contains("○ codex")).unwrap_or_default();
+    assert!(row.contains("health endpoint") && row.contains("last active"), "{drawn}");
     clean(&root);
 }
 

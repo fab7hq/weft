@@ -515,28 +515,30 @@ impl Session {
     /// One of RingFrame's three acts, by name. The daemon works out what to
     /// type and where it goes; this only says which act. Answered with the
     /// pending it staged.
+    /// One of RingFrame's acts; `eval` is the Eval a Seal seals.
     pub fn act(
         &mut self,
         act: &str,
         unit: Option<&str>,
         pane: Option<usize>,
         text: Option<&str>,
+        eval: Option<&str>,
     ) -> Result<u64> {
         self.last_refusal = None;
         self.unrecorded = None;
         let pane = pane.map(|p| self.id_at(p)).transpose()?;
-        // A Seal names the Eval it seals.
-        let eval = (act == "decide")
-            .then(|| self.units.iter().find(|u| Some(u.ask_id.as_str()) == unit))
-            .flatten()
-            .and_then(|u| u.check.as_ref().map(|c| c.eval_id.clone()));
         self.tell(Call::Act {
             act: act.to_string(),
             unit: unit.map(str::to_string),
             pane,
             text: text.map(str::to_string),
-            eval,
+            eval: eval.map(str::to_string),
         })
+    }
+
+    /// The Evals and the Seals the rounds were grouped by.
+    pub fn record_of(&self) -> weft_core::rounds::Record {
+        self.rounds.record.clone()
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them.

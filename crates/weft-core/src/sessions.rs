@@ -25,21 +25,6 @@ pub fn is_id(id: &str) -> bool {
         && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// A session a harness ran here, as Weft's receipts recorded it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Recorded {
-    pub id: String,
-    /// When it was last used, in milliseconds since the epoch.
-    pub at: i64,
-    /// The first line of its last prompt, when one is known. Weft's receipts
-    /// keep nothing from the conversation, so it is empty from them.
-    pub last: String,
-}
-
-pub fn first_line(prompt: &str) -> String {
-    prompt.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string()
-}
-
 /// When a session was last used, from its turn receipts and its last
 /// prompt's time: `None` when it never held a conversation (it only said it
 /// was `ready`), so there is nothing to resume.
@@ -214,10 +199,21 @@ pub fn index(
             row.state = State::Ended;
         }
     }
+    // The Asks made in each session: one pass over the board, however
+    // many sessions and Asks a project collects.
+    let mut made: std::collections::HashMap<&str, (usize, &Unit)> = Default::default();
+    for u in units {
+        let Some(id) = u.session_ref.as_deref() else { continue };
+        let e = made.entry(id).or_insert((0, u));
+        e.0 += 1;
+        if u.asked_at >= e.1.asked_at {
+            e.1 = u;
+        }
+    }
     for row in &mut rows {
-        let mine = units.iter().filter(|u| u.session_ref.as_deref() == Some(row.id.as_str()));
-        row.asks = mine.clone().count();
-        row.title = mine.max_by(|a, b| a.asked_at.cmp(&b.asked_at)).map(|u| u.title.clone());
+        if let Some((n, latest)) = made.get(row.id.as_str()) {
+            (row.asks, row.title) = (*n, Some(latest.title.clone()));
+        }
     }
     rows.sort_by(|a, b| {
         (b.state == State::Running)

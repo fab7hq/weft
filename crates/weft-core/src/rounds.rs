@@ -185,6 +185,7 @@ pub struct Sealed {
 
 /// WORK, as rounds, each in the order it is drawn.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Rounds {
     /// Evals being gathered or judged, newest first: drawn above Open.
     pub judging: Vec<Round>,
@@ -196,6 +197,9 @@ pub struct Rounds {
     pub evals: Vec<Round>,
     /// Every Seal, newest first.
     pub seals: Vec<Sealed>,
+    /// The Evals and Seals they were grouped by, for their Details.
+    #[serde(default)]
+    pub record: Record,
 }
 
 impl Rounds {
@@ -227,6 +231,7 @@ pub fn rounds(units: &[Unit], record: &Record) -> Rounds {
 
     let mut out = Rounds {
         since: record.evals.iter().rev().find(|e| e.completed() && !e.voided).map(|e| e.n),
+        record: record.clone(),
         ..Rounds::default()
     };
     let mut by_eval: Vec<(&Eval, Vec<String>)> = Vec::new();

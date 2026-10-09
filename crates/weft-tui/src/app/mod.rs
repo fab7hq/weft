@@ -1,8 +1,8 @@
 //! The running application: state, events, and the loop.
 //!
-//! Two nouns, two surfaces: agents are tabs over the pane, work is a sidebar
-//! tree of project, harness, and action. Opening an action shows its whole
-//! story in a blocking detail view.
+//! Two nouns, two surfaces: agents are tabs over the pane, and the sidebar
+//! is a tree of each project's AGENTS and WORK (ADR-0029). Opening a row
+//! shows its Details, one level each, in a blocking view.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -23,7 +23,8 @@ pub use weft_core::board::Act;
 use weft_core::board::{Board, Next, PaneInfo};
 pub use weft_core::offers::say_handoff;
 use weft_core::readiness::Readiness;
-use weft_core::sessions::Recorded;
+use weft_core::sessions::State;
+use weft_core::words::{fill, word};
 
 /// What Weft is about to type, and where. Shown before anything is sent.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,8 +86,13 @@ macro_rules! sess {
     };
 }
 
+mod details;
 mod eval;
 mod input;
+mod rows;
+
+pub use details::{Detail, Link, View};
+pub use rows::Row;
 mod notices;
 mod remote;
 pub use remote::ago;
@@ -106,67 +112,6 @@ fn shellexpand(typed: &str) -> String {
             None => typed.to_string(),
         },
         None => typed.to_string(),
-    }
-}
-
-/// A row of the sidebar. Project over harness over action, because a unit
-/// belongs to the harness it was asked of.
-///
-/// The rows are computed from the units and the fold state each frame rather
-/// than stored, so there is one source of truth and nothing to keep in step.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Row {
-    Project {
-        project: usize,
-        name: String,
-        folded: bool,
-        open: usize,
-        waiting: usize,
-    },
-    Harness {
-        project: usize,
-        name: String,
-        folded: bool,
-        waiting: usize,
-        running: bool,
-        turbo: bool,
-    },
-    Action {
-        project: usize,
-        unit: usize,
-        word: weft_core::tree::Word,
-        turn: Option<weft_core::tree::TurnWord>,
-    },
-}
-
-impl Row {
-    /// Which project this row belongs to. Moving the selection moves the
-    /// focus with it, so an act always lands in the project you are looking
-    /// at and never in the one you were.
-    pub fn project(&self) -> usize {
-        match self {
-            Row::Project { project, .. }
-            | Row::Harness { project, .. }
-            | Row::Action { project, .. } => *project,
-        }
-    }
-}
-
-impl Row {
-    /// The key this row folds under, or `None` for a leaf.
-    pub fn fold_key(&self) -> Option<String> {
-        match self {
-            Row::Project { name, .. } => Some(name.clone()),
-            Row::Harness { project, name, .. } => Some(format!("{project}\u{0}{name}")),
-            Row::Action { .. } => None,
-        }
-    }
-
-    pub fn folded(&self) -> bool {
-        match self {
-            Row::Project { folded, .. } | Row::Harness { folded, .. } => *folded,
-            Row::Action { .. } => false,
-        }
     }
 }
 
@@ -252,24 +197,9 @@ pub enum Bar {
     /// Weft types into on its own: `why` says what it reported instead.
     /// Typing is the person's to allow.
     SendAnyway { pending: Pending, why: &'static str },
-    /// Work whose agent is not running: resume the session it was asked in,
-    /// then carry on with `then`.
-    Resume { harness: String, session: Recorded, then: Option<Act> },
-    /// Work whose agent is not running and nothing to resume: a fresh agent
-    /// is `[N]`, as everywhere.
-    NothingToResume { harness: String },
-}
-
-/// The two reading surfaces. Siblings, not a stack: `P` from the judges
-/// drawer swaps the content rather than piling a second overlay on top.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Detail {
-    pub title: String,
-    pub harness: String,
-    /// The whole story, already assembled. Folded and scrolled at draw time,
-    /// because only the render knows how wide the screen is.
-    pub lines: Vec<String>,
-    pub offset: usize,
+    /// Resume this session, by its id (ADR-0029 D4). `quiet` is when it was
+    /// last active, when Weft cannot tell whether it runs (D11).
+    Resume { harness: String, session: String, quiet: Option<String> },
 }
 
 /// How long the loop waits when nothing wakes it.
@@ -298,8 +228,12 @@ pub struct App {
     /// How far the work list is scrolled. A list can be longer than the pane.
     list_offset: usize,
     detail: Option<Detail>,
-    /// The furthest the drawer may be scrolled, as the last render measured it.
+    /// The Details views a link was followed from, which `←` goes back to.
+    behind: Vec<Detail>,
+    /// The furthest the drawer may be scrolled, and how many lines it shows,
+    /// as the last render measured them.
     detail_reach: usize,
+    detail_room: usize,
     /// The Eval view, when it is open. It blocks, as the detail view does.
     eval: Option<EvalScreen>,
     /// Whether SET UP has been asked for once, and offered once: it opens by
@@ -362,6 +296,11 @@ pub struct App {
     /// The sidebar's rows, built once for the frame being drawn: nothing a
     /// frame draws changes what they are built from.
     listed: std::cell::RefCell<Option<std::rc::Rc<Vec<Row>>>>,
+    /// The time a test holds still; none reads the system's.
+    clock: Option<i64>,
+    /// The person has moved about: the selection is theirs, and no longer
+    /// lands on the first agent or work as the tree fills in.
+    landed: bool,
 }
 
 impl App {
@@ -556,9 +495,27 @@ impl App {
         })
     }
 
-    /// Why an action is not available now, as one sentence. `None` means it is.
-    pub fn missing_agent(&self, act: Act) -> Option<String> {
-        self.with_board(|b| b.missing_agent(act))
+    /// The board with this Ask selected: what a round's act reads, routed by
+    /// its newest Ask as a work's was.
+    fn with_board_on<T>(
+        &self,
+        units: &[Unit],
+        unit: Option<&str>,
+        f: impl FnOnce(Board<'_>) -> T,
+    ) -> T {
+        let (panes, agents) = facts_of(&sess!(self));
+        f(Board {
+            units,
+            selected: unit
+                .and_then(|id| units.iter().position(|u| u.ask_id == id))
+                .unwrap_or(usize::MAX),
+            panes: &panes,
+            focused: self.pane_focus,
+            readiness: &|h| self.readiness(h),
+            routing: &self.routing,
+            workspace_gap: self.workspace_gap.as_deref(),
+            agents: &agents,
+        })
     }
 
     pub fn unavailable(&self, act: Act) -> Option<String> {
@@ -583,61 +540,6 @@ impl App {
         *self.listed.borrow_mut() = holding.then(|| std::rc::Rc::new(self.list()));
     }
 
-    fn list(&self) -> Vec<Row> {
-        let facts: Vec<_> = self.projects.iter().map(|p| (p, facts_of(&p.session))).collect();
-        let titles: Vec<_> = facts
-            .iter()
-            .map(|(p, _)| move |name: &str| p.session.harnesses.find(name).map(|h| h.title.clone()))
-            .collect();
-        let ready = |h: &str| self.readiness(h);
-        let projects: Vec<_> = facts
-            .iter()
-            .enumerate()
-            .map(|(at, (p, (panes, agents)))| weft_core::tree::Facts {
-                name: &p.name,
-                units: self.units_of(at),
-                panes,
-                agents,
-                sessions: &p.session.sessions,
-                title: &titles[at],
-                readiness: &ready,
-                routing: &self.routing,
-                setup: p.session.needs,
-            })
-            .collect();
-        let folded = |at: usize, harness: Option<&str>| match harness {
-            None => self.folded.contains(&self.projects[at].name),
-            Some(name) => self.folded.contains(&format!("{at}\u{0}{name}")),
-        };
-        let mut out = Vec::new();
-        for (at, p) in weft_core::tree::rows(&projects, &folded).into_iter().enumerate() {
-            out.push(Row::Project {
-                project: at,
-                name: p.name,
-                folded: p.folded,
-                open: p.open,
-                waiting: p.needs,
-            });
-            for h in p.harnesses {
-                out.push(Row::Harness {
-                    project: at,
-                    name: h.harness,
-                    folded: h.folded,
-                    waiting: h.needs,
-                    running: h.running,
-                    turbo: h.turbo,
-                });
-                out.extend(h.works.into_iter().map(|w| Row::Action {
-                    project: at,
-                    unit: w.at,
-                    word: w.word,
-                    turn: w.turn,
-                }));
-            }
-        }
-        out
-    }
-
     /// Move the focus to the project the selected row is in. An act lands in
     /// the project you are looking at, never in the one you were.
     fn follow_the_selection(&mut self) {
@@ -650,6 +552,10 @@ impl App {
     }
 
     /// The focused project's root and name.
+    pub fn session(&self) -> &Session {
+        &self.projects[self.at].session
+    }
+
     pub fn session_mut(&mut self) -> &mut Session {
         &mut self.projects[self.at].session
     }
@@ -677,18 +583,6 @@ impl App {
     /// own connection.
     pub fn units_of(&self, at: usize) -> &[Unit] {
         if at == self.at { &self.units } else { &self.projects[at].session.units }
-    }
-
-    /// The unit the selected row is about, if it is about one.
-    pub fn selected_index(&self) -> Option<usize> {
-        match self.rows().get(self.selected) {
-            Some(Row::Action { unit, .. }) => Some(*unit),
-            _ => None,
-        }
-    }
-
-    pub fn selected_unit(&self) -> Option<&Unit> {
-        self.selected_index().and_then(|i| self.units.get(i))
     }
 
     /// Agents running, as the title bar's OPEN counts them.
@@ -737,6 +631,8 @@ impl App {
             asked: Default::default(),
             reading: None,
             listed: Default::default(),
+            clock: None,
+            landed: false,
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
@@ -745,7 +641,9 @@ impl App {
             folded: Default::default(),
             list_offset: 0,
             detail: None,
+            behind: Vec::new(),
             detail_reach: 0,
+            detail_room: 1,
             eval: None,
             eval_reach: 0,
             setup_asked: false,
@@ -781,7 +679,7 @@ impl App {
     /// is short of a moment later: asking it costs a process, so the daemon
     /// does that off its own loop.
     pub fn add(&mut self, harness: &str, spec: &str) -> Result<()> {
-        self.start(harness, spec, None, Then::Started { go: false, then: None })
+        self.start(harness, spec, None, Then::Started { go: false })
     }
 
     /// Start an agent, resuming `session` when it names one, and do `then`
@@ -830,10 +728,9 @@ impl App {
                 match opening {
                     Opening::Nothing => {}
                     Opening::Picker => self.open_agent_picker(),
-                    Opening::PickUp { harness, then } => self.show_pick_up(harness, then),
                 }
             }
-            Then::Started { go, then } => match answer {
+            Then::Started { go } => match answer {
                 Err(e) => {
                     self.modal = Some(Modal::Note(format!("Could not start it: {}", said(&e))))
                 }
@@ -844,11 +741,10 @@ impl App {
                         return;
                     };
                     if go && at == self.at {
+                        self.detail = None;
+                        self.behind.clear();
                         self.pane_focus = i;
-                        match then {
-                            Some(act) => self.act(act),
-                            None => self.focus = Focus::Agent,
-                        }
+                        self.focus = Focus::Agent;
                     }
                 }
             },
@@ -951,56 +847,6 @@ impl App {
         self.focus = Focus::Weft;
     }
 
-    /// Offer to start the harness this work needs: the session the selected
-    /// Ask was asked in, else the harness's latest on record, else fresh.
-    /// Offered once the daemon has said what could be started.
-    fn offer_pick_up(&mut self, harness: String, then: Option<Act>) {
-        self.look_for_agents(Opening::PickUp { harness, then });
-    }
-
-    fn show_pick_up(&mut self, harness: String, then: Option<Act>) {
-        // Picked up only where it is set up: otherwise SET UP is where it goes.
-        if !self.readiness(&harness).is_ready() {
-            let said = weft_core::words::say("why.not_set_up", &harness);
-            self.say(format!("{said} [U]PDATE sets it up."));
-            return;
-        }
-        let session = weft_core::offers::resume_session(
-            self.selected_unit().filter(|u| u.harness == harness),
-        );
-        self.modal_choice = 0;
-        self.modal = Some(Modal::Bar(match session {
-            Some(session) => Bar::Resume { harness, session, then },
-            None => Bar::NothingToResume { harness },
-        }));
-    }
-
-    /// Start the harness where it left off or fresh, then carry on. Weft runs
-    /// the command a person would type, and does not claim the session came
-    /// back: the harness says that, in its own pane.
-    fn pick_up(&mut self, harness: &str, session: Option<&Recorded>, then: Option<Act>) {
-        self.modal = None;
-        let Some(h) = sess!(self).harnesses.find(harness).cloned() else {
-            self.modal = Some(Modal::Note(format!("Weft does not know how to start {harness}.")));
-            return;
-        };
-        let spec = match session {
-            Some(s) => match h.resume_spec(&s.id) {
-                Some(spec) => spec,
-                None => {
-                    self.modal =
-                        Some(Modal::Note(weft_core::words::word("resume.nothing").to_string()));
-                    return;
-                }
-            },
-            None => h.spec(),
-        };
-        let resumes = session.map(|s| s.id.as_str());
-        if let Err(e) = self.start(harness, &spec, resumes, Then::Started { go: true, then }) {
-            self.modal = Some(Modal::Note(format!("Could not start {spec}: {e}")));
-        }
-    }
-
     /// Take the board the daemon read, and notice anything it implies. The
     /// record is followed once, in the daemon, and every client is told.
     /// Take in what every project's connection has sent, so a board in the
@@ -1034,8 +880,8 @@ impl App {
         self.offer_allow();
         if self.units != sess!(self).units {
             self.units = sess!(self).units.clone();
-            self.clamp_selection();
         }
+        self.clamp_selection();
         self.routing = sess!(self).routing.clone();
         self.workspace_gap = sess!(self).gap.clone();
         // A name in the routing file that is not a harness Weft knows. Said
@@ -1079,18 +925,6 @@ impl App {
         self.take_the_board();
         self.look_for_agents(Opening::Nothing);
         self.settle();
-    }
-
-    fn clamp_selection(&mut self) {
-        let rows = self.rows();
-        self.selected = self.selected.min(rows.len().saturating_sub(1));
-        // Land on the work, not on the project heading above it. Only while
-        // nothing has been picked, so it never overrides a choice.
-        if self.selected == 0
-            && let Some(first) = rows.iter().position(|r| matches!(r, Row::Action { .. }))
-        {
-            self.selected = first;
-        }
     }
 
     fn say(&mut self, sentence: impl Into<String>) {
@@ -1147,101 +981,16 @@ impl App {
             return;
         }
         let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) else { return };
-        self.ask_first("send", Some(&id), None, None);
-    }
-
-    /// Check or Decide, in whichever harness this project routes it to.
-    fn start_skill(&mut self, skill: &str) {
-        let act = if skill == "eval" { Act::Eval } else { Act::Seal };
-        if !self.guard(act) {
-            return;
-        }
-        let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) else { return };
-        self.ask_first(if skill == "eval" { "check" } else { "decide" }, Some(&id), None, None);
+        self.ask_first("send", Some(&id), None, None, None);
     }
 
     fn send_ask(&mut self, text: String, target: usize, follows: Option<Follows>) {
         match follows {
-            Some(f) => self.ask_first("follow_up", Some(&f.ask_id), Some(target), Some(&text)),
-            None => self.ask_first("ask", None, Some(target), Some(&text)),
-        }
-    }
-
-    /// One unit's whole story, in one blocking view: the Ask that started it,
-    /// the Eval that judged it, the Seal that closed it.
-    ///
-    /// Three reads, because the record keeps the three apart. They are joined
-    /// here rather than behind three keys, which is what `[P] WORDING`,
-    /// `[J] JUDGES` and `[T] THE SEAL` were.
-    fn open_detail(&mut self) {
-        if !self.guard(Act::Detail) {
-            return;
-        }
-        let Some(unit) = self.selected_unit().cloned() else { return };
-        // A part that will not come back is a fact about the record, not a
-        // reason to refuse the view: the section says so and the rest opens.
-        // What the person asked, and the prompt once one is composed.
-        let mut reads = vec![(Part::Source, "source", unit.ask_id.clone())];
-        if !unit.requested_only {
-            reads.push((Part::Prompt, "wording", unit.ask_id.clone()));
-        }
-        if let Some(c) = &unit.check {
-            reads.push((Part::Record, "judges", c.eval_id.clone()));
-        }
-        if let Some(id) = &unit.seal_id {
-            reads.push((Part::Seal, "seal", id.clone()));
-        }
-        let mut left = 0;
-        for (which, what, id) in reads {
-            if let Ok(call) = sess!(self).read(what, &id) {
-                self.await_answer(call, Then::Read(which));
-                left += 1;
+            Some(f) => {
+                self.ask_first("follow_up", Some(&f.ask_id), Some(target), Some(&text), None)
             }
+            None => self.ask_first("ask", None, Some(target), Some(&text), None),
         }
-        self.reading =
-            Some(Reading { unit, source: None, prompt: None, record: None, seal: None, left });
-        if left == 0 {
-            self.finish_reading();
-        }
-    }
-
-    /// One part of the detail view, read; once every part is in, the view
-    /// opens. A part that did not come back is said in its section.
-    fn read_part(&mut self, part: Part, answer: std::result::Result<serde_json::Value, String>) {
-        let Some(r) = self.reading.as_mut() else { return };
-        r.left = r.left.saturating_sub(1);
-        if let Ok(v) = answer {
-            match part {
-                Part::Source => {
-                    r.source = v.get("text").and_then(|t| t.as_str()).map(str::to_string)
-                }
-                Part::Prompt => {
-                    r.prompt = v.get("text").and_then(|t| t.as_str()).map(str::to_string)
-                }
-                Part::Record => r.record = serde_json::from_value(v).ok(),
-                Part::Seal => r.seal = Some(v),
-            }
-        }
-        if r.left == 0 {
-            self.finish_reading();
-        }
-    }
-
-    fn finish_reading(&mut self) {
-        let Some(r) = self.reading.take() else { return };
-        self.detail = Some(Detail {
-            lines: weft_core::offers::detail_read(
-                &r.unit,
-                r.source.as_deref(),
-                r.prompt.as_deref(),
-                r.record.as_ref(),
-                r.seal.as_ref(),
-                self.deciding_harness(Act::Eval).as_deref(),
-            ),
-            title: r.unit.title.clone(),
-            harness: r.unit.harness.clone(),
-            offset: 0,
-        });
     }
 
     /// Whether the selected Ask has a prompt still to send: the one thing
@@ -1308,36 +1057,19 @@ impl App {
                     harness: v.get("harness")?.as_str()?.to_string(),
                     label: v.get("label")?.as_str()?.to_string(),
                     spec: v.get("spec")?.as_str()?.to_string(),
-                    session: v.get("session").and_then(|s| {
-                        Some(Recorded {
-                            id: s.get("id")?.as_str()?.to_string(),
-                            at: s.get("at")?.as_i64()?,
-                            last: s.get("last")?.as_str()?.to_string(),
-                        })
-                    }),
                 })
             })
             .collect();
     }
 
-    /// What `[N]` offers: each harness fresh. Picking a session back up is
-    /// done from the work, which knows which session it was.
+    /// What `[N]` offers: each harness fresh. A session is resumed by its
+    /// id, from its own Details (T11.5).
     pub fn fresh_starts(&self) -> Vec<Start> {
-        self.starts.iter().filter(|s| s.session.is_none()).cloned().collect()
+        self.starts.clone()
     }
 
     fn start_agent_picker(&mut self) {
         self.look_for_agents(Opening::Picker);
-    }
-
-    /// `[N]` with nothing to resume: the picker, on that harness.
-    fn start_fresh(&mut self, harness: &str) {
-        self.modal = None;
-        self.open_agent_picker();
-        if let Some(i) = self.fresh_starts().iter().position(|s| s.harness == harness) {
-            self.modal = Some(Modal::StartAgent { choice: i });
-            self.modal_choice = i;
-        }
     }
 
     fn open_agent_picker(&mut self) {
@@ -1354,7 +1086,7 @@ impl App {
     pub fn start_chosen_agent(&mut self, choice: usize) {
         let Some(start) = self.fresh_starts().get(choice).cloned() else { return };
         self.modal = None;
-        let then = Then::Started { go: true, then: None };
+        let then = Then::Started { go: true };
         if let Err(e) = self.start(&start.harness, &start.spec, None, then) {
             self.modal = Some(Modal::Note(format!("Could not run {}: {e}", start.spec)));
         }
@@ -1369,8 +1101,9 @@ impl App {
         unit: Option<&str>,
         pane: Option<usize>,
         text: Option<&str>,
+        eval: Option<&str>,
     ) {
-        match sess!(self).act(act, unit, pane, text) {
+        match sess!(self).act(act, unit, pane, text, eval) {
             Ok(call) => self.await_answer(call, Then::Confirm),
             Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
@@ -1403,24 +1136,7 @@ impl App {
 
     // --- the drawer ----------------------------------------------------------
 
-    fn scroll_detail(&mut self, delta: i32) {
-        // Held down, `↓` used to scroll the whole reading off the top and
-        // leave an empty panel. It stops at the last line instead.
-        let reach = self.detail_reach as i32;
-        if let Some(d) = self.detail.as_mut() {
-            d.offset = (d.offset as i32 + delta).clamp(0, reach) as usize;
-        }
-    }
-
     // --- moving about ---------------------------------------------------------
-
-    fn pick(&mut self, delta: i8) {
-        let n = self.rows().len() as i32;
-        if n == 0 {
-            return;
-        }
-        self.select_row(((self.selected as i32 + delta as i32).rem_euclid(n)) as usize);
-    }
 
     /// Select one row of the list, the way the arrows arrive at it.
     fn select_row(&mut self, row: usize) {
@@ -1446,50 +1162,6 @@ impl App {
         }
         self.modal_choice =
             ((self.modal_choice as i32 + delta as i32).rem_euclid(n as i32)) as usize;
-    }
-
-    /// `[Enter]` opens what is closed and acts on what is already open. The
-    /// first press on a row always reveals; the second goes somewhere. On a
-    /// project it only ever folds and unfolds — nothing in the sidebar
-    /// removes anything on `[Enter]`.
-    fn open_row(&mut self) {
-        let Some(row) = self.rows().get(self.selected).cloned() else {
-            self.say("Nothing has been asked for yet.");
-            return;
-        };
-        match row {
-            Row::Project { .. } => self.set_fold(&row, !row.folded()),
-            Row::Harness { ref name, .. } if row.folded() => self.set_fold(&row, false),
-            Row::Harness { ref name, .. } => self.go_to_harness(name),
-            Row::Action { .. } => match self.selected_unit() {
-                Some(u) if u.is_open() && self.pane_for(&u.harness).is_none() => {
-                    let harness = u.harness.clone();
-                    self.offer_pick_up(harness, None)
-                }
-                _ => self.act(Act::Detail),
-            },
-        }
-    }
-
-    /// `[→]` and `[←]` unfold and fold without ever activating, which is what
-    /// a person wants when they are only looking.
-    fn set_fold(&mut self, row: &Row, folded: bool) {
-        let Some(key) = row.fold_key() else { return };
-        if folded {
-            self.folded.insert(key);
-        } else {
-            self.folded.remove(&key);
-        }
-        self.selected = self.selected.min(self.rows().len().saturating_sub(1));
-    }
-
-    fn fold_selected(&mut self, folded: bool) -> bool {
-        let Some(row) = self.rows().get(self.selected).cloned() else { return false };
-        if row.fold_key().is_none() || row.folded() == folded {
-            return false;
-        }
-        self.set_fold(&row, folded);
-        true
     }
 
     /// Open another project beside the ones already here. A window holds as
@@ -1542,20 +1214,10 @@ impl App {
         }
     }
 
-    /// The pane that is running this harness, or the offer to pick it up.
-    fn go_to_harness(&mut self, harness: &str) {
-        if let Some(i) = sess!(self).panes.iter().position(|p| p.harness == harness) {
-            self.pane_focus = i;
-            self.focus = Focus::Agent;
-            return;
-        }
-        self.offer_pick_up(harness.to_string(), None);
-    }
-
     /// `←` is back everywhere in Weft: it closes the drawer, then collapses the
     /// row. `Esc` is never Weft's.
     fn back(&mut self) {
-        if self.detail.take().is_some() {
+        if self.close_detail() {
             return;
         }
         // In the sidebar `←` folds the level it is on before it goes anywhere.
@@ -1592,13 +1254,13 @@ impl App {
     /// Show a pane, with its harness's row picked in the sidebar: the row
     /// that carries the badge, and the project any act then lands in.
     fn go_to_pane(&mut self, pane: usize) {
-        if let Some(name) = self.harness_at(pane).map(str::to_string) {
+        if let Some(id) = sess!(self).panes.get(pane).map(|p| p.id) {
             let at = self.at;
             // Folded away, the row would not be there to pick: open to it.
             self.folded.remove(&self.projects[at].name);
-            let row = self.rows().iter().position(
-                |r| matches!(r, Row::Harness { project, name: n, .. } if *project == at && *n == name),
-            );
+            let row = self.rows().iter().position(|r| {
+                matches!(r, Row::Agent { project, agent, .. } if *project == at && agent.pane == Some(id))
+            });
             if let Some(row) = row {
                 self.selected = row;
             }
@@ -1606,6 +1268,7 @@ impl App {
         self.pane_focus = pane;
         self.show_work = false;
         self.detail = None;
+        self.behind.clear();
     }
 
     /// The next pane waiting for an answer, skipping the one already shown.
@@ -1645,25 +1308,16 @@ impl App {
     /// What an action does, wherever it was asked for. The bar shows a key for
     /// every one of these and each is also a click, so they meet here.
     pub fn act(&mut self, act: Act) {
-        // Work whose agent is not running is picked back up, not refused.
-        if matches!(act, Act::Proceed | Act::Eval | Act::Seal)
-            && let Some(harness) = self.missing_agent(act)
-        {
-            return self.offer_pick_up(harness, Some(act));
-        }
         match act {
-            Act::Ask => {
-                if self.guard(Act::Ask) {
-                    self.start_ask(None);
+            Act::Ask | Act::Eval | Act::Seal => self.act_on_row(act),
+            Act::Proceed => self.proceed(),
+            Act::Detail => {
+                if let Some(id) = self.selected_unit().map(|u| u.ask_id.clone()) {
+                    self.open_view(View::Work(id));
                 }
             }
-            Act::Proceed => self.proceed(),
-            Act::Detail => self.open_detail(),
-            Act::Eval => self.start_skill("eval"),
-            Act::Seal => self.start_skill("seal"),
             Act::FollowUp => {
                 if self.guard(Act::FollowUp) {
-                    self.detail = None;
                     let follows = self.selected_unit().map(|u| Follows {
                         ask_id: u.ask_id.clone(),
                         title: u.title.clone(),
@@ -1716,8 +1370,42 @@ impl App {
         self.list_rows = rows.max(1);
     }
 
-    pub fn note_detail_reach(&mut self, last: usize) {
+    pub fn note_detail_reach(&mut self, last: usize, room: usize) {
         self.detail_reach = last;
+        self.detail_room = room.max(1);
+    }
+
+    /// Where the render scrolled the Details view to, to keep its pick in view.
+    pub fn set_detail_offset(&mut self, offset: usize) {
+        if let Some(d) = self.detail.as_mut() {
+            d.offset = offset;
+        }
+    }
+
+    /// Whether the focused project has any session on record.
+    pub fn has_sessions(&self) -> bool {
+        !sess!(self).sessions.is_empty()
+    }
+
+    /// The Mac's distance from UTC, in milliseconds, as the daemon said.
+    pub fn zone(&self) -> i64 {
+        sess!(self).zone
+    }
+
+    /// Now, in milliseconds since the epoch: the clock a time is read
+    /// against (`09:12`, `Tue 17:48`), held still by a test.
+    pub fn now(&self) -> i64 {
+        self.clock.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64)
+        })
+    }
+
+    /// Test seam: the time it is, and the Mac's distance from UTC.
+    pub fn set_clock(&mut self, now: i64, zone: i64) {
+        self.clock = Some(now);
+        sess!(self).zone = zone;
     }
 
     // --- test seams -----------------------------------------------------------
@@ -1727,6 +1415,7 @@ impl App {
         // The board belongs to the project it came from, not to the window,
         // or it would vanish the moment the focus moved elsewhere.
         sess!(self).units = units.clone();
+        sess!(self).rounds = rounds_of_units(&units);
         self.units = units;
         self.clamp_selection();
     }
@@ -1763,20 +1452,19 @@ enum Then {
     Turbo,
     /// What could be started here is known: open what was waiting on it.
     Starts(Opening),
-    /// An agent started: go to it, when asked to, then carry on.
-    Started { go: bool, then: Option<Act> },
+    /// An agent started: go to it, when asked to.
+    Started { go: bool },
     /// The Eval view, read or read again.
     EvalView { eval_id: String, title: String },
     /// One change's hunk, for the Eval view.
     Hunk { window: String },
 }
 
-/// A part of the detail view.
+/// A part of a Details view that is read from the daemon.
 #[derive(Clone, Copy)]
 enum Part {
     Source,
     Prompt,
-    Record,
     Seal,
 }
 
@@ -1784,15 +1472,14 @@ enum Part {
 enum Opening {
     Nothing,
     Picker,
-    PickUp { harness: String, then: Option<Act> },
 }
 
-/// The detail view, while its parts are read.
+/// A Details view, while its parts are read.
+#[derive(Default)]
 struct Reading {
-    unit: Unit,
+    view: Option<View>,
     source: Option<String>,
     prompt: Option<String>,
-    record: Option<weft_core::record::Record>,
     seal: Option<serde_json::Value>,
     left: usize,
 }
@@ -1804,8 +1491,6 @@ pub struct Start {
     pub harness: String,
     pub label: String,
     pub spec: String,
-    /// The session this would pick up, when it picks one up.
-    pub session: Option<Recorded>,
 }
 
 /// A project's panes as the rules read them, and each one's agent state.
@@ -1822,6 +1507,45 @@ fn facts_of(s: &Session) -> (Vec<PaneInfo>, Vec<Option<weft_core::turns::Turn>>)
         })
         .collect();
     (panes, s.panes.iter().map(|p| p.turn).collect())
+}
+
+/// The rounds of a board put in front by a test: its record as the units
+/// remember it, each Eval a check names and each Seal, numbered as met.
+fn rounds_of_units(units: &[Unit]) -> weft_core::rounds::Rounds {
+    use weft_core::rounds::{Eval, Record, Seal};
+    let mut record = Record::default();
+    for u in units {
+        if let Some(c) = &u.check
+            && !record.evals.iter().any(|e| e.id == c.eval_id)
+        {
+            let asks =
+                units.iter().filter(|v| v.check.as_ref().is_some_and(|d| d.eval_id == c.eval_id));
+            record.evals.push(Eval {
+                id: c.eval_id.clone(),
+                n: record.evals.len() + 1,
+                opened_at: u.asked_at.clone(),
+                asks: asks.map(|v| v.ask_id.clone()).collect(),
+                verdict: Some(c.verdict),
+                agreement: Some(c.agreement),
+                judged_by: c.judged_by.clone(),
+                completed_at: None,
+                voided: false,
+            });
+        }
+        if let Some(id) = &u.seal_id
+            && !record.seals.iter().any(|s| &s.id == id)
+        {
+            record.seals.push(Seal {
+                id: id.clone(),
+                n: record.seals.len() + 1,
+                at: u.sealed_at.clone().unwrap_or_default(),
+                disposition: u.sealed.clone().unwrap_or_default(),
+                by: "you".into(),
+                eval: u.check.as_ref().map(|c| c.eval_id.clone()),
+            });
+        }
+    }
+    weft_core::rounds::rounds(units, &record)
 }
 
 /// A refusal from the daemon, as one sentence for the person.

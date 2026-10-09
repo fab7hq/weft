@@ -27,30 +27,57 @@ pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     });
 }
 
-/// One unit's whole story, blocking. Lines fold rather than being cut: this
-/// is where the exact wording is read, and a prompt missing its right-hand
-/// end is not the exact wording.
+/// A Details view, blocking (T11.2–T11.6). Lines fold rather than being
+/// cut: this is where the exact wording is read, and a prompt missing its
+/// right-hand end is not the exact wording. A line's part after a tab is
+/// drawn against the right edge; the picked link is drawn picked.
 pub(super) fn detail(app: &mut App, area: Rect) -> Paragraph<'static> {
     let th = app.theme;
     let room = area.height as usize;
     let width = (area.width.saturating_sub(1) as usize).max(1);
     // Folded before it is scrolled, so one press of `↓` moves one drawn line
-    // rather than a whole paragraph of them.
-    let (folded, offset) = {
+    // rather than a whole paragraph of them. Each keeps the line it came from.
+    let (folded, offset, picked) = {
         let Some(d) = app.detail() else { return Paragraph::new("") };
-        (d.lines.iter().flat_map(|l| fold(l, width)).collect::<Vec<String>>(), d.offset)
+        let mut folded: Vec<(usize, String)> = Vec::new();
+        for (i, l) in d.lines.iter().enumerate() {
+            match l.split_once('\t') {
+                Some((left, right)) => {
+                    let gap = width.saturating_sub(cells(left) + cells(right) + 1).max(1);
+                    folded.push((i, format!("{left}{}{right}", " ".repeat(gap))));
+                }
+                None => folded.extend(fold(l, width).into_iter().map(|f| (i, f))),
+            }
+        }
+        (folded, d.offset, d.picked_line())
     };
-    app.note_detail_reach(folded.len().saturating_sub(room));
+    app.note_detail_reach(folded.len().saturating_sub(room), room);
+    // The picked line is kept in view.
+    let offset = match picked.and_then(|p| folded.iter().position(|(i, _)| *i == p)) {
+        Some(at) if at < offset => at,
+        Some(at) if at >= offset + room => at + 1 - room,
+        _ => offset,
+    };
+    app.set_detail_offset(offset);
 
     let mut lines: Vec<Line> = folded
         .iter()
         .skip(offset)
         .take(room)
-        .map(|l| {
-            // A section heading is the one thing that carries weight here.
-            let heading = ["ASK ", "EVAL ", "SEAL ", "● "].iter().any(|h| l.starts_with(h));
-            let style = if heading { th.title() } else { th.label() };
-            Line::styled(format!(" {l}"), style)
+        .map(|(i, l)| {
+            // A section heading, flush left, is the one thing with weight.
+            let style = if Some(*i) == picked {
+                th.selected()
+            } else if !l.starts_with(' ') {
+                th.title()
+            } else {
+                th.label()
+            };
+            let text = format!(" {l}");
+            if Some(*i) == picked {
+                return Line::styled(padded(&text, width + 1), style);
+            }
+            Line::styled(text, style)
         })
         .collect();
     let more = folded.len().saturating_sub(offset + lines.len());

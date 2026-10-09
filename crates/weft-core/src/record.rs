@@ -82,6 +82,31 @@ pub struct Record {
     /// How much was judged, as RingFrame counted it: `(judged, total)` windows.
     #[serde(default)]
     pub windows_judged: Option<(u64, u64)>,
+    /// The checks RingFrame ran on the work (`cargo test`), and how each went.
+    #[serde(default)]
+    pub checks: Vec<Ran>,
+}
+
+/// One check RingFrame ran: its command, and `succeeded` or `failed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ran {
+    pub command: String,
+    pub outcome: String,
+}
+
+/// The checks a record lists.
+fn checks_of(v: &Value) -> Vec<Ran> {
+    v.get("checks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|c| {
+            Some(Ran {
+                command: c.get("command")?.as_str()?.to_string(),
+                outcome: c.get("outcome").and_then(Value::as_str).unwrap_or("").to_string(),
+            })
+        })
+        .collect()
 }
 
 impl Record {
@@ -152,6 +177,7 @@ impl Record {
             unexplained,
             fabrications: 0,
             windows_judged: None,
+            checks: checks_of(v),
         })
     }
 
@@ -255,6 +281,7 @@ impl Record {
             unexplained,
             fabrications: v.get("fabrications").and_then(Value::as_array).map_or(0, Vec::len),
             windows_judged,
+            checks: checks_of(v),
         })
     }
 

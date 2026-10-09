@@ -30,7 +30,6 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
                 Bar::Send(_) => key_by("Enter", "act.send"),
                 Bar::SendAnyway { .. } => key_by("Enter", "act.send_anyway"),
                 Bar::Resume { .. } => key_by("Enter", "act.resume"),
-                Bar::NothingToResume { .. } => "[N] NEW AGENT".into(),
             };
             return plain(&format!(" {}   {act}", key_by("←", "act.cancel")));
         }
@@ -108,22 +107,44 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             width,
         ));
     }
-    if app.detail().is_some() {
-        // `[P]ROCEED` is there only while the Ask's prompt is still to be
-        // sent. Once it went, what happens next is the person's: the one
-        // thing offered is a follow-up.
-        let mut left = vec![Span::raw(" ")];
-        let proceed = app.proceeds().then(|| (key_in("act.proceed"), Act::Proceed));
-        let follow_up = (key_by("F", "act.follow_up"), Act::FollowUp);
-        for (label, act) in proceed.into_iter().chain([follow_up]) {
-            left.push(key(app, &label, act));
-            left.push(Span::raw("   "));
+    if let Some(d) = app.detail() {
+        use crate::app::View;
+        use weft_core::sessions::State;
+        let lit = |text: String| Span::styled(text, Style::default().fg(th.primary()));
+        let mut keys: Vec<Span<'static>> = vec![Span::raw(" ")];
+        let mut add = |span: Span<'static>| {
+            keys.push(span);
+            keys.push(Span::raw("   "));
+        };
+        match &d.view {
+            // `[P]ROCEED` is there only while the Ask's prompt is still to be
+            // sent. Once it went, the one thing offered is a follow-up.
+            View::Work(_) => {
+                if app.proceeds() {
+                    add(lit(key_in("act.proceed")));
+                }
+                add(lit(key_by("F", "act.follow_up")));
+            }
+            View::Eval(_) => {
+                add(lit(key_in("act.seal")));
+                add(lit(key_by("V", "act.eval_view")));
+                add(lit("[Enter] OPEN".into()));
+            }
+            View::Seal(_) => add(lit("[Enter] OPEN".into())),
+            View::Session(id) => match app.session_row(id).map(|r| r.state) {
+                Some(State::Running) => add(lit("[Enter] GO TO ITS PANE".into())),
+                _ => {
+                    add(lit("[R]ESUME THIS".into()));
+                    add(lit("[Enter] OPEN".into()));
+                }
+            },
+            View::Earlier => {
+                add(lit("[/] SEARCH".into()));
+                add(lit("[Enter] OPEN".into()));
+            }
         }
-        if app.has_eval_view() {
-            left.push(Span::styled(format!("{}   ", key_by("V", "act.eval_view")), th.label()));
-        }
-        left.push(Span::styled("[↑↓] SCROLL", th.label()));
-        return Paragraph::new(spread(left, vec![Span::styled("[ESC] CLOSE ", th.label())], width));
+        keys.push(Span::styled("[↑↓] SCROLL", th.label()));
+        return Paragraph::new(spread(keys, vec![Span::styled("[ESC] CLOSE ", th.label())], width));
     }
 
     // RingFrame's three acts, in the order they happen. Weft's own operations
@@ -137,7 +158,10 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         if i > 0 {
             spans.push(Span::raw("   "));
         }
-        spans.push(key(app, &key_in(label), act));
+        // Drawn the same always (ADR-0029 D5): one that does not apply to
+        // the row selected says why when pressed.
+        let _ = act;
+        spans.push(Span::styled(key_in(label), Style::default().fg(th.primary())));
     }
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
     Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width))
@@ -188,7 +212,7 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             format!(" {}", word("ask.which_approach"))
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
-        (Some(Modal::Bar(Bar::Resume { .. } | Bar::NothingToResume { .. })), _) => {
+        (Some(Modal::Bar(Bar::Resume { .. })), _) => {
             format!(" {}", word("resume.either_way"))
         }
         (Some(Modal::RingFrame), _) => {

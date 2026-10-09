@@ -6,7 +6,7 @@ mod common;
 use std::time::Duration;
 
 use common::Harness;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[test]
 fn nothing_the_never_sent_list_names_reaches_the_daemon() {
@@ -29,6 +29,9 @@ fn nothing_the_never_sent_list_names_reaches_the_daemon() {
         json!({"type": "turbo", "on": true, "req": 12}),
         json!({"type": "shutdown", "req": 13}),
         json!({"type": "confirm", "unit": "ask_1", "req": 14}),
+        // Version 2's resumes are gone, with no fallback (remote.md §6c).
+        json!({"type": "start", "project": "work", "harness": "sh", "resume": true, "req": 15}),
+        json!({"type": "start", "project": "work", "harness": "sh", "unit": "ask_1", "req": 16}),
     ];
     for (n, attempt) in attempts.iter().enumerate() {
         d.send(attempt.clone());
@@ -60,20 +63,53 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     let agent = welcome["agents"][0]["agent"].clone();
     let tree = &welcome["tree"];
     assert_eq!(tree.as_array().map(Vec::len), Some(1), "{tree}");
-    assert_eq!((tree[0]["project"].clone(), tree[0]["open"].clone()), (json!("work"), json!(1)));
+    assert_eq!((tree[0]["project"].clone(), tree[0]["open"].clone()), (json!("work"), json!(0)));
     assert!(tree[0].get("setup").is_some(), "whether RingFrame is set up here: {tree}");
-    let sh = &tree[0]["harnesses"][0];
+    assert_eq!(tree[0]["agents"]["rows"], json!([]), "no session named yet: {tree}");
+    assert!(tree[0].get("harnesses").is_none(), "no harness rows (remote.md §6c)");
+
+    // The shell's hook names its session: it is a row, its agent the pane's.
+    let told = std::fs::read_to_string(shell.project.with_extension("pane")).unwrap();
+    let (token, socket) = told.split_once('\n').unwrap();
+    let sent = weft_core::signal::Sent {
+        harness: "sh".into(),
+        hook: "Hook".into(),
+        session: "s1".into(),
+        workspace: Some(shell.project.to_string_lossy().into_owned()),
+        state: Some("ready".into()),
+        pane: Some(0),
+        token: Some(token.into()),
+        ..Default::default()
+    };
+    let line = weft_proto::Line::Event(weft_proto::Event::Signal(Box::new(sent))).encode();
+    use std::io::Write as _;
+    std::os::unix::net::UnixStream::connect(socket.trim()).unwrap().write_all(&line).unwrap();
+    let named = loop {
+        let m = d.next_of("tree");
+        if m["tree"][0]["agents"]["rows"].as_array().is_some_and(|r| !r.is_empty()) {
+            break m;
+        }
+    };
+    let row = &named["tree"][0]["agents"]["rows"][0];
     assert_eq!(
-        (sh["harness"].clone(), sh["agent"].clone(), sh["running"].clone()),
-        (json!("sh"), agent.clone(), json!(true))
+        (row["session"].clone(), row["state"].clone(), row["agent"].clone()),
+        (json!("s1"), json!("running"), agent.clone())
     );
-    assert_eq!(sh["works"], json!([]), "nothing asked yet");
 
     let pane = agent.as_str().unwrap().rsplit_once('-').unwrap().1.parse().unwrap();
     shell.tui.call(weft_proto::Call::Input { pane, bytes: b"exit\r".to_vec() });
-    let ended = d.next_of("tree");
-    assert_eq!(ended["tree"][0]["open"], 1, "started here, and no longer running: {ended}");
-    assert_eq!(ended["tree"][0]["harnesses"], json!([]), "no agent and nothing open: no row");
+    let ended = loop {
+        let m = d.next_of("tree");
+        if m["tree"][0]["agents"]["rows"][0]["state"] == "ended" {
+            break m;
+        }
+    };
+    let a = &ended["tree"][0]["agents"];
+    assert_eq!(
+        (a["running"].clone(), a["ended"].clone(), a["rows"][0]["agent"].clone()),
+        (json!(0), json!(1), Value::Null),
+        "its row stays, ended: {ended}"
+    );
 }
 
 #[test]
@@ -123,6 +159,25 @@ fn every_req_gets_ok_or_error() {
         (json!({"type": "nonsense", "req": 11}), "error"),
         (json!({"type": "read", "what": "detail", "unit": "ask_404", "req": 12}), "error"),
         (json!({"type": "read", "what": "eval_view", "req": 13}), "error"),
+        (json!({"type": "read", "what": "sessions", "project": "work", "q": "x", "req": 14}), "ok"),
+        (json!({"type": "read", "what": "sealed", "project": "work", "req": 15}), "ok"),
+        (
+            json!({"type": "read", "what": "session", "project": "work", "session": "s_9", "req": 16}),
+            "error",
+        ),
+        (
+            json!({"type": "read", "what": "eval", "project": "work", "eval": "evl_9", "req": 17}),
+            "error",
+        ),
+        (
+            json!({"type": "read", "what": "seal", "project": "work", "seal": "sel_9", "req": 18}),
+            "error",
+        ),
+        (
+            json!({"type": "start", "project": "work", "harness": "sh", "resume": "s_9", "req": 19}),
+            "error",
+        ),
+        (json!({"type": "act", "act": "eval", "project": "nowhere", "req": 20}), "error"),
     ];
     for (n, (request, want)) in requests.iter().enumerate() {
         d.send(request.clone());

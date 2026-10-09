@@ -6,15 +6,15 @@ expression: drawn
                                             │ ▸ 1 codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
  ▾ [project] 1 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
-   ▾ codex                                  ││█                                                                        │
-      health endpoint                EVALED ││                                                                         │
-      readme fix                      ASKED ││                                                                         │
+                                            ││█                                                                        │
+  AGENTS                1 running · 0 ended ││                                                                         │
+  ● codex no Ask yet            ready --:-- ││                                                                         │
                                             ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
+  WORK                                      ││                                                                         │
+  ▾ Open · since Eval 1                   1 ││                                                                         │
+    readme fix        codex           ASKED ││                                                                         │
+  ▾ Eval 1 · drifted · 0.67 · not sealed  1 ││                                                                         │
+    health endpoint   codex                 ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │

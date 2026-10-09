@@ -1,4 +1,4 @@
-//! The work list: one row per project, harness and unit of work.
+//! The sidebar: each project, its AGENTS and its WORK (T11.1).
 
 use super::*;
 
@@ -14,7 +14,7 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
 
     // An agent is on the list the moment it is opened, so the empty list is
     // only for a project with no agent and nothing asked.
-    if app.units().is_empty() && app.pane_count() == 0 {
+    if app.units().is_empty() && app.pane_count() == 0 && !app.has_sessions() {
         lines.push(Line::raw(""));
         // RingFrame is not set up here: what it still needs, under the project.
         if let Some(needs) = app.needs() {
@@ -101,9 +101,8 @@ fn checklist(needs: &weft_core::workspace::Needs, width: usize) -> Vec<String> {
     out
 }
 
-/// One row of the sidebar. `▾` and `▸` mark the levels that hold something;
-/// an action is a leaf and carries no marker. `⌫` is the one gesture that
-/// removes anything, so it is the one thing with a glyph of its own.
+/// One row of the sidebar, as T11.1 draws it. `▾` and `▸` mark what folds;
+/// `⌫` is the one gesture that removes anything, so it has a glyph of its own.
 pub(super) fn sidebar_row(
     app: &App,
     row: &crate::app::Row,
@@ -111,56 +110,144 @@ pub(super) fn sidebar_row(
     width: usize,
 ) -> Line<'static> {
     use crate::app::Row;
+    use weft_core::sessions::State;
     let th = app.theme;
-    let pick = |s: String| {
-        if picked { Span::styled(s, th.selected()) } else { Span::styled(s, th.label()) }
+    let style = |muted: bool| {
+        if picked {
+            th.selected()
+        } else if muted {
+            th.label()
+        } else {
+            Style::default().fg(th.primary())
+        }
     };
+    // A row: what reads at its left, cut to make room for what reads at its
+    // right edge, one cell in.
+    let row_of = |left: String, right: String, muted: bool, right_style: Style| {
+        let room = width.saturating_sub(cells(&right) + 1);
+        Line::from(vec![
+            Span::styled(padded(&clip(&left, room), room), style(muted)),
+            Span::styled(format!("{right} "), if picked { th.selected() } else { right_style }),
+        ])
+    };
+    let fold = |folded: bool| if folded { "▸" } else { "▾" };
     match row {
         Row::Project { name, folded, open, waiting, .. } => {
             let mut tail = format!("{open} {}", word("title.open"));
             if *waiting > 0 {
                 tail.push_str(&format!(" · {waiting} ●"));
             }
-            let head = format!(" {} {name}", if *folded { "▸" } else { "▾" });
+            let head = format!(" {} {name}", fold(*folded));
             let room = width.saturating_sub(cells(&tail) + 4);
             Line::from(vec![
-                pick(padded(&clip(&head, room), room)),
+                Span::styled(padded(&clip(&head, room), room), style(false)),
                 Span::styled(format!("{tail}  "), th.label()),
                 Span::styled("⌫".to_string(), th.label()),
             ])
         }
-        Row::Harness { name, folded, waiting, running, turbo, .. } => {
-            // The badge of an agent asking for input: the one thing NEEDS YOU is.
-            let tail = match waiting {
-                0 => String::new(),
-                1 => "● needs your input".to_string(),
-                n => format!("● {n} need your input"),
-            };
-            let gone =
-                if *running { String::new() } else { format!(" · {}", word("tree.not_running")) };
-            // ⚡: an agent of it runs in turbo mode, as its tab says too.
-            let turbo = if *turbo { " ⚡" } else { "" };
-            let head = format!("   {} {name}{turbo}{gone}", if *folded { "▸" } else { "▾" });
-            let room = width.saturating_sub(cells(&tail) + 1);
+        Row::Gap { .. } => Line::raw(""),
+        Row::Agents { running, ended, .. } => {
+            let counts =
+                fill("tree.counts", &[("n", &running.to_string()), ("m", &ended.to_string())]);
+            let room = width.saturating_sub(cells(&counts) + 1);
             Line::from(vec![
-                pick(padded(&clip(&head, room), room)),
-                Span::styled(tail, th.needs_you()),
+                Span::styled(
+                    padded(&format!("  {}", word("tree.agents")), room),
+                    th.label().add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{counts} "), th.label()),
             ])
         }
-        Row::Action { project, unit, word, turn } => {
-            // The row's own project, not the focused one: a unit in the
-            // background was being drawn from whichever board was in front.
-            let Some(unit) = app.units_of(*project).get(*unit) else { return Line::raw("") };
-            // Where the Ask stands, and never an alarm: what needs you is an
-            // agent asking, and that is its harness's row. The agent's state
-            // shows when its session reported one; nothing rather than a guess.
-            let agent = turn.map(|t| format!("{} · ", t.say()));
-            let state = format!("{}{}", agent.unwrap_or_default(), word.say());
-            let head = format!("      {}", unit.title);
-            let room = width.saturating_sub(cells(&state) + 1);
+        Row::Agent { agent, width: column, .. } => {
+            let ended = agent.state != State::Running;
+            let waiting = weft_core::turns::is_asking(agent.turn) && !ended;
+            let time = weft_core::sessions::when(agent.at, app.now(), app.zone());
+            let state = weft_core::tree::state_word(agent, &time);
+            let right = if agent.state == State::Quiet { state } else { format!("{state} {time}") };
+            let glyph = if ended { "○" } else { "●" };
+            let title = agent.title.clone().unwrap_or_else(|| word("tree.no_ask").to_string());
+            let head = format!("  {glyph} {} ", padded(&agent.harness, *column));
+            // The title is cut with `…`, keeping two spaces before the state
+            // and three after a cut one, as T11.1 draws it.
+            let room = width.saturating_sub(cells(&head) + cells(&right) + 1);
+            let title =
+                if cells(&title) + 2 > room { clip(&title, room.saturating_sub(3)) } else { title };
+            let state_style = if waiting { th.needs_you() } else { th.label() };
             Line::from(vec![
-                pick(padded(&clip(&head, room), room)),
-                Span::styled(state, th.label()),
+                Span::styled(head, if waiting && !picked { th.needs_you() } else { style(ended) }),
+                Span::styled(padded(&title, room), style(ended)),
+                Span::styled(format!("{right} "), if picked { th.selected() } else { state_style }),
+            ])
+        }
+        Row::Earlier { n, .. } => {
+            let said = if *n == 1 {
+                word("tree.earlier_one").to_string()
+            } else {
+                fill("tree.earlier", &[("n", &n.to_string())])
+            };
+            row_of(format!("  ▸ {said}"), String::new(), true, th.label())
+        }
+        Row::Work { .. } => Line::styled(
+            format!("  {}", word("tree.work")),
+            th.label().add_modifier(Modifier::BOLD),
+        ),
+        Row::Open { since, count, folded, .. } => {
+            let mut head = format!("  {} {}", fold(*folded), word("tree.open"));
+            if let Some(n) = since {
+                head.push_str(&format!(" · {}", fill("tree.since", &[("n", &n.to_string())])));
+            }
+            row_of(head, count.to_string(), false, th.label())
+        }
+        Row::Eval { group, .. } => {
+            let mut head = format!(
+                "  {} {}",
+                fold(group.folded),
+                fill("tree.eval", &[("n", &group.n.to_string())])
+            );
+            match (group.judging, group.verdict) {
+                (true, _) | (_, None) => head.push_str(&format!(" · {}", word("tree.judging"))),
+                (false, Some(v)) => {
+                    head.push_str(&format!(" · {}", word(&format!("verdict.{v}"))));
+                    if let Some(a) = &group.agreement {
+                        head.push_str(&format!(" · {a}"));
+                    }
+                    head.push_str(&format!(" · {}", word("tree.not_sealed")));
+                }
+            }
+            row_of(head, group.count.to_string(), false, th.label())
+        }
+        Row::Sealed { seals, asks, folded, .. } => {
+            let n = if *seals == 1 {
+                word("tree.seals_one").to_string()
+            } else {
+                fill("tree.seals", &[("n", &seals.to_string())])
+            };
+            let head = format!("  {} {} · {n}", fold(*folded), word("tree.sealed"));
+            row_of(head, asks.to_string(), false, th.label())
+        }
+        Row::Seal { seal, .. } => {
+            let mut head = format!("    Seal {} · {}", seal.n, seal.decision);
+            if let Some(n) = seal.eval {
+                head.push_str(&format!(" · {}", fill("tree.eval", &[("n", &n.to_string())])));
+            }
+            row_of(head, seal.asks.to_string(), false, th.label())
+        }
+        Row::Ask { ask, column, .. } => {
+            // Only Open's Asks carry a word: a round says its Asks' state (D6).
+            let word = ask.word.map(|w| w.say().to_string()).unwrap_or_default();
+            let room = width.saturating_sub(cells(&word) + 1 + 4);
+            let harness = cells(&ask.harness);
+            let title_room = (*column).min(room.saturating_sub(harness + 1));
+            let title = padded(&clip(&ask.title, title_room.saturating_sub(2)), title_room);
+            let left = format!("    {title}");
+            let used = cells(&left);
+            Line::from(vec![
+                Span::styled(left, style(false)),
+                Span::styled(
+                    padded(&ask.harness, width.saturating_sub(used + cells(&word) + 1)),
+                    if picked { th.selected() } else { th.label() },
+                ),
+                Span::styled(format!("{word} "), if picked { th.selected() } else { style(false) }),
             ])
         }
     }

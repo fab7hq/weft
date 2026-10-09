@@ -1,12 +1,12 @@
-//! The remote protocol, version 2, from a device that said hello (remote.md
-//! §4, §6b, §9). Each message becomes only the call §4 allows, or is refused
+//! The remote protocol, version 3, from a device that said hello (remote.md
+//! §4, §6c, §9). Each message becomes only the call §4 allows, or is refused
 //! here; a message with a `req` always gets `ok` or `error`.
 
 use base64ct::{Base64, Encoding};
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use super::{Asked, Carries, Gathering, Part, Remote, Wake};
+use super::{Asked, Carries, Gather, Gathering, Part, Remote, Wake};
 use crate::agents;
 
 /// How many lines of history a device is sent.
@@ -16,6 +16,13 @@ const ENTER_AFTER: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// Why a request was refused, for the app.
 use crate::agents::Refusal;
+
+/// Now, in milliseconds since the epoch.
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
 
 impl Remote {
     pub(super) fn request(&mut self, conn: u64, m: &Value) {
@@ -279,6 +286,8 @@ impl Remote {
     fn act_on(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let (at, pane) = match m["act"].as_str() {
             Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
+            // Eval and Seal act on a round of a project (remote.md §6c).
+            Some("eval" | "seal") => (self.project_named(m)?, None),
             _ => {
                 let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
                 let at = self
@@ -289,37 +298,54 @@ impl Remote {
             }
         };
         let agents = &self.projects[at].as_ref().expect("an open project").agents;
-        // No agent of the work's harness runs: say so, with what could be resumed.
-        if let Some(harness) = agents.missing(m) {
-            let session = m["unit"]
-                .as_str()
-                .and_then(|id| agents.unit(id))
-                .and_then(|u| agents.session_of(u));
-            let message = weft_core::words::say("resume.title", &harness);
-            self.send(conn, json!({"type": "error", "req": req, "code": "not_running", "message": message,
-                                   "harness": harness, "session": session.map(|s| json!({"at": s.at, "last": s.last}))}));
+        // No agent of the harness it goes to runs: say so, with the session
+        // that route names, as AGENTS reads it, or none (ADR-0029 D12.5).
+        if let Some((harness, session)) = agents.missing(m) {
+            let message = format!("{harness} is not running.");
+            self.send(
+                conn,
+                json!({"type": "error", "req": req, "code": "not_running", "message": message,
+                                   "harness": harness, "session": session}),
+            );
             return Ok(true);
         }
         let call = agents.act(m, pane)?;
         self.ask(at, call, conn, req, Carries::Pending)
     }
 
-    /// Start a fresh agent of a harness the project offers (remote.md §6b).
-    fn start_agent(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        let (project, harness) = (m["project"].as_str(), m["harness"].as_str());
-        let (Some(project), Some(harness)) = (project, harness) else {
-            return Err(("bad_request", "start names a project and a harness".into()));
-        };
+    /// The project a message names by `project`.
+    fn project_named(&self, m: &Value) -> Result<usize, Refusal> {
+        let project = m["project"].as_str().ok_or(("bad_request", "no project".to_string()))?;
         let at =
             self.projects.iter().position(|o| o.as_ref().is_some_and(|o| o.agents.name == project));
-        let at = at.ok_or(("no_project", format!("{project} is not open here")))?;
+        at.ok_or(("no_project", format!("{project} is not open here")))
+    }
+
+    /// Start a fresh agent of a harness the project offers, or resume a
+    /// session by its id (remote.md §6c, ADR-0029 D4). Never "the latest".
+    fn start_agent(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
+        let Some(harness) = m["harness"].as_str() else {
+            return Err(("bad_request", "start names a project and a harness".into()));
+        };
+        // Version 2's `unit` and `resume: true` are gone, with no fallback.
+        if m.get("unit").is_some() || !(m["resume"].is_null() || m["resume"].is_string()) {
+            return Err(("bad_request", "resume names a session's id".into()));
+        }
+        let at = self.project_named(m)?;
         let agents = &self.projects[at].as_ref().expect("an open project").agents;
-        // A work's: resume the session it was asked in (M4.12); `resume` with
-        // no work: the harness's latest (M2.9); else a fresh agent.
-        let call = match (m["unit"].as_str(), m["resume"].as_bool()) {
-            (Some(unit), _) => agents.resume(harness, Some(unit))?,
-            (None, Some(true)) => agents.resume(harness, None)?,
-            _ => agents.start(harness)?,
+        let call = match m["resume"].as_str() {
+            Some(id) => match agents.resume(harness, id) {
+                Ok(call) => call,
+                Err(((code, message), agent)) => {
+                    self.send(
+                        conn,
+                        json!({"type": "error", "req": req, "code": code,
+                                           "message": message, "agent": agent}),
+                    );
+                    return Ok(true);
+                }
+            },
+            None => agents.start(harness)?,
         };
         self.ask(at, call, conn, req, Carries::Agent)
     }
@@ -380,36 +406,66 @@ impl Remote {
             let key = self.projects[at].as_ref().and_then(|o| o.agents.transcript(pane));
             return self.ask(at, call, conn, req, Carries::History(key));
         }
-        if !matches!(what, Some("detail" | "eval_view")) {
-            return Err(("not_allowed", "a device reads history, detail or eval_view".into()));
-        }
         if req.is_null() {
             return Err(("bad_request", "a read is answered by its req".into()));
         }
-        let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
-        let found = self.projects.iter().enumerate().find_map(|(at, o)| {
-            o.as_ref().and_then(|o| o.agents.unit(id)).map(|u| (at, u.clone()))
-        });
-        let (at, unit) = found.ok_or(("no_unit", format!("{id} is not on the board")))?;
-        // The Details are the Ask, the Eval and the Seal, each read as the TUI
-        // reads it; the Eval view is the one running, else the last closed.
-        let reads: Vec<(Part, &str, String)> = if what == Some("detail") {
-            let mut reads = vec![(Part::Source, "source", unit.ask_id.clone())];
-            if !unit.requested_only {
-                reads.push((Part::Prompt, "wording", unit.ask_id.clone()));
+        let after = m["after"].as_str();
+        // What the device reads of a project it names, answered at once from
+        // what this process holds: no read reaches weftd for a page.
+        let local = match what {
+            Some("eval" | "session" | "sealed" | "sessions") => {
+                let at = self.project_named(m)?;
+                let agents = &self.projects[at].as_ref().expect("an open project").agents;
+                let id = |k: &str| m[k].as_str().ok_or(("bad_request", format!("no {k}")));
+                Some(match what {
+                    Some("eval") => json!({"eval": agents.eval(id("eval")?)?}),
+                    Some("session") => json!({"session": agents.session(id("session")?)?}),
+                    Some("sealed") => json!({"sealed": agents.sealed(after)}),
+                    _ => json!({"sessions": agents.sessions(m["q"].as_str(), after, now_millis())}),
+                })
             }
-            reads.extend(unit.check.as_ref().map(|c| (Part::Record, "judges", c.eval_id.clone())));
-            reads.extend(unit.seal_id.as_ref().map(|s| (Part::Seal, "seal", s.clone())));
-            reads
-        } else {
-            let eval = unit
-                .gathered
-                .as_ref()
-                .map(|g| &g.eval_id)
-                .or(unit.check.as_ref().map(|c| &c.eval_id));
-            let eval =
-                eval.ok_or(("why.no_eval", weft_core::words::word("why.no_eval").to_string()))?;
-            vec![(Part::View, "eval", eval.clone())]
+            _ => None,
+        };
+        if let Some(mut ok) = local {
+            ok["type"] = "ok".into();
+            ok["req"] = req.clone();
+            self.send(conn, ok);
+            return Ok(true);
+        }
+        let (at, of, reads): (usize, Gather, Vec<(Part, &str, String)>) = match what {
+            Some("detail") => {
+                let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
+                let found = self.projects.iter().enumerate().find_map(|(at, o)| {
+                    o.as_ref().and_then(|o| o.agents.unit(id)).map(|u| (at, u.clone()))
+                });
+                let (at, unit) = found.ok_or(("no_unit", format!("{id} is not on the board")))?;
+                let mut reads = vec![(Part::Source, "source", unit.ask_id.clone())];
+                if !unit.requested_only {
+                    reads.push((Part::Prompt, "wording", unit.ask_id.clone()));
+                }
+                (at, Gather::Work(Box::new(unit)), reads)
+            }
+            Some("seal") => {
+                let at = self.project_named(m)?;
+                let id = m["seal"].as_str().ok_or(("bad_request", "no seal".to_string()))?;
+                let agents = &self.projects[at].as_ref().expect("an open project").agents;
+                agents.seal(id, None, None)?;
+                let of = Gather::Seal { id: id.into(), after: after.map(str::to_string) };
+                (at, of, vec![(Part::Seal, "seal", id.to_string())])
+            }
+            Some("eval_view") => {
+                let at = self.project_named(m)?;
+                let id = m["eval"].as_str().ok_or(("bad_request", "no eval".to_string()))?;
+                (at, Gather::EvalView, vec![(Part::View, "eval", id.to_string())])
+            }
+            _ => {
+                return Err((
+                    "not_allowed",
+                    "a device reads history, detail, eval, seal, session, sealed, sessions or \
+                     eval_view"
+                        .into(),
+                ));
+            }
         };
         let g = self.next_gathering;
         self.next_gathering += 1;
@@ -419,11 +475,10 @@ impl Remote {
                 conn,
                 req: req.clone(),
                 at,
-                unit,
+                of,
                 left: 0,
                 source: None,
                 prompt: None,
-                record: None,
                 seal: None,
                 view: None,
                 hunks: Default::default(),
@@ -459,7 +514,6 @@ impl Remote {
         match part {
             Part::Source => r.source = text(&answer),
             Part::Prompt => r.prompt = text(&answer),
-            Part::Record => r.record = answer.and_then(|v| serde_json::from_value(v).ok()),
             Part::Seal => r.seal = answer,
             Part::Hunk(i) => {
                 let window =
@@ -488,21 +542,24 @@ impl Remote {
         }
         let Some(r) = self.gathering.remove(&g) else { return };
         let mut ok = json!({"type": "ok", "req": r.req});
-        match &r.view {
-            Some(view) => {
+        let Some(open) = self.projects.get(r.at).and_then(Option::as_ref) else { return };
+        match (&r.of, &r.view) {
+            (Gather::EvalView, Some(view)) => {
                 ok["eval_view"] =
                     serde_json::to_value(weft_core::eval_view::payload(view, &r.hunks))
                         .unwrap_or_default()
             }
-            None => {
-                let Some(open) = self.projects.get(r.at).and_then(Option::as_ref) else { return };
-                ok["detail"] = open.agents.detail(
-                    &r.unit,
-                    r.source.as_deref(),
-                    r.prompt.as_deref(),
-                    r.record.as_ref(),
-                    r.seal.as_ref(),
-                );
+            (Gather::Work(unit), _) => {
+                ok["detail"] = open.agents.detail(unit, r.source.as_deref(), r.prompt.as_deref())
+            }
+            (Gather::Seal { id, after }, _) => {
+                match open.agents.seal(id, r.seal.as_ref(), after.as_deref()) {
+                    Ok(v) => ok["seal"] = v,
+                    Err((code, message)) => return self.error(r.conn, &r.req, code, &message),
+                }
+            }
+            (Gather::EvalView, None) => {
+                return self.error(r.conn, &r.req, "no_record", "that Eval is not on disk");
             }
         }
         self.send(r.conn, ok);
