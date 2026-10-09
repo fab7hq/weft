@@ -126,6 +126,7 @@
   "web.detail.its_session": "Its session",
   "web.detail.not_evaluated": "not evaluated yet",
   "web.detail.title": "Details",
+  "web.earlier.count": "{n} sessions",
   "web.earlier.search": "Search by Ask, harness or id…",
   "web.eval.agreement": "Agreement",
   "web.eval.asks": "The Asks it covers",

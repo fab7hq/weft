@@ -309,6 +309,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.session.go", "Go to its agent"),
     ("web.resume.ask", "Resume {harness} {session}?"),
     ("web.earlier.search", "Search by Ask, harness or id…"),
+    ("web.earlier.count", "{n} sessions"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     (
