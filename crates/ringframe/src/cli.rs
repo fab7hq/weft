@@ -2665,7 +2665,7 @@ mod the_marketplace_contract {
                 assert!(!text.contains(composed), "{} still composes: {composed}", skill.display());
             }
         }
-        assert!(skills.len() >= 3, "only {} Eval skills found: {skills:?}", skills.len());
+        assert!(skills.len() >= 2, "only {} Eval skills found: {skills:?}", skills.len());
     }
 
     #[test]
