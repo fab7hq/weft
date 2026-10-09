@@ -890,6 +890,13 @@ fn atlas() -> App {
     a.add("claude", "/bin/cat").expect("claude");
     a.add("codex", "/bin/cat").expect("codex");
     a.settle();
+    // The daemon tells the two new panes' (empty) states on its next tick;
+    // take that first, or it lands after the states set below and clears them.
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(700);
+    while std::time::Instant::now() < until {
+        a.pump();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     for h in ["claude", "codex"] {
         a.set_readiness(h, weft_core::readiness::Readiness::Ready);
     }
