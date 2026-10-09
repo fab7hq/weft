@@ -878,6 +878,37 @@ fn the_shared_words_are_spelled_only_in_words() {
 
 // --- the Atlas: each changed screen, set up with its card's sample ---------
 
+/// The daemon tells new panes' (empty) states in `agents` events; take every
+/// one first, or one lands after the states a test sets and clears them.
+/// Each event replaces the session list, so a marker there shows one came;
+/// done once none has come for 300 ms.
+fn settle_agents(a: &mut App) {
+    use std::time::{Duration, Instant};
+    let mark = || {
+        vec![weft_core::turns::Session {
+            harness: "-".into(),
+            id: "-".into(),
+            first: 0,
+            latest: weft_core::turns::Turn::Ready,
+            at: 0,
+        }]
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut heard: Option<Instant> = None;
+    a.session_mut().turns = mark();
+    while Instant::now() < deadline
+        && heard.is_none_or(|t| t.elapsed() < Duration::from_millis(300))
+    {
+        a.pump();
+        if a.session_mut().turns != mark() {
+            a.session_mut().turns = mark();
+            heard = Some(Instant::now());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    a.session_mut().turns = Vec::new();
+}
+
 /// The Atlas's sample, as its TUI cards show it: project weft, with claude
 /// (ready) and codex (its turn ended) running; fix login of claude, ASKED;
 /// health endpoint of codex, EVALED.
@@ -889,13 +920,7 @@ fn atlas() -> App {
     a.add("claude", "/bin/cat").expect("claude");
     a.add("codex", "/bin/cat").expect("codex");
     a.settle();
-    // The daemon tells the two new panes' (empty) states on its next tick;
-    // take that first, or it lands after the states set below and clears them.
-    let until = std::time::Instant::now() + std::time::Duration::from_millis(700);
-    while std::time::Instant::now() < until {
-        a.pump();
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    settle_agents(&mut a);
     for h in ["claude", "codex"] {
         a.set_readiness(h, weft_core::readiness::Readiness::Ready);
     }
