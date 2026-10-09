@@ -31,6 +31,14 @@ use typing::*;
 
 /// Each pane's agent state, and every session's latest event.
 type Agents = (Vec<Option<Turn>>, Vec<weft_core::sessions::Row>);
+
+/// What an act is on: a work, a pane, the words of an Ask, an Eval's round.
+struct On<'a> {
+    unit: Option<&'a str>,
+    pane: Option<u32>,
+    text: Option<&'a str>,
+    eval: Option<&'a str>,
+}
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
 /// Everything a pane has printed since it started, so a late client can be
@@ -693,18 +701,41 @@ impl Session {
 
     /// One of RingFrame's three acts. The daemon works out what to type and
     /// where it goes; a client only names the act.
-    fn act(
-        &mut self,
-        client: u64,
-        at: usize,
-        act: &str,
-        unit_id: Option<&str>,
-        pane: Option<u32>,
-        text: Option<&str>,
-    ) -> Answer {
+    fn act(&mut self, client: u64, at: usize, act: &str, on: On) -> Answer {
+        let On { unit: unit_id, pane, text, eval } = on;
         let root = self.projects[at].root.clone();
-        let unit = unit_id
-            .and_then(|id| self.projects[at].ledger.units().into_iter().find(|u| u.ask_id == id));
+        let units = self.projects[at].ledger.units();
+        // Eval acts on the Open round and Seal on an Eval's (ADR-0029 D5):
+        // the Ask that routes it is the round's newest, as a work's was.
+        let record = self.projects[at].ledger.record();
+        let rounds = weft_core::rounds::rounds(&units, &record);
+        let unit_id = match (act, eval) {
+            ("check", _) if unit_id.is_none() => {
+                let judged = rounds.judging.first().and_then(|j| j.asks.first());
+                match rounds.open.first().or(judged) {
+                    Some(id) => Some(id.as_str()),
+                    None => return Answer::No("nothing_open", "no Ask is open".into()),
+                }
+            }
+            ("decide", None) => {
+                return Answer::No("no_eval", "a Seal names the Eval it seals".into());
+            }
+            ("decide", Some(id)) => {
+                let Some(round) = rounds.eval(id) else {
+                    if let Some(why) = weft_core::rounds::sealed_already(&record, id) {
+                        return Answer::No("sealed_already", why.say());
+                    }
+                    return Answer::No("no_eval", format!("{id} is no Eval round here"));
+                };
+                let ready = |_: Option<&str>| None;
+                if let Some(why) = weft_core::rounds::seal_why(round, &ready) {
+                    return Answer::No(why.key.trim_start_matches("why."), why.say());
+                }
+                round.asks.first().map(String::as_str)
+            }
+            _ => unit_id,
+        };
+        let unit = unit_id.and_then(|id| units.iter().find(|u| u.ask_id == id).cloned());
         let built = match act {
             "ask" | "follow_up" => {
                 let Some(pane) = pane else {
@@ -791,7 +822,8 @@ impl Session {
                     ("eval", into, args)
                 } else {
                     let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
-                    ("seal", into, String::new())
+                    // `seal create --eval <id>` closes exactly that Eval's Asks.
+                    ("seal", into, eval.map(|e| format!("--eval {e}")).unwrap_or_default())
                 };
                 let (pane, fresh) = match self.free_pane_of(at, &into) {
                     Some(pane) => (pane, false),
@@ -1118,7 +1150,8 @@ impl Session {
                     .map(|v| (c.eval_id.clone(), v))
             })
             .collect::<serde_json::Map<_, _>>();
-        Out::Units { units, records: serde_json::Value::Object(records) }
+        let rounds = weft_core::rounds::rounds(&units, &self.projects[at].ledger.record());
+        Out::Units { units, records: serde_json::Value::Object(records), rounds }
     }
 
     /// The project this client is watching, if it has opened one.
@@ -1269,7 +1302,9 @@ impl Session {
                     }
                 }
                 self.projects[at].ledger.refresh();
-                let Out::Units { units, records } = self.board_of(at) else { unreachable!() };
+                let Out::Units { units, records, rounds } = self.board_of(at) else {
+                    unreachable!()
+                };
                 let panes = self.pane_infos(at);
                 let (agent_panes, sessions) = self.agents_of(at);
                 // Everything comes back in the answer — the board, the panes,
@@ -1287,6 +1322,7 @@ impl Session {
                     "panes": weft_proto::panes_json(&panes),
                     "units": serde_json::to_value(&units).unwrap_or_default(),
                     "records": records,
+                    "rounds": rounds,
                     "replay": replay,
                     // What is already waiting on a person, so a client that
                     // arrives after it was staged can still answer it.
@@ -1376,9 +1412,15 @@ impl Session {
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
             }
-            Call::Act { act, unit, pane, text } => {
+            Call::Act { act, unit, pane, text, eval } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                return Ok(self.act(client, at, &act, unit.as_deref(), pane, text.as_deref()));
+                let on = On {
+                    unit: unit.as_deref(),
+                    pane,
+                    text: text.as_deref(),
+                    eval: eval.as_deref(),
+                };
+                return Ok(self.act(client, at, &act, on));
             }
             Call::ConfirmAsk { unit } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };

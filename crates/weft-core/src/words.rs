@@ -115,6 +115,9 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("why.nothing_to_send", "{title} has nothing to send. [F] FOLLOW UP asks for more."),
     ("why.no_eval", "No Eval of this work yet: [E]VAL starts one."),
+    // An act on a round (ADR-0029 D5, D12): `{title}` is the round, "Eval 2".
+    ("why.sealed_already", "{title} is sealed already."),
+    ("why.judging", "{title} is still being judged."),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys
     // (the owner, 2026-10-05), the same on a phone and a desktop.

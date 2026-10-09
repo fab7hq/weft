@@ -532,7 +532,7 @@ fn a_session_on_record_is_never_offered_as_the_latest() {
     }
     assert!(a.session_mut().sessions.iter().any(|s| s.id == "01a0bdb6"), "on record");
     a.refresh_for_test();
-    let codex: Vec<_> = a.starts().into_iter().filter(|c| c.harness == "codex").collect();
+    let codex: Vec<_> = a.starts().iter().filter(|c| c.harness == "codex").collect();
     assert_eq!(codex.len(), 1, "start fresh, and nothing else");
     assert_eq!((codex[0].spec.as_str(), codex[0].session.is_none()), ("codex", true));
 }
@@ -865,8 +865,14 @@ fn backspace_edits_the_intent() {
 #[test]
 fn eval_and_seal_always_confirm_before_typing() {
     for (key, expect) in [('e', "eval"), ('s', "seal")] {
-        let mut a = recorded(Sent::TakenByAgent);
-        gather_on_record(&a, &["ask_1"]);
+        // Eval goes on with a gathered round; Seal seals a judged one.
+        let mut a = if key == 'e' {
+            let a = recorded(Sent::TakenByAgent);
+            gather_on_record(&a, &["ask_1"]);
+            a
+        } else {
+            recorded_and_evaluated()
+        };
         a.settle();
         press(&mut a, KeyCode::Char(key));
         let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else {

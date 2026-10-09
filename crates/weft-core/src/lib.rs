@@ -20,6 +20,7 @@ pub mod onboarding;
 pub mod projects;
 pub mod readiness;
 pub mod record;
+pub mod rounds;
 pub mod routing;
 pub mod sessions;
 pub mod signal;

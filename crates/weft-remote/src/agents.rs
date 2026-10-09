@@ -42,6 +42,8 @@ pub struct Project {
     since: HashMap<u32, (&'static str, i64)>,
     /// The board: the tree, and the works a device acts on.
     units: Vec<Unit>,
+    /// The board grouped by Eval round, as the daemon built it (ADR-0029).
+    rounds: weft_core::rounds::Rounds,
     /// The project's session index (ADR-0029), and the Mac's distance from
     /// UTC, in milliseconds.
     sessions: Vec<weft_core::sessions::Row>,
@@ -83,6 +85,7 @@ impl Project {
             titles,
             since: HashMap::new(),
             units: serde_json::from_value(answer["units"].clone()).unwrap_or_default(),
+            rounds: serde_json::from_value(answer["rounds"].clone()).unwrap_or_default(),
             sessions: serde_json::from_value(answer["agents"]["sessions"].clone())
                 .unwrap_or_default(),
             zone: answer["agents"]["zone"].as_i64().unwrap_or(0),
@@ -122,7 +125,10 @@ impl Project {
                 self.turns = panes.clone();
                 self.sessions = sessions.clone();
             }
-            Event::Units { units, .. } => self.units = units.clone(),
+            Event::Units { units, rounds, .. } => {
+                self.units = units.clone();
+                self.rounds = rounds.clone();
+            }
             Event::Readiness { states } => self.readiness = states.clone(),
             Event::Workspace { setup, .. } => self.setup = *setup,
             Event::Turbo { on } => self.turbo = *on,
@@ -387,11 +393,15 @@ impl Project {
         if let Some(why) = self.board(unit, pane, |b| b.why_not(act)) {
             return Err((why.key, why.say()));
         }
+        let eval = unit
+            .filter(|_| daemon == "decide")
+            .and_then(|i| self.units[i].check.as_ref().map(|c| c.eval_id.clone()));
         Ok(Call::Act {
             act: daemon.into(),
             unit: unit.map(|i| self.units[i].ask_id.clone()),
             pane: pane.filter(|_| asking),
             text: text.filter(|_| asking),
+            eval,
         })
     }
 
@@ -499,7 +509,11 @@ mod tests {
     fn a_unit_added_an_eval_recorded_and_an_agent_ending_change_the_tree() {
         let mut p = opened();
         let mut units = vec![unit("ask_1", "fix login"), unit("ask_2", "telemetry")];
-        assert!(p.heard(&Event::Units { units: units.clone(), records: json!({}) }));
+        assert!(p.heard(&Event::Units {
+            units: units.clone(),
+            records: json!({}),
+            rounds: Default::default()
+        }));
         assert_eq!(
             works(&p.tree()),
             [("fix login".into(), "asked".into()), ("telemetry".into(), "asked".into())]
@@ -510,7 +524,7 @@ mod tests {
             agreement: 1.0,
             judged_by: None,
         });
-        assert!(p.heard(&Event::Units { units, records: json!({}) }));
+        assert!(p.heard(&Event::Units { units, records: json!({}), rounds: Default::default() }));
         assert_eq!(works(&p.tree())[0], ("fix login".into(), "evaled".into()));
         assert!(p.heard(&Event::Exited { pane: 4 }));
         assert_eq!(
@@ -567,6 +581,7 @@ mod tests {
             unit: unit.map(str::to_string),
             pane,
             text: text.map(str::to_string),
+            eval: None,
         }
     }
 

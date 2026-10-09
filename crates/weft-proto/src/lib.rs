@@ -93,6 +93,9 @@ pub enum Call {
         unit: Option<String>,
         pane: Option<u32>,
         text: Option<String>,
+        /// The Eval a Seal seals (`decide`): its round, and only its Asks
+        /// (ADR-0029 D8).
+        eval: Option<String>,
     },
     /// Record the person's yes for an Ask whose chooser never got one.
     ConfirmAsk {
@@ -181,12 +184,13 @@ pub enum Event {
     Exited {
         pane: u32,
     },
-    /// The board, and the Eval record behind each check. Sent on opening a
-    /// project and whenever the ledger moves, so nothing reads a file to draw
-    /// a frame.
+    /// The board, the Eval record behind each check, and the board grouped
+    /// by Eval round (ADR-0029). Sent on opening a project and whenever the
+    /// ledger moves, so nothing reads a file to draw a frame.
     Units {
         units: Vec<Unit>,
         records: Value,
+        rounds: weft_core::rounds::Rounds,
     },
     /// Something is waiting on a person. Every attached client is told.
     Pending {
@@ -366,8 +370,8 @@ impl Call {
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),
                        "what": what, "why": why}),
             ),
-            Call::Act { act, unit, pane, text } => {
-                ("act", json!({"act": act, "unit": unit, "pane": pane, "text": text}))
+            Call::Act { act, unit, pane, text, eval } => {
+                ("act", json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval}))
             }
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit, pane, lines } => {
@@ -427,6 +431,7 @@ impl Call {
                 unit: s("unit"),
                 pane: n("pane").map(|n| n as u32),
                 text: s("text"),
+                eval: s("eval"),
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read {
@@ -479,8 +484,8 @@ impl Event {
                 json!({"pane": pane, "harness": harness, "spec": spec, "turbo": turbo}),
             ),
             Event::Exited { pane } => ("pane.exited", json!({"pane": pane})),
-            Event::Units { units, records } => {
-                ("units", json!({"units": units, "records": records}))
+            Event::Units { units, records, rounds } => {
+                ("units", json!({"units": units, "records": records, "rounds": rounds}))
             }
             Event::Pending { id, pane, what, why, payload } => (
                 "pending.added",
@@ -531,6 +536,8 @@ impl Event {
             "units" => Event::Units {
                 units: serde_json::from_value(p.get("units")?.clone()).ok()?,
                 records: p.get("records").cloned().unwrap_or_else(|| json!({})),
+                rounds: serde_json::from_value(p.get("rounds").cloned().unwrap_or_default())
+                    .unwrap_or_default(),
             },
             "pending.added" => Event::Pending {
                 id: s("id")?,
@@ -808,8 +815,27 @@ mod tests {
             Call::Attach { pane: 1, form: "screen".into() },
             Call::Attach { pane: 1, form: "none".into() },
             Call::Resolve { pending: "pnd_1".into(), yes: false, force: false },
-            Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
-            Call::Act { act: "ask".into(), unit: None, pane: Some(1), text: Some("do it".into()) },
+            Call::Act {
+                act: "send".into(),
+                unit: Some("ask_1".into()),
+                pane: None,
+                text: None,
+                eval: None,
+            },
+            Call::Act {
+                act: "ask".into(),
+                unit: None,
+                pane: Some(1),
+                text: Some("do it".into()),
+                eval: None,
+            },
+            Call::Act {
+                act: "decide".into(),
+                unit: None,
+                pane: None,
+                text: None,
+                eval: Some("evl_1".into()),
+            },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read { what: "judges".into(), unit: "ask_1".into(), pane: None, lines: None },
             Call::Read {
@@ -882,7 +908,16 @@ mod tests {
                 turbo: false,
             },
             Event::Exited { pane: 1 },
-            Event::Units { units: Vec::new(), records: json!({}) },
+            Event::Units { units: Vec::new(), records: json!({}), rounds: Default::default() },
+            Event::Units {
+                units: Vec::new(),
+                records: json!({}),
+                rounds: weft_core::rounds::Rounds {
+                    open: vec!["ask_2".into()],
+                    since: Some(1),
+                    ..Default::default()
+                },
+            },
             Event::Pending {
                 id: "pnd_1".into(),
                 pane: 2,

@@ -162,6 +162,8 @@ pub struct Session {
     /// The Eval record behind each check, by eval id. Read by the daemon so
     /// that drawing a frame opens no file.
     pub records: serde_json::Value,
+    /// The board grouped by Eval round, as the daemon built it (ADR-0029).
+    pub rounds: weft_core::rounds::Rounds,
     /// How many boards the daemon has sent: one each time the ledger grew.
     pub boards: u64,
     /// What this project routes, and what an Ask could not finish here.
@@ -244,6 +246,7 @@ impl Session {
             setup: None,
             remote: None,
             records: serde_json::json!({}),
+            rounds: Default::default(),
             boards: 0,
             routing: weft_core::routing::Routing::default(),
             gap: None,
@@ -283,6 +286,8 @@ impl Session {
         session.readiness =
             opened.get("readiness").cloned().unwrap_or_else(|| serde_json::json!({}));
         session.records = opened.get("records").cloned().unwrap_or_else(|| serde_json::json!({}));
+        session.rounds = serde_json::from_value(opened.get("rounds").cloned().unwrap_or_default())
+            .unwrap_or_default();
         if let Some(agents) = opened.get("agents") {
             session.take_agents(agents);
         }
@@ -449,9 +454,10 @@ impl Session {
                         p.running = false;
                     }
                 }
-                Event::Units { units, records } => {
+                Event::Units { units, records, rounds } => {
                     self.units = units;
                     self.records = records;
+                    self.rounds = rounds;
                     self.boards += 1;
                 }
                 Event::Pending { id, pane, what, why, payload } => {
@@ -519,11 +525,17 @@ impl Session {
         self.last_refusal = None;
         self.unrecorded = None;
         let pane = pane.map(|p| self.id_at(p)).transpose()?;
+        // A Seal names the Eval it seals.
+        let eval = (act == "decide")
+            .then(|| self.units.iter().find(|u| Some(u.ask_id.as_str()) == unit))
+            .flatten()
+            .and_then(|u| u.check.as_ref().map(|c| c.eval_id.clone()));
         self.tell(Call::Act {
             act: act.to_string(),
             unit: unit.map(str::to_string),
             pane,
             text: text.map(str::to_string),
+            eval,
         })
     }
 

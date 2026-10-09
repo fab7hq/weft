@@ -34,7 +34,8 @@ impl Verdict {
         }
     }
 
-    fn from_recorded(s: &str) -> Option<Self> {
+    /// The verdict a record wrote: `aligned`, `drifted` or `incomplete`.
+    pub fn of(s: &str) -> Option<Self> {
         match s {
             "aligned" => Some(Verdict::Matches),
             "drifted" => Some(Verdict::DoesntMatch),
@@ -406,7 +407,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         u.gathered = None;
                     }
                 }
-                let Some(verdict) = s(&data, &["verdict"]).and_then(Verdict::from_recorded) else {
+                let Some(verdict) = s(&data, &["verdict"]).and_then(Verdict::of) else {
                     continue;
                 };
                 let check = Check {

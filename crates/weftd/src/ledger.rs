@@ -32,6 +32,11 @@ impl Ledger {
         project(&self.events)
     }
 
+    /// Its Evals and Seals, numbered in ledger order (ADR-0029 "Rounds").
+    pub fn record(&self) -> weft_core::rounds::Record {
+        weft_core::rounds::record(&self.events)
+    }
+
     /// Returns true when anything new was folded in.
     pub fn refresh(&mut self) -> bool {
         let Ok(meta) = std::fs::metadata(&self.path) else {

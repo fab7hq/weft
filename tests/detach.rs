@@ -532,8 +532,13 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     assert_eq!(c.wait_for_added(), (0, "sh".to_string()));
     agent_says(&socket, &root, "sh", 0, "s1", "ready");
     c.wait_for_state(Some(Turn::Ready));
-    let check =
-        || Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None };
+    let check = || Call::Act {
+        act: "check".into(),
+        unit: Some("ask_1".into()),
+        pane: None,
+        text: None,
+        eval: None,
+    };
     let pending_pane = |c: &mut Client| {
         c.wait_until(|e| match e {
             Event::Pending { pane, why, .. } => Some((pane, why)),
@@ -639,7 +644,13 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
     a.wait_for_state(Some(Turn::Working));
     // Nothing is free, so the daemon starts an agent for the Eval, which will
     // never say it is ready.
-    a.send(Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None });
+    a.send(Call::Act {
+        act: "check".into(),
+        unit: Some("ask_1".into()),
+        pane: None,
+        text: None,
+        eval: None,
+    });
     let id = a.wait_until(|e| match e {
         Event::Pending { id, .. } => Some(id),
         _ => None,
@@ -705,7 +716,13 @@ fn an_agent_started_for_an_eval_resumes_nobodys_session() {
     c.wait_for_added();
     agent_says(&socket, &root, "cat-agent", 0, "theirs", "working");
     c.wait_for_state(Some(Turn::Working));
-    c.send(Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None });
+    c.send(Call::Act {
+        act: "check".into(),
+        unit: Some("ask_1".into()),
+        pane: None,
+        text: None,
+        eval: None,
+    });
     c.wait_for_added();
 
     let mut look = Client::attach(&socket, &root);
@@ -1042,5 +1059,99 @@ fn turbo_can_be_switched_and_the_next_agent_follows_it() {
     assert_eq!(panes.iter().map(|p| p.turbo).collect::<Vec<_>>(), [true, false]);
 
     look.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Eval acts on the Open round and Seal on an Eval's (ADR-0029 D5, D8): a
+/// Seal names its Eval, `--eval`, so RingFrame closes exactly its Asks; one
+/// on an Eval still judged, already sealed, or unnamed is refused; Eval with
+/// no Ask named goes on with the round being judged.
+#[test]
+fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
+    let root = project("rounds");
+    ask_on_record(&root, "sh");
+    gathered_on_record(&root);
+    let socket = protocol::private_socket("weft-rounds");
+    let listening = socket.clone();
+    let program = agent(&socket);
+    let harnesses = weft::harness_table::Harnesses(vec![harness_running("sh", &program)]);
+    std::thread::spawn(move || {
+        let _ = server::Session::serve_with(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(harnesses),
+        );
+    });
+    let mut c = Client::attach(&socket, &root);
+    c.hello();
+    c.send(Call::StartAgent { harness: "sh".into(), spec: program.clone(), session: None });
+    c.wait_for_added();
+    agent_says(&socket, &root, "sh", 0, "s1", "ready");
+    c.wait_for_state(Some(Turn::Ready));
+    let act = |act: &str, eval: Option<&str>| Call::Act {
+        act: act.into(),
+        unit: None,
+        pane: None,
+        text: None,
+        eval: eval.map(str::to_string),
+    };
+    assert_eq!(c.answer(act("decide", None)), Err("no_eval".into()));
+    assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));
+    assert_eq!(c.answer(act("decide", Some("evl_9"))), Err("no_eval".into()));
+
+    // Eval on the round being judged sends its debate.
+    c.send(act("check", None));
+    let payload = c.wait_until(|e| match e {
+        Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).into_owned()),
+        _ => None,
+    });
+    assert!(payload.contains("evl_1"), "{payload}");
+
+    // Judged, the Seal on it names it.
+    let line = |kind: &str, id: &str, data: serde_json::Value, links: serde_json::Value| {
+        serde_json::json!({"schema": "ringframe.ledger/1", "event_id": "evt_r", "type": kind,
+            "time": "2026-09-19T14:04:00Z", "id": id,
+            "actor": {"kind": "human", "id": "me"}, "links": links, "data": data})
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".fab7/rf/ledger.jsonl"))
+        .expect("ledger");
+    let basis = serde_json::json!({"basis": {"asks": ["ask_1"]}, "verdict": "aligned",
+                                   "confidence": 1.0});
+    writeln!(f, "{}", line("eval.completed", "evl_1", basis, serde_json::json!([]))).unwrap();
+    drop(f);
+    c.wait_until(|e| match e {
+        Event::Units { rounds, .. } if rounds.evals.iter().any(|r| r.eval == "evl_1") => Some(()),
+        _ => None,
+    });
+    c.send(act("decide", Some("evl_1")));
+    let staged = c.wait_until(|e| match e {
+        Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).into_owned()),
+        _ => None,
+    });
+    assert!(staged.contains("seal") && staged.ends_with("--eval evl_1"), "{staged}");
+
+    // Sealed, the act stays and says so (D12.6).
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(root.join(".fab7/rf/ledger.jsonl"))
+        .expect("ledger");
+    let links =
+        serde_json::json!([{"rel": "seals", "id": "ask_1"}, {"rel": "seals", "id": "evl_1"}]);
+    let data = serde_json::json!({"basis": {"asks": ["ask_1"]}, "disposition": "accepted"});
+    writeln!(f, "{}", line("seal.created", "sel_1", data, links)).unwrap();
+    drop(f);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let got = c.answer(act("decide", Some("evl_1")));
+        if got == Err("sealed_already".into()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "a sealed Eval was sealed again: {got:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let mut stop = Client::attach(&socket, &root);
+    stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }

@@ -117,7 +117,13 @@ fn a_send_weft_typed_is_recorded_as_submitted_and_a_refused_one_is_not() {
                 force: bool| {
         call(
             stream,
-            Call::Act { act: "send".into(), unit: Some("ask_1".into()), pane: None, text: None },
+            Call::Act {
+                act: "send".into(),
+                unit: Some("ask_1".into()),
+                pane: None,
+                text: None,
+                eval: None,
+            },
         );
         let pending = wait(frames, stream, |e| match e {
             Event::Pending { id, .. } => Some(id),

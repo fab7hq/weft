@@ -122,8 +122,13 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
         }
         _ => None,
     });
-    let check =
-        || Call::Act { act: "check".into(), unit: Some("ask_1".into()), pane: None, text: None };
+    let check = || Call::Act {
+        act: "check".into(),
+        unit: Some("ask_1".into()),
+        pane: None,
+        text: None,
+        eval: None,
+    };
     let pending = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
         wait(frames, stream, |e| match e {
             Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).to_string()),
