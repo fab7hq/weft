@@ -339,24 +339,23 @@ impl Pane {
     }
 
     /// Press Enter and wait for the mode it enters. A host may already name
-    /// the mode in a popup for the command typed
-    /// (`/plan  switch to Plan mode`), so the mode counts only once the Enter
-    /// has changed the screen and it has then been left alone for
-    /// [`inject::SUBMIT_SETTLE`]: input that arrives while the host is still
-    /// switching is dropped (ringframe-ask-ledger-q10).
+    /// the mode in a popup for the command typed (`/plan  switch to Plan
+    /// mode`), and may keep part of its screen moving (a spinner), so the mode
+    /// counts once the lines that name it are not the ones that did before
+    /// the Enter, and the body then waits [`inject::SUBMIT_SETTLE`]: input
+    /// that arrives while the host is still switching is dropped
+    /// (ringframe-ask-ledger-q10).
     fn wait_for(&mut self, active: &str, timeout: std::time::Duration) -> Result<bool, Refusal> {
-        let before = self.with_screen(|s| s.contents());
+        let naming = |screen: String| -> Vec<String> {
+            screen.lines().filter(|l| l.contains(active)).map(|l| l.trim().to_string()).collect()
+        };
+        let before = naming(self.with_screen(|s| s.contents()));
         self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
         let deadline = std::time::Instant::now() + timeout;
-        let mut last = (std::time::Instant::now(), before.clone());
         while std::time::Instant::now() < deadline {
-            let screen = self.with_screen(|s| s.contents());
-            if screen != last.1 {
-                last = (std::time::Instant::now(), screen);
-            } else if last.1 != before
-                && last.1.contains(active)
-                && last.0.elapsed() >= inject::SUBMIT_SETTLE
-            {
+            let now = naming(self.with_screen(|s| s.contents()));
+            if !now.is_empty() && now != before {
+                std::thread::sleep(inject::SUBMIT_SETTLE);
                 return Ok(true);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
@@ -566,9 +565,10 @@ mod tests {
     }
 
     /// A host that, as Codex 0.161 does, shows its slash-command popup (which
-    /// names the mode) as soon as `/plan` is typed, and drops input that
-    /// arrives before it has handled the Enter: the body goes in only once
-    /// the mode is shown after the Enter (ringframe-ask-ledger-q10).
+    /// names the mode) as soon as `/plan` is typed, drops input that arrives
+    /// before it has handled the Enter, and keeps a footer spinner turning so
+    /// its screen is never still: the body goes in only once the mode is shown
+    /// after the Enter (ringframe-ask-ledger-q10).
     #[test]
     fn a_mode_named_by_the_popup_is_not_taken_for_the_mode_entered() {
         let host = HOST_DROPPING_EARLY_INPUT;
@@ -588,7 +588,15 @@ mod tests {
         pane.stop();
     }
 
-    const HOST_DROPPING_EARLY_INPUT: &str = r#"import os, sys, termios, tty, time
+    const HOST_DROPPING_EARLY_INPUT: &str = r#"import os, sys, termios, tty, time, threading
+def spin():
+    frames = '|/-\\'
+    i = 0
+    while True:
+        os.write(1, ('\x1b7\x1b[24;1H' + frames[i % 4] + '\x1b8').encode())
+        i += 1
+        time.sleep(0.1)
+threading.Thread(target=spin, daemon=True).start()
 fd = sys.stdin.fileno()
 tty.setraw(fd)
 out = lambda t: (os.write(1, t.encode()), None)
