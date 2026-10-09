@@ -73,6 +73,8 @@ fn serve(socket: &Path, config: &Path) {
     let (listening, config) = (socket.to_path_buf(), config.to_path_buf());
     let mut harness = weft::harness_table::fixture::file("codex");
     harness["program"] = "cat".into();
+    // Resumed, it reads its pane (`cat - <id>`) and keeps running.
+    harness["resume"] = serde_json::json!(["-"]);
     let harnesses = weft::harness_table::Harnesses(vec![
         weft::harness_table::Harness::of("codex", &harness).expect("a harness"),
     ]);
@@ -150,8 +152,11 @@ fn every_session_is_kept_and_a_resume_names_exactly_its_id() {
     let map = panes(&root);
     let p = &map["panes"][pane as usize];
     assert_eq!(p["session"], serde_json::json!({"session": "s_old", "how": "resumed"}));
-    assert_eq!(p["spec"], "cat resume s_old", "the harness file's line, not the client's");
+    assert_eq!(p["spec"], "cat - s_old", "the harness file's line, not the client's");
     assert!(!map.to_string().contains("s_new"), "the newer session is never chosen");
+    // Its row runs again, in the new pane (T11.5: the row turns ●).
+    let index = c.index_until(|i| row(i, "s_old").is_some_and(|r| r.pane == Some(pane as u32)));
+    assert_eq!(row(&index, "s_old").unwrap().state, State::Running);
 
     // The newer session ends the moment its process does, whatever its last
     // event said.
