@@ -127,6 +127,24 @@ pub struct Row {
     pub resumable: bool,
 }
 
+impl Row {
+    /// A row with only its harness, id, state, turn and time: the rest none.
+    pub fn of(harness: &str, id: &str, state: State, turn: Option<Turn>, at: i64) -> Self {
+        Row {
+            id: id.into(),
+            harness: harness.into(),
+            state,
+            turn,
+            started: at,
+            last: at,
+            title: None,
+            asks: 0,
+            pane: None,
+            resumable: true,
+        }
+    }
+}
+
 /// Every session of a project: each one Weft's receipts name, and each one a
 /// pane is bound to. `alive` says whether a recorded harness process still
 /// runs with its recorded start time. Running first, then the rest, each
@@ -401,7 +419,8 @@ mod tests {
     #[test]
     fn a_running_pane_holds_its_session_running() {
         let h = heard("claude-code", "s1", NOON, Turn::TurnEnded, NOON + MIN);
-        let rows = index(std::slice::from_ref(&h), &[pane(3, "claude-code", "s1", true)], &[], DEAD);
+        let rows =
+            index(std::slice::from_ref(&h), &[pane(3, "claude-code", "s1", true)], &[], DEAD);
         assert_eq!((rows[0].state, rows[0].pane), (State::Running, Some(3)));
         assert_eq!(rows[0].turn, Some(Turn::TurnEnded));
         // A pane bound before any receipt: a row from the pane alone.

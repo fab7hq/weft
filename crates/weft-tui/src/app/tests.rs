@@ -498,8 +498,10 @@ fn a_harness_with_nothing_open_and_no_agent_is_not_listed() {
     );
 }
 
+/// A session on record is never offered as "the latest" (ADR-0029 D4, the
+/// `gl` case): what can be started is each harness fresh.
 #[test]
-fn the_latest_recorded_session_is_found_for_picking_up() {
+fn a_session_on_record_is_never_offered_as_the_latest() {
     // `starts()` only offers a harness that is on this machine; in this
     // world, Codex is.
     let mut a = app();
@@ -522,21 +524,17 @@ fn the_latest_recorded_session_is_found_for_picking_up() {
     )
     .expect("sent");
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    let mut starts = a.starts();
     while std::time::Instant::now() < deadline
-        && starts.iter().filter(|c| c.harness == "codex").count() < 2
+        && !a.session_mut().sessions.iter().any(|s| s.id == "01a0bdb6")
     {
         std::thread::sleep(Duration::from_millis(20));
-        a.refresh_for_test();
-        starts = a.starts();
+        a.pump();
     }
-
-    let codex: Vec<_> = starts.iter().filter(|c| c.harness == "codex").collect();
-    assert_eq!(codex.len(), 2, "pick it up, or start fresh");
-    assert_eq!(codex[0].spec, "codex resume 01a0bdb6", "picking it up comes first");
-    assert!(codex[0].session.is_some());
-    assert_eq!(codex[1].spec, "codex");
-    assert!(codex[1].session.is_none());
+    assert!(a.session_mut().sessions.iter().any(|s| s.id == "01a0bdb6"), "on record");
+    a.refresh_for_test();
+    let codex: Vec<_> = a.starts().into_iter().filter(|c| c.harness == "codex").collect();
+    assert_eq!(codex.len(), 1, "start fresh, and nothing else");
+    assert_eq!((codex[0].spec.as_str(), codex[0].session.is_none()), ("codex", true));
 }
 
 #[test]
@@ -942,17 +940,18 @@ fn an_agent_that_has_not_said_it_is_ready_is_asked_about_first() {
 /// §6 test 1, drawn: the row carries the agent's state from its receipt.
 #[test]
 fn the_row_of_an_ask_shows_its_agents_state() {
-    use weft_core::turns::{Session, Turn};
+    use weft_core::sessions::{Row, State};
+    use weft_core::turns::Turn;
     let mut a = with_unit(Sent::Arrived { exact: true });
     let before = crate::ui::sidebar_text(&a);
     assert!(!before.contains("working"), "no receipt, no state: {before}");
-    a.session_mut().turns = vec![Session {
-        harness: "codex".into(),
-        id: "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0".into(),
-        first: 1,
-        latest: Turn::Working,
-        at: 1,
-    }];
+    a.session_mut().sessions = vec![Row::of(
+        "codex",
+        "01a0bdb6-1d1f-79c2-84b0-8b03496d7db0",
+        State::Running,
+        Some(Turn::Working),
+        1,
+    )];
     let after = crate::ui::sidebar_text(&a);
     assert!(after.contains("working · ASKED"), "{after}");
 }

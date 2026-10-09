@@ -13,7 +13,7 @@ use weft_core::ledger::Unit;
 use weft_core::readiness::Readiness;
 use weft_core::routing::Routing;
 use weft_core::sessions::Recorded;
-use weft_core::turns::{Session, Turn};
+use weft_core::turns::Turn;
 use weft_core::workspace::Needs;
 use weft_proto::{Call, Event};
 
@@ -42,16 +42,16 @@ pub struct Project {
     since: HashMap<u32, (&'static str, i64)>,
     /// The board: the tree, and the works a device acts on.
     units: Vec<Unit>,
-    /// The sessions the hooks reported, for a work's own turn.
-    sessions: Vec<Session>,
+    /// The project's session index (ADR-0029), and the Mac's distance from
+    /// UTC, in milliseconds.
+    sessions: Vec<weft_core::sessions::Row>,
+    zone: i64,
     /// What each harness is short of, by the daemon's word.
     readiness: Value,
     routing: Routing,
     /// The harnesses the person can start here, fresh, and each one's
     /// command line, as `agents.available` last answered.
     starts: Vec<(String, String)>,
-    /// The latest session of each harness the daemon offers to pick up.
-    resumes: Vec<(String, Recorded)>,
     /// The harness files, as the daemon read them: how to resume a session.
     files: Harnesses,
     /// What the project still needs before RingFrame is set up in it, if it
@@ -85,10 +85,10 @@ impl Project {
             units: serde_json::from_value(answer["units"].clone()).unwrap_or_default(),
             sessions: serde_json::from_value(answer["agents"]["sessions"].clone())
                 .unwrap_or_default(),
+            zone: answer["agents"]["zone"].as_i64().unwrap_or(0),
             readiness: answer["readiness"].clone(),
             routing: Routing::opened(&answer["routing"]),
             starts: Vec::new(),
-            resumes: Vec::new(),
             files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
             setup: serde_json::from_value(answer["setup"].clone()).unwrap_or_default(),
             turbo: answer["turbo"].as_bool().unwrap_or(false),
@@ -117,7 +117,8 @@ impl Project {
                 Some(p) => p.running = false,
                 None => return false,
             },
-            Event::Agents { panes, sessions } => {
+            Event::Agents { panes, sessions, zone } => {
+                self.zone = *zone;
                 self.turns = panes.clone();
                 self.sessions = sessions.clone();
             }
@@ -221,10 +222,10 @@ impl Project {
             project.harnesses.iter().zip(row["harnesses"].as_array_mut().into_iter().flatten())
         {
             at["agent"] = h.pane.map(|p| agent_id(&self.key, p)).into();
-            // Not running: what a tap on it would resume (M2.9), else nothing.
+            // Not running: nothing to resume from here, never "the latest"
+            // (ADR-0029 D4); a session is resumed by its id.
             if h.pane.is_none() {
-                let s = weft_core::offers::resume_session(None, self.latest(&h.harness));
-                at["session"] = s.map(|s| json!({"at": s.at, "last": s.last})).into();
+                at["session"] = Value::Null;
             }
         }
         row["turbo"] = self.turbo.into();
@@ -240,19 +241,6 @@ impl Project {
             .filter(|s| s["session"].is_null())
             .filter_map(|s| {
                 Some((s["harness"].as_str()?.to_string(), s["spec"].as_str()?.to_string()))
-            })
-            .collect();
-        self.resumes = answer["starts"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|s| {
-                let (h, r) = (s["harness"].as_str()?, &s["session"]);
-                let last = r["last"].as_str()?.to_string();
-                Some((
-                    h.to_string(),
-                    Recorded { id: r["id"].as_str()?.to_string(), at: r["at"].as_i64()?, last },
-                ))
             })
             .collect();
         let changed = starts != self.starts;
@@ -273,13 +261,7 @@ impl Project {
 
     /// The session a work's agent would resume, as the TUI picks one up.
     pub fn session_of(&self, unit: &Unit) -> Option<Recorded> {
-        weft_core::offers::resume_session(Some(unit), self.latest(&unit.harness))
-    }
-
-    /// The harness's latest session on record, what a tap on a harness that
-    /// runs no agent resumes (M2.9), as the TUI's Enter on it does.
-    fn latest(&self, harness: &str) -> Option<&Recorded> {
-        self.resumes.iter().find(|(h, _)| h == harness).map(|(_, s)| s)
+        weft_core::offers::resume_session(Some(unit))
     }
 
     /// The harness an act on this work has to happen in, when no agent of it runs.
@@ -310,7 +292,7 @@ impl Project {
                 .unit(id)
                 .ok_or(("no_unit", format!("{id} is not on the board")))
                 .map(|u| self.session_of(u))?,
-            None => weft_core::offers::resume_session(None, self.latest(harness)),
+            None => None,
         };
         let s =
             session.ok_or(("no_session", weft_core::words::word("resume.nothing").to_string()))?;
@@ -471,7 +453,8 @@ mod tests {
         let answer = json!({
             "panes": [{"pane": 4, "harness": "claude", "spec": "claude", "running": true}],
             "agents": {"panes": ["waiting"], "sessions": [
-                {"harness": "claude", "id": "s_1", "first": 0, "latest": "working", "at": 0}]},
+                {"harness": "claude", "id": "s_1", "state": "running", "turn": "working",
+                 "started": 0, "last": 0, "asks": 0, "resumable": true}]},
             "harnesses": [{"name": "claude", "title": "Claude Code"}],
             "units": [unit("ask_1", "fix login")],
             "readiness": {"claude": "ready"},
@@ -730,16 +713,10 @@ mod tests {
         none.session_ref = None;
         assert_eq!(p.session_of(&none), None, "nothing to resume");
 
-        // A tap on the harness itself (M2.9): its latest session, as the TUI's
-        // Enter on a harness that runs no agent picks it up.
-        assert_eq!(p.resume("claude", None).unwrap_err().0, "no_session", "none on record yet");
+        // A tap on the harness itself resumes nothing: never its latest
+        // session (ADR-0029 D4, the `gl` case).
+        p.available(&json!({"starts": [{"harness": "claude", "spec": "claude", "session": null}]}));
+        assert_eq!(p.resume("claude", None).unwrap_err().0, "no_session");
         assert_eq!(p.tree()["harnesses"][0]["session"], Value::Null);
-        p.available(&json!({"starts": [
-            {"harness": "claude", "spec": "claude --resume s_9", "session": {"id": "s_9", "at": 5, "last": "telemetry"}},
-            {"harness": "claude", "spec": "claude", "session": null}]}));
-        let Ok(Call::StartAgent { spec, session, .. }) = p.resume("claude", None) else { panic!() };
-        assert_eq!(session.as_deref(), Some("s_9"));
-        assert!(spec.ends_with(" s_9"), "{spec}");
-        assert_eq!(p.tree()["harnesses"][0]["session"], json!({"at": 5, "last": "telemetry"}));
     }
 }

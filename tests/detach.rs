@@ -679,6 +679,23 @@ fn an_agent_started_for_an_eval_resumes_nobodys_session() {
         );
     });
     let mut c = Client::attach(&socket, &root);
+    // Their session is on record (run in a terminal), so it can be resumed.
+    support::signal(
+        &socket,
+        weft_core::signal::Sent {
+            harness: "cat-agent".into(),
+            hook: "Hook".into(),
+            session: "theirs".into(),
+            workspace: Some(root.to_string_lossy().into_owned()),
+            state: Some("turn_ended".into()),
+            ..Default::default()
+        },
+    );
+    c.wait_until(|e| match e {
+        Event::Agents { sessions, .. } if sessions.iter().any(|s| s.id == "theirs") => Some(()),
+        _ => None,
+    });
+    let theirs = harness_running("cat-agent", &program).resume_spec("theirs").expect("resume");
     let resumed = Call::StartAgent {
         harness: "cat-agent".into(),
         spec: format!("{program} -"),
@@ -693,7 +710,7 @@ fn an_agent_started_for_an_eval_resumes_nobodys_session() {
 
     let mut look = Client::attach(&socket, &root);
     let specs: Vec<String> = look.hello().into_iter().map(|p| p.spec).collect();
-    assert_eq!(specs, [format!("{program} -"), program], "the harness's own command");
+    assert_eq!(specs, [theirs, program], "the harness's own command");
     look.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }

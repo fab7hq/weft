@@ -10,7 +10,7 @@ use crate::board::{Act, Board, PaneInfo};
 use crate::ledger::Unit;
 use crate::readiness::{Gap, Readiness};
 use crate::routing::Routing;
-use crate::turns::{Session, Turn};
+use crate::turns::Turn;
 use crate::workspace::Needs;
 
 /// What one project's rows are built from. Borrowed: the client owns it.
@@ -20,8 +20,8 @@ pub struct Facts<'a> {
     pub panes: &'a [PaneInfo],
     /// Each pane's agent state, in the order of `panes`.
     pub agents: &'a [Option<Turn>],
-    /// The sessions the hooks reported, for a work's own agent state.
-    pub sessions: &'a [Session],
+    /// The project's session index, for a work's own agent state.
+    pub sessions: &'a [crate::sessions::Row],
     /// A harness's title, by its harness file, when it has one.
     pub title: &'a dyn Fn(&str) -> Option<String>,
     pub readiness: &'a dyn Fn(&str) -> Readiness,
@@ -294,7 +294,7 @@ fn work(f: &Facts, at: usize, unit: &Unit, running: bool) -> Work {
         at,
         title: unit.title.clone(),
         word: Word::of(unit),
-        turn: crate::turns::state_of(unit, f.sessions).filter(|_| running).map(TurnWord::from),
+        turn: crate::turns::turn_in(unit, f.sessions).filter(|_| running).map(TurnWord::from),
         eval: board.not_ready(Act::Eval),
         seal: board.not_ready(Act::Seal),
     }
@@ -332,8 +332,21 @@ mod tests {
     }
 
     fn session(id: &str, harness: &str, latest: Turn) -> Session {
-        Session { harness: harness.into(), id: format!("s_{id}"), first: 0, latest, at: 0 }
+        crate::sessions::Row {
+            id: format!("s_{id}"),
+            harness: harness.into(),
+            state: crate::sessions::State::Running,
+            turn: Some(latest),
+            started: 0,
+            last: 0,
+            title: None,
+            asks: 0,
+            pane: None,
+            resumable: true,
+        }
     }
+
+    type Session = crate::sessions::Row;
 
     /// The Atlas's sample: weft has fix login and telemetry of claude,
     /// health endpoint and readme fix of codex.

@@ -22,6 +22,14 @@ pub struct Info {
     pub argv0: Option<String>,
     pub parent: u32,
     pub start: String,
+    /// It has exited and is not yet reaped: gone, for anyone asking.
+    pub zombie: bool,
+}
+
+/// Whether the process a session's receipts name still runs: that pid, with
+/// that start time, and not a zombie (ADR-0029 D11).
+pub fn alive(p: &weft_core::sessions::Process) -> bool {
+    info(p.pid).is_some_and(|me| me.start == p.start && !me.zombie)
 }
 
 /// The first process at or above `from` whose name, or else whose
@@ -64,12 +72,13 @@ pub fn info(pid: u32) -> Option<Info> {
     let (open, close) = (stat.find('(')?, stat.rfind(')')?);
     let name = stat.get(open + 1..close)?.to_string();
     let rest: Vec<&str> = stat.get(close + 1..)?.split_whitespace().collect();
+    let zombie = rest.first() == Some(&"Z");
     let parent = rest.get(1)?.parse().ok()?;
     let start = rest.get(19)?.to_string();
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
     let argv0 = cmdline.split(|b| *b == 0).next().filter(|a| !a.is_empty());
     let argv0 = argv0.map(|a| base(&String::from_utf8_lossy(a)).to_string());
-    Some(Info { name, argv0, parent, start })
+    Some(Info { name, argv0, parent, start, zombie })
 }
 
 /// `proc_pidinfo(PROC_PIDTBSDINFO)`: the name (`p_comm`), the parent and the
@@ -97,6 +106,8 @@ pub fn info(pid: u32) -> Option<Info> {
         argv0: argv0(pid),
         parent: bsd.pbi_ppid,
         start: format!("{}.{:06}", bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
+        // `SZOMB` in <sys/proc.h>.
+        zombie: bsd.pbi_status == 5,
     })
 }
 
@@ -161,5 +172,26 @@ mod tests {
     #[test]
     fn a_process_that_is_not_there_says_nothing() {
         assert_eq!(info(u32::MAX - 7), None);
+    }
+
+    /// D11: a recorded process runs while its pid has its start time; one
+    /// that exited, even unreaped, or a pid reused, does not.
+    #[test]
+    fn a_recorded_process_is_alive_only_as_itself() {
+        use weft_core::sessions::Process;
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let start = info(child.id()).unwrap().start;
+        let me = Process { pid: child.id(), start: start.clone() };
+        assert!(alive(&me));
+        assert!(!alive(&Process { pid: child.id(), start: format!("{start}0") }), "reused");
+        child.kill().unwrap();
+        // Killed and not yet waited for: a zombie, which is gone.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while alive(&me) {
+            assert!(std::time::Instant::now() < deadline, "a zombie still read as alive");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        child.wait().unwrap();
+        assert!(!alive(&me), "reaped");
     }
 }

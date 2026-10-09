@@ -58,11 +58,14 @@ impl Client {
     }
 
     /// The next `agents` event that `pick` says yes to.
-    fn agents_until(&mut self, pick: impl Fn(&[Option<Turn>], &[weft::turns::Session]) -> bool) {
+    fn agents_until(
+        &mut self,
+        pick: impl Fn(&[Option<Turn>], &[weft_core::sessions::Row]) -> bool,
+    ) {
         self.stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
         loop {
             match self.lines.next() {
-                Ok(Some(Line::Event(Event::Agents { panes, sessions })))
+                Ok(Some(Line::Event(Event::Agents { panes, sessions, .. })))
                     if pick(&panes, &sessions) =>
                 {
                     return;
@@ -165,7 +168,7 @@ fn a_signal_moves_only_the_pane_whose_token_it_carries_and_outlives_the_daemon()
     // is moved only by that pane.
     support::signal(&socket, state("waiting", "t9", &root));
     c.agents_until(|_, sessions| {
-        sessions.iter().any(|s| s.id == "t9" && s.latest == Turn::Waiting)
+        sessions.iter().any(|s| s.id == "t9" && s.turn == Some(Turn::Waiting))
     });
     support::signal(&socket, state("turn_ended", "s1", &root));
     support::pane_says(&socket, &agents, &root, "codex", 0, "s1", "waiting");
@@ -219,7 +222,7 @@ fn a_signal_moves_only_the_pane_whose_token_it_carries_and_outlives_the_daemon()
     serve(&socket, &config);
     let mut again = Client::attach(&socket, &root);
     again.agents_until(|_, sessions| {
-        let of = |id: &str| sessions.iter().find(|s| s.id == id).map(|s| s.latest);
+        let of = |id: &str| sessions.iter().find(|s| s.id == id).and_then(|s| s.turn);
         of("s1") == Some(Turn::Waiting) && of("t9") == Some(Turn::Waiting)
     });
     again.send(Call::Shutdown);

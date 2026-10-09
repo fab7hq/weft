@@ -17,11 +17,11 @@ use serde_json::{Value, json};
 pub use weft_core::board::PaneInfo;
 use weft_core::inject::Handoff;
 use weft_core::ledger::Unit;
-use weft_core::turns::{Session, Turn};
+use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 3;
+pub const PROTOCOL: u64 = 4;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -241,11 +241,14 @@ pub enum Event {
     Presence {
         at: i64,
     },
-    /// Each agent's state, as its hooks reported it: one per pane, in order,
-    /// and the latest event of every session this project has receipts for.
+    /// Each agent's state, as its hooks reported it: one per pane, in order;
+    /// the project's session index (ADR-0029, sessions.md); and the Mac's
+    /// distance from UTC, in milliseconds, so every client reads a time and
+    /// a date group as the Mac does.
     Agents {
         panes: Vec<Option<Turn>>,
-        sessions: Vec<Session>,
+        sessions: Vec<weft_core::sessions::Row>,
+        zone: i64,
     },
     /// One hook, from `weft signal` to the daemon (ADR-0030 D1): sent one way
     /// on a connection of its own, and answered by nothing.
@@ -495,8 +498,8 @@ impl Event {
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Workspace { setup, gap } => ("workspace", json!({"setup": setup, "gap": gap})),
-            Event::Agents { panes, sessions } => {
-                ("agents", json!({"panes": panes, "sessions": sessions}))
+            Event::Agents { panes, sessions, zone } => {
+                ("agents", json!({"panes": panes, "sessions": sessions, "zone": zone}))
             }
             Event::Signal(sent) => ("signal", serde_json::to_value(sent).unwrap_or_default()),
         }
@@ -553,6 +556,7 @@ impl Event {
             "agents" => Event::Agents {
                 panes: serde_json::from_value(p.get("panes")?.clone()).ok()?,
                 sessions: serde_json::from_value(p.get("sessions")?.clone()).ok()?,
+                zone: p.get("zone").and_then(Value::as_i64).unwrap_or(0),
             },
             "signal" => Event::Signal(Box::new(serde_json::from_value(p.clone()).ok()?)),
             "injected" => Event::Injected {
@@ -902,13 +906,19 @@ mod tests {
             Event::Workspace { setup: None, gap: None },
             Event::Agents {
                 panes: vec![Some(Turn::TurnEnded), None],
-                sessions: vec![Session {
-                    harness: "claude-code".into(),
+                sessions: vec![weft_core::sessions::Row {
                     id: "s1".into(),
-                    first: 1,
-                    latest: Turn::TurnEnded,
-                    at: 2,
+                    harness: "claude-code".into(),
+                    state: weft_core::sessions::State::Quiet,
+                    turn: Some(Turn::TurnEnded),
+                    started: 1,
+                    last: 2,
+                    title: None,
+                    asks: 0,
+                    pane: None,
+                    resumable: true,
                 }],
+                zone: 7 * 3_600_000,
             },
             Event::Signal(Box::new(weft_core::signal::Sent {
                 harness: "claude-code".into(),

@@ -884,36 +884,30 @@ fn the_shared_words_are_spelled_only_in_words() {
 /// done once none has come for 300 ms.
 fn settle_agents(a: &mut App) {
     use std::time::{Duration, Instant};
-    let mark = || {
-        vec![weft_core::turns::Session {
-            harness: "-".into(),
-            id: "-".into(),
-            first: 0,
-            latest: weft_core::turns::Turn::Ready,
-            at: 0,
-        }]
-    };
+    let mark =
+        || vec![weft_core::sessions::Row::of("-", "-", weft_core::sessions::State::Quiet, None, 0)];
     let deadline = Instant::now() + Duration::from_secs(10);
     let mut heard: Option<Instant> = None;
-    a.session_mut().turns = mark();
+    a.session_mut().sessions = mark();
     while Instant::now() < deadline
         && heard.is_none_or(|t| t.elapsed() < Duration::from_millis(300))
     {
         a.pump();
-        if a.session_mut().turns != mark() {
-            a.session_mut().turns = mark();
+        if a.session_mut().sessions != mark() {
+            a.session_mut().sessions = mark();
             heard = Some(Instant::now());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    a.session_mut().turns = Vec::new();
+    a.session_mut().sessions = Vec::new();
 }
 
 /// The Atlas's sample, as its TUI cards show it: project weft, with claude
 /// (ready) and codex (its turn ended) running; fix login of claude, ASKED;
 /// health endpoint of codex, EVALED.
 fn atlas() -> App {
-    use weft_core::turns::{Session, Turn};
+    use weft_core::sessions::{Row, State};
+    use weft_core::turns::Turn;
     let (root, session) =
         crate::app::tests::test_session_at("weft-atlas", "weft", crate::app::tests::set_up(|w| w));
     let mut a = App::with_session(root, crate::keys::Toggle, session);
@@ -936,14 +930,9 @@ fn atlas() -> App {
         judged_by: Some("codex".into()),
     });
     a.set_units(vec![fix, health]);
-    let receipt = |h: &str, latest| Session {
-        harness: h.into(),
-        id: format!("s_{h}"),
-        first: 0,
-        latest,
-        at: 0,
-    };
-    a.session_mut().turns = vec![receipt("claude", Turn::Ready), receipt("codex", Turn::TurnEnded)];
+    let receipt = |h: &str, latest| Row::of(h, &format!("s_{h}"), State::Running, Some(latest), 0);
+    a.session_mut().sessions =
+        vec![receipt("claude", Turn::Ready), receipt("codex", Turn::TurnEnded)];
     a.session_mut().set_turns(vec![Some(Turn::Ready), Some(Turn::TurnEnded)]);
     // claude at its prompt, as the cards draw it.
     let _ = screen(&mut a, 120, 32);
@@ -1059,7 +1048,8 @@ const CLAUDE_AT_WORK: &str = " ● Read(src/login.rs)\r\n ● Update(src/login.r
 /// The Atlas's sample while claude works: fix login working, telemetry
 /// still being asked, and claude's screen in its pane.
 fn atlas_at_work() -> App {
-    use weft_core::turns::{Session, Turn};
+    use weft_core::sessions::{Row, State};
+    use weft_core::turns::Turn;
     let mut a = atlas();
     let mut units = a.units().to_vec();
     let mut telemetry = unit(Sent::NotSent);
@@ -1072,14 +1062,8 @@ fn atlas_at_work() -> App {
     units.insert(1, telemetry);
     units.push(readme);
     a.set_units(units);
-    let receipt = |h: &str, latest| Session {
-        harness: h.into(),
-        id: format!("s_{h}"),
-        first: 0,
-        latest,
-        at: 0,
-    };
-    a.session_mut().turns =
+    let receipt = |h: &str, latest| Row::of(h, &format!("s_{h}"), State::Running, Some(latest), 0);
+    a.session_mut().sessions =
         vec![receipt("claude", Turn::Working), receipt("codex", Turn::TurnEnded)];
     a.session_mut().set_turns(vec![Some(Turn::Working), Some(Turn::TurnEnded)]);
     let _ = screen(&mut a, 120, 32);

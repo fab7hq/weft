@@ -23,19 +23,15 @@ pub fn say_handoff(how: &Handoff, harness: &str) -> Option<String> {
 }
 
 /// The session picking work back up resumes: the one it was asked in, when
-/// the record names one, else its harness's latest on record.
-pub fn resume_session(
-    unit: Option<&crate::ledger::Unit>,
-    latest: Option<&crate::sessions::Recorded>,
-) -> Option<crate::sessions::Recorded> {
-    let own = unit.and_then(|u| {
+/// the record names one. Never a harness's latest (ADR-0029 D4).
+pub fn resume_session(unit: Option<&crate::ledger::Unit>) -> Option<crate::sessions::Recorded> {
+    unit.and_then(|u| {
         Some(crate::sessions::Recorded {
             id: u.session_ref.clone()?,
             at: crate::turns::millis(&u.asked_at).unwrap_or_default(),
             last: u.title.clone(),
         })
-    });
-    own.or_else(|| latest.cloned())
+    })
 }
 
 /// A refusal's first line: RingFrame says what is wrong, then what to do, and

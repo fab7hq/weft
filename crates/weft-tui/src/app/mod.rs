@@ -598,7 +598,7 @@ impl App {
                 units: self.units_of(at),
                 panes,
                 agents,
-                sessions: &p.session.turns,
+                sessions: &p.session.sessions,
                 title: &titles[at],
                 readiness: &ready,
                 routing: &self.routing,
@@ -965,11 +965,8 @@ impl App {
             self.say(format!("{said} [U]PDATE sets it up."));
             return;
         }
-        let latest =
-            self.starts.iter().find(|s| s.harness == harness).and_then(|s| s.session.as_ref());
         let session = weft_core::offers::resume_session(
             self.selected_unit().filter(|u| u.harness == harness),
-            latest,
         );
         self.modal_choice = 0;
         self.modal = Some(Modal::Bar(match session {

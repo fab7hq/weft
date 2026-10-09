@@ -178,7 +178,10 @@ pub struct Session {
     /// size of the window that last focused it or typed into it.
     told: Option<(u32, u16, u16)>,
     /// Every session's latest event, as the daemon read the receipts.
-    pub turns: Vec<weft_core::turns::Session>,
+    /// The project's session index (ADR-0029), and the Mac's distance from
+    /// UTC, in milliseconds, to read its times by.
+    pub sessions: Vec<weft_core::sessions::Row>,
+    pub zone: i64,
     /// Whether to tell the person when an agent needs them, from Weft's
     /// `config.toml` as the daemon read it.
     pub notify: bool,
@@ -247,7 +250,8 @@ impl Session {
             needs: None,
             waiting: Vec::new(),
             told: None,
-            turns: Vec::new(),
+            sessions: Vec::new(),
+            zone: 0,
             notify: true,
             turbo: false,
             harnesses: Default::default(),
@@ -312,7 +316,8 @@ impl Session {
     fn take_agents(&mut self, agents: &serde_json::Value) {
         let field = |k: &str| agents.get(k).cloned().unwrap_or_default();
         self.set_turns(serde_json::from_value(field("panes")).unwrap_or_default());
-        self.turns = serde_json::from_value(field("sessions")).unwrap_or_default();
+        self.sessions = serde_json::from_value(field("sessions")).unwrap_or_default();
+        self.zone = field("zone").as_i64().unwrap_or(0);
     }
 
     /// Wake this window's loop whenever the daemon sends something.
@@ -460,9 +465,9 @@ impl Session {
                 Event::Readiness { states } => self.readiness = states,
                 Event::Setup { view } => self.setup = serde_json::from_value(view).ok(),
                 Event::Workspace { setup, gap } => (self.needs, self.gap) = (setup, gap),
-                Event::Agents { panes, sessions } => {
+                Event::Agents { panes, sessions, zone } => {
                     self.set_turns(panes);
-                    self.turns = sessions;
+                    (self.sessions, self.zone) = (sessions, zone);
                 }
             }
         }

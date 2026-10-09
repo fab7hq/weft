@@ -40,8 +40,10 @@ impl Session {
             .collect()
     }
 
-    /// Each pane's state and every session's latest event, re-read from
-    /// Weft's own receipts. A pane's session is the one its signals named.
+    /// Each pane's state and the project's session index, re-read from
+    /// Weft's own receipts, the pane map and the record (sessions.md, "The
+    /// session index"). A pane's session is the one its signals named; a
+    /// session no pane holds runs while the process its receipts name does.
     pub(super) fn agents_of(&mut self, at: usize) -> Agents {
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
@@ -49,10 +51,49 @@ impl Session {
         for slot in p.panes.iter_mut() {
             slot.map.running = slot.pane.running();
         }
+        let heard = p.turns.heard();
+        // Ask the machine about each recorded process not yet known gone.
+        for proc in heard.iter().filter_map(|h| h.process.as_ref()) {
+            let key = (proc.pid, proc.start.clone());
+            if !p.gone.contains(&key) && !crate::process::alive(proc) {
+                p.gone.insert(key);
+            }
+        }
         let p = &self.projects[at];
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-        (crate::turns::pane_states(&map, &sessions), sessions)
+        let alive =
+            |proc: &weft_core::sessions::Process| !p.gone.contains(&(proc.pid, proc.start.clone()));
+        let index = weft_core::sessions::index(&heard, &map, &p.ledger.units(), &alive);
+        (crate::turns::pane_states(&map, &sessions), index)
+    }
+
+    /// The command line that resumes `id`, when the index holds it for this
+    /// harness and it can be resumed; else the refusal.
+    pub(super) fn resumable(
+        &mut self,
+        at: usize,
+        harness: &str,
+        id: &str,
+    ) -> Result<String, Answer> {
+        let index = self.agents_of(at).1;
+        let row = index
+            .iter()
+            .find(|r| r.harness == harness && r.id == id && weft_core::sessions::is_id(id))
+            .filter(|r| r.resumable);
+        let Some(row) = row else {
+            return Err(Answer::No(
+                "no_session",
+                format!("there is no {harness} session {id} here"),
+            ));
+        };
+        if row.state == weft_core::sessions::State::Running {
+            let held = row.pane.map_or("another program".to_string(), |p| format!("pane {p}"));
+            return Err(Answer::No("running", format!("{id} is running, in {held}")));
+        }
+        let file = self.projects[at].harnesses.find(harness);
+        file.and_then(|h| h.resume_spec(id))
+            .ok_or_else(|| Answer::No("no_harness", format!("{harness} has no resume line")))
     }
 
     /// Weft's own pane map, `<project>/.fab7/weft/panes.json`: which pane

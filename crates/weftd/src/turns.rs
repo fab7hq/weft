@@ -8,12 +8,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use weft_core::sessions::{Heard, Process};
 pub use weft_core::turns::*;
 
 /// Every session's receipts in one project, re-read only when a file moved.
 #[derive(Default)]
 pub struct Turns {
-    seen: HashMap<PathBuf, (SystemTime, u64, Option<Session>)>,
+    seen: HashMap<PathBuf, (SystemTime, u64, Option<Session>, Option<Process>)>,
 }
 
 impl Turns {
@@ -42,7 +43,7 @@ impl Turns {
                         if let Some(s) = now.as_ref().filter(|s| Some((s.latest, s.at)) != before) {
                             heard.push(s.clone());
                         }
-                        (stamp.0, stamp.1, now)
+                        (stamp.0, stamp.1, now, weft_core::sessions::process(&text))
                     }
                 };
                 found.insert(path, entry);
@@ -56,10 +57,32 @@ impl Turns {
     /// Every session's latest event, in a fixed order, so the same receipts
     /// always make the same answer and nothing is told twice.
     pub fn sessions(&self) -> Vec<Session> {
-        let mut all: Vec<Session> = self.seen.values().filter_map(|(_, _, s)| s.clone()).collect();
+        let mut all: Vec<Session> =
+            self.seen.values().filter_map(|(_, _, s, _)| s.clone()).collect();
         all.sort_by(|a, b| (&a.harness, &a.id).cmp(&(&b.harness, &b.id)));
         all
     }
+
+    /// Every session's receipts, with the harness process they name last.
+    pub fn heard(&self) -> Vec<Heard> {
+        self.seen
+            .values()
+            .filter_map(|(_, _, s, p)| Some(Heard { session: s.clone()?, process: p.clone() }))
+            .collect()
+    }
+}
+
+/// The Mac's distance from UTC now, in milliseconds: how its clock and its
+/// calendar read a time (ADR-0029, the earlier sessions' date groups).
+pub fn zone() -> i64 {
+    let now = now_millis() / 1000;
+    // SAFETY: `localtime_r` writes only the `tm` it is given.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let t = now as libc::time_t;
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.tm_gmtoff as i64 * 1000
 }
 
 /// Now, as receipts count time.

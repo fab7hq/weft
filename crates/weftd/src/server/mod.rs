@@ -30,7 +30,7 @@ mod typing;
 use typing::*;
 
 /// Each pane's agent state, and every session's latest event.
-type Agents = (Vec<Option<Turn>>, Vec<crate::turns::Session>);
+type Agents = (Vec<Option<Turn>>, Vec<weft_core::sessions::Row>);
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
 /// Everything a pane has printed since it started, so a late client can be
@@ -151,6 +151,9 @@ struct Project {
     /// last told of it.
     turns: crate::turns::Turns,
     agents: Option<Agents>,
+    /// Harness processes a receipt named and that have since gone: one
+    /// gone with its start time never comes back, so it is not asked again.
+    gone: std::collections::HashSet<(u32, String)>,
     /// What this project still needs before RingFrame is set up in it, if it
     /// is not; when that was last asked, and whether it is being asked now.
     setup: Option<weft_core::workspace::Needs>,
@@ -378,17 +381,12 @@ impl Answer {
     }
 }
 
-/// What starting an agent could mean here, in the order it is offered.
-///
-/// Picking a session up comes before a fresh one, because a workspace with
-/// history is a workspace you are coming back to. The session is whatever
-/// RingFrame's receipts name; nothing is invented to fill a gap.
-/// What can be started here: each harness set up for RingFrame, fresh, and
-/// where a session of it was left. A harness whose plugin is not in it is
+/// What can be started here: each harness set up for RingFrame, fresh. A
+/// session is resumed by its id, from its own Details (ADR-0029 D4), never
+/// offered here as "the latest". A harness whose plugin is not in it is
 /// offered by SET UP, not here: an agent started in it would record nothing.
 fn starts(
     out_there: &dyn crate::outside::Outside,
-    receipts: &Path,
     harnesses: &weft_core::harness::Harnesses,
     readiness: &HashMap<String, weft_core::readiness::Readiness>,
 ) -> serde_json::Value {
@@ -396,15 +394,6 @@ fn starts(
     let ready =
         |h: &&weft_core::harness::Harness| readiness.get(&h.name).is_some_and(|r| r.is_ready());
     for h in harnesses.iter().filter(|h| out_there.on_path(&h.program)).filter(ready) {
-        let latest = crate::sessions::latest(receipts, &h.name);
-        if let Some((s, spec)) = latest.and_then(|s| h.resume_spec(&s.id).map(|spec| (s, spec))) {
-            out.push(serde_json::json!({
-                "harness": h.name,
-                "label": format!("{} · pick up where you left off", h.name),
-                "spec": spec,
-                "session": {"id": s.id, "at": s.at, "last": s.last},
-            }));
-        }
         out.push(serde_json::json!({
             "harness": h.name,
             "label": weft_core::words::say("start.fresh", &h.name),
@@ -1067,7 +1056,8 @@ impl Session {
         if self.projects[at].agents.as_ref() != Some(&agents) {
             self.projects[at].agents = Some(agents.clone());
             let (panes, sessions) = agents;
-            self.clients.broadcast(at, &Out::Agents { panes, sessions });
+            let zone = crate::turns::zone();
+            self.clients.broadcast(at, &Out::Agents { panes, sessions, zone });
         }
     }
 
@@ -1229,6 +1219,7 @@ impl Session {
                     harnesses,
                     unread,
                     agents: None,
+                    gone: Default::default(),
                     setup,
                     asked: std::time::Instant::now(),
                     asking: false,
@@ -1307,7 +1298,8 @@ impl Session {
                         .collect::<Vec<_>>(),
                     "readiness": readiness_json(&self.projects[at].readiness),
                     "routing": routing_json(&self.projects[at].routing),
-                    "agents": {"panes": agent_panes, "sessions": sessions},
+                    "agents": {"panes": agent_panes, "sessions": sessions,
+                               "zone": crate::turns::zone()},
                     "notify": self.projects[at].notify,
                     "turbo": self.projects[at].turbo,
                     "harnesses": &self.projects[at].harnesses,
@@ -1328,6 +1320,15 @@ impl Session {
             }
             Call::StartAgent { harness, spec, session } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                // A resume names a session the index holds, and runs that id
+                // with the harness file's own resume line (ADR-0029 D4).
+                let spec = match &session {
+                    None => spec,
+                    Some(id) => match self.resumable(at, &harness, id) {
+                        Ok(spec) => spec,
+                        Err(no) => return Ok(no),
+                    },
+                };
                 let started = self.spawn(client, at, &harness, &spec, session);
                 // Asked when a pane starts, because that is when a person
                 // would care.
@@ -1424,8 +1425,7 @@ impl Session {
                     self.look_at(at, &name);
                 }
                 let p = &self.projects[at];
-                let receipts = crate::receipts::project_dir(&self.receipts, &p.root);
-                let found = starts(self.outside.as_ref(), &receipts, &p.harnesses, &p.readiness);
+                let found = starts(self.outside.as_ref(), &p.harnesses, &p.readiness);
                 return Ok(Answer::Ok(serde_json::json!({"starts": found})));
             }
             Call::Turbo { on } => {

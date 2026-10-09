@@ -162,6 +162,15 @@ pub fn state_of(unit: &Unit, sessions: &[Session]) -> Option<Turn> {
     session_of(unit, sessions).map(|s| s.latest)
 }
 
+/// The turn of a unit's session in a project's session index.
+pub fn turn_in(unit: &Unit, index: &[crate::sessions::Row]) -> Option<Turn> {
+    let (harness, id) = match &unit.arrived {
+        Some(a) => (a.host.as_str(), a.session.as_str()),
+        None => (unit.harness.as_str(), unit.session_ref.as_deref()?),
+    };
+    index.iter().find(|r| r.harness == harness && r.id == id)?.turn
+}
+
 /// How a pane came to run its session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
