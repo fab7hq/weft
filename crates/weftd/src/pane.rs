@@ -305,8 +305,7 @@ impl Pane {
             // alone: written together they are one burst, and a host that
             // suppresses Enter during a burst takes it as a newline.
             std::thread::sleep(inject::SUBMIT_SETTLE);
-            self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
-            if !self.wait_for(active, inject::MODE_TIMEOUT) {
+            if !self.wait_for(active, inject::MODE_TIMEOUT)? {
                 return Err(Refusal::ModeNotEntered);
             }
         }
@@ -339,16 +338,30 @@ impl Pane {
         !screen.trim().is_empty() && last.0.elapsed() >= still
     }
 
-    /// Wait for the host to show something, rather than assuming it did.
-    fn wait_for(&self, needle: &str, timeout: std::time::Duration) -> bool {
+    /// Press Enter and wait for the mode it enters. A host may already name
+    /// the mode in a popup for the command typed
+    /// (`/plan  switch to Plan mode`), so the mode counts only once the Enter
+    /// has changed the screen and it has then been left alone for
+    /// [`inject::SUBMIT_SETTLE`]: input that arrives while the host is still
+    /// switching is dropped (ringframe-ask-ledger-q10).
+    fn wait_for(&mut self, active: &str, timeout: std::time::Duration) -> Result<bool, Refusal> {
+        let before = self.with_screen(|s| s.contents());
+        self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
         let deadline = std::time::Instant::now() + timeout;
+        let mut last = (std::time::Instant::now(), before.clone());
         while std::time::Instant::now() < deadline {
-            if self.with_screen(|s| s.contents()).contains(needle) {
-                return true;
+            let screen = self.with_screen(|s| s.contents());
+            if screen != last.1 {
+                last = (std::time::Instant::now(), screen);
+            } else if last.1 != before
+                && last.1.contains(active)
+                && last.0.elapsed() >= inject::SUBMIT_SETTLE
+            {
+                return Ok(true);
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        false
+        Ok(false)
     }
 
     fn write_and_submit(
@@ -551,6 +564,57 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(!pane.running());
     }
+
+    /// A host that, as Codex 0.161 does, shows its slash-command popup (which
+    /// names the mode) as soon as `/plan` is typed, and drops input that
+    /// arrives before it has handled the Enter: the body goes in only once
+    /// the mode is shown after the Enter (ringframe-ask-ledger-q10).
+    #[test]
+    fn a_mode_named_by_the_popup_is_not_taken_for_the_mode_entered() {
+        let host = HOST_DROPPING_EARLY_INPUT;
+        let mut pane =
+            Pane::spawn_args("test", "python3", &["-c", host], "/tmp", &[], 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let how = Handoff::EnterMode {
+            command: "/plan".into(),
+            at: "/plan ".len(),
+            active: "Plan mode".into(),
+        };
+        let attempt = pane.inject_as(b"/plan ship it", &how).expect("typed");
+        assert!(attempt.submitted, "{attempt:?}");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let text = pane.with_screen(|s| s.contents());
+        assert!(text.contains("SUBMITTED[ship it]"), "the body was dropped: {text:?}");
+        pane.stop();
+    }
+
+    const HOST_DROPPING_EARLY_INPUT: &str = r#"import os, sys, termios, tty, time
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+out = lambda t: (os.write(1, t.encode()), None)
+buf, mode = '', False
+out('ready\r\n')
+while True:
+    c = os.read(fd, 1).decode()
+    if not mode:
+        if c == '\r' and buf == '/plan':
+            time.sleep(0.3)
+            termios.tcflush(fd, termios.TCIFLUSH)
+            mode, buf = True, ''
+            out('\r\nPlan mode on\r\n')
+            continue
+        buf += c
+        out(c)
+        if buf == '/plan':
+            out('\r\n/plan  switch to Plan mode\r\n')
+    else:
+        if c == '\r':
+            out('\r\nSUBMITTED[' + buf + ']\r\n')
+            buf = ''
+        else:
+            buf += c
+            out(c)
+"#;
 
     #[test]
     fn enter_is_withheld_when_the_pane_never_shows_the_prompt() {
