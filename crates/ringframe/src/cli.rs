@@ -1216,7 +1216,7 @@ mod tests {
             assert_eq!(code, 0);
             assert_eq!(out["profile_id"], "claude-code");
             assert_eq!(out["sha256"].as_str().unwrap().len(), 64);
-            let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
+            let (_, out, _) = c.go(&["profile", "show", "--host", "loom", "--json"]);
             assert_eq!(out["profile_id"], "unknown");
         });
     }
@@ -2240,7 +2240,7 @@ mod tests {
             );
             let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--json"]);
             assert!(out["observe"].is_null(), "codex names no tool");
-            let (_, out, _) = c.go(&["profile", "show", "--host", "cursor", "--json"]);
+            let (_, out, _) = c.go(&["profile", "show", "--host", "loom", "--json"]);
             assert!(out["title"].is_null(), "unknown carries a title");
             let (code, _, _) = c.go(&["profile", "list", "--json"]);
             assert_ne!(code, 0, "no command lists harnesses for another program");
@@ -2665,7 +2665,7 @@ mod the_marketplace_contract {
                 assert!(!text.contains(composed), "{} still composes: {composed}", skill.display());
             }
         }
-        assert!(skills.len() >= 6, "only {} Eval skills found: {skills:?}", skills.len());
+        assert!(skills.len() >= 3, "only {} Eval skills found: {skills:?}", skills.len());
     }
 
     #[test]

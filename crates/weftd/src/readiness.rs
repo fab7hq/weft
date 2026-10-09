@@ -30,7 +30,7 @@ pub fn look(out: &dyn Outside, h: &Harness, cli: bool) -> (Readiness, Option<Str
     let Some(at) = h.manifest.as_deref() else { return (state, None) };
     use crate::harness::OnThisMachine;
     match out.newest(&h.config_home().join(at)) {
-        // No plugin there, whatever the listing proved (Cursor's lists only
+        // No plugin there, whatever the listing proved (one may list only
         // the marketplace): the plugin itself is still to be installed.
         None if state == Readiness::Ready => (Readiness::Missing(Gap::Plugin), None),
         None => (state, None),
@@ -96,7 +96,6 @@ mod tests {
             transcript: None,
             turbo: Vec::new(),
             manifest: None,
-            beta: false,
             signal: None,
         }
     }
@@ -117,7 +116,7 @@ mod tests {
         assert_eq!(check(&Fixed::new(), &absent(), true), Readiness::Unknown);
     }
 
-    /// A listing that gives no version (Antigravity's imports, Cursor's
+    /// A listing that gives no version (Antigravity's imports, or only
     /// marketplaces) leaves it to the plugin's own `plugin.json`, where the
     /// harness file says it is: the newest match of a `*` folder wins.
     #[test]
@@ -134,14 +133,12 @@ mod tests {
         };
         assert_eq!(look(&world(&[]), &h, true), (Readiness::Ready, None), "no manifest named");
 
-        h.manifest = Some("plugins/cache/fab7/rf/*/.cursor-plugin/plugin.json".into());
-        let old =
-            ("plugins/cache/fab7/rf/aaa/.cursor-plugin/plugin.json", r#"{"version": "0.1.2"}"#);
-        let new =
-            ("plugins/cache/fab7/rf/bbb/.cursor-plugin/plugin.json", r#"{"version": "0.1.3"}"#);
+        h.manifest = Some("plugins/cache/fab7/rf/*/.loom-plugin/plugin.json".into());
+        let old = ("plugins/cache/fab7/rf/aaa/.loom-plugin/plugin.json", r#"{"version": "0.1.2"}"#);
+        let new = ("plugins/cache/fab7/rf/bbb/.loom-plugin/plugin.json", r#"{"version": "0.1.3"}"#);
         assert_eq!(look(&world(&[old, new]), &h, true).1.as_deref(), Some("0.1.3"));
         let unversioned =
-            ("plugins/cache/fab7/rf/ccc/.cursor-plugin/plugin.json", r#"{"name": "rf"}"#);
+            ("plugins/cache/fab7/rf/ccc/.loom-plugin/plugin.json", r#"{"name": "rf"}"#);
         assert_eq!(
             look(&world(&[unversioned]), &h, true),
             (Readiness::Ready, Some(UNVERSIONED.into())),

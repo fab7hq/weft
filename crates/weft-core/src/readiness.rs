@@ -264,10 +264,10 @@ mod tests {
         p["plugin"]["listing"] =
             json!({"installed": ["."], "available": [], "name": "name", "want": ["fab7"]});
         let bare = crate::harness::Harness::of("bare", &p).expect("a harness");
-        let added = json!([{"name": "cursor-public"}, {"name": "fab7", "scope": "user"}]);
+        let added = json!([{"name": "loom-public"}, {"name": "fab7", "scope": "user"}]);
         assert_eq!(read(&bare, &added), Readiness::Ready, "a bare array, read as `.`");
         assert_eq!(
-            read(&bare, &json!([{"name": "cursor-public"}])),
+            read(&bare, &json!([{"name": "loom-public"}])),
             Readiness::Missing(Gap::Marketplace),
             "missing, and its file has a marketplace to add"
         );

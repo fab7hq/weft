@@ -100,18 +100,12 @@ pub struct Row {
     /// person said it is.
     pub program: String,
     pub state: State,
-    /// Its harness file marks it as beta: said on the row, and nothing else
-    /// about it differs.
-    #[serde(default)]
-    pub beta: bool,
 }
 
 impl Row {
-    /// The row as the view prints it: the mark, the name, and what it needs,
-    /// with `beta` before that for a harness its file marks as beta.
+    /// The row as the view prints it: the mark, the name, and what it needs.
     pub fn line(&self) -> String {
-        let beta = if self.beta { "beta · " } else { "" };
-        format!("{}  {:<14}{beta}{}", self.state.mark(), self.title, self.state.words())
+        format!("{}  {:<14}{}", self.state.mark(), self.title, self.state.words())
     }
 }
 
@@ -214,7 +208,6 @@ pub fn checking(h: &Harness) -> Row {
         title: h.title.clone(),
         program: h.program.clone(),
         state: State::Checking,
-        beta: h.beta,
     }
 }
 
@@ -239,13 +232,7 @@ pub fn row(h: &Harness, found: Option<(Readiness, Option<String>)>, latest: Opti
         }
         Some((Readiness::Missing(_), _)) => State::NotSetUp,
     };
-    Row {
-        name: h.name.clone(),
-        title: h.title.clone(),
-        program: h.program.clone(),
-        state,
-        beta: h.beta,
-    }
+    Row { name: h.name.clone(), title: h.title.clone(), program: h.program.clone(), state }
 }
 
 #[cfg(test)]
@@ -298,23 +285,15 @@ mod tests {
         assert!(!v.needs_anything() && !v.wants_setting_up() && !v.proceeds());
     }
 
-    /// A harness file that says `beta = true` is said to be beta on its row,
-    /// whatever its state; the others read as before.
+    /// A row reads its mark, its title and its state, and nothing else
+    /// (ADR-0032 D2).
     #[test]
-    fn a_beta_harness_says_so_on_its_row_and_only_there() {
-        let mut p = crate::harness::fixture::file("antigravity");
-        p["beta"] = serde_json::json!(true);
-        let beta = Harness::of("fresh", &p).expect("a harness");
-        assert!(beta.beta);
-        let r = row(&beta, Some((Readiness::Ready, None)), None);
-        assert_eq!(r.line(), format!("✓  {:<14}beta · ready", beta.title));
-        let r = row(&beta, Some((Readiness::Missing(Gap::Plugin), None)), None);
-        assert!(r.line().ends_with("beta · not set up"), "{}", r.line());
-
-        let plain = harness("antigravity");
-        assert!(!plain.beta, "absent means not beta");
-        let r = row(&plain, Some((Readiness::Ready, None)), None);
-        assert_eq!(r.line(), format!("✓  {:<14}ready", plain.title));
+    fn a_row_reads_its_title_then_its_state() {
+        let h = harness("antigravity");
+        let r = row(&h, Some((Readiness::Ready, None)), None);
+        assert_eq!(r.line(), format!("✓  {:<14}ready", h.title));
+        let r = row(&h, Some((Readiness::Missing(Gap::Plugin), None)), None);
+        assert!(r.line().ends_with(&format!("{:<14}not set up", h.title)), "{}", r.line());
     }
 
     /// A file that can add the marketplace but names no install is still set

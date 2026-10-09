@@ -25,7 +25,7 @@ pub struct Harness {
     /// The executable, as it is found on `PATH`.
     pub program: String,
     /// The words that always follow the program, for a harness reached
-    /// through another command (`cursor agent`): every command Weft runs for
+    /// through another command: every command Weft runs for
     /// it starts with them, and finding it on `PATH` looks for the program
     /// alone. Empty for most.
     #[serde(default)]
@@ -66,11 +66,6 @@ pub struct Harness {
     /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
-    /// Whether its file marks it as beta: offered and used like any other
-    /// harness, and said to be beta where its setup is shown, because it has
-    /// not been tested as fully as the rest.
-    #[serde(default)]
-    pub beta: bool,
     /// What each of its hooks means (`[signal]`, ADR-0030 D4). Without it the
     /// harness gives no state and forwards nothing.
     #[serde(default)]
@@ -130,7 +125,6 @@ impl Harness {
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
-            beta: p["beta"].as_bool().unwrap_or(false),
             signal: crate::signal::Signal::of(&p["signal"]),
         })
     }

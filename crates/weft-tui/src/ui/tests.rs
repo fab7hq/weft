@@ -687,7 +687,6 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
         title: title.into(),
         program: name.into(),
         state,
-        beta: false,
     };
     a.session_mut().setup = Some(View {
         latest: Some("v0.1.3".into()),

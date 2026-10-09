@@ -614,14 +614,14 @@ judge = { model = "x" }
 drift = { effort = "high", temperature = "1" }
 
 [projects."/work/thing".routing]
-eval = "cursor"
+eval = "loom"
 "#,
         );
         assert_eq!(
             c.unknown,
             [
                 "eval.debate.harness: aider",
-                "projects.\"/work/thing\".routing.eval: cursor",
+                "projects.\"/work/thing\".routing.eval: loom",
                 "routing.ask: aider"
             ]
         );

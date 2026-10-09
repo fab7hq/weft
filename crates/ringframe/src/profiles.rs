@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn an_unrecognised_host_gets_manual_handoff() {
         with_config_home(|_| {
-            for host in [json!("cursor"), json!("../codex"), json!(""), json!(null)] {
+            for host in [json!("loom"), json!("../codex"), json!(""), json!(null)] {
                 let p = for_host(&json!({"name": host, "version": "2.2.0"})).unwrap();
                 assert_eq!(p["profile_id"], "unknown");
                 assert_eq!(p["fallback"], "human_handoff");

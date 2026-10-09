@@ -2451,7 +2451,7 @@ mod tests {
             let out = compile_with(
                 ws,
                 Args {
-                    host: json!({"name": "cursor", "version": "1.0", "surface": "cli",
+                    host: json!({"name": "loom", "version": "1.0", "surface": "cli",
                              "session_ref": null}),
                     capability: "human_handoff".into(),
                     ..Default::default()
