@@ -339,6 +339,7 @@ impl Harness {
         d.send(json!({"type": "hello", "v": 2, "device": id, "token": token}));
         let welcome = d.next();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
+        d.welcomed = welcome["agents"].as_array().cloned();
         (d, welcome)
     }
 }
@@ -353,6 +354,9 @@ impl Drop for Harness {
 
 pub struct Device {
     pub ws: WebSocket<TcpStream>,
+    /// The agents its welcome listed, until `agents` has taken them: an
+    /// agent that started before the welcome sends no `agents` after it.
+    welcomed: Option<Vec<Value>>,
 }
 
 impl Device {
@@ -362,7 +366,7 @@ impl Device {
         let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let (ws, _) = tungstenite::client(request, stream).unwrap();
-        Device { ws }
+        Device { ws, welcomed: None }
     }
 
     pub fn send(&mut self, message: Value) {
@@ -442,6 +446,9 @@ impl Harness {
 impl Device {
     /// The agents list once it holds `n` rows.
     pub fn agents(&mut self, n: usize) -> Vec<Value> {
+        if let Some(a) = self.welcomed.take().filter(|a| a.len() == n) {
+            return a;
+        }
         loop {
             let m = self.next();
             if m["type"] == "agents" && m["agents"].as_array().is_some_and(|a| a.len() == n) {
