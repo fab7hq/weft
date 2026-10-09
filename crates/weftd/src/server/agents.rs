@@ -25,10 +25,6 @@ impl Session {
         Some(id)
     }
 
-    pub(super) fn pane_of(&self, at: usize, harness: &str) -> Option<u32> {
-        self.projects[at].panes.iter().find(|s| s.map.harness == harness).map(|s| s.map.pane)
-    }
-
     /// This project's panes, as everything outside the daemon sees them.
     pub(super) fn pane_infos(&mut self, project: usize) -> Vec<PaneInfo> {
         let Some(p) = self.projects.get_mut(project) else { return Vec::new() };

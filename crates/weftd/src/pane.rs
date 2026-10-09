@@ -457,7 +457,7 @@ impl Pane {
             // of showing it, and then the placeholder is the echo. It is the
             // length that decides, not the line count: a single long line is
             // folded just the same.
-            let folded = inject::collapsed_paste_of(&screen, payload.len());
+            let folded = inject::collapsed_paste_of(&screen, payload);
             let showing = folded || (screen.contains(&head) && screen.contains(&tail));
             settled = match (settled, showing) {
                 (_, false) => None,

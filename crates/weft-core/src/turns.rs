@@ -220,6 +220,26 @@ pub fn signalled(panes: &mut [Started], pane: u32, session: &str) -> bool {
     true
 }
 
+/// The pane a prompt for this unit goes to (ask-flow.md step 4): the running
+/// pane that runs the session its prompt arrived in, else the one it was asked
+/// in; with none, the first pane of its harness.
+pub fn owning_pane(panes: &[Started], unit: &Unit) -> Option<u32> {
+    let (harness, id) = match &unit.arrived {
+        Some(a) => (a.host.as_str(), Some(a.session.as_str())),
+        None => (unit.harness.as_str(), unit.session_ref.as_deref()),
+    };
+    let runs = |p: &&Started| {
+        p.running
+            && p.harness == harness
+            && p.session.as_ref().is_some_and(|b| Some(b.session.as_str()) == id)
+    };
+    panes
+        .iter()
+        .find(runs)
+        .or_else(|| panes.iter().find(|p| p.harness == unit.harness))
+        .map(|p| p.pane)
+}
+
 /// Each pane's state: its session's latest event, or none.
 pub fn pane_states(panes: &[Started], sessions: &[Session]) -> Vec<Option<Turn>> {
     panes
@@ -422,6 +442,25 @@ mod tests {
         let mut panes = [p];
         signalled(&mut panes, 0, "a");
         assert_eq!(pane_states(&panes, &[receipt("a", Turn::Ready, 12)]), vec![None]);
+    }
+
+    /// ask-flow.md step 4: a prompt goes to the pane that owns its Ask, the
+    /// one running the session it was asked or arrived in; only when none
+    /// does, to the first pane of its harness (ringframe-ask-ledger-q09).
+    #[test]
+    fn a_send_goes_to_the_pane_that_owns_the_ask() {
+        let units = project(&[asked("ask_1", "s2")]);
+        let mut panes = [started(0, 1000), started(1, 1010), started(2, 1020)];
+        panes[2].harness = "codex".into();
+        assert_eq!(owning_pane(&panes, &units[0]), Some(0), "no pane runs it yet");
+        signalled(&mut panes, 1, "s2");
+        assert_eq!(owning_pane(&panes, &units[0]), Some(1));
+        panes[1].running = false;
+        assert_eq!(owning_pane(&panes, &units[0]), Some(0), "its pane has gone");
+        let other = project(&[asked("ask_9", "s9")]);
+        let mut codex = [panes[2].clone()];
+        codex[0].harness = "codex".into();
+        assert_eq!(owning_pane(&codex, &other[0]), None, "no pane of its harness");
     }
 
     #[test]

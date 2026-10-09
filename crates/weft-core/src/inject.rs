@@ -200,12 +200,13 @@ pub fn collapsed_paste(screen: &str) -> bool {
 /// placeholder left over from something else fail to pass for this paste. A
 /// host that numbers its pastes instead leaves the marker all there is to go
 /// on.
-pub fn collapsed_paste_of(screen: &str, bytes: usize) -> bool {
+pub fn collapsed_paste_of(screen: &str, payload: &[u8]) -> bool {
     if let Some(at) = screen.find("[Pasted Content ") {
         let rest = &screen[at + "[Pasted Content ".len()..];
         let count: String = rest.chars().take_while(char::is_ascii_digit).collect();
         if let Ok(n) = count.parse::<usize>() {
-            return n == bytes;
+            // The host counts characters, not bytes.
+            return n == String::from_utf8_lossy(payload).chars().count();
         }
     }
     collapsed_paste(screen)
@@ -391,11 +392,15 @@ mod tests {
     fn a_placeholder_from_something_else_does_not_pass_for_this_paste() {
         // Codex names the size, so it can be checked. A stale placeholder
         // reporting a different one is not this prompt's echo.
-        assert!(collapsed_paste_of("› [Pasted Content 1400 chars]", 1400));
-        assert!(!collapsed_paste_of("› [Pasted Content 1400 chars]", 42));
+        let body = "x".repeat(1400);
+        assert!(collapsed_paste_of("› [Pasted Content 1400 chars]", body.as_bytes()));
+        assert!(!collapsed_paste_of("› [Pasted Content 1400 chars]", b"short"));
+        // Codex counts characters, not bytes: an em dash is one of each
+        // (ringframe-ask-ledger-q09, Codex 0.161.0).
+        assert!(collapsed_paste_of("› [Pasted Content 5 chars]", "a — b".as_bytes()));
         // Claude Code numbers its pastes instead, so the marker is all there is.
-        assert!(collapsed_paste_of("❯ [Pasted text #1]", 42));
-        assert!(!collapsed_paste_of("❯ /plan ship it", 42));
+        assert!(collapsed_paste_of("❯ [Pasted text #1]", b"anything"));
+        assert!(!collapsed_paste_of("❯ /plan ship it", b"anything"));
     }
 
     #[test]

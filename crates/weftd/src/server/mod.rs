@@ -743,7 +743,16 @@ impl Session {
                 let Some(unit) = unit else {
                     return Answer::No("no_unit", "that Ask is not on the board".into());
                 };
-                let Some(pane) = self.pane_of(at, &unit.harness) else {
+                // The pane that owns the Ask: the one running its session.
+                let map: Vec<_> = self.projects[at]
+                    .panes
+                    .iter_mut()
+                    .map(|s| {
+                        s.map.running = s.pane.running();
+                        s.map.clone()
+                    })
+                    .collect();
+                let Some(pane) = crate::turns::owning_pane(&map, &unit) else {
                     return Answer::No("no_pane", format!("no {} pane is open here", unit.harness));
                 };
                 match crate::acts::send(self.outside.as_ref(), &root, &unit) {
