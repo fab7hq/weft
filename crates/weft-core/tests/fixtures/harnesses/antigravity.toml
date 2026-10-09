@@ -50,9 +50,12 @@ none = "No imported plugins."
 [signal]
 session = "conversationId"
 workspace = "workspacePaths"
+# No hook carries the prompt; the transcript the payload names holds it, and
+# when PreInvocation follows a typed prompt its last line is that prompt.
+prompt = { file = "transcriptPath", last = { type = "USER_INPUT" }, field = "content", between = ["<USER_REQUEST>\n", "\n</USER_REQUEST>"] }
 reply = "{}"
 on = [
-  { hook = "PreInvocation", state = "working" },
+  { hook = "PreInvocation", state = "working", forward = "prompt" },
   { hook = "PreToolUse",    state = "waiting", reply = '{"decision":"allow"}' },
   { hook = "PostToolUse",   state = "working" },
   { hook = "Stop",          state = "turn_ended" },

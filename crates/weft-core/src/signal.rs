@@ -6,7 +6,9 @@
 //! names one) says the agent's state and whether the hook forwards a prompt or
 //! a tool to RingFrame; the table's paths say where in the payload the
 //! session, the project, the prompt, the tool and its command are. Nothing
-//! else of the payload is taken.
+//! else of the payload is taken. A harness whose hooks carry no prompt may
+//! name a file its payload points to instead: the prompt is that file's last
+//! line, when the line says it is one, and nothing else of the file is read.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,7 +21,7 @@ pub struct Signal {
     /// The payload path of the project directory; for a list, its first entry.
     pub workspace: String,
     #[serde(default)]
-    pub prompt: Option<String>,
+    pub prompt: Option<Prompt>,
     #[serde(default)]
     pub tool: Option<String>,
     #[serde(default)]
@@ -28,6 +30,33 @@ pub struct Signal {
     #[serde(default)]
     pub reply: Option<String>,
     pub on: Vec<Row>,
+}
+
+/// Where a forwarded prompt is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Prompt {
+    /// The payload path of its text.
+    At(String),
+    /// A file of JSON lines the payload names, whose last line holds it.
+    InFile(InFile),
+}
+
+/// A prompt kept in a file the payload names (a transcript): the file's last
+/// line, only when its fields are `last`'s, and of it only `field`, cut to
+/// what lies between `between`'s two markers when it names them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InFile {
+    /// The payload path of the file's path.
+    pub file: String,
+    /// Dotted paths in the line, and the value each must have.
+    #[serde(default)]
+    pub last: serde_json::Map<String, Value>,
+    /// The dotted path in the line of the text.
+    pub field: String,
+    #[serde(default)]
+    pub between: Option<[String; 2]>,
 }
 
 /// One hook's meaning.
@@ -115,7 +144,11 @@ impl Signal {
             ..Sent::default()
         };
         match row.forward.as_deref() {
-            Some("prompt") => sent.prompt = at(&self.prompt),
+            Some("prompt") => {
+                if let Some(Prompt::At(path)) = &self.prompt {
+                    sent.prompt = text_at(payload, path);
+                }
+            }
             Some("tool") => {
                 sent.tool = at(&self.tool);
                 sent.command = at(&self.command);
@@ -124,6 +157,37 @@ impl Signal {
             _ => {}
         }
         Some(sent)
+    }
+
+    /// The file this hook's prompt is in, when its row forwards a prompt and
+    /// `[signal]` keeps it in a file the payload names. `weft signal` reads
+    /// its end and gives it to `prompt_from`.
+    pub fn prompt_file(&self, hook: &str, payload: &Value) -> Option<String> {
+        let row = self.row(hook, payload)?;
+        match (&self.prompt, row.forward.as_deref()) {
+            (Some(Prompt::InFile(f)), Some("prompt")) => text_at(payload, &f.file),
+            _ => None,
+        }
+    }
+
+    /// The prompt in the end of such a file: its last line, when that line
+    /// is one, and only its text.
+    pub fn prompt_from(&self, tail: &str) -> Option<String> {
+        let Some(Prompt::InFile(f)) = &self.prompt else { return None };
+        let line: Value =
+            serde_json::from_str(tail.lines().rfind(|l| !l.trim().is_empty())?).ok()?;
+        if !f.last.iter().all(|(path, want)| value_at(&line, path) == Some(want)) {
+            return None;
+        }
+        let text = value_at(&line, &f.field)?.as_str()?;
+        match &f.between {
+            None => Some(text.to_string()),
+            Some([start, end]) => {
+                let from = text.find(start.as_str())? + start.len();
+                let to = from + text[from..].find(end.as_str())?;
+                Some(text[from..to].to_string())
+            }
+        }
     }
 
     /// What this hook prints: its row's reply, else the table's.
@@ -169,13 +233,14 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
     }
 }
 
+/// The value at a dotted path.
+fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.').try_fold(v, |v, key| v.get(key))
+}
+
 /// The text at a dotted payload path; for a list, its first entry.
 pub fn text_at(payload: &Value, path: &str) -> Option<String> {
-    let mut v = payload;
-    for key in path.split('.') {
-        v = v.get(key)?;
-    }
-    match v {
+    match value_at(payload, path)? {
         Value::Array(all) => all.first()?.as_str().map(str::to_string),
         other => other.as_str().map(str::to_string),
     }
@@ -315,6 +380,94 @@ mod tests {
         assert_eq!(plan.args[8..12], ["--tool", "EnterPlanMode", "--outcome", "succeeded"]);
         assert_eq!(forward(&ran("Write", "PostToolUse"), &observe), None, "another tool");
         assert_eq!(forward(&ran("Bash", "PostToolUse"), &json!({})), None, "a profile naming none");
+    }
+
+    /// A harness whose hooks carry no prompt but name a file holding it:
+    /// `prompt` as a table. Only the file's last line is read, and only when
+    /// its fields are `last`'s; `field` is its text, cut by `between`.
+    fn from_a_file() -> Signal {
+        Signal::of(&json!({
+            "session": "id", "workspace": "dir",
+            "prompt": {"file": "log.path", "last": {"kind": "typed"}, "field": "body.text",
+                       "between": ["<said>\n", "\n</said>"]},
+            "on": [{"hook": "Began", "state": "working", "forward": "prompt"},
+                   {"hook": "Ended", "state": "turn_ended"}]
+        }))
+        .expect("a [signal] whose prompt is in a file")
+    }
+
+    #[test]
+    fn a_prompt_can_be_the_last_line_of_a_file_the_payload_names() {
+        let s = from_a_file();
+        let payload = json!({"id": "s1", "dir": "/w", "log": {"path": "/h/log.jsonl"}});
+        assert_eq!(s.prompt_file("Began", &payload).as_deref(), Some("/h/log.jsonl"));
+        assert_eq!(s.prompt_file("Ended", &payload), None, "its row forwards nothing");
+        let sent = s.sent("made-up", "Began", &payload).unwrap();
+        assert_eq!(
+            (sent.prompt, sent.forward.as_deref()),
+            (None, Some("prompt")),
+            "read by weft signal"
+        );
+        let typed = "/rf:ask fix it — now\n  with lines  ";
+        let line = |kind: &str, text: &str| {
+            json!({"kind": kind, "body": {"text": format!("<said>\n{text}\n</said>\n<meta>9:00</meta>")}})
+                .to_string()
+        };
+        let tail = format!("{}\n{}\n", line("answer", "earlier"), line("typed", typed));
+        assert_eq!(
+            s.prompt_from(&tail).as_deref(),
+            Some(typed),
+            "byte for byte, between the markers"
+        );
+    }
+
+    #[test]
+    fn a_file_prompt_is_none_unless_its_last_line_is_one() {
+        let s = from_a_file();
+        let typed =
+            json!({"kind": "typed", "body": {"text": "<said>\nhello\n</said>"}}).to_string();
+        let tool = json!({"kind": "tool", "body": {"text": "ran"}}).to_string();
+        assert_eq!(
+            s.prompt_from(&format!("{typed}\n{tool}\n")),
+            None,
+            "a later step: no new prompt"
+        );
+        let unmarked = json!({"kind": "typed", "body": {"text": "no markers"}}).to_string();
+        assert_eq!(s.prompt_from(&unmarked), None, "markers named and absent");
+        assert_eq!(s.prompt_from("not json\n"), None);
+        assert_eq!(s.prompt_from(""), None);
+        let plain = Signal::of(&json!({"session": "id", "workspace": "dir",
+            "prompt": {"file": "f", "last": {"kind": "typed"}, "field": "body.text"},
+            "on": [{"hook": "Began", "forward": "prompt"}]}))
+        .unwrap();
+        assert_eq!(
+            plain.prompt_from(&format!("{typed}\n")).as_deref(),
+            Some("<said>\nhello\n</said>")
+        );
+        assert_eq!(
+            signal("claude-code").prompt_from(&format!("{typed}\n")),
+            None,
+            "a payload-path prompt"
+        );
+    }
+
+    /// The Antigravity fixture's transcript, as agy 1.3.2 writes it (probe A,
+    /// `probe-agy-ab`): a typed prompt, then a tool step.
+    #[test]
+    fn a_transcript_line_gives_the_typed_prompt_once() {
+        let s = signal("antigravity");
+        let payload =
+            json!({"conversationId": "a1", "workspacePaths": ["/w"], "transcriptPath": "/t.jsonl"});
+        assert_eq!(s.prompt_file("PreInvocation", &payload).as_deref(), Some("/t.jsonl"));
+        let typed = json!({"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
+            "content": "<USER_REQUEST>\n/rf:ask Plan it.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-09T09:24:12Z.\n</ADDITIONAL_METADATA>"});
+        let step = json!({"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Created file"});
+        assert_eq!(s.prompt_from(&format!("{typed}\n")).as_deref(), Some("/rf:ask Plan it."));
+        assert_eq!(
+            s.prompt_from(&format!("{typed}\n{step}\n")),
+            None,
+            "a later invocation of the same turn"
+        );
     }
 
     #[test]
