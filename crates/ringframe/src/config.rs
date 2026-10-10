@@ -379,6 +379,10 @@ mod tests {
                         "5d0f73340532af8dbe0205ce6c0465b223219dd0cdc1fe05bc59139d78df128c",
                     ),
                     (
+                        "config/deltas/antigravity.toml",
+                        "1ddda693ce7198d1ad82216655dd6a3ed5d8c6ee69afd78c77d64cbbc635ea17",
+                    ),
+                    (
                         "config/deltas/claude-code.toml",
                         "7ae9628082b3b9f6de57826f0372d2cd67179130885ded34d9ca7df7ab640d34",
                     ),
@@ -393,6 +397,10 @@ mod tests {
                     (
                         "config/deltas/practices/software-development.toml",
                         "95712a43be78b03ca64a6b62022688b282e8b57df9b7b41ca617d4121dad40de",
+                    ),
+                    (
+                        "config/harnesses/antigravity.toml",
+                        "69d406f9ec1e4c9f0a4d00368fb6f648785a5811553599037f2683b926a7b1e1",
                     ),
                     (
                         "config/harnesses/claude-code.toml",
