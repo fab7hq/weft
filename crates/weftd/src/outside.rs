@@ -34,6 +34,9 @@ pub trait Outside: Send + Sync {
     fn newest(&self, pattern: &Path) -> Option<String>;
     /// Run `weft remote` until it ends (remote.md D10).
     fn remote(&self) -> std::io::Result<ExitStatus>;
+    /// Weft's own service on this machine, "Start at login" (ADR-0034 D1),
+    /// where Weft has one.
+    fn service(&self) -> Option<crate::service::Service>;
 }
 
 pub type Shared = Arc<dyn Outside>;
@@ -119,6 +122,10 @@ impl Outside for Machine {
             .stdout(std::process::Stdio::null())
             .status()
     }
+
+    fn service(&self) -> Option<crate::service::Service> {
+        crate::service::Service::here()
+    }
 }
 
 /// A world a test describes: the programs in it and what each answers.
@@ -131,6 +138,8 @@ pub struct Fixed {
     files: Vec<(std::path::PathBuf, String)>,
     /// When `weft remote` was started. Each run ends at once, failing.
     remote_runs: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+    /// Its service, when it has one: a scratch home's.
+    service: Option<crate::service::Service>,
 }
 
 impl Default for Fixed {
@@ -140,6 +149,7 @@ impl Default for Fixed {
             release: Err("no release check in this world".into()),
             files: Vec::new(),
             remote_runs: Arc::default(),
+            service: None,
         }
     }
 }
@@ -183,6 +193,12 @@ impl Fixed {
     /// When `weft remote` was started in this world, as it runs.
     pub fn remote_runs(&self) -> Arc<std::sync::Mutex<Vec<std::time::Instant>>> {
         Arc::clone(&self.remote_runs)
+    }
+
+    /// This world's "Start at login" service.
+    pub fn with_service(mut self, service: crate::service::Service) -> Self {
+        self.service = Some(service);
+        self
     }
 
     pub fn shared(self) -> Shared {
@@ -244,6 +260,10 @@ impl Outside for Fixed {
     fn remote(&self) -> std::io::Result<ExitStatus> {
         self.remote_runs.lock().expect("runs").push(std::time::Instant::now());
         Ok(ExitStatus::from_raw(1 << 8))
+    }
+
+    fn service(&self) -> Option<crate::service::Service> {
+        self.service.clone()
     }
 }
 

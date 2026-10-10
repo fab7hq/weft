@@ -32,6 +32,9 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # tunnel = "cloudflared"       # the tunnel you picked there, by its tool file
 # program = "/path/to/it"      # where its program is, when it is not on PATH
 
+# [service]                    # Weft's own service on this machine: W → L
+# start_at_login = true        # start Weft when you log in, and again if it stops
+
 [routing]                      # every project; each act optional
 # ask  = "<harness>"          # a harness, as its harness file is named
 # eval = "<harness>"
@@ -96,6 +99,9 @@ pub struct Config {
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
     remote: Remote,
+    /// `[service] start_at_login`: Weft starts when the person logs in
+    /// (ADR-0034 D1). Off unless turned on; Remote never turns it on.
+    start_at_login: bool,
 }
 
 /// Parse the file. Nothing readable is nothing set, which is how Weft behaves
@@ -130,6 +136,16 @@ impl Config {
     pub fn remote(&self) -> &Remote {
         &self.remote
     }
+
+    /// Whether Weft's own service starts it at login (ADR-0034 D1).
+    pub fn start_at_login(&self) -> bool {
+        self.start_at_login
+    }
+}
+
+/// `config.toml` with `[service] start_at_login` set, the rest as it was.
+pub fn set_start_at_login(text: &str, on: bool) -> Result<String, String> {
+    set(text, &["service"], "start_at_login", &Value::Bool(on))
 }
 
 /// `config.toml` with `[remote] enabled` set, the rest as it was.
@@ -289,6 +305,14 @@ impl Config {
                         }
                     }
                 }
+                ("service", Value::Object(t)) if at.is_empty() => {
+                    for (k, v) in t {
+                        match (k.as_str(), v) {
+                            ("start_at_login", Value::Bool(on)) => self.start_at_login = *on,
+                            _ => self.ignored.push(format!("{here}.{k}")),
+                        }
+                    }
+                }
                 ("harnesses", Value::Object(hs)) if at.is_empty() => {
                     for (name, body) in hs {
                         let path = format!("{here}.{name}");
@@ -444,6 +468,26 @@ mod tests {
         let inline = "harnesses = { codex = { program = \"/x\" } }\n";
         assert!(set_harness(inline, "codex", "program", &json!("/y")).is_err());
         assert_eq!(read_("[harnesses.nowhere]\nprogram = \"/x\"\n").unknown, ["harnesses.nowhere"]);
+    }
+
+    /// `[service] start_at_login`: Weft's own option (ADR-0034 D1), off
+    /// unless turned on, and not a key of a project's; Remote never sets it.
+    #[test]
+    fn start_at_login_is_off_unless_turned_on() {
+        assert!(!read_(STARTING).start_at_login(), "off in the starting file");
+        let uncommented = STARTING
+            .replace("# [service]", "[service]")
+            .replace("# start_at_login = true", "start_at_login = true");
+        assert!(read_(&uncommented).start_at_login(), "its own lines work uncommented");
+        let on = set_start_at_login(STARTING, true).unwrap();
+        assert!(read_(&on).start_at_login());
+        assert!(!read_(&set_start_at_login(&on, false).unwrap()).start_at_login());
+        assert!(!read_(&set_remote(STARTING, true).unwrap()).start_at_login());
+        assert_eq!(read_("[service]\nat_boot = true\n").ignored, ["service.at_boot"]);
+        assert_eq!(
+            read_("[projects.\"/p\".service]\nstart_at_login = true\n").ignored,
+            ["projects.\"/p\".service"]
+        );
     }
 
     /// `[remote]`: off unless turned on, the tunnel chosen and where its

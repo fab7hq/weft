@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 4;
+pub const PROTOCOL: u64 = 5;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -138,6 +138,14 @@ pub enum Call {
     Remote {
         act: Value,
     },
+    /// Turn Weft's own "Start at login" on or off (ADR-0034 D1): the
+    /// service runs `program --serve` with `path` as its `PATH`, the window's
+    /// when it was turned on. Answers with `{"start_at_login": bool}`.
+    StartAtLogin {
+        on: bool,
+        program: String,
+        path: String,
+    },
     /// Yes or no, by id. Whoever answers first answers for everyone.
     Resolve {
         pending: String,
@@ -240,6 +248,10 @@ pub enum Event {
     /// sent to every client, at most once in ten seconds (remote.md D6).
     /// A project's turbo switch changed: agents started from now on run so.
     Turbo {
+        on: bool,
+    },
+    /// Weft's "Start at login" was turned on or off, to every client.
+    StartAtLogin {
         on: bool,
     },
     Presence {
@@ -384,6 +396,9 @@ impl Call {
             Call::Turbo { on } => ("project.turbo", json!({"on": on})),
             Call::RemoteView { view } => ("remote.view", json!({"view": view})),
             Call::Remote { act } => ("remote", act.clone()),
+            Call::StartAtLogin { on, program, path } => {
+                ("service.login", json!({"on": on, "program": program, "path": path}))
+            }
             Call::Resolve { pending, yes, force } => {
                 ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
             }
@@ -452,6 +467,11 @@ impl Call {
                 p.get("act")?.as_str()?;
                 Call::Remote { act: p.clone() }
             }
+            "service.login" => Call::StartAtLogin {
+                on: p.get("on")?.as_bool()?,
+                program: s("program").unwrap_or_default(),
+                path: s("path").unwrap_or_default(),
+            },
             "pending.resolve" => {
                 Call::Resolve {
                     pending: s("pending")?,
@@ -498,6 +518,7 @@ impl Event {
             }
             Event::Presence { at } => ("presence", json!({"at": at})),
             Event::Turbo { on } => ("turbo", json!({"on": on})),
+            Event::StartAtLogin { on } => ("start_at_login", json!({"on": on})),
             Event::Remote { view } => ("remote", json!({"view": view})),
             Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
@@ -549,6 +570,7 @@ impl Event {
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
             "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
+            "start_at_login" => Event::StartAtLogin { on: p.get("on")?.as_bool()? },
             "remote" => Event::Remote { view: p.get("view")?.clone() },
             "remote.act" => {
                 p.get("act")?.as_str()?;
@@ -865,6 +887,7 @@ mod tests {
             Call::Turbo { on: true },
             Call::RemoteView { view: json!({"state": "off"}) },
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
+            Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
             Call::Detach,
             Call::Shutdown,
         ] {
@@ -940,6 +963,7 @@ mod tests {
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
             Event::Turbo { on: true },
+            Event::StartAtLogin { on: false },
             Event::Remote { view: json!({"state": "on"}) },
             Event::RemoteAct { act: json!({"act": "stop"}) },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },

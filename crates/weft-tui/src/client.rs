@@ -189,6 +189,8 @@ pub struct Session {
     pub notify: bool,
     /// Whether agents started here from now on run in turbo mode.
     pub turbo: bool,
+    /// Weft's own "Start at login" option (ADR-0034 D1), as the daemon reads it.
+    pub start_at_login: bool,
     /// The harnesses Weft has a file for, as the daemon read them, and the
     /// files it could not read.
     pub harnesses: weft_core::harness::Harnesses,
@@ -257,6 +259,7 @@ impl Session {
             zone: 0,
             notify: true,
             turbo: false,
+            start_at_login: false,
             harnesses: Default::default(),
             unread: Vec::new(),
             answers: std::collections::HashMap::new(),
@@ -301,6 +304,8 @@ impl Session {
             .unwrap_or_default();
         session.notify = opened.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
         session.turbo = opened.get("turbo").and_then(|v| v.as_bool()).unwrap_or(false);
+        session.start_at_login =
+            opened.get("start_at_login").and_then(|v| v.as_bool()).unwrap_or(false);
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
         session.needs =
             opened.get("setup").and_then(|v| serde_json::from_value(v.clone()).ok()).flatten();
@@ -436,6 +441,7 @@ impl Session {
                 // draws from the pane's own output; presence is its own.
                 // Another window switched it: this one says so too.
                 Event::Turbo { on } => self.turbo = on,
+                Event::StartAtLogin { on } => self.start_at_login = on,
                 Event::Screen { .. }
                 | Event::Presence { .. }
                 | Event::RemoteAct { .. }

@@ -251,6 +251,14 @@ fn main() -> Result<()> {
         return Ok(());
     };
 
+    // With "Start at login" on, the daemon is started through Weft's service,
+    // so one owner keeps it running (ADR-0034 D1); else, or if that fails,
+    // the window starts it itself.
+    let socket = protocol::socket_path();
+    if !protocol::is_live(&socket) {
+        let service = weftd::service::Service::here();
+        let _ = weftd::service::start_daemon(service.as_ref(), &socket);
+    }
     let size = terminal.size().unwrap_or_default();
     let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
     let mut weft = App::with_session(root, toggle, session);

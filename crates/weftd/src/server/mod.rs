@@ -23,6 +23,7 @@ use crate::pane::Pane;
 use crate::turns::Turn;
 
 mod agents;
+mod login;
 mod remote;
 mod screens;
 mod typing;
@@ -537,6 +538,13 @@ impl Session {
         // and the socket 0600 (ADR-0030 D2).
         if let Some(dir) = socket.parent() {
             private_dir(dir)?;
+        }
+        // A live daemon is left alone: this one ends cleanly, so a service
+        // started beside it is not restarted over it (ADR-0034 D1).
+        if weft_proto::is_live(socket) {
+            // Still the line a starting client waits for: one is listening.
+            println!("weft: already listening on {}", socket.display());
+            return Ok(());
         }
         // A socket left by a server that died is not a live server.
         let _ = std::fs::remove_file(socket);
@@ -1361,6 +1369,7 @@ impl Session {
                                "zone": crate::turns::zone()},
                     "notify": self.projects[at].notify,
                     "turbo": self.projects[at].turbo,
+                    "start_at_login": self.start_at_login(),
                     "harnesses": &self.projects[at].harnesses,
                     // Harness files that would not read, to be said once.
                     "unread": &self.projects[at].unread,
@@ -1506,6 +1515,9 @@ impl Session {
                 }
                 self.clients.remote = Some((client, view.clone()));
                 self.clients.broadcast_all(&Out::Remote { view });
+            }
+            Call::StartAtLogin { on, program, path } => {
+                return Ok(self.turn_start_at_login(on, &program, &path));
             }
             Call::Remote { act } if matches!(act["act"].as_str(), Some("on" | "off")) => {
                 return Ok(self.turn_remote(act["act"] == "on"));

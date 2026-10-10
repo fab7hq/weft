@@ -19,6 +19,7 @@ pub mod record;
 pub mod ringframe;
 pub mod routing;
 pub mod server;
+pub mod service;
 pub mod signal;
 pub mod sync;
 pub mod turns;
