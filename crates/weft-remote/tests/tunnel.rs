@@ -173,3 +173,40 @@ fn a_tunnel_left_by_a_killed_weft_remote_is_stopped_by_the_next() {
     tunnel::stop_left(&kept, &program);
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A program that ends at once, with no address: each run is counted.
+const NO_ADDRESS: &str = "#!/bin/sh\necho x >> \"$0.runs\"\nexit 1\n";
+
+/// While the network is away the tunnel is started again after 2, 4, 8 …
+/// seconds; told the network is back, it starts at once (ADR-0034 D3).
+#[test]
+fn a_tunnel_waiting_to_start_again_starts_at_once_when_the_network_returns() {
+    let dir = std::env::temp_dir().join(format!("weft-tunnel-back-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("cloudflared");
+    std::fs::write(&program, NO_ADDRESS).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runs = || {
+        std::fs::read_to_string(dir.join("cloudflared.runs")).unwrap_or_default().lines().count()
+    };
+
+    let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
+    let events = tunnel.start(48124);
+    // Three runs: at once, then 2 s and 4 s later; the next wait is 8 s.
+    let mut ended = 0;
+    while ended < 3 {
+        if let TunnelEvent::Ended(_) = events.recv_timeout(Duration::from_secs(10)).expect("ends") {
+            ended += 1;
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(runs(), 3);
+    let poked = Instant::now();
+    tunnel.back();
+    while runs() < 4 {
+        assert!(poked.elapsed() < Duration::from_secs(2), "it waited out its 8 s");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(tunnel);
+    std::fs::remove_dir_all(&dir).ok();
+}

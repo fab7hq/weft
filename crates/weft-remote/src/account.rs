@@ -225,6 +225,14 @@ impl Account {
     }
 }
 
+impl Account {
+    /// Whether the network answers at all: Weft's service says anything.
+    pub fn online(&self) -> bool {
+        let request = http::Request::builder().method("GET").uri(&self.service).body(String::new());
+        request.ok().is_some_and(|r| self.http.run(r).is_ok())
+    }
+}
+
 impl Default for Account {
     fn default() -> Self {
         Self::new()

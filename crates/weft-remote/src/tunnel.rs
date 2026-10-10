@@ -22,7 +22,33 @@ pub enum TunnelEvent {
 /// How long the program has to print its address.
 const ADDRESS_WITHIN: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(2);
-const LONGEST_WAIT: Duration = Duration::from_secs(300);
+/// At most this long between starts, so a tunnel is back within it of the
+/// network returning (ADR-0034 D3).
+const LONGEST_WAIT: Duration = Duration::from_secs(30);
+
+/// The wait before each start again: 2, 4, 8 … 30 seconds, and from 2 again
+/// once the tunnel gave an address or the network came back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backoff(Duration);
+
+impl Default for Backoff {
+    fn default() -> Self {
+        Backoff(FIRST_WAIT)
+    }
+}
+
+impl Backoff {
+    /// The wait now; the next one is twice it, at most the longest.
+    pub fn wait(&mut self) -> Duration {
+        let now = self.0;
+        self.0 = (self.0 * 2).min(LONGEST_WAIT);
+        now
+    }
+
+    pub fn reset(&mut self) {
+        *self = Backoff::default();
+    }
+}
 
 /// Where the tunnel's program is: where `[remote] program` says, else on
 /// `PATH` by its name.
@@ -66,6 +92,8 @@ pub struct Tunnel {
     suffix: String,
     stopped: Arc<AtomicBool>,
     child: Arc<Mutex<Option<Child>>>,
+    /// Wakes a wait between starts: the network came back.
+    poke: Mutex<Option<std::sync::mpsc::Sender<()>>>,
     /// Where the running program's pid is kept, for the next weft remote to
     /// stop it if this one is killed before it can.
     pid: Option<PathBuf>,
@@ -73,7 +101,15 @@ pub struct Tunnel {
 
 impl Tunnel {
     pub fn new(program: PathBuf, run: Vec<String>, suffix: String) -> Self {
-        Tunnel { program, run, suffix, stopped: Arc::default(), child: Arc::default(), pid: None }
+        Tunnel {
+            program,
+            run,
+            suffix,
+            stopped: Arc::default(),
+            child: Arc::default(),
+            poke: Mutex::default(),
+            pid: None,
+        }
     }
 
     /// Keep the running program's pid in `file`.
@@ -90,19 +126,26 @@ impl Tunnel {
         let args: Vec<String> =
             self.run.iter().map(|w| w.replace("{port}", &port.to_string())).collect();
         let suffix = self.suffix.clone();
+        let (poke, poked) = channel();
+        *self.poke.lock().expect("poke") = Some(poke);
         std::thread::spawn(move || {
-            let mut wait = FIRST_WAIT;
+            let mut backoff = Backoff::default();
             while !stopped.load(Ordering::SeqCst) {
                 let reason =
                     run_once(&program, &args, &suffix, &slot, &stopped, pid.as_deref(), |a| {
-                        wait = FIRST_WAIT;
+                        backoff.reset();
                         tx.send(TunnelEvent::Address(a)).is_ok()
                     });
                 if stopped.load(Ordering::SeqCst) || tx.send(TunnelEvent::Ended(reason)).is_err() {
                     break;
                 }
-                std::thread::sleep(wait);
-                wait = (wait * 2).min(LONGEST_WAIT);
+                // Pokes from before it ended are no news.
+                while poked.try_recv().is_ok() {}
+                match poked.recv_timeout(backoff.wait()) {
+                    Ok(()) => backoff.reset(),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             }
         });
         rx
@@ -110,6 +153,14 @@ impl Tunnel {
 }
 
 impl Tunnel {
+    /// The network came back: a tunnel waiting to start again starts now,
+    /// and the waits begin again from the first.
+    pub fn back(&self) {
+        if let Some(poke) = self.poke.lock().ok().as_ref().and_then(|p| p.as_ref()) {
+            let _ = poke.send(());
+        }
+    }
+
     /// End the running program so it starts again with a new address: one
     /// that runs but that Cloudflare no longer carries is no use to anyone.
     pub fn recycle(&self) {
@@ -122,6 +173,8 @@ impl Tunnel {
 impl Drop for Tunnel {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
+        // A wait between starts ends at once.
+        self.poke.lock().ok().map(|mut p| p.take());
         if let Some(mut child) = self.child.lock().ok().and_then(|mut c| c.take()) {
             let _ = child.kill();
             let _ = child.wait();
@@ -235,5 +288,19 @@ fn run_once(
             }
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_wait_between_starts_doubles_to_thirty_seconds_and_resets() {
+        let mut b = Backoff::default();
+        let waits: Vec<u64> = (0..7).map(|_| b.wait().as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 30, 30, 30]);
+        b.reset();
+        assert_eq!(b.wait().as_secs(), 2, "from the first again");
     }
 }
