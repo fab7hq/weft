@@ -161,6 +161,9 @@ pub struct Unit {
     /// goes on in that session, which may not be the one it was asked in.
     #[serde(default)]
     pub arrived: Option<Arrival>,
+    /// When the prompt arrived, as the record has it.
+    #[serde(default)]
+    pub arrived_at: Option<String>,
     pub check: Option<Check>,
     /// An open Eval over this work whose change is gathered and whose
     /// debate has not run: the next `[E]VAL` sends the debate.
@@ -379,6 +382,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         continue;
                     }
                     u.sent = Sent::Arrived { exact };
+                    u.arrived_at = s(e, &["time"]).map(str::to_string);
                     if s(&data, &["state"]) == Some("observed")
                         && let (Some(host), Some(session)) =
                             (s(&data, &["host", "name"]), s(&data, &["host", "session_ref"]))

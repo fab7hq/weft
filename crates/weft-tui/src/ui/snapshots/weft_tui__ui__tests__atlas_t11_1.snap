@@ -6,11 +6,11 @@ expression: drawn
                                             │ ▸ 1 claude ●    2 codex    3 codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
  ▾ weft                     2 open · 1 ●  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
-                                            ││ ● Write(src/login.rs)                                                   │
-  AGENTS               3 running · 15 ended ││ Do you want to make this edit to login.rs?                              │
-  ● codex  no Ask yet         working 11:31 ││ ❯ 1. Yes                                                                │
-  ● claude fix login  waiting for you 11:29 ││   2. Yes, and don't ask again this session                              │
-  ● codex  health endpo…   turn ended 10:52 ││   3. No, and tell Claude what to do differently (esc)                   │
+                                            ││   ● Write(src/login.rs)                                                 │
+  AGENTS               3 running · 15 ended ││   Do you want to make this edit to login.rs?                            │
+  ● codex  no Ask yet         working 11:31 ││   ❯ 1. Yes                                                              │
+  ● claude fix login  waiting for you 11:29 ││     2. Yes, and don't ask again this session                            │
+  ● codex  health endpo…   turn ended 10:52 ││     3. No, and tell Claude what to do differently (esc)                 │
   ○ claude readme fix           ended 09:12 ││                                                                         │
   ○ codex  lint pass            ended 08:30 ││                                                                         │
   ○ claude no Ask yet           ended 08:02 ││                                                                         │

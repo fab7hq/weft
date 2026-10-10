@@ -184,6 +184,24 @@ pub struct AskPart {
     pub lines: Vec<String>,
 }
 
+/// How an Ask's prompt went (T11.2): typed into its harness's pane, word for
+/// word or reworded, and when it arrived; else where it stands.
+fn how_it_went(unit: &crate::ledger::Unit, zone: i64) -> String {
+    let crate::ledger::Sent::Arrived { exact } = unit.sent else {
+        return if unit.cancelled { "cancelled".into() } else { unit.sent_phrase().into() };
+    };
+    let mut line = format!(
+        "typed into {}'s pane · {}",
+        unit.harness,
+        if exact { "word for word" } else { "reworded" }
+    );
+    if let Some(t) = unit.arrived_at.as_deref().and_then(at) {
+        line.push_str(" · ");
+        line.push_str(&stamp(t, zone)[11..]);
+    }
+    line
+}
+
 /// T11.2: a work's Details, its Ask only.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct WorkDetail {
@@ -242,18 +260,21 @@ pub fn work_detail(
         None => lines.push("what you asked is not on disk".into()),
     }
     if unit.requested_only {
+        lines.push(String::new());
         lines.push(format!("{} has not composed its prompt yet.", unit.harness));
     } else {
         match prompt {
             // How it went is its own line below (T11.2).
             Some(text) => {
+                lines.push(String::new());
                 lines.push(format!("The prompt {} composed:", unit.harness));
                 lines.extend(text.lines().map(str::to_string));
             }
             None => lines.push("the prompt is not on disk".into()),
         }
+        lines.push(String::new());
         lines.push("How it was sent:".into());
-        lines.push(if unit.cancelled { "cancelled".into() } else { unit.sent_phrase().into() });
+        lines.push(how_it_went(unit, zone));
     }
     WorkDetail {
         unit: unit.ask_id.clone(),
@@ -596,11 +617,14 @@ mod tests {
             [
                 "You asked:",
                 "Refresh the token",
+                "",
                 "The prompt claude composed:",
                 "In src/login.rs",
+                "",
                 "How it was sent:",
                 "the agent took it"
-            ]
+            ],
+            "a blank line between its parts (T11.2)"
         );
         let health = work_detail(unit("ask_h"), &record, &rounds, None, None, None, 0);
         assert_eq!(
@@ -613,6 +637,36 @@ mod tests {
         assert_eq!(readme.ask.aside, "asked 2026-10-08 18:01 · sent", "in the Mac's time");
         let v = serde_json::to_value(&fix).unwrap();
         assert!(v.get("eval").is_none() && v.get("sections").is_none(), "no Eval or Seal section");
+    }
+
+    #[test]
+    fn a_prompt_that_arrived_says_how_it_was_sent_and_when_as_t11_2_does() {
+        let typed = |modified: bool| {
+            let events = vec![
+                ev(
+                    "ask.compiled",
+                    "ask_f",
+                    28,
+                    json!({"title": "fix login", "delivery_mode": "human_handoff",
+                    "host": {"name": "claude"}}),
+                ),
+                ev(
+                    "ask.submission",
+                    "ask_f",
+                    29,
+                    json!({"state": "observed", "as_modified": modified,
+                    "host": {"name": "claude", "session_ref": "883b9d12"}}),
+                ),
+            ];
+            let (units, record) = (crate::ledger::project(&events), record_of(&events));
+            let rounds = rounds_of(&units, &record);
+            work_detail(&units[0], &record, &rounds, None, None, None, 0).ask.lines.last().cloned()
+        };
+        assert_eq!(
+            typed(false).as_deref(),
+            Some("typed into claude's pane · word for word · 11:29")
+        );
+        assert_eq!(typed(true).as_deref(), Some("typed into claude's pane · reworded · 11:29"));
     }
 
     #[test]

@@ -71,6 +71,14 @@ impl Detail {
         self.lines.push(text.into());
     }
 
+    /// A blank line before the next group, as the cards space them (T11.2–
+    /// T11.6): never first, never twice.
+    fn gap(&mut self) {
+        if self.lines.last().is_some_and(|l| !l.is_empty()) {
+            self.lines.push(String::new());
+        }
+    }
+
     /// A line `[Enter]` follows.
     fn link(&mut self, text: impl Into<String>, to: Link) {
         self.links.push((Some(self.lines.len()), to));
@@ -447,10 +455,12 @@ fn work(view: View, d: &WorkDetail, now: i64, zone: i64) -> Detail {
     out.links = links;
     out.line(format!("ASK [{}]", d.ask.state));
     out.line(format!("  {}", d.ask.aside));
+    out.gap();
     for l in &d.ask.lines {
-        out.line(format!("  {l}"));
+        if l.is_empty() { out.gap() } else { out.line(format!("  {l}")) }
     }
     if let Some(s) = &d.session {
+        out.gap();
         out.line("  Session:");
         let to = match (s.state, s.pane) {
             (State::Running, Some(p)) => Link::Pane(p),
@@ -493,6 +503,7 @@ fn eval(view: View, d: &EvalDetail, zone: i64) -> Detail {
         None => out.line(format!("  covers {covers}")),
     }
     if !d.judging {
+        out.gap();
         out.line(format!("  VERDICT     {}", verdict(d.verdict)));
         out.line(format!("  AGREEMENT   {}", d.agreement.as_deref().unwrap_or("?")));
         if let Some(by) = &d.judged_by {
@@ -500,18 +511,21 @@ fn eval(view: View, d: &EvalDetail, zone: i64) -> Detail {
         }
     }
     if !d.findings.is_empty() {
+        out.gap();
         out.line("FINDINGS");
         for f in &d.findings {
             out.line(format!("  {} {}", f.mark, f.text));
         }
     }
     if !d.checks.is_empty() {
+        out.gap();
         out.line("CHECKS");
         for c in &d.checks {
             let result = c.result.as_deref().unwrap_or("");
             out.line(format!("  {} {}{result}", c.mark, column(&c.text, 20)));
         }
     }
+    out.gap();
     out.line(format!("ASKS IT COVERS  {}", d.asks.len()));
     for a in &d.asks {
         out.link(
@@ -519,6 +533,7 @@ fn eval(view: View, d: &EvalDetail, zone: i64) -> Detail {
             Link::View(View::Work(a.unit.clone())),
         );
     }
+    out.gap();
     match &d.sealed {
         Some(s) => {
             out.link(format!("Sealed by Seal {}  ›", s.n), Link::View(View::Seal(s.seal.clone())))
@@ -537,6 +552,7 @@ fn seal_view(view: View, d: &SealDetail, zone: i64) -> Detail {
     let when = d.at.map(|at| offers::stamp(at, zone)).unwrap_or_default();
     out.line(format!("SEAL {}   {}", d.n, d.decision));
     out.line(format!("  sealed {when} by {} · covers {}", d.by, asks_n(d.asks.len())));
+    out.gap();
     out.line(format!("  DECISION    {}", d.decision));
     out.line(format!("  WHEN        {when}"));
     out.line(format!("  BY          {}", d.by));
@@ -561,6 +577,7 @@ fn seal_view(view: View, d: &SealDetail, zone: i64) -> Detail {
         }
         None => out.line("  RingFrame did not say whether the receipt still holds."),
     }
+    out.gap();
     out.line(format!("ASKS IT COVERED  {}", d.asks.len()));
     for a in &d.asks {
         out.link(
@@ -568,6 +585,7 @@ fn seal_view(view: View, d: &SealDetail, zone: i64) -> Detail {
             Link::View(View::Work(a.unit.clone())),
         );
     }
+    out.gap();
     out.line("  A Seal records what was decided. It does not make the work right.");
     out
 }
@@ -595,10 +613,12 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
         when(d.last),
         asks_n(d.asks.len())
     ));
+    out.gap();
     out.line(format!("  HARNESS      {}", d.harness));
     out.line(format!("  STATE        {state}"));
     out.line(format!("  STARTED      {}", when(d.started)));
     out.line(format!("  SESSION ID   {short}"));
+    out.gap();
     out.line(format!("ASKS MADE IN IT  {}", d.asks.len()));
     for a in &d.asks {
         let at = match (a.seal, a.eval) {
@@ -611,6 +631,7 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
             Link::View(View::Work(a.unit.clone())),
         );
     }
+    out.gap();
     match (d.state, d.pane, d.resume) {
         (State::Running, Some(p), _) => {
             out.link("[Enter] GO TO ITS PANE".to_string(), Link::Pane(p));
@@ -648,6 +669,7 @@ fn earlier(
         if mine.is_empty() {
             continue;
         }
+        out.gap();
         out.line(format!("{}  {}", word(&format!("earlier.{}", group_key(group))), mine.len()));
         for r in mine {
             let title = r.title.clone().unwrap_or_else(|| word("tree.no_ask").to_string());

@@ -1246,7 +1246,7 @@ fn atlas11() -> App {
     };
     let mut fix =
         work("ask_1", "fix login", "claude", "2026-10-08T11:29:00Z", Sent::Arrived { exact: true });
-    fix.session_ref = Some("k1".into());
+    (fix.session_ref, fix.arrived_at) = (Some("k1".into()), Some("2026-10-08T11:29:00Z".into()));
     let mut telemetry = work("ask_2", "telemetry", "claude", "2026-10-08T11:20:00Z", Sent::NotSent);
     telemetry.requested_only = true;
     let mut health = work(
@@ -1403,7 +1403,7 @@ fn atlas11() -> App {
 const ENDED_CLAUDE: &str = "883b9d12-4c1e-4f0a-9d2e-7a1b3c5d6e7f";
 
 /// What claude shows in T11.1, asking to make an edit.
-const CLAUDE_ASKS: &str = "\x1b[2J\x1b[H ● Write(src/login.rs)\r\n Do you want to make this edit to login.rs?\r\n ❯ 1. Yes\r\n   2. Yes, and don't ask again this session\r\n   3. No, and tell Claude what to do differently (esc)\x1b[?25l";
+const CLAUDE_ASKS: &str = "\x1b[2J\x1b[H   ● Write(src/login.rs)\r\n   Do you want to make this edit to login.rs?\r\n   ❯ 1. Yes\r\n     2. Yes, and don't ask again this session\r\n     3. No, and tell Claude what to do differently (esc)\x1b[?25l";
 
 /// T11.1: AGENTS and WORK.
 #[test]
@@ -1561,15 +1561,22 @@ fn search_narrows_the_earlier_sessions_and_keeps_the_groups() {
     }
     let d = a.detail().expect("the list");
     assert_eq!(d.lines[0], "SEARCH  token");
-    assert_eq!(d.lines[1], "YESTERDAY  1");
-    assert!(d.lines[2].contains("token refresh") && d.lines.len() == 3, "{:?}", d.lines);
+    assert_eq!(d.lines[1], "", "a blank line between groups, as T11.6 spaces them");
+    assert_eq!(d.lines[2], "YESTERDAY  1");
+    assert!(d.lines[3].contains("token refresh") && d.lines.len() == 4, "{:?}", d.lines);
     for c in [KeyCode::Backspace; 5] {
         press(&mut a, c);
     }
     press(&mut a, KeyCode::Char('c'));
     press(&mut a, KeyCode::Char('o'));
-    let groups: Vec<_> =
-        a.detail().unwrap().lines.iter().filter(|l| !l.starts_with(' ')).cloned().collect();
+    let groups: Vec<_> = a
+        .detail()
+        .unwrap()
+        .lines
+        .iter()
+        .filter(|l| !l.is_empty() && !l.starts_with(' '))
+        .cloned()
+        .collect();
     assert_eq!(groups, ["SEARCH  co", "TODAY  1", "YESTERDAY  2", "THIS WEEK  3"], "codex");
     press(&mut a, KeyCode::Enter);
     assert!(!a.detail().unwrap().typing, "Enter ends the search; the list stays narrowed");

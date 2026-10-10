@@ -1264,6 +1264,20 @@ fn proceeding_from_the_detail_view_closes_it_and_lands_in_the_agent() {
     assert_eq!(a.focus, Focus::Agent, "and the keys are the agent's");
 }
 
+/// T11.2: `[P]ROCEED` stays on a sent Ask's Details, and pressing it says
+/// there is nothing to send rather than sending it again.
+#[test]
+fn proceed_on_a_sent_asks_details_says_why_and_sends_nothing() {
+    let mut a = recorded(Sent::Arrived { exact: true });
+    on_work(&mut a);
+    press(&mut a, KeyCode::Enter);
+    assert!(a.detail().is_some(), "the detail view is open");
+    press(&mut a, KeyCode::Char('p'));
+    assert!(a.modal.is_none(), "nothing is sent: {:?}", a.modal);
+    let said = a.hint_text().unwrap_or_default().to_string();
+    assert!(said.ends_with("has nothing to send. [F] FOLLOW UP asks for more."), "{said}");
+}
+
 /// Sent on the person's yes, and RingFrame would not record that it went:
 /// the person is told, rather than being offered the send again blind.
 #[test]

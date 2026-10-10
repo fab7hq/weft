@@ -7,16 +7,16 @@ expression: drawn
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  SESSION  ○ ended
    claude ran 08:58 – 09:12 · 1 Ask
+
    HARNESS      claude
    STATE        ended 09:12
    STARTED      08:58
    SESSION ID   s 883b9d12
+
  ASKS MADE IN IT  1
    readme fix            SEALED  Seal 4  ›
+
  [R]ESUME THIS starts claude again on session s 883b9d12. Weft asks first.
-
-
-
 
 
 

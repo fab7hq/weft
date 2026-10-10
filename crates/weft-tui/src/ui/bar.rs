@@ -117,12 +117,10 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             keys.push(Span::raw("   "));
         };
         match &d.view {
-            // `[P]ROCEED` is there only while the Ask's prompt is still to be
-            // sent. Once it went, the one thing offered is a follow-up.
+            // `[P]ROCEED` stays drawn (T11.2): once the prompt went, pressing
+            // it says there is nothing to send, and `[F]` asks for more.
             View::Work(_) => {
-                if app.proceeds() {
-                    add(lit(key_in("act.proceed")));
-                }
+                add(lit(key_in("act.proceed")));
                 add(lit(key_by("F", "act.follow_up")));
             }
             View::Eval(_) => {
