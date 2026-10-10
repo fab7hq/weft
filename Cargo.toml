@@ -31,3 +31,10 @@ weft-core = { path = "crates/weft-core", features = ["fixtures"] }
 sha2 = "0.10"
 tempfile = "3"
 vt100 = "0.16.2"
+
+# No debug info in dev and test builds. On macOS debug info keeps every object
+# file in target/debug/deps, and cargo never removes the stale ones: about 4,500
+# more per edit of weft-core, 1.1 million by 2026-10-10, and every rustc call
+# spent 30 s listing them. Panics still name their file and line.
+[profile.dev]
+debug = false

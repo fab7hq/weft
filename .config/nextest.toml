@@ -1,0 +1,18 @@
+# `cargo nextest run --workspace` (the workspace AGENTS.md, "Rust builds and tests").
+# Each test runs in its own process, so RingFrame's tests that set HOME no longer
+# wait on one lock, and the unit tests run as wide as the machine.
+
+[profile.default]
+fail-fast = false
+# A test still running after 60 s is reported; at 3 minutes it is stopped and fails.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# The integration tests (`tests/*.rs`) start a weftd, its PTYs and fake harnesses,
+# and wait on them with fixed timeouts. All of them at once load the machine past
+# those timeouts; `cargo test` ran one binary at a time, a few threads each.
+[test-groups]
+daemons = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'kind(test)'
+test-group = 'daemons'

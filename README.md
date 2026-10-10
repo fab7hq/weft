@@ -35,8 +35,19 @@ in [Releases](https://github.com/fab7hq/weft/releases).
 
 ```sh
 cargo build
-cargo test
+cargo nextest run --workspace   # cargo install cargo-nextest; or plain `cargo test`
 ```
+
+[nextest](https://nexte.st) runs each test in its own process: RingFrame's tests
+that set `HOME` then run side by side instead of one at a time behind a lock.
+`.config/nextest.toml` caps the integration tests, which start a weftd each, at
+four at once.
+
+Dev builds carry no debug info (`Cargo.toml`). On macOS, debug info would keep
+every object file in `target/debug/deps`, and cargo never removes stale ones.
+Once that directory reaches hundreds of thousands of files, each rustc call
+spends tens of seconds listing it. If an old checkout is slow to build,
+`ls -f target/debug/deps | wc -l` shows the count; `cargo clean` resets it.
 
 The docs, and the scenarios that draw Weft's screens for them, live in
 [fab7hq/docs](https://github.com/fab7hq/docs), pinned to a Weft release: a
