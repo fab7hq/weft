@@ -301,6 +301,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.session.asks", "{n} Asks made in it"),
     ("web.session.asks_one", "1 Ask made in it"),
     ("web.session.state", "State"),
+    ("web.session.harness", "Harness"),
+    (
+        "web.session.resume_how",
+        "Resume this session starts {harness} again on session {session} in a new agent. Weft asks you first.",
+    ),
     ("web.session.started", "Started"),
     ("web.session.session", "Session"),
     ("web.session.project", "Project"),
@@ -310,6 +315,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.resume.ask", "Resume {harness} {session}?"),
     ("web.earlier.search", "Search by Ask, harness or id…"),
     ("web.earlier.count", "{n} sessions"),
+    ("web.earlier.wide", "{n} earlier"),
+    ("web.earlier.foot", "newest first · scroll for more"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     (
