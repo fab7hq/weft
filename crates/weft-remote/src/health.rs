@@ -9,15 +9,17 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use crate::account::Probe;
+use crate::account::{Probe, Reported};
 
 /// The wall clock ran this far ahead of the tick: the machine slept.
 pub const SLEPT: Duration = Duration::from_secs(15);
 /// A new name is not looked at from outside for this long: until it is known
 /// everywhere, a lookup of it can say it does not exist.
 pub const NEW_NAME: Duration = Duration::from_secs(120);
-/// How often the tunnel is looked at while it answers.
-pub const LOOK_EVERY: Duration = Duration::from_secs(60);
+/// How often the tunnel is looked at while it answers: often enough that one
+/// Cloudflare dropped is found, ended and replaced within the 60 s target
+/// (15 + 2 × 10 s of looks, then a new tunnel's few seconds).
+pub const LOOK_EVERY: Duration = Duration::from_secs(15);
 /// How often the network is looked at while it does not answer.
 pub const OFFLINE_EVERY: Duration = Duration::from_secs(5);
 /// Between looks that find the tunnel gone.
@@ -128,6 +130,92 @@ impl Health {
     pub fn lost(&mut self, mono: Instant) {
         self.looking = false;
         self.next_look = mono + OFFLINE_EVERY;
+    }
+}
+
+/// What the loop is to do, by these rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Act {
+    /// Look at the tunnel's address from outside.
+    LookAtTunnel(String),
+    /// Look at whether the network answers.
+    LookAtNetwork,
+    /// Tell the service this address.
+    Report(String),
+    /// Start a tunnel waiting to start again now.
+    PokeTunnel,
+    /// End the tunnel's program: it carries nothing.
+    Recycle,
+}
+
+/// The machine's side of every recovery (remote.md §11a): when to look,
+/// when to tell the service, and what a look or a wake changes. The loop
+/// does each act; the scenario tests drive the same rules on a clock of
+/// their own.
+pub struct Recovery {
+    pub health: Health,
+    pub reported: Reported,
+}
+
+impl Recovery {
+    pub fn new(mono: Instant, wall: SystemTime) -> Self {
+        Recovery { health: Health::new(mono, wall), reported: Reported::default() }
+    }
+
+    /// A tick. `address` is the tunnel's while it is up; `tunnel` whether a
+    /// tunnel is started at all; `joined` whether this machine is on an
+    /// account to report to.
+    pub fn tick(
+        &mut self,
+        mono: Instant,
+        wall: SystemTime,
+        address: Option<&str>,
+        tunnel: bool,
+        joined: bool,
+    ) -> Vec<Act> {
+        let mut acts = Vec::new();
+        if self.health.tick(mono, wall) {
+            // Awake again, perhaps on another network.
+            acts.extend(self.back());
+        }
+        if tunnel {
+            match (self.health.due(mono, address.is_some()), address) {
+                (Due::Tunnel, Some(a)) => acts.push(Act::LookAtTunnel(a.to_string())),
+                (Due::Network, _) => acts.push(Act::LookAtNetwork),
+                _ => {}
+            }
+        }
+        acts.extend(self.report(mono, address, joined));
+        acts
+    }
+
+    /// Tell the service `address` if it is due.
+    pub fn report(&mut self, mono: Instant, address: Option<&str>, joined: bool) -> Option<Act> {
+        let a = address.filter(|_| joined)?;
+        self.reported.due(a, mono).then(|| Act::Report(a.to_string()))
+    }
+
+    /// What a look at the tunnel answered.
+    pub fn seen(&mut self, mono: Instant, probe: Probe) -> Vec<Act> {
+        let seen = self.health.seen(mono, probe);
+        let mut acts = if seen.back { self.back() } else { Vec::new() };
+        if seen.recycle {
+            acts.push(Act::Recycle);
+        }
+        acts
+    }
+
+    /// What a look at the network answered.
+    pub fn network(&mut self, mono: Instant, online: bool) -> Vec<Act> {
+        if self.health.network(mono, online).back { self.back() } else { Vec::new() }
+    }
+
+    /// The network answers again, or the machine woke: tell the service the
+    /// address again at once, and start a tunnel waiting to start now
+    /// (ADR-0034 D3).
+    fn back(&mut self) -> Vec<Act> {
+        self.reported.again();
+        vec![Act::PokeTunnel]
     }
 }
 

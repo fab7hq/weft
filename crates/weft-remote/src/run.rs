@@ -13,11 +13,11 @@ use ed25519_dalek::VerifyingKey;
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use crate::account::{Account, Probe, Report, Reported, SignIn};
+use crate::account::{Account, Probe, Report, SignIn};
 use crate::agents;
 use crate::daemon::{self, CONTROL, Heard};
 use crate::devices::{self, Devices, Gate};
-use crate::health::{Due, Health};
+use crate::health::{Act, Recovery};
 use crate::install::Tool;
 use crate::socket::{self, Outbox, Socket};
 use crate::store::{self, Machine};
@@ -209,10 +209,9 @@ struct Remote {
     shown: Value,
     /// The tree devices were last sent.
     told_tree: Value,
-    reported: Reported,
-    /// The tunnel seen from outside: when to look next, a look on its way,
-    /// and how many looks in a row found it gone.
-    health: Health,
+    /// When to look at the tunnel and the network, and to tell the service
+    /// the address (remote.md §11a).
+    recovery: Recovery,
     cancel: Arc<AtomicBool>,
     tunnel: Option<Tunnel>,
     /// The tunnel adapter chosen, once it is found.
@@ -376,8 +375,7 @@ impl Remote {
             view,
             shown: Value::Null,
             told_tree: Value::Null,
-            reported: Reported::default(),
-            health: Health::new(Instant::now(), SystemTime::now()),
+            recovery: Recovery::new(Instant::now(), SystemTime::now()),
             cancel: Arc::default(),
             tunnel: None,
             adapter: None,
@@ -428,10 +426,8 @@ impl Remote {
                     true
                 }
                 Wake::Network(online) => {
-                    let seen = self.health.network(Instant::now(), online);
-                    if seen.back {
-                        self.back();
-                    }
+                    let acts = self.recovery.network(Instant::now(), online);
+                    self.perform(acts);
                     true
                 }
                 Wake::PushGone(g) => {
@@ -782,7 +778,7 @@ impl Remote {
                 self.view.address = Some(address);
                 self.view.up = true;
                 // A new name is looked at once it is known everywhere.
-                self.health.new_name(Instant::now());
+                self.recovery.health.new_name(Instant::now());
                 self.report();
             }
             TunnelEvent::Ended(_) => self.view.up = false,
@@ -792,81 +788,65 @@ impl Remote {
     /// Tell the service the address when it does not have it, off the loop;
     /// one that did not arrive is tried again.
     fn report(&mut self) {
-        let Some(machine) = self.machine.clone() else { return };
-        let Some(address) = self.view.address.clone().filter(|_| self.view.up) else { return };
-        if !self.reported.due(&address, Instant::now()) {
-            return;
+        let address = self.view.address.clone().filter(|_| self.view.up);
+        let joined = self.machine.is_some();
+        let act = self.recovery.report(Instant::now(), address.as_deref(), joined);
+        self.perform(act.into_iter().collect());
+    }
+
+    /// Do what the recovery rules say.
+    fn perform(&mut self, acts: Vec<Act>) {
+        for act in acts {
+            let (account, tx) = (self.settings.account.clone(), self.tx.clone());
+            match act {
+                Act::LookAtTunnel(address) => {
+                    std::thread::spawn(move || {
+                        let seen = account.probe(&address);
+                        let _ = tx.send(Wake::Probed(address, seen));
+                    });
+                }
+                Act::LookAtNetwork => {
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Wake::Network(account.online()));
+                    });
+                }
+                Act::Report(address) => {
+                    let Some(machine) = self.machine.clone() else { continue };
+                    std::thread::spawn(move || {
+                        let said = account.report(&machine, &address);
+                        let _ = tx.send(Wake::Reported(address, said));
+                    });
+                }
+                Act::PokeTunnel => {
+                    if let Some(t) = &self.tunnel {
+                        t.back();
+                    }
+                }
+                Act::Recycle => {
+                    self.view.up = false;
+                    if let Some(t) = &self.tunnel {
+                        t.recycle();
+                    }
+                }
+            }
         }
-        let (account, tx) = (self.settings.account.clone(), self.tx.clone());
-        std::thread::spawn(move || {
-            let said = account.report(&machine, &address);
-            let _ = tx.send(Wake::Reported(address, said));
-        });
     }
 
     fn reported(&mut self, address: &str, said: Result<Report, String>) {
         match said {
-            Ok(Report::Taken) => self.reported.taken(address, Instant::now()),
+            Ok(Report::Taken) => self.recovery.reported.taken(address, Instant::now()),
             Ok(Report::NotOnAnAccount) => self.left(),
-            Err(_) => self.reported.failed(Instant::now()),
-        }
-    }
-
-    /// Look at the tunnel from outside now and then, and at once after the
-    /// machine wakes: a quick tunnel Cloudflare dropped while it slept still
-    /// runs here and still shows its address, but carries nothing. With no
-    /// tunnel up, look at the network, so its return is noticed too.
-    fn look_at_tunnel(&mut self, mono: Instant, wall: SystemTime) {
-        if self.health.tick(mono, wall) {
-            // Awake again, perhaps on another network.
-            self.back();
-        }
-        if self.tunnel.is_none() {
-            return;
-        }
-        let address = self.view.address.clone().filter(|_| self.view.up);
-        let (account, tx) = (self.settings.account.clone(), self.tx.clone());
-        match (self.health.due(mono, address.is_some()), address) {
-            (Due::Tunnel, Some(address)) => {
-                std::thread::spawn(move || {
-                    let seen = account.probe(&address);
-                    let _ = tx.send(Wake::Probed(address, seen));
-                });
-            }
-            (Due::Network, _) => {
-                std::thread::spawn(move || {
-                    let _ = tx.send(Wake::Network(account.online()));
-                });
-            }
-            _ => {}
-        }
-    }
-
-    /// The network answers again, or the machine woke: tell the service the
-    /// address again at once, and start a tunnel waiting to start now
-    /// (ADR-0034 D3).
-    fn back(&mut self) {
-        self.reported.again();
-        if let Some(t) = &self.tunnel {
-            t.back();
+            Err(_) => self.recovery.reported.failed(Instant::now()),
         }
     }
 
     fn probed(&mut self, address: &str, probe: Probe) {
         let now = Instant::now();
         if self.view.address.as_deref() != Some(address) {
-            return self.health.lost(now);
+            return self.recovery.health.lost(now);
         }
-        let seen = self.health.seen(now, probe);
-        if seen.back {
-            self.back();
-        }
-        if seen.recycle {
-            self.view.up = false;
-            if let Some(t) = &self.tunnel {
-                t.recycle();
-            }
-        }
+        let acts = self.recovery.seen(now, probe);
+        self.perform(acts);
     }
 
     /// Removed from the account on the web (D1.6): forget its place there and
@@ -875,7 +855,7 @@ impl Remote {
         self.machine = None;
         let _ = std::fs::remove_file(self.dir.join("machine.toml"));
         self.view.login = None;
-        self.reported = Reported::default();
+        self.recovery.reported = Default::default();
         if self.tunnel.is_some() && self.view.signing_in.is_none() {
             self.sign_in();
         }
@@ -884,8 +864,19 @@ impl Remote {
     // --- devices ---------------------------------------------------------
 
     fn tick(&mut self) {
-        self.look_at_tunnel(Instant::now(), SystemTime::now());
-        self.report();
+        // Look at the tunnel from outside now and then, and at once after
+        // the machine wakes: a quick tunnel Cloudflare dropped while it slept
+        // still runs here and still shows its address, but carries nothing.
+        // With no tunnel up, look at the network, so its return is noticed.
+        let address = self.view.address.clone().filter(|_| self.view.up);
+        let acts = self.recovery.tick(
+            Instant::now(),
+            SystemTime::now(),
+            address.as_deref(),
+            self.tunnel.is_some(),
+            self.machine.is_some(),
+        );
+        self.perform(acts);
         if self.asking.as_ref().is_some_and(|a| a.since.elapsed() >= ASK_WITHIN) {
             let a = self.asking.take().expect("asking");
             self.refuse(a.conn, "expired");

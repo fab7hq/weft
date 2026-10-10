@@ -20,7 +20,7 @@ pub enum TunnelEvent {
 }
 
 /// How long the program has to print its address.
-const ADDRESS_WITHIN: Duration = Duration::from_secs(30);
+pub const ADDRESS_WITHIN: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(2);
 /// At most this long between starts, so a tunnel is back within it of the
 /// network returning (ADR-0034 D3).
