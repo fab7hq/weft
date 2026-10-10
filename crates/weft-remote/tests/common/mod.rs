@@ -329,7 +329,7 @@ impl Harness {
     pub fn allowed(&mut self, id: &str) -> (Device, Value) {
         let mut d = self.device();
         d.send(
-            json!({"type": "pair", "v": 3, "device": id, "name": "iPhone", "assertion": good(id)}),
+            json!({"type": "pair", "v": 4, "device": id, "name": "iPhone", "assertion": good(id)}),
         );
         assert_eq!(d.next()["type"], "asking");
         self.tui.wait_view(|v| v["asking"]["device"] == id);
@@ -337,7 +337,7 @@ impl Harness {
         let paired = d.next();
         assert_eq!(paired["type"], "paired", "{paired}");
         let token = paired["token"].as_str().unwrap().to_string();
-        d.send(json!({"type": "hello", "v": 3, "device": id, "token": token}));
+        d.send(json!({"type": "hello", "v": 4, "device": id, "token": token}));
         let welcome = d.next();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
         d.welcomed = welcome["agents"].as_array().cloned();

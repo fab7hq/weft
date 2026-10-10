@@ -198,6 +198,20 @@ mod tests {
         assert!(!r.due("https://a.example", now), "once: it is on its way");
     }
 
+    /// The address the service took is told again every 5 minutes, so the
+    /// service's last-heard time is never older than that (ADR-0034 D4).
+    #[test]
+    fn the_service_hears_from_the_machine_every_five_minutes() {
+        use crate::account::Reported;
+        let now = Instant::now();
+        let mut r = Reported::default();
+        assert!(r.due("https://a.example", now));
+        r.taken("https://a.example", now);
+        let almost = now + Duration::from_secs(5 * 60 - 1);
+        assert!(!r.due("https://a.example", almost));
+        assert!(r.due("https://a.example", now + Duration::from_secs(5 * 60)));
+    }
+
     /// With no tunnel up, the network itself is looked at, so its return
     /// still starts the tunnel without waiting.
     #[test]

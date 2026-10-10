@@ -129,8 +129,9 @@ impl Project {
 
 /// The calls `weft remote` may make (remote.md §4), and its own handshake
 /// and view; `agent.start` with the command line the daemon's harness file
-/// gives. Never `agent.close`, `stage`, `setup`, `project.turbo`, `shutdown` or
-/// `unit.confirm`; `force: true` only as protocol.rs allows it.
+/// gives; `project.dismiss`. Never `agent.close`, `stage`, `setup`,
+/// `project.turbo`, `shutdown`, `unit.confirm`, `update` or `service.login`;
+/// `force: true` only as protocol.rs allows it.
 pub fn allowed(call: &Call) -> bool {
     match call {
         Call::Hello { .. } | Call::RemoteView { .. } => true,
@@ -147,6 +148,8 @@ pub fn allowed(call: &Call) -> bool {
         // A device may send anyway only after weft remote said its agent is
         // not ready (protocol.rs).
         Call::Resolve { .. } => true,
+        // A project reopened after an unclean end, dismissed (ADR-0034 D2).
+        Call::Dismiss => true,
         // The reads a device's Details and Eval view are gathered from.
         Call::Read { what, .. } => {
             matches!(
@@ -196,6 +199,8 @@ mod tests {
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
             Call::Detach,
+            Call::Update { version: "0.2.1".into() },
+            Call::StartAtLogin { on: true, program: "/w/weft".into(), path: String::new() },
         ];
         for call in never {
             assert!(!allowed(&call), "{call:?}");
@@ -247,6 +252,7 @@ mod tests {
                 session: Some("s".into()),
             },
             Call::Available,
+            Call::Dismiss,
             Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None },
             Call::Read {
                 what: "history".into(),

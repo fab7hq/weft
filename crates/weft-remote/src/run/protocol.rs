@@ -284,6 +284,11 @@ impl Remote {
     /// Ask to an agent, or Eval, Seal, Proceed or Follow up on a work: each
     /// becomes a pending the person answers.
     fn act_on(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
+        // A project reopened after an unclean end, dismissed (ADR-0034 D2).
+        if m["act"] == "dismiss" {
+            let at = self.project_named(m)?;
+            return self.ask(at, Call::Dismiss, conn, req, Carries::Nothing);
+        }
         let (at, pane) = match m["act"].as_str() {
             Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
             // Eval and Seal act on a round of a project (remote.md §6c).

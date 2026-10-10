@@ -27,7 +27,7 @@ use crate::view::View;
 mod protocol;
 
 /// The remote protocol's version.
-pub const VERSION: u64 = 3;
+pub const VERSION: u64 = 4;
 /// How long the person has to answer a device asking to be allowed.
 const ASK_WITHIN: Duration = Duration::from_secs(120);
 
@@ -236,6 +236,9 @@ struct Remote {
     vapid: String,
     rules: crate::push::Rules,
     pusher: Sender<crate::push::Job>,
+    /// A newer Weft installed on this machine, waiting for no agent to run
+    /// (ADR-0034 D5).
+    update: Option<String>,
 }
 
 /// Where the tunnel stands: up, with no adapter chosen, or with the chosen
@@ -388,6 +391,7 @@ impl Remote {
             vapid,
             rules: Default::default(),
             pusher,
+            update: None,
         };
         remote.open_projects();
         remote.look();
@@ -486,6 +490,9 @@ impl Remote {
                 daemon::Project::open(&self.settings.socket, &path, at, self.tx.clone())
             {
                 let agents = agents::Project::opened(&path, &client.opened);
+                if let Some(v) = client.opened["update"].as_str() {
+                    self.update = Some(v.to_string());
+                }
                 let listed: Vec<Value> =
                     client.opened["pendings"].as_array().cloned().unwrap_or_default();
                 self.projects.push(Some(Open { client, agents }));
@@ -515,6 +522,13 @@ impl Remote {
                 self.tell_agents();
             }
             Heard::Event(CONTROL, Event::RemoteAct { act }) => return self.act(&act),
+            Heard::Event(_, Event::Update { version }) => {
+                if version != self.update {
+                    self.update = version;
+                    let update = self.update_json();
+                    self.to_devices(&json!({"type": "update", "update": update}));
+                }
+            }
             Heard::Event(_, Event::Presence { .. }) => self.presence(),
             Heard::Event(CONTROL, _) => {}
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
@@ -542,6 +556,11 @@ impl Remote {
             }
         }
         true
+    }
+
+    /// The machine's `update` (remote.md §6e): null, or `{version}`.
+    fn update_json(&self) -> Value {
+        self.update.as_ref().map_or(Value::Null, |v| json!({"version": v}))
     }
 
     fn agents_message(&self) -> Value {
@@ -938,7 +957,7 @@ impl Remote {
             (m["device"].as_str().unwrap_or(""), m["token"].as_str().unwrap_or(""));
         // A page from another version is told so, rather than forgotten.
         if m["v"] != VERSION {
-            return self.refuse(conn, "version");
+            return self.refuse_version(conn, &m["v"]);
         }
         if !self.devices.admits(device, token) {
             return self.refuse(conn, "unknown_device");
@@ -957,15 +976,28 @@ impl Remote {
             conn,
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
                    "vapid": self.vapid, "agents": agents, "tree": self.tree(),
-                   "harnesses": self.harnesses(), "pendings": pendings}),
+                   "harnesses": self.harnesses(), "pendings": pendings,
+                   "update": self.update_json()}),
         );
+    }
+
+    /// Refused for its version, saying which side is the newer, so the page
+    /// says what to do: reload it, or update Weft here (ADR-0034 D4).
+    fn refuse_version(&self, conn: u64, v: &Value) {
+        let newer = if v.as_u64().is_some_and(|v| v > VERSION) { "page" } else { "machine" };
+        if let Some(c) = self.conns.get(&conn) {
+            c.outbox
+                .send(json!({"type": "refused", "code": "version", "newer": newer}).to_string());
+            c.outbox.finish();
+        }
     }
 
     fn pair(&mut self, conn: u64, m: &Value) {
         if m["v"] != VERSION {
-            return self.refuse(conn, "version");
+            return self.refuse_version(conn, &m["v"]);
         }
-        let Some(machine) = &self.machine else { return self.refuse(conn, "not_owner") };
+        // Not signed in to Weft's service: only the person here can fix it.
+        let Some(machine) = &self.machine else { return self.refuse(conn, "signed_out") };
         let now = agents::now() / 1000;
         let checked = devices::check(
             &self.settings.key,

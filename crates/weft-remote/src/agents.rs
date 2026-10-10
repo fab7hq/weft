@@ -62,6 +62,9 @@ pub struct Project {
     setup: Option<Needs>,
     /// Whether agents started here from now on run in turbo mode.
     turbo: bool,
+    /// Reopened after weftd ended uncleanly, at this time (ADR-0034 D2),
+    /// until someone acts in it.
+    reopened: Option<i64>,
 }
 
 impl Project {
@@ -97,6 +100,7 @@ impl Project {
             files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
             setup: serde_json::from_value(answer["setup"].clone()).unwrap_or_default(),
             turbo: answer["turbo"].as_bool().unwrap_or(false),
+            reopened: answer["reopened"].as_i64(),
         };
         p.stamp(now());
         p
@@ -135,6 +139,7 @@ impl Project {
             Event::Readiness { states } => self.readiness = states.clone(),
             Event::Workspace { setup, .. } => self.setup = *setup,
             Event::Turbo { on } => self.turbo = *on,
+            Event::Reopened { since } => self.reopened = *since,
             _ => return false,
         }
         self.stamp(now());
@@ -236,6 +241,7 @@ impl Project {
             at["agent"] = a.pane.map(|p| agent_id(&self.key, p)).into();
         }
         row["turbo"] = self.turbo.into();
+        row["reopened"] = self.reopened.into();
         row
     }
 
