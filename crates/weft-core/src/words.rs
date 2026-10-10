@@ -16,7 +16,7 @@ pub const WORDS: &[(&str, &str)] = &[
     // An agent's turn, as its hooks reported it.
     ("turn.ready", "ready"),
     ("turn.working", "working"),
-    ("turn.waiting", "waiting for you"),
+    ("turn.waiting", "needs you"),
     ("turn.turn_ended", "turn ended"),
     // The title bar and the tree.
     ("title.open", "open"),
@@ -291,7 +291,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.seal.sealed", "sealed {time}"),
     ("web.seal.decision", "Decision"),
     ("web.seal.when", "When"),
-    ("web.seal.by", "By"),
     ("web.seal.eval", "The Eval it seals"),
     ("web.seal.receipt", "Receipt"),
     ("web.seal.asks", "The Asks it covered"),
@@ -313,7 +312,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.session.resume", "Resume this session"),
     ("web.session.go", "Go to its agent"),
     ("web.resume.ask", "Resume {harness} {session}?"),
-    ("web.earlier.search", "Search by Ask, harness or id…"),
+    ("web.earlier.search", "Search"),
     ("web.earlier.count", "{n} sessions"),
     ("web.earlier.wide", "{n} earlier"),
     ("web.earlier.foot", "newest first · scroll for more"),
@@ -369,6 +368,6 @@ mod tests {
             "telemetry is still being composed in claude. There is nothing to send yet."
         );
         assert_eq!(say("why.not_set_up", "claude"), "claude is not set up for RingFrame.");
-        assert_eq!(word("turn.waiting"), "waiting for you");
+        assert_eq!(word("turn.waiting"), "needs you");
     }
 }

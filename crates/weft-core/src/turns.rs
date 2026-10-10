@@ -49,7 +49,7 @@ impl Turn {
         match self {
             Turn::Ready => "ready",
             Turn::Working => "working",
-            Turn::Waiting => "waiting for you",
+            Turn::Waiting => "needs you",
             Turn::TurnEnded => "turn ended",
             Turn::Ended => "ended",
         }

@@ -951,12 +951,12 @@ fn only_an_agent_asking_for_input_needs_you_and_space_goes_to_it() {
     assert_eq!(a.hint_text(), Some("Nothing needs your input."));
     assert!(a.detail().is_none(), "Space opens no Ask");
     let rows = crate::ui::sidebar_text(&a);
-    assert!(!rows.contains("waiting for you") && !rows.contains("· 1 ●"), "{rows}");
+    assert!(!rows.contains("needs you") && !rows.contains("· 1 ●"), "{rows}");
 
     agent_says(&mut a, "codex", "fixture", "waiting");
     assert_eq!(a.needs_you(), 1);
     let rows = crate::ui::sidebar_text(&a);
-    let badge = rows.lines().find(|l| l.contains("waiting for you")).expect("its row");
+    let badge = rows.lines().find(|l| l.contains("needs you")).expect("its row");
     assert!(badge.contains("codex") && !badge.contains("ASKED"), "{rows}");
     press(&mut a, KeyCode::Char(' '));
     assert_eq!(a.pane_focus, 0);
@@ -1043,7 +1043,7 @@ fn an_agent_with_no_asks_still_has_a_row_for_its_badge() {
     let mut a = app();
     agent_says(&mut a, "codex", "fixture", "waiting");
     let rows = crate::ui::sidebar_text(&a);
-    assert!(rows.lines().any(|l| l.contains("codex") && l.contains("waiting for you")), "{rows}");
+    assert!(rows.lines().any(|l| l.contains("codex") && l.contains("needs you")), "{rows}");
 }
 
 /// ADR-0017: an agent the person is not looking at that starts asking

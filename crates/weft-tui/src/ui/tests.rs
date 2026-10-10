@@ -16,8 +16,7 @@ fn expect_screen(name: &str, drawn: &str) {
     // A live daemon's sessions carry the time the test ran; the Atlas's
     // samples hold their clock still and keep theirs.
     if !name.starts_with("atlas_") {
-        settings
-            .add_filter(r"(ready|working|turn ended|waiting for you|ended) \d\d:\d\d", "$1 --:--");
+        settings.add_filter(r"(ready|working|turn ended|needs you|ended) \d\d:\d\d", "$1 --:--");
     }
     settings.bind(|| insta::assert_snapshot!(name, drawn));
 }

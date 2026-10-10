@@ -87,7 +87,7 @@ fn each_field_appears_only_once_its_own_event_is_written() {
 #[test]
 fn an_agents_state_appears_only_once_its_receipt_is_written() {
     const SAYS_A_STATE: &[&str] =
-        &["AGENTS", "ready", "working", "waiting for you", "turn ended", "last active"];
+        &["AGENTS", "ready", "working", "needs you", "turn ended", "last active"];
     let mut asked = compiled("ask_1", "health endpoint", "codex");
     asked["data"]["host"] =
         json!({"name": "codex", "session_ref": "c1", "session_ref_source": "capture"});

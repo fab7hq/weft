@@ -187,8 +187,12 @@ pub struct AskPart {
 /// How an Ask's prompt went (T11.2): typed into its harness's pane, word for
 /// word or reworded, and when it arrived; else where it stands.
 fn how_it_went(unit: &crate::ledger::Unit, zone: i64) -> String {
-    let crate::ledger::Sent::Arrived { exact } = unit.sent else {
-        return if unit.cancelled { "cancelled".into() } else { unit.sent_phrase().into() };
+    use crate::ledger::Sent;
+    let exact = match unit.sent {
+        _ if unit.cancelled => return "cancelled".into(),
+        Sent::NotSent | Sent::ReadyToSend => return "not sent yet, waiting for proceeding".into(),
+        Sent::Arrived { exact } => exact,
+        _ => return unit.sent_phrase().into(),
     };
     let mut line = format!(
         "typed into {}'s pane · {}",
@@ -245,11 +249,21 @@ pub fn work_detail(
     if let Some(t) = at(&unit.asked_at) {
         aside.push(format!("asked {}", stamp(t, zone)));
     }
-    aside.push(if went { "sent".to_string() } else { unit.sent_phrase().to_string() });
+    // Not sent yet, however it waits (11.2); else where it stands.
+    aside.push(match unit.sent {
+        _ if went => "sent".to_string(),
+        crate::ledger::Sent::NotSent | crate::ledger::Sent::ReadyToSend => {
+            "not sent yet".to_string()
+        }
+        _ => unit.sent_phrase().to_string(),
+    });
     if let Some(s) = session.as_ref().filter(|s| s.state == crate::sessions::State::Running)
         && let Some(t) = s.turn
     {
-        aside.push(format!("{} is {}", s.harness, t.plain()));
+        aside.push(match t {
+            crate::turns::Turn::Waiting => format!("{} {}", s.harness, t.plain()),
+            _ => format!("{} is {}", s.harness, t.plain()),
+        });
     }
     let mut lines = Vec::new();
     match source {
@@ -411,7 +425,6 @@ pub struct SealDetail {
     /// As a person reads it: accepted, rejected, parked, dropped.
     pub decision: String,
     pub at: Option<i64>,
-    pub by: String,
     pub eval: Option<SealedEval>,
     /// The receipt RingFrame checked.
     pub receipt: String,
@@ -450,7 +463,6 @@ pub fn seal_detail(
         n: seal.n,
         decision: crate::tree::decision(&seal.disposition),
         at: at(&seal.at),
-        by: seal.by.clone(),
         eval: eval.map(|e| SealedEval {
             eval: e.id.clone(),
             n: e.n,
@@ -670,6 +682,25 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_still_to_send_waits_for_proceeding_as_11_2_says() {
+        let events = vec![ev(
+            "ask.compiled",
+            "ask_t",
+            20,
+            json!({"title": "telemetry",
+            "delivery_mode": "human_handoff", "host": {"name": "claude"}}),
+        )];
+        let (units, record) = (crate::ledger::project(&events), record_of(&events));
+        let rounds = rounds_of(&units, &record);
+        let d = work_detail(&units[0], &record, &rounds, None, None, None, 0);
+        assert_eq!(
+            d.ask.lines.last().map(String::as_str),
+            Some("not sent yet, waiting for proceeding")
+        );
+        assert!(d.ask.aside.ends_with(" · not sent yet"), "{}", d.ask.aside);
+    }
+
+    #[test]
     fn an_evals_details_say_it_once_with_its_findings_checks_and_asks() {
         let events = sample();
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
@@ -715,7 +746,9 @@ mod tests {
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
         let held = json!({"seal_id": "sel_4", "codes": [], "subject_matches": true});
         let d = seal_detail(&record.seals[0], &units, &record, Some(&held));
-        assert_eq!((d.decision.as_str(), d.by.as_str(), d.holds), ("accepted", "you", Some(true)));
+        assert_eq!((d.decision.as_str(), d.holds), ("accepted", Some(true)));
+        let v = serde_json::to_value(&d).unwrap();
+        assert!(v.get("by").is_none(), "the record names no one but you, so it says no one (11.4)");
         assert_eq!(
             d.eval.as_ref().map(|e| (e.n, e.verdict, e.agreement.as_deref())),
             Some((2, Some("aligned"), Some("1.0")))

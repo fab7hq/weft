@@ -664,7 +664,7 @@ mod tests {
     fn an_agents_state_reads_as_its_turn_ended_or_last_active() {
         let t = build(&weft(), READY, AS_DRAWN);
         let words: Vec<_> = t.agents.rows.iter().take(4).map(|a| state_word(a, "11:25")).collect();
-        assert_eq!(words, ["working", "waiting for you", "turn ended", "ended"]);
+        assert_eq!(words, ["working", "needs you", "turn ended", "ended"]);
         let quiet = Agent { state: State::Quiet, ..t.agents.rows[3].clone() };
         assert_eq!(state_word(&quiet, "11:25"), "last active 11:25");
     }

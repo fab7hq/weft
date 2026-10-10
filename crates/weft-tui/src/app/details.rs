@@ -551,11 +551,10 @@ fn seal_view(view: View, d: &SealDetail, zone: i64) -> Detail {
     let mut out = Detail::new(view, crumbs, String::new());
     let when = d.at.map(|at| offers::stamp(at, zone)).unwrap_or_default();
     out.line(format!("SEAL {}   {}", d.n, d.decision));
-    out.line(format!("  sealed {when} by {} · covers {}", d.by, asks_n(d.asks.len())));
+    out.line(format!("  sealed {when} · covers {}", asks_n(d.asks.len())));
     out.gap();
     out.line(format!("  DECISION    {}", d.decision));
     out.line(format!("  WHEN        {when}"));
-    out.line(format!("  BY          {}", d.by));
     match &d.eval {
         Some(e) => {
             let agreement = e.agreement.as_deref().map(|a| format!(" · {a}")).unwrap_or_default();
