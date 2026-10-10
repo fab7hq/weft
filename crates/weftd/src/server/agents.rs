@@ -220,12 +220,20 @@ impl Session {
     /// is the pane's. One naming no pane is a session no pane holds, in the
     /// project its workspace is in, and changes no pane. Accepted, it is
     /// recorded in Weft's receipts; anything else is dropped unrecorded.
-    pub(super) fn signal(&mut self, sent: weft_core::signal::Sent) {
+    pub(super) fn signal(&mut self, mut sent: weft_core::signal::Sent) {
         // A session or harness that is not only an id names no file and is
         // passed to no one (D7): both become paths and arguments.
         use weft_core::sessions::is_id;
         if !is_id(&sent.session) || !is_id(&sent.harness) {
             return;
+        }
+        // A line of a file is forwarded once per session: a later hook that
+        // finds the same newest line has received nothing new (ADR-0033 D7).
+        if let Some(key) = sent.prompt_key.take() {
+            let seen = format!("{}\0{}\0{key}", sent.harness, sent.session);
+            if !self.forwarded.insert(seen) {
+                sent.prompt = None;
+            }
         }
         let (at, root) = match sent.pane {
             Some(pane) => {
@@ -277,6 +285,13 @@ impl Session {
             self.tell_agents(at);
         }
         let answered = at.and_then(|at| self.answers_a_send(at, &sent));
+        // A turn that ended with nothing received: the send's wait is over.
+        if answered.is_none()
+            && let (Some(at), Some(pane)) = (at, sent.pane)
+            && matches!(sent.state.as_deref(), Some("turn_ended" | "ended"))
+        {
+            self.received_nothing(at, pane);
+        }
         self.forwarders.send(&root, sent, answered);
     }
 }

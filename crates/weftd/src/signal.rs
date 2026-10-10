@@ -5,7 +5,8 @@
 //! giving up after 200 ms. It writes no file, never runs `ringframe`, and
 //! always exits 0: a hook must never fail the harness's turn. Without weftd
 //! it is silent and records nothing. Where `[signal]` keeps the prompt in a
-//! file the payload names, it reads only that file's end, for its last line.
+//! file the payload names, it reads only that file's end, for the line that
+//! holds it, and a file that line names as holding it (ADR-0033 D7).
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -64,8 +65,13 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
     let signal = weft_core::signal::Signal::of(&table["signal"])?;
     let payload: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let mut sent = signal.sent(harness, hook, &payload)?;
-    if let Some(file) = signal.prompt_file(hook, &payload) {
-        sent.prompt = tail(std::path::Path::new(&file)).and_then(|t| signal.prompt_from(&t));
+    // Where the harness recorded the prompt it received: the payload, or a
+    // file it names (and a file a line names), read only here.
+    let end = |file: &str| tail(std::path::Path::new(file));
+    let whole = |file: &str| whole(std::path::Path::new(file));
+    if let Some(got) = signal.prompt_in(hook, &payload, &end, &whole) {
+        sent.prompt = Some(got.text);
+        sent.prompt_key = got.key;
     }
     if let Some(program) = table["program"].as_str()
         && let Some(found) = crate::process::harness(program)
@@ -78,19 +84,30 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
     Some(sent)
 }
 
-/// How much of the end of a file holding the prompt is read: its last line
-/// must fit.
+/// How much of the end of a file holding the prompt is read: the line must
+/// fit; and the most of a file a line names that is read.
 const TAIL: u64 = 4 << 20;
 
-/// The end of a file, as text: up to `TAIL` bytes.
-fn tail(path: &std::path::Path) -> Option<String> {
+/// The end of a file, as text: up to `TAIL` bytes, and where they start.
+fn tail(path: &std::path::Path) -> Option<(u64, String)> {
     use std::io::Seek;
     let mut file = std::fs::File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    file.seek(std::io::SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let start = len.saturating_sub(TAIL);
+    file.seek(std::io::SeekFrom::Start(start)).ok()?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some((start, String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// A file a recorded line names as holding the prompt: all of it, when it
+/// is text of at most `TAIL` bytes.
+fn whole(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > TAIL {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
 }
 
 /// One line to weftd, or nothing when no weftd answers in time.
@@ -242,6 +259,39 @@ mod tests {
         std::fs::remove_file(&log).unwrap();
         let (_, sent) = heard(&b.at, &["made-up", "Began"], &payload);
         assert_eq!(sent.expect("a missing file sends the state").prompt, None);
+    }
+
+    /// A harness that records a prompt only in its transcript, past other
+    /// lines, and a long one in a file the line names (ADR-0033 D7):
+    /// `weft signal` reads both, and says where the line was.
+    #[test]
+    fn a_prompt_recorded_in_a_transcript_line_or_a_file_it_names_reaches_weftd() {
+        let b = bench();
+        std::fs::write(
+            b.at.harnesses.join("made-up.toml"),
+            "title = \"Made up\"\nprogram = \"made-up\"\n[signal]\nsession = \"id\"\nworkspace = \"dir\"\n\
+             prompt = [\"said\", { file = \"log\", newest = true, last = { kind = \"goal\" }, field = \"text\", names_file = [\"kept at: \", \". Read\"] }]\n\
+             on = [ { hook = \"Done\", state = \"turn_ended\", forward = \"prompt\" } ]\n",
+        )
+        .unwrap();
+        let log = b.at.harnesses.join("log.jsonl");
+        let payload = format!(r#"{{"id":"s1","dir":"/w","log":"{}"}}"#, log.display());
+        let goal = r#"{"kind":"goal","text":"ship it"}"#;
+        let lines =
+            format!("{{\"kind\":\"typed\",\"text\":\"hi\"}}\n{goal}\n{{\"kind\":\"step\"}}\n");
+        std::fs::write(&log, &lines).unwrap();
+        let (_, sent) = heard(&b.at, &["made-up", "Done"], &payload);
+        let sent = sent.expect("weftd heard it");
+        assert_eq!(sent.prompt.as_deref(), Some("ship it"), "the newest goal line");
+        let offset = lines.find(goal).unwrap();
+        assert_eq!(sent.prompt_key, Some(format!("{}:{offset}", log.display())));
+        let pasted = b.at.harnesses.join("pasted.txt");
+        std::fs::write(&pasted, "a long prompt\nof two lines").unwrap();
+        let named =
+            format!(r#"{{"kind":"goal","text":"kept at: {}. Read it."}}"#, pasted.display());
+        std::fs::write(&log, format!("{named}\n{{\"kind\":\"step\"}}\n")).unwrap();
+        let (_, sent) = heard(&b.at, &["made-up", "Done"], &payload);
+        assert_eq!(sent.expect("heard").prompt.as_deref(), Some("a long prompt\nof two lines"));
     }
 
     #[test]

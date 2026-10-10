@@ -45,15 +45,23 @@ on = ["enabled", "installed"]
 # No SessionStart row: it runs only with the first prompt (W5 q05).
 # PostToolUse forwards nothing: a failed command also arrives there, so its
 # outcome cannot be told.
+# A typed prompt is in UserPromptSubmit's payload. A `/goal` fires no prompt
+# hook: Codex records it in its transcript as a thread_goal_updated line, the
+# prompt without the command, and a long paste as a file that line names; the
+# goal turn's first hook is its first tool use or its Stop (HostLab probe
+# goal-hooks, codex 0.162.0; Weft ADR-0033 D7).
 [signal]
 session = "session_id"
 workspace = "cwd"
-prompt = "prompt"
+prompt = [
+  "prompt",
+  { file = "transcript_path", newest = true, last = { type = "event_msg", "payload.type" = "thread_goal_updated" }, field = "payload.goal.objective", names_file = ["pasted text file: ", ". Read this file"] },
+]
 tool = "tool_name"
 on = [
-  { hook = "UserPromptSubmit",                         state = "working", forward = "prompt" },
+  { hook = "UserPromptSubmit",                         state = "working",    forward = "prompt" },
   { hook = "PreToolUse",  tool = "request_user_input", state = "waiting" },
   { hook = "PermissionRequest",                        state = "waiting" },
-  { hook = "PostToolUse",                              state = "working" },
-  { hook = "Stop",                                     state = "turn_ended" },
+  { hook = "PostToolUse",                              state = "working",    forward = "prompt" },
+  { hook = "Stop",                                     state = "turn_ended", forward = "prompt" },
 ]

@@ -32,12 +32,13 @@ list = ["plugins"]
 [signal]
 session = "session_id"
 workspace = "cwd"
-prompt = "said.text"
+prompt = ["said.text", { file = "log", newest = true, last = { kind = "goal" }, field = "text" }]
 on = [
   { hook = "Began",     state = "ready" },
   { hook = "Submitted", state = "working", forward = "prompt" },
   { hook = "Busy",      state = "working" },
   { hook = "Idle",      state = "turn_ended" },
+  { hook = "Done",      state = "turn_ended", forward = "prompt" },
 ]
 "#;
 
@@ -87,8 +88,11 @@ fn stand_in() -> PathBuf {
 /// A made-up agent. Each line its composer takes it reports through its
 /// `Submitted` hook, as `mode` says: `true` as typed, `mangle` without its
 /// first two characters (a composer that swallowed the start of a paste),
-/// `silent` not at all; `busy` reports each as typed, but starts with a turn
-/// running that ends 3 s later. Every line also goes to `<dir>/took`.
+/// `silent` not at all, and then ends its turn; `transcript` records it only
+/// in a transcript, then a later step, and names that transcript only at the
+/// end of its turn 12 s later, twice; `busy` reports each as typed, but starts
+/// with a turn running that ends 3 s later. Every line also goes to
+/// `<dir>/took`.
 fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
@@ -105,7 +109,15 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
          while IFS= read -r line; do\n\
            printf '%s\\n' \"$line\" >> '{d}/took'\n\
            case {mode} in mangle) line=${{line#??}} ;; esac\n\
-           [ {mode} = silent ] || sig Submitted \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\",\\\"said\\\":{{\\\"text\\\":\\\"$line\\\"}}}}\"\n\
+           case {mode} in\n\
+           silent) sig Done \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\" ;;\n\
+           transcript)\n\
+             printf '{{\"kind\":\"goal\",\"text\":\"%s\"}}\\n{{\"kind\":\"step\"}}\\n' \"$line\" >> '{d}/log.jsonl'\n\
+             sleep 12\n\
+             sig Done \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\",\\\"log\\\":\\\"{d}/log.jsonl\\\"}}\"\n\
+             sig Done \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\",\\\"log\\\":\\\"{d}/log.jsonl\\\"}}\" ;;\n\
+           *) sig Submitted \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\",\\\"said\\\":{{\\\"text\\\":\\\"$line\\\"}}}}\" ;;\n\
+           esac\n\
          done\n"
     );
     let path = dir.join("agent.sh");
@@ -309,17 +321,39 @@ fn another_prompt_arriving_is_not_the_ask_and_the_person_is_told() {
     assert_eq!(b.took(), format!("{WORDING}\n"), "no retry, no keys pressed");
 }
 
+/// A turn that ends with nothing received is "cannot tell" at once: the
+/// wait ends at the turn's end, not after a fixed time (ADR-0033 D1 as
+/// amended). No retry.
 #[test]
-fn nothing_arriving_in_ten_seconds_is_cannot_tell_and_no_retry() {
+fn a_turn_that_ends_with_nothing_received_is_cannot_tell_and_no_retry() {
     let mut b = Bench::new("weft-proven-silent", "loom", "silent");
     let sent = Instant::now();
     assert_eq!(b.send(), Ok(None), "typed");
-    let said = b.notice(Duration::from_secs(13)).expect("the person is told");
+    let said = b.notice(Duration::from_secs(8)).expect("the person is told");
     assert_eq!(said.as_deref(), Some("NoReceipt"));
-    assert!(sent.elapsed() >= Duration::from_secs(10), "not before the 10 s");
+    assert!(sent.elapsed() < Duration::from_secs(8), "at the turn's end: {:?}", sent.elapsed());
     assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
     assert!(!b.calls().contains("observe prompt"), "{}", b.calls());
     assert_eq!(b.took(), format!("{WORDING}\n"), "no retry");
+}
+
+/// A harness that records the prompt only in its transcript, and names the
+/// transcript only when its turn ends, past the old 10 s: the send is
+/// delivered when that hook comes, and the same line is forwarded once
+/// (ADR-0033 D7).
+#[test]
+fn a_prompt_recorded_only_in_a_transcript_arrives_with_a_later_hook() {
+    let mut b = Bench::new("weft-proven-transcript", "loom", "transcript");
+    assert_eq!(b.send(), Ok(None), "typed");
+    assert_eq!(b.notice(Duration::from_secs(16)), None, "delivered: nothing to tell the person");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while b.calls().matches("observe prompt").count() < 1 {
+        assert!(Instant::now() < deadline, "no verdict was asked for: {}", b.calls());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(b.calls().matches("observe prompt").count(), 1, "once: {}", b.calls());
+    assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
 }
 
 /// An agent whose turn is running is not typed into: the send waits until
@@ -334,8 +368,8 @@ fn a_busy_agent_is_waited_for() {
         "not while it worked: {:?}",
         asked.elapsed()
     );
-    assert_eq!(b.took(), format!("{WORDING}\n"));
     assert_eq!(b.notice(Duration::from_secs(2)), None, "and it arrived as the Ask");
+    assert_eq!(b.took(), format!("{WORDING}\n"));
 }
 
 #[test]

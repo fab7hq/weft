@@ -347,6 +347,8 @@ pub struct Session {
     receipts: PathBuf,
     /// What signals forward to `ringframe observe`, one queue per project.
     forwarders: crate::forward::Forwarders,
+    /// The file lines already forwarded as a prompt, by harness and session.
+    forwarded: std::collections::HashSet<String>,
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
@@ -606,6 +608,7 @@ impl Session {
             socket: socket.to_path_buf(),
             receipts,
             forwarders: crate::forward::Forwarders::new(outside.clone()),
+            forwarded: Default::default(),
             clients: Clients::default(),
             tx,
             next_pending: 1,

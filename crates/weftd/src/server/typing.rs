@@ -35,9 +35,10 @@ pub(super) fn recorded_first(
         .map_err(|e| format!("RingFrame would not record your yes: {e:?}. Nothing was typed."))
 }
 
-/// How long after Enter a pane has to report the prompt it received, before
-/// Weft says it cannot tell whether the Ask arrived (ADR-0033 D1).
-pub(super) const RECEIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// How long after Enter a pane that reports nothing at all, neither the
+/// prompt it received nor its turn's end, is waited for before Weft says it
+/// cannot tell whether the Ask arrived (ADR-0033 D1, amended 2026-10-10).
+pub(super) const RECEIPT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// A send of an Ask, typed and submitted, waiting for what its pane reports
 /// it received. Only that report, judged by RingFrame, makes it delivered.
@@ -120,7 +121,7 @@ impl Session {
         // Typed and submitted is not delivered: what the pane reports it
         // received says whether this was the Ask (D1).
         if let Some(ask) = w.sends.filter(|_| submitted) {
-            let until = std::time::Instant::now() + RECEIPT_TIMEOUT;
+            let until = std::time::Instant::now() + RECEIPT_CAP;
             self.projects[project].due.push(Due { pane: w.pane, ask, until });
         }
         self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None });
@@ -165,8 +166,20 @@ impl Session {
         self.clients.broadcast(project, &said);
     }
 
-    /// Sends whose pane reported nothing in time: Weft cannot tell whether
-    /// the Ask arrived. A stall does not prove nothing was sent, so no retry.
+    /// A pane whose turn ended with no prompt received since Weft's send:
+    /// Weft cannot tell whether the Ask arrived. No retry.
+    pub(super) fn received_nothing(&mut self, project: usize, pane: u32) {
+        let due = &mut self.projects[project].due;
+        if let Some(i) = due.iter().position(|d| d.pane == pane) {
+            due.remove(i);
+            let said = Out::Injected { pane, refusal: Some("NoReceipt".into()), unrecorded: None };
+            self.clients.broadcast(project, &said);
+        }
+    }
+
+    /// Sends whose pane reported nothing at all by the cap: Weft cannot tell
+    /// whether the Ask arrived. A stall does not prove nothing was sent, so
+    /// no retry.
     pub(super) fn nothing_received(&mut self, project: usize) {
         let now = std::time::Instant::now();
         let due = std::mem::take(&mut self.projects[project].due);

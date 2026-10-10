@@ -32,19 +32,31 @@ pub struct Signal {
     pub on: Vec<Row>,
 }
 
-/// Where a forwarded prompt is.
+/// Where a forwarded prompt is: one place, or a list tried in order, for a
+/// harness that records some prompts in one place and some in another
+/// (ADR-0033 D7).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Prompt {
+    One(Place),
+    Each(Vec<Place>),
+}
+
+/// One place a harness records the prompt it received.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Place {
     /// The payload path of its text.
     At(String),
-    /// A file of JSON lines the payload names, whose last line holds it.
+    /// A file of JSON lines the payload names, one of whose lines holds it.
     InFile(InFile),
 }
 
-/// A prompt kept in a file the payload names (a transcript): the file's last
-/// line, only when its fields are `last`'s, and of it only `field`, cut to
-/// what lies between `between`'s two markers when it names them.
+/// A prompt kept in a file the payload names (a transcript): its last line,
+/// or with `newest` its newest line, whose fields are `last`'s, and of it
+/// only `field`, cut to what lies between `between`'s two markers when it
+/// names them. When the text holds `names_file`'s first marker, the path
+/// between the two markers is a file, and the prompt is that file's bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InFile {
@@ -53,10 +65,68 @@ pub struct InFile {
     /// Dotted paths in the line, and the value each must have.
     #[serde(default)]
     pub last: serde_json::Map<String, Value>,
+    /// Look back from the end for the newest line with `last`'s fields,
+    /// rather than take only the last line.
+    #[serde(default)]
+    pub newest: bool,
     /// The dotted path in the line of the text.
     pub field: String,
     #[serde(default)]
     pub between: Option<[String; 2]>,
+    #[serde(default)]
+    pub names_file: Option<[String; 2]>,
+}
+
+/// A prompt found where the harness recorded it, and, for a line of a file,
+/// where it was read (`<file>:<offset>`), so the same line is forwarded once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Received {
+    pub text: String,
+    pub key: Option<String>,
+}
+
+impl Prompt {
+    fn places(&self) -> &[Place] {
+        match self {
+            Prompt::One(p) => std::slice::from_ref(p),
+            Prompt::Each(all) => all,
+        }
+    }
+}
+
+impl InFile {
+    /// The line this place reads in a file's end, and where in it the line
+    /// starts.
+    fn line(&self, tail: &str) -> Option<(usize, Value)> {
+        let matches = |v: &Value| self.last.iter().all(|(p, want)| value_at(v, p) == Some(want));
+        let mut at = tail.len();
+        for line in tail.split_inclusive('\n').collect::<Vec<_>>().into_iter().rev() {
+            at -= line.len();
+            if line.trim().is_empty() {
+                continue;
+            }
+            let read = serde_json::from_str::<Value>(line).ok().filter(|v| matches(v));
+            match (read, self.newest) {
+                (Some(v), _) => return Some((at, v)),
+                (None, false) => return None,
+                (None, true) => continue,
+            }
+        }
+        None
+    }
+
+    /// The text of a line: `field`, cut by `between`.
+    fn text(&self, line: &Value) -> Option<String> {
+        let text = value_at(line, &self.field)?.as_str()?;
+        match &self.between {
+            None => Some(text.to_string()),
+            Some([start, end]) => {
+                let from = text.find(start.as_str())? + start.len();
+                let to = from + text[from..].find(end.as_str())?;
+                Some(text[from..to].to_string())
+            }
+        }
+    }
 }
 
 /// One hook's meaning.
@@ -94,6 +164,9 @@ pub struct Sent {
     pub forward: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt: Option<String>,
+    /// Where a prompt read from a file was read, so weftd forwards it once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_key: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -145,9 +218,8 @@ impl Signal {
         };
         match row.forward.as_deref() {
             Some("prompt") => {
-                if let Some(Prompt::At(path)) = &self.prompt {
-                    sent.prompt = text_at(payload, path);
-                }
+                // What the payload alone holds; `weft signal` reads the rest.
+                sent.prompt = self.prompt_in(hook, payload, &|_| None, &|_| None).map(|r| r.text);
             }
             Some("tool") => {
                 sent.tool = at(&self.tool);
@@ -159,35 +231,36 @@ impl Signal {
         Some(sent)
     }
 
-    /// The file this hook's prompt is in, when its row forwards a prompt and
-    /// `[signal]` keeps it in a file the payload names. `weft signal` reads
-    /// its end and gives it to `prompt_from`.
-    pub fn prompt_file(&self, hook: &str, payload: &Value) -> Option<String> {
-        let row = self.row(hook, payload)?;
-        match (&self.prompt, row.forward.as_deref()) {
-            (Some(Prompt::InFile(f)), Some("prompt")) => text_at(payload, &f.file),
-            _ => None,
-        }
-    }
-
-    /// The prompt in the end of such a file: its last line, when that line
-    /// is one, and only its text.
-    pub fn prompt_from(&self, tail: &str) -> Option<String> {
-        let Some(Prompt::InFile(f)) = &self.prompt else { return None };
-        let line: Value =
-            serde_json::from_str(tail.lines().rfind(|l| !l.trim().is_empty())?).ok()?;
-        if !f.last.iter().all(|(path, want)| value_at(&line, path) == Some(want)) {
+    /// The prompt this hook reports the harness received, when its row
+    /// forwards one: from each place in turn, the first that has it. `tail`
+    /// reads a file's end (where it starts, and the text); `whole` reads a
+    /// file a text names. `weft signal` gives them; they read nothing else.
+    pub fn prompt_in(
+        &self,
+        hook: &str,
+        payload: &Value,
+        tail: &dyn Fn(&str) -> Option<(u64, String)>,
+        whole: &dyn Fn(&str) -> Option<String>,
+    ) -> Option<Received> {
+        if self.row(hook, payload)?.forward.as_deref() != Some("prompt") {
             return None;
         }
-        let text = value_at(&line, &f.field)?.as_str()?;
-        match &f.between {
-            None => Some(text.to_string()),
-            Some([start, end]) => {
-                let from = text.find(start.as_str())? + start.len();
-                let to = from + text[from..].find(end.as_str())?;
-                Some(text[from..to].to_string())
+        self.prompt.as_ref()?.places().iter().find_map(|place| match place {
+            Place::At(path) => text_at(payload, path).map(|text| Received { text, key: None }),
+            Place::InFile(f) => {
+                let file = text_at(payload, &f.file)?;
+                let (start, end) = tail(&file)?;
+                let (at, line) = f.line(&end)?;
+                let mut text = f.text(&line)?;
+                if let Some([open, close]) = &f.names_file
+                    && let Some(from) = text.find(open.as_str()).map(|i| i + open.len())
+                {
+                    let to = from + text[from..].find(close.as_str())?;
+                    text = whole(&text[from..to])?;
+                }
+                Some(Received { text, key: Some(format!("{file}:{}", start + at as u64)) })
             }
-        }
+        })
     }
 
     /// What this hook prints: its row's reply, else the table's.
@@ -325,12 +398,15 @@ mod tests {
     }
 
     #[test]
-    fn a_tool_row_that_forwards_nothing_sends_no_tool() {
+    fn a_row_that_forwards_no_tool_sends_no_tool() {
+        // Codex's PostToolUse looks for a goal it received (ADR-0033 D7),
+        // never at the tool: a failed command also arrives there.
         let s = signal("codex");
         let payload = json!({"session_id": "c1", "cwd": "/w", "tool_name": "shell",
                              "tool_input": {"command": "npm test"}});
         let sent = s.sent("codex", "PostToolUse", &payload).unwrap();
-        assert_eq!((sent.tool, sent.command, sent.forward), (None, None, None));
+        assert_eq!((sent.tool, sent.command, sent.prompt), (None, None, None));
+        assert_eq!(sent.forward.as_deref(), Some("prompt"));
     }
 
     #[test]
@@ -396,58 +472,72 @@ mod tests {
         .expect("a [signal] whose prompt is in a file")
     }
 
+    /// The prompt `hook` gives when the file the payload names ends with
+    /// `tail`.
+    fn read(s: &Signal, hook: &str, payload: &Value, tail: &str) -> Option<String> {
+        let end = |_: &str| Some((0, tail.to_string()));
+        s.prompt_in(hook, payload, &end, &|_| None).map(|r| r.text)
+    }
+
     #[test]
     fn a_prompt_can_be_the_last_line_of_a_file_the_payload_names() {
         let s = from_a_file();
         let payload = json!({"id": "s1", "dir": "/w", "log": {"path": "/h/log.jsonl"}});
-        assert_eq!(s.prompt_file("Began", &payload).as_deref(), Some("/h/log.jsonl"));
-        assert_eq!(s.prompt_file("Ended", &payload), None, "its row forwards nothing");
-        let sent = s.sent("made-up", "Began", &payload).unwrap();
-        assert_eq!(
-            (sent.prompt, sent.forward.as_deref()),
-            (None, Some("prompt")),
-            "read by weft signal"
-        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let end = |p: &str| {
+            asked.borrow_mut().push(p.to_string());
+            None
+        };
+        s.prompt_in("Began", &payload, &end, &|_| None);
+        assert_eq!(*asked.borrow(), ["/h/log.jsonl"], "the file the payload names");
         let typed = "/rf:ask fix it — now\n  with lines  ";
         let line = |kind: &str, text: &str| {
             json!({"kind": kind, "body": {"text": format!("<said>\n{text}\n</said>\n<meta>9:00</meta>")}})
                 .to_string()
         };
         let tail = format!("{}\n{}\n", line("answer", "earlier"), line("typed", typed));
+        assert_eq!(read(&s, "Ended", &payload, &tail), None, "its row forwards nothing");
         assert_eq!(
-            s.prompt_from(&tail).as_deref(),
+            read(&s, "Began", &payload, &tail).as_deref(),
             Some(typed),
             "byte for byte, between the markers"
+        );
+        let sent = s.sent("made-up", "Began", &payload).unwrap();
+        assert_eq!(
+            (sent.prompt, sent.forward.as_deref()),
+            (None, Some("prompt")),
+            "read by weft signal"
         );
     }
 
     #[test]
     fn a_file_prompt_is_none_unless_its_last_line_is_one() {
         let s = from_a_file();
+        let payload = json!({"id": "s1", "dir": "/w", "log": {"path": "/h/log.jsonl"}});
         let typed =
             json!({"kind": "typed", "body": {"text": "<said>\nhello\n</said>"}}).to_string();
         let tool = json!({"kind": "tool", "body": {"text": "ran"}}).to_string();
         assert_eq!(
-            s.prompt_from(&format!("{typed}\n{tool}\n")),
+            read(&s, "Began", &payload, &format!("{typed}\n{tool}\n")),
             None,
             "a later step: no new prompt"
         );
         let unmarked = json!({"kind": "typed", "body": {"text": "no markers"}}).to_string();
-        assert_eq!(s.prompt_from(&unmarked), None, "markers named and absent");
-        assert_eq!(s.prompt_from("not json\n"), None);
-        assert_eq!(s.prompt_from(""), None);
+        assert_eq!(read(&s, "Began", &payload, &unmarked), None, "markers named and absent");
+        assert_eq!(read(&s, "Began", &payload, "not json\n"), None);
+        assert_eq!(read(&s, "Began", &payload, ""), None);
         let plain = Signal::of(&json!({"session": "id", "workspace": "dir",
             "prompt": {"file": "f", "last": {"kind": "typed"}, "field": "body.text"},
             "on": [{"hook": "Began", "forward": "prompt"}]}))
         .unwrap();
         assert_eq!(
-            plain.prompt_from(&format!("{typed}\n")).as_deref(),
+            read(&plain, "Began", &json!({"f": "/f"}), &format!("{typed}\n")).as_deref(),
             Some("<said>\nhello\n</said>")
         );
         assert_eq!(
-            signal("claude-code").prompt_from(&format!("{typed}\n")),
+            read(&signal("claude-code"), "UserPromptSubmit", &json!({"session_id": "s"}), &typed),
             None,
-            "a payload-path prompt"
+            "a payload-path prompt: no file is read"
         );
     }
 
@@ -458,16 +548,131 @@ mod tests {
         let s = signal("antigravity");
         let payload =
             json!({"conversationId": "a1", "workspacePaths": ["/w"], "transcriptPath": "/t.jsonl"});
-        assert_eq!(s.prompt_file("PreInvocation", &payload).as_deref(), Some("/t.jsonl"));
         let typed = json!({"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT", "status": "DONE",
             "content": "<USER_REQUEST>\n/rf:ask Plan it.\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-10-09T09:24:12Z.\n</ADDITIONAL_METADATA>"});
         let step = json!({"step_index": 2, "source": "MODEL", "type": "GENERIC", "status": "DONE", "content": "Created file"});
-        assert_eq!(s.prompt_from(&format!("{typed}\n")).as_deref(), Some("/rf:ask Plan it."));
         assert_eq!(
-            s.prompt_from(&format!("{typed}\n{step}\n")),
+            read(&s, "PreInvocation", &payload, &format!("{typed}\n")).as_deref(),
+            Some("/rf:ask Plan it.")
+        );
+        assert_eq!(
+            read(&s, "PreInvocation", &payload, &format!("{typed}\n{step}\n")),
             None,
             "a later invocation of the same turn"
         );
+    }
+
+    /// A made-up harness that records some prompts only in its transcript:
+    /// a list of places, the payload's first, then the newest matching line
+    /// of the transcript, whose text may name a file holding the prompt
+    /// (ADR-0033 D7).
+    fn in_several_places() -> Signal {
+        Signal::of(&json!({
+            "session": "id", "workspace": "dir",
+            "prompt": ["said", {"file": "log", "newest": true, "last": {"kind": "goal"},
+                                "field": "goal.text", "names_file": ["kept at: ", ". Read it"]}],
+            "on": [{"hook": "Submitted", "state": "working", "forward": "prompt"},
+                   {"hook": "Done", "state": "turn_ended", "forward": "prompt"},
+                   {"hook": "Began", "state": "ready"}]
+        }))
+        .expect("a [signal] with several places")
+    }
+
+    /// A transcript, read from offset 100, with a goal, then steps after it.
+    fn transcript(goal: &str) -> (u64, String) {
+        let line = |v: Value| format!("{v}\n");
+        let text = [
+            line(json!({"kind": "typed", "text": "earlier"})),
+            line(json!({"kind": "goal", "goal": {"text": goal}})),
+            line(json!({"kind": "step", "text": "ran a tool"})),
+            line(json!({"kind": "tokens", "n": 9})),
+        ]
+        .concat();
+        (100, text)
+    }
+
+    #[test]
+    fn the_payload_is_the_first_place_and_the_transcript_the_next() {
+        let s = in_several_places();
+        let typed = json!({"id": "s1", "dir": "/w", "said": "fix it", "log": "/t.jsonl"});
+        let got = s.prompt_in("Submitted", &typed, &|_| None, &|_| None).expect("from the payload");
+        assert_eq!((got.text.as_str(), got.key), ("fix it", None));
+        let ended = json!({"id": "s1", "dir": "/w", "log": "/t.jsonl"});
+        let tail = |p: &str| (p == "/t.jsonl").then(|| transcript("ship the endpoint"));
+        let got = s.prompt_in("Done", &ended, &tail, &|_| None).expect("from the transcript");
+        assert_eq!(got.text, "ship the endpoint", "the newest goal line, not the last line");
+        let first = transcript("x").1.lines().next().unwrap().len() as u64 + 1;
+        assert_eq!(got.key, Some(format!("/t.jsonl:{}", 100 + first)), "where it was read");
+        assert_eq!(
+            s.prompt_in("Began", &ended, &tail, &|_| None),
+            None,
+            "its row forwards nothing"
+        );
+    }
+
+    #[test]
+    fn a_text_that_names_a_file_is_that_files_bytes() {
+        let s = in_several_places();
+        let ended = json!({"id": "s1", "dir": "/w", "log": "/t.jsonl"});
+        let tail = |_: &str| Some(transcript("kept at: /a/pasted.txt. Read it first."));
+        let whole = |p: &str| (p == "/a/pasted.txt").then(|| "a long prompt\nof lines".to_string());
+        let got = s.prompt_in("Done", &ended, &tail, &whole).expect("the named file");
+        assert_eq!(got.text, "a long prompt\nof lines");
+        let gone = |_: &str| None;
+        assert_eq!(s.prompt_in("Done", &ended, &tail, &gone), None, "named and unreadable");
+        let plain = |_: &str| Some(transcript("no file named here"));
+        let got = s.prompt_in("Done", &ended, &plain, &gone).expect("a text naming no file");
+        assert_eq!(got.text, "no file named here");
+    }
+
+    #[test]
+    fn without_newest_only_the_last_line_counts() {
+        let s = from_a_file();
+        let payload = json!({"id": "s1", "dir": "/w", "log": {"path": "/h/log.jsonl"}});
+        let line = json!({"kind": "typed", "body": {"text": "<said>\nhi\n</said>"}}).to_string();
+        let step = json!({"kind": "tool", "body": {"text": "ran"}}).to_string();
+        let last = |_: &str| Some((0, format!("{line}\n")));
+        let got = s.prompt_in("Began", &payload, &last, &|_| None).map(|r| r.text);
+        assert_eq!(got.as_deref(), Some("hi"));
+        let later = |_: &str| Some((0, format!("{line}\n{step}\n")));
+        assert_eq!(s.prompt_in("Began", &payload, &later, &|_| None), None, "a later step");
+    }
+
+    /// The Codex fixture's transcript, as codex 0.162.0 writes a `/goal`
+    /// (HostLab probe goal-hooks): the goal line, then the goal turn's lines;
+    /// a long paste is a file the objective names.
+    #[test]
+    fn a_codex_goal_is_read_from_its_transcript() {
+        let s = signal("codex");
+        let payload = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl",
+            "turn_id": "t2", "hook_event_name": "Stop", "last_assistant_message": "ok"});
+        let goal = |objective: &str| {
+            json!({"timestamp": "2026-10-10T14:26:55.065Z", "type": "event_msg",
+            "payload": {"type": "thread_goal_updated", "threadId": "c1",
+                        "goal": {"threadId": "c1", "objective": objective, "status": "active"}}})
+        };
+        let after = [
+            json!({"type": "event_msg", "payload": {"type": "task_started", "turn_attribution": {"turn_trigger": "goal"}}}),
+            json!({"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": []}}),
+            json!({"type": "event_msg", "payload": {"type": "token_count"}}),
+        ]
+        .map(|v| format!("{v}\n"))
+        .concat();
+        let short = format!("{}\n{after}", goal("Reply with the single word ok."));
+        let end = |_: &str| Some((0, short.clone()));
+        let got = s.prompt_in("Stop", &payload, &end, &|_| None).expect("the goal line");
+        assert_eq!(got.text, "Reply with the single word ok.");
+        let named = "pasted text file: /h/.codex/attachments/a1/pasted-text-1.txt. Read this file before continuing.";
+        let long = format!("{}\n{after}", goal(named));
+        let end = |_: &str| Some((0, long.clone()));
+        let whole = |p: &str| {
+            (p == "/h/.codex/attachments/a1/pasted-text-1.txt").then(|| "the pasted prompt".into())
+        };
+        let got = s.prompt_in("PostToolUse", &payload, &end, &whole).expect("the file it names");
+        assert_eq!(got.text, "the pasted prompt");
+        let typed = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl", "prompt": "fix it"});
+        let got = s.prompt_in("UserPromptSubmit", &typed, &end, &whole).expect("typed");
+        assert_eq!((got.text.as_str(), got.key), ("fix it", None), "the payload first");
     }
 
     #[test]
