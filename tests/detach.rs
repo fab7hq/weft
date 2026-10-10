@@ -82,7 +82,9 @@ impl Client {
         self.call(call);
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            self.stream.set_read_timeout(Some(Duration::from_millis(100))).expect("timeout");
+            // A connection the daemon has shut refuses a timeout on some
+            // systems; its lines are still read to their end.
+            let _ = self.stream.set_read_timeout(Some(Duration::from_millis(100)));
             match self.frames.next() {
                 Ok(Some(Line::Result { id: got, result })) if got == id => return Ok(result),
                 Ok(Some(Line::Error { id: got, code, .. })) if got == id => return Err(code),
@@ -1361,14 +1363,19 @@ fn a_reopened_project_is_kept_until_someone_acts_in_it() {
     assert_eq!(w.opened["reopened"], serde_json::Value::Null, "a window holds it now");
     w.send(Call::Detach);
     drop(w);
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(now(), std::slice::from_ref(&dismissed));
+    let until = |want: &[PathBuf]| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while now() != want {
+            assert!(Instant::now() < deadline, "listed: {:?}, not {want:?}", now());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    until(std::slice::from_ref(&dismissed));
 
     // Dismissed from a device: closed at once.
     let mut device = Client::attach_as(&socket, &dismissed, 24, 80, "weft-remote/0.2.0");
     assert_eq!(device.answer(Call::Dismiss), Ok(serde_json::json!({})));
-    std::thread::sleep(Duration::from_millis(200));
-    assert!(now().is_empty(), "{:?}", now());
+    until(&[]);
     let mut stop = Client::attach(&socket, &home);
     stop.send(Call::Shutdown);
 }

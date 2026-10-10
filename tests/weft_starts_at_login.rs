@@ -175,7 +175,7 @@ fn weft_starts_the_daemon_through_the_service_when_it_is_installed() {
     let weft = env!("CARGO_BIN_EXE_weft");
     // The service's start, as launchd would run it: `weft --serve`, detached.
     let on_start = format!(
-        "XDG_RUNTIME_DIR=\"{}\" HOME=\"$WEFT_TEST_HOME\" nohup \"{weft}\" --serve </dev/null >/dev/null 2>&1 &",
+        "XDG_RUNTIME_DIR=\"{}\" HOME=\"$WEFT_TEST_HOME\" PATH=/usr/bin:/bin nohup \"{weft}\" --serve </dev/null >/dev/null 2>&1 &",
         runtime.display()
     );
     let w = World::with("start", &on_start);
