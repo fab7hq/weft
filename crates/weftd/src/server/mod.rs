@@ -1625,6 +1625,11 @@ impl Session {
                 }
                 self.clients.remote = Some((client, view.clone()));
                 self.clients.broadcast_all(&Out::Remote { view });
+                // Turned off before it first spoke: it was told nothing then.
+                if !self.remote_wanted() {
+                    let stop = Out::RemoteAct { act: serde_json::json!({"act": "stop"}) };
+                    self.clients.send_to(client, &Line::Event(stop));
+                }
             }
             Call::StartAtLogin { on, program, path } => {
                 return Ok(self.turn_start_at_login(on, &program, &path));

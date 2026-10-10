@@ -62,6 +62,11 @@ impl Session {
         Answer::nothing()
     }
 
+    /// Whether remote access is turned on.
+    pub(super) fn remote_wanted(&self) -> bool {
+        self.supervisor.on.load(Ordering::SeqCst)
+    }
+
     fn keep_remote_running(&mut self) {
         if self.supervisor.running.swap(true, Ordering::SeqCst) {
             return;

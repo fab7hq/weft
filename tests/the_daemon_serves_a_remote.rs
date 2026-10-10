@@ -263,7 +263,8 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
 /// from any other client reaches `weft-remote` unchanged.
 #[test]
 fn the_remote_view_and_its_acts_are_relayed() {
-    let (root, socket) = daemon("relay");
+    let world = weft::outside::Fixed::new();
+    let (root, socket, _) = daemon_in("relay", "[remote]\nenabled = true\n", world);
     let mut tui = Client::open(&socket, &root, "weft-tui", true);
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     let view = serde_json::json!({"state": "on", "address": "https://a-b.trycloudflare.com"});
@@ -362,6 +363,25 @@ fn weft_remote_starts_when_turned_on_and_not_before() {
     assert!(std::fs::read_to_string(&file).unwrap().contains("[remote]\nenabled = true"));
 
     tui.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
+    tui.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Turned off before `weft remote` first said its view, it is told to stop
+/// as soon as it does: no tunnel stays up while Remote is off (found on
+/// Linux, Gate W-durable's candidate, 2026-10-12).
+#[test]
+fn a_weft_remote_that_speaks_while_remote_is_off_is_told_to_stop() {
+    let world = weft::outside::Fixed::new();
+    let (root, socket, _) = daemon_in("late-view", "", world);
+    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let mut remote = Client::open(&socket, &root, "weft-remote", false);
+    remote.send(Call::RemoteView { view: serde_json::json!({"state": "on"}) });
+    let told = remote.wait_for(|e| match e {
+        Event::RemoteAct { act } => Some(act.clone()),
+        _ => None,
+    });
+    assert_eq!(told, serde_json::json!({"act": "stop"}));
     tui.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
