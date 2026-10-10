@@ -172,6 +172,8 @@ fn main() -> Result<()> {
         std::process::exit(0);
     }
     if first.as_deref() == Some("remote") {
+        // Its version is kept while it runs (ADR-0034 D5).
+        let _held = weftd::versions::hold_own();
         return weft_remote::run();
     }
     if first.as_deref() == Some("--serve") {
@@ -216,6 +218,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // This window's version is kept while it runs (ADR-0034 D5).
+    let _held = weftd::versions::hold_own();
     let named = first.clone();
     // Weft starts no agent on its own. Named agents are a convenience for
     // scripts and probes; the ordinary way in is to press N.
@@ -286,10 +290,21 @@ fn main() -> Result<()> {
     release(&mut out);
     ratatui::restore();
 
-    if let Err(e) = &result {
-        eprintln!("weft: {e}");
+    match result {
+        // Weft's service is a newer Weft now: this window starts again as it,
+        // in the same terminal, on the same project (ADR-0034 D5).
+        Ok(Some(root)) => {
+            use std::os::unix::process::CommandExt as _;
+            let failed = std::process::Command::new("weft").arg(&root).exec();
+            eprintln!("weft: Weft was updated; run weft again ({failed})");
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(e) => {
+            eprintln!("weft: {e}");
+            Err(e)
+        }
     }
-    result
 }
 
 const REPO: &str = "fab7hq/weft";
@@ -352,8 +367,23 @@ fn update() -> Result<()> {
     if !ran?.success() {
         anyhow::bail!("the installer did not finish");
     }
-    println!("\nRestart Weft to use it: `weft stop`, then `weft`.");
+    println!("\n{}", after_update(&protocol::socket_path(), tag.trim_start_matches('v')));
     Ok(())
+}
+
+/// Tell a running daemon a newer Weft is installed beside it, which it starts
+/// on once no agent runs (ADR-0034 D5); what to say to the person.
+fn after_update(socket: &std::path::Path, version: &str) -> String {
+    if !protocol::is_live(socket) {
+        return format!("Weft {version} starts the next time you run weft.");
+    }
+    match protocol::tell_update(socket, version) {
+        Ok(Ok(())) => format!(
+            "Weft {version} is installed. It starts when no agent is running; nothing to restart."
+        ),
+        Ok(Err(why)) => format!("Weft {version} is installed, but Weft's service said: {why}"),
+        Err(e) => format!("Weft {version} is installed; Weft's service could not be told ({e})."),
+    }
 }
 
 #[cfg(test)]

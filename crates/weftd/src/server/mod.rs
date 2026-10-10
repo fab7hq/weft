@@ -373,6 +373,12 @@ pub struct Session {
     supervisor: remote::Supervisor,
     /// A project a client dismissed, closed once its answer is sent.
     dismissed: Option<usize>,
+    /// A newer Weft installed beside this one, by its version: started on
+    /// once no agent runs (ADR-0034 D5).
+    update: Option<String>,
+    /// This daemon's own version, held while it runs so it is never removed
+    /// from under it.
+    _held: Option<crate::versions::Held>,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -501,6 +507,9 @@ fn write_whole(path: &Path, text: String) {
     }
 }
 
+/// Set for a daemon an update started, which ended nothing (ADR-0034 D5).
+const UPDATED: &str = "WEFT_UPDATED";
+
 impl Session {
     /// Serve until told to shut down. The socket is removed on the way out.
     /// Serve on `socket`, reading Weft's configuration from `config`. `weft
@@ -543,6 +552,14 @@ impl Session {
         // and the socket 0600 (ADR-0030 D2).
         if let Some(dir) = socket.parent() {
             private_dir(dir)?;
+        }
+        // Started again by an update, which ended nothing (ADR-0034 D5). Read
+        // before any thread of this daemon runs, and not passed on.
+        let updated = std::env::var_os(UPDATED).is_some();
+        if updated {
+            // SAFETY: the daemon's first act in a process that `exec` just
+            // started; no other thread reads the environment yet.
+            unsafe { std::env::remove_var(UPDATED) };
         }
         // A live daemon is left alone: this one ends cleanly, so a service
         // started beside it is not restarted over it (ADR-0034 D1).
@@ -632,11 +649,24 @@ impl Session {
             attached: Vec::new(),
             supervisor: Default::default(),
             dismissed: None,
+            update: None,
+            _held: crate::versions::hold_own(),
         };
+        // Older versions nothing runs any more are removed: never this one,
+        // nor the one `weft` points at. A daemon not run from a version
+        // (a test's, a build's) removes nothing.
+        let versions = config.with_file_name("versions");
+        if let Some(own) =
+            std::env::current_exe().ok().and_then(|e| crate::versions::own(&versions, &e))
+        {
+            let newest = crate::versions::newest(&versions);
+            let keep: Vec<PathBuf> = [Some(own), newest].into_iter().flatten().collect();
+            crate::versions::prune(&versions, &keep);
+        }
         // The projects an earlier daemon had open when it ended without a
         // stop, reopened with their agents ended (ADR-0034 D2); after a stop
-        // the list is empty.
-        session.reopen();
+        // the list is empty. After an update nothing ended: they are open.
+        session.reopen(!updated);
         session.remote_from_config();
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
@@ -673,7 +703,10 @@ impl Session {
                 Wake::Exited { project, pane } => {
                     self.clients.broadcast(project, &Out::Exited { pane })
                 }
-                Wake::Tick => self.follow_the_record(),
+                Wake::Tick => {
+                    self.follow_the_record();
+                    self.update_when_idle();
+                }
                 Wake::Checked => {
                     let open: Vec<usize> =
                         (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
@@ -1163,17 +1196,54 @@ impl Session {
 
     /// Open again the projects `projects.json` lists, as an earlier daemon
     /// left it: each reopened now, with no agent running in it.
-    fn reopen(&mut self) {
+    fn reopen(&mut self, mark: bool) {
         let text = std::fs::read_to_string(self.config.with_file_name("projects.json"))
             .unwrap_or_default();
         let now = crate::turns::now_millis();
         for listed in weft_core::projects::read(&text) {
             if listed.path.is_dir() && self.projects.iter().all(|p| p.root != listed.path) {
                 let at = self.project_at(listed.path);
-                self.projects[at].reopened = Some(now);
+                self.projects[at].reopened = mark.then_some(now);
             }
         }
         self.write_projects();
+    }
+
+    /// `update {version}`: a newer Weft is in `versions/<version>`; start on
+    /// it once no agent runs. Every client is told it waits.
+    fn update_to(&mut self, version: String) -> Answer {
+        let plain = !version.is_empty()
+            && version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+            && !version.starts_with('.');
+        let program = self.config.with_file_name("versions").join(&version).join("weft");
+        if !plain || !program.is_file() {
+            return Answer::No("no_version", format!("Weft {version} is not installed here"));
+        }
+        self.update = Some(version.clone());
+        self.clients.broadcast_all(&Out::Update { version: Some(version.clone()) });
+        Answer::Ok(serde_json::json!({"update": version}))
+    }
+
+    /// With an update waiting and no agent running in any project, become
+    /// the new version: the same process, so a service that runs it keeps
+    /// it; windows and `weft remote` lose their connections and come back.
+    fn update_when_idle(&mut self) {
+        let Some(version) = self.update.clone() else { return };
+        let busy = self
+            .projects
+            .iter_mut()
+            .filter(|p| !p.closed)
+            .any(|p| p.panes.iter_mut().any(|s| s.pane.running()));
+        if busy {
+            return;
+        }
+        let program = self.config.with_file_name("versions").join(&version).join("weft");
+        use std::os::unix::process::CommandExt as _;
+        let failed = std::process::Command::new(&program).arg("--serve").env(UPDATED, "1").exec();
+        // Only reached when it could not start: stay on this version, and say so.
+        eprintln!("weft: could not start {}: {failed}", program.display());
+        self.update = None;
+        self.clients.broadcast_all(&Out::Update { version: None });
     }
 
     /// Someone acted in this project: it is no longer only reopened, and the
@@ -1408,6 +1478,7 @@ impl Session {
                     "turbo": self.projects[at].turbo,
                     "start_at_login": self.start_at_login(),
                     "reopened": self.projects[at].reopened,
+                    "update": self.update,
                     "harnesses": &self.projects[at].harnesses,
                     // Harness files that would not read, to be said once.
                     "unread": &self.projects[at].unread,
@@ -1592,6 +1663,7 @@ impl Session {
             // A client leaving is not the session ending. That is the point.
             // What it is done with is when its connection ends (`left`).
             Call::Detach => {}
+            Call::Update { version } => return Ok(self.update_to(version)),
             Call::Dismiss => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 self.acted_in(at);

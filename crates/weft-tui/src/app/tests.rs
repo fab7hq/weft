@@ -113,6 +113,54 @@ pub(crate) fn connect_when_listening(
     crate::client::Session::connect(socket, root, 24, 80).expect("connect")
 }
 
+/// Weft's service went and came back at the same socket (a crash with Start
+/// at login on, or an update that started it again as the same protocol):
+/// the window opens its project on the new one by itself (ADR-0034 D5).
+#[test]
+fn a_window_reconnects_when_its_daemon_comes_back() {
+    let (root, session) = test_session("reconnect");
+    let socket = session.socket().to_path_buf();
+    let mut a = App::with_session(root.clone(), Toggle, session);
+    sess!(a).shutdown();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !sess!(a).lost {
+        assert!(std::time::Instant::now() < deadline, "the end was not noticed");
+        a.turn(Duration::from_millis(50)).unwrap();
+    }
+    let listening = socket.clone();
+    std::thread::spawn(move || {
+        let _ = weftd::server::Session::serve_in(
+            &listening,
+            &listening.with_extension("no-config.toml"),
+            Some(weft_core::harness::fixture::harnesses()),
+            set_up(|w| w).shared(),
+        );
+    });
+    while sess!(a).lost {
+        assert!(std::time::Instant::now() < deadline, "it never reconnected");
+        a.turn(Duration::from_millis(50)).unwrap();
+    }
+    assert!(!a.quit, "the window goes on");
+    sess!(a).shutdown();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// Nothing comes back: the window ends, saying why, rather than freezing.
+#[test]
+fn a_window_whose_daemon_never_comes_back_ends_and_says_why() {
+    let (root, session) = test_session("gone-for-good");
+    let mut a = App::with_session(root.clone(), Toggle, session);
+    sess!(a).shutdown();
+    a.lost_since = Some(std::time::Instant::now() - LOST_FOR);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !a.quit {
+        assert!(std::time::Instant::now() < deadline, "it never ended");
+        a.turn(Duration::from_millis(50)).unwrap();
+    }
+    assert_eq!(a.ended.as_deref(), Some("Weft's service ended. Run weft to start it again."));
+    let _ = std::fs::remove_dir_all(root);
+}
+
 pub(crate) fn app() -> App {
     app_in(set_up(|w| w))
 }

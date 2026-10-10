@@ -204,11 +204,21 @@ pub enum Bar {
 
 /// How long the loop waits when nothing wakes it.
 pub const TICK: Duration = Duration::from_millis(250);
+/// How long a window waits for Weft's service to listen again before it ends:
+/// long enough for a login service to start a crashed one again.
+pub const LOST_FOR: Duration = Duration::from_secs(30);
 
 /// The shortest time between two frames: at most 60 a second.
 pub const FRAME: Duration = Duration::from_micros(16_667);
 
 pub struct App {
+    /// Weft's service came back as a newer Weft than this window: it starts
+    /// again as that one (ADR-0034 D5).
+    relaunch: bool,
+    /// Since when a project's daemon has been gone.
+    lost_since: Option<std::time::Instant>,
+    /// Why the window ended by itself, when it did.
+    ended: Option<String>,
     /// A newer Weft release, once someone has looked. Set from outside,
     /// because the client itself reaches nothing.
     pub newer: std::sync::Arc<std::sync::OnceLock<String>>,
@@ -659,6 +669,9 @@ impl App {
             modal: None,
             modal_choice: 0,
             quit: false,
+            relaunch: false,
+            lost_since: None,
+            ended: None,
             stop_agents_on_quit: false,
             hint: None,
             workspace_gap: None,
@@ -751,7 +764,10 @@ impl App {
         }
     }
 
-    pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    /// Run until the person quits. `Some(root)` when Weft's service started
+    /// again as a newer Weft this window cannot speak to: the caller starts
+    /// the newer `weft` on `root` in its place (ADR-0034 D5).
+    pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<Option<PathBuf>> {
         self.take_the_board();
         self.look_for_agents(Opening::Nothing);
         // The mouse is Weft's: a click selects a row or goes to an agent,
@@ -771,7 +787,38 @@ impl App {
             self.frame(terminal, TICK)?;
         }
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
-        Ok(())
+        if let Some(why) = &self.ended {
+            anyhow::bail!("{why}");
+        }
+        Ok(self.relaunch.then(|| self.projects[self.at].root.clone()))
+    }
+
+    /// A project whose daemon went: open it again on the one that listens
+    /// now, or end the window when none comes back in time.
+    pub fn reconnect(&mut self) {
+        for at in 0..self.projects.len() {
+            if !self.projects[at].session.lost {
+                continue;
+            }
+            let since = *self.lost_since.get_or_insert_with(std::time::Instant::now);
+            match self.projects[at].session.again(&self.projects[at].root.clone()) {
+                crate::client::Again::Back(mut session) => {
+                    session.wake(self.wakes.clone());
+                    self.projects[at].session = *session;
+                    self.projects[at].heard = None;
+                    self.lost_since = None;
+                }
+                crate::client::Again::Newer => {
+                    self.relaunch = true;
+                    self.quit = true;
+                }
+                crate::client::Again::Waiting if since.elapsed() >= LOST_FOR => {
+                    self.ended = Some("Weft's service ended. Run weft to start it again.".into());
+                    self.quit = true;
+                }
+                crate::client::Again::Waiting => {}
+            }
+        }
     }
 
     /// A way to wake this window's loop, for news from outside it.
@@ -826,6 +873,7 @@ impl App {
         if self.pump_all() {
             self.take_the_board();
         }
+        self.reconnect();
         self.notice_an_agent_that_ended();
         let told = self.notices();
         if !told.is_empty() {

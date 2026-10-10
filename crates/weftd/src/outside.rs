@@ -45,7 +45,17 @@ pub type Shared = Arc<dyn Outside>;
 pub struct Machine;
 
 pub fn machine() -> Shared {
+    let _ = started_as();
     Arc::new(Machine)
+}
+
+/// This program's real path, links followed, as it was the first time this
+/// was asked: when the daemon started.
+pub fn started_as() -> std::io::Result<std::path::PathBuf> {
+    static AT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    AT.get_or_init(|| std::env::current_exe().and_then(|e| e.canonicalize()).ok())
+        .clone()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "this program's path"))
 }
 
 impl Outside for Machine {
@@ -115,8 +125,10 @@ impl Outside for Machine {
     }
 
     /// This same program, as `weft remote`: the daemon is `weft --serve`.
+    /// Its own version's file, as it was when the daemon started, so a
+    /// `weft` pointed at a newer version since is not it (ADR-0034 D5).
     fn remote(&self) -> std::io::Result<ExitStatus> {
-        Command::new(std::env::current_exe()?)
+        Command::new(started_as()?)
             .arg("remote")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())

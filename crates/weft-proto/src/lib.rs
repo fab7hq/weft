@@ -154,6 +154,12 @@ pub enum Call {
         /// anyway. The inference is Weft's; the decision is theirs.
         force: bool,
     },
+    /// A newer Weft is installed in `versions/<version>` (ADR-0034 D5): the
+    /// daemon starts again on it once no agent is running. Needs no hello,
+    /// as `shutdown`, so the `weft update` of any version can say it.
+    Update {
+        version: String,
+    },
     /// Close a project reopened after an unclean end, from a device or a
     /// window that has nothing to do in it (ADR-0034 D2). It closes as any
     /// project does once nobody is in it.
@@ -257,6 +263,11 @@ pub enum Event {
     /// Weft's "Start at login" was turned on or off, to every client.
     StartAtLogin {
         on: bool,
+    },
+    /// A newer Weft is installed and waits for no agent to be running, or
+    /// none does (ADR-0034 D5).
+    Update {
+        version: Option<String>,
     },
     /// The project was reopened after an unclean end at `since`
     /// (milliseconds), or no longer only that: someone acted in it (D2).
@@ -413,6 +424,7 @@ impl Call {
             }
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
+            Call::Update { version } => ("update", json!({"version": version})),
             Call::Shutdown => ("shutdown", json!({})),
         }
     }
@@ -492,6 +504,7 @@ impl Call {
             }
             "detach" => Call::Detach,
             "project.dismiss" => Call::Dismiss,
+            "update" => Call::Update { version: s("version")? },
             "shutdown" => Call::Shutdown,
             _ => return None,
         })
@@ -531,6 +544,7 @@ impl Event {
             Event::Turbo { on } => ("turbo", json!({"on": on})),
             Event::StartAtLogin { on } => ("start_at_login", json!({"on": on})),
             Event::Reopened { since } => ("project.reopened", json!({"since": since})),
+            Event::Update { version } => ("update.waiting", json!({"version": version})),
             Event::Remote { view } => ("remote", json!({"view": view})),
             Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
@@ -584,6 +598,9 @@ impl Event {
             "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
             "start_at_login" => Event::StartAtLogin { on: p.get("on")?.as_bool()? },
             "project.reopened" => Event::Reopened { since: p.get("since")?.as_i64() },
+            "update.waiting" => {
+                Event::Update { version: p.get("version")?.as_str().map(str::to_string) }
+            }
             "remote" => Event::Remote { view: p.get("view")?.clone() },
             "remote.act" => {
                 p.get("act")?.as_str()?;
@@ -764,6 +781,22 @@ pub fn stop(socket: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Tell the daemon at `socket` that Weft `version` is installed beside it
+/// (ADR-0034 D5). Like `stop`, it needs no hello, so an older daemon is told
+/// by a newer `weft update`. Its refusal, when it refused.
+pub fn tell_update(socket: &Path, version: &str) -> io::Result<Result<(), String>> {
+    let mut stream = UnixStream::connect(socket)?;
+    let call = Call::Update { version: version.into() };
+    send(&mut stream, &Line::Call { id: 1, call }.encode())?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line)?;
+    Ok(match Line::decode(line.as_bytes()) {
+        Some(Line::Error { message, .. }) => Err(message),
+        _ => Ok(()),
+    })
+}
+
 /// Drop a stale socket so a new server can bind.
 pub fn clear_dead(socket: &Path) {
     if socket.exists() && UnixStream::connect(socket).is_err() {
@@ -911,6 +944,7 @@ mod tests {
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
             Call::Dismiss,
+            Call::Update { version: "0.2.1".into() },
             Call::Detach,
             Call::Shutdown,
         ] {
@@ -989,6 +1023,8 @@ mod tests {
             Event::StartAtLogin { on: false },
             Event::Reopened { since: Some(1_790_000_000_000) },
             Event::Reopened { since: None },
+            Event::Update { version: Some("0.2.1".into()) },
+            Event::Update { version: None },
             Event::Remote { view: json!({"state": "on"}) },
             Event::RemoteAct { act: json!({"act": "stop"}) },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },

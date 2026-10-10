@@ -68,16 +68,30 @@ main() {
         fail "Checksum mismatch for $archive. Expected $expected, got $actual."
 
     tar -xzf "$work/$archive" -C "$work"
-    mkdir -p "$BIN_DIR"
     for name in weft ringframe; do
         [ -f "$work/$name" ] || fail "$archive does not contain $name."
-        # Replaced rather than written through, so a running binary is undisturbed.
-        mv "$work/$name" "$BIN_DIR/$name.new"
-        chmod 755 "$BIN_DIR/$name.new"
-        mv "$BIN_DIR/$name.new" "$BIN_DIR/$name"
     done
+    mkdir -p "$BIN_DIR"
 
-    printf 'Installed weft and ringframe %s to %s\n' "$tag" "$BIN_DIR"
+    # Weft beside its other versions, each in its own folder, and `weft` a
+    # link to the newest: a running Weft keeps its own file, and starts again
+    # on this one once no agent runs (ADR-0034 D5).
+    version=${tag#v}
+    versions="$HOME/.fab7/weft/versions"
+    mkdir -p "$versions/$version"
+    mv "$work/weft" "$versions/$version/weft.new"
+    chmod 755 "$versions/$version/weft.new"
+    mv "$versions/$version/weft.new" "$versions/$version/weft"
+    rm -f "$BIN_DIR/weft.new"
+    ln -s "$versions/$version/weft" "$BIN_DIR/weft.new"
+    mv -f "$BIN_DIR/weft.new" "$BIN_DIR/weft"
+
+    # Replaced rather than written through, so a running binary is undisturbed.
+    mv "$work/ringframe" "$BIN_DIR/ringframe.new"
+    chmod 755 "$BIN_DIR/ringframe.new"
+    mv "$BIN_DIR/ringframe.new" "$BIN_DIR/ringframe"
+
+    printf 'Installed weft %s to %s, and ringframe to %s\n' "$tag" "$versions/$version" "$BIN_DIR"
 
     # The binaries are in place whatever happens next, so a configuration that
     # cannot be read is worth saying plainly rather than aborting on.

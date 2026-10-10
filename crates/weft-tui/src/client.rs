@@ -191,6 +191,11 @@ pub struct Session {
     pub turbo: bool,
     /// Weft's own "Start at login" option (ADR-0034 D1), as the daemon reads it.
     pub start_at_login: bool,
+    /// A newer Weft installed and waiting for no agent to run (ADR-0034 D5).
+    pub update: Option<String>,
+    /// The daemon's connection ended: it stopped, crashed, or started again
+    /// as a newer version. The window waits for one to listen again.
+    pub lost: bool,
     /// The harnesses Weft has a file for, as the daemon read them, and the
     /// files it could not read.
     pub harnesses: weft_core::harness::Harnesses,
@@ -233,6 +238,11 @@ impl Session {
                     let _ = w.send(Wake::Arrived);
                 }
             }
+            // The end of the connection is news too.
+            drop(tx);
+            if let Some(w) = nudging.lock().ok().as_deref().and_then(Option::as_ref) {
+                let _ = w.send(Wake::Arrived);
+            }
         });
 
         let mut session = Session {
@@ -260,6 +270,8 @@ impl Session {
             notify: true,
             turbo: false,
             start_at_login: false,
+            update: None,
+            lost: false,
             harnesses: Default::default(),
             unread: Vec::new(),
             answers: std::collections::HashMap::new(),
@@ -306,6 +318,7 @@ impl Session {
         session.turbo = opened.get("turbo").and_then(|v| v.as_bool()).unwrap_or(false);
         session.start_at_login =
             opened.get("start_at_login").and_then(|v| v.as_bool()).unwrap_or(false);
+        session.update = opened.get("update").and_then(|v| v.as_str()).map(str::to_string);
         session.gap = opened.get("gap").and_then(|v| v.as_str()).map(str::to_string);
         session.needs =
             opened.get("setup").and_then(|v| serde_json::from_value(v.clone()).ok()).flatten();
@@ -392,11 +405,19 @@ impl Session {
     /// Take in whatever has arrived. Returns true when anything changed.
     pub fn pump(&mut self) -> bool {
         let mut changed = false;
-        while let Ok(line) = self.inbox.try_recv() {
-            changed = true;
-            self.take(line);
+        loop {
+            match self.inbox.try_recv() {
+                Ok(line) => {
+                    changed = true;
+                    self.take(line);
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) if !self.lost => {
+                    self.lost = true;
+                    return true;
+                }
+                Err(_) => return changed,
+            }
         }
-        changed
     }
 
     /// One line from the daemon: an answer, kept by call id, or an event.
@@ -444,6 +465,7 @@ impl Session {
                 Event::StartAtLogin { on } => self.start_at_login = on,
                 // A window holds its project, so it is never only reopened.
                 Event::Reopened { .. } => {}
+                Event::Update { version } => self.update = version,
                 Event::Screen { .. }
                 | Event::Presence { .. }
                 | Event::RemoteAct { .. }
@@ -622,6 +644,32 @@ impl Session {
         let ids: Vec<u32> = self.panes.iter().map(|p| p.id).collect();
         for pane in ids.into_iter().rev() {
             let _ = self.tell(Call::CloseAgent { pane });
+        }
+    }
+}
+
+/// What became of a window's lost connection, looked at again.
+pub enum Again {
+    /// Nothing listens yet.
+    Waiting,
+    /// A daemon listens, and this project is open on it again.
+    Back(Box<Session>),
+    /// A daemon listens that speaks another protocol: a newer Weft. This
+    /// window is to start again as it.
+    Newer,
+}
+
+impl Session {
+    /// Try to open `root` again on whatever daemon now listens where this one
+    /// did (ADR-0034 D5: an update starts the daemon again on a newer Weft).
+    pub fn again(&self, root: &Path) -> Again {
+        if !is_live(&self.socket) {
+            return Again::Waiting;
+        }
+        match Session::connect(&self.socket, root, 24, 80) {
+            Ok(s) => Again::Back(Box::new(s)),
+            Err(e) if e.to_string().contains("speaks protocol") => Again::Newer,
+            Err(_) => Again::Waiting,
         }
     }
 }

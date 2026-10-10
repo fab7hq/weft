@@ -101,9 +101,12 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
     }
 
     fn install(&self, tag: &str) -> std::process::Output {
-        let bin_dir = self.dir.path().join("target-bin");
-        let home = self.dir.path().join("home");
-        std::fs::create_dir_all(&home).unwrap();
+        self.install_into(tag, &self.dir.path().join("home"), &self.dir.path().join("target-bin"))
+    }
+
+    /// Install `tag` from this release into another home and bin folder.
+    fn install_into(&self, tag: &str, home: &Path, bin_dir: &Path) -> std::process::Output {
+        std::fs::create_dir_all(home).unwrap();
         Command::new("sh")
             .arg(script())
             .env(
@@ -115,8 +118,8 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
                 ),
             )
             .env("WEFT_VERSION", tag)
-            .env("WEFT_BIN_DIR", &bin_dir)
-            .env("HOME", &home)
+            .env("WEFT_BIN_DIR", bin_dir)
+            .env("HOME", home)
             .output()
             .expect("sh")
     }
@@ -173,6 +176,29 @@ fn it_downloads_verifies_and_installs_both_binaries() {
         );
     }
     assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
+    // Weft is in its version's folder, and `weft` is a link to it (ADR-0034 D5).
+    let kept = release.dir.path().join("home/.fab7/weft/versions/0.1.0/weft");
+    assert!(kept.is_file(), "{text}");
+    assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), kept);
+    assert!(!release.installed("ringframe").is_symlink(), "RingFrame is replaced in place");
+}
+
+/// A newer version goes beside the older, whose file a running Weft still
+/// uses; `weft` then points at the newer (ADR-0034 D5).
+#[test]
+fn a_newer_version_is_installed_beside_the_older() {
+    let old = Release::make("v0.1.0", false);
+    let new = Release::make("v0.2.0", false);
+    let (home, bin) = (old.dir.path().join("home"), old.dir.path().join("target-bin"));
+    assert!(old.install("v0.1.0").status.success() || bin.join("weft").exists());
+    let before = std::fs::read(home.join(".fab7/weft/versions/0.1.0/weft")).unwrap();
+    let out = new.install_into("v0.2.0", &home, &bin);
+    let text = String::from_utf8_lossy(&out.stderr);
+    let versions = home.join(".fab7/weft/versions");
+    assert_eq!(std::fs::read(versions.join("0.1.0/weft")).unwrap(), before, "untouched: {text}");
+    assert_eq!(std::fs::read_link(bin.join("weft")).unwrap(), versions.join("0.2.0/weft"));
+    let shown = Command::new(bin.join("weft")).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "weft v0.2.0");
 }
 
 /// Weft's harness files come with fab7 at the tag RingFrame's configuration
