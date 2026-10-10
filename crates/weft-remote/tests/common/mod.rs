@@ -309,14 +309,15 @@ impl Harness {
         if state != "on" {
             return Harness { dir, socket, port: 0, tui };
         }
-        let args = loop {
-            if let Ok(a) = std::fs::read_to_string(dir.join("cloudflared.args")) {
-                break a;
+        // Read until the file holds the port: it can be seen before it is written whole.
+        let port = loop {
+            let args = std::fs::read_to_string(dir.join("cloudflared.args")).unwrap_or_default();
+            if let Some(Ok(port)) = args.trim().rsplit(':').next().map(str::parse) {
+                break port;
             }
             assert!(Instant::now() < deadline, "cloudflared never started");
             std::thread::sleep(Duration::from_millis(20));
         };
-        let port = args.trim().rsplit(':').next().unwrap().parse().unwrap();
         Harness { dir, socket, port, tui }
     }
 
