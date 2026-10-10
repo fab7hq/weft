@@ -396,7 +396,7 @@ mod tests {
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "89965133aaf83dc972442a52a2f517032cc6acf0f546b69b43bd3d2e11337f1e",
+                        "4c5ad30198fcfe8c09b8c80b5222c82647ee5ffe4f68c1bf27c16de927b532dd",
                     ),
                     (
                         "config/harnesses/codex.toml",

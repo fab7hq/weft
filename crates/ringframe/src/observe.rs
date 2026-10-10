@@ -31,11 +31,38 @@ pub fn prompt(
     out["submission"] = Value::Null;
     if rec.get("prompt").is_none() {
         let sha = rec["sha256"].as_str().unwrap_or_default();
-        if let Some(s) = ask::submission_from_capture(ws, host, session, sha, by)? {
+        let mut sub = ask::submission_from_capture(ws, host, session, sha, by)?;
+        // A host that wraps a long paste in markers of its own when it
+        // reports what it received: compared without them (ADR-0033 D1).
+        if sub.is_none()
+            && let Some(inner) = unwrapped(host, prompt)
+        {
+            let inner = crate::digest::sha256_bytes(inner.as_bytes());
+            sub = ask::submission_as(ws, host, session, &inner, by, Some("host_paste_unwrapped"))?;
+        }
+        if let Some(s) = sub {
             out["submission"] = s;
         }
     }
     Ok(out)
+}
+
+/// The prompt inside the host's paste wrapper, when the whole prompt is one:
+/// its profile's `paste_open`, then the paste, then `paste_close`, both
+/// naming the same `{id}`. None for a host that names no wrapper.
+fn unwrapped<'a>(host: &str, prompt: &'a str) -> Option<&'a str> {
+    let open = profiles::fact(host, "paste_open")?;
+    let close = profiles::fact(host, "paste_close")?;
+    let (open_a, open_b) = open.split_once("{id}")?;
+    let (close_a, close_b) = close.split_once("{id}")?;
+    let rest = prompt.strip_prefix(open_a)?;
+    let id_len = rest.find(open_b)?;
+    let id = &rest[..id_len];
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let inner = rest[id_len + open_b.len()..].strip_suffix(close_b)?;
+    inner.strip_suffix(id)?.strip_suffix(close_a)
 }
 
 /// `observe tool`: one tool call, seen in `session`, and whether it
@@ -149,6 +176,62 @@ mod tests {
             let sub = events(ws).into_iter().find(|e| e["type"] == "ask.submission").unwrap();
             assert_eq!(sub["data"]["state"], "observed");
             assert_eq!(sub["data"]["observed_by"], "weft");
+        });
+    }
+
+    /// A host that wraps a long paste in markers of its own when it reports
+    /// the prompt it received: its profile names them (`paste_open`,
+    /// `paste_close`, `{id}` for the id it gives each paste), and a prompt
+    /// that is wholly so wrapped is compared without them (ADR-0033 D1).
+    #[test]
+    fn a_prompt_the_host_wrapped_as_a_paste_is_compared_without_the_wrapper() {
+        bench(|ws| {
+            let dir = crate::config::config_dir().join("harnesses");
+            let unknown = std::fs::read_to_string(dir.join("unknown.toml")).unwrap();
+            let loom = unknown.replace(
+                "profile_id = \"unknown\"",
+                "profile_id = \"loom\"\nhost = \"loom\"\npaste_open = \"\\n\\n<paste n=\\\"{id}\\\">\\n\"\n\
+                 paste_close = \"\\n</paste n=\\\"{id}\\\">\\n\"",
+            );
+            std::fs::write(dir.join("loom.toml"), loom).unwrap();
+            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            let none =
+                |p: &str| prompt(ws, "weft", "loom", "s1", p, None).unwrap()["submission"].clone();
+            assert!(
+                none("Fix it first.\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"7f\">\n")
+                    .is_null(),
+                "a wrapper that is not the whole prompt"
+            );
+            assert!(
+                none("\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"8a\">\n").is_null(),
+                "two ids"
+            );
+            let out = prompt(
+                ws,
+                "weft",
+                "loom",
+                "s1",
+                "\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"7f\">\n",
+                None,
+            )
+            .unwrap();
+            assert_eq!(out["submission"]["ask_id"], ask["ask_id"]);
+            let sub = events(ws).into_iter().find(|e| e["type"] == "ask.submission").unwrap();
+            assert_eq!(sub["data"]["match"], "host_paste_unwrapped");
+            assert_eq!(sub["data"]["state"], "observed");
+            // A host whose profile names no wrapper compares the prompt as it came.
+            let other = confirm_ask(ws, "Other", b"other\n", b"Other.\n");
+            let as_came = prompt(
+                ws,
+                "weft",
+                "unknown",
+                "s2",
+                "\n\n<paste n=\"1\">\nOther.\n\n</paste n=\"1\">\n",
+                None,
+            )
+            .unwrap();
+            assert!(as_came["submission"].is_null(), "{as_came}");
+            let _ = other;
         });
     }
 

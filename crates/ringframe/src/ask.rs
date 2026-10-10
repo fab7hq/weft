@@ -951,6 +951,19 @@ pub fn submission_from_capture(
     sha256: &str,
     observed_by: &str,
 ) -> Result<Option<Value>, AskError> {
+    submission_as(ws, host, session, sha256, observed_by, None)
+}
+
+/// As `submission_from_capture`, for a prompt the caller took out of the
+/// host's own wrapping, recorded under that `allowance` as its `match`.
+pub fn submission_as(
+    ws: &Workspace,
+    host: &str,
+    session: &str,
+    sha256: &str,
+    observed_by: &str,
+    allowance: Option<&str>,
+) -> Result<Option<Value>, AskError> {
     let mut hits: Vec<(String, String, bool)> = Vec::new();
     for (ask_id, v) in by_id(ws)? {
         let Some(compiled) = &v.compiled else { continue };
@@ -968,6 +981,7 @@ pub fn submission_from_capture(
         return Ok(None);
     }
     let (ask_id, matched, _) = hits.remove(0);
+    let matched = allowance.map_or(matched, str::to_string);
     Ok(Some(append_event(
         ws,
         "ask.submission",
