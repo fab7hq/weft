@@ -180,13 +180,9 @@ fn main() -> Result<()> {
     }
 
     if first.as_deref() == Some("stop") {
-        let root = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()))
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."));
         let socket = protocol::socket_path();
         if protocol::is_live(&socket) {
-            let mut s = Session::connect(&socket, &root, 24, 80)?;
-            s.shutdown();
+            protocol::stop(&socket)?;
             println!("weft: stopped the session and its agents");
         } else {
             println!("weft: nothing is running here");

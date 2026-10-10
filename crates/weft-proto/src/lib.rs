@@ -708,6 +708,18 @@ pub fn is_live(socket: &Path) -> bool {
     socket.exists() && UnixStream::connect(socket).is_ok()
 }
 
+/// Stop the daemon at `socket`, whatever protocol it speaks. `shutdown`
+/// needs no hello, so a newer `weft` stops an older daemon it could not
+/// otherwise talk to, as an upgrade does before starting the new one.
+pub fn stop(socket: &Path) -> io::Result<()> {
+    let mut stream = UnixStream::connect(socket)?;
+    send(&mut stream, &Line::Call { id: 1, call: Call::Shutdown }.encode())?;
+    // Its whole answer, or the connection closing as it stops.
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
+    let _ = BufReader::new(stream).read_line(&mut String::new());
+    Ok(())
+}
+
 /// Drop a stale socket so a new server can bind.
 pub fn clear_dead(socket: &Path) {
     if socket.exists() && UnixStream::connect(socket).is_err() {
