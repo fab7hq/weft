@@ -79,13 +79,15 @@ pub fn set_up(outside: &dyn Outside, project: &Path) -> Option<Needs> {
     Some(Needs::refused(Some(said["error"].as_str().unwrap_or_default())))
 }
 
-/// One `ringframe observe` call, as weftd forwards a signal (ADR-0030 D9).
-/// Weft writes no record itself: RingFrame decides what the fact means.
+/// One `ringframe observe` call, as weftd forwards a signal (ADR-0030 D9),
+/// and what RingFrame answered, which for a prompt says whose submission it
+/// is (ADR-0033 D1). Weft writes no record itself: RingFrame decides what the
+/// fact means.
 pub fn observe(
     out: &dyn Outside,
     project: &Path,
     call: &weft_core::signal::Forward,
-) -> Result<(), Error> {
+) -> Result<Value, Error> {
     let project = project.to_string_lossy();
     let argv: Vec<&str> = ["--workspace", project.as_ref()]
         .into_iter()
@@ -97,7 +99,7 @@ pub fn observe(
     };
     let said = said.map_err(|_| Error::NotInstalled)?;
     if said.status.success() {
-        return Ok(());
+        return Ok(serde_json::from_slice(&said.stdout).unwrap_or(Value::Null));
     }
     // Only the code: nothing a prompt said is logged.
     Err(Error::Refused { code: said.status.code().unwrap_or(-1), message: String::new() })
@@ -139,13 +141,6 @@ pub fn ask_preflight(out: &dyn Outside, project: &Path) -> Result<(), Error> {
 /// the person made by pressing the key.
 pub fn ask_confirm(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<(), Error> {
     run(out, project, &["ask", "confirm", "--ask", ask_id]).map(|_| ())
-}
-
-/// The person submitted this Ask's prompt: Weft typed it on their yes and
-/// pressed Enter. RingFrame records it as attributed to them; where a hook
-/// also observes it arrive, that receipt outranks this.
-pub fn ask_submitted(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<(), Error> {
-    run(out, project, &["ask", "submitted", "--ask", ask_id]).map(|_| ())
 }
 
 /// Open and gather the Eval of the open Asks, and say which it is: RingFrame
@@ -200,17 +195,6 @@ pub fn invocation_prefix(out: &dyn Outside, project: &Path, host: &str) -> Resul
         .and_then(Value::as_str)
         .map(str::to_string)
         .ok_or(Error::Refused { code: 4, message: "the profile names no invocation prefix".into() })
-}
-
-/// The size at which this host's composer folds a paste into a placeholder,
-/// as the profile declares it.
-///
-/// Measured by RingFrame against the installed hosts and written down once, so
-/// Weft reads it rather than carrying a second copy that can drift. `None`
-/// means the profile does not say, and Weft then assumes nothing.
-pub fn paste_fold_chars(out: &dyn Outside, project: &Path, host: &str) -> Option<usize> {
-    let v = json(out, project, &["profile", "show", "--host", host, "--json"]).ok()?;
-    v.get("paste_fold_chars").and_then(Value::as_u64).map(|n| n as usize)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -320,10 +304,9 @@ mod tests {
             "ringframe",
             &["profile", "show", "--host", "codex"],
             0,
-            r#"{"invocation_prefix": "$rf:", "paste_fold_chars": 1001}"#,
+            r#"{"invocation_prefix": "$rf:"}"#,
         );
         assert_eq!(invocation_prefix(&world, Path::new("/p"), "codex"), Ok("$rf:".into()));
-        assert_eq!(paste_fold_chars(&world, Path::new("/p"), "codex"), Some(1001));
     }
 
     #[test]

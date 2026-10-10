@@ -9,9 +9,11 @@
 //! may know its hosts' profiles by name no more than as quoted literals.
 //!
 //! Weft reads a pane's screen only to guard its own typing, never to guess an
-//! agent's state: the echo of what it typed, a folded paste, the mode a prompt
-//! entered, whether a started agent has gone still, and the paste mode the
-//! agent asked for. Drawing a pane for the person is not a read.
+//! agent's state: the mode a prompt entered (as the profile names it),
+//! whether the screen changed and has gone still, and the paste mode the
+//! agent asked for. Drawing a pane for the person is not a read. A send is
+//! proven by what the harness reports it received, so no harness's way of
+//! drawing a paste is in Weft's code (ADR-0033 D2, D5).
 
 use std::path::{Path, PathBuf};
 
@@ -47,12 +49,15 @@ const SCREEN: &[&str] = &[
     "idle_pane",
 ];
 
+/// How harnesses draw a long paste, which Weft once read to guard its typing:
+/// a fold placeholder, a scroll line. A line naming all of a group's words is
+/// a harness's screen in Weft's code (ADR-0033 D5).
+const PASTE_SCREEN: &[&[&str]] = &[&["[Pasted text"], &["[Pasted Content"], &["↑", "more lines"]];
+
 /// The only functions that read a pane's screen, and why each may.
 const SCREEN_READS: &[&str] = &[
-    "wait_for_echo",    // the echo of what Weft typed
-    "folded_command",   // a paste the harness folded away
-    "wait_for",         // the mode a prompt entered
-    "gone_quiet",       // a started agent that has gone still
+    "wait_for",         // the mode a prompt entered, as the profile names it
+    "gone_quiet",       // whether the screen changed and has gone still
     "bracketed_paste",  // the paste mode the agent asked for, not its words
     "with_pane_screen", // drawing the pane for the person
 ];
@@ -222,4 +227,17 @@ fn weft_reads_a_screen_only_where_it_guards_its_own_typing() {
         }
     }
     assert!(found.is_empty(), "a new screen read:\n{}", found.join("\n"));
+}
+
+#[test]
+fn no_harness_s_way_of_drawing_a_paste_is_in_weft_s_code() {
+    let mut found = Vec::new();
+    for (path, text) in files(WEFT) {
+        for (n, line) in lines(&path, &text, true) {
+            for group in PASTE_SCREEN.iter().filter(|g| g.iter().all(|w| line.contains(w))) {
+                found.push(format!("{}:{n} names {group:?}: {}", path.display(), line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "Weft reads how a harness draws a paste:\n{}", found.join("\n"));
 }

@@ -276,7 +276,8 @@ impl Session {
         if let Some(at) = at {
             self.tell_agents(at);
         }
-        self.forwarders.send(&root, sent);
+        let answered = at.and_then(|at| self.answers_a_send(at, &sent));
+        self.forwarders.send(&root, sent, answered);
     }
 }
 

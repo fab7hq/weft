@@ -9,6 +9,9 @@ pub(super) fn refused(code: &str) -> String {
         "NoProcess" => word("not_typed.no_process").into(),
         "InjectionInFlight" => word("not_typed.in_flight").into(),
         "ControlCharacters" => word("not_typed.control_characters").into(),
+        "PasteNotShown" => word("not_typed.paste_not_shown").into(),
+        "NotTheAsk" => word("not_typed.not_the_ask").into(),
+        "NoReceipt" => word("not_typed.no_receipt").into(),
         other => fill("not_typed.why", &[("why", other.trim_end_matches('.'))]),
     }
 }

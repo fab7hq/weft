@@ -1,21 +1,22 @@
-//! Typing into an agent on the person's yes: staged, waited for while the
-//! agent starts, and refused with the reason when it is not ready.
+//! Typing into an agent on the person's yes: staged, waited for until the
+//! agent is ready, refused with the reason when it is not, and proven by what
+//! the agent reports it received (ADR-0033).
 
 use super::*;
 
-/// How long a pane Weft started for an act must be still before it is typed
-/// into, and how long Weft waits for that.
+/// How long an agent must be still before it is typed into, and how long
+/// Weft waits for an agent to be ready.
 pub(super) const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub(super) const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// A send into an agent that is still starting, until it may be typed or its
+/// A send waiting for its agent to be ready, until it may be typed or its
 /// deadline passes.
 pub(super) struct Starting {
     w: Waiting,
     force: bool,
     until: std::time::Instant,
-    /// The screen when it last changed, for a send the person forced.
+    /// The screen when it last changed: only whether it changes is read.
     screen: (std::time::Instant, String),
 }
 
@@ -34,59 +35,59 @@ pub(super) fn recorded_first(
         .map_err(|e| format!("RingFrame would not record your yes: {e:?}. Nothing was typed."))
 }
 
-/// Why Enter was withheld. Written once here because it is the daemon that
-/// knows, and the person has to be told the text is sitting in their agent.
-pub(super) fn withheld(a: &crate::pane::Attempt) -> String {
-    match &a.folded_command {
-        // The prompt is all there, but folded into a placeholder, and a folded
-        // paste is not read for commands. Sending it would ask for an ordinary
-        // answer instead of the mode.
-        Some(command) => format!(
-            "the agent folded the paste, so {command} would not run — it would be taken as \
-             ordinary text. The prompt is in its composer; type {command} there yourself, or \
-             press Enter to send it without the mode."
-        ),
-        None => "the agent did not show the whole prompt, so it was not sent. The text is in \
-                 its composer."
-            .to_string(),
-    }
+/// How long after Enter a pane has to report the prompt it received, before
+/// Weft says it cannot tell whether the Ask arrived (ADR-0033 D1).
+pub(super) const RECEIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A send of an Ask, typed and submitted, waiting for what its pane reports
+/// it received. Only that report, judged by RingFrame, makes it delivered.
+pub(super) struct Due {
+    pane: u32,
+    ask: String,
+    until: std::time::Instant,
+}
+
+/// Whether RingFrame's answer to a received prompt says it is this Ask's
+/// submission: the one comparison is RingFrame's (`observe prompt`), with
+/// its allowances; Weft compares no bytes.
+fn is_the_ask(answer: &serde_json::Value, ask: &str) -> bool {
+    answer["submission"]["ask_id"].as_str() == Some(ask)
 }
 
 impl Session {
-    /// Type a prompt that was said yes to. The refusal, if there is one, is
-    /// the person's to see: it says what is sitting unsent in their agent.
-    ///
-    /// An agent Weft just started is not ready until it says so, and one that
-    /// never will still draws its composer a moment after it starts. Either
-    /// is waited for on the tick, never here.
+    /// Type a prompt that was said yes to, once its agent is ready: its turn
+    /// is not running, by its hooks (ADR-0013), and its screen has not changed
+    /// for [`STARTED_QUIET`] (ADR-0033 D2). A busy agent, or one still
+    /// starting, is waited for on the tick, never here. The refusal, if
+    /// there is one, is the person's to see.
     pub(super) fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
-        if w.fresh {
-            let now = std::time::Instant::now();
-            let screen = (now, String::new());
-            let until = now + STARTED_TIMEOUT;
-            self.projects[project].starting.push(Starting { w, force, until, screen });
-            return;
-        }
-        self.type_now(project, w, force);
+        let now = std::time::Instant::now();
+        let screen = (now, String::new());
+        let until = now + STARTED_TIMEOUT;
+        self.projects[project].starting.push(Starting { w, force, until, screen });
+        self.type_what_started(project);
     }
 
-    /// Type each send whose agent is ready now, or whose wait is over.
+    /// Type each send whose agent is ready now, or whose wait is over. A
+    /// screen that never holds still (a spinner) does not stop a ready agent
+    /// past the deadline; a turn that is running does.
     pub(super) fn type_what_started(&mut self, project: usize) {
         let waiting = std::mem::take(&mut self.projects[project].starting);
         let now = std::time::Instant::now();
         for mut s in waiting {
-            let go = now >= s.until
-                || if s.force {
-                    // The words on it are not read, only whether it has gone
-                    // still.
-                    match self.projects[project].slot(s.w.pane) {
-                        Some(slot) => slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET),
-                        None => true,
-                    }
-                } else {
-                    crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok()
-                };
-            if go {
+            let ready =
+                s.force || crate::turns::may_type(self.pane_state(project, s.w.pane)).is_ok();
+            // The words on it are not read, only whether it has gone still. An
+            // agent whose hooks say it is ready may have drawn nothing; one the
+            // person forced must at least have drawn something.
+            let still = match self.projects[project].slot(s.w.pane) {
+                Some(slot) => {
+                    slot.pane.gone_quiet(&mut s.screen, STARTED_QUIET)
+                        || (!s.force && s.screen.0.elapsed() >= STARTED_QUIET)
+                }
+                None => true,
+            };
+            if now >= s.until || (ready && still) {
                 self.type_now(project, s.w, s.force);
             } else {
                 self.projects[project].starting.push(s);
@@ -100,50 +101,99 @@ impl Session {
         // the decision is theirs.
         let not_ready =
             if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
-        let mut unrecorded = None;
+        let mut submitted = false;
         let refusal = match self.projects[project].slot(w.pane) {
             Some(slot) => match not_ready {
                 Err(why) if slot.pane.running() => Some(why.to_string()),
                 _ => match slot.pane.inject_as(&w.payload, &w.how) {
                     Err(r) => Some(format!("{r:?}")),
-                    Ok(a) if !a.submitted => Some(withheld(&a)),
+                    // The paste never changed the screen: Enter is withheld.
+                    Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
                     Ok(_) => {
-                        // Sent on the person's yes: their submission, on
-                        // record, so the Ask moves on to its Eval even
-                        // where no hook sees it arrive. When RingFrame will
-                        // not record it, the person is told: the row would
-                        // otherwise offer the send again.
-                        if let Some(ask) = &w.sends {
-                            let root = self.projects[project].root.clone();
-                            unrecorded =
-                                crate::ringframe::ask_submitted(self.outside.as_ref(), &root, ask)
-                                    .err()
-                                    .map(|e| match e {
-                                        crate::ringframe::Error::NotInstalled => {
-                                            "ringframe is not installed".to_string()
-                                        }
-                                        crate::ringframe::Error::Refused { message, .. } => {
-                                            weft_core::offers::first_line(&message).to_string()
-                                        }
-                                    });
-                        }
+                        submitted = true;
                         None
                     }
                 },
             },
             None => Some("NoProcess".to_string()),
         };
-        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded });
+        // Typed and submitted is not delivered: what the pane reports it
+        // received says whether this was the Ask (D1).
+        if let Some(ask) = w.sends.filter(|_| submitted) {
+            let until = std::time::Instant::now() + RECEIPT_TIMEOUT;
+            self.projects[project].due.push(Due { pane: w.pane, ask, until });
+        }
+        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None });
+    }
+
+    /// When this signal is the next prompt a pane received since Weft sent
+    /// it an Ask, what to do with RingFrame's verdict on it.
+    pub(super) fn answers_a_send(
+        &mut self,
+        at: usize,
+        sent: &weft_core::signal::Sent,
+    ) -> Option<crate::forward::Answered> {
+        let pane = sent.pane?;
+        if sent.forward.as_deref() != Some("prompt") || sent.prompt.is_none() {
+            return None;
+        }
+        let due = &mut self.projects[at].due;
+        let Due { ask, .. } = due.remove(due.iter().position(|d| d.pane == pane)?);
+        let tx = self.tx.clone();
+        Some(Box::new(move |answer| {
+            let _ = tx.send(Wake::Received { project: at, pane, ask, answer });
+        }))
+    }
+
+    /// RingFrame's verdict on the prompt a pane received after Weft's send.
+    /// The Ask's prompt is its observed submission, already on record, and
+    /// there is nothing to say. Anything else is not the Ask, and the person
+    /// is told; Weft presses no key to stop the agent and never retries.
+    pub(super) fn received(
+        &mut self,
+        project: usize,
+        pane: u32,
+        ask: &str,
+        answer: Result<serde_json::Value, String>,
+    ) {
+        let said = match answer {
+            Ok(v) if is_the_ask(&v, ask) => return,
+            Ok(_) => Out::Injected { pane, refusal: Some("NotTheAsk".into()), unrecorded: None },
+            // RingFrame did not say: the prompt went, unjudged.
+            Err(why) => Out::Injected { pane, refusal: None, unrecorded: Some(why) },
+        };
+        self.clients.broadcast(project, &said);
+    }
+
+    /// Sends whose pane reported nothing in time: Weft cannot tell whether
+    /// the Ask arrived. A stall does not prove nothing was sent, so no retry.
+    pub(super) fn nothing_received(&mut self, project: usize) {
+        let now = std::time::Instant::now();
+        let due = std::mem::take(&mut self.projects[project].due);
+        let (late, waiting): (Vec<Due>, Vec<Due>) = due.into_iter().partition(|d| now >= d.until);
+        self.projects[project].due = waiting;
+        for d in late {
+            let said =
+                Out::Injected { pane: d.pane, refusal: Some("NoReceipt".into()), unrecorded: None };
+            self.clients.broadcast(project, &said);
+        }
+    }
+
+    /// Why Weft cannot prove a send to this pane, when it cannot: its
+    /// harness file does not say where the prompt it received is (D4).
+    pub(super) fn cannot_prove(&mut self, at: usize, pane: u32) -> Option<String> {
+        let p = &mut self.projects[at];
+        let name = p.slot(pane)?.map.harness.clone();
+        let harness = p.harnesses.find(&name);
+        if harness.and_then(|h| h.signal.as_ref()).is_some_and(|s| s.prompt.is_some()) {
+            return None;
+        }
+        let title = harness.map_or(name.as_str(), |h| h.title.as_str());
+        Some(weft_core::words::fill("send.no_prompt", &[("harness", title)]))
     }
 
     /// Put a built prompt in front of everyone watching, and answer with its id.
-    pub(super) fn stage(
-        &mut self,
-        at: usize,
-        pane: u32,
-        built: crate::acts::Built,
-        fresh: bool,
-    ) -> Answer {
+    pub(super) fn stage(&mut self, at: usize, pane: u32, built: crate::acts::Built) -> Answer {
         let id = format!("pnd_{}", self.next_pending);
         self.next_pending += 1;
         let (what, why) = (built.asking.what, built.asking.why.join("\n"));
@@ -162,7 +212,6 @@ impl Session {
             payload: built.payload,
             how: built.how,
             confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
-            fresh,
             sends: built.ask_id.clone(),
         });
         self.clients.broadcast(at, &message);

@@ -191,6 +191,19 @@ impl Client {
         })
     }
 
+    /// The next `injected` within `within`, if one comes.
+    fn injected_within(&mut self, within: Duration) -> Option<Option<String>> {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if let Some(Event::Injected { refusal, .. }) =
+                self.next_event(Duration::from_millis(250))
+            {
+                return Some(refusal);
+            }
+        }
+        None
+    }
+
     /// Whether nothing that would type or add a pane arrives.
     fn quiet_for(&mut self, how_long: Duration) -> bool {
         !matches!(self.next_event(how_long), Some(Event::Added { .. } | Event::Output { .. }))
@@ -930,18 +943,22 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
             .to_string()
     };
 
+    // Not ready: the send waits for the agent rather than being refused at
+    // once (ADR-0033 D2), and is refused only when the wait is over.
     let id = stage(&mut c, "not-yet");
+    let asked = Instant::now();
     c.send(Call::Resolve { pending: id, yes: true, force: false });
-    assert_eq!(c.wait_for_refusal().as_deref(), Some("Weft can't tell whether the agent is ready"));
+    assert_eq!(c.injected_within(Duration::from_secs(2)), None, "waited for, not refused");
 
-    // The person presses Enter in it, and its hook says it is working.
-    c.send(Call::Input { pane: 0, bytes: b"\r".to_vec() });
+    // The person types in it and presses Enter, and its hook says it is
+    // working: still not typed into, and refused once the wait is over.
+    c.send(Call::Input { pane: 0, bytes: b"go\r".to_vec() });
     std::thread::sleep(Duration::from_millis(50));
     agent_says(&socket, &root, "codex", 0, "c1", "working");
     c.wait_for_state(Some(Turn::Working));
-    let id = stage(&mut c, "still-not");
-    c.send(Call::Resolve { pending: id, yes: true, force: false });
-    assert_eq!(c.wait_for_refusal().as_deref(), Some("the agent is working"));
+    let said = c.injected_within(Duration::from_secs(20)).expect("refused when the wait is over");
+    assert_eq!(said.as_deref(), Some("the agent is working"));
+    assert!(asked.elapsed() >= Duration::from_secs(14), "after the wait: {:?}", asked.elapsed());
 
     let id = stage(&mut c, "anyway-typed");
     c.send(Call::Resolve { pending: id, yes: true, force: true });
@@ -955,7 +972,7 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
 
     let mut stop = Client::attach(&socket, &root);
     let replay = stop.replay();
-    assert!(!replay.contains("not-yet") && !replay.contains("still-not"), "{replay}");
+    assert!(!replay.contains("not-yet"), "{replay}");
     assert!(replay.contains("anyway-typed") && replay.contains("now-typed"), "{replay}");
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();

@@ -103,6 +103,23 @@ pub const WORDS: &[(&str, &str)] = &[
         "Weft did not type it: it holds control characters a terminal would act on.",
     ),
     ("not_typed.in_flight", "Weft did not type it: it is still typing the last one."),
+    // A send is proven by what the harness reported it received (ADR-0033).
+    (
+        "not_typed.paste_not_shown",
+        "Weft did not press Enter: the agent's screen did not change when the Ask was pasted. The text may be in its composer.",
+    ),
+    (
+        "not_typed.not_the_ask",
+        "The agent received something other than the Ask, so the Ask was not delivered. You can stop the agent in Terminal.",
+    ),
+    (
+        "not_typed.no_receipt",
+        "Weft can't tell whether the Ask arrived: the agent reported no prompt in 10 seconds.",
+    ),
+    (
+        "send.no_prompt",
+        "Weft does not send an Ask to {harness}: its harness file does not say where the prompt it received is, so Weft could not tell whether the Ask arrived.",
+    ),
     // Resuming a session by its id (ADR-0029 D4, T11.5).
     ("resume.ask", "Resume {harness} on s {session}?"),
     ("resume.how", "Weft starts {harness} again on this session, in a new pane."),

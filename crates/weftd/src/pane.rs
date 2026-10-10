@@ -283,7 +283,7 @@ impl Pane {
     ///
     /// The bytes that reach the host are the same whichever way this goes; what
     /// changes is whether the host reads the command. Typed, it does; inside a
-    /// folded paste, it does not.
+    /// folded paste, it may not, so a command is never pasted (ADR-0033 D3).
     pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
         // Only what can be said is typed: a prompt read from a project's files
         // could otherwise end its own paste and press keys (`!`, Enter).
@@ -318,8 +318,7 @@ impl Pane {
             self.send(text.as_bytes()).map_err(|_| Refusal::NoProcess)?;
             std::thread::sleep(inject::ENTER_DELAY);
         }
-        let body = how.body(payload);
-        self.write_and_submit(body, typed.is_some())
+        self.write_and_submit(how.body(payload))
     }
 
     /// Whether the pane has drawn something and then left it alone for
@@ -363,17 +362,15 @@ impl Pane {
         Ok(false)
     }
 
-    fn write_and_submit(
-        &mut self,
-        payload: &[u8],
-        command_typed: bool,
-    ) -> Result<Attempt, Refusal> {
+    fn write_and_submit(&mut self, payload: &[u8]) -> Result<Attempt, Refusal> {
         let state = self.state();
         inject::check(&state)?;
         self.injecting = true;
         let bracketed = self.bracketed_paste();
         let steps = inject::compose(payload, bracketed);
-        let mut echoed = false;
+        // The screen before the paste, to tell whether the paste changed it.
+        let mut before = (std::time::Instant::now(), String::new());
+        self.gone_quiet(&mut before, inject::COMPOSER_SETTLE);
         for step in &steps {
             match step {
                 Step::Write(bytes) => {
@@ -385,126 +382,56 @@ impl Pane {
                 Step::Wait(d) => {
                     // A fixed pause is not enough: a harness that is still
                     // settling drops the Enter and the prompt sits unsent in
-                    // its composer. Wait for the text to appear instead.
+                    // its composer. Wait for the paste to land instead.
                     std::thread::sleep(*d);
-                    echoed = self.wait_for_echo(payload, inject::ECHO_TIMEOUT);
-                    if !echoed {
-                        // The composer is not showing what was written, so
-                        // Enter would submit something other than the Ask. The
-                        // text stays where it is, unsent, for the person to
-                        // see. Never a blind retry.
+                    if !self.paste_landed(&before.1, inject::PASTE_TIMEOUT) {
+                        // The screen never changed, so the paste did not land
+                        // where Enter would send it. Never a blind retry.
                         self.injecting = false;
-                        return Ok(Attempt {
-                            bytes: payload.len(),
-                            bracketed,
-                            echoed,
-                            submitted: false,
-                            folded_command: None,
-                        });
-                    }
-                    // The text is there, but folded into a placeholder — and a
-                    // folded paste is not scanned for slash commands. Enter
-                    // here runs the prompt as an ordinary request instead of
-                    // the mode it asked for, which is a different act. Unless
-                    // the command was typed in front of it, which is the whole
-                    // point of doing that.
-                    if let Some(command) =
-                        (!command_typed).then(|| self.folded_command(payload)).flatten()
-                    {
-                        self.injecting = false;
-                        return Ok(Attempt {
-                            bytes: payload.len(),
-                            bracketed,
-                            echoed,
-                            submitted: false,
-                            folded_command: Some(command),
-                        });
+                        return Ok(Attempt { bytes: payload.len(), bracketed, submitted: false });
                     }
                 }
             }
         }
         self.injecting = false;
-        Ok(Attempt {
-            bytes: payload.len(),
-            bracketed,
-            echoed,
-            submitted: true,
-            folded_command: None,
-        })
-    }
-
-    /// The command this payload opens with, when the pane has folded the paste
-    /// away so that the host will never see it as a command.
-    ///
-    /// Measured: one host folds a paste from 1000 characters, another from
-    /// somewhere between 500 and 800 (RingFrame's profile keeps each as
-    /// `paste_fold_chars`). A folded paste submits as ordinary text — the
-    /// model does not even change — so a prompt carrying `/plan` gets an
-    /// ordinary answer.
-    fn folded_command(&self, payload: &[u8]) -> Option<String> {
-        let command = inject::leading_command(payload)?;
-        let screen = self.with_screen(|s| s.contents());
-        inject::collapsed_paste(&screen).then_some(command)
+        Ok(Attempt { bytes: payload.len(), bracketed, submitted: true })
     }
 
     fn bracketed_paste(&self) -> bool {
         self.with_screen(|s| s.bracketed_paste())
     }
 
-    /// Wait until the pane shows both ends of what was written, so Enter
-    /// lands on a composer holding the whole prompt rather than one still
-    /// catching up — or one that swallowed the start of the paste.
-    fn wait_for_echo(&self, payload: &[u8], timeout: std::time::Duration) -> bool {
-        let (Some(head), Some(tail)) = (inject::echo_head(payload), inject::echo_tail(payload))
-        else {
-            return false;
-        };
+    /// Whether the screen changed from `before` and then held still for
+    /// [`inject::COMPOSER_SETTLE`], so Enter lands on a composer that took
+    /// the paste rather than one still taking it. Only whether it changed is
+    /// compared, never what it says (ADR-0033 D2): a harness may show a long
+    /// paste whole, folded or scrolled. Changed but never still (a spinner)
+    /// is taken as landed when the time is up; never changed is not.
+    fn paste_landed(&self, before: &str, timeout: std::time::Duration) -> bool {
         let deadline = std::time::Instant::now() + timeout;
-        // Seen, and then unchanged for a moment: a composer still taking the
-        // paste is still redrawing, and Enter sent into that is dropped.
-        let mut settled: Option<(std::time::Instant, String)> = None;
+        let mut last = (std::time::Instant::now(), before.to_string());
+        let mut changed = false;
         while std::time::Instant::now() < deadline {
-            let screen = inject::squeeze(&self.with_screen(|s| s.contents()));
-            // Past a size the host folds the paste into a placeholder instead
-            // of showing it, and then the placeholder is the echo. It is the
-            // length that decides, not the line count: a single long line is
-            // folded just the same.
-            let folded = inject::collapsed_paste_of(&screen, payload);
-            let showing = folded || (screen.contains(&head) && screen.contains(&tail));
-            settled = match (settled, showing) {
-                (_, false) => None,
-                (None, true) => Some((std::time::Instant::now(), screen)),
-                (Some((since, before)), true) if before == screen => {
-                    if since.elapsed() >= inject::COMPOSER_SETTLE {
-                        return true;
-                    }
-                    Some((since, before))
-                }
-                (Some(_), true) => Some((std::time::Instant::now(), screen)),
-            };
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            let quiet = self.gone_quiet(&mut last, inject::COMPOSER_SETTLE);
+            changed |= last.1 != before;
+            if changed && quiet {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        // On screen but never still: say so rather than pretend it settled.
-        settled.is_some()
+        changed
     }
 }
 
-/// An injection that was *attempted*. Never evidence that it arrived.
+/// An injection that was *attempted*. Never evidence that it arrived: only
+/// what the harness reports it received is (ADR-0033 D1).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub bytes: usize,
     pub bracketed: bool,
-    /// Whether the pane was seen to show the text before Enter was sent.
-    /// Still not evidence it was received — only the hook receipt is that.
-    pub echoed: bool,
-    /// Whether Enter was sent at all. It is not, when the composer never
-    /// showed the whole prompt: submitting a mangled Ask is worse than
-    /// leaving the text sitting there for the person to see.
+    /// Whether Enter was sent at all. It is not when the paste never changed
+    /// the screen: the text may be in the composer, and the person is told.
     pub submitted: bool,
-    /// The slash command this prompt opens with, when the harness folded the
-    /// paste and would therefore run it as ordinary text. Enter is withheld:
-    /// `/plan` that does not enter Plan mode is not the Ask that was confirmed.
-    pub folded_command: Option<String>,
 }
 
 #[cfg(test)]
@@ -624,51 +551,129 @@ while True:
             out(c)
 "#;
 
+    /// A made-up composer: it takes a bracketed paste and draws it as
+    /// `style` says, then, on Enter, writes what it took to `out` and says
+    /// `SUBMITTED`. `scroll` shows only the last two lines under a line that
+    /// counts the rest, as a composer that scrolls a long input; `fold` shows
+    /// a placeholder in place of a paste over 200 characters; `plain` shows
+    /// it all. Nothing here is any harness's own screen.
+    const COMPOSER: &str = r#"import os, sys, tty
+style, out = sys.argv[1], sys.argv[2]
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+w = lambda t: os.write(1, t.encode())
+w('\x1b[?2004h> ')
+buf, raw = '', b''
+def draw():
+    lines = buf.split('\n')
+    if style == 'scroll' and len(lines) > 2:
+        shown = ['(%d hidden above)' % (len(lines) - 2)] + lines[-2:]
+    elif style == 'fold' and len(buf) > 200:
+        shown = ['<<%d folded>>' % len(buf)]
+    else:
+        shown = lines
+    w('\x1b[2J\x1b[H> ' + '\r\n  '.join(shown))
+while True:
+    raw += os.read(fd, 4096)
+    while raw:
+        if raw.startswith(b'\x1b[200~'):
+            end = raw.find(b'\x1b[201~')
+            if end < 0:
+                break
+            buf += raw[6:end].decode()
+            raw = raw[end + 6:]
+            draw()
+        elif raw[:1] == b'\r':
+            open(out, 'w').write(buf)
+            w('\r\nSUBMITTED\r\n')
+            buf, raw = '', raw[1:]
+        elif raw[:1] == b'\x1b':
+            break
+        else:
+            buf += raw[:1].decode()
+            raw = raw[1:]
+            draw()
+"#;
+
+    /// A prompt as long as a compiled one: 3500 bytes over 60 lines.
+    fn long_prompt() -> Vec<u8> {
+        let line = "Keep the change to the health endpoint and its tests; no more.";
+        let mut text = String::from("Ship the health endpoint.\n");
+        while text.len() < 3440 {
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push_str("End of the Ask.");
+        text.into_bytes()
+    }
+
+    /// Each composer gets Enter, and takes the prompt whole: none of their
+    /// screens is read, only whether it changed and then held still.
+    fn composer_takes(style: &str, how: &Handoff, payload: &[u8]) -> (Attempt, String) {
+        let dir = tempfile::tempdir().expect("dir");
+        let out = dir.path().join("took");
+        let args = ["-c", COMPOSER, style, out.to_str().expect("path")];
+        let mut pane =
+            Pane::spawn_args("test", "python3", &args, "/tmp", &[], 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let attempt = pane.inject_as(payload, how).expect("allowed");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !out.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        pane.stop();
+        (attempt, std::fs::read_to_string(&out).unwrap_or_default())
+    }
+
+    /// ringframe-ask-ledger-q12: a composer that scrolls a long prompt shows
+    /// only its last lines, so the start of the prompt is never on screen.
+    /// Weft used to look for it there and withheld Enter on a 1523-byte
+    /// prompt. It now gets Enter, and what arrived is judged by the receipt.
     #[test]
-    fn enter_is_withheld_when_the_pane_never_shows_the_prompt() {
-        // Found by a W4 run against Codex: the composer swallowed the first
-        // characters of the paste, the tail still matched, and Weft submitted
-        // a prompt the person had not asked for. With nothing echoed at all,
-        // Enter must not be sent and the attempt must say so.
-        let mut pane = sh("stty -echo; cat > /dev/null");
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(b"/plan Return the real build number").expect("allowed to write");
-        assert!(!attempt.echoed, "nothing was echoed");
-        assert!(!attempt.submitted, "so Enter was withheld");
+    fn a_scrolling_composer_gets_enter_for_a_long_prompt() {
+        let prompt = long_prompt();
+        let (attempt, took) = composer_takes("scroll", &Handoff::Whole, &prompt);
+        assert!(attempt.submitted, "{attempt:?}");
+        assert_eq!(took.as_bytes(), prompt.as_slice());
     }
 
     #[test]
-    fn enter_is_withheld_when_the_paste_folds_a_command_away() {
-        // Found against Codex 0.155.1: a paste of 1000 characters or more is
-        // folded into `[Pasted Content N chars]`, and a folded paste is not
-        // scanned for slash commands. Enter there submits `/plan …` as an
-        // ordinary request — the model does not even change — which is not
-        // the Ask that was confirmed.
-        let payload = b"/plan ship the health endpoint\nwith rules\nand a tail";
-        let mut pane = sh(&format!(
-            "stty -echo; printf '[Pasted Content {} chars]\\n'; cat > /dev/null",
-            payload.len()
-        ));
-        std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(payload).expect("allowed to write");
-        assert!(attempt.echoed, "the whole prompt is there, folded");
-        assert!(!attempt.submitted, "so Enter is withheld");
-        assert_eq!(attempt.folded_command.as_deref(), Some("/plan"), "and it says which command");
+    fn a_folding_composer_gets_enter_for_a_long_prompt() {
+        let prompt = long_prompt();
+        let (attempt, took) = composer_takes("fold", &Handoff::Whole, &prompt);
+        assert!(attempt.submitted, "{attempt:?}");
+        assert_eq!(took.as_bytes(), prompt.as_slice());
     }
 
     #[test]
-    fn a_folded_paste_with_no_command_is_still_sent() {
-        // Folding is only a problem for a command. Ordinary prompt text reads
-        // the same folded or not, so there is nothing to withhold Enter for.
-        let payload = b"ship the health endpoint\nwith rules\nand a tail";
-        let mut pane = sh(&format!(
-            "stty -echo; printf '[Pasted Content {} chars]\\n'; cat > /dev/null",
-            payload.len()
-        ));
+    fn a_plain_composer_gets_enter_for_a_short_prompt() {
+        let (attempt, took) = composer_takes("plain", &Handoff::Whole, b"Ship it.");
+        assert!(attempt.submitted, "{attempt:?}");
+        assert_eq!(took, "Ship it.");
+    }
+
+    /// A command is typed in front of the body, never pasted, whatever the
+    /// length and however the composer draws the body.
+    #[test]
+    fn a_command_is_typed_in_front_of_a_short_body_and_a_long_one() {
+        let how = Handoff::TypeCommand { command: "/goal".into(), at: "/goal ".len() };
+        let mut long = b"/goal ".to_vec();
+        long.extend(long_prompt());
+        for (style, payload) in [("plain", b"/goal ship it".to_vec()), ("scroll", long.clone())] {
+            let (attempt, took) = composer_takes(style, &how, &payload);
+            assert!(attempt.submitted, "{style}: {attempt:?}");
+            assert_eq!(took.as_bytes(), payload.as_slice(), "{style}");
+        }
+    }
+
+    /// A paste that never changes the screen did not land where Enter would
+    /// send it: Enter is withheld, and the attempt says so.
+    #[test]
+    fn enter_is_withheld_when_the_paste_never_changes_the_screen() {
+        let mut pane = sh("stty -echo; printf 'ready'; cat > /dev/null");
         std::thread::sleep(std::time::Duration::from_millis(400));
-        let attempt = pane.inject(payload).expect("allowed to write");
-        assert!(attempt.submitted, "nothing here needs a command to run");
-        assert_eq!(attempt.folded_command, None);
+        let attempt = pane.inject(b"Return the real build number").expect("allowed to write");
+        assert!(!attempt.submitted, "Enter withheld: {attempt:?}");
     }
 
     #[test]
@@ -682,14 +687,6 @@ while True:
         let written = std::fs::read_to_string("/tmp/weft-inject-test.txt").unwrap_or_default();
         assert_eq!(written.trim_end_matches(['\r', '\n']), payload);
         let _ = std::fs::remove_file("/tmp/weft-inject-test.txt");
-    }
-
-    #[test]
-    fn an_injection_waits_for_the_pane_to_show_the_text() {
-        let mut pane = sh("cat");
-        let attempt = pane.inject(b"$rf:eval the distinctive tail").expect("allowed");
-        assert!(attempt.echoed, "Enter is sent once the text is visible");
-        assert!(attempt.bytes > 0);
     }
 
     #[test]

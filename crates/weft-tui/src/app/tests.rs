@@ -1278,32 +1278,24 @@ fn proceed_on_a_sent_asks_details_says_why_and_sends_nothing() {
     assert!(said.ends_with("has nothing to send. [F] FOLLOW UP asks for more."), "{said}");
 }
 
-/// Sent on the person's yes, and RingFrame would not record that it went:
-/// the person is told, rather than being offered the send again blind.
+/// Sent on the person's yes, and what the agent reported it received was not
+/// the Ask, or nothing came: the pane's notice says so, in words, so the
+/// person is not offered the send again blind (ADR-0033 D1).
 #[test]
-fn a_send_ringframe_would_not_record_is_said() {
-    let refuses = set_up(|w| {
-        w.answers("ringframe", &["ask", "submitted"], 2, "ledger.io: the ledger is read-only")
-            .answers("ringframe", &["ask", "copy"], 0, "Ship it.\n")
-    });
-    let mut a = recorded_in(Sent::ReadyToSend, refuses);
-    on_work(&mut a);
-    press(&mut a, KeyCode::Char('p'));
-    assert!(
-        matches!(a.modal, Some(Modal::Bar(Bar::Send(_)))),
-        "{:?} / {:?}",
-        a.modal,
-        a.hint_text()
-    );
-    press(&mut a, KeyCode::Enter);
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while std::time::Instant::now() < deadline && a.session_mut().unrecorded.is_none() {
-        a.pump();
-        std::thread::sleep(Duration::from_millis(20));
+fn a_send_that_did_not_arrive_as_the_ask_is_said() {
+    let mut a = recorded(Sent::ReadyToSend);
+    for (code, key) in
+        [("NotTheAsk", "not_typed.not_the_ask"), ("NoReceipt", "not_typed.no_receipt")]
+    {
+        a.session_mut().last_refusal = Some(code.into());
+        let said = drawn(&mut a);
+        assert!(said.contains(&word(key)[..40]), "{code}: {said}");
     }
+    // RingFrame could not judge what arrived: sent, and not recorded.
+    a.session_mut().last_refusal = None;
+    a.session_mut().unrecorded = Some("ringframe exit 2".into());
     let said = drawn(&mut a).lines().last().unwrap_or_default().to_string();
     assert!(said.contains("RingFrame did not record it"), "{said}");
-    assert!(said.contains("ledger.io"), "and why: {said}");
 }
 
 /// Turbo mode is switched from Weft, by `[T]` or a click on it in the

@@ -53,12 +53,12 @@ pub fn skill(
     worked_in: &str,
     args: &str,
     over: Option<&str>,
-    folds: &mut Folds,
+    prefixes: &mut Prefixes,
 ) -> Built {
-    let command = ringframe::skill_command(&folds.prefix(root, into), skill);
+    let command = ringframe::skill_command(&prefixes.prefix(root, into), skill);
     let payload = typed(&command, over, args);
     Built {
-        how: folds.how(root, into, &payload, &command),
+        how: how(&command),
         asking: weft_core::offers::running(skill, &command, into, worked_in),
         payload,
         confirm_first: false,
@@ -67,11 +67,17 @@ pub fn skill(
 }
 
 /// Ask for something new, in the harness the person is asking in.
-pub fn ask(root: &Path, harness: &str, text: &str, over: Option<&str>, folds: &mut Folds) -> Built {
-    let command = ringframe::skill_command(&folds.prefix(root, harness), "ask");
+pub fn ask(
+    root: &Path,
+    harness: &str,
+    text: &str,
+    over: Option<&str>,
+    prefixes: &mut Prefixes,
+) -> Built {
+    let command = ringframe::skill_command(&prefixes.prefix(root, harness), "ask");
     let payload = typed(&command, over, text);
     Built {
-        how: folds.how(root, harness, &payload, &command),
+        how: how(&command),
         asking: weft_core::offers::asking(&command, harness),
         payload,
         confirm_first: false,
@@ -90,27 +96,23 @@ fn typed(command: &str, over: Option<&str>, words: &str) -> Vec<u8> {
     .into_bytes()
 }
 
-/// What each harness answers about itself, asked once and kept.
-///
-/// Both answers are properties of the machine, not of the moment: the skill
-/// prefix RingFrame uses for this host, and the size at which its composer
-/// stops reading a paste as text.
-pub struct Folds {
+/// The skill prefix RingFrame uses for each harness, asked once and kept: a
+/// property of the machine, not of the moment.
+pub struct Prefixes {
     prefixes: HashMap<String, String>,
-    at: HashMap<String, Option<usize>>,
     out: Shared,
 }
 
-impl Default for Folds {
+impl Default for Prefixes {
     fn default() -> Self {
-        Folds::asking(crate::outside::machine())
+        Prefixes::asking(crate::outside::machine())
     }
 }
 
-impl Folds {
+impl Prefixes {
     /// Kept answers, asked of `out` the first time each is needed.
     pub fn asking(out: Shared) -> Self {
-        Folds { prefixes: HashMap::new(), at: HashMap::new(), out }
+        Prefixes { prefixes: HashMap::new(), out }
     }
 
     fn prefix(&mut self, root: &Path, harness: &str) -> String {
@@ -122,24 +124,15 @@ impl Folds {
             })
             .clone()
     }
+}
 
-    /// How a prompt Weft composed has to be typed. Its command is the skill
-    /// invocation, which on a harness whose prefix is `/rf:` is a real slash command, and
-    /// so subject to the same fold as any other.
-    fn how(&mut self, root: &Path, harness: &str, payload: &[u8], command: &str) -> Handoff {
-        let Some(command) = inject::leading_command(command.as_bytes()) else {
-            return Handoff::Whole;
-        };
-        let fold = *self
-            .at
-            .entry(harness.to_string())
-            .or_insert_with(|| ringframe::paste_fold_chars(self.out.as_ref(), root, harness));
-        match fold {
-            Some(at) if payload.len() >= at => {
-                Handoff::TypeCommand { at: command.len() + 1, command }
-            }
-            _ => Handoff::Whole,
-        }
+/// How a prompt Weft composed has to be typed. Its command is the skill
+/// invocation, which on a harness whose prefix is `/rf:` is a real slash
+/// command, and is then typed whatever the prompt's length (ADR-0033 D3).
+fn how(command: &str) -> Handoff {
+    match inject::leading_command(command.as_bytes()) {
+        Some(command) => Handoff::TypeCommand { at: command.len() + 1, command },
+        None => Handoff::Whole,
     }
 }
 
@@ -149,55 +142,71 @@ mod tests {
 
     #[test]
     fn eval_carries_its_words_after_the_skill_on_either_harness() {
-        let mut folds = Folds::default();
-        folds.prefixes.insert("claude-code".into(), "/rf:".into());
-        folds.prefixes.insert("codex".into(), "$rf:".into());
-        folds.at.insert("claude-code".into(), None);
-        folds.at.insert("codex".into(), None);
+        let mut prefixes = Prefixes::default();
+        prefixes.prefixes.insert("claude-code".into(), "/rf:".into());
+        prefixes.prefixes.insert("codex".into(), "$rf:".into());
         let root = Path::new("/nowhere");
-        let sent = |into: &str, args: &str, folds: &mut Folds| {
-            String::from_utf8(skill(root, "eval", into, "claude-code", args, None, folds).payload)
-                .unwrap()
+        let sent = |into: &str, args: &str, prefixes: &mut Prefixes| {
+            String::from_utf8(
+                skill(root, "eval", into, "claude-code", args, None, prefixes).payload,
+            )
+            .unwrap()
         };
         assert_eq!(
-            sent("codex", "gather context=gpt-6-luna/low", &mut folds),
+            sent("codex", "gather context=gpt-6-luna/low", &mut prefixes),
             "$rf:eval gather context=gpt-6-luna/low"
         );
         assert_eq!(
-            sent("claude-code", "debate evl_1 drift=/high", &mut folds),
+            sent("claude-code", "debate evl_1 drift=/high", &mut prefixes),
             "/rf:eval debate evl_1 drift=/high"
         );
-        assert_eq!(sent("claude-code", "", &mut folds), "/rf:eval ");
+        assert_eq!(sent("claude-code", "", &mut prefixes), "/rf:eval ");
     }
 
     #[test]
     fn every_rf_command_carries_the_override_right_after_the_skill() {
-        let mut folds = Folds::default();
-        folds.prefixes.insert("claude-code".into(), "/rf:".into());
-        folds.prefixes.insert("codex".into(), "$rf:".into());
-        folds.at.insert("claude-code".into(), None);
-        folds.at.insert("codex".into(), None);
+        let mut prefixes = Prefixes::default();
+        prefixes.prefixes.insert("claude-code".into(), "/rf:".into());
+        prefixes.prefixes.insert("codex".into(), "$rf:".into());
         let root = Path::new("/nowhere");
         let over = r#"[{"layer":"weft","ringframe":{"deltas":{}}}]"#;
         let text = |b: Built| String::from_utf8(b.payload).unwrap();
         for (harness, prefix) in [("claude-code", "/rf:"), ("codex", "$rf:")] {
             assert_eq!(
-                text(skill(root, "eval", harness, harness, "gather", Some(over), &mut folds)),
+                text(skill(root, "eval", harness, harness, "gather", Some(over), &mut prefixes)),
                 format!("{prefix}eval --override '{over}' gather")
             );
             assert_eq!(
-                text(skill(root, "seal", harness, harness, "", Some(over), &mut folds)),
+                text(skill(root, "seal", harness, harness, "", Some(over), &mut prefixes)),
                 format!("{prefix}seal --override '{over}' ")
             );
             assert_eq!(
-                text(ask(root, harness, "[follow-up evl_1] fix it", Some(over), &mut folds)),
+                text(ask(root, harness, "[follow-up evl_1] fix it", Some(over), &mut prefixes)),
                 format!("{prefix}ask --override '{over}' [follow-up evl_1] fix it")
             );
             assert_eq!(
-                text(ask(root, harness, "fix it", None, &mut folds)),
+                text(ask(root, harness, "fix it", None, &mut prefixes)),
                 format!("{prefix}ask fix it"),
                 "no overrides: nothing typed"
             );
+        }
+    }
+
+    /// A command Weft composed is typed whatever the prompt's length, on a
+    /// made-up harness whose prefix is a slash command and one whose is not.
+    #[test]
+    fn a_command_is_typed_for_a_short_prompt_and_a_long_one() {
+        let mut prefixes = Prefixes::default();
+        prefixes.prefixes.insert("loom".into(), "/rf:".into());
+        prefixes.prefixes.insert("weave".into(), "$rf:".into());
+        let root = Path::new("/nowhere");
+        let long = "x".repeat(3500);
+        for text in ["fix it", long.as_str()] {
+            let built = ask(root, "loom", text, None, &mut prefixes);
+            assert_eq!(built.how, Handoff::TypeCommand { command: "/rf:ask".into(), at: 8 });
+            assert_eq!(built.how.body(&built.payload), text.as_bytes());
+            let built = ask(root, "weave", text, None, &mut prefixes);
+            assert_eq!(built.how, Handoff::Whole, "not a slash command: pasted whole");
         }
     }
 }

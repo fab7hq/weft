@@ -92,10 +92,9 @@ pub struct Gathered {
 
 /// The command a prompt carries, and what that command is.
 ///
-/// Both hosts fold a paste past a size and stop reading a folded paste for
-/// slash commands, so a prompt that carries `/plan` cannot always be sent in
-/// one piece. RingFrame measures and records this; Weft renders the decision
-/// and does not work it out again.
+/// A harness may fold or scroll a long paste, and a command inside a folded
+/// paste is not read, so a prompt that carries `/plan` is never pasted whole
+/// (ADR-0033 D3). RingFrame records the command and what it is; Weft types it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivery {
     /// The command, without its trailing space: `/plan`, `/goal`, `/review`.
@@ -108,9 +107,6 @@ pub struct Delivery {
     pub active: Option<String>,
     /// Where the body starts in `prompt.txt`, in bytes.
     pub prefix_bytes: usize,
-    /// Whether this host would fold this prompt, which is what makes the
-    /// command unreadable in a single paste.
-    pub folds: bool,
 }
 
 impl Delivery {
@@ -130,7 +126,6 @@ fn delivery_of(data: &Value) -> Delivery {
         kind: text("mode_kind"),
         active: text("mode_active"),
         prefix_bytes: d.get("prefix_bytes").and_then(Value::as_u64).unwrap_or(0) as usize,
-        folds: d.get("folds").and_then(Value::as_bool).unwrap_or(false),
     }
 }
 

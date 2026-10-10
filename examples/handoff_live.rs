@@ -21,14 +21,12 @@ fn main() -> anyhow::Result<()> {
             kind: Some("mode".into()),
             active: Some("Plan mode".into()),
             prefix_bytes: 6,
-            folds: true,
         },
         _ => Delivery {
             mode: Some("/goal".into()),
             kind: Some("inline".into()),
             active: None,
             prefix_bytes: 6,
-            folds: true,
         },
     };
     let how = Handoff::choose(&delivery);

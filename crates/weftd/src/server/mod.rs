@@ -118,9 +118,8 @@ struct Waiting {
     /// The Ask whose yes has to be recorded before anything is typed, when the
     /// harness's own chooser never got one.
     confirm: Option<String>,
-    /// The pane was started for this, and may still be starting up.
-    fresh: bool,
-    /// The Ask whose prompt this sends, recorded as submitted once it is.
+    /// The Ask whose prompt this sends: delivered only when its pane reports
+    /// receiving it (ADR-0033 D1).
     sends: Option<String>,
 }
 
@@ -147,10 +146,13 @@ struct Project {
     /// Whether agents started here get their harness's turbo flags.
     turbo: bool,
     readiness: HashMap<String, weft_core::readiness::Readiness>,
-    /// Sends said yes to that wait for an agent Weft just started, looked at
-    /// on each tick rather than waited on, so nothing else stops meanwhile.
+    /// Sends said yes to that wait for their agent to be ready, looked at on
+    /// each tick rather than waited on, so nothing else stops meanwhile.
     starting: Vec<Starting>,
-    folds: crate::acts::Folds,
+    /// Sends of an Ask typed and submitted, each waiting for what its pane
+    /// reports it received (ADR-0033 D1).
+    due: Vec<typing::Due>,
+    prefixes: crate::acts::Prefixes,
     /// The harnesses Weft has a file for, read when the project opened, and
     /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
@@ -326,6 +328,14 @@ enum Wake {
     },
     /// A hook, from `weft signal` (ADR-0030).
     Signal(Box<weft_core::signal::Sent>),
+    /// What RingFrame made of the prompt a pane received after Weft's send of
+    /// `ask` (ADR-0033 D1).
+    Received {
+        project: usize,
+        pane: u32,
+        ask: String,
+        answer: Result<serde_json::Value, String>,
+    },
 }
 
 pub struct Session {
@@ -673,6 +683,9 @@ impl Session {
                 }
                 Wake::Workspace { project, setup } => self.set_up(project, setup),
                 Wake::Signal(sent) => self.signal(*sent),
+                Wake::Received { project, pane, ask, answer } => {
+                    self.received(project, pane, &ask, answer)
+                }
             }
         }
         Ok(())
@@ -756,7 +769,7 @@ impl Session {
                 }
                 let project = &mut self.projects[at];
                 let over = project.ringframe.as_deref();
-                let built = crate::acts::ask(&root, &harness, &text, over, &mut project.folds);
+                let built = crate::acts::ask(&root, &harness, &text, over, &mut project.prefixes);
                 (built, pane)
             }
             "send" => {
@@ -775,6 +788,11 @@ impl Session {
                 let Some(pane) = crate::turns::owning_pane(&map, &unit) else {
                     return Answer::No("no_pane", format!("no {} pane is open here", unit.harness));
                 };
+                // A send is proven by what the harness reports it received, so
+                // Weft sends only to one whose file says where that is (D4).
+                if let Some(why) = self.cannot_prove(at, pane) {
+                    return Answer::No("no_receipt", why);
+                }
                 match crate::acts::send(self.outside.as_ref(), &root, &unit) {
                     Ok(built) => (built, pane),
                     Err(why) => return Answer::No("refused", why),
@@ -842,7 +860,7 @@ impl Session {
                     &unit.harness,
                     &args,
                     project.ringframe.as_deref(),
-                    &mut project.folds,
+                    &mut project.prefixes,
                 );
                 if fresh {
                     built
@@ -850,12 +868,12 @@ impl Session {
                         .why
                         .push(format!("No {into} agent here was free, so Weft started one."));
                 }
-                return self.stage(at, pane, built, fresh);
+                return self.stage(at, pane, built);
             }
             other => return Answer::No("unknown_act", format!("there is no act {other}")),
         };
         let (built, pane) = built;
-        self.stage(at, pane, built, false)
+        self.stage(at, pane, built)
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them.
@@ -1074,6 +1092,7 @@ impl Session {
             }
             self.recheck(at);
             self.type_what_started(at);
+            self.nothing_received(at);
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
@@ -1247,7 +1266,8 @@ impl Session {
                         None => HashMap::new(),
                     },
                     starting: Vec::new(),
-                    folds: crate::acts::Folds::asking(self.outside.clone()),
+                    due: Vec::new(),
+                    prefixes: crate::acts::Prefixes::asking(self.outside.clone()),
                     turns: crate::turns::Turns::default(),
                     harnesses,
                     unread,
@@ -1406,7 +1426,6 @@ impl Session {
                     payload: bytes,
                     how,
                     confirm: None,
-                    fresh: false,
                     sends: None,
                 });
                 self.clients.broadcast(at, &message);
