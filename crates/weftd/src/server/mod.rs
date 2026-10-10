@@ -175,6 +175,9 @@ struct Project {
     /// project keeps its number; the next window to open its path gets a new
     /// one.
     closed: bool,
+    /// Reopened after an unclean end, at this time (ADR-0034 D2): kept open
+    /// with no window until someone acts in it or dismisses it.
+    reopened: Option<i64>,
 }
 
 impl Project {
@@ -368,6 +371,8 @@ pub struct Session {
     attached: Vec<screens::Attachment>,
     /// Keeps `weft remote` running while remote access is on.
     supervisor: remote::Supervisor,
+    /// A project a client dismissed, closed once its answer is sent.
+    dismissed: Option<usize>,
 }
 
 /// What a call answers with. Everything gets one, so a client is never left
@@ -626,11 +631,12 @@ impl Session {
             assume_ready,
             attached: Vec::new(),
             supervisor: Default::default(),
+            dismissed: None,
         };
-        // The list is of the projects open in this daemon: a new one has none
-        // yet, whatever an earlier one left there, so `weft remote` opens
-        // nothing a window has not.
-        session.write_projects();
+        // The projects an earlier daemon had open when it ended without a
+        // stop, reopened with their agents ended (ADR-0034 D2); after a stop
+        // the list is empty.
+        session.reopen();
         session.remote_from_config();
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
@@ -651,6 +657,9 @@ impl Session {
                         .send_to(client, &answer.unwrap_or_else(Answer::failed).line(call_id));
                     if done {
                         return Ok(());
+                    }
+                    if let Some(at) = self.dismissed.take() {
+                        self.close_if_idle(at);
                     }
                 }
                 Wake::Output { project, pane, bytes } => {
@@ -1152,6 +1161,29 @@ impl Session {
         self.clients.broadcast(at, &Out::Workspace { setup, gap });
     }
 
+    /// Open again the projects `projects.json` lists, as an earlier daemon
+    /// left it: each reopened now, with no agent running in it.
+    fn reopen(&mut self) {
+        let text = std::fs::read_to_string(self.config.with_file_name("projects.json"))
+            .unwrap_or_default();
+        let now = crate::turns::now_millis();
+        for listed in weft_core::projects::read(&text) {
+            if listed.path.is_dir() && self.projects.iter().all(|p| p.root != listed.path) {
+                let at = self.project_at(listed.path);
+                self.projects[at].reopened = Some(now);
+            }
+        }
+        self.write_projects();
+    }
+
+    /// Someone acted in this project: it is no longer only reopened, and the
+    /// rule every project closes by holds for it again.
+    fn acted_in(&mut self, at: usize) {
+        if self.projects.get_mut(at).and_then(|p| p.reopened.take()).is_some() {
+            self.clients.broadcast(at, &Out::Reopened { since: None });
+        }
+    }
+
     /// The projects open here, beside `config.toml`, for a window's picker.
     fn write_projects(&self) {
         let open: Vec<_> = self
@@ -1219,7 +1251,7 @@ impl Session {
             .iter()
             .any(|(c, p)| *p == at && !self.clients.named(*c, "weft-remote"));
         let Some(p) = self.projects.get_mut(at).filter(|p| !p.closed) else { return };
-        if windows || p.panes.iter_mut().any(|s| s.pane.running()) {
+        if windows || p.reopened.is_some() || p.panes.iter_mut().any(|s| s.pane.running()) {
             return;
         }
         p.closed = true;
@@ -1288,6 +1320,7 @@ impl Session {
                     asked: std::time::Instant::now(),
                     asking: false,
                     closed: false,
+                    reopened: None,
                 });
                 let at = self.projects.len() - 1;
                 // A map a daemon before this one left names panes that are gone.
@@ -1324,6 +1357,10 @@ impl Session {
                 }
                 let at = self.project_at(PathBuf::from(project));
                 self.clients.watching.insert(client, at);
+                // A window holds it now; `weft remote` opening it is not one.
+                if !self.clients.named(client, "weft-remote") {
+                    self.acted_in(at);
+                }
                 // An act routed to a harness with no pane yet still needs its
                 // readiness, or it reads as "could not ask" rather than as a
                 // missing pane.
@@ -1370,6 +1407,7 @@ impl Session {
                     "notify": self.projects[at].notify,
                     "turbo": self.projects[at].turbo,
                     "start_at_login": self.start_at_login(),
+                    "reopened": self.projects[at].reopened,
                     "harnesses": &self.projects[at].harnesses,
                     // Harness files that would not read, to be said once.
                     "unread": &self.projects[at].unread,
@@ -1397,6 +1435,7 @@ impl Session {
                         Err(no) => return Ok(no),
                     },
                 };
+                self.acted_in(at);
                 let started = self.spawn(client, at, &harness, &spec, session);
                 // Asked when a pane starts, because that is when a person
                 // would care.
@@ -1553,7 +1592,21 @@ impl Session {
             // A client leaving is not the session ending. That is the point.
             // What it is done with is when its connection ends (`left`).
             Call::Detach => {}
-            Call::Shutdown => return Ok(Answer::Done),
+            Call::Dismiss => {
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                self.acted_in(at);
+                // Closed once the answer is sent: closing ends this client's
+                // connection to it.
+                self.dismissed = Some(at);
+            }
+            Call::Shutdown => {
+                // The person's stop: the next daemon opens nothing again.
+                write_whole(
+                    &self.config.with_file_name("projects.json"),
+                    weft_core::projects::write(&[]),
+                );
+                return Ok(Answer::Done);
+            }
         }
         Ok(Answer::nothing())
     }

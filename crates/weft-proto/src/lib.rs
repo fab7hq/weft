@@ -154,6 +154,10 @@ pub enum Call {
         /// anyway. The inference is Weft's; the decision is theirs.
         force: bool,
     },
+    /// Close a project reopened after an unclean end, from a device or a
+    /// window that has nothing to do in it (ADR-0034 D2). It closes as any
+    /// project does once nobody is in it.
+    Dismiss,
     /// Leave, without stopping anything.
     Detach,
     /// Stop every agent and end the session.
@@ -253,6 +257,11 @@ pub enum Event {
     /// Weft's "Start at login" was turned on or off, to every client.
     StartAtLogin {
         on: bool,
+    },
+    /// The project was reopened after an unclean end at `since`
+    /// (milliseconds), or no longer only that: someone acted in it (D2).
+    Reopened {
+        since: Option<i64>,
     },
     Presence {
         at: i64,
@@ -403,6 +412,7 @@ impl Call {
                 ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
             }
             Call::Detach => ("detach", json!({})),
+            Call::Dismiss => ("project.dismiss", json!({})),
             Call::Shutdown => ("shutdown", json!({})),
         }
     }
@@ -481,6 +491,7 @@ impl Call {
                 }
             }
             "detach" => Call::Detach,
+            "project.dismiss" => Call::Dismiss,
             "shutdown" => Call::Shutdown,
             _ => return None,
         })
@@ -519,6 +530,7 @@ impl Event {
             Event::Presence { at } => ("presence", json!({"at": at})),
             Event::Turbo { on } => ("turbo", json!({"on": on})),
             Event::StartAtLogin { on } => ("start_at_login", json!({"on": on})),
+            Event::Reopened { since } => ("project.reopened", json!({"since": since})),
             Event::Remote { view } => ("remote", json!({"view": view})),
             Event::RemoteAct { act } => ("remote.act", act.clone()),
             Event::Readiness { states } => ("readiness", json!({"states": states})),
@@ -571,6 +583,7 @@ impl Event {
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
             "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
             "start_at_login" => Event::StartAtLogin { on: p.get("on")?.as_bool()? },
+            "project.reopened" => Event::Reopened { since: p.get("since")?.as_i64() },
             "remote" => Event::Remote { view: p.get("view")?.clone() },
             "remote.act" => {
                 p.get("act")?.as_str()?;
@@ -718,11 +731,20 @@ fn socket_path_in(base: &Path, name: String) -> PathBuf {
 /// The real one is per machine, which is the point of it — so anything that
 /// wants a daemon to itself has to say so rather than quietly taking the
 /// machine's and fighting whatever else is running.
+///
+/// It is alone in a folder of its own, so what a daemon keeps beside its
+/// configuration (`projects.json`, receipts) is that daemon's alone: a daemon
+/// reopens the projects its folder lists (ADR-0034 D2), never another's.
 pub fn private_socket(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
-    socket_path_in(&std::env::temp_dir(), format!("{name}-{}-{n}.sock", std::process::id()))
+    let dir = format!("{name}-{}-{n}", std::process::id());
+    let socket = socket_path_in(&std::env::temp_dir(), format!("{dir}/d.sock"));
+    if let Some(folder) = socket.parent() {
+        let _ = std::fs::create_dir_all(folder);
+    }
+    socket
 }
 
 /// Is a session already listening there?
@@ -888,6 +910,7 @@ mod tests {
             Call::RemoteView { view: json!({"state": "off"}) },
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
+            Call::Dismiss,
             Call::Detach,
             Call::Shutdown,
         ] {
@@ -964,6 +987,8 @@ mod tests {
             Event::Presence { at: 1_790_000_000_000 },
             Event::Turbo { on: true },
             Event::StartAtLogin { on: false },
+            Event::Reopened { since: Some(1_790_000_000_000) },
+            Event::Reopened { since: None },
             Event::Remote { view: json!({"state": "on"}) },
             Event::RemoteAct { act: json!({"act": "stop"}) },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },

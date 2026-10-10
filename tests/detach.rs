@@ -1172,3 +1172,203 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
+
+// --- an unclean end (ADR-0034 D2, Phase 6.9 step 4) ----------------------
+
+/// `weft --serve`, the real program, in a home and a runtime folder of its
+/// own: its socket, and the process to kill.
+fn real_daemon(home: &Path) -> (std::process::Child, PathBuf) {
+    let runtime = home.join("run");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_weft"))
+        .arg("--serve")
+        .env("HOME", home)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove(weftd::service::MANAGED)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("weft --serve");
+    let socket = runtime.join("weft").join("weft.sock");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !protocol::is_live(&socket) {
+        assert!(Instant::now() < deadline, "the daemon never came up");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    (child, socket)
+}
+
+fn listed(home: &Path) -> Vec<PathBuf> {
+    let text = std::fs::read_to_string(home.join(".fab7/weft/projects.json")).unwrap_or_default();
+    weft::projects::read(&text).into_iter().map(|p| p.path).collect()
+}
+
+/// A daemon killed with two projects open starts again with both, each
+/// reopened, with no agent running; a `weft stop` starts again with none.
+#[test]
+fn a_daemon_killed_with_two_projects_open_reopens_both() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path().canonicalize().unwrap();
+    let (one, two) = (home.join("one"), home.join("two"));
+    for p in [&one, &two] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    let (mut daemon, socket) = real_daemon(&home);
+    let mut a = Client::attach(&socket, &one);
+    let b = Client::attach(&socket, &two);
+    assert_eq!(a.opened["reopened"], serde_json::Value::Null, "opened by a window");
+    a.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    a.wait_for_added();
+
+    // Killed: no `weft stop`, as a crash or a restart of the machine.
+    daemon.kill().unwrap();
+    daemon.wait().unwrap();
+    drop((a, b));
+    assert_eq!(listed(&home), [one.clone(), two.clone()], "the list outlives it");
+
+    let started = weftd::turns::now_millis();
+    let (mut daemon, socket) = real_daemon(&home);
+    assert_eq!(listed(&home), [one.clone(), two.clone()], "both open again");
+    let mut remote = Client::attach_as(&socket, &one, 24, 80, "weft-remote/0.2.0");
+    let since = remote.opened["reopened"].as_i64().expect("reopened, with when");
+    assert!(since >= started, "{since} is when this daemon started");
+    assert_eq!(remote.hello().len(), 0, "no agent runs in it");
+
+    // `weft stop`: the next daemon opens nothing.
+    protocol::stop(&socket).unwrap();
+    daemon.wait().unwrap();
+    assert!(listed(&home).is_empty(), "a stop empties the list");
+    let (mut daemon, socket) = real_daemon(&home);
+    assert!(listed(&home).is_empty(), "and nothing is reopened");
+    protocol::stop(&socket).unwrap();
+    daemon.wait().unwrap();
+}
+
+/// A daemon that finds a project listed (the one before it ended without a
+/// stop) reopens it with its sessions ended, each resumable by its id.
+#[test]
+fn a_reopened_project_shows_its_sessions_ended_and_resumable() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mut harness = weft::harness_table::fixture::file("codex");
+    harness["program"] = "cat".into();
+    harness["resume"] = serde_json::json!(["-"]);
+    let harnesses = weft::harness_table::Harnesses(vec![
+        weft::harness_table::Harness::of("codex", &harness).expect("a harness"),
+    ]);
+    let serve = |socket: &PathBuf| {
+        let (listening, config, harnesses) = (socket.clone(), config.clone(), harnesses.clone());
+        std::thread::spawn(move || {
+            let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
+        });
+    };
+
+    // The first daemon: a session of this project, its process now gone.
+    let first = protocol::private_socket("weft-reopen-a");
+    serve(&first);
+    let mut c = Client::attach(&first, &root);
+    let gone = std::process::Command::new("true").spawn().unwrap();
+    let pid = gone.id();
+    let start = weftd::process::info(pid).map(|i| i.start).or(Some("0.000001".into()));
+    support::signal(
+        &first,
+        weft_core::signal::Sent {
+            harness: "codex".into(),
+            hook: "Hook".into(),
+            session: "s_old".into(),
+            workspace: Some(root.to_string_lossy().into_owned()),
+            state: Some("turn_ended".into()),
+            pid: Some(pid),
+            pid_start: start,
+            ..Default::default()
+        },
+    );
+    let mut gone = gone;
+    gone.wait().unwrap();
+    c.wait_until(|e| match e {
+        Event::Agents { sessions, .. } if sessions.iter().any(|r| r.id == "s_old") => Some(()),
+        _ => None,
+    });
+
+    // The next daemon finds it listed, as one would after a crash.
+    let second = protocol::private_socket("weft-reopen-b");
+    serve(&second);
+    let mut d = Client::attach_as(&second, &root, 24, 80, "weft-remote/0.2.0");
+    assert!(d.opened["reopened"].is_i64(), "{}", d.opened["reopened"]);
+    let rows = &d.opened["agents"]["sessions"];
+    let old = rows.as_array().unwrap().iter().find(|r| r["id"] == "s_old").expect("listed");
+    assert_eq!(old["state"], "ended", "{old}");
+
+    // Resumed by its own id: no longer only reopened.
+    d.send(Call::StartAgent {
+        harness: "codex".into(),
+        spec: "cat".into(),
+        session: Some("s_old".into()),
+    });
+    let cleared = d.wait_until(|e| match e {
+        Event::Reopened { since } => Some(since),
+        _ => None,
+    });
+    assert_eq!(cleared, None, "a device resumed something in it");
+    d.wait_for_added();
+    d.send(Call::Shutdown);
+    c.send(Call::Shutdown);
+}
+
+/// A reopened project with no window is kept while nothing has been done in
+/// it; a window's visit then closes it by the 2026-10-07 rule, and Dismiss
+/// closes one at once.
+#[test]
+fn a_reopened_project_is_kept_until_someone_acts_in_it() {
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path().canonicalize().unwrap();
+    let (kept, dismissed) = (home.join("kept"), home.join("dismissed"));
+    for p in [&kept, &dismissed] {
+        std::fs::create_dir_all(p).unwrap();
+    }
+    let list = weft::projects::write(&[
+        weft::projects::Opened { path: kept.clone(), opened: 1 },
+        weft::projects::Opened { path: dismissed.clone(), opened: 2 },
+        weft::projects::Opened { path: "/gone/before".into(), opened: 3 },
+    ]);
+    std::fs::write(home.join("projects.json"), list).unwrap();
+    let socket = protocol::private_socket("weft-reopen-kept");
+    let (listening, config) = (socket.clone(), home.join("config.toml"));
+    std::thread::spawn(move || {
+        let _ = server::Session::serve(&listening, &config);
+    });
+    let now = || {
+        let text = std::fs::read_to_string(home.join("projects.json")).unwrap_or_default();
+        weft::projects::read(&text).into_iter().map(|p| p.path).collect::<Vec<_>>()
+    };
+    let mut remote = Client::attach_as(&socket, &kept, 24, 80, "weft-remote/0.2.0");
+    assert_eq!(now(), [kept.clone(), dismissed.clone()], "a folder that is gone is not");
+
+    // `weft remote` comes and goes: it holds nothing open, and nothing closes.
+    remote.send(Call::Detach);
+    drop(remote);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(now(), [kept.clone(), dismissed.clone()], "kept while nobody acted");
+
+    // A window opens it, which is someone in it; when it leaves with no
+    // agent running, it closes as any project would.
+    let mut w = Client::attach(&socket, &kept);
+    assert_eq!(w.opened["reopened"], serde_json::Value::Null, "a window holds it now");
+    w.send(Call::Detach);
+    drop(w);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(now(), std::slice::from_ref(&dismissed));
+
+    // Dismissed from a device: closed at once.
+    let mut device = Client::attach_as(&socket, &dismissed, 24, 80, "weft-remote/0.2.0");
+    assert_eq!(device.answer(Call::Dismiss), Ok(serde_json::json!({})));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(now().is_empty(), "{:?}", now());
+    let mut stop = Client::attach(&socket, &home);
+    stop.send(Call::Shutdown);
+}

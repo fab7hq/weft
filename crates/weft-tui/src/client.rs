@@ -442,6 +442,8 @@ impl Session {
                 // Another window switched it: this one says so too.
                 Event::Turbo { on } => self.turbo = on,
                 Event::StartAtLogin { on } => self.start_at_login = on,
+                // A window holds its project, so it is never only reopened.
+                Event::Reopened { .. } => {}
                 Event::Screen { .. }
                 | Event::Presence { .. }
                 | Event::RemoteAct { .. }
