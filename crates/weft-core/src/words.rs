@@ -252,6 +252,7 @@ pub const WORDS: &[(&str, &str)] = &[
         "Weft started again on {machine} at {time}, and these agents ended. Resume one, or dismiss this project.",
     ),
     ("web.reopened.dismiss", "Dismiss"),
+    ("web.reopened.ended", "This session ended at {time}, when Weft stopped on {machine}."),
     ("web.update.waiting", "Weft {version} is waiting on {machine}."),
     ("web.update.running_one", "It starts when no agent is running there: 1 is running."),
     ("web.update.running", "It starts when no agent is running there: {n} are running."),
