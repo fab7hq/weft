@@ -46,3 +46,41 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  release-build:
+    # What release.yml builds, built on every push, so a tag never finds out
+    # first that a platform cannot build (rustls's `ring` needs a C compiler
+    # for each target).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-14
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install the musl toolchain
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target "$TARGET" --bin weft --bin ringframe
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Check what was built runs
+        if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-musl')
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          "./target/$TARGET/release/ringframe" --version
+          "./target/$TARGET/release/weft" --help > /dev/null
