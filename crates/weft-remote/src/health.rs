@@ -16,6 +16,12 @@ pub const SLEPT: Duration = Duration::from_secs(15);
 /// A new name is not looked at from outside for this long: until it is known
 /// everywhere, a lookup of it can say it does not exist.
 pub const NEW_NAME: Duration = Duration::from_secs(120);
+/// A new name is told to the service this long after it appears. Resolvers
+/// learn it a moment after the tunnel prints it, and one asked sooner answers
+/// that it does not exist and keeps that answer for a minute or more: a phone
+/// told at once looked it up within 2 s and could not reach it for 90 s
+/// (Gate W-durable, 2026-10-11). Asked 3 s and more after, every lookup found it.
+pub const PUBLISHED: Duration = Duration::from_secs(5);
 /// How often the tunnel is looked at while it answers: often enough that one
 /// Cloudflare dropped is found, ended and replaced within the 60 s target
 /// (15 + 2 × 10 s of looks, then a new tunnel's few seconds).
@@ -55,11 +61,21 @@ pub struct Health {
     looking: bool,
     gone: u32,
     offline: bool,
+    /// When the tunnel last gave a new name.
+    named: Option<Instant>,
 }
 
 impl Health {
     pub fn new(mono: Instant, wall: SystemTime) -> Self {
-        Health { mono, wall, next_look: mono + NEW_NAME, looking: false, gone: 0, offline: false }
+        Health {
+            mono,
+            wall,
+            next_look: mono + NEW_NAME,
+            looking: false,
+            gone: 0,
+            offline: false,
+            named: None,
+        }
     }
 
     /// A tick at these times: whether the machine slept since the last one.
@@ -88,6 +104,12 @@ impl Health {
     pub fn new_name(&mut self, mono: Instant) {
         self.next_look = mono + NEW_NAME;
         self.gone = 0;
+        self.named = Some(mono);
+    }
+
+    /// Whether resolvers know the tunnel's name by now (`PUBLISHED`).
+    pub fn published(&self, mono: Instant) -> bool {
+        self.named.is_none_or(|at| mono >= at + PUBLISHED)
     }
 
     /// What a look at the tunnel answered.
@@ -191,7 +213,7 @@ impl Recovery {
 
     /// Tell the service `address` if it is due.
     pub fn report(&mut self, mono: Instant, address: Option<&str>, joined: bool) -> Option<Act> {
-        let a = address.filter(|_| joined)?;
+        let a = address.filter(|_| joined && self.health.published(mono))?;
         self.reported.due(a, mono).then(|| Act::Report(a.to_string()))
     }
 
@@ -331,5 +353,23 @@ mod tests {
         h.seen(t, Probe::Gone);
         h.seen(t, Probe::Up);
         assert!(!h.seen(t, Probe::Gone).recycle && !h.seen(t, Probe::Gone).recycle);
+    }
+
+    /// A new name is told to the service only once resolvers know it: a
+    /// device that looks it up sooner is told it does not exist, and keeps
+    /// that answer for a minute or more (Gate W-durable, 2026-10-11).
+    #[test]
+    fn a_new_name_is_reported_only_once_it_is_published() {
+        let (mono, wall) = at();
+        let mut r = Recovery::new(mono, wall);
+        r.health.new_name(mono);
+        let name = "https://new.example";
+        assert_eq!(r.report(mono, Some(name), true), None, "not as it appears");
+        let soon = mono + PUBLISHED - Duration::from_millis(1);
+        assert!(
+            r.tick(soon, wall, Some(name), true, true).iter().all(|a| !matches!(a, Act::Report(_)))
+        );
+        let acts = r.tick(mono + PUBLISHED, wall, Some(name), true, true);
+        assert!(acts.contains(&Act::Report(name.into())), "{acts:?}");
     }
 }

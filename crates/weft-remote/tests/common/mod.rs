@@ -189,7 +189,8 @@ impl Tui {
 
     /// Views until one is picked, keeping each as `view`.
     pub fn wait_view(&mut self, mut pick: impl FnMut(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // A new address reaches the service `PUBLISHED` (5 s) after it appears.
+        let deadline = Instant::now() + Duration::from_secs(10);
         self.out.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         while Instant::now() < deadline {
             if let Ok(Some(Line::Event(Event::Remote { view }))) = self.lines.next() {
