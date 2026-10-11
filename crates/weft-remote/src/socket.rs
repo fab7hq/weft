@@ -24,6 +24,10 @@ pub const PER_SECOND: u32 = 50;
 /// How many messages may wait for a device before its screen frames are
 /// dropped; twice this, and it is closed.
 pub const QUEUE: usize = 64;
+/// What the system may hold for a device it has not yet taken. Left to the
+/// system, Linux grows it to megabytes, so a device that stops reading fills
+/// that rather than its queue, and is never given a whole screen again.
+pub const SEND_BUFFER: usize = 64 * 1024;
 
 /// What a connection tells the loop.
 pub enum Socket {
@@ -52,6 +56,24 @@ fn config() -> WebSocketConfig {
     WebSocketConfig::default().max_message_size(Some(MAX_MESSAGE)).max_frame_size(Some(MAX_MESSAGE))
 }
 
+/// Set the socket's send buffer to `size`, which also stops the system from
+/// growing it. A socket that refuses keeps the system's.
+fn bound_send_buffer(stream: &TcpStream, size: usize) {
+    use std::os::fd::AsRawFd as _;
+    let size = libc::c_int::try_from(size).unwrap_or(libc::c_int::MAX);
+    // SAFETY: the descriptor is the stream's own, open for the call, and the
+    // value is a c_int of the length given.
+    unsafe {
+        libc::setsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_SNDBUF,
+            (&raw const size).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+}
+
 /// Upgrade `GET /ws` from the app's Origin; refuse anything else.
 // The shape is tungstenite's handshake callback's, error and all.
 #[allow(clippy::result_large_err)]
@@ -72,6 +94,7 @@ fn check(request: &Request, response: Response) -> Result<Response, ErrorRespons
 }
 
 fn serve<T: From<Socket> + Send + 'static>(id: u64, stream: TcpStream, tx: Sender<T>) {
+    bound_send_buffer(&stream, SEND_BUFFER);
     let Ok(mut refusal) = stream.try_clone() else { return };
     let mut reading = match tungstenite::accept_hdr_with_config(stream, check, Some(config())) {
         Ok(ws) => ws,

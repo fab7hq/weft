@@ -14,6 +14,8 @@ anyhow = "1.0.104"
 base64ct = { version = "1.8.3", features = ["alloc"] }
 # Checks Fab7's assertions (remote.md §8).
 ed25519-dalek = "3.0.0"
+# Bounds what the system buffers for a device's socket.
+libc = "0.2.189"
 # Tokens, the epoch, device ids.
 getrandom = "0.4.3"
 # The push request web-push-native builds is an http::Request.

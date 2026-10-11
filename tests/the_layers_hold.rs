@@ -58,6 +58,7 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "ed25519-dalek",
             "getrandom",
             "http",
+            "libc",
             "p256",
             "serde_json",
             "sha2",
@@ -70,8 +71,8 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
         ],
         "another device's way in: a socket client like the TUI, the tunnel, the WebSocket \
          (tungstenite), HTTPS (ureq with rustls), Web Push (web-push-native, its VAPID JWT signed \
-         with p256), Fab7's assertions (ed25519-dalek) and its own randomness (getrandom); never \
-         weftd",
+         with p256), Fab7's assertions (ed25519-dalek), its own randomness (getrandom) and a bounded \
+         socket buffer for each device (libc); never weftd",
     ),
 ];
 
