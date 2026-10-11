@@ -12,13 +12,22 @@
 <a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
-- **RingFrame** — your agentic workflow in three acts: ask, eval, seal.
-  Everything is an Ask.
-- **Weft** — RingFrame in your terminal: your agents in panes, your Asks in
-  one list.
+Weft is the terminal workspace for the coding agents you already run: your
+sessions side by side in panes, and every Ask in one list beside them, from
+asked to checked to decided. It has no model of its own.
 
 Named after woven cloth: RingFrame is the warp, the fixed record; Weft is the
 thread carried across it.
+
+## What is here
+
+| Part | What it is |
+| --- | --- |
+| Weft (`weft`, `weftd`) | The terminal UI and the daemon that keeps your agents running |
+| RingFrame (`crates/ringframe`) | Ask, Eval and Seal over the record in `.fab7/rf/`, as the `ringframe` binary |
+| [Weft on the web](https://weft.getfab7.com) | The same agents from a phone or a browser, from [fab7hq/weft-app](https://github.com/fab7hq/weft-app) |
+
+Weft runs Claude Code, Codex and Antigravity.
 
 ## Install
 
@@ -26,10 +35,13 @@ thread carried across it.
 curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | sh
 ```
 
-Then run `weft` in a repository. Everything else, from setting up your harness
-to the whole loop from Ask to Seal, is in the docs at
-**[docs.getfab7.com](https://docs.getfab7.com)**. Changes in each version are
-in [Releases](https://github.com/fab7hq/weft/releases).
+Then run `weft` in a repository. Later, `weft update` installs the newest
+release, and the running Weft takes it once no agent is working.
+
+## Docs
+
+Setting up your harness, the whole loop from Ask to Seal, and Weft on your
+phone are at **[docs.getfab7.com](https://docs.getfab7.com)**.
 
 ## Development
 
@@ -38,31 +50,32 @@ cargo build
 cargo nextest run --workspace   # cargo install cargo-nextest; or plain `cargo test`
 ```
 
-[nextest](https://nexte.st) runs each test in its own process: RingFrame's tests
-that set `HOME` then run side by side instead of one at a time behind a lock.
-`.config/nextest.toml` caps the integration tests, which start a weftd each, at
-four at once.
-
-Dev builds carry no debug info (`Cargo.toml`). On macOS, debug info would keep
-every object file in `target/debug/deps`, and cargo never removes stale ones.
-Once that directory reaches hundreds of thousands of files, each rustc call
-spends tens of seconds listing it. If an old checkout is slow to build,
-`ls -f target/debug/deps | wc -l` shows the count; `cargo clean` resets it.
-
-The docs, and the scenarios that draw Weft's screens for them, live in
-[fab7hq/docs](https://github.com/fab7hq/docs), pinned to a Weft release: a
-change to what Weft draws shows up there when the pin moves. `examples/` holds
-probes that check one mechanism against a real harness, by hand.
-
-`crates/weft-core/words.json` holds the words the TUI and the web app share,
-generated from `weft_core::words`; `cargo test` fails when it is stale, and
-`WEFT_WRITE_WORDS=1 cargo test -p weft-core --test words_json` writes it again.
+[nextest](https://nexte.st) runs each test in its own process, so RingFrame's
+tests that set `HOME` run side by side. `.config/nextest.toml` caps the
+integration tests, which each start a weftd, at four at once. Dev builds carry
+no debug info (`Cargo.toml`): on macOS it would keep every object file in
+`target/debug/deps`, and a build slows once that directory holds hundreds of
+thousands. `cargo clean` resets it.
 
 `./bin/reinstall-local` builds both binaries, installs them, syncs RingFrame's
-configuration and Weft's harness files (`~/.fab7/weft/harnesses/`) from a `fab7`
-checkout beside this one, and restarts the daemon, so a change is tested as
-users will get it. Each harness's plugin is then set up from Weft's RingFrame
-view (`U`).
+configuration and Weft's harness files from a `fab7` checkout beside this one,
+and restarts the daemon, so a change is tested as users will get it. Set up
+each harness's plugin from Weft's RingFrame view (`U`).
+
+`crates/weft-core/words.json` holds the words the TUI and the web app share.
+`cargo test` fails when it is stale; `WEFT_WRITE_WORDS=1 cargo test -p
+weft-core --test words_json` writes it again.
+
+The docs, and the scenarios that draw Weft's screens for them, live in
+[fab7hq/docs](https://github.com/fab7hq/docs), pinned to a Weft release.
+`examples/` holds probes that check one mechanism against a real harness, by
+hand.
+
+## Releases
+
+Tagged `vX.Y.Z`; what changed is in [Releases](https://github.com/fab7hq/weft/releases).
+Weft, RingFrame and the `rf` plugins in [fab7hq/fab7](https://github.com/fab7hq/fab7)
+share one version.
 
 ## License
 
