@@ -13,8 +13,10 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     app.note_list_rows(area.height.saturating_sub(1) as usize);
 
     // An agent is on the list the moment it is opened, so the empty list is
-    // only for a project with no agent and nothing asked.
-    if app.units().is_empty() && app.pane_count() == 0 && !app.has_sessions() {
+    // only for a project with no agent and nothing asked. With more projects
+    // open, the others stay listed and this one says it under its heading.
+    let empty = app.units().is_empty() && app.pane_count() == 0 && !app.has_sessions();
+    if empty && app.project_count() == 1 {
         lines.push(Line::raw(""));
         // RingFrame is not set up here: what it still needs, under the project.
         if let Some(needs) = app.needs() {
@@ -26,22 +28,7 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
             );
             return Paragraph::new(lines);
         }
-        if let Some((name, state)) = app.not_ready() {
-            lines.push(Line::styled(
-                format!(" {}", state.say(&name).unwrap_or_default()),
-                th.label(),
-            ));
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(format!(" {}", word("tree.runs_either_way")), th.label()));
-            return Paragraph::new(lines);
-        }
-        // When the agent area is beside the list, it says how to start one.
-        let next = if beside_agent { "" } else { "[N] starts an agent to ask." };
-        lines.push(Line::styled(format!(" {}", word("tree.nothing_asked")), th.label()));
-        if !next.is_empty() {
-            lines.push(Line::raw(""));
-            lines.push(Line::styled(format!(" {next}"), th.label()));
-        }
+        lines.extend(nothing_here(app, width, beside_agent));
         return Paragraph::new(lines);
     }
 
@@ -60,9 +47,22 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
         let at = Rect { y: area.y + lines.len() as u16, height: 1, ..area };
         app.hits.push((at, Target::Row(i)));
         lines.push(sidebar_row(app, row, i == app.selected, width));
+        if let crate::app::Row::Project { project, .. } = row
+            && empty
+            && app.project_count() > 1
+            && app.is_focused(*project)
+        {
+            lines.extend(match app.needs() {
+                Some(needs) => checklist(&needs, width)
+                    .into_iter()
+                    .map(|l| Line::styled(format!(" {l}"), th.label()))
+                    .collect(),
+                None => nothing_here(app, width, beside_agent),
+            });
+        }
     }
     // An agent open and nothing asked yet: say what comes next under it.
-    if app.units().is_empty() {
+    if app.units().is_empty() && !(empty && app.project_count() > 1) {
         let next: Vec<String> = match (app.needs(), app.not_ready()) {
             (Some(needs), _) => checklist(&needs, width),
             (None, Some((name, state))) => {
@@ -76,6 +76,26 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
         }
     }
     Paragraph::new(lines)
+}
+
+/// What a project with no agent and nothing asked says: what RingFrame
+/// lacks, or that nothing is asked, and how to start an agent.
+fn nothing_here(app: &App, _width: usize, beside_agent: bool) -> Vec<Line<'static>> {
+    let th = app.theme;
+    if let Some((name, state)) = app.not_ready() {
+        return vec![
+            Line::styled(format!(" {}", state.say(&name).unwrap_or_default()), th.label()),
+            Line::raw(""),
+            Line::styled(format!(" {}", word("tree.runs_either_way")), th.label()),
+        ];
+    }
+    // When the agent area is beside the list, it says how to start one.
+    let mut out = vec![Line::styled(format!(" {}", word("tree.nothing_asked")), th.label())];
+    if !beside_agent {
+        out.push(Line::raw(""));
+        out.push(Line::styled(" [N] starts an agent to ask.", th.label()));
+    }
+    out
 }
 
 /// What RingFrame still needs before it is set up here, a line each under

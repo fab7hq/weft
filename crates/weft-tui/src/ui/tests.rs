@@ -1652,3 +1652,28 @@ fn search_narrows_the_earlier_sessions_and_keeps_the_groups() {
     press(&mut a, KeyCode::Enter);
     assert!(!a.detail().unwrap().typing, "Enter ends the search; the list stays narrowed");
 }
+
+/// With two projects open, the one with nothing in it says so under its own
+/// heading; it never takes the list from the other. Quitting the only agent of
+/// a project with no work leaves it that way.
+#[test]
+fn a_project_with_nothing_in_it_leaves_the_other_projects_listed() {
+    let mut a = judged();
+    let (other, _) = crate::app::tests::test_session("second");
+    a.open_project(&other.to_string_lossy());
+    a.add("codex", "/bin/cat").expect("an agent in the second project");
+    a.settle();
+    a.focus = Focus::Agent;
+    a.input(0, &[4]).expect("Ctrl+D ends /bin/cat");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && a.pane_count() > 0 {
+        a.pump();
+        a.notice_an_agent_that_ended();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(a.pane_count(), 0, "the agent quit");
+    let drawn = screen(&mut a, 120, 30);
+    assert!(drawn.contains("readme fix"), "the first project's work is still listed: {drawn}");
+    assert!(drawn.contains("Nothing asked for yet."), "the empty one says so: {drawn}");
+    assert_eq!(drawn.matches("open  ⌫").count(), 2, "both projects are listed: {drawn}");
+}

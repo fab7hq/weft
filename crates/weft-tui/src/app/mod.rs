@@ -1458,6 +1458,16 @@ impl App {
         !sess!(self).sessions.is_empty()
     }
 
+    /// How many projects this window has open.
+    pub fn project_count(&self) -> usize {
+        self.projects.len()
+    }
+
+    /// Whether project `at` is the one acts land in.
+    pub fn is_focused(&self, at: usize) -> bool {
+        self.at == at
+    }
+
     /// The Mac's distance from UTC, in milliseconds, as the daemon said.
     pub fn zone(&self) -> i64 {
         sess!(self).zone
