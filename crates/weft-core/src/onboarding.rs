@@ -57,9 +57,9 @@ impl State {
     /// What the row says after its name.
     pub fn words(&self) -> String {
         match self {
-            State::Ready { version: Some(v) } => format!("ready · rf {v}"),
+            State::Ready { version: Some(v) } => format!("ready · plugin {v}"),
             State::Ready { version: None } => "ready".into(),
-            State::Behind { have, latest } => format!("rf {have} → {latest}"),
+            State::Behind { have, latest } => format!("plugin {have} → {latest}"),
             State::NotFound => "not found".into(),
             State::NotSetUp => "not set up".into(),
             State::CannotInstall => "Weft cannot do this one: its setup page says how".into(),
@@ -166,6 +166,26 @@ impl View {
             || self.rows.iter().any(|r| {
                 matches!(r.state, State::Behind { .. } | State::NotSetUp | State::Failed { .. })
             })
+    }
+
+    /// The mark of Weft's own row: behind, installed and waiting, not asked
+    /// yet or out of reach, or current.
+    pub fn weft_mark(&self) -> &'static str {
+        match () {
+            _ if self.weft_behind => "↑",
+            _ if self.weft_waiting => "↻",
+            _ if self.weft_latest.is_none() => "?",
+            _ => "✓",
+        }
+    }
+
+    /// The mark of RingFrame's row, which is its configuration.
+    pub fn configuration_mark(&self) -> &'static str {
+        match () {
+            _ if self.configuration_behind => "↑",
+            _ if self.latest.is_none() => "?",
+            _ => "✓",
+        }
     }
 
     /// Both releases were reached and nothing is behind: Weft, RingFrame's
@@ -362,11 +382,11 @@ mod tests {
         let r = row(&claude, Some((Readiness::Missing(Gap::Plugin), None)), None);
         assert_eq!((r.state.clone(), r.state.next()), (State::NotSetUp, Some(Next::SetUp)));
         let r = row(&claude, Some((Readiness::Ready, Some("0.1.3".into()))), Some("0.1.3"));
-        assert_eq!((r.state.words().as_str(), r.state.next()), ("ready · rf 0.1.3", None));
+        assert_eq!((r.state.words().as_str(), r.state.next()), ("ready · plugin 0.1.3", None));
         let r = row(&claude, Some((Readiness::Ready, Some("0.1.2".into()))), Some("0.1.3"));
         assert_eq!(
             (r.state.words().as_str(), r.state.next()),
-            ("rf 0.1.2 → 0.1.3", Some(Next::Update))
+            ("plugin 0.1.2 → 0.1.3", Some(Next::Update))
         );
         assert_eq!(
             row(&claude, Some((Readiness::Missing(Gap::Cli), None)), None).state,

@@ -306,19 +306,23 @@ fn setup_body(app: &App) -> Vec<String> {
     };
     let mut lines = if v.pending_release {
         vec!["Checking for updates…".into(), String::new()]
-    } else if v.up_to_date() {
-        vec!["You are using the latest version.".into(), String::new()]
     } else {
-        vec![
-            format!("Weft {}", v.weft),
-            match (&v.latest, &v.plugin) {
-                (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
-                (Some(t), None) => format!("Latest release {t}"),
-                _ => "Weft could not reach the latest release.".into(),
-            },
-            format!("RingFrame's configuration: {}", v.configuration),
+        // One list, one layout: the mark, the name, the state. Weft, then
+        // RingFrame; the harness plugins follow as the rows.
+        let mut top = vec![
+            format!("    {}  {:<14}{}", v.weft_mark(), "Weft", v.weft),
+            format!(
+                "    {}  {:<14}configuration: {}",
+                v.configuration_mark(),
+                "RingFrame",
+                v.configuration
+            ),
             String::new(),
-        ]
+        ];
+        if v.up_to_date() {
+            top.extend(["You are using the latest version.".into(), String::new()]);
+        }
+        top
     };
     if v.rows.is_empty() {
         lines.push("Weft has no harness files in ~/.fab7/weft/harnesses.".into());

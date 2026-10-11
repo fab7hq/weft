@@ -16,12 +16,12 @@ expression: drawn
                                             ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
+                                            ││                                                                         │
                                             │└─────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
  UPDATE
- Weft 0.1.2 → 0.1.3
- Latest release v0.1.3 · rf 0.1.3
- RingFrame's configuration: up to date
+     ↑  Weft          0.1.2 → 0.1.3
+     ✓  RingFrame     configuration: up to date
 
  Sign in to a harness yourself first: Weft runs its own plugin
  commands, then asks it again. Your rules are not touched.
@@ -29,9 +29,9 @@ expression: drawn
    Error: not signed in
 
    ▸ !  Antigravity   failed: agy plugin install https://github.com/fab7hq/f…
-     ↑  Claude Code   rf 0.1.2 → 0.1.3
+     ↑  Claude Code   plugin 0.1.2 → 0.1.3
      ✗  Codex         not found
-     ✓  Zed Agent     ready · rf 0.1.3
+     ✓  Zed Agent     ready · plugin 0.1.3
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  [↑↓] PICK   [P]ROCEED ALL   [ESC] CLOSE
  Weft never changes an agent without asking you first.

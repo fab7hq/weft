@@ -1710,6 +1710,6 @@ fn the_update_view_says_when_nothing_is_newer() {
     a.modal = Some(crate::app::Modal::RingFrame);
     let drawn = screen(&mut a, 120, 32);
     assert!(drawn.contains("You are using the latest version."), "{drawn}");
-    assert!(!drawn.contains("Latest release") && !drawn.contains("is the latest"), "{drawn}");
+    assert!(drawn.contains("✓  Weft") && drawn.contains("✓  RingFrame"), "{drawn}");
     assert!(!drawn.contains("[U]PDATE"), "nothing to update lights nothing: {drawn}");
 }
