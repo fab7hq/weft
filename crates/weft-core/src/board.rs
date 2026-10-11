@@ -38,6 +38,8 @@ pub enum Act {
     Remote,
     /// Turn turbo mode on or off for the agents started next.
     Turbo,
+    /// Turn Weft's own "Start at login" on or off (ADR-0034 D1).
+    StartAtLogin,
     Help,
     Quit,
 }
@@ -241,6 +243,7 @@ impl Board<'_> {
             | Act::Remote
             | Act::ReadyUp
             | Act::Turbo
+            | Act::StartAtLogin
             | Act::Help
             | Act::Quit => None,
             Act::Ask => {

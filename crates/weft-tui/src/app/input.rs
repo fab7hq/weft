@@ -300,11 +300,8 @@ impl App {
             event::KeyCode::Up => self.modal_choice = self.modal_choice.saturating_sub(1),
             event::KeyCode::Down => self.modal_choice = (self.modal_choice + 1).min(options - 1),
             event::KeyCode::Char(c) if modal == Modal::Weft => {
-                if let Some(&(_, _, act)) =
-                    WEFT_MENU.iter().find(|(k, ..)| k.eq_ignore_ascii_case(&c))
-                {
-                    self.modal = None;
-                    self.act(act);
+                if let Some(at) = WEFT_MENU.iter().position(|(k, ..)| k.eq_ignore_ascii_case(&c)) {
+                    self.menu_act(at);
                 }
             }
             event::KeyCode::Left | event::KeyCode::Esc => match &modal {
@@ -361,11 +358,7 @@ impl App {
                     self.take_the_board();
                 }
             }
-            Modal::Weft => {
-                let act = WEFT_MENU[self.modal_choice.min(WEFT_MENU.len() - 1)].2;
-                self.modal = None;
-                self.act(act);
-            }
+            Modal::Weft => self.menu_act(self.modal_choice.min(WEFT_MENU.len() - 1)),
             Modal::Quit => match self.modal_choice {
                 0 => {
                     // Leave; the server keeps the agents working.

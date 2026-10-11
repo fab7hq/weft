@@ -2096,6 +2096,11 @@ fn a_device_asking_opens_the_question_by_itself() {
     let allow = |device: &str| {
         Some(Modal::Allow { device: device.into(), name: "iPhone".into(), login: "octo".into() })
     };
+    // Remote is on: a `weft remote` speaking while it is off is told to stop.
+    press(&mut a, KeyCode::Char('r'));
+    press(&mut a, KeyCode::Enter);
+    remote_state(&mut a, "starting");
+    press(&mut a, KeyCode::Esc);
     a.focus = Focus::Agent;
     let mut remote = Remote::on(&a, asking("d_1"));
     modal_is(&mut a, allow("d_1"));
@@ -2119,4 +2124,66 @@ fn a_device_asking_opens_the_question_by_itself() {
     let _expired =
         Remote::on(&a, serde_json::json!({"state": "on", "login": "octo", "devices": []}));
     modal_is(&mut a, Some(Modal::Help));
+}
+
+/// A scratch home whose `systemctl` does nothing: Weft's service as a test
+/// may write it, never the machine's.
+fn scratch_service(name: &str) -> (PathBuf, weftd::service::Service) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let scratch = std::env::temp_dir().join(format!("weft-app-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let (home, tools) = (scratch.join("home"), scratch.join("tools"));
+    std::fs::create_dir_all(&home).expect("home");
+    std::fs::create_dir_all(&tools).expect("tools");
+    let systemctl = tools.join("systemctl");
+    std::fs::write(&systemctl, "#!/bin/sh\nexit 0\n").expect("systemctl");
+    std::fs::set_permissions(&systemctl, std::fs::Permissions::from_mode(0o755)).expect("mode");
+    let service =
+        weftd::service::Service::new(weftd::service::System::Systemd, home, 501).with_tools(tools);
+    (scratch, service)
+}
+
+/// T13.2's L: Weft's own "Start at login" turned on and off in place from
+/// the Weft menu, the service written to run `weft --serve` (ADR-0034 D1).
+#[test]
+fn l_in_the_weft_menu_turns_start_at_login_on_and_off() {
+    let (scratch, service) = scratch_service("login");
+    let (root, session) = test_session_in("login", set_up(|w| w.with_service(service.clone())));
+    let mut a = App::with_session(root, Toggle, session);
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('l'));
+    assert_eq!(a.modal, Some(Modal::Weft), "the menu stays open");
+    assert_eq!(WEFT_MENU[a.modal_choice].1, "Start at login", "and L is picked");
+    assert!(sess!(a).start_at_login, "{:?}", a.hint_text());
+    let unit = std::fs::read_to_string(service.file()).expect("the service is written");
+    assert!(unit.contains("--serve"), "{unit}");
+    // Enter on it turns it off again.
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.modal, Some(Modal::Weft));
+    assert!(!sess!(a).start_at_login);
+    assert!(!service.installed());
+    let _ = std::fs::remove_dir_all(scratch);
+}
+
+/// Where Weft has no service, L says so in one line and the option stays
+/// off; in the Remote view (T13.3) L asks the same.
+#[test]
+fn start_at_login_that_cannot_be_turned_on_says_why_and_stays_off() {
+    let (root, session) = test_session("no-login");
+    let mut a = App::with_session(root, Toggle, session);
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('l'));
+    assert!(!sess!(a).start_at_login);
+    assert_eq!(
+        a.hint_text(),
+        Some("Could not turn on Start at login: Weft has no login service on this system")
+    );
+    press(&mut a, KeyCode::Esc);
+    sess!(a).remote = Some(json!({"state": "on", "login": "octo", "address": "https://a.example",
+        "tunnel": "up", "note": "n", "devices": []}));
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('r'));
+    press(&mut a, KeyCode::Char('l'));
+    assert_eq!(a.modal, Some(Modal::Remote));
+    assert!(a.hint_text().is_some_and(|h| h.starts_with("Could not turn on Start at login")));
 }

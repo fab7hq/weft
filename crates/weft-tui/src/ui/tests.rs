@@ -745,9 +745,10 @@ fn help_says_what_enter_does_once_and_update_sits_above_help() {
     assert_eq!(at("U  update") + 1, at("H  help"), "update sits right above help:\n{help}");
     // The Weft menu: the same order, and no turbo, whose switch is on the title bar.
     let menu: Vec<char> = crate::app::WEFT_MENU.iter().map(|(k, ..)| *k).collect();
-    assert_eq!(menu, ['O', 'N', 'B', 'R', 'U', 'H', 'X']);
+    assert_eq!(menu, ['O', 'N', 'B', 'R', 'L', 'U', 'H', 'X']);
     assert_eq!(crate::app::WEFT_MENU[3].1, "Remote");
-    assert_eq!(crate::app::WEFT_MENU[4].1, "Update");
+    assert_eq!(crate::app::WEFT_MENU[4].1, "Start at login");
+    assert_eq!(crate::app::WEFT_MENU[5].1, "Update");
 }
 
 /// remote.md §12: `W` → `R` shows the remote view `weft remote` publishes,
@@ -755,6 +756,8 @@ fn help_says_what_enter_does_once_and_update_sits_above_help() {
 #[test]
 fn the_remote_view_in_each_state() {
     let mut a = app();
+    // With Start at login on, the view is T8.13/T8.14's (T13.3 is its off).
+    a.session_mut().start_at_login = true;
     press(&mut a, KeyCode::Char('w'));
     press(&mut a, KeyCode::Char('r'));
     assert_eq!(a.modal, Some(crate::app::Modal::Remote));
@@ -968,6 +971,78 @@ fn atlas_t1_8_an_update_waiting() {
     let mut a = atlas();
     let _ = a.newer.set("0.1.1".into());
     expect_screen("atlas_t1_8", &screen(&mut a, 120, 32));
+}
+
+/// T13.1: an update installed while agents run waits for them, and says so
+/// in place of `↑ [U]PDATE`, with how many run (ADR-0034 D5).
+#[test]
+fn atlas_t13_1_an_update_waiting() {
+    let mut a = atlas();
+    a.session_mut().update = Some("0.2.1".into());
+    let drawn = screen(&mut a, 120, 32);
+    let title = drawn.lines().next().unwrap_or_default();
+    assert!(title.contains("↻ UPDATE WAITING   [T]URBO OFF"), "{title}");
+    assert!(!drawn.contains("[U]PDATE"), "{drawn}");
+    let hint = "Weft 0.2.1 is installed - it starts when no agent is running (2 running)";
+    assert_eq!(drawn.lines().last().map(str::trim), Some(hint), "{drawn}");
+    expect_screen("atlas_t13_1", &drawn);
+    // It started: nothing waits, and the title is as before.
+    a.session_mut().update = None;
+    assert!(!screen(&mut a, 120, 32).contains("UPDATE WAITING"));
+}
+
+/// T13.2: Weft's own "Start at login" in the Weft menu, after Remote, with
+/// its state; while it is picked the line under the keys says what it does
+/// (ADR-0034 D1).
+#[test]
+fn atlas_t13_2_start_at_login_in_the_weft_menu() {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('w'));
+    for _ in 0..4 {
+        press(&mut a, KeyCode::Down);
+    }
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("▸ [L]  Start at login  OFF"), "{drawn}");
+    let says =
+        "Start Weft when you log in, and again if it stops. Weft never turns this on by itself.";
+    assert_eq!(drawn.lines().last().map(str::trim), Some(says), "{drawn}");
+    expect_screen("atlas_t13_2", &drawn);
+    a.session_mut().start_at_login = true;
+    assert!(screen(&mut a, 120, 32).contains("▸ [L]  Start at login  ON"));
+    // Another item picked: the line is the menu's own again.
+    press(&mut a, KeyCode::Up);
+    assert!(!screen(&mut a, 120, 32).contains(says));
+}
+
+/// T13.3: Remote on with Start at login off says, in one line, that Remote
+/// stops at a restart, and offers `[L]`; with the option on neither is shown.
+#[test]
+fn atlas_t13_3_remote_on_with_start_at_login_off() {
+    let mut a = atlas();
+    let now =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+            as i64;
+    a.session_mut().remote = Some(serde_json::json!({"state": "on", "login": "0xnairb",
+    "address": "https://tall-river-1234.trycloudflare.com", "tunnel": "up",
+    "note": "traffic is decrypted at Cloudflare's edge", "devices": [
+        {"id": "d_1", "name": "iPhone", "login": "0xnairb", "last_seen": now - 10_000},
+        {"id": "d_2", "name": "Browser", "login": "0xnairb", "last_seen": now - 3 * 3_600_000},
+    ]}));
+    press(&mut a, KeyCode::Char('w'));
+    press(&mut a, KeyCode::Char('r'));
+    let drawn = screen(&mut a, 120, 32);
+    let line =
+        "Start at login is off: Remote stops when this machine restarts, until you run weft.";
+    let at = |what: &str| drawn.lines().position(|l| l.contains(what));
+    assert_eq!(at(line), at("Traffic is decrypted").map(|i| i + 1), "{drawn}");
+    assert!(
+        drawn.contains("[↑↓] PICK   [D] REMOVE   [L] START AT LOGIN   [O] TURN OFF   [ESC] CLOSE"),
+        "{drawn}"
+    );
+    expect_screen("atlas_t13_3", &drawn);
+    a.session_mut().start_at_login = true;
+    let on = screen(&mut a, 120, 32);
+    assert!(!on.contains(line) && !on.contains("[L] START AT LOGIN"), "{on}");
 }
 
 /// The Atlas's sample with its second project: docs, with claude running and

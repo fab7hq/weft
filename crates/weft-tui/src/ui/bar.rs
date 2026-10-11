@@ -77,7 +77,12 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
                 "installing" => " [ESC] CLOSE",
                 "signing_in" => " [ESC] CANCEL",
                 "signed_out" => " [Enter] SIGN IN   [O] TURN OFF   [ESC] CLOSE",
+                // Remote stops at a restart while Start at login is off (T13.3).
+                "on" if devices && !app.start_at_login() => {
+                    " [↑↓] PICK   [D] REMOVE   [L] START AT LOGIN   [O] TURN OFF   [ESC] CLOSE"
+                }
                 "on" if devices => " [↑↓] PICK   [D] REMOVE   [O] TURN OFF   [ESC] CLOSE",
+                "on" if !app.start_at_login() => " [L] START AT LOGIN   [O] TURN OFF   [ESC] CLOSE",
                 _ => " [O] TURN OFF   [ESC] CLOSE",
             };
             return plain(keys);
@@ -194,7 +199,17 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         let said = format!(" Sent, but RingFrame did not record it ({why}). It has gone once.");
         return Paragraph::new(Line::styled(said, th.needs_you()));
     }
-    if let Some(v) = app.newer.get().filter(|_| app.modal.is_none() && !app.waiting_here()) {
+    let quiet = app.modal.is_none() && !app.waiting_here();
+    if let Some(v) = app.update_waiting().filter(|_| quiet) {
+        return Paragraph::new(Line::styled(
+            format!(
+                " Weft {v} is installed - it starts when no agent is running ({} running)",
+                app.running_everywhere()
+            ),
+            th.needs_you(),
+        ));
+    }
+    if let Some(v) = app.newer.get().filter(|_| quiet) {
         let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
         return Paragraph::new(Line::styled(
             format!(" Weft {v} is out - update to use the latest version"),
@@ -218,6 +233,10 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         }
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
+        }
+        (Some(Modal::Weft), _) if app.start_at_login_picked() => {
+            " Start Weft when you log in, and again if it stops. Weft never turns this on by itself."
+                .into()
         }
         (Some(Modal::Remote), _) => {
             " Fab7 says who you are; only this machine says which devices get in.".into()

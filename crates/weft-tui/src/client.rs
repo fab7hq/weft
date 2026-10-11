@@ -587,6 +587,13 @@ impl Session {
         self.tell(Call::Turbo { on })
     }
 
+    /// Turn Weft's own "Start at login" on or off: its service runs
+    /// `program --serve` with `path` as its `PATH` (ADR-0034 D1). Answered
+    /// with `{"start_at_login": bool}`.
+    pub fn set_start_at_login(&mut self, on: bool, program: &str, path: &str) -> Result<u64> {
+        self.tell(Call::StartAtLogin { on, program: program.into(), path: path.into() })
+    }
+
     /// The agents that could be started here. Answered with `{"starts": …}`.
     pub fn available(&mut self) -> Result<u64> {
         self.tell(Call::Available)

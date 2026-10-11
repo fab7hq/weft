@@ -26,8 +26,7 @@ impl Session {
             service.remove(managed)
         };
         if let Err(why) = done {
-            let turn = if on { "on" } else { "off" };
-            return Answer::No("failed", format!("Could not turn {turn} Start at login: {why}"));
+            return Answer::No("failed", why);
         }
         let text = std::fs::read_to_string(&self.config).unwrap_or_default();
         match weft_core::config::set_start_at_login(&text, on) {

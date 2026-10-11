@@ -188,7 +188,12 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
     match modal {
         Modal::Weft => crate::app::WEFT_MENU
             .iter()
-            .map(|(key, label, _)| format!("[{key}]  {label}"))
+            .map(|(key, label, act)| match act {
+                weft_core::board::Act::StartAtLogin => {
+                    format!("[{key}]  {label}  {}", if app.start_at_login() { "ON" } else { "OFF" })
+                }
+                _ => format!("[{key}]  {label}"),
+            })
             .collect(),
         Modal::CloseProject { .. } => vec!["Close it".into(), word("act.cancel").into()],
         Modal::OpenProject { .. } => Vec::new(),
@@ -243,11 +248,12 @@ pub(super) fn panel(app: &App, area: Rect) -> Paragraph<'static> {
         .collect();
     let choices = panel_choices(app, modal);
     let for_body = room.saturating_sub(choices.len());
+    let warning = panel_warning(app, modal);
     for (i, l) in body.iter().take(for_body).enumerate() {
         let more = body.len() > for_body && i + 1 == for_body;
         drawn.push(Line::styled(
             if more { format!(" {l}  ▼") } else { format!(" {l}") },
-            th.label(),
+            if warning.as_deref() == Some(l.as_str()) { th.needs_you() } else { th.label() },
         ));
     }
     let at = match modal {
@@ -258,12 +264,39 @@ pub(super) fn panel(app: &App, area: Rect) -> Paragraph<'static> {
     };
     for (i, choice) in choices.iter().enumerate() {
         let picked = i == at;
-        drawn.push(Line::styled(
-            format!("   {} {choice}", if picked { "▸" } else { " " }),
-            if picked { th.selected() } else { th.label() },
-        ));
+        let style = if picked { th.selected() } else { th.label() };
+        let line = format!("   {} {choice}", if picked { "▸" } else { " " });
+        // The menu's option says its state as T13.2 does: ON lit, OFF muted.
+        let state = (*modal == Modal::Weft)
+            .then(|| line.rsplit_once("  ").filter(|(_, s)| *s == "ON" || *s == "OFF"))
+            .flatten();
+        drawn.push(match state {
+            Some((item, state)) => Line::from(vec![
+                Span::styled(format!("{item}  "), style),
+                Span::styled(
+                    state.to_string(),
+                    Style::default().fg(if state == "ON" { th.accent() } else { th.muted() }),
+                ),
+            ]),
+            None => Line::styled(line, style),
+        });
     }
     Paragraph::new(drawn)
+}
+
+/// The one line of a panel's body that must be seen, if it has one.
+fn panel_warning(app: &App, modal: &Modal) -> Option<String> {
+    (*modal == Modal::Remote && remote_needs_login(app)).then(|| START_AT_LOGIN_OFF.to_string())
+}
+
+const START_AT_LOGIN_OFF: &str =
+    "Start at login is off: Remote stops when this machine restarts, until you run weft.";
+
+/// Remote is on and nothing would start it again after a restart (T13.3).
+fn remote_needs_login(app: &App) -> bool {
+    !app.start_at_login()
+        && app.remote_view().is_some_and(|v| v["state"] == "on")
+        && app.remote_removing.is_none()
 }
 
 /// Left spans, right spans, and the gap between them.
@@ -424,8 +457,11 @@ fn remote_body(app: &App) -> Vec<String> {
                 format!("Open weft.getfab7.com, signed in as {}.", s("login")),
                 format!("Tunnel {tunnel}  {}", s("address")),
                 format!("{}.", capitalized(&s("note"))),
-                String::new(),
             ];
+            if remote_needs_login(app) {
+                lines.push(START_AT_LOGIN_OFF.into());
+            }
+            lines.push(String::new());
             if app.remote_devices().is_empty() {
                 lines.push(
                     "No device is allowed yet. Open the app on one, and say yes here.".into(),

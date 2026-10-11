@@ -76,6 +76,9 @@ impl App {
             event::KeyCode::Char('o' | 'O') if state != "off" => {
                 self.remote_act(serde_json::json!({"act": "off"}))
             }
+            event::KeyCode::Char('l' | 'L') if state == "on" && !sess!(self).start_at_login => {
+                self.toggle_start_at_login()
+            }
             event::KeyCode::Char('d' | 'D') if state == "on" => {
                 if let Some(id) = devices.get(self.modal_choice).and_then(|d| d["id"].as_str()) {
                     self.remote_removing = Some(id.to_string());

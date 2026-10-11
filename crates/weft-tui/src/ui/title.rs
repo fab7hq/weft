@@ -27,8 +27,12 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
     ];
     let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
     let mut right = Vec::new();
-    // Something to update: RingFrame or a harness behind, or a newer Weft.
-    if app.setup_view().is_some_and(|v| v.needs_anything()) || app.newer.get().is_some() {
+    // A newer Weft installed and waiting for no agent to run says so in its
+    // place (ADR-0034 D5, T13.1): nothing is pressed for it.
+    if app.update_waiting().is_some() {
+        right.push(Span::styled("↻ UPDATE WAITING   ", th.needs_you()));
+    } else if app.setup_view().is_some_and(|v| v.needs_anything()) || app.newer.get().is_some() {
+        // Something to update: RingFrame or a harness behind, or a newer Weft.
         right.push(Span::styled("↑ [U]PDATE   ", lit));
     }
     // The turbo switch: always there, because it matters most before the

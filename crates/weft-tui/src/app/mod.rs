@@ -93,6 +93,7 @@ mod rows;
 
 pub use details::{Detail, Link, View};
 pub use rows::Row;
+mod login;
 mod notices;
 mod remote;
 pub use remote::ago;
@@ -117,11 +118,12 @@ fn shellexpand(typed: &str) -> String {
 
 /// Weft's own operations, in the order the menu lists them.
 /// Turbo mode is not here: its switch is always on the title bar.
-pub const WEFT_MENU: [(char, &str, Act); 7] = [
+pub const WEFT_MENU: [(char, &str, Act); 8] = [
     ('O', "Open project", Act::OpenProject),
     ('N', "New agent", Act::NewAgent),
     ('B', "Toggle Sidebar", Act::ToggleSidebar),
     ('R', "Remote", Act::Remote),
+    ('L', "Start at login", Act::StartAtLogin),
     ('U', "Update", Act::ReadyUp),
     ('H', "Help", Act::Help),
     ('X', "Quit", Act::Quit),
@@ -444,6 +446,28 @@ impl App {
     }
 
     /// Whether agents started in this project from now on run in turbo mode.
+    /// Weft's own "Start at login", as the daemon last said.
+    pub fn start_at_login(&self) -> bool {
+        sess!(self).start_at_login
+    }
+
+    /// Whether the Weft menu is open on "Start at login".
+    pub fn start_at_login_picked(&self) -> bool {
+        self.modal == Some(Modal::Weft)
+            && WEFT_MENU.get(self.modal_choice).is_some_and(|(.., a)| *a == Act::StartAtLogin)
+    }
+
+    /// A newer Weft installed and waiting for no agent to run (ADR-0034 D5).
+    pub fn update_waiting(&self) -> Option<&str> {
+        sess!(self).update.as_deref()
+    }
+
+    /// The agents running in every project this window has open: an update
+    /// waits for all of them.
+    pub fn running_everywhere(&self) -> usize {
+        self.projects.iter().map(|p| p.session.panes.iter().filter(|v| v.running).count()).sum()
+    }
+
     pub fn turbo(&self) -> bool {
         sess!(self).turbo
     }
@@ -736,6 +760,7 @@ impl App {
             Then::EvalView { eval_id, title } => self.eval_read(eval_id, title, answer),
             Then::Hunk { window } => self.hunk_read(window, answer),
             Then::Turbo => self.turbo_switched(at, answer),
+            Then::StartAtLogin { on } => self.start_at_login_turned(at, on, answer),
             Then::Starts(opening) => {
                 self.take_starts(answer.ok());
                 match opening {
@@ -1391,6 +1416,7 @@ impl App {
                 self.modal_choice = 0;
             }
             Act::Turbo => self.toggle_turbo(),
+            Act::StartAtLogin => self.toggle_start_at_login(),
             Act::Help => {
                 self.modal = Some(Modal::Help);
                 self.modal_choice = 0;
@@ -1498,6 +1524,8 @@ enum Then {
     Read(Part),
     /// Turbo mode was switched.
     Turbo,
+    /// "Start at login" was turned on or off, or was not.
+    StartAtLogin { on: bool },
     /// What could be started here is known: open what was waiting on it.
     Starts(Opening),
     /// An agent started: go to it, when asked to.
