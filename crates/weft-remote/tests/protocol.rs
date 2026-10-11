@@ -65,7 +65,13 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     assert_eq!(tree.as_array().map(Vec::len), Some(1), "{tree}");
     assert_eq!((tree[0]["project"].clone(), tree[0]["open"].clone()), (json!("work"), json!(0)));
     assert!(tree[0].get("setup").is_some(), "whether RingFrame is set up here: {tree}");
-    assert_eq!(tree[0]["agents"]["rows"], json!([]), "no session named yet: {tree}");
+    // No session named yet: a row all the same, with no id, its agent the pane's.
+    let row = &tree[0]["agents"]["rows"][0];
+    assert_eq!(
+        (row["session"].clone(), row["state"].clone(), row["agent"].clone()),
+        (json!(""), json!("running"), agent.clone()),
+        "{tree}"
+    );
     assert!(tree[0].get("harnesses").is_none(), "no harness rows (remote.md §6c)");
 
     // The shell's hook names its session: it is a row, its agent the pane's.
@@ -86,7 +92,7 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     std::os::unix::net::UnixStream::connect(socket.trim()).unwrap().write_all(&line).unwrap();
     let named = loop {
         let m = d.next_of("tree");
-        if m["tree"][0]["agents"]["rows"].as_array().is_some_and(|r| !r.is_empty()) {
+        if m["tree"][0]["agents"]["rows"][0]["session"] == json!("s1") {
             break m;
         }
     };

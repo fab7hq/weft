@@ -130,8 +130,8 @@ impl Row {
     }
 }
 
-/// Every session of a project: each one Weft's receipts name, and each one a
-/// pane is bound to. `alive` says whether a recorded harness process still
+/// Every session of a project: each one Weft's receipts name, each one a
+/// pane is bound to, and each running pane not bound yet. `alive` says whether a recorded harness process still
 /// runs with its recorded start time. Running first, then the rest, each
 /// newest first.
 pub fn index(
@@ -171,6 +171,23 @@ pub fn index(
     // pane runs, ended once the pane's harness has exited.
     for p in panes {
         let Some(bound) = p.session.as_ref().filter(|b| named(&p.harness, &b.session)) else {
+            // A running pane whose harness has not named its session yet (a
+            // harness with no hook before its first prompt): a row, with no
+            // id, so it can be Asked. Nothing can resume it.
+            if p.running && is_id(&p.harness) {
+                rows.push(Row {
+                    id: String::new(),
+                    harness: p.harness.clone(),
+                    state: State::Running,
+                    turn: None,
+                    started: p.at,
+                    last: p.at,
+                    title: None,
+                    asks: 0,
+                    pane: Some(p.pane),
+                    resumable: false,
+                });
+            }
             continue;
         };
         let at = rows.iter().position(|r| r.harness == p.harness && r.id == bound.session);
@@ -426,6 +443,37 @@ mod tests {
         // A pane that has exited no longer holds it: its harness ended.
         let rows = index(&[h], &[pane(3, "claude-code", "s1", false)], &[], DEAD);
         assert_eq!((rows[0].state, rows[0].pane), (State::Ended, None));
+    }
+
+    /// A running pane whose harness has not named a session yet is a row,
+    /// with no id, so it can be Asked; one that has exited is not.
+    #[test]
+    fn a_running_pane_with_no_session_yet_is_a_row_with_no_id() {
+        let fresh = |pane: u32, running: bool| {
+            let mut p = Started::new(pane, "antigravity", "agy", NOON - MIN, None);
+            p.running = running;
+            p
+        };
+        let rows = index(&[], &[fresh(5, true)], &[], DEAD);
+        assert_eq!(
+            rows,
+            [Row {
+                id: String::new(),
+                harness: "antigravity".into(),
+                state: State::Running,
+                turn: None,
+                started: NOON - MIN,
+                last: NOON - MIN,
+                title: None,
+                asks: 0,
+                pane: Some(5),
+                resumable: false,
+            }]
+        );
+        assert!(index(&[], &[fresh(5, false)], &[], DEAD).is_empty(), "exited: no row");
+        // Once its first hook names the session, the pane's row is that one.
+        let rows = index(&[], &[pane(5, "antigravity", "a1", true)], &[], DEAD);
+        assert_eq!((ids(&rows), rows[0].pane), (vec!["a1"], Some(5)));
     }
 
     /// D11: running while the recorded process lives with its start time;

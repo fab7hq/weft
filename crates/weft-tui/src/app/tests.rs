@@ -735,6 +735,28 @@ fn quitting_asks_first_and_leaves_the_agents_running_by_default() {
     assert!(!a.stop_agents_on_quit);
 }
 
+/// A harness with no hook before its first prompt (Antigravity) has named no
+/// session yet: its running pane is an agent under AGENTS all the same, and
+/// an Ask goes to it.
+#[test]
+fn an_agent_that_named_no_session_yet_is_listed_and_can_be_asked() {
+    let (root, session) = test_session_in("codex", set_up(|w| w));
+    let agent = agent_program(&root.with_extension("agents"));
+    let mut a = App::with_session(root, Toggle, session);
+    a.add("codex", &agent).expect("spawn");
+    asked(&mut a);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline && !crate::ui::sidebar_text(&a).contains("AGENTS") {
+        a.session_mut().pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let rows = crate::ui::sidebar_text(&a);
+    assert!(rows.contains("AGENTS") && rows.contains("● codex"), "{rows}");
+    assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session.is_empty())));
+    press(&mut a, KeyCode::Char('a'));
+    assert!(matches!(a.modal, Some(Modal::Ask { target: 0, .. })), "{:?}", a.modal);
+}
+
 #[test]
 fn asking_opens_a_box_and_types_nothing_yet() {
     let mut a = app();
