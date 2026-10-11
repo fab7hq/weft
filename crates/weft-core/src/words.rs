@@ -362,6 +362,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.earlier.foot", "newest first · scroll for more"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
+    ("web.start.project", "IN WHICH PROJECT"),
+    ("web.start.harness", "WHICH HARNESS"),
+    ("web.start.nothing_yet", "nothing yet"),
+    ("web.start.in", "Start an agent in {project}"),
     (
         "web.start.none",
         "No harness is set up for RingFrame yet. [U]PDATE on {machine} sets one up.",
