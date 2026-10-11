@@ -302,10 +302,12 @@ pub(super) fn routing_lines(app: &App) -> Vec<String> {
 /// failed step's own last lines.
 fn setup_body(app: &App) -> Vec<String> {
     let Some(v) = app.setup_view() else {
-        return vec!["Checking the latest release…".into(), String::new()];
+        return vec!["Checking for updates…".into(), String::new()];
     };
     let mut lines = if v.pending_release {
-        vec!["Checking the latest release…".into(), String::new()]
+        vec!["Checking for updates…".into(), String::new()]
+    } else if v.up_to_date() {
+        vec!["You are using the latest version.".into(), String::new()]
     } else {
         vec![
             format!("Weft {}", v.weft),

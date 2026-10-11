@@ -688,6 +688,7 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
         weft: "0.1.2 → 0.1.3".into(),
         weft_latest: Some("0.1.3".into()),
         weft_behind: true,
+        weft_waiting: false,
         latest: Some("v0.1.3".into()),
         plugin: Some("0.1.3".into()),
         configuration: "up to date".into(),
@@ -1684,4 +1685,31 @@ fn a_project_with_nothing_in_it_leaves_the_other_projects_listed() {
     assert!(drawn.contains("readme fix"), "the first project's work is still listed: {drawn}");
     assert!(drawn.contains("Nothing asked for yet."), "the empty one says so: {drawn}");
     assert_eq!(drawn.matches("open  ⌫").count(), 2, "both projects are listed: {drawn}");
+}
+
+/// T7.9: with both releases reached and nothing behind, the view says so.
+#[test]
+fn the_update_view_says_when_nothing_is_newer() {
+    use weft_core::onboarding::{Row, State, View};
+    let mut a = atlas();
+    let row = |name: &str, title: &str| Row {
+        name: name.into(),
+        title: title.into(),
+        program: name.into(),
+        state: State::Ready { version: Some("0.2.0".into()) },
+    };
+    a.session_mut().setup = Some(View {
+        weft: "0.2.1 is the latest".into(),
+        weft_latest: Some("0.2.1".into()),
+        latest: Some("v0.2.0".into()),
+        plugin: Some("0.2.0".into()),
+        configuration: "up to date".into(),
+        rows: vec![row("claude-code", "Claude Code"), row("codex", "Codex")],
+        ..View::default()
+    });
+    a.modal = Some(crate::app::Modal::RingFrame);
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("You are using the latest version."), "{drawn}");
+    assert!(!drawn.contains("Latest release") && !drawn.contains("is the latest"), "{drawn}");
+    assert!(!drawn.contains("[U]PDATE"), "nothing to update lights nothing: {drawn}");
 }

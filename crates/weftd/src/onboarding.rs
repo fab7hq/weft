@@ -94,9 +94,10 @@ pub struct WeftCheck {
     pub installed: bool,
 }
 
-/// Ask for [`WeftCheck`]; the latest is the kept answer, as `check`'s is.
-pub fn weft_check(out: &dyn Outside) -> WeftCheck {
-    let latest = out.weft_release(false);
+/// Ask for [`WeftCheck`]; the latest is the kept answer, as `check`'s is,
+/// unless `fresh` asks again.
+pub fn weft_check(out: &dyn Outside, fresh: bool) -> WeftCheck {
+    let latest = out.weft_release(fresh);
     let installed = latest.as_deref().is_some_and(|l| out.weft_installed(l));
     WeftCheck { latest, installed }
 }
@@ -159,6 +160,11 @@ pub fn look_as_they_answer(
     let (line, step) =
         weft_core::sync::weft(env!("CARGO_PKG_VERSION"), weft.latest.as_deref(), weft.installed);
     (view.weft, view.weft_behind, view.weft_latest) = (line, step.is_some(), weft.latest.clone());
+    view.weft_waiting = weft.installed
+        && weft
+            .latest
+            .as_deref()
+            .is_some_and(|l| weft_core::sync::older(env!("CARGO_PKG_VERSION"), l));
     let mut states = Vec::new();
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();

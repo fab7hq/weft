@@ -119,6 +119,9 @@ pub struct View {
     pub weft_latest: Option<String>,
     #[serde(default)]
     pub weft_behind: bool,
+    /// A newer Weft is installed already and starts once no agent runs.
+    #[serde(default)]
+    pub weft_waiting: bool,
     /// The latest release, and its `rf` version, when it could be reached.
     #[serde(default)]
     pub latest: Option<String>,
@@ -163,6 +166,18 @@ impl View {
             || self.rows.iter().any(|r| {
                 matches!(r.state, State::Behind { .. } | State::NotSetUp | State::Failed { .. })
             })
+    }
+
+    /// Both releases were reached and nothing is behind: Weft, RingFrame's
+    /// configuration and every plugin that is in a harness.
+    pub fn up_to_date(&self) -> bool {
+        !self.pending_release
+            && self.weft_latest.is_some()
+            && self.latest.is_some()
+            && !self.weft_behind
+            && !self.weft_waiting
+            && !self.configuration_behind
+            && !self.rows.iter().any(|r| matches!(r.state, State::Behind { .. }))
     }
 
     /// Whether `[P]ROCEED` has anything to run: the configuration, and every
@@ -387,5 +402,34 @@ mod tests {
         );
         v.configuration_behind = true;
         assert!(v.needs_anything() && v.proceeds());
+    }
+
+    #[test]
+    fn a_view_is_up_to_date_only_when_both_releases_were_reached_and_nothing_is_behind() {
+        let mut v = View {
+            weft_latest: Some("0.2.1".into()),
+            latest: Some("v0.2.0".into()),
+            ..View::default()
+        };
+        assert!(v.up_to_date());
+        for change in [
+            |v: &mut View| v.weft_behind = true,
+            |v: &mut View| v.weft_waiting = true,
+            |v: &mut View| v.configuration_behind = true,
+            |v: &mut View| v.weft_latest = None,
+            |v: &mut View| v.latest = None,
+            |v: &mut View| v.pending_release = true,
+        ] {
+            let mut other = v.clone();
+            change(&mut other);
+            assert!(!other.up_to_date(), "{other:?}");
+        }
+        v.rows.push(Row {
+            name: "c".into(),
+            title: "C".into(),
+            program: "c".into(),
+            state: State::Behind { have: "0.1.0".into(), latest: "0.2.0".into() },
+        });
+        assert!(!v.up_to_date());
     }
 }

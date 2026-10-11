@@ -1022,8 +1022,17 @@ impl Session {
                 show(&pending(out, &harnesses));
             }
             let cli = crate::ringframe::installed(out);
-            let mut check = out.release(false);
-            let mut weft = crate::onboarding::weft_check(out);
+            // Opening the view asks both releases again, at once: Weft's and
+            // RingFrame's; the other acts read the kept answers.
+            let fresh = act == "look";
+            let (mut check, mut weft) = std::thread::scope(|scope| {
+                let release = scope.spawn(|| out.release(fresh));
+                let weft = scope.spawn(|| crate::onboarding::weft_check(out, fresh));
+                (
+                    release.join().unwrap_or_else(|_| Err("the check did not finish".into())),
+                    weft.join().unwrap_or_default(),
+                )
+            });
             let mut harnesses = harnesses;
             let mut note = None;
             // A step's row shows it running; a failed one stays on its row
@@ -1057,7 +1066,7 @@ impl Session {
                         {
                             note = Some(format!("{step} failed: {said}"));
                         }
-                        weft = crate::onboarding::weft_check(out);
+                        weft = crate::onboarding::weft_check(out, true);
                     }
                     let (base, _) = look(out, &harnesses, &check, &weft, cli);
                     if act == "all" && base.configuration_behind {
