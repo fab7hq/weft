@@ -1533,12 +1533,20 @@ fn atlas_t11_5_a_session() {
     expect_screen("atlas_t11_5", &screen(&mut a, 120, 32));
 }
 
-/// T11.6: the earlier sessions, by day.
+/// T11.7: Enter on `▸ n earlier sessions` lists them under it, in the tree.
 #[test]
-fn atlas_t11_6_earlier_sessions() {
+fn atlas_t11_7_earlier_sessions_expanded() {
+    use crate::app::Row;
     let mut a = atlas11();
-    a.open_view_read(crate::app::View::Earlier, None, None, None);
-    expect_screen("atlas_t11_6", &screen(&mut a, 120, 32));
+    assert!(a.select(|r| matches!(r, Row::Earlier { open: false, .. })));
+    press(&mut a, KeyCode::Enter);
+    assert!(a.detail().is_none(), "no screen of its own: the tree opens in place");
+    assert!(matches!(a.rows()[a.selected], Row::Earlier { open: true, .. }));
+    expect_screen("atlas_t11_7", &screen(&mut a, 120, 32));
+    // Enter again folds it, and the sessions go.
+    press(&mut a, KeyCode::Enter);
+    assert!(matches!(a.rows()[a.selected], Row::Earlier { open: false, .. }));
+    assert!(a.rows().iter().all(|r| !matches!(r, Row::Agent { earlier: true, .. })));
 }
 
 /// T11.1's keys: Enter on each kind of row goes where the card says.
@@ -1552,12 +1560,11 @@ fn enter_on_each_row_goes_where_t11_1_says() {
     assert_eq!((a.focus, a.pane_focus), (Focus::Agent, 0), "k1 runs in the first pane");
     a.focus = Focus::Weft;
     type Pick<'a> = &'a dyn Fn(&Row) -> bool;
-    let cases: [(Pick, View); 4] = [
+    let cases: [(Pick, View); 3] = [
         (
             &|r| matches!(r, Row::Agent { agent, .. } if agent.session == ENDED_CLAUDE),
             View::Session(ENDED_CLAUDE.into()),
         ),
-        (&|r| matches!(r, Row::Earlier { .. }), View::Earlier),
         (&|r| matches!(r, Row::Ask { ask, .. } if ask.unit == "ask_1"), View::Work("ask_1".into())),
         (&|r| matches!(r, Row::Eval { .. }), View::Eval("evl_3".into())),
     ];
@@ -1630,36 +1637,51 @@ fn enter_on_a_running_sessions_line_goes_to_its_pane() {
     assert!(a.detail().is_none(), "the Details close as the keys go to the agent");
 }
 
-/// T11.6: `/` narrows the list as it is typed, and keeps its groups.
+/// T11.8: `/` narrows the whole tree as it is typed: agents, earlier sessions
+/// and works, by project.
 #[test]
-fn search_narrows_the_earlier_sessions_and_keeps_the_groups() {
+fn search_narrows_the_tree_across_agents_earlier_sessions_and_works() {
+    use crate::app::Row;
     let mut a = atlas11();
-    a.open_view_read(crate::app::View::Earlier, None, None, None);
+    let all = a.rows().len();
     press(&mut a, KeyCode::Char('/'));
+    assert_eq!(a.tree_search(), Some(""));
     for c in "token".chars() {
         press(&mut a, KeyCode::Char(c));
     }
-    let d = a.detail().expect("the list");
-    assert_eq!(d.lines[0], "SEARCH  token");
-    assert_eq!(d.lines[1], "", "a blank line between groups, as T11.6 spaces them");
-    assert_eq!(d.lines[2], "YESTERDAY  1");
-    assert!(d.lines[3].contains("token refresh") && d.lines.len() == 4, "{:?}", d.lines);
-    for c in [KeyCode::Backspace; 5] {
-        press(&mut a, c);
-    }
-    press(&mut a, KeyCode::Char('c'));
-    press(&mut a, KeyCode::Char('o'));
-    let groups: Vec<_> = a
-        .detail()
-        .unwrap()
-        .lines
+    let rows = a.rows();
+    let sessions: Vec<_> = rows
         .iter()
-        .filter(|l| !l.is_empty() && !l.starts_with(' '))
-        .cloned()
+        .filter_map(|r| match r {
+            Row::Agent { agent, .. } => agent.title.clone(),
+            _ => None,
+        })
         .collect();
-    assert_eq!(groups, ["SEARCH  co", "TODAY  1", "YESTERDAY  2", "THIS WEEK  3"], "codex");
-    press(&mut a, KeyCode::Enter);
-    assert!(!a.detail().unwrap().typing, "Enter ends the search; the list stays narrowed");
+    assert_eq!(sessions, ["token refresh"], "an earlier session matches without being opened");
+    assert!(
+        rows.iter().any(|r| matches!(r, Row::Project { matches: Some(1), .. })),
+        "the project says how many: {rows:?}"
+    );
+    assert!(a.selected_row_is_agent(), "the selection lands on the first match");
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.contains("1 match") && drawn.contains("/ token"), "{drawn}");
+    // Backspacing widens it again, and a harness matches too.
+    for _ in 0..5 {
+        press(&mut a, KeyCode::Backspace);
+    }
+    for c in "codex".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    assert!(a.rows().iter().filter(|r| matches!(r, Row::Agent { .. })).count() > 1);
+    // Nothing matches: it says so, and Esc brings the tree back.
+    for c in "zzz".chars() {
+        press(&mut a, KeyCode::Char(c));
+    }
+    assert!(a.rows().is_empty());
+    assert!(screen(&mut a, 120, 32).contains("Nothing matches codexzzz."));
+    press(&mut a, KeyCode::Esc);
+    assert_eq!(a.tree_search(), None);
+    assert_eq!(a.rows().len(), all, "the tree is as it was");
 }
 
 /// With two projects open, the one with nothing in it says so under its own

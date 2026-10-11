@@ -5,7 +5,6 @@
 
 use super::*;
 use weft_core::offers::{self, EvalDetail, SealDetail, SessionDetail, WorkDetail};
-use weft_core::sessions::Group;
 
 /// What a Details view is about.
 #[derive(Debug, Clone, PartialEq)]
@@ -14,7 +13,6 @@ pub enum View {
     Eval(String),
     Seal(String),
     Session(String),
-    Earlier,
 }
 
 /// Where `[Enter]` on a link goes.
@@ -44,9 +42,6 @@ pub struct Detail {
     /// work's Details once there is more than one place to go.
     pub marked: bool,
     pub offset: usize,
-    /// The earlier sessions' search, and whether it is being typed.
-    pub search: Option<String>,
-    pub typing: bool,
 }
 
 impl Detail {
@@ -62,8 +57,6 @@ impl Detail {
             pick: 0,
             marked: true,
             offset: 0,
-            search: None,
-            typing: false,
         }
     }
 
@@ -285,7 +278,6 @@ impl App {
                 let d = offers::session_detail(row, &self.units, &record);
                 session(view.clone(), &d, now, zone)
             }
-            View::Earlier => earlier(&self.projects[self.at].name, &s.sessions, None, now, zone),
         })
     }
 
@@ -340,12 +332,6 @@ impl App {
     /// `[Enter]` in a Details view: where the picked link goes.
     pub(super) fn follow_link(&mut self) {
         let Some(d) = self.detail.as_ref() else { return };
-        if d.typing {
-            if let Some(d) = self.detail.as_mut() {
-                d.typing = false;
-            }
-            return;
-        }
         let Some((_, link)) = d.links.get(d.pick).cloned() else { return };
         match link {
             Link::View(View::Session(id)) => {
@@ -393,32 +379,6 @@ impl App {
         if let Err(e) = self.start(harness, "", Some(id), Then::Started { go: true }) {
             self.modal = Some(Modal::Note(format!("Could not resume {id}: {e}")));
         }
-    }
-
-    /// `/` and what follows it in the earlier sessions: the list narrows as
-    /// the search is typed. True when the key was the search's.
-    pub(super) fn search_key(&mut self, key: &KeyEvent) -> bool {
-        use event::KeyCode;
-        let Some(d) = self.detail.as_ref().filter(|d| d.view == View::Earlier) else {
-            return false;
-        };
-        let (typing, mut q) = (d.typing, d.search.clone().unwrap_or_default());
-        match key.code {
-            KeyCode::Char('/') if !typing => {}
-            KeyCode::Char(c) if typing => q.push(c),
-            KeyCode::Backspace if typing => {
-                q.pop();
-            }
-            KeyCode::Esc if typing => q.clear(),
-            _ => return false,
-        }
-        let typing = !matches!(key.code, KeyCode::Esc);
-        let now = self.now();
-        let s = &sess!(self);
-        let mut d = earlier(&self.projects[self.at].name, &s.sessions, Some(&q), now, s.zone);
-        d.typing = typing;
-        self.detail = Some(d);
-        true
     }
 }
 
@@ -639,56 +599,4 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
         (_, _, false) => out.line(word("resume.nothing")),
     }
     out
-}
-
-/// T11.6: every ended session past the tree's, by day, as the search narrows.
-fn earlier(
-    project: &str,
-    rows: &[weft_core::sessions::Row],
-    q: Option<&str>,
-    now: i64,
-    zone: i64,
-) -> Detail {
-    let past = weft_core::sessions::split(rows).1;
-    let found: Vec<_> =
-        past.iter().filter(|r| q.is_none_or(|q| weft_core::sessions::matches(r, q))).collect();
-    let crumbs = vec![(word("earlier.title").to_string(), None), (project.to_string(), None)];
-    let mut out = Detail::new(View::Earlier, crumbs, found.len().to_string());
-    if let Some(q) = q {
-        out.line(format!("SEARCH  {q}"));
-    }
-    let harness = found.iter().map(|r| r.harness.chars().count()).max().unwrap_or(0) + 2;
-    for group in [Group::Today, Group::Yesterday, Group::Week, Group::Earlier] {
-        let mine: Vec<_> = found.iter().filter(|r| Group::of(r.last, now, zone) == group).collect();
-        if mine.is_empty() {
-            continue;
-        }
-        out.gap();
-        out.line(format!("{}  {}", word(&format!("earlier.{}", group_key(group))), mine.len()));
-        for r in mine {
-            let title = r.title.clone().unwrap_or_else(|| word("tree.no_ask").to_string());
-            out.link(
-                format!(
-                    "  ○ {}{}{}s {}\t{}",
-                    column(&r.harness, harness),
-                    column(&title, 27),
-                    column(&asks_n(r.asks), 12),
-                    weft_core::sessions::short(&r.id),
-                    weft_core::sessions::when(r.last, now, zone)
-                ),
-                Link::View(View::Session(r.id.clone())),
-            );
-        }
-    }
-    out.search = q.map(str::to_string);
-    out
-}
-
-fn group_key(g: Group) -> &'static str {
-    match g {
-        Group::Today => "today",
-        Group::Yesterday => "yesterday",
-        Group::Week => "week",
-        Group::Earlier => "earlier",
-    }
 }

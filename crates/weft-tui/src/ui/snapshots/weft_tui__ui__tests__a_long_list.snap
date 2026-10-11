@@ -1,5 +1,6 @@
 ---
 source: crates/weft-tui/src/ui/tests.rs
+assertion_line: 21
 expression: drawn
 ---
  ╸┃╺ WEFT                                                 [T]URBO OFF   OPEN  1
@@ -24,5 +25,5 @@ expression: drawn
     unit 10   codex                                                       ASKED
    ↓ 10 more
 ────────────────────────────────────────────────────────────────────────────────
- [A]SK   [E]VAL   [S]EAL                                               [W]EFT ⌄
+ [A]SK   [E]VAL   [S]EAL                                  [/] SEARCH   [W]EFT ⌄
  [H]ELP lists every key.

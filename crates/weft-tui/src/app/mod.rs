@@ -224,6 +224,8 @@ pub struct App {
     projects: Vec<Open>,
     at: usize,
     pub pane_focus: usize,
+    /// What the tree is narrowed to, once `/` has opened the search.
+    tree_search: Option<String>,
     units: Vec<Unit>,
     /// An index into [`App::rows`], not into the units: the sidebar is a tree
     /// and a project or a harness can be selected too.
@@ -664,6 +666,7 @@ impl App {
             projects: vec![Open::new(root, session)],
             at: 0,
             pane_focus: 0,
+            tree_search: None,
             units: Vec::new(),
             selected: 0,
             folded: Default::default(),

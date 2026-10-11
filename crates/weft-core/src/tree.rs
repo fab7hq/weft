@@ -366,7 +366,7 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
 }
 
 /// A session's row, and why an Ask cannot go to it when it cannot.
-fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
+pub fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
     let ask = match (s.state, s.pane) {
         (State::Running, Some(_)) => Why::not_ready((f.readiness)(&s.harness), &s.harness),
         (State::Running, None) => Some(Why::of("why.elsewhere", &s.harness)),
@@ -384,6 +384,22 @@ fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
         pane: s.pane,
         ask,
     }
+}
+
+/// Whether an agent row holds `q`, ignoring case: its harness, its latest
+/// Ask's title, or its session id.
+pub fn agent_matches(a: &Agent, q: &str) -> bool {
+    let q = q.to_lowercase();
+    let has = |text: &str| text.to_lowercase().contains(&q);
+    has(&a.harness) || has(&a.session) || a.title.as_deref().is_some_and(has)
+}
+
+/// Whether an Ask row holds `q`, ignoring case: its title, its harness, or the
+/// word for where it stands.
+pub fn ask_matches(a: &Ask, q: &str) -> bool {
+    let q = q.to_lowercase();
+    let has = |text: &str| text.to_lowercase().contains(&q);
+    has(&a.title) || has(&a.harness) || a.word.is_some_and(|w| has(w.say()))
 }
 
 /// A Seal's decision in the words a person reads (board.md).

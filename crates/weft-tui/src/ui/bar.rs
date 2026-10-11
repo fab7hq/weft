@@ -143,13 +143,14 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
                     add(lit("[Enter] OPEN".into()));
                 }
             },
-            View::Earlier => {
-                add(lit("[/] SEARCH".into()));
-                add(lit("[Enter] OPEN".into()));
-            }
         }
         keys.push(Span::styled("[↑↓] SCROLL", th.label()));
         return Paragraph::new(spread(keys, vec![Span::styled("[ESC] CLOSE ", th.label())], width));
+    }
+
+    // A search narrows the tree: its keys are the whole bar.
+    if app.tree_search().is_some() {
+        return plain(" [Enter] OPEN   [↑↓] PICK   [ESC] CLEAR");
     }
 
     // RingFrame's three acts, in the order they happen. Weft's own operations
@@ -169,7 +170,8 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         spans.push(Span::styled(key_in(label), Style::default().fg(th.primary())));
     }
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
-    Paragraph::new(spread(spans, vec![menu, Span::raw(" ")], width))
+    let search = Span::styled("[/] SEARCH", Style::default().fg(th.primary()));
+    Paragraph::new(spread(spans, vec![search, Span::raw("   "), menu, Span::raw(" ")], width))
 }
 
 /// One action on the bar, dimmed when it cannot be used.
@@ -186,6 +188,11 @@ pub(super) fn key(app: &App, label: &str, act: Act) -> Span<'static> {
 
 pub(super) fn hint(app: &App) -> Paragraph<'static> {
     let th = app.theme;
+    // The search being typed stands where the hint does.
+    if let Some(q) = app.tree_search().filter(|_| app.modal.is_none() && app.detail().is_none()) {
+        let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
+        return Paragraph::new(Line::styled(format!(" / {q}▌"), lit));
+    }
     if let Some(said) = app.hint_text() {
         return Paragraph::new(Line::styled(format!(" {said}"), th.needs_you()));
     }

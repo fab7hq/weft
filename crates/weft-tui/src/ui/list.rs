@@ -15,7 +15,9 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     // An agent is on the list the moment it is opened, so the empty list is
     // only for a project with no agent and nothing asked. With more projects
     // open, the others stay listed and this one says it under its heading.
-    let empty = app.units().is_empty() && app.pane_count() == 0 && !app.has_sessions();
+    let searching = app.tree_search().is_some_and(|q| !q.is_empty());
+    let empty =
+        !searching && app.units().is_empty() && app.pane_count() == 0 && !app.has_sessions();
     if empty && app.project_count() == 1 {
         lines.push(Line::raw(""));
         // RingFrame is not set up here: what it still needs, under the project.
@@ -33,6 +35,11 @@ pub(super) fn work_list(app: &mut App, area: Rect, beside_agent: bool) -> Paragr
     }
 
     let all = app.rows();
+    if searching && all.is_empty() {
+        let q = app.tree_search().unwrap_or_default();
+        lines.push(Line::styled(format!(" {}", fill("tree.search_none", &[("q", q)])), th.label()));
+        return Paragraph::new(lines);
+    }
     let offset = app.list_offset().min(all.len().saturating_sub(1));
     if offset > 0 {
         lines.push(Line::styled(format!("   ↑ {offset} above"), th.label()));
@@ -152,9 +159,12 @@ pub(super) fn sidebar_row(
     };
     let fold = |folded: bool| if folded { "▸" } else { "▾" };
     match row {
-        Row::Project { name, folded, open, waiting, .. } => {
-            let mut tail = format!("{open} {}", word("title.open"));
-            if *waiting > 0 {
+        Row::Project { name, folded, open, waiting, matches, .. } => {
+            let mut tail = match matches {
+                Some(n) => fill("tree.match", &[("n", &n.to_string())]),
+                None => format!("{open} {}", word("title.open")),
+            };
+            if matches.is_none() && *waiting > 0 {
                 tail.push_str(&format!(" · {waiting} ●"));
             }
             let head = format!(" {} {name}", fold(*folded));
@@ -178,7 +188,7 @@ pub(super) fn sidebar_row(
                 Span::styled(format!("{counts} "), th.label()),
             ])
         }
-        Row::Agent { agent, width: column, .. } => {
+        Row::Agent { agent, width: column, earlier, .. } => {
             let ended = agent.state != State::Running;
             let waiting = weft_core::turns::is_asking(agent.turn) && !ended;
             let time = weft_core::sessions::when(agent.at, app.now(), app.zone());
@@ -186,7 +196,8 @@ pub(super) fn sidebar_row(
             let right = if agent.state == State::Quiet { state } else { format!("{state} {time}") };
             let glyph = if ended { "○" } else { "●" };
             let title = agent.title.clone().unwrap_or_else(|| word("tree.no_ask").to_string());
-            let head = format!("  {glyph} {} ", padded(&agent.harness, *column));
+            let indent = if *earlier { "    " } else { "  " };
+            let head = format!("{indent}{glyph} {} ", padded(&agent.harness, *column));
             // The title is cut with `…`, keeping two spaces before the state
             // and three after a cut one, as T11.1 draws it.
             let room = width.saturating_sub(cells(&head) + cells(&right) + 1);
@@ -199,13 +210,13 @@ pub(super) fn sidebar_row(
                 Span::styled(format!("{right} "), if picked { th.selected() } else { state_style }),
             ])
         }
-        Row::Earlier { n, .. } => {
+        Row::Earlier { n, open, .. } => {
             let said = if *n == 1 {
                 word("tree.earlier_one").to_string()
             } else {
                 fill("tree.earlier", &[("n", &n.to_string())])
             };
-            row_of(format!("  ▸ {said}"), String::new(), true, th.label())
+            row_of(format!("  {} {said}", fold(!open)), String::new(), true, th.label())
         }
         Row::Work { .. } => Line::styled(
             format!("  {}", word("tree.work")),

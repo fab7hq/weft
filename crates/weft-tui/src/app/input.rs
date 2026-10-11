@@ -12,8 +12,8 @@ impl App {
         }
         self.hint = None;
         self.landed = true;
-        // The earlier sessions' search takes what is typed into it.
-        if self.focus == Focus::Weft && self.search_key(&key) {
+        // The tree's search takes what is typed into it.
+        if self.focus == Focus::Weft && self.tree_search_key(&key) {
             return Ok(());
         }
         let chord = chord_of(key);

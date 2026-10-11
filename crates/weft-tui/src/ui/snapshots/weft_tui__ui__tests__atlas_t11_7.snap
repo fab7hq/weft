@@ -1,0 +1,37 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+assertion_line: 21
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                          [T]URBO OFF   OPEN  3   NEEDS YOU  1
+                                            │ ▸ 1 claude ●    2 codex    3 codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                     2 open · 1 ●  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
+                                            ││   ● Write(src/login.rs)                                                 │
+  AGENTS               3 running · 15 ended ││   Do you want to make this edit to login.rs?                            │
+  ● codex  no Ask yet         working 11:31 ││   ❯ 1. Yes                                                              │
+  ● claude fix login        needs you 11:29 ││     2. Yes, and don't ask again this session                            │
+  ● codex  health endpo…   turn ended 10:52 ││     3. No, and tell Claude what to do differently (esc)                 │
+  ○ claude readme fix           ended 09:12 ││                                                                         │
+  ○ codex  lint pass            ended 08:30 ││                                                                         │
+  ○ claude no Ask yet           ended 08:02 ││                                                                         │
+  ▾ 12 earlier sessions                     ││                                                                         │
+    ○ codex  flaky test         ended 07:40 ││                                                                         │
+    ○ claude no Ask yet         ended 07:15 ││                                                                         │
+    ○ claude token refresh      ended 18:22 ││                                                                         │
+    ○ codex  cli --help text    ended 16:05 ││                                                                         │
+    ○ codex  readme badge       ended 14:40 ││                                                                         │
+    ○ claude login form errors  ended 10:13 ││                                                                         │
+    ○ claude pane resize…   ended Tue 17:48 ││                                                                         │
+    ○ codex  config.toml…   ended Tue 15:02 ││                                                                         │
+    ○ codex  no Ask yet     ended Tue 09:31 ││                                                                         │
+    ○ claude notify on w…   ended Mon 19:20 ││                                                                         │
+    ○ codex  tunnel picker  ended Mon 14:55 ││                                                                         │
+    ○ claude project pic…   ended Mon 10:07 ││                                                                         │
+                                            ││                                                                         │
+  WORK                                      ││                                                                         │
+  ▾ Open · since Eval 3                   2 ││                                                                         │
+   ↓ 6 more                                 │└─────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ [A]SK   [E]VAL   [S]EAL                                                                          [/] SEARCH   [W]EFT ⌄
+ [H]ELP lists every key.
