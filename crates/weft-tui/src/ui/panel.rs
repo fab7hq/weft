@@ -311,12 +311,7 @@ fn setup_body(app: &App) -> Vec<String> {
         // RingFrame; the harness plugins follow as the rows.
         let mut top = vec![
             format!("    {}  {:<14}{}", v.weft_mark(), "Weft", v.weft),
-            format!(
-                "    {}  {:<14}configuration: {}",
-                v.configuration_mark(),
-                "RingFrame",
-                v.configuration
-            ),
+            format!("    {}  {:<14}{}", v.configuration_mark(), "RingFrame", v.configuration),
             String::new(),
         ];
         if v.up_to_date() {

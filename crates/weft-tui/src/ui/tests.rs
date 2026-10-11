@@ -691,7 +691,7 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
         weft_waiting: false,
         latest: Some("v0.1.3".into()),
         plugin: Some("0.1.3".into()),
-        configuration: "up to date".into(),
+        configuration: "0.1.3 is the latest".into(),
         configuration_behind: false,
         pending_release: false,
         rows: vec![
@@ -1703,7 +1703,7 @@ fn the_update_view_says_when_nothing_is_newer() {
         weft_latest: Some("0.2.1".into()),
         latest: Some("v0.2.0".into()),
         plugin: Some("0.2.0".into()),
-        configuration: "up to date".into(),
+        configuration: "0.2.0 is the latest".into(),
         rows: vec![row("claude-code", "Claude Code"), row("codex", "Codex")],
         ..View::default()
     });

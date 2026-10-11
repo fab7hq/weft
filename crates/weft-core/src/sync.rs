@@ -84,9 +84,11 @@ pub fn manifest_version(text: &str) -> Option<String> {
 
 /// The configuration's line, from what `ringframe sync --check` printed (or
 /// `None` when it could not tell), and the step that catches it up when it
-/// is behind.
+/// is behind. Versions read as Weft's do: no `v`.
 pub fn configuration(check: Option<&Value>) -> (String, Option<Step>) {
-    let text = |v: &Value, k: &str| v[k].as_str().map(str::to_string).unwrap_or_default();
+    let text = |v: &Value, k: &str| {
+        v[k].as_str().map(|t| t.trim_start_matches('v').to_string()).unwrap_or_default()
+    };
     match check {
         None => ("could not reach the latest release".into(), None),
         Some(c) if c["behind"] == true => (
@@ -94,6 +96,9 @@ pub fn configuration(check: Option<&Value>) -> (String, Option<Step>) {
             Some(Step::new("ringframe", &["sync"])),
         ),
         Some(c) if c["revision"] == "local" => ("local, not replaced".into(), None),
+        Some(c) if c["latest"].is_string() => {
+            (format!("{} is the latest", text(c, "latest")), None)
+        }
         Some(_) => ("up to date".into(), None),
     }
 }
@@ -144,11 +149,13 @@ mod tests {
         let (line, step) = configuration(Some(&behind));
         assert_eq!(
             (line.as_str(), step.map(|s| s.line())),
-            ("v0.1.0 → v0.1.1", Some("ringframe sync".into()))
+            ("0.1.0 → 0.1.1", Some("ringframe sync".into()))
         );
         let local = json!({"revision": "local", "latest": "v0.1.1", "behind": false});
         assert_eq!(configuration(Some(&local)).0, "local, not replaced");
         assert_eq!(configuration(Some(&json!({"behind": false}))).0, "up to date");
+        let current = json!({"revision": "v0.2.0", "latest": "v0.2.0", "behind": false});
+        assert_eq!(configuration(Some(&current)).0, "0.2.0 is the latest");
         assert_eq!(configuration(None).0, "could not reach the latest release");
         assert!(older("0.1.2", "0.1.10") && !older("0.1.3", "0.1.3"));
     }
