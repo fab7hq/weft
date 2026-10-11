@@ -1,5 +1,6 @@
 ---
 source: crates/weft-tui/src/ui/tests.rs
+assertion_line: 21
 expression: drawn
 ---
  ╸┃╺ WEFT                                                                            ↑ [U]PDATE   [T]URBO OFF   OPEN  2
@@ -33,4 +34,4 @@ expression: drawn
                                             │└─────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
  [A]SK   [E]VAL   [S]EAL                                                                                       [W]EFT ⌄
- Weft 0.1.1 is out - update to use the latest version
+ Weft 0.2.1 is out, run update

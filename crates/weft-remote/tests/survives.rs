@@ -42,17 +42,17 @@ fn a_machine_that_is_signed_out_says_so() {
 #[test]
 fn an_update_waiting_is_told_to_devices() {
     let mut h = Harness::with("update", |dir| {
-        std::fs::create_dir_all(dir.join("versions/0.2.1")).unwrap();
-        std::fs::write(dir.join("versions/0.2.1/weft"), "#!/bin/sh\n").unwrap();
+        std::fs::create_dir_all(dir.join("versions/99.0.0")).unwrap();
+        std::fs::write(dir.join("versions/99.0.0/weft"), "#!/bin/sh\n").unwrap();
     });
     let (mut d, welcome) = h.allowed("d_1");
     assert_eq!(welcome["update"], serde_json::Value::Null, "nothing waits");
     // An agent runs, so the update waits for it.
     let _shell = h.shell("busy");
-    h.tui.call(Call::Update { version: "0.2.1".into() });
-    assert_eq!(d.next_of("update"), json!({"type": "update", "update": {"version": "0.2.1"}}));
+    h.tui.call(Call::Update { version: "99.0.0".into() });
+    assert_eq!(d.next_of("update"), json!({"type": "update", "update": {"version": "99.0.0"}}));
     let (_, later) = h.allowed("d_2");
-    assert_eq!(later["update"], json!({"version": "0.2.1"}));
+    assert_eq!(later["update"], json!({"version": "99.0.0"}));
 }
 
 /// A project weftd reopened after it ended uncleanly is in the tree with

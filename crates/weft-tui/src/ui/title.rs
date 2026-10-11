@@ -31,8 +31,8 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
     // place (T13.1): nothing is pressed for it.
     if app.update_waiting().is_some() {
         right.push(Span::styled("↻ UPDATE WAITING   ", th.needs_you()));
-    } else if app.setup_view().is_some_and(|v| v.needs_anything()) || app.newer.get().is_some() {
-        // Something to update: RingFrame or a harness behind, or a newer Weft.
+    } else if app.setup_view().is_some_and(|v| v.needs_anything()) {
+        // Something to update: Weft, RingFrame or a harness behind.
         right.push(Span::styled("↑ [U]PDATE   ", lit));
     }
     // The turbo switch: always there, because it matters most before the

@@ -29,7 +29,7 @@ pub(super) fn panel_title(_app: &App, modal: &Modal) -> String {
         Modal::Ask { .. } => word("ask.title").to_uppercase(),
         Modal::Bar(Bar::Send(p)) => p.what.to_uppercase(),
         Modal::StartAgent { .. } => word("start.title").to_uppercase(),
-        Modal::RingFrame => "RINGFRAME".into(),
+        Modal::RingFrame => "UPDATE".into(),
         Modal::Remote => "REMOTE".into(),
         Modal::Allow { .. } => "ALLOW A DEVICE?".into(),
         Modal::Locate { harness, .. } => format!("WHERE IS {}?", harness.to_uppercase()),
@@ -124,7 +124,7 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
         ("⌫", "close the project"),
     ];
     let ringframe = [
-        ("RINGFRAME", ""),
+        ("UPDATE", ""),
         ("A", "ask"),
         ("E", "eval"),
         ("S", "seal"),
@@ -308,6 +308,7 @@ fn setup_body(app: &App) -> Vec<String> {
         vec!["Checking the latest release…".into(), String::new()]
     } else {
         vec![
+            format!("Weft {}", v.weft),
             match (&v.latest, &v.plugin) {
                 (Some(t), Some(p)) => format!("Latest release {t} · rf {p}"),
                 (Some(t), None) => format!("Latest release {t}"),

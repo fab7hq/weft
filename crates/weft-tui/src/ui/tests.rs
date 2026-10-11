@@ -685,6 +685,9 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
         state,
     };
     a.session_mut().setup = Some(View {
+        weft: "0.1.2 → 0.1.3".into(),
+        weft_latest: Some("0.1.3".into()),
+        weft_behind: true,
         latest: Some("v0.1.3".into()),
         plugin: Some("0.1.3".into()),
         configuration: "up to date".into(),
@@ -965,12 +968,17 @@ fn bound(
     r
 }
 
-/// T1.8: an update waiting says what to do about it.
+/// T1.9: a newer Weft that is out and not installed says what to do about it.
 #[test]
-fn atlas_t1_8_an_update_waiting() {
+fn atlas_t1_9_a_newer_weft_is_out() {
     let mut a = atlas();
-    let _ = a.newer.set("0.1.1".into());
-    expect_screen("atlas_t1_8", &screen(&mut a, 120, 32));
+    a.session_mut().setup = Some(weft_core::onboarding::View {
+        weft: "0.2.0 → 0.2.1".into(),
+        weft_latest: Some("0.2.1".into()),
+        weft_behind: true,
+        ..weft_core::onboarding::View::default()
+    });
+    expect_screen("atlas_t1_9", &screen(&mut a, 120, 32));
 }
 
 /// T13.1: an update installed while agents run waits for them, and says so

@@ -218,9 +218,6 @@ pub struct App {
     lost_since: Option<std::time::Instant>,
     /// Why the window ended by itself, when it did.
     ended: Option<String>,
-    /// A newer Weft release, once someone has looked. Set from outside,
-    /// because the client itself reaches nothing.
-    pub newer: std::sync::Arc<std::sync::OnceLock<String>>,
     /// The projects open in this window, and which one has the focus. The
     /// daemon has always been able to hold many; this is the client catching
     /// up.
@@ -701,7 +698,6 @@ impl App {
             hits: Hits::default(),
             starts: Vec::new(),
             routing: Default::default(),
-            newer: Default::default(),
         }
     }
 

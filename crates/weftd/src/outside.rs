@@ -27,6 +27,12 @@ pub trait Outside: Send + Sync {
     /// What `ringframe sync --check` says of the latest release, or why it
     /// could not tell; `fresh` asks again rather than reading a kept answer.
     fn release(&self, fresh: bool) -> Result<serde_json::Value, String>;
+    /// The latest Weft release, by version, or nothing when it cannot be
+    /// reached; kept like `release`.
+    fn weft_release(&self, fresh: bool) -> Option<String>;
+    /// Whether Weft `version` is installed on this machine beside the one
+    /// running.
+    fn weft_installed(&self, version: &str) -> bool;
     /// The program the person pointed at, if it is one that starts.
     fn check_program(&self, path: &str) -> Result<String, String>;
     /// The text of the newest file at `pattern`, where a `*` folder stands
@@ -97,6 +103,16 @@ impl Outside for Machine {
         crate::onboarding::check(fresh)
     }
 
+    fn weft_release(&self, fresh: bool) -> Option<String> {
+        crate::onboarding::weft_latest(fresh)
+    }
+
+    fn weft_installed(&self, version: &str) -> bool {
+        std::env::var_os("HOME").is_some_and(|home| {
+            Path::new(&home).join(".fab7/weft/versions").join(version).join("weft").is_file()
+        })
+    }
+
     fn check_program(&self, path: &str) -> Result<String, String> {
         crate::onboarding::check_program(path)
     }
@@ -147,6 +163,8 @@ impl Outside for Machine {
 pub struct Fixed {
     programs: BTreeMap<String, Vec<(Vec<String>, i32, String)>>,
     release: Result<serde_json::Value, String>,
+    /// The latest Weft release, and whether it is installed here already.
+    weft: (Option<String>, bool),
     files: Vec<(std::path::PathBuf, String)>,
     /// When `weft remote` was started. Each run ends at once, failing.
     remote_runs: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
@@ -159,6 +177,7 @@ impl Default for Fixed {
         Fixed {
             programs: BTreeMap::new(),
             release: Err("no release check in this world".into()),
+            weft: (None, false),
             files: Vec::new(),
             remote_runs: Arc::default(),
             service: None,
@@ -192,6 +211,12 @@ impl Fixed {
 
     pub fn with_release(mut self, release: Result<serde_json::Value, String>) -> Self {
         self.release = release;
+        self
+    }
+
+    /// The latest Weft release in this world, and whether it is installed.
+    pub fn with_weft(mut self, latest: Option<&str>, installed: bool) -> Self {
+        self.weft = (latest.map(str::to_string), installed);
         self
     }
 
@@ -250,6 +275,14 @@ impl Outside for Fixed {
 
     fn release(&self, _fresh: bool) -> Result<serde_json::Value, String> {
         self.release.clone()
+    }
+
+    fn weft_release(&self, _fresh: bool) -> Option<String> {
+        self.weft.0.clone()
+    }
+
+    fn weft_installed(&self, _version: &str) -> bool {
+        self.weft.1
     }
 
     fn check_program(&self, path: &str) -> Result<String, String> {

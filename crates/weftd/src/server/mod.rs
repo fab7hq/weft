@@ -1023,6 +1023,7 @@ impl Session {
             }
             let cli = crate::ringframe::installed(out);
             let mut check = out.release(false);
+            let mut weft = crate::onboarding::weft_check(out);
             let mut harnesses = harnesses;
             let mut note = None;
             // A step's row shows it running; a failed one stays on its row
@@ -1041,7 +1042,24 @@ impl Session {
                     Err(e) => note = Some(e),
                 },
                 "run" | "all" => {
-                    let (base, _) = look(out, &harnesses, &check, cli);
+                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                    // Weft first: it brings RingFrame's program with it, and the
+                    // steps after it run on that.
+                    if act == "all" && base.weft_behind {
+                        let updating = weft_core::onboarding::View {
+                            weft: "updating…".into(),
+                            ..base.clone()
+                        };
+                        show(&updating);
+                        let step = vec![weft_core::sync::Step::new("weft", &["update"])];
+                        if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                            proceed(out, step, |_| {})
+                        {
+                            note = Some(format!("{step} failed: {said}"));
+                        }
+                        weft = crate::onboarding::weft_check(out);
+                    }
+                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
                     if act == "all" && base.configuration_behind {
                         let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
                         if let Some(weft_core::onboarding::State::Failed { step, said }) =
@@ -1051,7 +1069,7 @@ impl Session {
                         }
                         check = out.release(true);
                     }
-                    let (base, _) = look(out, &harnesses, &check, cli);
+                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
                     let todo: Vec<String> = base
                         .rows
                         .iter()
@@ -1073,7 +1091,7 @@ impl Session {
             }
             // Looked at again, whatever was done: the tick is the harness's
             // answer now, never a command's exit code.
-            let (mut v, states) = look_as_they_answer(out, &harnesses, &check, cli, |v| {
+            let (mut v, states) = look_as_they_answer(out, &harnesses, &check, &weft, cli, |v| {
                 let mut v = v.clone();
                 v.note = note.clone();
                 show(&v);
@@ -1218,6 +1236,10 @@ impl Session {
         let program = self.config.with_file_name("versions").join(&version).join("weft");
         if !plain || !program.is_file() {
             return Answer::No("no_version", format!("Weft {version} is not installed here"));
+        }
+        // Already this one: nothing to wait for, and no restart to make.
+        if version == env!("CARGO_PKG_VERSION") {
+            return Answer::Ok(serde_json::json!({"update": version}));
         }
         self.update = Some(version.clone());
         self.clients.broadcast_all(&Out::Update { version: Some(version.clone()) });

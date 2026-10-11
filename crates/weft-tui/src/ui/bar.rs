@@ -208,12 +208,10 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             th.needs_you(),
         ));
     }
-    if let Some(v) = app.newer.get().filter(|_| quiet) {
+    let out = app.setup_view().filter(|v| v.weft_behind).and_then(|v| v.weft_latest.as_deref());
+    if let Some(v) = out.filter(|_| quiet) {
         let lit = Style::default().fg(th.accent()).add_modifier(Modifier::BOLD);
-        return Paragraph::new(Line::styled(
-            format!(" Weft {v} is out - update to use the latest version"),
-            lit,
-        ));
+        return Paragraph::new(Line::styled(format!(" Weft {v} is out, run update"), lit));
     }
     let text = match (&app.modal, app.focus) {
         (Some(Modal::Quit), _) => {

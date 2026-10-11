@@ -40,6 +40,35 @@ pub fn check(fresh: bool) -> Result<serde_json::Value, String> {
     answer
 }
 
+static WEFT_CHECKED: std::sync::Mutex<Option<(Instant, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// The latest Weft release's version, or nothing when GitHub cannot be
+/// reached, kept for [`CHECK_EVERY`] like `check`; `fresh` asks again.
+pub fn weft_latest(fresh: bool) -> Option<String> {
+    let mut kept = WEFT_CHECKED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, answer)) = kept.as_ref()
+        && !fresh
+        && at.elapsed() < CHECK_EVERY
+    {
+        return answer.clone();
+    }
+    let answer = ask_weft_release();
+    *kept = Some((Instant::now(), answer.clone()));
+    answer
+}
+
+fn ask_weft_release() -> Option<String> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "10"])
+        .arg(format!("https://api.github.com/repos/{}/releases/latest", weft_core::sync::WEFT_REPO))
+        .output()
+        .ok()?;
+    let release: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let tag = release["tag_name"].as_str()?;
+    weft_core::sync::release_version(tag).map(str::to_string)
+}
+
 fn ask_check() -> Result<serde_json::Value, String> {
     let out = Command::new("ringframe")
         .args(["sync", "--check"])
@@ -57,6 +86,21 @@ fn ask_check() -> Result<serde_json::Value, String> {
     }
 }
 
+/// What the machine says of Weft's own releases: the latest, and whether it
+/// is installed beside the running one already.
+#[derive(Clone, Default)]
+pub struct WeftCheck {
+    pub latest: Option<String>,
+    pub installed: bool,
+}
+
+/// Ask for [`WeftCheck`]; the latest is the kept answer, as `check`'s is.
+pub fn weft_check(out: &dyn Outside) -> WeftCheck {
+    let latest = out.weft_release(false);
+    let installed = latest.as_deref().is_some_and(|l| out.weft_installed(l));
+    WeftCheck { latest, installed }
+}
+
 /// The view: RingFrame's configuration against the latest release (`check`),
 /// and every harness file's row, found or not, current or behind; and, for
 /// each harness found, its readiness, to tell the clients.
@@ -64,9 +108,10 @@ pub fn look(
     out: &dyn Outside,
     harnesses: &Harnesses,
     check: &Result<serde_json::Value, String>,
+    weft: &WeftCheck,
     cli: bool,
 ) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
-    look_as_they_answer(out, harnesses, check, cli, |_| {})
+    look_as_they_answer(out, harnesses, check, weft, cli, |_| {})
 }
 
 /// The view before anything has answered: every harness found on this machine
@@ -87,6 +132,7 @@ pub fn look_as_they_answer(
     out: &dyn Outside,
     harnesses: &Harnesses,
     check: &Result<serde_json::Value, String>,
+    weft: &WeftCheck,
     cli: bool,
     mut shown: impl FnMut(&View),
 ) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
@@ -110,6 +156,9 @@ pub fn look_as_they_answer(
         plugin,
         ..View::default()
     };
+    let (line, step) =
+        weft_core::sync::weft(env!("CARGO_PKG_VERSION"), weft.latest.as_deref(), weft.installed);
+    (view.weft, view.weft_behind, view.weft_latest) = (line, step.is_some(), weft.latest.clone());
     let mut states = Vec::new();
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
@@ -278,10 +327,16 @@ mod tests {
         assert!(opened.rows.iter().all(|r| r.state == State::Checking), "{:?}", opened.rows);
 
         let mut seen = Vec::new();
-        let (view, states) =
-            look_as_they_answer(&Machine, &harnesses, &Ok(serde_json::json!({})), true, |v| {
+        let (view, states) = look_as_they_answer(
+            &Machine,
+            &harnesses,
+            &Ok(serde_json::json!({})),
+            &WeftCheck::default(),
+            true,
+            |v| {
                 seen.push(v.rows.iter().filter(|r| r.state == State::Checking).count());
-            });
+            },
+        );
         assert_eq!(seen, [1, 0], "each answer shown as it came, the other still being asked");
         assert!(!view.pending_release);
         assert!(
@@ -327,19 +382,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let h = stub(&dir);
         let harnesses = Harnesses(vec![h.clone()]);
-        let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), true);
+        let (v, _) =
+            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), true);
         assert_eq!(v.rows[0].state, State::NotSetUp);
         let mut seen = Vec::new();
         assert_eq!(run(&Machine, &h, true, None, |s| seen.push(s)), None, "no step failed");
         assert_eq!(seen, [State::Running(format!("{} install", h.program))]);
-        let (v, states) = look(&Machine, &harnesses, &Err("offline".into()), true);
+        let (v, states) =
+            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), true);
         assert_eq!(v.rows[0].state, State::Ready { version: None });
         assert_eq!(states, [("stub".to_string(), weft_core::readiness::Readiness::Ready)]);
-        let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), false);
+        let (v, _) =
+            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), false);
         assert_eq!(v.rows[0].state, State::NoCli, "RingFrame missing is Weft's installer's");
         let mut gone = h.clone();
         gone.program = dir.join("nothing-here").display().to_string();
-        let (v, _) = look(&Machine, &Harnesses(vec![gone]), &Err("offline".into()), true);
+        let (v, _) = look(
+            &Machine,
+            &Harnesses(vec![gone]),
+            &Err("offline".into()),
+            &WeftCheck::default(),
+            true,
+        );
         assert_eq!(v.rows[0].state, State::NotFound);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -354,5 +418,39 @@ mod tests {
         let c = weft_core::config::read(&std::fs::read_to_string(&path).unwrap(), &known);
         assert_eq!(c.program("codex"), Some("/opt/codex"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Weft's own line: behind, installed and waiting, or the latest.
+    #[test]
+    fn the_view_says_where_weft_stands() {
+        use crate::outside::Fixed;
+        let out = Fixed::new().shared();
+        let look = |latest: Option<&str>, installed: bool| {
+            let weft = WeftCheck { latest: latest.map(str::to_string), installed };
+            look(out.as_ref(), &Harnesses::default(), &Ok(serde_json::json!({})), &weft, true).0
+        };
+        let now = env!("CARGO_PKG_VERSION");
+        let behind = look(Some("99.0.0"), false);
+        assert_eq!(behind.weft, format!("{now} → 99.0.0"));
+        assert!(behind.weft_behind && behind.needs_anything() && behind.proceeds());
+        assert_eq!(behind.weft_latest.as_deref(), Some("99.0.0"));
+        let waiting = look(Some("99.0.0"), true);
+        assert_eq!(waiting.weft, "99.0.0 is installed: it starts when no agent is running");
+        assert!(!waiting.weft_behind);
+        assert_eq!(look(Some(now), false).weft, format!("{now} is the latest"));
+        assert_eq!(look(None, false).weft, "could not reach the latest release");
+    }
+
+    /// Weft's step is the CLI's own update; its failure comes back with what it said.
+    #[test]
+    fn weft_updates_by_its_own_command() {
+        use crate::outside::Fixed;
+        let step = || vec![Step::new("weft", &["update"])];
+        let ok = Fixed::new().answers("weft", &["update"], 0, "weft 0.2.0 → v0.2.1\n").shared();
+        assert_eq!(proceed(ok.as_ref(), step(), |_| {}), None);
+        let bad = Fixed::new()
+            .answers("weft", &["update"], 1, "could not reach the latest release")
+            .shared();
+        assert!(matches!(proceed(bad.as_ref(), step(), |_| {}), Some(State::Failed { .. })));
     }
 }

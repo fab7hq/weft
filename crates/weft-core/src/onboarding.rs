@@ -111,6 +111,14 @@ impl Row {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct View {
+    /// Weft itself: its line, the latest release when it could be reached,
+    /// and whether a step catches it up.
+    #[serde(default)]
+    pub weft: String,
+    #[serde(default)]
+    pub weft_latest: Option<String>,
+    #[serde(default)]
+    pub weft_behind: bool,
     /// The latest release, and its `rf` version, when it could be reached.
     #[serde(default)]
     pub latest: Option<String>,
@@ -150,7 +158,8 @@ impl View {
     /// Something is behind, or found and not set up: what lights `↑ [U]PDATE`.
     /// A harness that is not on this machine lights nothing.
     pub fn needs_anything(&self) -> bool {
-        self.configuration_behind
+        self.weft_behind
+            || self.configuration_behind
             || self.rows.iter().any(|r| {
                 matches!(r.state, State::Behind { .. } | State::NotSetUp | State::Failed { .. })
             })
@@ -159,7 +168,8 @@ impl View {
     /// Whether `[P]ROCEED` has anything to run: the configuration, and every
     /// harness to set up or update. Finding a program is the person's to say.
     pub fn proceeds(&self) -> bool {
-        self.configuration_behind
+        self.weft_behind
+            || self.configuration_behind
             || self.rows.iter().any(|r| matches!(r.state.next(), Some(Next::SetUp | Next::Update)))
     }
 

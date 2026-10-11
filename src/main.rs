@@ -275,13 +275,6 @@ fn main() -> Result<()> {
     };
     let mut weft = App::with_session(root, toggle, session);
     weft.look_for_updates();
-    let (newer, wake) = (weft.newer.clone(), weft.waker());
-    std::thread::spawn(move || {
-        if let Some(tag) = latest_release().filter(|t| is_newer(t)) {
-            let _ = newer.set(tag.trim_start_matches('v').to_string());
-            let _ = wake.send(weft::client::Wake::Arrived);
-        }
-    });
     let mut started = Ok(());
     for agent in &agents {
         let program = agent.split_whitespace().next().unwrap_or(agent);
@@ -352,6 +345,12 @@ fn update() -> Result<()> {
     }
     if !is_newer(&tag) {
         println!("weft {now} is the latest");
+        // Installed by hand, or by an earlier update: a service on an older
+        // Weft is told to start on this one once no agent runs.
+        let socket = protocol::socket_path();
+        if protocol::is_live(&socket) {
+            let _ = protocol::tell_update(&socket, now);
+        }
         return Ok(());
     }
     println!("weft {now} → {tag}");
