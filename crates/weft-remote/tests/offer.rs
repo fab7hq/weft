@@ -1,4 +1,4 @@
-//! remote.md §7a, §12 (ADR-0023, ADR-0024): turning Remote on lists the
+//! remote.md §7a, §12: turning Remote on lists the
 //! tunnel adapters until one is chosen; with its program missing there is one
 //! Install, which uses Homebrew when it is there, else the release for this
 //! machine; it runs only when asked, and the tunnel starts once it is there.

@@ -78,7 +78,7 @@ struct Slot {
     /// command line it was asked for, which `spec` keeps as it was.
     turbo: bool,
     /// `$WEFT_PANE_TOKEN`: 128 random bits, kept here and nowhere else. A
-    /// signal naming this pane counts only with it (ADR-0030 D2).
+    /// signal naming this pane counts only with it.
     token: String,
 }
 
@@ -120,7 +120,7 @@ struct Waiting {
     /// harness's own chooser never got one.
     confirm: Option<String>,
     /// The Ask whose prompt this sends: delivered only when its pane reports
-    /// receiving it (ADR-0033 D1).
+    /// receiving it.
     sends: Option<String>,
 }
 
@@ -151,7 +151,7 @@ struct Project {
     /// each tick rather than waited on, so nothing else stops meanwhile.
     starting: Vec<Starting>,
     /// Sends of an Ask typed and submitted, each waiting for what its pane
-    /// reports it received (ADR-0033 D1).
+    /// reports it received.
     due: Vec<typing::Due>,
     prefixes: crate::acts::Prefixes,
     /// The harnesses Weft has a file for, read when the project opened, and
@@ -175,7 +175,7 @@ struct Project {
     /// project keeps its number; the next window to open its path gets a new
     /// one.
     closed: bool,
-    /// Reopened after an unclean end, at this time (ADR-0034 D2): kept open
+    /// Reopened after an unclean end, at this time: kept open
     /// with no window until someone acts in it or dismisses it.
     reopened: Option<i64>,
 }
@@ -330,10 +330,10 @@ enum Wake {
         project: usize,
         setup: Option<weft_core::workspace::Needs>,
     },
-    /// A hook, from `weft signal` (ADR-0030).
+    /// A hook, from `weft signal`.
     Signal(Box<weft_core::signal::Sent>),
     /// What RingFrame made of the prompt a pane received after Weft's send of
-    /// `ask` (ADR-0033 D1).
+    /// `ask`.
     Received {
         project: usize,
         pane: u32,
@@ -347,7 +347,7 @@ pub struct Session {
     /// The socket this daemon listens on, which every harness it starts is
     /// told as `$WEFT_SOCKET`.
     socket: PathBuf,
-    /// Weft's own session receipts, beside `config` (ADR-0030 D7).
+    /// Weft's own session receipts, beside `config`.
     receipts: PathBuf,
     /// What signals forward to `ringframe observe`, one queue per project.
     forwarders: crate::forward::Forwarders,
@@ -374,7 +374,7 @@ pub struct Session {
     /// A project a client dismissed, closed once its answer is sent.
     dismissed: Option<usize>,
     /// A newer Weft installed beside this one, by its version: started on
-    /// once no agent runs (ADR-0034 D5).
+    /// once no agent runs.
     update: Option<String>,
     /// This daemon's own version, held while it runs so it is never removed
     /// from under it.
@@ -414,7 +414,7 @@ impl Answer {
 }
 
 /// What can be started here: each harness set up for RingFrame, fresh. A
-/// session is resumed by its id, from its own Details (ADR-0029 D4), never
+/// session is resumed by its id, from its own Details, never
 /// offered here as "the latest". A harness whose plugin is not in it is
 /// offered by SET UP, not here: an agent started in it would record nothing.
 fn starts(
@@ -507,7 +507,7 @@ fn write_whole(path: &Path, text: String) {
     }
 }
 
-/// Set for a daemon an update started, which ended nothing (ADR-0034 D5).
+/// Set for a daemon an update started, which ended nothing.
 const UPDATED: &str = "WEFT_UPDATED";
 
 impl Session {
@@ -549,11 +549,11 @@ impl Session {
         assume_ready: bool,
     ) -> Result<()> {
         // Only this user may reach the daemon: its folder is 0700 and theirs,
-        // and the socket 0600 (ADR-0030 D2).
+        // and the socket 0600.
         if let Some(dir) = socket.parent() {
             private_dir(dir)?;
         }
-        // Started again by an update, which ended nothing (ADR-0034 D5). Read
+        // Started again by an update, which ended nothing. Read
         // before any thread of this daemon runs, and not passed on.
         let updated = std::env::var_os(UPDATED).is_some();
         if updated {
@@ -562,7 +562,7 @@ impl Session {
             unsafe { std::env::remove_var(UPDATED) };
         }
         // A live daemon is left alone: this one ends cleanly, so a service
-        // started beside it is not restarted over it (ADR-0034 D1).
+        // started beside it is not restarted over it.
         if weft_proto::is_live(socket) {
             // Still the line a starting client waits for: one is listening.
             println!("weft: already listening on {}", socket.display());
@@ -664,7 +664,7 @@ impl Session {
             crate::versions::prune(&versions, &keep);
         }
         // The projects an earlier daemon had open when it ended without a
-        // stop, reopened with their agents ended (ADR-0034 D2); after a stop
+        // stop, reopened with their agents ended; after a stop
         // the list is empty. After an update nothing ended: they are open.
         session.reopen(!updated);
         session.remote_from_config();
@@ -771,7 +771,7 @@ impl Session {
         let On { unit: unit_id, pane, text, eval } = on;
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
-        // Eval acts on the Open round and Seal on an Eval's (ADR-0029 D5):
+        // Eval acts on the Open round and Seal on an Eval's:
         // the Ask that routes it is the round's newest, as a work's was.
         let record = self.projects[at].ledger.record();
         let rounds = weft_core::rounds::rounds(&units, &record);
@@ -842,7 +842,7 @@ impl Session {
                     return Answer::No("no_pane", format!("no {} pane is open here", unit.harness));
                 };
                 // A send is proven by what the harness reports it received, so
-                // Weft sends only to one whose file says where that is (D4).
+                // Weft sends only to one whose file says where that is.
                 if let Some(why) = self.cannot_prove(at, pane) {
                     return Answer::No("no_receipt", why);
                 }
@@ -1498,7 +1498,7 @@ impl Session {
             Call::StartAgent { harness, spec, session } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // A resume names a session the index holds, and runs that id
-                // with the harness file's own resume line (ADR-0029 D4).
+                // with the harness file's own resume line.
                 let spec = match &session {
                     None => spec,
                     Some(id) => match self.resumable(at, &harness, id) {

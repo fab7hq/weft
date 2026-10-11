@@ -1,11 +1,11 @@
-//! "Start at login", Weft's own option (ADR-0034 D1, Phase 6.9 step 3): a
+//! "Start at login", Weft's own option: a
 //! launchd agent or a systemd user unit running `weft --serve` with the
 //! `PATH` the person had, written when the option is turned on and removed
 //! when it is turned off. Turning Remote on or off never touches it.
 //!
 //! `launchctl` and `systemctl` are scripts here that write down how they were
 //! called; the home is a scratch folder. The services themselves are not
-//! tested: that is the platform's (ADR-0034 D7).
+//! tested: that is the platform's.
 
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -350,7 +350,7 @@ fn the_option_is_kept_in_config_and_changes_the_service() {
 }
 
 /// Turning Remote on or off writes no service and runs no `launchctl` or
-/// `systemctl` (ADR-0034 D1).
+/// `systemctl`.
 #[test]
 fn turning_remote_on_or_off_never_touches_the_service() {
     let w = World::new("remote");

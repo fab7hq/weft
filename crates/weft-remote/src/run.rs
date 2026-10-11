@@ -27,7 +27,7 @@ use crate::view::View;
 mod protocol;
 
 /// The remote protocol's version.
-pub const VERSION: u64 = 4;
+pub const VERSION: u64 = 1;
 /// How long the person has to answer a device asking to be allowed.
 const ASK_WITHIN: Duration = Duration::from_secs(120);
 
@@ -40,7 +40,7 @@ pub struct Settings {
     pub account: Account,
     /// Fab7's assertion key.
     pub key: VerifyingKey,
-    /// GitHub's API, where Cloudflare's latest release is found (ADR-0023).
+    /// GitHub's API, where Cloudflare's latest release is found.
     pub github: String,
 }
 
@@ -161,7 +161,7 @@ enum Gather {
     EvalView,
 }
 
-/// A device's read (remote.md §6c), answered once every part the daemon was
+/// A device's read (remote.md §6), answered once every part the daemon was
 /// asked for is in. A part that did not come back is said where it would
 /// be, as the TUI says it.
 struct Gathering {
@@ -235,8 +235,8 @@ struct Remote {
     vapid: String,
     rules: crate::push::Rules,
     pusher: Sender<crate::push::Job>,
-    /// A newer Weft installed on this machine, waiting for no agent to run
-    /// (ADR-0034 D5).
+    /// A newer Weft installed on this machine, waiting for no agent
+    /// to run.
     update: Option<String>,
 }
 
@@ -554,7 +554,7 @@ impl Remote {
         true
     }
 
-    /// The machine's `update` (remote.md §6e): null, or `{version}`.
+    /// The machine's `update` (remote.md §6): null, or `{version}`.
     fn update_json(&self) -> Value {
         self.update.as_ref().map_or(Value::Null, |v| json!({"version": v}))
     }
@@ -580,7 +580,7 @@ impl Remote {
         self.projects.iter().flatten().flat_map(|o| o.agents.harnesses()).collect()
     }
 
-    /// Every open project's rows of the tree (remote.md §6b).
+    /// Every open project's rows of the tree (remote.md §6).
     fn tree(&self) -> Value {
         self.projects.iter().flatten().map(|o| o.agents.tree()).collect()
     }
@@ -664,7 +664,7 @@ impl Remote {
             }
             // `cloudflared` was missing: look again, and start if it is there.
             Some("look") if self.tunnel.is_none() => self.look(),
-            // The tunnel the person picked from the list (ADR-0024).
+            // The tunnel the person picked from the list.
             Some("choose") if self.tunnel.is_none() => {
                 if let Some(tool) =
                     act["tunnel"].as_str().and_then(|id| Tool::tunnel(&self.settings.weft, id))
@@ -973,7 +973,7 @@ impl Remote {
     }
 
     /// Refused for its version, saying which side is the newer, so the page
-    /// says what to do: reload it, or update Weft here (ADR-0034 D4).
+    /// says what to do: reload it, or update Weft here.
     fn refuse_version(&self, conn: u64, v: &Value) {
         let newer = if v.as_u64().is_some_and(|v| v > VERSION) { "page" } else { "machine" };
         if let Some(c) = self.conns.get(&conn) {

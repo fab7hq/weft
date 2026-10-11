@@ -1,12 +1,12 @@
 //! `weft signal [--reply <json>] <harness> <hook>`: every hook of every
-//! harness (ADR-0030 D1). It prints the hook's reply before anything else can
+//! harness. It prints the hook's reply before anything else can
 //! fail, takes from the payload only what the harness file's `[signal]`
 //! names, finds the harness process, and sends weftd one `signal` message,
 //! giving up after 200 ms. It writes no file, never runs `ringframe`, and
 //! always exits 0: a hook must never fail the harness's turn. Without weftd
 //! it is silent and records nothing. Where `[signal]` keeps the prompt in a
 //! file the payload names, it reads only that file's end, for the line that
-//! holds it, and a file that line names as holding it (ADR-0033 D7).
+//! holds it, and a file that line names as holding it.
 
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -262,7 +262,7 @@ mod tests {
     }
 
     /// A harness that records a prompt only in its transcript, past other
-    /// lines, and a long one in a file the line names (ADR-0033 D7):
+    /// lines, and a long one in a file the line names:
     /// `weft signal` reads both, and says where the line was.
     #[test]
     fn a_prompt_recorded_in_a_transcript_line_or_a_file_it_names_reaches_weftd() {

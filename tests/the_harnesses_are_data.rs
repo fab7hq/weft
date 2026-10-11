@@ -1,5 +1,5 @@
-//! No harness in either program's code (ADR-0015), and no screen text Weft
-//! reads to guess an agent's state (ADR-0013): harness-profile.md §5 test 2,
+//! No harness in either program's code, and no screen text Weft
+//! reads to guess an agent's state: harness-profile.md §5 test 2,
 //! turn-state.md §6 test 7.
 //!
 //! Weft names no harness anywhere it ships or runs: not in its code or its
@@ -13,7 +13,7 @@
 //! whether the screen changed and has gone still, and the paste mode the
 //! agent asked for. Drawing a pane for the person is not a read. A send is
 //! proven by what the harness reports it received, so no harness's way of
-//! drawing a paste is in Weft's code (ADR-0033 D2, D5).
+//! drawing a paste is in Weft's code.
 
 use std::path::{Path, PathBuf};
 
@@ -51,7 +51,7 @@ const SCREEN: &[&str] = &[
 
 /// How harnesses draw a long paste, which Weft once read to guard its typing:
 /// a fold placeholder, a scroll line. A line naming all of a group's words is
-/// a harness's screen in Weft's code (ADR-0033 D5).
+/// a harness's screen in Weft's code.
 const PASTE_SCREEN: &[&[&str]] = &[&["[Pasted text"], &["[Pasted Content"], &["↑", "more lines"]];
 
 /// The only functions that read a pane's screen, and why each may.

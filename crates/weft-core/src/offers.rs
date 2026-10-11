@@ -118,11 +118,11 @@ fn sent(unit: &crate::ledger::Unit) -> bool {
     !unit.requested_only && !matches!(unit.sent, Sent::NotSent | Sent::ReadyToSend)
 }
 
-// --- Details, one level each (ADR-0029 D3) ------------------------------
+// --- Details, one level each --------------------------------------------
 //
 // A work shows only its Ask; an Eval, a Seal and a session each show once,
 // as themselves. weftd's facts in, a payload out: the TUI draws these and a
-// device is sent them (remote.md §6c), so the two cannot say different
+// device is sent them (remote.md §6), so the two cannot say different
 // things.
 
 use crate::rounds::Record as Rounds;
@@ -335,7 +335,7 @@ pub struct EvalDetail {
     pub checks: Vec<Marked>,
     pub asks: Vec<Ask>,
     pub sealed: Option<SealRef>,
-    /// `None` when Seal can run on it, else why not: the act stays (D12.6).
+    /// `None` when Seal can run on it, else why not: the act stays.
     pub seal: Option<Why>,
 }
 

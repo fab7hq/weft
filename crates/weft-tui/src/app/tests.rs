@@ -115,7 +115,7 @@ pub(crate) fn connect_when_listening(
 
 /// Weft's service went and came back at the same socket (a crash with Start
 /// at login on, or an update that started it again as the same protocol):
-/// the window opens its project on the new one by itself (ADR-0034 D5).
+/// the window opens its project on the new one by itself.
 #[test]
 fn a_window_reconnects_when_its_daemon_comes_back() {
     let (root, session) = test_session("reconnect");
@@ -517,7 +517,7 @@ fn enter_on_an_ask_opens_its_details_and_back_goes_to_the_tree() {
     assert!(a.detail().is_none() && a.modal.is_none());
 }
 
-/// A session on record is never offered as "the latest" (ADR-0029 D4, the
+/// A session on record is never offered as "the latest" (the
 /// `gl` case): what can be started is each harness fresh.
 #[test]
 fn a_session_on_record_is_never_offered_as_the_latest() {
@@ -919,7 +919,7 @@ fn eval_and_seal_always_confirm_before_typing() {
         };
         a.settle();
         a.take_the_board();
-        // Eval acts on Open, Seal on an Eval (ADR-0029 D5).
+        // Eval acts on Open, Seal on an Eval.
         let on = |r: &Row| match key {
             'e' => matches!(r, Row::Open { .. }),
             _ => matches!(r, Row::Eval { .. }),
@@ -995,7 +995,7 @@ fn an_agent_that_has_not_said_it_is_ready_is_asked_about_first() {
 }
 
 /// §6 test 1, drawn: an agent's row carries its state from its receipt;
-/// Asks under a round carry none (D6).
+/// Asks under a round carry none.
 #[test]
 fn an_agents_row_shows_its_state_from_its_receipt() {
     let mut a = with_unit(Sent::Arrived { exact: true });
@@ -1116,7 +1116,7 @@ fn an_agent_with_no_asks_still_has_a_row_for_its_badge() {
     assert!(rows.lines().any(|l| l.contains("codex") && l.contains("needs you")), "{rows}");
 }
 
-/// ADR-0017: an agent the person is not looking at that starts asking
+/// An agent the person is not looking at that starts asking
 /// for input sends one notification; a turn that ends sends none; the agent in
 /// front sends none; one that stays waiting is not announced again;
 /// turned off, nothing is sent.
@@ -1350,7 +1350,7 @@ fn proceed_on_a_sent_asks_details_says_why_and_sends_nothing() {
 
 /// Sent on the person's yes, and what the agent reported it received was not
 /// the Ask, or nothing came: the pane's notice says so, in words, so the
-/// person is not offered the send again blind (ADR-0033 D1).
+/// person is not offered the send again blind.
 #[test]
 fn a_send_that_did_not_arrive_as_the_ask_is_said() {
     let mut a = recorded(Sent::ReadyToSend);
@@ -1481,7 +1481,7 @@ fn proceed_does_the_step_the_selected_row_is_actually_waiting_on() {
     );
 }
 
-/// Each act acts where it applies (ADR-0029 D5): pressed on another row it
+/// Each act acts where it applies: pressed on another row it
 /// says what to select, in the cards' words.
 #[test]
 fn an_act_pressed_on_a_row_it_does_not_act_on_says_what_to_select() {
@@ -2001,7 +2001,7 @@ fn remote_state(a: &mut App, state: &str) {
     }
 }
 
-/// ADR-0024, remote.md §7a: turning Remote on lists the tunnels and `Enter`
+/// remote.md §7a: turning Remote on lists the tunnels and `Enter`
 /// chooses one; with its program missing `I` asks "Run this?" first, `N`
 /// sends nothing and `Y` sends `install`.
 #[test]
@@ -2166,7 +2166,7 @@ fn scratch_service(name: &str) -> (PathBuf, weftd::service::Service) {
 }
 
 /// T13.2's L: Weft's own "Start at login" turned on and off in place from
-/// the Weft menu, the service written to run `weft --serve` (ADR-0034 D1).
+/// the Weft menu, the service written to run `weft --serve`.
 #[test]
 fn l_in_the_weft_menu_turns_start_at_login_on_and_off() {
     let (scratch, service) = scratch_service("login");

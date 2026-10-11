@@ -1,4 +1,4 @@
-//! A send is proven by what the harness received (ADR-0033 D1, D4): after
+//! A send is proven by what the harness received: after
 //! Enter, weftd waits for the pane's next forwarded prompt and takes
 //! `ringframe observe prompt`'s verdict on it. The Ask's prompt is delivered
 //! and observed; anything else is not, and the pane's notice says so; nothing
@@ -322,8 +322,8 @@ fn another_prompt_arriving_is_not_the_ask_and_the_person_is_told() {
 }
 
 /// A turn that ends with nothing received is "cannot tell" at once: the
-/// wait ends at the turn's end, not after a fixed time (ADR-0033 D1 as
-/// amended). No retry.
+/// wait ends at the turn's end, not after a fixed time. No
+/// retry.
 #[test]
 fn a_turn_that_ends_with_nothing_received_is_cannot_tell_and_no_retry() {
     let mut b = Bench::new("weft-proven-silent", "loom", "silent");
@@ -339,8 +339,8 @@ fn a_turn_that_ends_with_nothing_received_is_cannot_tell_and_no_retry() {
 
 /// A harness that records the prompt only in its transcript, and names the
 /// transcript only when its turn ends, past the old 10 s: the send is
-/// delivered when that hook comes, and the same line is forwarded once
-/// (ADR-0033 D7).
+/// delivered when that hook comes, and the same line is forwarded
+/// once.
 #[test]
 fn a_prompt_recorded_only_in_a_transcript_arrives_with_a_later_hook() {
     let mut b = Bench::new("weft-proven-transcript", "loom", "transcript");

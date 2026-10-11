@@ -1,4 +1,4 @@
-//! "Start at login", Weft's own option (ADR-0034 D1): a per-user service that
+//! "Start at login", Weft's own option: a per-user service that
 //! runs `weft --serve` when the person logs in, and again when it ends by
 //! itself. A launchd agent on macOS, a systemd user unit on Linux; the code
 //! differs per system, never per harness or tunnel.

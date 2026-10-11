@@ -57,7 +57,7 @@ impl Release {
         let harnesses = fab7.join(format!("fab7-{tag}/products/weft/harnesses"));
         std::fs::create_dir_all(&harnesses).unwrap();
         std::fs::write(harnesses.join("zed-agent.toml"), "title = \"Zed Agent\"\n").unwrap();
-        // And its tool files (ADR-0023).
+        // And its tool files.
         let tools = fab7.join(format!("fab7-{tag}/products/weft/tools"));
         std::fs::create_dir_all(&tools).unwrap();
         std::fs::write(tools.join("cloudflared.toml"), "program = \"cloudflared\"\n").unwrap();
@@ -176,7 +176,7 @@ fn it_downloads_verifies_and_installs_both_binaries() {
         );
     }
     assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
-    // Weft is in its version's folder, and `weft` is a link to it (ADR-0034 D5).
+    // Weft is in its version's folder, and `weft` is a link to it.
     let kept = release.dir.path().join("home/.fab7/weft/versions/0.1.0/weft");
     assert!(kept.is_file(), "{text}");
     assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), kept);
@@ -184,7 +184,7 @@ fn it_downloads_verifies_and_installs_both_binaries() {
 }
 
 /// A newer version goes beside the older, whose file a running Weft still
-/// uses; `weft` then points at the newer (ADR-0034 D5).
+/// uses; `weft` then points at the newer.
 #[test]
 fn a_newer_version_is_installed_beside_the_older() {
     let old = Release::make("v0.1.0", false);
@@ -216,8 +216,8 @@ fn the_harness_files_are_installed_from_the_same_fab7_and_replace_the_old() {
     assert!(!installed.join("gone.toml").exists(), "replaced, not added to: {text}");
 }
 
-/// The tool files come the same way, and replace the old the same way
-/// (ADR-0023).
+/// The tool files come the same way, and replace the old the same
+/// way.
 #[test]
 fn the_tool_files_are_installed_beside_the_harness_files() {
     let release = Release::make("v0.1.0", false);

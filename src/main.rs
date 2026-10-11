@@ -160,7 +160,7 @@ fn main() -> Result<()> {
     // outlives whatever asked for it.
     // Weft from another device: started by the daemon while remote access is
     // on (remote.md §5).
-    // Every hook of every harness (ADR-0030): answers the hook, tells the
+    // Every hook of every harness: answers the hook, tells the
     // daemon, and exits 0 whatever happens, so no hook fails a harness's turn.
     if first.as_deref() == Some("signal") {
         std::panic::set_hook(Box::new(|_| {}));
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
         std::process::exit(0);
     }
     if first.as_deref() == Some("remote") {
-        // Its version is kept while it runs (ADR-0034 D5).
+        // Its version is kept while it runs.
         let _held = weftd::versions::hold_own();
         return weft_remote::run();
     }
@@ -218,7 +218,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // This window's version is kept while it runs (ADR-0034 D5).
+    // This window's version is kept while it runs.
     let _held = weftd::versions::hold_own();
     let named = first.clone();
     // Weft starts no agent on its own. Named agents are a convenience for
@@ -256,7 +256,7 @@ fn main() -> Result<()> {
     };
 
     // With "Start at login" on, the daemon is started through Weft's service,
-    // so one owner keeps it running (ADR-0034 D1); else, or if that fails,
+    // so one owner keeps it running; else, or if that fails,
     // the window starts it itself.
     let socket = protocol::socket_path();
     if !protocol::is_live(&socket) {
@@ -264,7 +264,15 @@ fn main() -> Result<()> {
         let _ = weftd::service::start_daemon(service.as_ref(), &socket);
     }
     let size = terminal.size().unwrap_or_default();
-    let session = Session::open(&root, size.height.max(24), size.width.max(80))?;
+    // Refused or unreachable, the terminal is given back before saying so.
+    let session = match Session::open(&root, size.height.max(24), size.width.max(80)) {
+        Ok(session) => session,
+        Err(e) => {
+            release(&mut out);
+            ratatui::restore();
+            return Err(e);
+        }
+    };
     let mut weft = App::with_session(root, toggle, session);
     weft.look_for_updates();
     let (newer, wake) = (weft.newer.clone(), weft.waker());
@@ -292,7 +300,7 @@ fn main() -> Result<()> {
 
     match result {
         // Weft's service is a newer Weft now: this window starts again as it,
-        // in the same terminal, on the same project (ADR-0034 D5).
+        // in the same terminal, on the same project.
         Ok(Some(root)) => {
             use std::os::unix::process::CommandExt as _;
             let failed = std::process::Command::new("weft").arg(&root).exec();
@@ -372,7 +380,7 @@ fn update() -> Result<()> {
 }
 
 /// Tell a running daemon a newer Weft is installed beside it, which it starts
-/// on once no agent runs (ADR-0034 D5); what to say to the person.
+/// on once no agent runs; what to say to the person.
 fn after_update(socket: &std::path::Path, version: &str) -> String {
     if !protocol::is_live(socket) {
         return format!("Weft {version} starts the next time you run weft.");

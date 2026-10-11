@@ -1,5 +1,5 @@
-//! Tool files, the adapters for outside programs (ADR-0024), and installing a
-//! tunnel's program when the person says yes (ADR-0023, remote.md §7a): by
+//! Tool files, the adapters for outside programs, and installing a
+//! tunnel's program when the person says yes (remote.md §7a): by
 //! Homebrew when it is there, else the adapter's latest GitHub release, as
 //! Weft installs itself. The facts are in `~/.fab7/weft/tools/<id>.toml`.
 
@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// A tool file, as read: an adapter for one outside program (ADR-0024).
+/// A tool file, as read: an adapter for one outside program.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Tool {
     /// Its file's name: what `[remote] tunnel` names.

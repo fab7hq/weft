@@ -1,4 +1,4 @@
-//! The frames a remote device draws (Phase 6 step 2, remote.md D3).
+//! The frames a remote device draws (remote.md D3).
 //!
 //! A pane's recorded output, fed in chunks the way the reader thread sees it,
 //! becomes one `state_formatted()` frame and then a `state_diff()` frame per

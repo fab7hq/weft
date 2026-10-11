@@ -104,7 +104,7 @@ fn sh(c: &mut Client) -> u32 {
     started.unwrap()["pane"].as_u64().unwrap() as u32
 }
 
-/// D4: `output: "none"` is never sent a pane's bytes, and hears the rest.
+/// remote.md D4: `output: "none"` is never sent a pane's bytes, and hears the rest.
 #[test]
 fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     let (root, socket) = daemon("quiet");
@@ -140,7 +140,7 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// D5: a client that opens the project after a `stage` sees it, and can
+/// remote.md D5: a client that opens the project after a `stage` sees it, and can
 /// resolve it.
 #[test]
 fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
@@ -181,7 +181,7 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// D6: the TUI's typing is told as `presence`, at most once in ten seconds;
+/// remote.md D6: the TUI's typing is told as `presence`, at most once in ten seconds;
 /// `weft-remote`'s own typing never is.
 #[test]
 fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
@@ -214,7 +214,7 @@ fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// D7: `read {what: "history", pane, lines}` is the last lines of
+/// remote.md D7: `read {what: "history", pane, lines}` is the last lines of
 /// scrollback and screen as text, at most 2,000.
 #[test]
 fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
@@ -259,7 +259,7 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// D8: `weft-remote` publishes its view and every client hears it; an act
+/// remote.md D8: `weft-remote` publishes its view and every client hears it; an act
 /// from any other client reaches `weft-remote` unchanged.
 #[test]
 fn the_remote_view_and_its_acts_are_relayed() {
@@ -309,7 +309,7 @@ fn daemon_in(name: &str, config: &str, world: weft::outside::Fixed) -> (PathBuf,
     (root, socket, file)
 }
 
-/// D9, D10: `enabled = true` keeps `weft remote` running, restarted with a
+/// remote.md D9, D10: `enabled = true` keeps `weft remote` running, restarted with a
 /// 2, 4, 8 … second backoff; turning it off sends `stop` and it is not
 /// started again; an unknown key in `[remote]` is reported as ignored.
 #[test]
@@ -369,7 +369,7 @@ fn weft_remote_starts_when_turned_on_and_not_before() {
 
 /// Turned off before `weft remote` first said its view, it is told to stop
 /// as soon as it does: no tunnel stays up while Remote is off (found on
-/// Linux, Gate W-durable's candidate, 2026-10-12).
+/// Linux).
 #[test]
 fn a_weft_remote_that_speaks_while_remote_is_off_is_told_to_stop() {
     let world = weft::outside::Fixed::new();

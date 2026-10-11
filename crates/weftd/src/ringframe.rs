@@ -79,9 +79,9 @@ pub fn set_up(outside: &dyn Outside, project: &Path) -> Option<Needs> {
     Some(Needs::refused(Some(said["error"].as_str().unwrap_or_default())))
 }
 
-/// One `ringframe observe` call, as weftd forwards a signal (ADR-0030 D9),
+/// One `ringframe observe` call, as weftd forwards a signal,
 /// and what RingFrame answered, which for a prompt says whose submission it
-/// is (ADR-0033 D1). Weft writes no record itself: RingFrame decides what the
+/// is. Weft writes no record itself: RingFrame decides what the
 /// fact means.
 pub fn observe(
     out: &dyn Outside,

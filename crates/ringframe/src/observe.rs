@@ -1,5 +1,5 @@
 //! `ringframe observe`: facts someone else saw a harness do, recorded under
-//! the name of whoever saw them (ADR-0022). RingFrame reads no hook payload:
+//! the name of whoever saw them. RingFrame reads no hook payload:
 //! the caller extracts the prompt, or the tool and its outcome, and passes
 //! them here. RingFrame decides what each one means for the record.
 
@@ -33,7 +33,7 @@ pub fn prompt(
         let sha = rec["sha256"].as_str().unwrap_or_default();
         let mut sub = ask::submission_from_capture(ws, host, session, sha, by)?;
         // A host that wraps a long paste in markers of its own when it
-        // reports what it received: compared without them (ADR-0033 D1).
+        // reports what it received: compared without them.
         if sub.is_none()
             && let Some(inner) = unwrapped(host, prompt)
         {
@@ -182,7 +182,7 @@ mod tests {
     /// A host that wraps a long paste in markers of its own when it reports
     /// the prompt it received: its profile names them (`paste_open`,
     /// `paste_close`, `{id}` for the id it gives each paste), and a prompt
-    /// that is wholly so wrapped is compared without them (ADR-0033 D1).
+    /// that is wholly so wrapped is compared without them.
     #[test]
     fn a_prompt_the_host_wrapped_as_a_paste_is_compared_without_the_wrapper() {
         bench(|ws| {
@@ -303,7 +303,7 @@ mod tests {
         });
     }
 
-    /// ADR-0022, "weftd not running": with nothing calling `observe`, an Ask
+    /// With weftd not running, nothing calls `observe`: an Ask
     /// still compiles, and the record holds the weaker grades it already has.
     #[test]
     fn without_observe_ringframe_records_the_weaker_grades() {

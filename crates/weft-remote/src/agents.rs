@@ -41,11 +41,11 @@ pub struct Project {
     since: HashMap<u32, (&'static str, i64)>,
     /// The board: the tree, and the works a device acts on.
     units: Vec<Unit>,
-    /// The board grouped by Eval round, as the daemon built it (ADR-0029).
+    /// The board grouped by Eval round, as the daemon built it.
     rounds: weft_core::rounds::Rounds,
     /// The Eval record behind each check, as the daemon read it.
     records: Value,
-    /// The project's session index (ADR-0029), and the Mac's distance from
+    /// The project's session index, and the Mac's distance from
     /// UTC, in milliseconds.
     sessions: Vec<weft_core::sessions::Row>,
     zone: i64,
@@ -62,7 +62,7 @@ pub struct Project {
     setup: Option<Needs>,
     /// Whether agents started here from now on run in turbo mode.
     turbo: bool,
-    /// Reopened after weftd ended uncleanly, at this time (ADR-0034 D2),
+    /// Reopened after weftd ended uncleanly, at this time,
     /// until someone acts in it.
     reopened: Option<i64>,
 }
@@ -213,7 +213,7 @@ impl Project {
             .collect()
     }
 
-    /// This project's row of the `tree` message (remote.md §6c):
+    /// This project's row of the `tree` message (remote.md §6):
     /// weft-core's AGENTS and WORK, Sealed and the earlier sessions as
     /// counts, each session a Weft pane holds naming its agent.
     pub fn tree(&self) -> Value {
@@ -273,7 +273,7 @@ impl Project {
     }
 
     /// The harness an act has to happen in when no agent of it runs, and
-    /// the session that route names, as AGENTS reads it (ADR-0029 D12.5):
+    /// the session that route names, as AGENTS reads it:
     /// the one its work was asked in, never a harness's latest.
     pub fn missing(&self, m: &Value) -> Option<(String, Value)> {
         let (act, unit) = match m["act"].as_str()? {
@@ -303,7 +303,7 @@ impl Project {
         self.sessions.iter().find(|r| r.id == id)
     }
 
-    /// A session as AGENTS sends it (remote.md §6c `Agent`).
+    /// A session as AGENTS sends it (remote.md §6 `Agent`).
     fn agent_json(&self, r: &weft_core::sessions::Row) -> Value {
         json!({"session": r.id, "harness": r.harness, "state": r.state, "turn": r.turn,
                "title": r.title, "at": r.last, "asks": r.asks,
@@ -316,7 +316,7 @@ impl Project {
         self.turns.get(i).copied().flatten()
     }
 
-    /// The call that resumes a session by its id (ADR-0029 D4): one the
+    /// The call that resumes a session by its id: one the
     /// index holds for that harness, that held a conversation and that
     /// nothing runs. The daemon runs the harness file's own resume line.
     /// Refused `running` with the agent a Weft pane holds it in, if one does.
@@ -504,7 +504,7 @@ impl Project {
         json!({"total": total, "rows": rows, "next": next})
     }
 
-    /// What a device's act asks the daemon (remote.md §6c): an Ask to the
+    /// What a device's act asks the daemon (remote.md §6): an Ask to the
     /// agent it names (`pane`), Proceed or Follow up on a work (`unit`), Eval
     /// on the Open round, Seal on an Eval's (`eval`). When the act cannot
     /// run, the refusal's code is the why-not's `words` key.
@@ -588,7 +588,7 @@ impl Project {
     }
 }
 
-/// How many rows a page of a folded group holds (remote.md §6c).
+/// How many rows a page of a folded group holds (remote.md §6).
 pub const PAGE: usize = 50;
 
 /// The page of `rows` after the one `after` names (the first page with
@@ -679,7 +679,7 @@ mod tests {
             .collect()
     }
 
-    /// remote.md §6c: AGENTS with each session's agent, and the Open round.
+    /// remote.md §6: AGENTS with each session's agent, and the Open round.
     #[test]
     fn the_tree_names_each_sessions_agent_and_the_open_rounds_asks() {
         let p = opened();
@@ -849,7 +849,7 @@ mod tests {
         ] {
             assert_eq!(act(&p, m.clone()), Ok(want), "{m}");
         }
-        // Eval on the Open round, Seal on an Eval's (remote.md §6c).
+        // Eval on the Open round, Seal on an Eval's (remote.md §6).
         let p = judged();
         assert_eq!(
             act(&p, json!({"act": "eval", "project": "weft"})),
@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(s["resume"], false, "running: go to it");
     }
 
-    /// ADR-0029 D4: a session is resumed by its id, one the index holds and
+    /// A session is resumed by its id, one the index holds and
     /// nothing runs; never a harness's latest (the `gl` case).
     #[test]
     fn a_session_is_resumed_by_its_id_and_nothing_else() {

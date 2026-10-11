@@ -264,7 +264,7 @@ fn the_client_counts_nothing_that_needs_you_itself() {
 /// may call it, a person or a tool, and its shipped product, when the fab7
 /// checkout is beside this one, says the same. Only its plugins' hooks run
 /// `weft signal`, through the `weft-signal` shim, because one release
-/// installs both (RingFrame ADR-0022 D8, Weft ADR-0030).
+/// installs both.
 #[test]
 fn ringframe_names_no_weft() {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));

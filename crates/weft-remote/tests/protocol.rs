@@ -29,9 +29,8 @@ fn nothing_the_never_sent_list_names_reaches_the_daemon() {
         json!({"type": "turbo", "on": true, "req": 12}),
         json!({"type": "shutdown", "req": 13}),
         json!({"type": "confirm", "unit": "ask_1", "req": 14}),
-        // Version 2's resumes are gone, with no fallback (remote.md §6c).
+        // A resume names a session's id, never "the latest" (remote.md §6).
         json!({"type": "start", "project": "work", "harness": "sh", "resume": true, "req": 15}),
-        json!({"type": "start", "project": "work", "harness": "sh", "unit": "ask_1", "req": 16}),
     ];
     for (n, attempt) in attempts.iter().enumerate() {
         d.send(attempt.clone());
@@ -72,7 +71,7 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
         (json!(""), json!("running"), agent.clone()),
         "{tree}"
     );
-    assert!(tree[0].get("harnesses").is_none(), "no harness rows (remote.md §6c)");
+    assert!(tree[0].get("harnesses").is_none(), "no harness rows (remote.md §6)");
 
     // The shell's hook names its session: it is a row, its agent the pane's.
     let told = std::fs::read_to_string(shell.project.with_extension("pane")).unwrap();

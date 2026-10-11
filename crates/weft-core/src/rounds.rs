@@ -1,8 +1,7 @@
-//! The rounds: the board grouped by Eval round (ADR-0029, board.md "Rounds").
+//! The rounds: the board grouped by Eval round (board.md "Rounds").
 //!
-//! An Eval covers every Ask open when it was opened (RingFrame ADR-0020 D9),
-//! and a Seal on an Eval closes exactly the Asks it covers (ADR-0029 D8). So
-//! the record reads as rounds: an Eval being judged, the Asks no Eval covers
+//! An Eval covers every Ask open when it was opened, and a Seal on an Eval
+//! closes exactly the Asks it covers. So the record reads as rounds: an Eval being judged, the Asks no Eval covers
 //! yet (Open), each Eval not sealed with its Asks, and the Seals. Pure, from
 //! the ledger's events and the units projected from them; every field traces
 //! to a ledger event.
@@ -303,7 +302,7 @@ pub fn eval_why(r: &Rounds, ready: &dyn Fn(Option<&str>) -> Option<Why>) -> Opti
     ready(Some(ask))
 }
 
-/// An Eval a Seal names: sealed already (D12.6) when a Seal on the record
+/// An Eval a Seal names: sealed already when a Seal on the record
 /// seals it, however many of its Asks are left.
 pub fn sealed_already(record: &Record, id: &str) -> Option<Why> {
     let e = record.evals.iter().find(|e| e.id == id)?;

@@ -1,4 +1,4 @@
-//! `weft signal`, as a harness's hook runs it (ADR-0030 D1): it answers the
+//! `weft signal`, as a harness's hook runs it: it answers the
 //! hook and exits 0 whatever it is given, with or without a daemon.
 
 use std::io::Write;

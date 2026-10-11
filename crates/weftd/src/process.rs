@@ -1,4 +1,4 @@
-//! The harness process a hook ran under (ADR-0030 D8): the first ancestor of
+//! The harness process a hook ran under: the first ancestor of
 //! the hook whose name is the harness's program, and when it started. Read
 //! from the kernel, never by starting `ps` in a hook: on Linux from
 //! `/proc/<pid>/stat` and `/proc/<pid>/cmdline`, on macOS from `proc_pidinfo`
@@ -27,7 +27,7 @@ pub struct Info {
 }
 
 /// Whether the process a session's receipts name still runs: that pid, with
-/// that start time, and not a zombie (ADR-0029 D11).
+/// that start time, and not a zombie.
 pub fn alive(p: &weft_core::sessions::Process) -> bool {
     info(p.pid).is_some_and(|me| me.start == p.start && !me.zombie)
 }
@@ -174,7 +174,7 @@ mod tests {
         assert_eq!(info(u32::MAX - 7), None);
     }
 
-    /// D11: a recorded process runs while its pid has its start time; one
+    /// A recorded process runs while its pid has its start time; one
     /// that exited, even unreaped, or a pid reused, does not.
     #[test]
     fn a_recorded_process_is_alive_only_as_itself() {

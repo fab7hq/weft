@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 5;
+pub const PROTOCOL: u64 = 3;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -93,8 +93,7 @@ pub enum Call {
         unit: Option<String>,
         pane: Option<u32>,
         text: Option<String>,
-        /// The Eval a Seal seals (`decide`): its round, and only its Asks
-        /// (ADR-0029 D8).
+        /// The Eval a Seal seals (`decide`): its round, and only its Asks.
         eval: Option<String>,
     },
     /// Record the person's yes for an Ask whose chooser never got one.
@@ -129,16 +128,16 @@ pub enum Call {
         on: bool,
     },
     /// `weft remote`'s view, from the client whose hello names it
-    /// `weft-remote`: kept, and sent to every client as `remote` (D8).
+    /// `weft-remote`: kept, and sent to every client as `remote` (remote.md D8).
     RemoteView {
         view: Value,
     },
     /// An act for `weft remote` (`{act, …}`), from any other client: passed
-    /// to it unchanged as `remote.act` (D8).
+    /// to it unchanged as `remote.act` (remote.md D8).
     Remote {
         act: Value,
     },
-    /// Turn Weft's own "Start at login" on or off (ADR-0034 D1): the
+    /// Turn Weft's own "Start at login" on or off: the
     /// service runs `program --serve` with `path` as its `PATH`, the window's
     /// when it was turned on. Answers with `{"start_at_login": bool}`.
     StartAtLogin {
@@ -154,14 +153,14 @@ pub enum Call {
         /// anyway. The inference is Weft's; the decision is theirs.
         force: bool,
     },
-    /// A newer Weft is installed in `versions/<version>` (ADR-0034 D5): the
+    /// A newer Weft is installed in `versions/<version>`: the
     /// daemon starts again on it once no agent is running. Needs no hello,
     /// as `shutdown`, so the `weft update` of any version can say it.
     Update {
         version: String,
     },
     /// Close a project reopened after an unclean end, from a device or a
-    /// window that has nothing to do in it (ADR-0034 D2). It closes as any
+    /// window that has nothing to do in it. It closes as any
     /// project does once nobody is in it.
     Dismiss,
     /// Leave, without stopping anything.
@@ -203,7 +202,7 @@ pub enum Event {
         pane: u32,
     },
     /// The board, the Eval record behind each check, and the board grouped
-    /// by Eval round (ADR-0029). Sent on opening a project and whenever the
+    /// by Eval round. Sent on opening a project and whenever the
     /// ledger moves, so nothing reads a file to draw a frame.
     Units {
         units: Vec<Unit>,
@@ -265,12 +264,12 @@ pub enum Event {
         on: bool,
     },
     /// A newer Weft is installed and waits for no agent to be running, or
-    /// none does (ADR-0034 D5).
+    /// none does.
     Update {
         version: Option<String>,
     },
     /// The project was reopened after an unclean end at `since`
-    /// (milliseconds), or no longer only that: someone acted in it (D2).
+    /// (milliseconds), or no longer only that: someone acted in it.
     Reopened {
         since: Option<i64>,
     },
@@ -278,7 +277,7 @@ pub enum Event {
         at: i64,
     },
     /// Each agent's state, as its hooks reported it: one per pane, in order;
-    /// the project's session index (ADR-0029, sessions.md); and the Mac's
+    /// the project's session index (sessions.md); and the Mac's
     /// distance from UTC, in milliseconds, so every client reads a time and
     /// a date group as the Mac does.
     Agents {
@@ -286,7 +285,7 @@ pub enum Event {
         sessions: Vec<weft_core::sessions::Row>,
         zone: i64,
     },
-    /// One hook, from `weft signal` to the daemon (ADR-0030 D1): sent one way
+    /// One hook, from `weft signal` to the daemon: sent one way
     /// on a connection of its own, and answered by nothing.
     Signal(Box<weft_core::signal::Sent>),
 }
@@ -751,7 +750,7 @@ fn socket_path_in(base: &Path, name: String) -> PathBuf {
 ///
 /// It is alone in a folder of its own, so what a daemon keeps beside its
 /// configuration (`projects.json`, receipts) is that daemon's alone: a daemon
-/// reopens the projects its folder lists (ADR-0034 D2), never another's.
+/// reopens the projects its folder lists, never another's.
 pub fn private_socket(name: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU32, Ordering};
     static N: AtomicU32 = AtomicU32::new(0);
@@ -781,9 +780,9 @@ pub fn stop(socket: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Tell the daemon at `socket` that Weft `version` is installed beside it
-/// (ADR-0034 D5). Like `stop`, it needs no hello, so an older daemon is told
-/// by a newer `weft update`. Its refusal, when it refused.
+/// Tell the daemon at `socket` that Weft `version` is installed beside it.
+/// Like `stop`, it needs no hello, so an older daemon is told by a newer
+/// `weft update`. Its refusal, when it refused.
 pub fn tell_update(socket: &Path, version: &str) -> io::Result<Result<(), String>> {
     let mut stream = UnixStream::connect(socket)?;
     let call = Call::Update { version: version.into() };
@@ -1119,7 +1118,7 @@ mod tests {
         let Some(Line::Call { call: Call::Open { raw, .. }, .. }) = Line::decode(line) else {
             panic!("an open")
         };
-        assert!(raw, "a client from before protocol 3 asked for nothing else");
+        assert!(raw, "a client that names no output gets raw");
         let other = br#"{"id":1,"method":"project.open","params":{"path":"/p","rows":24,"cols":80,"output":"some"}}"#;
         assert_eq!(Line::decode(other), None, "only raw or none");
     }

@@ -1,4 +1,4 @@
-//! weftd keeps every session of a project (Weft ADR-0029, sessions.md "The
+//! weftd keeps every session of a project (sessions.md "The
 //! session index"): a session is listed as soon as its receipt is written,
 //! held by a pane or not; it ends the moment the process its receipts name
 //! does, whatever its last event; and `agent.start` resumes exactly the id it

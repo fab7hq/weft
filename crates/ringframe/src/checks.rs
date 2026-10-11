@@ -1,4 +1,4 @@
-//! The checks an Eval's Asks name, run once by RingFrame (ADR-0020 D8).
+//! The checks an Eval's Asks name, run once by RingFrame.
 //!
 //! A check is a command an Ask, or a step of a plan part it names, states
 //! verbatim in backticks: "`cargo test -p app-core` passes". `eval open`

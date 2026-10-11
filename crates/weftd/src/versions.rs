@@ -1,4 +1,4 @@
-//! Versions side by side (ADR-0034 D5): `install.sh` puts each Weft in
+//! Versions side by side: `install.sh` puts each Weft in
 //! `~/.fab7/weft/versions/<version>/weft` and points `weft` at the newest, so
 //! an update never replaces a program under a process running it.
 //!

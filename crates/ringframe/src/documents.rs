@@ -1,5 +1,5 @@
 //! The documents an Ask names, and the obligations RingFrame reads out of them
-//! without a model (ADR-0019 §1, D4).
+//! without a model.
 //!
 //! A path in an Ask's prompt that is a file is a document. When the Ask names
 //! a part of it ("Phase 3.20 of plans/app/plan.md"), that section is read;

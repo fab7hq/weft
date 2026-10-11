@@ -128,7 +128,7 @@ impl Prefixes {
 
 /// How a prompt Weft composed has to be typed. Its command is the skill
 /// invocation, which on a harness whose prefix is `/rf:` is a real slash
-/// command, and is then typed whatever the prompt's length (ADR-0033 D3).
+/// command, and is then typed whatever the prompt's length.
 fn how(command: &str) -> Handoff {
     match inject::leading_command(command.as_bytes()) {
         Some(command) => Handoff::TypeCommand { at: command.len() + 1, command },

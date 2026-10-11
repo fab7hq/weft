@@ -1,5 +1,5 @@
-//! The remote protocol, version 3, from a device that said hello (remote.md
-//! §4, §6c, §9). Each message becomes only the call §4 allows, or is refused
+//! The remote protocol, from a device that said hello (remote.md
+//! §4, §6, §9). Each message becomes only the call §4 allows, or is refused
 //! here; a message with a `req` always gets `ok` or `error`.
 
 use base64ct::{Base64, Encoding};
@@ -284,14 +284,14 @@ impl Remote {
     /// Ask to an agent, or Eval, Seal, Proceed or Follow up on a work: each
     /// becomes a pending the person answers.
     fn act_on(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        // A project reopened after an unclean end, dismissed (ADR-0034 D2).
+        // A project reopened after an unclean end, dismissed.
         if m["act"] == "dismiss" {
             let at = self.project_named(m)?;
             return self.ask(at, Call::Dismiss, conn, req, Carries::Nothing);
         }
         let (at, pane) = match m["act"].as_str() {
             Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
-            // Eval and Seal act on a round of a project (remote.md §6c).
+            // Eval and Seal act on a round of a project (remote.md §6).
             Some("eval" | "seal") => (self.project_named(m)?, None),
             _ => {
                 let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
@@ -304,7 +304,7 @@ impl Remote {
         };
         let agents = &self.projects[at].as_ref().expect("an open project").agents;
         // No agent of the harness it goes to runs: say so, with the session
-        // that route names, as AGENTS reads it, or none (ADR-0029 D12.5).
+        // that route names, as AGENTS reads it, or none.
         if let Some((harness, session)) = agents.missing(m) {
             let message = format!("{harness} is not running.");
             self.send(
@@ -327,13 +327,13 @@ impl Remote {
     }
 
     /// Start a fresh agent of a harness the project offers, or resume a
-    /// session by its id (remote.md §6c, ADR-0029 D4). Never "the latest".
+    /// session by its id (remote.md §6). Never "the latest".
     fn start_agent(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let Some(harness) = m["harness"].as_str() else {
             return Err(("bad_request", "start names a project and a harness".into()));
         };
-        // Version 2's `unit` and `resume: true` are gone, with no fallback.
-        if m.get("unit").is_some() || !(m["resume"].is_null() || m["resume"].is_string()) {
+        // A resume names a session's id, never "the latest".
+        if !(m["resume"].is_null() || m["resume"].is_string()) {
             return Err(("bad_request", "resume names a session's id".into()));
         }
         let at = self.project_named(m)?;

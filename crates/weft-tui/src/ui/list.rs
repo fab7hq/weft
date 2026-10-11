@@ -233,7 +233,7 @@ pub(super) fn sidebar_row(
             row_of(head, seal.asks.to_string(), false, th.label())
         }
         Row::Ask { ask, column, .. } => {
-            // Only Open's Asks carry a word: a round says its Asks' state (D6).
+            // Only Open's Asks carry a word: a round says its Asks' state.
             let word = ask.word.map(|w| w.say().to_string()).unwrap_or_default();
             let room = width.saturating_sub(cells(&word) + 1 + 4);
             let harness = cells(&ask.harness);

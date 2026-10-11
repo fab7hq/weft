@@ -178,8 +178,8 @@ fn a_row_is_one_line_saying_what_and_where_it_stands() {
     let mut a = judged();
     let drawn = screen(&mut a, 80, 24);
     let row = drawn.lines().find(|l| l.contains("health endpoint")).expect("the row");
-    // Its harness is on the row; under an Eval its round says its state
-    // (D6), and the verdict is the round's, said once.
+    // Its harness is on the row; under an Eval its round says its
+    // state, and the verdict is the round's, said once.
     assert!(row.contains("codex") && !row.contains("EVALED") && !row.contains('●'), "{row}");
     assert!(drawn.contains("Eval 1 · drifted · 0.67"), "{drawn}");
     assert!(!drawn.contains("DOESN'T MATCH"), "{drawn}");
@@ -254,7 +254,7 @@ fn hiding_the_work_list_gives_the_agent_the_whole_width() {
     expect_screen("the_list_hidden", &screen(&mut a, 120, 32));
 }
 
-/// A work's Details block the screen and hold its Ask alone (D3): no Eval
+/// A work's Details block the screen and hold its Ask alone: no Eval
 /// or Seal section, however far it has gone.
 #[test]
 fn a_works_details_block_and_hold_its_ask_alone() {
@@ -974,7 +974,7 @@ fn atlas_t1_8_an_update_waiting() {
 }
 
 /// T13.1: an update installed while agents run waits for them, and says so
-/// in place of `↑ [U]PDATE`, with how many run (ADR-0034 D5).
+/// in place of `↑ [U]PDATE`, with how many run.
 #[test]
 fn atlas_t13_1_an_update_waiting() {
     let mut a = atlas();
@@ -992,8 +992,8 @@ fn atlas_t13_1_an_update_waiting() {
 }
 
 /// T13.2: Weft's own "Start at login" in the Weft menu, after Remote, with
-/// its state; while it is picked the line under the keys says what it does
-/// (ADR-0034 D1).
+/// its state; while it is picked the line under the keys says what it
+/// does.
 #[test]
 fn atlas_t13_2_start_at_login_in_the_weft_menu() {
     let mut a = atlas_with_docs();
@@ -1267,7 +1267,7 @@ fn atlas_t4_11_the_bar_send_anyway() {
     expect_screen("atlas_t4_11", &screen(&mut a, 120, 32));
 }
 
-// --- Section 11: agents and rounds (ADR-0029) -------------------------------
+// --- Section 11: agents and rounds -----------------------------------------
 
 /// A session of the 11.x sample, ended or past, `day` days before the 8th.
 fn past(
@@ -1568,7 +1568,7 @@ fn enter_on_each_row_goes_where_t11_1_says() {
     press(&mut a, KeyCode::Enter);
     assert_eq!(view(&a), Some(View::Seal("sel_4".into())));
     // A session another program runs reads the same; Enter says what Weft
-    // cannot do to it (D9).
+    // cannot do to it.
     a.close_all_details();
     a.session_mut().sessions[0].pane = None;
     assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session == "c1")));

@@ -113,7 +113,7 @@ fn dropping_the_tunnel_stops_cloudflared() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// ADR-0024: another adapter, with its own `run` and `address`, is started
+/// Another adapter, with its own `run` and `address`, is started
 /// and read by its own; nothing of Cloudflare's applies to it.
 #[test]
 fn another_adapter_is_started_and_read_by_its_own_file() {
@@ -178,7 +178,7 @@ fn a_tunnel_left_by_a_killed_weft_remote_is_stopped_by_the_next() {
 const NO_ADDRESS: &str = "#!/bin/sh\necho x >> \"$0.runs\"\nexit 1\n";
 
 /// While the network is away the tunnel is started again after 2, 4, 8 …
-/// seconds; told the network is back, it starts at once (ADR-0034 D3).
+/// seconds; told the network is back, it starts at once.
 #[test]
 fn a_tunnel_waiting_to_start_again_starts_at_once_when_the_network_returns() {
     let dir = std::env::temp_dir().join(format!("weft-tunnel-back-{}", std::process::id()));

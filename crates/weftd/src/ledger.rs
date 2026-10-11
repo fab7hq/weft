@@ -32,7 +32,7 @@ impl Ledger {
         project(&self.events)
     }
 
-    /// Its Evals and Seals, numbered in ledger order (ADR-0029 "Rounds").
+    /// Its Evals and Seals, numbered in ledger order.
     pub fn record(&self) -> weft_core::rounds::Record {
         weft_core::rounds::record(&self.events)
     }

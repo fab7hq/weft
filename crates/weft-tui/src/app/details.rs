@@ -1,4 +1,4 @@
-//! Details, one level each (ADR-0029 D3, T11.2–T11.6): a work, an Eval, a
+//! Details, one level each (T11.2–T11.6): a work, an Eval, a
 //! Seal, a session, and the earlier sessions. Each blocks the screen; `Esc`
 //! or `←` goes back to where it was opened from. What each says is
 //! `weft_core::offers`'; this lays it out as the cards do.
@@ -368,9 +368,8 @@ impl App {
         }
     }
 
-    /// `[R]ESUME THIS` on a session's Details: resumes that id at once (D4),
-    /// as the web's Resume does: the Details are that one session (the
-    /// owner, 2026-10-11).
+    /// `[R]ESUME THIS` on a session's Details: resumes that id at once,
+    /// as the web's Resume does: the Details are that one session.
     pub(super) fn resume_shown(&mut self) -> bool {
         let Some(View::Session(id)) = self.detail.as_ref().map(|d| d.view.clone()) else {
             return false;

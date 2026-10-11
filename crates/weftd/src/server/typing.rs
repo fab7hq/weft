@@ -1,6 +1,6 @@
 //! Typing into an agent on the person's yes: staged, waited for until the
 //! agent is ready, refused with the reason when it is not, and proven by what
-//! the agent reports it received (ADR-0033).
+//! the agent reports it received.
 
 use super::*;
 
@@ -37,7 +37,7 @@ pub(super) fn recorded_first(
 
 /// How long after Enter a pane that reports nothing at all, neither the
 /// prompt it received nor its turn's end, is waited for before Weft says it
-/// cannot tell whether the Ask arrived (ADR-0033 D1, amended 2026-10-10).
+/// cannot tell whether the Ask arrived (amended 2026-10-10).
 pub(super) const RECEIPT_CAP: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// A send of an Ask, typed and submitted, waiting for what its pane reports
@@ -57,8 +57,8 @@ fn is_the_ask(answer: &serde_json::Value, ask: &str) -> bool {
 
 impl Session {
     /// Type a prompt that was said yes to, once its agent is ready: its turn
-    /// is not running, by its hooks (ADR-0013), and its screen has not changed
-    /// for [`STARTED_QUIET`] (ADR-0033 D2). A busy agent, or one still
+    /// is not running, by its hooks, and its screen has not changed
+    /// for [`STARTED_QUIET`]. A busy agent, or one still
     /// starting, is waited for on the tick, never here. The refusal, if
     /// there is one, is the person's to see.
     pub(super) fn type_it(&mut self, project: usize, w: Waiting, force: bool) {
@@ -97,8 +97,8 @@ impl Session {
     }
 
     pub(super) fn type_now(&mut self, project: usize, w: Waiting, force: bool) {
-        // Weft types on its own only into an agent that reported it is ready
-        // (ADR-0013). When the person has been told and said to type anyway,
+        // Weft types on its own only into an agent that reported it is
+        // ready. When the person has been told and said to type anyway,
         // the decision is theirs.
         let not_ready =
             if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
@@ -119,7 +119,7 @@ impl Session {
             None => Some("NoProcess".to_string()),
         };
         // Typed and submitted is not delivered: what the pane reports it
-        // received says whether this was the Ask (D1).
+        // received says whether this was the Ask.
         if let Some(ask) = w.sends.filter(|_| submitted) {
             let until = std::time::Instant::now() + RECEIPT_CAP;
             self.projects[project].due.push(Due { pane: w.pane, ask, until });
@@ -193,7 +193,7 @@ impl Session {
     }
 
     /// Why Weft cannot prove a send to this pane, when it cannot: its
-    /// harness file does not say where the prompt it received is (D4).
+    /// harness file does not say where the prompt it received is.
     pub(super) fn cannot_prove(&mut self, at: usize, pane: u32) -> Option<String> {
         let p = &mut self.projects[at];
         let name = p.slot(pane)?.map.harness.clone();

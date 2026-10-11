@@ -1,5 +1,5 @@
 //! `weft remote`: the agents on this machine, from another device
-//! ([remote.md](../../../../plans/weft/spec/remote.md)).
+//! (remote.md).
 //!
 //! A client of the daemon's socket, like the TUI, and the one part of Weft
 //! that listens on a network port: a loopback one, which `cloudflared`

@@ -93,8 +93,8 @@ pub struct Gathered {
 /// The command a prompt carries, and what that command is.
 ///
 /// A harness may fold or scroll a long paste, and a command inside a folded
-/// paste is not read, so a prompt that carries `/plan` is never pasted whole
-/// (ADR-0033 D3). RingFrame records the command and what it is; Weft types it.
+/// paste is not read, so a prompt that carries `/plan` is never pasted whole.
+/// RingFrame records the command and what it is; Weft types it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Delivery {
     /// The command, without its trailing space: `/plan`, `/goal`, `/review`.

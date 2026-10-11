@@ -1,7 +1,6 @@
-//! Versions side by side, and an update that finishes when no agent runs
-//! (ADR-0034 D5, Phase 6.9 step 6), with the real program: two versions of
-//! it in a scratch home, and `weft` a link to the newest, as `install.sh`
-//! lays them out.
+//! Versions side by side, and an update that finishes when no agent runs,
+//! with the real program: two versions of it in a scratch home, and `weft` a
+//! link to the newest, as `install.sh` lays them out.
 
 use std::io::Write as _;
 use std::os::unix::net::UnixStream;

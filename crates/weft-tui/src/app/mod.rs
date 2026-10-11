@@ -1,7 +1,7 @@
 //! The running application: state, events, and the loop.
 //!
 //! Two nouns, two surfaces: agents are tabs over the pane, and the sidebar
-//! is a tree of each project's AGENTS and WORK (ADR-0029). Opening a row
+//! is a tree of each project's AGENTS and WORK. Opening a row
 //! shows its Details, one level each, in a blocking view.
 
 use std::path::PathBuf;
@@ -212,7 +212,7 @@ pub const FRAME: Duration = Duration::from_micros(16_667);
 
 pub struct App {
     /// Weft's service came back as a newer Weft than this window: it starts
-    /// again as that one (ADR-0034 D5).
+    /// again as that one.
     relaunch: bool,
     /// Since when a project's daemon has been gone.
     lost_since: Option<std::time::Instant>,
@@ -252,7 +252,7 @@ pub struct App {
     /// What was in front when a device's question opened over it.
     before_allow: Option<Modal>,
     /// The Remote view's "Run this?" is up: Install waits for the person's
-    /// yes (ADR-0023, ADR-0024).
+    /// yes.
     pub remote_run: bool,
     /// The Remote view's "Remove it?" is up for this device: D asks first,
     /// as the web app's Remove does (T8.16).
@@ -432,7 +432,7 @@ impl App {
     }
 
     /// Whether a pane's agent is asking its person something, as its hooks
-    /// reported it. Weft reads nothing off the screen (ADR-0013).
+    /// reported it. Weft reads nothing off the screen.
     pub fn waiting(&self, pane: usize) -> bool {
         weft_core::turns::is_asking(self.pane_turn(pane))
     }
@@ -454,7 +454,7 @@ impl App {
             && WEFT_MENU.get(self.modal_choice).is_some_and(|(.., a)| *a == Act::StartAtLogin)
     }
 
-    /// A newer Weft installed and waiting for no agent to run (ADR-0034 D5).
+    /// A newer Weft installed and waiting for no agent to run.
     pub fn update_waiting(&self) -> Option<&str> {
         sess!(self).update.as_deref()
     }
@@ -788,7 +788,7 @@ impl App {
 
     /// Run until the person quits. `Some(root)` when Weft's service started
     /// again as a newer Weft this window cannot speak to: the caller starts
-    /// the newer `weft` on `root` in its place (ADR-0034 D5).
+    /// the newer `weft` on `root` in its place.
     pub fn run(mut self, terminal: &mut DefaultTerminal) -> Result<Option<PathBuf>> {
         self.take_the_board();
         self.look_for_agents(Opening::Nothing);
@@ -1004,8 +1004,8 @@ impl App {
     /// Answer a question the person was asked. The daemon does the typing,
     /// because the daemon owns the pane.
     fn do_inject(&mut self, pending: &Pending) {
-        // Weft types on its own only into an agent that said it is ready
-        // (ADR-0013). Anything else is the person's to allow; sending is the
+        // Weft types on its own only into an agent that said it is
+        // ready. Anything else is the person's to allow; sending is the
         // default, since they asked for it a key ago.
         if let Err(why) = weft_core::turns::may_type(self.pane_turn(pending.pane)) {
             self.modal = Some(Modal::Bar(Bar::SendAnyway { pending: pending.clone(), why }));

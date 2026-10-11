@@ -121,7 +121,7 @@ fn an_agents_state_appears_only_once_its_receipt_is_written() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     // Run in another program, with no process its receipt names: its state
-    // cannot be known, so it reads when it was last active (ADR-0029 D11).
+    // cannot be known, so it reads when it was last active.
     let row = drawn.lines().find(|l| l.contains("○ codex")).unwrap_or_default();
     assert!(row.contains("health endpoint") && row.contains("last active"), "{drawn}");
     clean(&root);

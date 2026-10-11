@@ -34,7 +34,7 @@ pub trait Outside: Send + Sync {
     fn newest(&self, pattern: &Path) -> Option<String>;
     /// Run `weft remote` until it ends (remote.md D10).
     fn remote(&self) -> std::io::Result<ExitStatus>;
-    /// Weft's own service on this machine, "Start at login" (ADR-0034 D1),
+    /// Weft's own service on this machine, "Start at login",
     /// where Weft has one.
     fn service(&self) -> Option<crate::service::Service>;
 }
@@ -126,7 +126,7 @@ impl Outside for Machine {
 
     /// This same program, as `weft remote`: the daemon is `weft --serve`.
     /// Its own version's file, as it was when the daemon started, so a
-    /// `weft` pointed at a newer version since is not it (ADR-0034 D5).
+    /// `weft` pointed at a newer version since is not it.
     fn remote(&self) -> std::io::Result<ExitStatus> {
         Command::new(started_as()?)
             .arg("remote")

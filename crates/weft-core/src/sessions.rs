@@ -2,7 +2,7 @@
 //!
 //! A harness owns its own session and can open one again by id. Weft keeps
 //! only the id, the events its hooks signalled and the harness process, in
-//! its own receipts (ADR-0030 D7): `~/.fab7/weft/sessions/<project key>/
+//! its own receipts: `~/.fab7/weft/sessions/<project key>/
 //! <harness>/<id>.jsonl`. A session with no receipt is a session Weft cannot
 //! name, and it says so rather than guessing.
 
@@ -42,14 +42,14 @@ pub fn clock(at: i64) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
-// --- The session index (ADR-0029, sessions.md "The session index") -------
+// --- The session index (sessions.md "The session index") -----------------
 
 use serde::{Deserialize, Serialize};
 
 use crate::ledger::Unit;
 use crate::turns::{Started, Turn};
 
-/// The harness process a session's receipts name (ADR-0029 D11): its pid,
+/// The harness process a session's receipts name: its pid,
 /// and when it started, in the kernel's own units. A pid with another start
 /// time is another process.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,7 +76,7 @@ pub struct Heard {
 }
 
 /// Whether a session runs: a fact read from the machine, never a guess from
-/// how long it has been quiet (ADR-0029 D11).
+/// how long it has been quiet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!((ids(&rows), rows[0].pane), (vec!["a1"], Some(5)));
     }
 
-    /// D11: running while the recorded process lives with its start time;
+    /// Running while the recorded process lives with its start time;
     /// a reused pid is another process; an end on record settles it.
     #[test]
     fn running_or_ended_is_the_recorded_process_or_an_end() {

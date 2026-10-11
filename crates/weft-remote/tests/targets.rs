@@ -1,4 +1,4 @@
-//! The recovery targets (remote.md §11a, ADR-0034 D6), each a scenario on a
+//! The recovery targets (remote.md §11a), each a scenario on a
 //! clock of the test's own: the machine's own rules (`Recovery`, the tunnel's
 //! `Backoff` and its time to give an address) against a modelled tunnel
 //! program, Cloudflare, the network and Weft's service. A target missed is a
@@ -8,7 +8,7 @@
 //! that Cloudflare carries to this machine's running tunnel. The phone then
 //! has `PHONE` to reach it (it asks the service again at least every 10 s,
 //! web `machine.ts`), so the machine's budget is each target less that.
-//! What a real tunnel and network do is Gate W-durable's (HostLab).
+//! What a real tunnel and network do is not tested here.
 
 use std::collections::HashSet;
 use std::time::{Duration, Instant, SystemTime};
@@ -26,7 +26,7 @@ const ANSWER: Duration = Duration::from_secs(1);
 /// wait, `server/remote.rs`; `the_daemon_keeps_weft_remote_running…`).
 const REMOTE_AGAIN: Duration = Duration::from_secs(2);
 /// launchd starts a crashed agent again within this (its throttle); systemd
-/// with `RestartSec=2`, sooner. The platform's, not tested here (D7).
+/// with `RestartSec=2`, sooner. The platform's, not tested here.
 const SERVICE_AGAIN: Duration = Duration::from_secs(10);
 
 fn secs(n: u64) -> Duration {

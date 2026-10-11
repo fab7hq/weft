@@ -1,6 +1,6 @@
 //! The harnesses Weft can run, and how to find and prepare one.
 //!
-//! Weft names no harness (ADR-0015). Everything it knows about one comes from
+//! Weft names no harness. Everything it knows about one comes from
 //! that harness's Weft harness file, `~/.fab7/weft/harnesses/<id>.toml`,
 //! shipped by fab7, read by the daemon and handed to every client: the name a
 //! person reads, the program, where it keeps its configuration, the plugin
@@ -66,7 +66,7 @@ pub struct Harness {
     /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
-    /// What each of its hooks means (`[signal]`, ADR-0030 D4). Without it the
+    /// What each of its hooks means (`[signal]`). Without it the
     /// harness gives no state and forwards nothing.
     #[serde(default)]
     pub signal: Option<crate::signal::Signal>,

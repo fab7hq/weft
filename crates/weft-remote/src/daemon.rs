@@ -148,7 +148,7 @@ pub fn allowed(call: &Call) -> bool {
         // A device may send anyway only after weft remote said its agent is
         // not ready (protocol.rs).
         Call::Resolve { .. } => true,
-        // A project reopened after an unclean end, dismissed (ADR-0034 D2).
+        // A project reopened after an unclean end, dismissed.
         Call::Dismiss => true,
         // The reads a device's Details and Eval view are gathered from.
         Call::Read { what, .. } => {

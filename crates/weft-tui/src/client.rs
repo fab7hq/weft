@@ -162,7 +162,7 @@ pub struct Session {
     /// The Eval record behind each check, by eval id. Read by the daemon so
     /// that drawing a frame opens no file.
     pub records: serde_json::Value,
-    /// The board grouped by Eval round, as the daemon built it (ADR-0029).
+    /// The board grouped by Eval round, as the daemon built it.
     pub rounds: weft_core::rounds::Rounds,
     /// How many boards the daemon has sent: one each time the ledger grew.
     pub boards: u64,
@@ -180,7 +180,7 @@ pub struct Session {
     /// size of the window that last focused it or typed into it.
     told: Option<(u32, u16, u16)>,
     /// Every session's latest event, as the daemon read the receipts.
-    /// The project's session index (ADR-0029), and the Mac's distance from
+    /// The project's session index, and the Mac's distance from
     /// UTC, in milliseconds, to read its times by.
     pub sessions: Vec<weft_core::sessions::Row>,
     pub zone: i64,
@@ -189,9 +189,9 @@ pub struct Session {
     pub notify: bool,
     /// Whether agents started here from now on run in turbo mode.
     pub turbo: bool,
-    /// Weft's own "Start at login" option (ADR-0034 D1), as the daemon reads it.
+    /// Weft's own "Start at login" option, as the daemon reads it.
     pub start_at_login: bool,
-    /// A newer Weft installed and waiting for no agent to run (ADR-0034 D5).
+    /// A newer Weft installed and waiting for no agent to run.
     pub update: Option<String>,
     /// The daemon's connection ended: it stopped, crashed, or started again
     /// as a newer version. The window waits for one to listen again.
@@ -282,7 +282,12 @@ impl Session {
             client: concat!("weft-tui/", env!("CARGO_PKG_VERSION")).to_string(),
             protocol: PROTOCOL,
         })?;
-        session.answered(hello)?;
+        // Refused, it is another version of Weft: say how to end it.
+        if let Err(no) = session.answer(hello)? {
+            return Err(anyhow!(
+                "Another version of Weft is running ({no}). `weft stop` ends it and its agents."
+            ));
+        }
         // The state comes back in the answer, so nothing is missed between
         // opening a project and the first pump.
         let open = session.tell(Call::Open {
@@ -385,10 +390,16 @@ impl Session {
     /// The answer to a call made while connecting, before any window waits
     /// on this connection: the one wait there is, on the socket itself.
     fn answered(&mut self, id: u64) -> Result<serde_json::Value> {
+        self.answer(id)?.map_err(|e| anyhow!(e))
+    }
+
+    /// The answer to call `id`, a result or the daemon's refusal; an error
+    /// when none came in five seconds.
+    fn answer(&mut self, id: u64) -> Result<std::result::Result<serde_json::Value, String>> {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             if let Some(answer) = self.answers.remove(&id) {
-                return answer.map_err(|e| anyhow!(e));
+                return Ok(answer);
             }
             let left = deadline.saturating_duration_since(Instant::now());
             let line =
@@ -588,7 +599,7 @@ impl Session {
     }
 
     /// Turn Weft's own "Start at login" on or off: its service runs
-    /// `program --serve` with `path` as its `PATH` (ADR-0034 D1). Answered
+    /// `program --serve` with `path` as its `PATH`. Answered
     /// with `{"start_at_login": bool}`.
     pub fn set_start_at_login(&mut self, on: bool, program: &str, path: &str) -> Result<u64> {
         self.tell(Call::StartAtLogin { on, program: program.into(), path: path.into() })
@@ -668,7 +679,7 @@ pub enum Again {
 
 impl Session {
     /// Try to open `root` again on whatever daemon now listens where this one
-    /// did (ADR-0034 D5: an update starts the daemon again on a newer Weft).
+    /// did (an update starts the daemon again on a newer Weft).
     pub fn again(&self, root: &Path) -> Again {
         if !is_live(&self.socket) {
             return Again::Waiting;

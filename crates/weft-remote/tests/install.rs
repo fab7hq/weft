@@ -1,4 +1,4 @@
-//! Installing cloudflared by download (ADR-0023, remote.md §7a): Cloudflare's
+//! Installing cloudflared by download (remote.md §7a): Cloudflare's
 //! latest release, checked against GitHub's digest and the release's notes,
 //! against a fake GitHub.
 

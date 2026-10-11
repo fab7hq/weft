@@ -242,7 +242,7 @@ impl Default for Account {
 /// How long an address the service took stands before it is told again, so a
 /// service that lost it, or never got it, has it back.
 /// Every 5 minutes, so the service's last-heard time is never older than
-/// that while the machine is up (ADR-0034 D4).
+/// that while the machine is up.
 pub const REPORT_AGAIN: Duration = Duration::from_secs(5 * 60);
 /// The longest wait between tries when the service cannot be reached.
 const REPORT_WAIT_MOST: Duration = Duration::from_secs(60);

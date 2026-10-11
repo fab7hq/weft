@@ -1,18 +1,15 @@
 //! Which harness takes an Eval's debate, and which model and effort each role
-//! runs on ([ADR-0011], [ADR-0012]). The gather is Weft's own: it runs
+//! runs on. The gather is Weft's own: it runs
 //! `ringframe eval open`, which reads the change with Git and records the Eval
 //! as gathered, so no harness is asked to map it. Weft types the
 //! debate into `/rf:eval`; it calls no model and checks no model name — the
 //! harness owns its catalogue. Weft ships no tiers: a role `config.toml` sets
 //! nothing for is not typed, and the plugin's own tiers apply.
-//!
-//! [ADR-0011]: ../../../plans/weft/adr/0011-eval-stages-and-model-choice.md
-//! [ADR-0012]: ../../../plans/weft/adr/0012-one-config-toml.md
 
 use serde_json::{Map, Value, json};
 
 /// The debate's roles, in the order they run: RingFrame's judging tasks
-/// (ADR-0020: map the change, reduce per requirement, confirm).
+/// (map the change, reduce per requirement, confirm).
 pub const DEBATE_ROLES: [&str; 3] = ["map", "reduce", "confirm"];
 
 /// What a role was once called, read as what it is now called. `intent` and

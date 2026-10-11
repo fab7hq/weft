@@ -1,4 +1,4 @@
-//! Weft's own "Start at login" in the TUI (ADR-0034 D1, cards T13.2 and
+//! Weft's own "Start at login" in the TUI (cards T13.2 and
 //! T13.3): turned on or off in place from the Weft menu, or turned on from
 //! the Remote view. Nothing turns it on for the person.
 

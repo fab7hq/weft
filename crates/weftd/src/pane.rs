@@ -283,7 +283,7 @@ impl Pane {
     ///
     /// The bytes that reach the host are the same whichever way this goes; what
     /// changes is whether the host reads the command. Typed, it does; inside a
-    /// folded paste, it may not, so a command is never pasted (ADR-0033 D3).
+    /// folded paste, it may not, so a command is never pasted.
     pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
         // Only what can be said is typed: a prompt read from a project's files
         // could otherwise end its own paste and press keys (`!`, Enter).
@@ -342,8 +342,7 @@ impl Pane {
     /// mode`), and may keep part of its screen moving (a spinner), so the mode
     /// counts once the lines that name it are not the ones that did before
     /// the Enter, and the body then waits [`inject::SUBMIT_SETTLE`]: input
-    /// that arrives while the host is still switching is dropped
-    /// (ringframe-ask-ledger-q10).
+    /// that arrives while the host is still switching is dropped.
     fn wait_for(&mut self, active: &str, timeout: std::time::Duration) -> Result<bool, Refusal> {
         let naming = |screen: String| -> Vec<String> {
             screen.lines().filter(|l| l.contains(active)).map(|l| l.trim().to_string()).collect()
@@ -404,7 +403,7 @@ impl Pane {
     /// Whether the screen changed from `before` and then held still for
     /// [`inject::COMPOSER_SETTLE`], so Enter lands on a composer that took
     /// the paste rather than one still taking it. Only whether it changed is
-    /// compared, never what it says (ADR-0033 D2): a harness may show a long
+    /// compared, never what it says: a harness may show a long
     /// paste whole, folded or scrolled. Changed but never still (a spinner)
     /// is taken as landed when the time is up; never changed is not.
     fn paste_landed(&self, before: &str, timeout: std::time::Duration) -> bool {
@@ -424,7 +423,7 @@ impl Pane {
 }
 
 /// An injection that was *attempted*. Never evidence that it arrived: only
-/// what the harness reports it received is (ADR-0033 D1).
+/// what the harness reports it received is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub bytes: usize,
@@ -495,7 +494,7 @@ mod tests {
     /// names the mode) as soon as `/plan` is typed, drops input that arrives
     /// before it has handled the Enter, and keeps a footer spinner turning so
     /// its screen is never still: the body goes in only once the mode is shown
-    /// after the Enter (ringframe-ask-ledger-q10).
+    /// after the Enter.
     #[test]
     fn a_mode_named_by_the_popup_is_not_taken_for_the_mode_entered() {
         let host = HOST_DROPPING_EARLY_INPUT;
@@ -625,7 +624,7 @@ while True:
         (attempt, std::fs::read_to_string(&out).unwrap_or_default())
     }
 
-    /// ringframe-ask-ledger-q12: a composer that scrolls a long prompt shows
+    /// A composer that scrolls a long prompt shows
     /// only its last lines, so the start of the prompt is never on screen.
     /// Weft used to look for it there and withheld Enter on a 1523-byte
     /// prompt. It now gets Enter, and what arrived is judged by the receipt.

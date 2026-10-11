@@ -325,7 +325,7 @@ fn validate_agents(agents: &Value) -> Result<(), EvalError> {
 }
 
 /// What a brief or a Seal says when no prompt and no tool was observed at
-/// all (ADR-0022 §7).
+/// all.
 pub const NOTHING_OBSERVED: &str =
     "no prompt or tool was observed: nothing ran `ringframe observe`";
 
@@ -627,7 +627,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "changes_patch",
     )?;
     // RingFrame's own reading of the work, for judges that read it in bounded
-    // pieces (ADR-0019 §1). An Eval still opens without it.
+    // pieces. An Eval still opens without it.
     let (evidence, evidence_refs) = match crate::evidence::prepare(
         ws,
         &eval_id,
@@ -645,7 +645,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         }
     };
     // The checks the Asks and their plan steps state, which RingFrame runs
-    // once (ADR-0020 D8): found here, started once the Eval is on record.
+    // once: found here, started once the Eval is on record.
     let checks = {
         let changes: Value =
             std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/changes.json")))
@@ -3160,7 +3160,7 @@ mod tests {
         });
     }
 
-    /// ADR-0022 §7: the brief names who observed a submission, and says so
+    /// The brief names who observed a submission, and says so
     /// when nothing ran `ringframe observe` at all.
     #[test]
     fn a_brief_names_who_observed_and_says_when_nothing_was() {

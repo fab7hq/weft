@@ -1,6 +1,6 @@
 //! remote.md §14 test 1: a pane writes 5 MiB with mode changes, and a device
 //! attaching at any point draws the same screen as a parser fed every byte
-//! (D1 to D3).
+//! (remote.md D1 to D3).
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;

@@ -1,4 +1,4 @@
-//! weft signal → weftd → `ringframe observe` (ADR-0030 D9), end to end: a
+//! weft signal → weftd → `ringframe observe`, end to end: a
 //! harness's hooks run the real `weft signal` inside a pane, and weftd passes
 //! a typed prompt byte for byte and a shell tool's outcome to a stand-in
 //! `ringframe`, and nothing else. Its own test binary because it puts the

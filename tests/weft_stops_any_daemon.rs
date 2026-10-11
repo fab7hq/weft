@@ -2,7 +2,7 @@
 //! installs a `weft` whose protocol is newer than the daemon still running;
 //! `bin/reinstall-local` stops that daemon before starting the new one, and
 //! if the stop needed a hello the old daemon would refuse it ("this daemon
-//! speaks protocol 3, not 4") and keep running beside the new one.
+//! speaks protocol 2, not 3") and keep running beside the new one.
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
@@ -28,7 +28,7 @@ fn stop_reaches_a_daemon_of_another_protocol() {
             let id = m["id"].clone();
             if method == "hello" {
                 let no = serde_json::json!({"id": id, "error": {"code": "protocol",
-                    "message": "this daemon speaks protocol 3, not 4"}});
+                    "message": "this daemon speaks protocol 2, not 3"}});
                 writeln!(writer, "{no}").unwrap();
             } else if method == "shutdown" {
                 let yes = serde_json::json!({"id": id, "result": {}});
@@ -60,4 +60,31 @@ fn stop_ends_a_running_daemon() {
         assert!(Instant::now() < deadline, "the daemon is still running");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A window that finds another version of Weft running says so, and how to
+/// end it, rather than a bare protocol number.
+#[test]
+fn a_window_refused_by_another_version_says_how_to_end_it() {
+    let socket = protocol::private_socket("weft-other-version");
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut writer = stream.try_clone().unwrap();
+        for line in BufReader::new(stream).lines() {
+            let m: serde_json::Value = serde_json::from_str(&line.unwrap()).unwrap();
+            let no = serde_json::json!({"id": m["id"], "error": {"code": "protocol",
+                "message": "this daemon speaks protocol 2, not 3"}});
+            writeln!(writer, "{no}").unwrap();
+        }
+    });
+    let refused = weft::client::Session::connect(&socket, std::path::Path::new("."), 24, 80)
+        .err()
+        .expect("refused")
+        .to_string();
+    assert_eq!(
+        refused,
+        "Another version of Weft is running (protocol: this daemon speaks protocol 2, \
+         not 3). `weft stop` ends it and its agents."
+    );
 }

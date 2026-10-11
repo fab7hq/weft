@@ -1,4 +1,4 @@
-//! The transport seam (remote.md §7, ADR-0021, ADR-0024): start the tunnel to
+//! The transport seam (remote.md §7): start the tunnel to
 //! a loopback port, yield its address, notice it ending, start it again with a
 //! backoff. Which program, how it is started and how its address reads are
 //! the adapter's (its tool file); nothing here knows a provider.
@@ -23,7 +23,7 @@ pub enum TunnelEvent {
 pub const ADDRESS_WITHIN: Duration = Duration::from_secs(30);
 const FIRST_WAIT: Duration = Duration::from_secs(2);
 /// At most this long between starts, so a tunnel is back within it of the
-/// network returning (ADR-0034 D3).
+/// network returning.
 const LONGEST_WAIT: Duration = Duration::from_secs(30);
 
 /// The wait before each start again: 2, 4, 8 … 30 seconds, and from 2 again

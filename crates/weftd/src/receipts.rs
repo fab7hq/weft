@@ -1,4 +1,4 @@
-//! Weft's own session receipts (ADR-0030 D7):
+//! Weft's own session receipts:
 //! `~/.fab7/weft/sessions/<project key>/<harness>/<session id>.jsonl`, one
 //! line per change, written by weftd alone from the signals it accepts.
 //! Nothing from the conversation: the event, the session, the time, the

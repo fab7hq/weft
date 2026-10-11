@@ -22,7 +22,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("title.open", "open"),
     ("title.needs_you", "needs you"),
     ("tree.nothing_asked", "Nothing asked for yet."),
-    // AGENTS and WORK (ADR-0029, T11.1).
+    // AGENTS and WORK (T11.1).
     ("tree.agents", "AGENTS"),
     ("tree.work", "WORK"),
     ("tree.counts", "{n} running · {m} ended"),
@@ -45,7 +45,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("verdict.aligned", "aligned"),
     ("verdict.drifted", "drifted"),
     ("verdict.incomplete", "not enough proof"),
-    // An act pressed on a row it does not act on (ADR-0029 D5).
+    // An act pressed on a row it does not act on.
     ("select.agent", "Select an agent to Ask."),
     ("select.open", "Select Open to Eval its Asks."),
     ("select.eval", "Select an Eval to Seal it."),
@@ -103,7 +103,7 @@ pub const WORDS: &[(&str, &str)] = &[
         "Weft did not type it: it holds control characters a terminal would act on.",
     ),
     ("not_typed.in_flight", "Weft did not type it: it is still typing the last one."),
-    // A send is proven by what the harness reported it received (ADR-0033).
+    // A send is proven by what the harness reported it received.
     (
         "not_typed.paste_not_shown",
         "Weft did not press Enter: the agent's screen did not change when the Ask was pasted. The text may be in its composer.",
@@ -120,7 +120,7 @@ pub const WORDS: &[(&str, &str)] = &[
         "send.no_prompt",
         "Weft does not send an Ask to {harness}: its harness file does not say where the prompt it received is, so Weft could not tell whether the Ask arrived.",
     ),
-    // Resuming a session by its id (ADR-0029 D4, T11.5).
+    // Resuming a session by its id (T11.5).
     ("resume.how", "Weft starts {harness} again on this session, in a new pane."),
     ("resume.quiet", "Weft can't tell whether it still runs: it was last active {time}."),
     ("resume.either_way", "Your work is in the record either way."),
@@ -163,15 +163,15 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("why.nothing_to_send", "{title} has nothing to send. [F] FOLLOW UP asks for more."),
     ("why.no_eval", "No Eval of this work yet: [E]VAL starts one."),
-    // An act on a round (ADR-0029 D5, D12): `{title}` is the round, "Eval 2".
+    // An act on a round: `{title}` is the round, "Eval 2".
     ("why.sealed_already", "{title} is sealed already."),
     ("why.ended", "{harness} has ended: resume this session to Ask it."),
     ("why.elsewhere", "{harness} runs in another program: Weft can't show it or type into it."),
     ("why.quiet", "Weft can't tell whether this {harness} session runs: resume it to Ask it."),
     ("why.judging", "{title} is still being judged."),
     ("why.nothing_needs_you", "Nothing needs your input."),
-    // The web app's own wording of the same things: a screen, not keys
-    // (the owner, 2026-10-05), the same on a phone and a desktop.
+    // The web app's own wording of the same things: a screen, not keys, the
+    // same on a phone and a desktop.
     ("web.turn.waiting", "waiting"),
     ("web.tree.needs_you", "● needs you"),
     ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
@@ -315,7 +315,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.push.connect_first", "Connect to the machine first."),
     ("web.push.denied", "Notifications are turned off for Weft in this browser."),
     ("web.push.failed", "The browser could not subscribe to pushes."),
-    // The web's own wording of agents and rounds (ADR-0029, M/D11.x).
+    // The web's own wording of agents and rounds (M/D11.x).
     ("web.bar.selected", "selected: {what}"),
     ("web.bar.open_round", "Open round"),
     ("web.detail.not_evaluated", "not evaluated yet"),

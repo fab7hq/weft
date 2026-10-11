@@ -1,11 +1,9 @@
 //! `~/.fab7/weft/config.toml`: where each RingFrame act goes, how an Eval is
-//! split across harnesses, and RingFrame's overrides ([ADR-0012]).
+//! split across harnesses, and RingFrame's overrides.
 //!
 //! The top-level tables hold for every project; `[projects."<path>"]` holds
 //! the same tables for one, and wins key by key. Weft ships no model tiers:
 //! a role Weft sets nothing for runs on its plugin's own.
-//!
-//! [ADR-0012]: ../../../plans/weft/adr/0012-one-config-toml.md
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -77,7 +75,7 @@ pub struct Choice {
 pub struct Remote {
     /// The daemon keeps `weft remote` running.
     pub enabled: bool,
-    /// The tunnel adapter chosen: a tool file's name (ADR-0024).
+    /// The tunnel adapter chosen: a tool file's name.
     pub tunnel: Option<String>,
     /// Where its program is, when it is not on `PATH`.
     pub program: Option<String>,
@@ -99,8 +97,8 @@ pub struct Config {
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
     remote: Remote,
-    /// `[service] start_at_login`: Weft starts when the person logs in
-    /// (ADR-0034 D1). Off unless turned on; Remote never turns it on.
+    /// `[service] start_at_login`: Weft starts when the person logs in. Off
+    /// unless turned on; Remote never turns it on.
     start_at_login: bool,
 }
 
@@ -137,7 +135,7 @@ impl Config {
         &self.remote
     }
 
-    /// Whether Weft's own service starts it at login (ADR-0034 D1).
+    /// Whether Weft's own service starts it at login.
     pub fn start_at_login(&self) -> bool {
         self.start_at_login
     }
@@ -153,14 +151,14 @@ pub fn set_remote(text: &str, enabled: bool) -> Result<String, String> {
     set(text, &["remote"], "enabled", &Value::Bool(enabled))
 }
 
-/// `config.toml` with `[remote] tunnel` set to the adapter chosen (ADR-0024),
+/// `config.toml` with `[remote] tunnel` set to the adapter chosen,
 /// the rest as it was.
 pub fn set_tunnel(text: &str, tunnel: &str) -> Result<String, String> {
     set(text, &["remote"], "tunnel", &Value::String(tunnel.into()))
 }
 
 /// `config.toml` with `[remote] program` set to where Weft installed the
-/// tunnel's program (ADR-0023), the rest as it was.
+/// tunnel's program, the rest as it was.
 pub fn set_program(text: &str, path: &str) -> Result<String, String> {
     set(text, &["remote"], "program", &Value::String(path.into()))
 }
@@ -470,7 +468,7 @@ mod tests {
         assert_eq!(read_("[harnesses.nowhere]\nprogram = \"/x\"\n").unknown, ["harnesses.nowhere"]);
     }
 
-    /// `[service] start_at_login`: Weft's own option (ADR-0034 D1), off
+    /// `[service] start_at_login`: Weft's own option, off
     /// unless turned on, and not a key of a project's; Remote never sets it.
     #[test]
     fn start_at_login_is_off_unless_turned_on() {
@@ -527,7 +525,7 @@ mod tests {
             "replaced in place"
         );
 
-        // The tunnel chosen, and where its program is (ADR-0024), beside `enabled`.
+        // The tunnel chosen, and where its program is, beside `enabled`.
         let chosen = set_tunnel(&on, "cloudflared").unwrap();
         assert_eq!(read_(&chosen).remote().tunnel.as_deref(), Some("cloudflared"));
         let at = set_program(&chosen, "/home/me/.fab7/weft/bin/cloudflared").unwrap();

@@ -1,11 +1,11 @@
 //! What the person is told without looking: an agent asking them, through
-//! the terminal (ADR-0017), and an agent that ended.
+//! the terminal, and an agent that ended.
 
 use super::*;
 
 /// One notification, through the terminal Weft runs in: OSC 9 where the
 /// terminal shows it, the bell where it shows none. Nothing leaves the
-/// terminal (ADR-0017).
+/// terminal.
 pub fn notification(term_program: Option<&str>, message: &str) -> Vec<u8> {
     const SHOWS_OSC_9: [&str; 3] = ["iTerm.app", "WezTerm", "ghostty"];
     if !term_program.is_some_and(|t| SHOWS_OSC_9.contains(&t)) {
@@ -17,7 +17,7 @@ pub fn notification(term_program: Option<&str>, message: &str) -> Vec<u8> {
 
 impl App {
     /// What to tell the person, once per change: an agent they are not
-    /// looking at started asking them something (ADR-0017).
+    /// looking at started asking them something.
     /// The agent in front is never announced, and nothing is said with
     /// `notify = false`.
     pub fn notices(&mut self) -> Vec<String> {

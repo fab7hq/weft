@@ -75,7 +75,7 @@ main() {
 
     # Weft beside its other versions, each in its own folder, and `weft` a
     # link to the newest: a running Weft keeps its own file, and starts again
-    # on this one once no agent runs (ADR-0034 D5).
+    # on this one once no agent runs.
     version=${tag#v}
     versions="$HOME/.fab7/weft/versions"
     mkdir -p "$versions/$version"
@@ -115,7 +115,7 @@ main() {
         rm -rf "$harnesses"
         mv "$harnesses.new" "$harnesses"
         printf 'Installed the harness files of fab7 %s to %s\n' "$revision" "$harnesses"
-        # Its tool files too: how Weft installs cloudflared when asked (ADR-0023).
+        # Its tool files too: how Weft installs cloudflared when asked.
         tools="$HOME/.fab7/weft/tools"
         if [ -d "$work"/fab7/*/products/weft/tools ]; then
             rm -rf "$tools.new"

@@ -1,8 +1,7 @@
-//! What an Eval judges, prepared by RingFrame rather than by a model
-//! (ADR-0019 §1): every repository the work touched, its change cut into
-//! windows a judge can read whole, moved code shown once, mechanical changes
-//! set aside, weakened tests found, and for each obligation the windows that
-//! bear on it.
+//! What an Eval judges, prepared by RingFrame rather than by a model: every
+//! repository the work touched, its change cut into windows a judge can read
+//! whole, moved code shown once, mechanical changes set aside, weakened tests
+//! found, and for each obligation the windows that bear on it.
 //!
 //! Nothing here reads a model's output, and nothing here is a judgement: a
 //! window's class and an evidence set are where to look, not what is true.

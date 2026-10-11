@@ -213,7 +213,7 @@ impl Record {
                                 vs.iter()
                                     .map(|x| {
                                         let cast = str_at(x, "vote");
-                                        // A map-and-reduce Eval (ADR-0020) votes `met` or
+                                        // A map-and-reduce Eval votes `met` or
                                         // `not_met` and says whether the vote counted; an
                                         // earlier one voted `yes` or `no` and named what it
                                         // counted as.
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(r.windows_judged, Some((5, 6)));
     }
 
-    /// A map-and-reduce Eval (ADR-0020): votes are `met` or `not_met`, and
+    /// A map-and-reduce Eval: votes are `met` or `not_met`, and
     /// `counted` says whether RingFrame counted them.
     #[test]
     fn a_map_and_reduce_record_reads_its_votes() {

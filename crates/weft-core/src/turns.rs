@@ -4,11 +4,8 @@
 //! `[signal]` says the hook means: four events about the turn and one about
 //! the session, the same for every harness, one line per change in Weft's own
 //! receipts, `~/.fab7/weft/sessions/<project key>/<harness>/<id>.jsonl`
-//! ([ADR-0013], [ADR-0030], turn-state.md). Weft reads nothing off the screen:
+//! (turn-state.md). Weft reads nothing off the screen:
 //! a state is a recorded report or it is none.
-//!
-//! [ADR-0013]: ../../../plans/weft/adr/0013-the-agents-turn-is-a-hook-fact.md
-//! [ADR-0030]: ../../../plans/weft/adr/0030-weft-owns-the-hooks.md
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,7 +25,7 @@ pub enum Turn {
     Waiting,
     /// The turn ended. Never "done": that is an Eval and a Seal.
     TurnEnded,
-    /// The session ended: its harness said so (ADR-0029 D11).
+    /// The session ended: its harness said so.
     Ended,
 }
 
@@ -218,7 +215,7 @@ impl Started {
 }
 
 /// A signal from inside pane `pane` named `session`: that pane runs it now,
-/// as a pane that starts a new session does (ADR-0030 D2). True when the map
+/// as a pane that starts a new session does. True when the map
 /// changed.
 pub fn signalled(panes: &mut [Started], pane: u32, session: &str) -> bool {
     let Some(p) = panes.iter_mut().find(|p| p.pane == pane) else { return false };
@@ -409,7 +406,7 @@ mod tests {
         p.session.as_ref().map(|b| (b.session.as_str(), b.how))
     }
 
-    /// ADR-0030 D2: a pane's session is the one its own signal names.
+    /// A pane's session is the one its own signal names.
     #[test]
     fn a_signal_naming_a_pane_binds_its_session_to_that_pane() {
         let mut panes = [started(0, 1000), started(1, 1010)];

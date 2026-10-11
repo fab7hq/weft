@@ -1,4 +1,4 @@
-//! ADR-0024: a tunnel is an adapter, and the adapter is data (the tool file).
+//! A tunnel is an adapter, and the adapter is data (the tool file).
 //! No provider's name, address or command line is in the code that starts a
 //! tunnel, reads its address or shows it: the daemon, `weft remote` and the
 //! TUI, outside tests.

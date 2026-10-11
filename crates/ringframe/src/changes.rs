@@ -1,6 +1,6 @@
-//! The change DAG (ADR-0020): the
-//! project's change as units, the commits that made them, and the edges
-//! between them, all read from git. An Eval publishes its view of it.
+//! The change DAG: the project's change as units, the commits that made
+//! them, and the edges between them, all read from git. An Eval publishes
+//! its view of it.
 
 use std::collections::{BTreeMap, BTreeSet};
 

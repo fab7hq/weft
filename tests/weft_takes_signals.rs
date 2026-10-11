@@ -1,4 +1,4 @@
-//! weftd takes the signals (Weft ADR-0030 D2, D3, D7): its socket is the
+//! weftd takes the signals: its socket is the
 //! user's alone, a harness it starts is told its pane, its token and its
 //! socket, a signal moves only the pane whose token it carries, one with no
 //! pane is a session no pane holds, a wrong token records nothing, and the

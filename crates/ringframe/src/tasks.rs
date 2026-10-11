@@ -1,9 +1,9 @@
 //! Eval as bounded tasks that RingFrame hands out and checks, over the change
-//! DAG (ADR-0020 D4–D7): **map** reads the change once, in the file tree's
-//! order, and says why each window is there; the **shuffle** gives each
-//! requirement the windows the map assigned to it and RingFrame's own
-//! evidence for it; **reduce** decides each requirement from that; **confirm**
-//! re-reads, afresh and on the strong tier, every decisive negative and every
+//! DAG: **map** reads the change once, in the file tree's order, and says
+//! why each window is there; the **shuffle** gives each requirement the
+//! windows the map assigned to it and RingFrame's own evidence for it;
+//! **reduce** decides each requirement from that; **confirm** re-reads,
+//! afresh and on the strong tier, every decisive negative and every
 //! requirement whose evidence carries a finding. RingFrame merges the rest.
 //!
 //! `eval next` says which tasks are ready and writes each one's file, with
@@ -321,7 +321,7 @@ struct Status {
 }
 
 /// What the last judged Eval of these Asks settled, found by content, so this
-/// one judges only what changed (ADR-0020 D9): a window whose text is the
+/// one judges only what changed: a window whose text is the
 /// same keeps its readings, and a requirement whose evidence is the same
 /// keeps its verdict.
 #[derive(Default)]
@@ -2412,7 +2412,7 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
         items.iter().map(|i| i["agreement"].as_f64().unwrap_or(0.0)).collect()
     };
     let confidence = round2(deciding.iter().copied().fold(1.0, f64::min));
-    // Drift as two numbers (ADR-0020 D6): how much of the change nothing
+    // Drift as two numbers: how much of the change nothing
     // explains, and how much of what was asked is not done.
     let findings = array_of(&ctx.changes, "findings").to_vec();
     // The checks RingFrame ran: those in, and any still running, which this

@@ -1,4 +1,4 @@
-//! Who gets in (remote.md §8, ADR-0020). A device is let in only after the
+//! Who gets in (remote.md §8). A device is let in only after the
 //! person allows it on this machine, and asks only with Fab7's assertion that
 //! it belongs to the machine's owner; anything else is refused silently. The
 //! machine issues the device's token and keeps only its SHA-256

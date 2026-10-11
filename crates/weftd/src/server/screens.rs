@@ -10,9 +10,8 @@
 //! Taken from the pane at each frame rather than kept by a parser per
 //! attachment, as remote.md first had it: a parser started from
 //! `state_formatted()` while the pane is in the alternate screen has no normal
-//! screen behind it, and shows the wrong one when the harness leaves (Phase 6
-//! step 7's note). The pane's visible screen is small; its scrollback is never
-//! copied.
+//! screen behind it, and shows the wrong one when the harness leaves. The
+//! pane's visible screen is small; its scrollback is never copied.
 
 use super::*;
 

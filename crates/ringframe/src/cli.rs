@@ -1254,7 +1254,7 @@ mod tests {
         });
     }
 
-    /// RingFrame's CLI reads no hook (ADR-0022): the commands that read a
+    /// RingFrame's CLI reads no hook: the commands that read a
     /// payload are gone, and `observe` names who saw what it records.
     #[test]
     fn no_command_reads_a_hook_payload_and_observe_names_its_observer() {
@@ -2228,7 +2228,7 @@ mod tests {
                 for k in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
                     assert!(out[k].is_null(), "{host} carries {k}");
                 }
-                // No payload field: RingFrame reads no hook (ADR-0022).
+                // No payload field: RingFrame reads no hook.
                 for k in ["session_field", "workspace_field"] {
                     assert!(out[k].is_null(), "{host} carries {k}");
                 }

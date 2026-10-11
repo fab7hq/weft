@@ -1,9 +1,9 @@
-//! weftd forwards evidence to `ringframe observe` (ADR-0030 D9): per project,
+//! weftd forwards evidence to `ringframe observe`: per project,
 //! one call at a time in the order the hooks fired, so the ledger keeps their
 //! order. In memory only: a forwarded prompt is in weftd between its signal
 //! and its call, and nowhere after. A failed call is logged, without its
 //! prompt, and dropped; it is never retried. A prompt that answers Weft's own
-//! send hands RingFrame's answer back (ADR-0033 D1).
+//! send hands RingFrame's answer back.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

@@ -285,8 +285,7 @@ mod tests {
         assert!(!v.needs_anything() && !v.wants_setting_up() && !v.proceeds());
     }
 
-    /// A row reads its mark, its title and its state, and nothing else
-    /// (ADR-0032 D2).
+    /// A row reads its mark, its title and its state, and nothing else.
     #[test]
     fn a_row_reads_its_title_then_its_state() {
         let h = harness("antigravity");

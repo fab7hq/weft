@@ -163,7 +163,7 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         if i > 0 {
             spans.push(Span::raw("   "));
         }
-        // Drawn the same always (ADR-0029 D5): one that does not apply to
+        // Drawn the same always: one that does not apply to
         // the row selected says why when pressed.
         let _ = act;
         spans.push(Span::styled(key_in(label), Style::default().fg(th.primary())));

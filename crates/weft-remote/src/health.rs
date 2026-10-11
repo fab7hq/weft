@@ -1,5 +1,5 @@
 //! The tunnel seen from outside, and the machine's own sleep and network
-//! (remote.md §7, §11a; ADR-0034 D3). Only rules: the loop gives the time and
+//! (remote.md §7, §11a). Only rules: the loop gives the time and
 //! what each look answered, and does what these say.
 //!
 //! Sleep is found from the wall clock against the tick: the monotonic clock
@@ -19,8 +19,8 @@ pub const NEW_NAME: Duration = Duration::from_secs(120);
 /// A new name is told to the service this long after it appears. Resolvers
 /// learn it a moment after the tunnel prints it, and one asked sooner answers
 /// that it does not exist and keeps that answer for a minute or more: a phone
-/// told at once looked it up within 2 s and could not reach it for 90 s
-/// (Gate W-durable, 2026-10-11). Asked 3 s and more after, every lookup found it.
+/// told at once looked it up within 2 s and could not reach it for 90 s.
+/// Asked 3 s and more after, every lookup found it.
 pub const PUBLISHED: Duration = Duration::from_secs(5);
 /// How often the tunnel is looked at while it answers: often enough that one
 /// Cloudflare dropped is found, ended and replaced within the 60 s target
@@ -233,8 +233,8 @@ impl Recovery {
     }
 
     /// The network answers again, or the machine woke: tell the service the
-    /// address again at once, and start a tunnel waiting to start now
-    /// (ADR-0034 D3).
+    /// address again at once, and start a tunnel waiting to start
+    /// now.
     fn back(&mut self) -> Vec<Act> {
         self.reported.again();
         vec![Act::PokeTunnel]
@@ -309,7 +309,7 @@ mod tests {
     }
 
     /// The address the service took is told again every 5 minutes, so the
-    /// service's last-heard time is never older than that (ADR-0034 D4).
+    /// service's last-heard time is never older than that.
     #[test]
     fn the_service_hears_from_the_machine_every_five_minutes() {
         use crate::account::Reported;
@@ -357,7 +357,7 @@ mod tests {
 
     /// A new name is told to the service only once resolvers know it: a
     /// device that looks it up sooner is told it does not exist, and keeps
-    /// that answer for a minute or more (Gate W-durable, 2026-10-11).
+    /// that answer for a minute or more.
     #[test]
     fn a_new_name_is_reported_only_once_it_is_published() {
         let (mono, wall) = at();

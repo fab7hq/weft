@@ -1,4 +1,4 @@
-//! Remote protocol 4 (remote.md §6e, ADR-0034 D2, D4, D5): the machine's
+//! The remote protocol (remote.md §6): the machine's
 //! `update`, a project reopened after an unclean end and dismissed, and the
 //! refusals a device acts on.
 
@@ -33,12 +33,12 @@ fn a_machine_that_is_signed_out_says_so() {
         "signed_out",
     );
     let mut d = Device::connect(port(&h));
-    d.send(json!({"type": "pair", "v": 4, "device": "d_1", "name": "iPhone", "assertion": good("d_1")}));
+    d.send(json!({"type": "pair", "v": 1, "device": "d_1", "name": "iPhone", "assertion": good("d_1")}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "signed_out"}));
 }
 
 /// An update installed while agents run is told to every device, and a
-/// device that says hello later is welcomed with it (ADR-0034 D5).
+/// device that says hello later is welcomed with it.
 #[test]
 fn an_update_waiting_is_told_to_devices() {
     let mut h = Harness::with("update", |dir| {
@@ -56,7 +56,7 @@ fn an_update_waiting_is_told_to_devices() {
 }
 
 /// A project weftd reopened after it ended uncleanly is in the tree with
-/// when, and its agents ended; Dismiss takes it away (ADR-0034 D2).
+/// when, and its agents ended; Dismiss takes it away.
 #[test]
 fn a_reopened_project_is_in_the_tree_until_it_is_dismissed() {
     let mut h = Harness::with("reopened", |dir| {

@@ -1,4 +1,4 @@
-//! "Start at login", Weft's own option (ADR-0034 D1): kept in `config.toml`
+//! "Start at login", Weft's own option: kept in `config.toml`
 //! under `[service]`, and the service written or removed when a window turns
 //! it on or off. Remote never changes it.
 

@@ -218,7 +218,7 @@ impl Tui {
 }
 
 /// A fake cloudflared: says where it was pointed, prints an address, waits.
-/// The tunnel adapter, as fab7 ships Cloudflare Tunnel's (ADR-0024).
+/// The tunnel adapter, as fab7 ships Cloudflare Tunnel's.
 pub const ADAPTER: &str = "kind = \"tunnel\"\ntitle = \"Cloudflare Tunnel\"\nprogram = \"cloudflared\"\nrun = [\"tunnel\", \"--no-autoupdate\", \"--url\", \"http://127.0.0.1:{port}\"]\naddress = \".trycloudflare.com\"\nnote = \"traffic is decrypted at Cloudflare's edge\"\n";
 
 pub const CLOUDFLARED: &str = "#!/bin/sh\necho \"$*\" > \"$0.args\"\necho '|  https://test-tunnel.trycloudflare.com  |' >&2\nexec sleep 600\n";
@@ -330,7 +330,7 @@ impl Harness {
     pub fn allowed(&mut self, id: &str) -> (Device, Value) {
         let mut d = self.device();
         d.send(
-            json!({"type": "pair", "v": 4, "device": id, "name": "iPhone", "assertion": good(id)}),
+            json!({"type": "pair", "v": 1, "device": id, "name": "iPhone", "assertion": good(id)}),
         );
         assert_eq!(d.next()["type"], "asking");
         self.tui.wait_view(|v| v["asking"]["device"] == id);
@@ -338,7 +338,7 @@ impl Harness {
         let paired = d.next();
         assert_eq!(paired["type"], "paired", "{paired}");
         let token = paired["token"].as_str().unwrap().to_string();
-        d.send(json!({"type": "hello", "v": 4, "device": id, "token": token}));
+        d.send(json!({"type": "hello", "v": 1, "device": id, "token": token}));
         let welcome = d.next();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
         d.welcomed = welcome["agents"].as_array().cloned();

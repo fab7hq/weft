@@ -73,7 +73,7 @@ impl Turns {
 }
 
 /// The Mac's distance from UTC now, in milliseconds: how its clock and its
-/// calendar read a time (ADR-0029, the earlier sessions' date groups).
+/// calendar read a time (the earlier sessions' date groups).
 pub fn zone() -> i64 {
     let now = now_millis() / 1000;
     // SAFETY: `localtime_r` writes only the `tm` it is given.

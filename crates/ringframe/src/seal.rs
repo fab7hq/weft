@@ -339,7 +339,7 @@ mod tests {
         strings(v, key)
     }
 
-    /// ADR-0022 §7: a Seal's receipt says who observed its Asks, or that
+    /// A Seal's receipt says who observed its Asks, or that
     /// nothing was.
     #[test]
     fn a_seal_names_who_observed_its_asks_or_that_nothing_was() {
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn a_seal_on_an_eval_closes_exactly_the_asks_it_covers() {
-        // Weft ADR-0029 D8: Seal on "Eval 3" seals that round; an Ask asked
+        // Seal on "Eval 3" seals that round; an Ask asked
         // since stays open for the next Eval.
         eval_bench(|ws| {
             let (a, b, rec) = judged(ws, ["yes", "yes", "yes"]);

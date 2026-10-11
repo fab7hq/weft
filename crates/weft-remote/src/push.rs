@@ -1,5 +1,5 @@
-//! A push when an agent needs the person and they are away (remote.md §10,
-//! ADR-0022). The machine sends Web Push itself, encrypted to each device,
+//! A push when an agent needs the person and they are away (remote.md §10).
+//! The machine sends Web Push itself, encrypted to each device,
 //! with its own VAPID key; nothing goes through Fab7. A push says nothing the
 //! app would not show, and is never taken as an answer.
 

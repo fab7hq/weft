@@ -18,7 +18,7 @@ pub const PASTE_TIMEOUT: Duration = Duration::from_millis(2500);
 /// finished taking the paste: a short payload draws almost at once, so Enter
 /// used to arrive while the composer was still ingesting it, and the prompt
 /// sat there unsent. Whether the screen changed is compared, never what it
-/// says (ADR-0033 D2).
+/// says.
 pub const COMPOSER_SETTLE: Duration = Duration::from_millis(400);
 
 /// How long to leave a composer alone before pressing Enter on it.
@@ -127,7 +127,7 @@ impl Handoff {
     /// length: a harness may fold or scroll a paste, and a command inside a
     /// folded paste is not read. A mode the profile says how to see is
     /// entered first, because that can be confirmed; any other command is
-    /// typed in front of the body (ADR-0033 D3).
+    /// typed in front of the body.
     pub fn choose(d: &crate::ledger::Delivery) -> Self {
         // A command that is not one is never typed: the prompt goes in whole.
         let Some(command) = d.mode.clone().filter(|c| is_command(c)) else { return Handoff::Whole };
@@ -163,7 +163,7 @@ pub fn compose(payload: &[u8], bracketed_paste: bool) -> Vec<Step> {
 }
 
 /// The slash command a payload opens with, if it opens with one: such a
-/// prompt is typed, never pasted whole (ADR-0033 D3).
+/// prompt is typed, never pasted whole.
 pub fn leading_command(payload: &[u8]) -> Option<String> {
     let text = String::from_utf8_lossy(payload);
     let first = text.lines().next()?.trim_start();
@@ -320,7 +320,7 @@ mod tests {
     }
 
     /// Whatever the prompt's length, and however the harness draws a long
-    /// paste, a command is typed and never pasted (ADR-0033 D3): the record
+    /// paste, a command is typed and never pasted: the record
     /// says nothing about size that could decide otherwise.
     #[test]
     fn an_inline_command_is_typed_in_front_of_the_body() {

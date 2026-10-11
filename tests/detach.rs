@@ -1,5 +1,5 @@
-//! Gate W2's open criterion: a client can leave and come back, and the agents
-//! keep working while it is gone.
+//! A client can leave and come back, and the agents keep working while it is
+//! gone.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -946,7 +946,7 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     };
 
     // Not ready: the send waits for the agent rather than being refused at
-    // once (ADR-0033 D2), and is refused only when the wait is over.
+    // once, and is refused only when the wait is over.
     let id = stage(&mut c, "not-yet");
     let asked = Instant::now();
     c.send(Call::Resolve { pending: id, yes: true, force: false });
@@ -1081,7 +1081,7 @@ fn turbo_can_be_switched_and_the_next_agent_follows_it() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Eval acts on the Open round and Seal on an Eval's (ADR-0029 D5, D8): a
+/// Eval acts on the Open round and Seal on an Eval's: a
 /// Seal names its Eval, `--eval`, so RingFrame closes exactly its Asks; one
 /// on an Eval still judged, already sealed, or unnamed is refused; Eval with
 /// no Ask named goes on with the round being judged.
@@ -1175,7 +1175,7 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-// --- an unclean end (ADR-0034 D2, Phase 6.9 step 4) ----------------------
+// --- an unclean end --------------------------------------------------------
 
 /// `weft --serve`, the real program, in a home and a runtime folder of its
 /// own: its socket, and the process to kill.

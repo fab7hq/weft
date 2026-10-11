@@ -1,7 +1,6 @@
-//! The Eval view: one screen, requirements first (RingFrame ADR-0020, "The
-//! Eval view in Weft"). A header with the verdict and both drift numbers;
-//! then what RingFrame found and the changes nothing explains; then each part
-//! of what was asked as a row of steps, each step one line with its state and
+//! The Eval view: one screen, requirements first. A header with the verdict
+//! and both drift numbers; then what RingFrame found and the changes nothing
+//! explains; then each part of what was asked as a row of steps, each step one line with its state and
 //! how many changes serve it. The same results read by file are one key away.
 //!
 //! Built from RingFrame's own files and never re-judged: a closed Eval's

@@ -1,5 +1,5 @@
-//! What a harness's hooks mean, as its harness file's `[signal]` says
-//! (ADR-0030 D4), and the one message `weft signal` sends weftd for a hook.
+//! What a harness's hooks mean, as its harness file's `[signal]` says, and
+//! the one message `weft signal` sends weftd for a hook.
 //!
 //! Every hook of every harness runs `weft signal <harness> <hook>` with the
 //! hook's payload on stdin. The row for that hook (and its tool, where the row
@@ -33,8 +33,7 @@ pub struct Signal {
 }
 
 /// Where a forwarded prompt is: one place, or a list tried in order, for a
-/// harness that records some prompts in one place and some in another
-/// (ADR-0033 D7).
+/// harness that records some prompts in one place and some in another.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Prompt {
@@ -173,7 +172,7 @@ pub struct Sent {
     pub command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
-    /// The harness process the hook ran under (D8), and when it started.
+    /// The harness process the hook ran under, and when it started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,7 +268,7 @@ impl Signal {
     }
 }
 
-/// One call to `ringframe observe` (ADR-0030 D9): its arguments after
+/// One call to `ringframe observe`: its arguments after
 /// `--workspace <project>`, and what it reads on stdin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Forward {
@@ -399,7 +398,7 @@ mod tests {
 
     #[test]
     fn a_row_that_forwards_no_tool_sends_no_tool() {
-        // Codex's PostToolUse looks for a goal it received (ADR-0033 D7),
+        // Codex's PostToolUse looks for a goal it received,
         // never at the tool: a failed command also arrives there.
         let s = signal("codex");
         let payload = json!({"session_id": "c1", "cwd": "/w", "tool_name": "shell",
@@ -564,8 +563,7 @@ mod tests {
 
     /// A made-up harness that records some prompts only in its transcript:
     /// a list of places, the payload's first, then the newest matching line
-    /// of the transcript, whose text may name a file holding the prompt
-    /// (ADR-0033 D7).
+    /// of the transcript, whose text may name a file holding the prompt.
     fn in_several_places() -> Signal {
         Signal::of(&json!({
             "session": "id", "workspace": "dir",

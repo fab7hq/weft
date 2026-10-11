@@ -1,4 +1,4 @@
-//! The tree (T11.1, ADR-0029): a project, then AGENTS and WORK.
+//! The tree (T11.1): a project, then AGENTS and WORK.
 //!
 //! The rows are `weft_core::tree`'s, laid out in the order the card draws
 //! them, and built again from the daemon's facts each frame: there is one
@@ -304,7 +304,7 @@ impl App {
     }
 
     /// A session: its pane while one holds it; one another program runs says
-    /// so (D9); an ended or quiet one opens its Details (T11.5).
+    /// so; an ended or quiet one opens its Details (T11.5).
     pub(super) fn go_to_session(&mut self, id: &str, pane: Option<u32>, state: State) {
         match (state, pane.and_then(|p| sess!(self).index_of(p))) {
             (State::Running, Some(i)) => {
@@ -349,7 +349,7 @@ impl App {
         true
     }
 
-    /// `[A]`, `[E]` and `[S]` act where they apply (ADR-0029 D5): Ask on an
+    /// `[A]`, `[E]` and `[S]` act where they apply: Ask on an
     /// agent, Eval on Open, Seal on an Eval. Pressed anywhere else, each says
     /// what to select; one that cannot run says why.
     pub(super) fn act_on_row(&mut self, act: Act) {

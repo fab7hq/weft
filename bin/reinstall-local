@@ -30,7 +30,7 @@ printf 'Building from %s\n' "$root"
 
 mkdir -p "$bin_dir"
 # Weft in its version's folder and `weft` a link to it, as `install.sh` lays
-# it out (ADR-0034 D5); RingFrame replaced in place. Each replaced rather than
+# it out; RingFrame replaced in place. Each replaced rather than
 # written through, so a running binary is undisturbed.
 version=$("$root/target/release/weft" --version | sed 's/^weft //')
 versions="$HOME/.fab7/weft/versions"
@@ -67,7 +67,7 @@ if [ -n "$fab7" ] && [ -d "$fab7/products/weft/harnesses" ]; then
     rm -rf "$harnesses"
     mv "$harnesses.new" "$harnesses"
     printf '  harness %s\n' "$(ls "$harnesses" | sed 's/\.toml$//' | tr '\n' ' ')"
-    # The tool files, the same way (ADR-0023).
+    # The tool files, the same way.
     if [ -d "$fab7/products/weft/tools" ]; then
         tools="$HOME/.fab7/weft/tools"
         rm -rf "$tools.new"

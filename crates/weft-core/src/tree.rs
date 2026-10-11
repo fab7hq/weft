@@ -1,10 +1,10 @@
-//! The tree both clients draw (ADR-0029): a project, then AGENTS and WORK.
+//! The tree both clients draw: a project, then AGENTS and WORK.
 //!
 //! AGENTS is the session index weftd keeps (`sessions.md`); WORK is the record
 //! by Eval round (`board.md` "Rounds"). Built from those and nothing else, so
 //! the TUI's list and a device's tree are one set of rows. Folding Open or an
 //! Eval is the client's own, asked here and never kept; Sealed and the
-//! earlier sessions are counts (remote.md §6c).
+//! earlier sessions are counts (remote.md §6).
 
 use serde::Serialize;
 
@@ -73,7 +73,7 @@ pub struct Agents {
     pub earlier: usize,
 }
 
-/// One session, read the same whoever runs it (D9).
+/// One session, read the same whoever runs it.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Agent {
     pub session: String,
@@ -155,7 +155,7 @@ pub struct SealRow {
     pub asks: usize,
 }
 
-/// An Ask in a round. Only Open's carry a state word (D6).
+/// An Ask in a round. Only Open's carry a state word.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Ask {
     pub unit: String,
@@ -253,8 +253,8 @@ impl Why {
     }
 }
 
-/// The sentence an act says when the row selected is not one it acts on
-/// (ADR-0029 D5): Ask on an agent, Eval on Open, Seal on an Eval.
+/// The sentence an act says when the row selected is not one it acts on:
+/// Ask on an agent, Eval on Open, Seal on an Eval.
 pub fn select(act: Act) -> Option<&'static str> {
     match act {
         Act::Ask => Some("select.agent"),
@@ -540,7 +540,7 @@ mod tests {
     }
 
     /// Each agent row says why an Ask cannot go to it: an ended one (D12.4),
-    /// one run by another program (D9), a quiet one, one not set up.
+    /// one run by another program, a quiet one, one not set up.
     #[test]
     fn an_agent_says_why_an_ask_cannot_go_to_it() {
         let mut w = weft();
@@ -669,7 +669,7 @@ mod tests {
         assert_eq!(state_word(&quiet, "11:25"), "last active 11:25");
     }
 
-    /// remote.md §6c: the names on the wire, folded content left out.
+    /// remote.md §6: the names on the wire, folded content left out.
     #[test]
     fn the_wire_names_the_fields_as_the_protocol_does() {
         let t = build(&weft(), &|_| Readiness::Missing(Gap::Cli), AS_DRAWN);
