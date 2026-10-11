@@ -91,7 +91,7 @@ impl App {
             Action::Turbo => self.act(Act::Turbo),
             // In a session's Details, R resumes it (T11.5).
             Action::Remote => {
-                if !self.ask_to_resume() {
+                if !self.resume_shown() {
                     self.act(Act::Remote)
                 }
             }
@@ -337,10 +337,6 @@ impl App {
                 let pending = pending.clone();
                 self.modal = None;
                 self.do_inject_forcing(&pending, true);
-            }
-            Modal::Bar(Bar::Resume { harness, session, .. }) => {
-                let (harness, session) = (harness.clone(), session.clone());
-                self.resume(&harness, &session);
             }
             Modal::StartAgent { .. } => self.start_chosen_agent(self.modal_choice),
             // Its own keyboard, handled above.

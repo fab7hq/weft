@@ -199,9 +199,6 @@ pub enum Bar {
     /// Weft types into on its own: `why` says what it reported instead.
     /// Typing is the person's to allow.
     SendAnyway { pending: Pending, why: &'static str },
-    /// Resume this session, by its id (ADR-0029 D4). `quiet` is when it was
-    /// last active, when Weft cannot tell whether it runs (D11).
-    Resume { harness: String, session: String, quiet: Option<String> },
 }
 
 /// How long the loop waits when nothing wakes it.

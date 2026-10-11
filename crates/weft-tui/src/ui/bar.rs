@@ -32,7 +32,6 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
             let act = match bar {
                 Bar::Send(_) => key_by("Enter", "act.send"),
                 Bar::SendAnyway { .. } => key_by("Enter", "act.send_anyway"),
-                Bar::Resume { .. } => key_by("Enter", "act.resume"),
             };
             return plain(&format!(" {}   {act}", key_by("←", "act.cancel")));
         }
@@ -228,9 +227,6 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             format!(" {}", word("ask.which_approach"))
         }
         (Some(Modal::StartAgent { .. }), _) => " It runs here, with your own settings.".into(),
-        (Some(Modal::Bar(Bar::Resume { .. })), _) => {
-            format!(" {}", word("resume.either_way"))
-        }
         (Some(Modal::RingFrame), _) => {
             " Weft never changes an agent without asking you first.".into()
         }

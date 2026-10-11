@@ -121,7 +121,6 @@ pub const WORDS: &[(&str, &str)] = &[
         "Weft does not send an Ask to {harness}: its harness file does not say where the prompt it received is, so Weft could not tell whether the Ask arrived.",
     ),
     // Resuming a session by its id (ADR-0029 D4, T11.5).
-    ("resume.ask", "Resume {harness} on s {session}?"),
     ("resume.how", "Weft starts {harness} again on this session, in a new pane."),
     ("resume.quiet", "Weft can't tell whether it still runs: it was last active {time}."),
     ("resume.either_way", "Your work is in the record either way."),

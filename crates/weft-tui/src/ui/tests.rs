@@ -1595,21 +1595,18 @@ fn acts_on_the_sample_say_why_in_the_cards_words() {
     assert!(a.modal.is_none(), "the act stays, and says why");
 }
 
-/// T11.5: R asks first, naming the id; yes asks the daemon for that id.
+/// T11.5: R resumes the id shown at once, as the web's Resume does: it asks
+/// the daemon for that id, with no confirm first.
 #[test]
-fn r_asks_to_resume_the_id_shown_and_yes_resumes_that_id() {
+fn r_resumes_the_id_shown_at_once() {
     let mut a = atlas11();
     a.open_view_read(crate::app::View::Session(ENDED_CLAUDE.into()), None, None, None);
-    press(&mut a, KeyCode::Char('r'));
-    let Some(Modal::Bar(Bar::Resume { session, harness, quiet })) = a.modal.clone() else {
-        panic!("it asks first: {:?}", a.modal)
-    };
-    assert_eq!((session.as_str(), harness.as_str(), quiet), (ENDED_CLAUDE, "claude", None));
     let drawn = screen(&mut a, 120, 32);
-    assert!(drawn.contains("RESUME CLAUDE ON S 883B9D12?"), "{drawn}");
-    press(&mut a, KeyCode::Enter);
+    assert!(drawn.contains("[R]ESUME THIS starts claude again on session s 883b9d12."), "{drawn}");
+    assert!(!drawn.contains("asks first"), "{drawn}");
+    press(&mut a, KeyCode::Char('r'));
     // This sample's daemon has never heard of the session, so it refuses
-    // that id, by name: nothing else was asked for.
+    // that id, by name: nothing else was asked for, and nothing asked first.
     let Some(Modal::Note(said)) = a.modal.clone() else { panic!("{:?}", a.modal) };
     assert!(said.contains(ENDED_CLAUDE), "{said}");
 }

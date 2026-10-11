@@ -50,7 +50,6 @@
   "not_typed.not_the_ask": "The agent received something other than the Ask, so the Ask was not delivered. You can stop the agent in Terminal.",
   "not_typed.paste_not_shown": "Weft did not press Enter: the agent's screen did not change when the Ask was pasted. The text may be in its composer.",
   "not_typed.why": "Weft did not type it: {why}.",
-  "resume.ask": "Resume {harness} on s {session}?",
   "resume.either_way": "Your work is in the record either way.",
   "resume.how": "Weft starts {harness} again on this session, in a new pane.",
   "resume.nothing": "Nothing to resume: this session never held a conversation.",

@@ -158,7 +158,6 @@ fn kind_of(modal: &weft::app::Modal) -> &'static str {
         Ask { .. } => "Ask",
         Bar(weft::app::Bar::Send(_)) => "Send",
         Bar(weft::app::Bar::SendAnyway { .. }) => "SendAnyway",
-        Bar(weft::app::Bar::Resume { .. }) => "Resume",
         Note(_) => "Note",
         StartAgent { .. } => "StartAgent",
         RingFrame => "RingFrame",

@@ -368,9 +368,10 @@ impl App {
         }
     }
 
-    /// `[R]ESUME THIS` on a session's Details: asks first, naming the id
-    /// (D4), and its last active time when Weft cannot tell whether it runs.
-    pub(super) fn ask_to_resume(&mut self) -> bool {
+    /// `[R]ESUME THIS` on a session's Details: resumes that id at once (D4),
+    /// as the web's Resume does: the Details are that one session (the
+    /// owner, 2026-10-11).
+    pub(super) fn resume_shown(&mut self) -> bool {
         let Some(View::Session(id)) = self.detail.as_ref().map(|d| d.view.clone()) else {
             return false;
         };
@@ -382,11 +383,7 @@ impl App {
             self.say(word("resume.nothing"));
             return true;
         }
-        let now = self.now();
-        let quiet = (row.state == State::Quiet)
-            .then(|| weft_core::sessions::when(row.last, now, sess!(self).zone));
-        self.modal = Some(Modal::Bar(Bar::Resume { harness: row.harness, session: row.id, quiet }));
-        self.modal_choice = 0;
+        self.resume(&row.harness, &row.id);
         true
     }
 
@@ -637,10 +634,9 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
             out.pick = out.links.len() - 1;
         }
         (State::Running, None, _) => out.line(fill("why.elsewhere", &[("harness", &d.harness)])),
-        (_, _, true) => out.line(format!(
-            "[R]ESUME THIS starts {} again on session {short}. Weft asks first.",
-            d.harness
-        )),
+        (_, _, true) => {
+            out.line(format!("[R]ESUME THIS starts {} again on session {short}.", d.harness))
+        }
         (_, _, false) => out.line(word("resume.nothing")),
     }
     out

@@ -15,7 +15,7 @@ use crate::app::{Act, App, Bar, Modal, Target};
 use crate::keys::Focus;
 use crate::layout::{self, Layout};
 use crate::theme::{Theme, pair};
-use weft_core::words::{fill, say, word};
+use weft_core::words::{fill, word};
 
 mod agent;
 mod bar;
