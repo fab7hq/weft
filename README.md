@@ -17,6 +17,8 @@ sessions side by side, and every Ask in one list beside them. It has no model
 of its own. RingFrame is the warp, the fixed record; Weft is the thread carried
 across it.
 
+## What is here
+
 - `weft`, `weftd`: the terminal UI and the daemon that keeps your agents running
 - `crates/ringframe`: Ask, Eval and Seal over the record in `.fab7/rf/`
 - [weft.getfab7.com](https://weft.getfab7.com): the same agents from a phone
@@ -31,7 +33,11 @@ curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | 
 ```
 
 Run `weft` in a repository. `weft update` installs the next release.
-Everything else is in the docs at **[docs.getfab7.com](https://docs.getfab7.com)**.
+
+## Docs
+
+Setting up your harness, the loop from Ask to Seal, and Weft on your phone:
+**[docs.getfab7.com](https://docs.getfab7.com)**.
 
 ## Development
 
