@@ -280,6 +280,41 @@ pub mod fixture {
 
 #[cfg(test)]
 mod tests {
+
+    /// Codex's `[listen]` reads what its server said in HostLab
+    /// (`codex-app-server-probe-q01`, sample 1, Codex 0.162): a turn running,
+    /// an interrupted one idle, an unloaded thread nothing.
+    #[test]
+    fn codex_listens_to_what_its_server_said() {
+        let codex = Harness::of("codex", &fixture::file("codex")).expect("codex");
+        let l = codex.listen.expect("a [listen]");
+        let said = |line: &str| l.heard(&serde_json::from_str(line).unwrap());
+        let t = "01a12e8f-7e5f-73c2-84fe-b717d7b49322";
+        assert_eq!(
+            said(&format!(
+                r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"active","activeFlags":[]}}}},"emittedAtMs":1791782530983}}"#
+            )),
+            Some((t.into(), "working".into()))
+        );
+        assert_eq!(
+            said(&format!(
+                r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"active","activeFlags":["waitingOnApproval"]}}}}}}"#
+            )),
+            Some((t.into(), "waiting".into()))
+        );
+        assert_eq!(
+            said(&format!(
+                r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"idle"}}}},"emittedAtMs":1791782534750}}"#
+            )),
+            Some((t.into(), "turn_ended".into()))
+        );
+        assert_eq!(
+            said(&format!(
+                r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"notLoaded"}}}}}}"#
+            )),
+            None
+        );
+    }
     use super::fixture::{file, harnesses, text};
     use super::*;
 

@@ -219,6 +219,7 @@ fn stream_words() -> Vec<String> {
                 .filter_map(|a| a.as_str().map(String::from)),
         );
     }
+    assert!(out.len() >= 4, "a fixture harness file names a stream: {out:?}");
     out.sort();
     out.dedup();
     out
