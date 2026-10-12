@@ -224,3 +224,39 @@ fn watching_sends_the_screen_whole_then_as_it_changes() {
         seen.push_str(&String::from_utf8_lossy(&bytes));
     }
 }
+
+/// A device may watch a second agent beside the first, each at its own
+/// size: both screens come, each whole first, and the second is let go when
+/// the device watches one again. A machine says it can, in its welcome.
+#[test]
+fn a_device_watches_two_agents_side_by_side() {
+    let mut h = Harness::start("watch-two");
+    let _work = h.shell("work");
+    let _more = h.shell("more");
+    let (mut d, welcome) = h.allowed("d_1");
+    assert_eq!(welcome["split"], true, "{welcome}");
+    let agents = d.agents(2);
+    let (a, b) = (agents[0]["agent"].as_str().unwrap(), agents[1]["agent"].as_str().unwrap());
+    d.send(json!({"type": "watch", "agent": a, "rows": 30, "cols": 40,
+                  "also": {"agent": b, "rows": 30, "cols": 41}}));
+    let mut whole = std::collections::HashSet::new();
+    while whole.len() < 2 {
+        let frame = d.next_of("screen");
+        if frame["full"] == true {
+            whole.insert(frame["agent"].as_str().unwrap().to_string());
+        }
+    }
+    assert!(whole.contains(a) && whole.contains(b), "{whole:?}");
+    // One again: only the first agent's frames come.
+    d.send(json!({"type": "watch", "agent": a}));
+    d.send(json!({"type": "keys", "agent": b, "bytes": "ZWNobyBub3Qtd2F0Y2hlZA0=", "req": 1}));
+    d.send(json!({"type": "keys", "agent": a, "bytes": "ZWNobyBzdGlsbC13YXRjaGVkDQ==", "req": 2}));
+    let mut seen = String::new();
+    while !seen.contains("still-watched") {
+        let frame = d.next_of("screen");
+        assert_eq!(frame["agent"], a, "the second agent was let go");
+        use base64ct::Encoding;
+        let bytes = base64ct::Base64::decode_vec(frame["bytes"].as_str().unwrap()).unwrap();
+        seen.push_str(&String::from_utf8_lossy(&bytes));
+    }
+}

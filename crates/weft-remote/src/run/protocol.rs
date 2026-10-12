@@ -148,23 +148,37 @@ impl Remote {
 
     /// One agent per device: the previous one is let go.
     fn watch(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
-        let next = if m["agent"].is_null() { None } else { Some(self.agent(m)?) };
-        let was = self.conns.get_mut(&conn).and_then(|c| std::mem::replace(&mut c.watching, next));
-        if was != next {
-            self.unwatch(conn, was);
+        // The agent, and the one beside it when the device shows two.
+        let mut next = Vec::new();
+        for w in [m, &m["also"]] {
+            if w.is_object() && !w["agent"].is_null() {
+                let at = self.agent(w)?;
+                if !next.iter().any(|(n, _)| *n == at) {
+                    next.push((at, w));
+                }
+            }
         }
-        if let Some((at, pane)) = next {
+        let now: Vec<(usize, u32)> = next.iter().map(|(at, _)| *at).collect();
+        let was = self
+            .conns
+            .get_mut(&conn)
+            .map(|c| std::mem::replace(&mut c.watching, now.clone()))
+            .unwrap_or_default();
+        for gone in was.into_iter().filter(|w| !now.contains(w)) {
+            self.unwatch(conn, gone);
+        }
+        for ((at, pane), w) in next {
             // Nobody at the Mac, or an agent this device started: the device's
             // size and the keys, so it fills the device's pane (remote.md §9).
             let mine = self.conns.get(&conn).is_some_and(|c| c.started.contains(&(at, pane)));
-            if let (Some(rows), Some(cols)) = (dimension(m, "rows"), dimension(m, "cols"))
+            if let (Some(rows), Some(cols)) = (dimension(w, "rows"), dimension(w, "cols"))
                 && (self.away() || mine)
             {
                 self.call(at, Call::Resize { pane, rows, cols });
                 self.drive(conn, at, pane);
             }
             if let Some(c) = self.conns.get_mut(&conn) {
-                c.needs_full = true;
+                c.needs_full.insert((at, pane));
             }
             // Attached again: the daemon starts this pane's frames over with
             // a whole screen, which every device watching it can take.
@@ -174,9 +188,9 @@ impl Remote {
     }
 
     /// Let a pane go when no device watches it any more.
-    pub(super) fn unwatch(&mut self, conn: u64, was: Option<(usize, u32)>) {
-        let Some((at, pane)) = was else { return };
-        let still = self.conns.iter().any(|(id, c)| *id != conn && c.watching == Some((at, pane)));
+    pub(super) fn unwatch(&mut self, conn: u64, (at, pane): (usize, u32)) {
+        let still =
+            self.conns.iter().any(|(id, c)| *id != conn && c.watching.contains(&(at, pane)));
         if !still {
             self.call(at, Call::Attach { pane, form: "none".into() });
         }
@@ -188,12 +202,12 @@ impl Remote {
             json!({"type": "screen", "agent": self.agent_id(at, pane), "seq": seq, "full": full,
                              "rows": rows, "cols": cols, "bytes": Base64::encode_string(&bytes)})
             .to_string();
-        for c in self.conns.values_mut().filter(|c| c.watching == Some((at, pane))) {
-            if c.needs_full && !full {
+        for c in self.conns.values_mut().filter(|c| c.watching.contains(&(at, pane))) {
+            if c.needs_full.contains(&(at, pane)) && !full {
                 continue;
             }
             if c.outbox.frame(message.clone()) {
-                c.needs_full = false;
+                c.needs_full.remove(&(at, pane));
             }
         }
     }
@@ -202,8 +216,9 @@ impl Remote {
     /// over with a whole screen.
     pub(super) fn drained(&mut self, conn: u64) {
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        c.needs_full = true;
-        if let Some((at, pane)) = c.watching {
+        let watching = c.watching.clone();
+        c.needs_full.extend(watching.iter().copied());
+        for (at, pane) in watching {
             self.call(at, Call::Attach { pane, form: "screen".into() });
         }
     }

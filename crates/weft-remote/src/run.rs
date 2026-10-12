@@ -108,10 +108,12 @@ struct Conn {
     outbox: Outbox,
     /// The device it is, once it said hello with its token.
     device: Option<String>,
-    /// The agent it has open: a project and a pane.
-    watching: Option<(usize, u32)>,
-    /// Frames were dropped: nothing but a whole screen until one comes.
-    needs_full: bool,
+    /// The agents it has open, a project and a pane each: one, or two side
+    /// by side.
+    watching: Vec<(usize, u32)>,
+    /// The agents whose frames were dropped: nothing but a whole screen of
+    /// each until one comes.
+    needs_full: HashSet<(usize, u32)>,
     /// The agents it has typed into since the machine last did.
     driving: HashSet<(usize, u32)>,
     /// The agents it started or resumed: opening one takes its size.
@@ -892,7 +894,9 @@ impl Remote {
             }
             Socket::Closed(id) => {
                 if let Some(c) = self.conns.remove(&id) {
-                    self.unwatch(id, c.watching);
+                    for w in c.watching {
+                        self.unwatch(id, w);
+                    }
                 }
                 if self.asking.as_ref().is_some_and(|a| a.conn == id) {
                     self.asking = None;
@@ -968,7 +972,7 @@ impl Remote {
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
                    "vapid": self.vapid, "agents": agents, "tree": self.tree(),
                    "harnesses": self.harnesses(), "pendings": pendings,
-                   "update": self.update_json()}),
+                   "update": self.update_json(), "split": true}),
         );
     }
 
