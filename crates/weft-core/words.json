@@ -119,6 +119,7 @@
   "web.agent.message_box": "Message",
   "web.agent.nothing_scrolled": "Nothing of {harness}'s has scrolled away yet.",
   "web.agent.own_history": "{harness} keeps its own history: press {key} in the agent to read it.",
+  "web.agents": "Agents",
   "web.allow.browser": "Allow this browser on your machine",
   "web.allow.go": "Go to {machine} and press {key}.",
   "web.allow.phone": "Allow this phone on your machine",
