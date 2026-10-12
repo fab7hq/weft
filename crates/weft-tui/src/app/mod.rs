@@ -342,6 +342,10 @@ pub struct App {
     pub layout_bar: bool,
     /// A tab held by the mouse.
     pub drag: Option<Drag>,
+    /// Where the layout is kept between runs.
+    layout_file: Option<PathBuf>,
+    /// The layout kept by the last run, until the agents it names are known.
+    kept_layout: Option<weft_core::layout::Saved>,
     /// Where the panes were last drawn: what a split must leave room in.
     panes_area: ratatui::layout::Rect,
 }
@@ -399,7 +403,15 @@ impl App {
     }
 
     /// The panes, kept to the agents running and showing the agent shown.
+    /// The last run's layout comes back once an agent it names is running.
     pub(crate) fn sync_panes(&mut self) {
+        if let Some(kept) = self.kept_layout.clone() {
+            let restored = crate::panes::Panes::restore(&kept, |id| self.agent_of_session(id));
+            if !restored.order().is_empty() {
+                self.panes = restored;
+                self.kept_layout = None;
+            }
+        }
         let running = self.running_agents();
         self.panes.sync(&running);
         if let Some(now) = self.shown()
@@ -433,6 +445,8 @@ impl App {
             self.say(word(why.word()));
             return;
         }
+        self.kept_layout = None;
+        self.save_layout();
         if let Some((at, id)) = self.panes.active().showing()
             && let Some(pane) = self.running_pane(at, id)
         {
@@ -442,6 +456,35 @@ impl App {
         if self.panes.count() > 1 {
             self.show_work = false;
         }
+    }
+
+    /// The running agent a session is, by its id.
+    fn agent_of_session(&self, session: &str) -> Option<crate::panes::Agent> {
+        self.projects.iter().enumerate().find_map(|(at, p)| {
+            let row = p.session.sessions.iter().find(|r| r.id == session)?;
+            let id = row.pane?;
+            self.running_pane(at, id).map(|_| (at, id))
+        })
+    }
+
+    /// Keep the layout in this file, and take back the one it holds.
+    pub fn keep_layout_in(&mut self, file: PathBuf) {
+        let text = std::fs::read_to_string(&file).ok();
+        self.kept_layout = text.and_then(|t| weft_core::layout::read(&t));
+        self.layout_file = Some(file);
+    }
+
+    /// Keep the layout, each agent by its session id.
+    fn save_layout(&self) {
+        let Some(file) = &self.layout_file else { return };
+        let kept = self.panes.save(|(at, id)| {
+            let rows = &self.projects.get(at)?.session.sessions;
+            rows.iter().find(|r| r.pane == Some(id)).map(|r| r.id.clone())
+        });
+        if let Some(dir) = file.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(file, weft_core::layout::write(&kept));
     }
 
     /// Show an agent's tab, in whichever project it runs and in the pane
@@ -837,6 +880,8 @@ impl App {
             panes: Default::default(),
             layout_bar: false,
             drag: None,
+            layout_file: None,
+            kept_layout: None,
             panes_area: Default::default(),
             landed: false,
             projects: vec![Open::new(root, session)],

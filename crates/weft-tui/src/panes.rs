@@ -3,6 +3,7 @@
 //! is never shown twice. Panes share the space equally.
 
 use ratatui::layout::Rect;
+use weft_core::layout::Saved;
 
 /// An agent, by its project in this window and the daemon's pane id.
 pub type Agent = (usize, u32);
@@ -309,6 +310,49 @@ impl Panes {
                 }
             }
         });
+    }
+
+    /// The layout as kept, each agent by its name there; an agent with none
+    /// is left out.
+    pub fn save(&self, name: impl Fn(Agent) -> Option<String>) -> Saved {
+        fn walk(node: &Node, name: &dyn Fn(Agent) -> Option<String>) -> Saved {
+            match node {
+                Node::Pane(p) => Saved::Pane(p.tabs.iter().filter_map(|&a| name(a)).collect()),
+                Node::Split(axis, kids) => {
+                    let kids = kids.iter().map(|k| walk(k, name)).collect();
+                    if *axis == Axis::Right { Saved::Right(kids) } else { Saved::Down(kids) }
+                }
+            }
+        }
+        walk(&self.root, &name)
+    }
+
+    /// A kept layout, with the agents that still run: one that does not is
+    /// dropped, and a pane left with none closes.
+    pub fn restore(saved: &Saved, agent: impl Fn(&str) -> Option<Agent>) -> Panes {
+        fn walk(s: &Saved, agent: &dyn Fn(&str) -> Option<Agent>, p: &mut Panes) -> Option<Node> {
+            let (axis, kids) = match s {
+                Saved::Pane(names) => {
+                    let tabs: Vec<Agent> = names.iter().filter_map(|n| agent(n)).collect();
+                    let id = p.fresh();
+                    return (!tabs.is_empty()).then_some(Node::Pane(Pane { id, tabs, shown: 0 }));
+                }
+                Saved::Right(kids) => (Axis::Right, kids),
+                Saved::Down(kids) => (Axis::Down, kids),
+            };
+            let mut kids: Vec<Node> = kids.iter().filter_map(|k| walk(k, agent, p)).collect();
+            match kids.len() {
+                0 => None,
+                1 => kids.pop(),
+                _ => Some(Node::Split(axis, kids)),
+            }
+        }
+        let mut p = Panes::default();
+        if let Some(root) = walk(saved, &agent, &mut p) {
+            p.root = root;
+            p.active = p.panes()[0].id;
+        }
+        p
     }
 
     /// Take an agent out of its pane; a pane left empty closes, unless it is
@@ -655,6 +699,29 @@ mod tests {
         p.split(Axis::Right, BODY).expect("right");
         assert!(p.fits(BODY));
         assert!(!p.fits(Rect::new(0, 0, 80, 28)));
+    }
+
+    #[test]
+    fn a_kept_layout_comes_back_with_what_still_runs() {
+        let p = four();
+        let name = |(at, id): Agent| Some(format!("s{at}{id}"));
+        let kept = p.save(name);
+        let all = Panes::restore(&kept, |n| {
+            p.order().into_iter().find(|&a| name(a).as_deref() == Some(n))
+        });
+        assert_eq!((all.count(), all.order()), (4, p.order()));
+        assert_eq!(
+            all.rects(BODY).iter().map(|(_, r)| *r).collect::<Vec<_>>(),
+            p.rects(BODY).iter().map(|(_, r)| *r).collect::<Vec<_>>()
+        );
+        // openbox's claude has ended: its pane goes, the rest keep their places.
+        let some = Panes::restore(&kept, |n| {
+            p.order().into_iter().filter(|&a| a != (1, 1)).find(|&a| name(a).as_deref() == Some(n))
+        });
+        assert_eq!(some.count(), 3);
+        assert_eq!(some.order(), vec![(0, 1), (2, 1), (2, 2), (0, 2)], "docs fills the right");
+        // Nothing runs: one empty pane, as at the start.
+        assert_eq!(Panes::restore(&kept, |_| None).count(), 1);
     }
 
     #[test]

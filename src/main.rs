@@ -274,6 +274,9 @@ fn main() -> Result<()> {
         }
     };
     let mut weft = App::with_session(root, toggle, session);
+    if let Some(home) = std::env::var_os("HOME") {
+        weft.keep_layout_in(std::path::PathBuf::from(home).join(".fab7/weft/layout.toml"));
+    }
     weft.look_for_updates();
     let mut started = Ok(());
     for agent in &agents {

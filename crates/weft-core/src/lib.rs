@@ -14,6 +14,7 @@ pub mod eval_stages;
 pub mod eval_view;
 pub mod harness;
 pub mod inject;
+pub mod layout;
 pub mod ledger;
 pub mod listen;
 pub mod offers;

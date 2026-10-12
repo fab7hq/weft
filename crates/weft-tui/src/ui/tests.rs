@@ -1398,6 +1398,43 @@ fn atlas_t15_5_a_tab_dragged() {
     expect_screen("atlas_t15_5", &drawn);
 }
 
+/// The Atlas's sample with docs open, its claude bound to a session of
+/// that id, and the layout kept in a file.
+fn kept(file: &std::path::Path, docs: &str) -> App {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('3'));
+    let row = bound(&a, 0, docs, Some(weft_core::turns::Turn::Ready), 1, None);
+    a.session_mut().sessions = vec![row];
+    a.keep_layout_in(file.to_path_buf());
+    let _ = screen(&mut a, 120, 32);
+    a
+}
+
+/// The layout is kept by session id: a window started again lays out the
+/// agents still running as they were, and an ended session's place goes.
+#[test]
+fn the_layout_is_kept_and_comes_back_for_what_still_runs() {
+    let file = std::env::temp_dir().join(format!("weft-layout-{}.toml", std::process::id()));
+    let _ = std::fs::remove_file(&file);
+    let mut a = kept(&file, "s_docs");
+    layout(&mut a, &[KeyCode::Right]);
+    let text = std::fs::read_to_string(&file).expect("kept");
+    for id in ["s_claude", "s_codex", "s_docs"] {
+        assert!(text.contains(id), "{text}");
+    }
+    // Started again, the same sessions running: the same panes.
+    let again = kept(&file, "s_docs");
+    assert_eq!(again.panes().count(), 2);
+    assert_eq!(names(&again), names(&a));
+    assert_eq!(again.panes().panes()[1].tabs.len(), 1);
+    // docs' claude is another session now: its place goes, and it opens
+    // in the pane with the keys.
+    let other = kept(&file, "s_other");
+    assert_eq!(other.panes().count(), 1);
+    assert_eq!(names(&other), ["weft · claude", "weft · codex", "docs · claude"]);
+    let _ = std::fs::remove_file(&file);
+}
+
 /// T9.7: N starts an agent; each set-up harness starts fresh.
 #[test]
 fn atlas_t9_7_start_an_agent() {
