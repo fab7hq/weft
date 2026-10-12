@@ -126,6 +126,7 @@
   "web.allow.phone": "Allow this phone on your machine",
   "web.allow.waits_browser": "It waits two minutes. Nothing here can answer it.",
   "web.allow.waits_phone": "It waits two minutes. Nothing on this phone can answer it.",
+  "web.back.tree": "weft",
   "web.bar.answered": "Answered on the machine",
   "web.bar.into": "into {harness}",
   "web.bar.open_round": "Open round",
