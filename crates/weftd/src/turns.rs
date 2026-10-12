@@ -67,7 +67,9 @@ impl Turns {
     pub fn heard(&self) -> Vec<Heard> {
         self.seen
             .values()
-            .filter_map(|(_, _, s, p)| Some(Heard { session: s.clone()?, process: p.clone() }))
+            .filter_map(|(_, _, s, p)| {
+                Some(Heard { session: s.clone()?, process: p.clone(), streamed: false })
+            })
             .collect()
     }
 }

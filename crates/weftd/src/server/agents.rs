@@ -43,7 +43,8 @@ impl Session {
     /// Each pane's state and the project's session index, re-read from
     /// Weft's own receipts, the pane map and the record (sessions.md, "The
     /// session index"). A pane's session is the one its signals named; a
-    /// session no pane holds runs while the process its receipts name does.
+    /// session no pane holds runs while the process its receipts name does,
+    /// or while its harness's open stream says a turn runs (ADR-0035 D4).
     pub(super) fn agents_of(&mut self, at: usize) -> Agents {
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
@@ -59,6 +60,13 @@ impl Session {
                 p.gone.insert(key);
             }
         }
+        let streamed = |h: &weft_core::sessions::Heard| {
+            self.streamed.contains(&(h.session.harness.clone(), h.session.id.clone()))
+        };
+        let heard: Vec<_> = heard
+            .into_iter()
+            .map(|h| weft_core::sessions::Heard { streamed: streamed(&h), ..h })
+            .collect();
         let p = &self.projects[at];
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();

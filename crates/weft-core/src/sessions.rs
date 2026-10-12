@@ -74,6 +74,8 @@ pub fn process(text: &str) -> Option<Process> {
 pub struct Heard {
     pub session: crate::turns::Session,
     pub process: Option<Process>,
+    /// Its harness's own stream, open now, has spoken of it (ADR-0035 D4).
+    pub streamed: bool,
 }
 
 /// Whether a session runs: a fact read from the machine, never a guess from
@@ -151,6 +153,10 @@ pub fn index(
             match &h.process {
                 Some(p) if alive(p) => State::Running,
                 Some(_) => State::Ended,
+                // Its harness's stream says a turn runs (ADR-0035 D4 rule 1).
+                None if h.streamed && matches!(s.latest, Turn::Working | Turn::Waiting) => {
+                    State::Running
+                }
                 None => State::Quiet,
             }
         };
@@ -334,7 +340,11 @@ mod tests {
     const NOON: i64 = 1_791_460_800_000;
 
     fn heard(harness: &str, id: &str, first: i64, latest: Turn, at: i64) -> Heard {
-        Heard { session: turns(first, latest, at).named(harness, id), process: None }
+        Heard {
+            session: turns(first, latest, at).named(harness, id),
+            process: None,
+            streamed: false,
+        }
     }
 
     impl Session {
@@ -508,6 +518,21 @@ mod tests {
         assert_eq!((row.state, row.turn), (State::Ended, None), "the end event settles it");
         let quiet = heard("agy", "a1", NOON, Turn::TurnEnded, NOON + MIN);
         assert_eq!(index(&[quiet], &[], &[], &alive)[0].state, State::Quiet, "nothing to read");
+    }
+
+    /// ADR-0035 D4 rule 1: a session its harness's open stream says is
+    /// working or waiting runs, though no process of its own holds it; one
+    /// the stream says is idle reads "last active", as does a working one no
+    /// stream speaks of (an interrupted turn its hooks never ended).
+    #[test]
+    fn a_stream_saying_working_or_waiting_means_running() {
+        let streamed =
+            |latest| Heard { streamed: true, ..heard("codex", "c1", NOON, latest, NOON + MIN) };
+        assert_eq!(index(&[streamed(Turn::Working)], &[], &[], DEAD)[0].state, State::Running);
+        assert_eq!(index(&[streamed(Turn::Waiting)], &[], &[], DEAD)[0].state, State::Running);
+        assert_eq!(index(&[streamed(Turn::TurnEnded)], &[], &[], DEAD)[0].state, State::Quiet);
+        let hooked = heard("codex", "c1", NOON, Turn::Working, NOON + MIN);
+        assert_eq!(index(&[hooked], &[], &[], DEAD)[0].state, State::Quiet);
     }
 
     #[test]

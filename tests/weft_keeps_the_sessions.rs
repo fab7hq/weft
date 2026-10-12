@@ -261,7 +261,12 @@ fn a_harness_stream_gives_its_sessions_turns() {
     conn.write_all(status("s1", "idle", &[]).as_bytes()).unwrap();
     turn(&mut c, "s1", Turn::TurnEnded);
     conn.write_all(status("s1", "active", &["asking"]).as_bytes()).unwrap();
-    turn(&mut c, "s1", Turn::Waiting);
+    // No process of its own holds it, yet it runs: the stream says so (D4).
+    let index = c.index_until(|i| row(i, "s1").is_some_and(|r| r.turn == Some(Turn::Waiting)));
+    assert_eq!(
+        (row(&index, "s1").unwrap().state, row(&index, "s1").unwrap().pane),
+        (State::Running, None)
+    );
 
     // A hook no longer moves it: its turn stays the stream's.
     support::signal(&socket, outside(&root, "s1", "working", None));
@@ -275,6 +280,7 @@ fn a_harness_stream_gives_its_sessions_turns() {
     conn.write_all(status("s1", "idle", &[]).as_bytes()).unwrap();
     let index = c.index_until(|i| row(i, "s1").is_some_and(|r| r.turn == Some(Turn::TurnEnded)));
     assert!(row(&index, "s9").is_none());
+    assert_eq!(row(&index, "s1").unwrap().state, State::Quiet, "idle: last active");
     assert!(!receipts.join("codex/s9.jsonl").exists());
 
     // The server closes the stream: hooks move the turn again, and the next
