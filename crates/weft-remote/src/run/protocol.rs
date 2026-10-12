@@ -6,7 +6,7 @@ use base64ct::{Base64, Encoding};
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use super::{Asked, Carries, Gather, Gathering, Part, Remote, Wake};
+use super::{Asked, Carries, Gather, Gathering, PANES, Part, Remote, Wake};
 use crate::agents;
 
 /// How many lines of history a device is sent.
@@ -146,11 +146,17 @@ impl Remote {
 
     // --- watching ----------------------------------------------------------
 
-    /// At most two agents per device, side by side: one no longer watched is let go.
+    /// At most `PANES` agents per device, one to a pane: one no longer
+    /// watched is let go, and one past the most is ignored.
     fn watch(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
-        // The agent, and the one beside it when the device shows two.
+        // The agent, and those in the device's other panes: `also` is one, or
+        // a list of them.
+        let also = match &m["also"] {
+            Value::Array(list) => list.iter().collect(),
+            one => vec![one],
+        };
         let mut next = Vec::new();
-        for w in [m, &m["also"]] {
+        for w in std::iter::once(m).chain(also).take(PANES) {
             if w.is_object() && !w["agent"].is_null() {
                 let at = self.agent(w)?;
                 if !next.iter().any(|(n, _)| *n == at) {

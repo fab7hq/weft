@@ -225,6 +225,48 @@ fn watching_sends_the_screen_whole_then_as_it_changes() {
     }
 }
 
+/// A device with four panes watches four agents: a whole screen of each,
+/// each at its own size; a fifth is ignored. `welcome` says `panes`.
+#[test]
+fn a_device_watches_four_agents_each_at_its_own_size() {
+    let mut h = Harness::start("watch-four");
+    let _shells: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|n| h.shell(n)).collect();
+    let (mut d, welcome) = h.allowed("d_1");
+    assert_eq!((welcome["panes"].clone(), welcome["split"].clone()), (json!(4), json!(true)));
+    let agents = d.agents(5);
+    let id = |i: usize| agents[i]["agent"].as_str().unwrap().to_string();
+    let also: Vec<Value> =
+        (1..5).map(|i| json!({"agent": id(i), "rows": 20 + i, "cols": 40 + i})).collect();
+    d.send(json!({"type": "watch", "agent": id(0), "rows": 20, "cols": 40, "also": also}));
+    let mut whole = std::collections::HashMap::new();
+    while whole.len() < 4 {
+        let frame = d.next_of("screen");
+        let agent = frame["agent"].as_str().unwrap().to_string();
+        assert_ne!(agent, id(4), "a fifth agent is not watched");
+        if frame["full"] == true {
+            whole.insert(agent, (frame["rows"].clone(), frame["cols"].clone()));
+        }
+    }
+    for i in 0..4 {
+        assert_eq!(whole[&id(i)], (json!(20 + i), json!(40 + i)), "agent {i}");
+    }
+    // The fifth's output never comes; the first's does.
+    d.send(json!({"type": "keys", "agent": id(4), "bytes": "ZWNobyBub3Qtd2F0Y2hlZA0=", "req": 1}));
+    d.send(
+        json!({"type": "keys", "agent": id(0), "bytes": "ZWNobyBzdGlsbC13YXRjaGVkDQ==", "req": 2}),
+    );
+    let mut seen = String::new();
+    while !seen.contains("still-watched") {
+        let frame = d.next_of("screen");
+        assert_ne!(frame["agent"], id(4).as_str(), "a fifth agent is not watched");
+        if frame["agent"] == id(0).as_str() {
+            use base64ct::Encoding;
+            let bytes = base64ct::Base64::decode_vec(frame["bytes"].as_str().unwrap()).unwrap();
+            seen.push_str(&String::from_utf8_lossy(&bytes));
+        }
+    }
+}
+
 /// A device may watch a second agent beside the first, each at its own
 /// size: both screens come, each whole first, and the second is let go when
 /// the device watches one again. A machine says it can, in its welcome.

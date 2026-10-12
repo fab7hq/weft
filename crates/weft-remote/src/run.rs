@@ -28,6 +28,8 @@ mod protocol;
 
 /// The remote protocol's version.
 pub const VERSION: u64 = 1;
+/// The most agents a device may watch at once: one to each of its panes.
+pub const PANES: usize = 4;
 /// How long the person has to answer a device asking to be allowed.
 const ASK_WITHIN: Duration = Duration::from_secs(120);
 
@@ -972,7 +974,7 @@ impl Remote {
             json!({"type": "welcome", "v": VERSION, "epoch": self.epoch, "machine": machine,
                    "vapid": self.vapid, "agents": agents, "tree": self.tree(),
                    "harnesses": self.harnesses(), "pendings": pendings,
-                   "update": self.update_json(), "split": true}),
+                   "update": self.update_json(), "panes": PANES, "split": true}),
         );
     }
 
