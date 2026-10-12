@@ -114,8 +114,40 @@ impl App {
     /// the keys, scrolls its pane.
     pub fn on_mouse(&mut self, m: MouseEvent) {
         self.sync_panes();
-        if m.kind == MouseEventKind::Down(MouseButton::Left) {
-            return self.on_click(m.column, m.row);
+        let at = ratatui::layout::Position { x: m.column, y: m.row };
+        match m.kind {
+            // A tab is taken by the press and shown by the release, unless
+            // it was dragged: then it lands where it was let go.
+            MouseEventKind::Down(MouseButton::Left) => {
+                let tab = self.hits.iter().find(|(area, _)| area.contains(at)).map(|(_, t)| *t);
+                if let (Some(Target::Tab(project, pane)), None) = (tab, &self.modal) {
+                    let id = self.projects.get(project).and_then(|p| p.session.panes.get(pane));
+                    if let Some(id) = id.map(|p| p.id) {
+                        let at = (m.column, m.row);
+                        self.drag = Some(Drag { agent: (project, id), at, moved: false });
+                        return;
+                    }
+                }
+                return self.on_click(m.column, m.row);
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(d) = &mut self.drag {
+                    d.moved |= d.at != (m.column, m.row);
+                    d.at = (m.column, m.row);
+                }
+                return;
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                let Some(d) = self.drag.take() else { return };
+                if !d.moved {
+                    return self.on_click(m.column, m.row);
+                }
+                if let Some(to) = self.drop_at(d.at) {
+                    self.layout(|p, area| p.drop_tab(d.agent, to, area));
+                }
+                return;
+            }
+            _ => {}
         }
         let delta = match m.kind {
             MouseEventKind::ScrollUp => 3,
@@ -173,8 +205,57 @@ impl App {
                 self.select_row(row);
             }
             Target::Tab(project, pane) => self.show_tab(project, pane),
+            Target::Bar(_) => {}
+            // Another pane: it takes the keys.
+            Target::Pane(id) => {
+                self.layout(|p, _| {
+                    p.focus(id);
+                    Ok(())
+                });
+                self.focus = Focus::Agent;
+            }
             // The wheel's place on an agent's screen; a click there is the agent's own.
             Target::Screen(_) => {}
+        }
+    }
+
+    /// Where a tab let go at a place lands: its place on a tab bar, a pane's
+    /// outer fifth, or a pane's middle. Nowhere, off them.
+    pub fn drop_at(&self, (x, y): (u16, u16)) -> Option<crate::panes::Drop> {
+        use crate::panes::{Drop, Side};
+        let at = ratatui::layout::Position { x, y };
+        let (area, target) = self
+            .hits
+            .iter()
+            .find(|(area, t)| matches!(t, Target::Bar(_) | Target::Pane(_)) && area.contains(at))?;
+        match *target {
+            Target::Bar(pane) => {
+                let tabs = &self.panes.pane(pane)?.tabs;
+                let mid = |&(project, id): &crate::panes::Agent| {
+                    let i = self.running_pane(project, id)?;
+                    self.hits.iter().find_map(|(r, t)| {
+                        (*t == Target::Tab(project, i) && r.y == area.y)
+                            .then_some(r.x + r.width / 2)
+                    })
+                };
+                let at = tabs.iter().position(|t| mid(t).is_some_and(|m| m > x));
+                Some(Drop::Bar { pane, at: at.unwrap_or(tabs.len()) })
+            }
+            Target::Pane(pane) => {
+                let fx = f32::from(x - area.x) / f32::from(area.width.max(1));
+                let fy = f32::from(y - area.y) / f32::from(area.height.max(1));
+                let edges = [
+                    (fx, Side::Left),
+                    (1.0 - fx, Side::Right),
+                    (fy, Side::Up),
+                    (1.0 - fy, Side::Down),
+                ];
+                let (near, side) = edges
+                    .into_iter()
+                    .fold((f32::MAX, Side::Left), |best, e| if e.0 < best.0 { e } else { best });
+                Some(if near < 0.2 { Drop::Edge { pane, side } } else { Drop::Middle { pane } })
+            }
+            _ => None,
         }
     }
 

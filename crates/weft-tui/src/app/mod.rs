@@ -49,6 +49,19 @@ pub enum Target {
     Screen(usize),
     /// The turbo switch in the title bar.
     Turbo,
+    /// A pane's tab bar, by the pane's id in the layout.
+    Bar(u32),
+    /// A pane's frame and what is in it, by the pane's id in the layout.
+    Pane(u32),
+}
+
+/// A tab held by the mouse: its agent, where the pointer is, and whether it
+/// has moved since it was pressed (a press let go where it was is a click).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Drag {
+    pub agent: crate::panes::Agent,
+    pub at: (u16, u16),
+    pub moved: bool,
 }
 
 /// One agent's tab: where it runs, and what its tab shows.
@@ -327,6 +340,8 @@ pub struct App {
     panes: crate::panes::Panes,
     /// The layout bar is open: its keys are the only ones Weft reads.
     pub layout_bar: bool,
+    /// A tab held by the mouse.
+    pub drag: Option<Drag>,
     /// Where the panes were last drawn: what a split must leave room in.
     panes_area: ratatui::layout::Rect,
 }
@@ -821,6 +836,7 @@ impl App {
             clock: None,
             panes: Default::default(),
             layout_bar: false,
+            drag: None,
             panes_area: Default::default(),
             landed: false,
             projects: vec![Open::new(root, session)],

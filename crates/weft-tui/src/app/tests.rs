@@ -1207,12 +1207,9 @@ fn drawn(a: &mut App) -> String {
 }
 
 fn click(a: &mut App, column: u16, row: u16) {
-    a.on_mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column,
-        row,
-        modifiers: KeyModifiers::NONE,
-    });
+    for kind in [MouseEventKind::Down(MouseButton::Left), MouseEventKind::Up(MouseButton::Left)] {
+        a.on_mouse(MouseEvent { kind, column, row, modifiers: KeyModifiers::NONE });
+    }
     a.settle();
 }
 

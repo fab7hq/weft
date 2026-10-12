@@ -69,6 +69,15 @@ impl Theme {
         }
     }
 
+    /// Where a dragged tab would land: the one background Weft paints, and
+    /// only while a tab is held.
+    pub fn drop_zone(self) -> Color {
+        match self.depth {
+            Depth::True => Color::Rgb(0x16, 0x23, 0x3a),
+            Depth::Ansi => Color::Blue,
+        }
+    }
+
     /// Rules and borders. Present, not loud.
     pub fn line(self) -> Color {
         match self.depth {

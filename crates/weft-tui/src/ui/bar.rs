@@ -269,6 +269,7 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         }
         (Some(Modal::Allow { .. }), _) => " A device gets in only after you say yes here.".into(),
         (Some(_), _) => String::new(),
+        (None, _) if app.drag.is_some_and(|d| d.moved) => format!(" {}", word("hint.drag")),
         (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
         (None, Focus::Weft) if app.layout_bar => {
             let tab = app.tabs().into_iter().find(|t| t.active);

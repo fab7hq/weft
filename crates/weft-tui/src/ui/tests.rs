@@ -1315,6 +1315,89 @@ fn atlas_t15_4_four_panes_the_most() {
     expect_screen("atlas_t15_4", &screen(&mut a, 120, 32));
 }
 
+fn mouse(a: &mut App, kind: crossterm::event::MouseEventKind, (column, row): (u16, u16)) {
+    a.on_mouse(crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: crossterm::event::KeyModifiers::NONE,
+    });
+}
+
+/// Where a tab is drawn, by its name: its first cell.
+fn tab_at(a: &mut App, name: &str) -> (u16, u16) {
+    let _ = screen(a, 120, 32);
+    let tabs = a.tabs();
+    let t = tabs.iter().find(|t| format!("{} · {}", t.project_name, t.harness) == name);
+    let t = t.unwrap_or_else(|| panic!("{name}: {:?}", names(a)));
+    let r = a.hits.iter().find(|(_, h)| *h == crate::app::Target::Tab(t.project, t.pane));
+    let r = r.expect("drawn").0;
+    (r.x, r.y)
+}
+
+/// Press a tab, drag it, and let it go.
+fn drag(a: &mut App, name: &str, to: (u16, u16)) {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let from = tab_at(a, name);
+    mouse(a, MouseEventKind::Down(MouseButton::Left), from);
+    mouse(a, MouseEventKind::Drag(MouseButton::Left), to);
+    mouse(a, MouseEventKind::Up(MouseButton::Left), to);
+}
+
+/// A tab dragged with the mouse: along its bar it is reordered; onto a
+/// pane's outer fifth it splits that pane that way; onto a pane's middle
+/// or another bar it moves there; the last tab out of a pane closes it. A
+/// press let go where it was shows the tab.
+#[test]
+fn a_dragged_tab_reorders_moves_splits_and_joins() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let mut a = atlas_with_docs();
+    let first = tab_at(&mut a, "weft · claude");
+    drag(&mut a, "weft · codex", first);
+    assert_eq!(names(&a), ["weft · codex", "weft · claude", "docs · claude"]);
+    // The pane's right fifth, beside the list: a pane on the right.
+    drag(&mut a, "docs · claude", (115, 15));
+    assert_eq!(a.panes().count(), 2);
+    assert_eq!(a.panes().panes()[1].tabs.len(), 1);
+    assert_eq!(a.project_name(), "docs", "the tab keeps the keys");
+    // The right pane's middle.
+    drag(&mut a, "weft · claude", (90, 15));
+    assert_eq!(names(&a), ["weft · codex", "docs · claude", "weft · claude"]);
+    // Onto the left pane's bar, after its tab: the right pane keeps one.
+    drag(&mut a, "docs · claude", (40, 1));
+    assert_eq!(names(&a), ["weft · codex", "docs · claude", "weft · claude"]);
+    assert_eq!(a.panes().panes()[0].tabs.len(), 2);
+    // The last tab out of a pane: it closes.
+    drag(&mut a, "weft · claude", (30, 15));
+    assert_eq!(a.panes().count(), 1);
+    // Pressed and let go where it was: shown, and nothing moves.
+    let at = tab_at(&mut a, "docs · claude");
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), at);
+    mouse(&mut a, MouseEventKind::Up(MouseButton::Left), at);
+    assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
+    assert_eq!(names(&a), ["weft · codex", "docs · claude", "weft · claude"]);
+}
+
+/// A tab being dragged: where it would land is shaded, and it follows the
+/// pointer.
+#[test]
+fn atlas_t15_5_a_tab_dragged() {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    let mut a = two_panes();
+    let from = tab_at(&mut a, "weft · codex");
+    mouse(&mut a, MouseEventKind::Down(MouseButton::Left), from);
+    mouse(&mut a, MouseEventKind::Drag(MouseButton::Left), (90, 27));
+    let drawn = screen(&mut a, 120, 32);
+    assert_eq!(
+        a.drop_at((90, 27)),
+        Some(crate::panes::Drop::Edge {
+            pane: a.panes().panes()[1].id,
+            side: crate::panes::Side::Down
+        })
+    );
+    expect_screen("atlas_t15_5", &drawn);
+}
+
 /// T9.7: N starts an agent; each set-up harness starts fresh.
 #[test]
 fn atlas_t9_7_start_an_agent() {

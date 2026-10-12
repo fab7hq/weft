@@ -58,6 +58,10 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
             let at = Rect { x: from, width: to - from, ..geo.tabs };
             app.hits.push((at, Target::Tab(project, pane)));
         }
+        if app.detail().is_none() && app.eval_screen().is_none() {
+            let bar = app.panes().active().id;
+            app.hits.push((geo.tabs, Target::Bar(bar)));
+        }
         frame.render_widget(Paragraph::new(line), geo.tabs);
     }
     let between: Option<u16> = None;
@@ -86,6 +90,9 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
         app.note_panes_area(geo.content);
         if let Some(right) = geo.right {
             agent(frame, app, right);
+        }
+        if let Some(drag) = app.drag.filter(|d| d.moved) {
+            drag_overlay(frame, app, drag);
         }
     }
 

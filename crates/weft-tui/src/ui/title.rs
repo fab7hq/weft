@@ -146,7 +146,13 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
             if tab.waiting { " ●" } else { "" },
             if tab.ready { "" } else { " ⚠" }
         );
+        let held = app.drag.is_some_and(|d| {
+            d.moved
+                && app.running_pane(d.agent.0, d.agent.1) == Some(tab.pane)
+                && d.agent.0 == tab.project
+        });
         let style = match (tab.active, in_weft, tab.waiting) {
+            _ if held => th.rule(),
             // In the agent the active tab carries the accent; in Weft the
             // `WORK` header does, so the tab steps back.
             (true, false, _) => Style::default().fg(th.accent()).add_modifier(Modifier::BOLD),

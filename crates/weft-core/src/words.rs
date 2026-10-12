@@ -186,6 +186,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("layout.next_pane", "Next pane"),
     ("layout.join", "Join"),
     ("layout.done", "Done"),
+    (
+        "hint.drag",
+        "Drop on a tab bar to move it there, on a pane's edge to split that way, in its middle to join it.",
+    ),
     ("hint.layout", "→ and ↓ move {tab}, the tab with the keys, to a new pane on that side."),
     ("hint.tabs", "Tab, 1–9: every open project's agents."),
     ("hint.split", "Ctrl+] moves the keys between the list and each pane. [B] shows the list."),

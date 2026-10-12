@@ -23,6 +23,8 @@ pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let inside = block.inner(area);
     app.hits.push((inside, crate::app::Target::Screen(app.pane_focus)));
+    let id = app.panes().active().id;
+    app.hits.push((area, Target::Pane(id)));
     frame.render_widget(block, area);
     let focus = app.pane_focus;
     app.with_pane_screen(focus, inside.height, inside.width, |screen| {
@@ -183,7 +185,9 @@ fn panes(frame: &mut Frame, app: &mut App, area: Rect) {
                 tab.harness,
                 if tab.turbo { " ⚡" } else { "" },
             );
+            let held = app.drag.is_some_and(|d| d.moved && d.agent == (at, aid));
             let style = match (shown, keys && app.focus == Focus::Agent) {
+                _ if held => th.rule(),
                 (true, true) => Style::default().fg(th.accent()).add_modifier(Modifier::BOLD),
                 (true, false) => Style::default().fg(th.primary()).add_modifier(Modifier::BOLD),
                 _ => Style::default().fg(th.primary()),
@@ -217,8 +221,72 @@ fn panes(frame: &mut Frame, app: &mut App, area: Rect) {
         if keys {
             app.hits.push((inside, Target::Screen(idx)));
         }
+        app.hits.push((bar, Target::Bar(id)));
+        app.hits.push((body, Target::Pane(id)));
         app.with_pane_screen_in(at, idx, inside.height, inside.width, |screen| {
             frame.render_widget(PseudoTerminal::new(screen), inside);
         });
     }
+}
+
+/// A tab held by the mouse: where it would land is shaded blue (a tab bar, a
+/// pane's middle, or the half a split would give it, behind a dashed line),
+/// and the tab follows the pointer.
+pub(super) fn drag_overlay(frame: &mut Frame, app: &App, drag: crate::app::Drag) {
+    use crate::panes::{Drop, Side};
+    let th = app.theme;
+    let zone = Style::default().bg(th.drop_zone());
+    let line = Style::default().fg(th.warp());
+    let hit = |want: Target| app.hits.iter().find(|(_, t)| *t == want).map(|(r, _)| *r);
+    let buf = frame.buffer_mut();
+    match app.drop_at(drag.at) {
+        Some(Drop::Bar { pane, .. }) => {
+            if let Some(r) = hit(Target::Bar(pane)) {
+                buf.set_style(r, zone);
+            }
+        }
+        Some(Drop::Middle { pane }) => {
+            if let Some(r) = hit(Target::Pane(pane)) {
+                buf.set_style(r.inner(ratatui::layout::Margin::new(1, 1)), zone);
+            }
+        }
+        Some(Drop::Edge { pane, side }) => {
+            let Some(r) = hit(Target::Pane(pane)) else { return };
+            let inner = r.inner(ratatui::layout::Margin::new(1, 1));
+            if matches!(side, Side::Up | Side::Down) {
+                let mid = inner.y + inner.height / 2;
+                let shade = if side == Side::Down {
+                    Rect { y: mid + 1, height: inner.bottom().saturating_sub(mid + 1), ..inner }
+                } else {
+                    Rect { height: mid - inner.y, ..inner }
+                };
+                buf.set_style(shade, zone);
+                let dashed = format!("├{}┤", "╌".repeat(r.width.saturating_sub(2) as usize));
+                buf.set_string(r.x, mid, dashed, line);
+            } else {
+                let mid = inner.x + inner.width / 2;
+                let shade = if side == Side::Right {
+                    Rect { x: mid + 1, width: inner.right().saturating_sub(mid + 1), ..inner }
+                } else {
+                    Rect { width: mid - inner.x, ..inner }
+                };
+                buf.set_style(shade, zone);
+                buf.set_string(mid, r.y, "┬", line);
+                for y in inner.y..inner.bottom() {
+                    buf.set_string(mid, y, "╎", line);
+                }
+                buf.set_string(mid, r.bottom().saturating_sub(1), "┴", line);
+            }
+        }
+        None => {}
+    }
+    let tabs = app.tabs();
+    let (at, id) = drag.agent;
+    let Some(pane) = app.running_pane(at, id) else { return };
+    let Some(n) = tabs.iter().position(|t| (t.project, t.pane) == (at, pane)) else { return };
+    let label = format!(" {} {} · {} ", n + 1, tabs[n].project_name, tabs[n].harness);
+    let area = buf.area;
+    let x = drag.at.0.min(area.right().saturating_sub(cells(&label) as u16));
+    let held = Style::default().fg(th.primary()).bg(th.warp()).add_modifier(Modifier::BOLD);
+    buf.set_string(x, drag.at.1, label, held);
 }
