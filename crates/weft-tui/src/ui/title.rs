@@ -133,6 +133,46 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
     }
     let mut tabs = Vec::new();
 
+    // Split, each half names its own agent, by its tab's number.
+    if let (Some(split), Some(right)) = (app.split_now(), geo.right) {
+        let all = app.tabs();
+        let (l, r) = halves(right);
+        for (side, half) in [l, r].into_iter().enumerate() {
+            let (at, id) = split.sides[side];
+            let Some(pane) = app.running_pane(at, id) else { continue };
+            let Some((n, tab)) =
+                all.iter().enumerate().find(|(_, t)| (t.project, t.pane) == (at, pane))
+            else {
+                continue;
+            };
+            let start = half.x.saturating_sub(geo.tabs.x);
+            if side == 1 {
+                let gap = start.saturating_sub(col + 1) as usize;
+                push(&mut spans, &mut col, " ".repeat(gap), th.label());
+                push(&mut spans, &mut col, "│ ".into(), th.rule());
+            } else if col < start {
+                let gap = (start - col) as usize;
+                push(&mut spans, &mut col, " ".repeat(gap), th.label());
+            }
+            let text = format!(
+                "▸ {} {} · {}{}",
+                n + 1,
+                clip(&tab.project_name, PROJECT_IN_TAB),
+                tab.harness,
+                if tab.waiting { " ●" } else { "" }
+            );
+            let style = if side == split.side {
+                Style::default().fg(th.accent()).add_modifier(Modifier::BOLD)
+            } else {
+                th.title()
+            };
+            let from = geo.tabs.x + col;
+            push(&mut spans, &mut col, text, style);
+            tabs.push((from, geo.tabs.x + col, tab.project, tab.pane));
+        }
+        return (Line::from(spans), tabs);
+    }
+
     for (n, tab) in app.tabs().into_iter().enumerate() {
         // A long project name is shortened, so the row keeps room for its
         // agents and for `+`.

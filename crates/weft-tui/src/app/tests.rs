@@ -378,7 +378,7 @@ pub(crate) fn press(a: &mut App, code: KeyCode) {
     a.settle();
 }
 
-fn ctrl(a: &mut App, c: char) {
+pub(crate) fn ctrl(a: &mut App, c: char) {
     a.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)).expect("key");
     a.settle();
 }

@@ -65,6 +65,14 @@ pub struct Tab {
     pub ready: bool,
 }
 
+/// Two agents side by side: each side's project and pane id, left first,
+/// and the side whose agent is the one shown and given the keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Split {
+    pub sides: [(usize, u32); 2],
+    pub side: usize,
+}
+
 /// Where the last frame drew each thing a click can land on, as the area it
 /// covers. Written by `ui::draw` where it draws them, read by `on_mouse`.
 pub type Hits = Vec<(ratatui::layout::Rect, Target)>;
@@ -323,6 +331,11 @@ pub struct App {
     /// The person has moved about: the selection is theirs, and no longer
     /// lands on the first agent or work as the tree fills in.
     landed: bool,
+    /// Two agents side by side, while split.
+    split: Option<Split>,
+    /// The agent shown before the one shown now, by project and pane id:
+    /// what a split puts beside it.
+    last_tab: Option<(usize, u32)>,
 }
 
 impl App {
@@ -362,14 +375,124 @@ impl App {
     }
 
     /// Show an agent's tab, in whichever project it runs: that project
-    /// becomes the one acts land in, and the agent has the keys.
+    /// becomes the one acts land in, and the agent has the keys. Split, it
+    /// goes on the side with the keys; the agent on the other side moves the
+    /// keys there instead.
     pub(crate) fn show_tab(&mut self, project: usize, pane: usize) {
+        let Some(id) =
+            self.projects.get(project).and_then(|p| p.session.panes.get(pane)).map(|p| p.id)
+        else {
+            return;
+        };
+        if let Some(mut split) = self.split_now() {
+            match split.sides.iter().position(|s| *s == (project, id)) {
+                Some(side) => split.side = side,
+                None => split.sides[split.side] = (project, id),
+            }
+            self.split = Some(split);
+        }
+        let now = self.shown();
+        if now.is_some_and(|n| n != (project, id)) {
+            self.last_tab = now;
+        }
+        self.focus_on(project, pane);
+        self.focus = Focus::Agent;
+    }
+
+    /// The agent shown, by project and pane id.
+    fn shown(&self) -> Option<(usize, u32)> {
+        sess!(self).panes.get(self.pane_focus).filter(|p| p.running).map(|p| (self.at, p.id))
+    }
+
+    /// Make an agent the one shown, without counting it as a move.
+    fn focus_on(&mut self, project: usize, pane: usize) {
         if project != self.at {
             self.at = project;
             self.take_the_board();
         }
         self.pane_focus = pane;
+    }
+
+    /// The split, while both its agents still run.
+    pub fn split_now(&self) -> Option<Split> {
+        let split = self.split?;
+        split.sides.iter().all(|&(at, id)| self.running_pane(at, id).is_some()).then_some(split)
+    }
+
+    pub fn split(&self) -> Option<Split> {
+        self.split_now()
+    }
+
+    /// A running agent's pane index, by project and pane id.
+    pub fn running_pane(&self, project: usize, id: u32) -> Option<usize> {
+        let s = &self.projects.get(project)?.session;
+        s.index_of(id).filter(|&i| s.panes[i].running)
+    }
+
+    /// `|`: the agent shown and the one shown before it, side by side; or
+    /// one pane again, the agent with the keys kept.
+    pub(crate) fn toggle_split(&mut self) {
+        if self.split_now().is_some() {
+            self.split = None;
+            return;
+        }
+        let Some(now) = self.shown() else {
+            self.say(weft_core::words::word("why.split_needs_two"));
+            return;
+        };
+        let running = |at: usize, id: u32| self.running_pane(at, id).is_some();
+        let beside =
+            self.last_tab.filter(|&(at, id)| (at, id) != now && running(at, id)).or_else(|| {
+                self.tabs()
+                    .into_iter()
+                    .map(|t| (t.project, self.projects[t.project].session.panes[t.pane].id))
+                    .find(|&t| t != now)
+            });
+        let Some(beside) = beside else {
+            self.say(weft_core::words::word("why.split_needs_two"));
+            return;
+        };
+        self.split = Some(Split { sides: [beside, now], side: 1 });
+        self.show_work = false;
         self.focus = Focus::Agent;
+    }
+
+    /// `Ctrl+]` while split: from the list to the left side, to the right,
+    /// back to the list. The list is not brought back: `B` does that.
+    pub(crate) fn cycle_split(&mut self, mut split: Split) {
+        match (self.focus, split.side) {
+            (Focus::Agent, 1) => self.focus = Focus::Weft,
+            (Focus::Agent, _) | (Focus::Weft, _) => {
+                split.side = if self.focus == Focus::Weft { 0 } else { 1 };
+                let (at, id) = split.sides[split.side];
+                if let Some(pane) = self.running_pane(at, id) {
+                    self.focus_on(at, pane);
+                }
+                self.split = Some(split);
+                self.focus = Focus::Agent;
+            }
+        }
+    }
+
+    /// A pane's screen in any project, drawn at the size given.
+    pub fn with_pane_screen_in(
+        &mut self,
+        project: usize,
+        pane: usize,
+        rows: u16,
+        cols: u16,
+        f: impl FnOnce(&vt100::Screen),
+    ) {
+        let Some(p) = self.projects.get_mut(project) else { return };
+        let _ = p.session.resize(pane, rows, cols);
+        if let Some(view) = p.session.panes.get(pane) {
+            view.with_screen(f);
+        }
+    }
+
+    /// A pane's size as last drawn, rows and columns.
+    pub fn pane_size_in(&self, project: usize, pane: usize) -> (u16, u16) {
+        self.projects[project].session.panes.get(pane).map_or((0, 0), |p| p.size())
     }
 
     pub fn harness_at(&self, i: usize) -> Option<&str> {
@@ -685,10 +808,7 @@ impl App {
         cols: u16,
         f: impl FnOnce(&vt100::Screen),
     ) {
-        let _ = sess!(self).resize(pane, rows, cols);
-        if let Some(p) = sess!(self).panes.get(pane) {
-            p.with_screen(f);
-        }
+        self.with_pane_screen_in(self.at, pane, rows, cols, f);
     }
 
     // --- construction ---------------------------------------------------------
@@ -709,6 +829,8 @@ impl App {
             reading: None,
             listed: Default::default(),
             clock: None,
+            split: None,
+            last_tab: None,
             landed: false,
             projects: vec![Open::new(root, session)],
             at: 0,

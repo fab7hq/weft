@@ -62,8 +62,18 @@ impl App {
             Action::NextNeedsYou => self.next_needs_you(),
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
             // Picking an agent hands it the keys, as Enter on its harness does.
+            Action::Split => self.toggle_split(),
             Action::NextPane => {
-                let tabs = self.tabs();
+                // Split, the agent on the other side is not a next one.
+                let other = self.split_now().map(|s| s.sides[1 - s.side]);
+                let tabs: Vec<_> = self
+                    .tabs()
+                    .into_iter()
+                    .filter(|t| {
+                        let id = self.projects[t.project].session.panes[t.pane].id;
+                        other != Some((t.project, id))
+                    })
+                    .collect();
                 if !tabs.is_empty() {
                     let next = tabs.iter().position(|t| t.active).map_or(0, |at| at + 1);
                     let t = &tabs[next % tabs.len()];
@@ -172,6 +182,9 @@ impl App {
     }
 
     pub(crate) fn toggle_focus(&mut self) {
+        if let Some(split) = self.split_now() {
+            return self.cycle_split(split);
+        }
         self.focus = match self.focus {
             Focus::Weft => Focus::Agent,
             Focus::Agent => {

@@ -173,6 +173,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ("why.elsewhere", "{harness} runs in another program: Weft can't show it or type into it."),
     ("why.quiet", "Weft can't tell whether this {harness} session runs: resume it to Ask it."),
     ("why.judging", "{title} is still being judged."),
+    ("why.split_needs_two", "A split needs two agents running."),
+    ("act.split", "Split"),
+    ("act.one_pane", "One pane"),
+    ("hint.split", "Ctrl+] moves the keys between the list and each side. [B] shows the list."),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys, the
     // same on a phone and a desktop.

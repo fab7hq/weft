@@ -1,7 +1,7 @@
 //! What the screen shows, read the way a person reads it.
 
 use super::*;
-use crate::app::tests::{app, press, unit};
+use crate::app::tests::{app, ctrl, press, unit};
 use crate::ledger::{Check, Sent, Verdict};
 use crossterm::event::KeyCode;
 use ratatui::Terminal;
@@ -1107,6 +1107,69 @@ fn atlas_t14_1_every_projects_agents_as_tabs() {
     let mut a = atlas_with_docs();
     press(&mut a, KeyCode::Char('1'));
     expect_screen("atlas_t14_1", &screen(&mut a, 120, 32));
+}
+
+/// The Atlas's sample with docs open, split: weft's claude, looked at last,
+/// on the left; docs' claude, with the keys, on the right.
+fn split_atlas() -> App {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('1'));
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('3'));
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('|'));
+    a
+}
+
+/// `|` splits: the agent you are on and the one you looked at last, side by
+/// side, each drawn at its half's size. Ctrl+] moves the keys from the list
+/// to the left side, to the right; Tab changes the agent on the side with
+/// the keys; `|` again shows one pane, that agent kept.
+#[test]
+fn a_split_shows_two_agents_and_moves_the_keys_between_them() {
+    let mut a = split_atlas();
+    let shown =
+        |a: &App| (a.project_name().to_string(), a.harness_at(a.pane_focus).map(String::from));
+    assert!(a.split().is_some());
+    assert_eq!((shown(&a), a.focus), (("docs".into(), Some("claude".into())), Focus::Agent));
+    let _ = screen(&mut a, 120, 32);
+    let (left, right) = (a.pane_size_in(0, 0), a.pane_size_in(1, 0));
+    assert!(left.1 < 60 && right.1 < 60 && left.1 > 50 && right.1 > 50, "{left:?} {right:?}");
+    ctrl(&mut a, ']');
+    assert_eq!(a.focus, Focus::Weft);
+    ctrl(&mut a, ']');
+    assert_eq!((shown(&a), a.focus), (("weft".into(), Some("claude".into())), Focus::Agent));
+    ctrl(&mut a, ']');
+    assert_eq!(shown(&a), ("docs".into(), Some("claude".into())));
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(
+        shown(&a),
+        ("weft".into(), Some("codex".into())),
+        "the next agent not shown beside it"
+    );
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('|'));
+    assert!(a.split().is_none());
+    assert_eq!(shown(&a), ("weft".into(), Some("codex".into())));
+}
+
+/// One agent running: nothing to put beside it, and the hint says so.
+#[test]
+fn a_split_needs_two_agents() {
+    let mut a = app();
+    press(&mut a, KeyCode::Char('|'));
+    assert!(a.split().is_none());
+    assert_eq!(a.hint_text(), Some(weft_core::words::word("why.split_needs_two")));
+}
+
+/// T14.2: two side by side.
+#[test]
+fn atlas_t14_2_split_two_side_by_side() {
+    let mut a = split_atlas();
+    // As the card: the right side current, Weft holding the keys.
+    a.focus = Focus::Weft;
+    expect_screen("atlas_t14_2", &screen(&mut a, 120, 32));
 }
 
 /// T9.7: N starts an agent; each set-up harness starts fresh.

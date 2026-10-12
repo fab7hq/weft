@@ -56,10 +56,10 @@ const PASTE_SCREEN: &[&[&str]] = &[&["[Pasted text"], &["[Pasted Content"], &["â
 
 /// The only functions that read a pane's screen, and why each may.
 const SCREEN_READS: &[&str] = &[
-    "wait_for",         // the mode a prompt entered, as the profile names it
-    "gone_quiet",       // whether the screen changed and has gone still
-    "bracketed_paste",  // the paste mode the agent asked for, not its words
-    "with_pane_screen", // drawing the pane for the person
+    "wait_for",            // the mode a prompt entered, as the profile names it
+    "gone_quiet",          // whether the screen changed and has gone still
+    "bracketed_paste",     // the paste mode the agent asked for, not its words
+    "with_pane_screen_in", // drawing a pane for the person
 ];
 
 /// Every harness a Weft fixture harness file defines: its id, its title and

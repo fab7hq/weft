@@ -59,7 +59,19 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
         }
         frame.render_widget(Paragraph::new(line), geo.tabs);
     }
-    frame.render_widget(rule(geo.top_rule.width, geo.divider, geo.top_junction, th), geo.top_rule);
+    // Split with the list hidden, the rules meet the column between the halves.
+    let between = match (app.split_now(), geo.divider, geo.right) {
+        (Some(_), None, Some(right)) if app.detail().is_none() && app.eval_screen().is_none() => {
+            let (l, _) = halves(right);
+            Some(l.x + l.width - geo.top_rule.x)
+        }
+        _ => None,
+    };
+    let (top_at, top_junction) = match between {
+        Some(col) => (Some(col), '┼'),
+        None => (geo.divider, geo.top_junction),
+    };
+    frame.render_widget(rule(geo.top_rule.width, top_at, top_junction, th), geo.top_rule);
 
     if app.eval_screen().is_some() {
         // It blocks, as the detail view does.
@@ -85,7 +97,7 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
     }
 
     // A panel closes the body: the divider ends on the rule above it.
-    let mut ends = geo.body_divider;
+    let mut ends = geo.body_divider.or(between);
     if let (Some(rule_area), Some(panel_area)) = (geo.panel_rule, geo.panel) {
         frame.render_widget(rule(rule_area.width, ends.take(), '┴', th), rule_area);
         frame.render_widget(panel(app, panel_area), panel_area);

@@ -103,6 +103,10 @@ impl PaneView {
         self.parser.screen_mut().set_scrollback(0);
     }
 
+    pub fn size(&self) -> (u16, u16) {
+        (self.rows, self.cols)
+    }
+
     fn resize(&mut self, rows: u16, cols: u16) {
         if (rows, cols) != (self.rows, self.cols) {
             self.parser.screen_mut().set_size(rows, cols);
@@ -178,7 +182,7 @@ pub struct Session {
     /// The pane (by id) and size this client last told the daemon it draws.
     /// Told once per change, since telling is focusing: the agent takes the
     /// size of the window that last focused it or typed into it.
-    told: Option<(u32, u16, u16)>,
+    told: std::collections::HashMap<u32, (u16, u16)>,
     /// Every session's latest event, as the daemon read the receipts.
     /// The project's session index, and the Mac's distance from
     /// UTC, in milliseconds, to read its times by.
@@ -264,7 +268,7 @@ impl Session {
             gap: None,
             needs: None,
             waiting: Vec::new(),
-            told: None,
+            told: Default::default(),
             sessions: Vec::new(),
             zone: 0,
             notify: true,
@@ -633,10 +637,10 @@ impl Session {
         if let Some(p) = self.panes.get_mut(pane) {
             p.resize(rows, cols);
         }
-        if self.told == Some((id, rows, cols)) {
+        if self.told.get(&id) == Some(&(rows, cols)) {
             return Ok(());
         }
-        self.told = Some((id, rows, cols));
+        self.told.insert(id, (rows, cols));
         self.tell(Call::Resize { pane: id, rows, cols }).map(|_| ())
     }
 

@@ -6,6 +6,9 @@ use super::*;
 /// keys, blue and heavy while the agent has them. Beside the list it starts
 /// at the divider.
 pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
+    if let Some(split) = app.split_now() {
+        return two_agents(frame, app, area, split);
+    }
     if app.pane_count() == 0 {
         frame.render_widget(no_agent(app, area), area);
         return;
@@ -142,4 +145,44 @@ pub(super) fn no_agent(app: &App, area: Rect) -> Paragraph<'static> {
     }
     lines.push(Line::styled("   [N] starts an agent.".to_string(), th.label()));
     Paragraph::new(lines)
+}
+
+/// The two halves of the agents' area, left and right, with a column
+/// between them.
+pub(super) fn halves(area: Rect) -> (Rect, Rect) {
+    let left = area.width.saturating_sub(1) / 2;
+    let l = Rect { width: left, ..area };
+    let r = Rect { x: area.x + left + 1, width: area.width.saturating_sub(left + 1), ..area };
+    (l, r)
+}
+
+/// Two agents side by side, each in its own frame at its half's size; the
+/// side with the keys is framed as the one pane is.
+fn two_agents(frame: &mut Frame, app: &mut App, area: Rect, split: crate::app::Split) {
+    let th = app.theme;
+    let (l, r) = halves(area);
+    let rule = Rect { x: l.x + l.width, width: 1, ..area };
+    frame.render_widget(Paragraph::new(vlines(rule.height, th)), rule);
+    for (side, half) in [l, r].into_iter().enumerate() {
+        let (at, id) = split.sides[side];
+        let Some(pane) = app.running_pane(at, id) else { continue };
+        let keys = side == split.side && app.focus == Focus::Agent;
+        let block = if keys {
+            Block::bordered()
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(th.warp()))
+        } else if side == split.side {
+            Block::bordered().border_style(Style::default().fg(th.warp()))
+        } else {
+            Block::bordered().border_style(th.rule())
+        };
+        let inside = block.inner(half);
+        if side == split.side {
+            app.hits.push((inside, crate::app::Target::Screen(app.pane_focus)));
+        }
+        frame.render_widget(block, half);
+        app.with_pane_screen_in(at, pane, inside.height, inside.width, |screen| {
+            frame.render_widget(PseudoTerminal::new(screen), inside);
+        });
+    }
 }

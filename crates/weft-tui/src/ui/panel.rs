@@ -120,6 +120,7 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
         ("Space", "what needs you"),
         ("Tab", "next agent"),
         ("1-9", "that agent"),
+        ("|", "split · one pane"),
         (toggle, "switch active pane"),
         ("⌫", "close the project"),
     ];

@@ -173,7 +173,13 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     }
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
     let search = Span::styled("[/] SEARCH", Style::default().fg(th.primary()));
-    Paragraph::new(spread(spans, vec![search, Span::raw("   "), menu, Span::raw(" ")], width))
+    let split = if app.split_now().is_some() { "act.one_pane" } else { "act.split" };
+    let split = Span::styled(
+        format!("[|] {}", word(split).to_uppercase()),
+        Style::default().fg(th.primary()),
+    );
+    let right = vec![search, Span::raw("   "), split, Span::raw("   "), menu, Span::raw(" ")];
+    Paragraph::new(spread(spans, right, width))
 }
 
 /// One action on the bar, dimmed when it cannot be used.
@@ -252,6 +258,7 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
             app.harness_at(app.pane_focus).unwrap_or("the agent")
         ),
         (None, Focus::Weft) if app.detail().is_some() => String::new(),
+        (None, Focus::Weft) if app.split_now().is_some() => format!(" {}", word("hint.split")),
         (None, Focus::Weft) if app.not_ready().is_some() => {
             let (name, state) = app.not_ready().expect("not ready");
             let mut said = state.say(&name).unwrap_or_default();
