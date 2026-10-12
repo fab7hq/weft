@@ -369,3 +369,30 @@ fn a_shared_servers_hook_for_a_session_a_pane_holds_is_that_panes() {
     assert_eq!(row(&index, "s_held").unwrap().pane, Some(pane));
     let _ = c.call(Call::Shutdown);
 }
+
+/// A receipt written before the harness file named its shared server holds
+/// the server as the session's process. Read now, the server is no
+/// session's: the session reads last active, not running.
+#[test]
+fn a_receipt_naming_the_shared_server_reads_last_active() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let socket = protocol::private_socket("weft-old-server");
+    // The stand-in server: a process whose arguments hold the harness file's mark.
+    serve(&socket, &config, serde_json::json!({"server_args": ["300"]}));
+    let mut c = Client::attach(&socket, &root);
+    let mut server = std::process::Command::new("sleep").arg("300").spawn().unwrap();
+    let mut own = std::process::Command::new("sleep").arg("301").spawn().unwrap();
+    support::signal(&socket, outside(&root, "s_old", "working", Some(server.id())));
+    support::signal(&socket, outside(&root, "s_own", "working", Some(own.id())));
+    let index = c.index_until(|i| row(i, "s_old").is_some() && row(i, "s_own").is_some());
+    assert_eq!(row(&index, "s_old").unwrap().state, State::Quiet, "the server holds every session");
+    assert_eq!(row(&index, "s_own").unwrap().state, State::Running, "its own process still counts");
+    server.kill().unwrap();
+    own.kill().unwrap();
+    let _ = (server.wait(), own.wait());
+    let _ = c.call(Call::Shutdown);
+}

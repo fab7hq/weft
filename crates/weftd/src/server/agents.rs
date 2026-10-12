@@ -52,7 +52,18 @@ impl Session {
         for slot in p.panes.iter_mut() {
             slot.map.running = slot.pane.running();
         }
-        let heard = p.turns.heard();
+        let mut heard = p.turns.heard();
+        // A harness's shared server holds every session, so it is no
+        // session's process, however old the receipt that names it.
+        for h in &mut heard {
+            let server = p.harnesses.find(&h.session.harness).map(|f| f.server_args.as_slice());
+            if h.process
+                .as_ref()
+                .is_some_and(|x| crate::process::is_server(x, server.unwrap_or(&[])))
+            {
+                h.process = None;
+            }
+        }
         // Ask the machine about each recorded process not yet known gone.
         for proc in heard.iter().filter_map(|h| h.process.as_ref()) {
             let key = (proc.pid, proc.start.clone());

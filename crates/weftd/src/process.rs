@@ -34,6 +34,14 @@ pub fn alive(p: &weft_core::sessions::Process) -> bool {
     info(p.pid).is_some_and(|me| me.start == p.start && !me.zombie)
 }
 
+/// Whether a recorded process is, still, a harness's shared server: that
+/// pid, with that start time, its arguments holding one of `server`.
+pub fn is_server(p: &weft_core::sessions::Process, server: &[String]) -> bool {
+    !server.is_empty()
+        && info(p.pid)
+            .is_some_and(|me| me.start == p.start && me.args.iter().any(|a| server.contains(a)))
+}
+
 /// What holds the session a hook runs for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Holder {

@@ -100,6 +100,7 @@ mod tests {
             signal: None,
             listen: None,
             resume_joins: false,
+            server_args: Vec::new(),
         }
     }
 
