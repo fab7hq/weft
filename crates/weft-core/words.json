@@ -40,6 +40,7 @@
   "eval_view.readings": "Readings",
   "eval_view.unexplained": "Unexplained changes",
   "hint.split": "Ctrl+] moves the keys between the list and each side. [B] shows the list.",
+  "hint.tabs": "Tab, 1–9: every open project's agents.",
   "not_ready.asking": "the agent is asking you something",
   "not_ready.title": "The agent has not said it is ready",
   "not_ready.unknown": "Weft can't tell whether the agent is ready",

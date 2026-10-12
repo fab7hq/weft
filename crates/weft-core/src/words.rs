@@ -176,6 +176,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("why.split_needs_two", "A split needs two agents running."),
     ("act.split", "Split"),
     ("act.one_pane", "One pane"),
+    ("hint.tabs", "Tab, 1–9: every open project's agents."),
     ("hint.split", "Ctrl+] moves the keys between the list and each side. [B] shows the list."),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys, the

@@ -272,6 +272,10 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         (None, Focus::Weft) if !app.show_work() => {
             " The list is hidden. [B] brings it back.".into()
         }
+        // Tabs from more than one project: say that the keys reach them all.
+        (None, Focus::Weft) if app.tabs().windows(2).any(|t| t[0].project != t[1].project) => {
+            format!(" {}", word("hint.tabs"))
+        }
         (None, Focus::Weft) => " [H]ELP lists every key.".into(),
     };
     Paragraph::new(Line::styled(text, th.label()))
