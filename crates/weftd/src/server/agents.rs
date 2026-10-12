@@ -170,11 +170,14 @@ impl Session {
             self.clients.broadcast(project, &Out::Injected { pane: id, refusal, unrecorded: None });
             return None;
         };
-        let env = [
-            ("WEFT_PANE", id.to_string()),
-            ("WEFT_PANE_TOKEN", token.clone()),
-            ("WEFT_SOCKET", self.socket.to_string_lossy().into_owned()),
-        ];
+        let unset = p.harnesses.find(harness).map(|h| h.unset_env.clone()).unwrap_or_default();
+        let mut env: Vec<(&str, Option<String>)> =
+            unset.iter().map(|k| (k.as_str(), None)).collect();
+        env.extend([
+            ("WEFT_PANE", Some(id.to_string())),
+            ("WEFT_PANE_TOKEN", Some(token.clone())),
+            ("WEFT_SOCKET", Some(self.socket.to_string_lossy().into_owned())),
+        ]);
         match Pane::spawn_args(harness, &program, &argv, &cwd, &env, size.0, size.1) {
             Ok(mut pane) => {
                 // Every byte a pane prints goes to the session, which records

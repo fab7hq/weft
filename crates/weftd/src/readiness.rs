@@ -95,6 +95,7 @@ mod tests {
             resume: argv(&["resume"]),
             transcript: None,
             turbo: Vec::new(),
+            unset_env: Vec::new(),
             manifest: None,
             signal: None,
         }

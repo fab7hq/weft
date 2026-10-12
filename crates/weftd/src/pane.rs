@@ -76,7 +76,7 @@ impl Pane {
         program: &str,
         args: &[&str],
         cwd: &str,
-        env: &[(&str, String)],
+        env: &[(&str, Option<String>)],
         rows: u16,
         cols: u16,
     ) -> Result<Self> {
@@ -86,8 +86,12 @@ impl Pane {
         let mut cmd = CommandBuilder::new(program);
         cmd.args(args);
         cmd.cwd(cwd);
+        // `None` keeps a variable the daemon inherited out of the pane.
         for (k, v) in env {
-            cmd.env(k, v);
+            match v {
+                Some(v) => cmd.env(k, v),
+                None => cmd.env_remove(k),
+            }
         }
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
@@ -463,6 +467,18 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         let text = pane.with_screen(|s| s.contents());
         assert!(text.contains("got=1;4;"), "the cursor sat after `abc`, row 1 column 4: {text:?}");
+        pane.stop();
+    }
+
+    #[test]
+    fn a_pane_does_not_inherit_a_variable_given_as_none() {
+        let script = "printf 'home=%s pane=%s;' \"${HOME-unset}\" \"$WEFT_PANE\"";
+        let env = [("HOME", None), ("WEFT_PANE", Some("7".to_string()))];
+        let mut pane =
+            Pane::spawn_args("test", "bash", &["-c", script], "/tmp", &env, 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let text = pane.with_screen(|s| s.contents());
+        assert!(text.contains("home=unset pane=7;"), "screen was: {text:?}");
         pane.stop();
     }
 

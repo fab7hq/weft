@@ -66,6 +66,9 @@ pub struct Harness {
     /// `config.toml` turns turbo on. Empty when the file names none.
     #[serde(default)]
     pub turbo: Vec<String>,
+    /// Variables an agent's pane does not inherit from the daemon.
+    #[serde(default)]
+    pub unset_env: Vec<String>,
     /// What each of its hooks means (`[signal]`). Without it the
     /// harness gives no state and forwards nothing.
     #[serde(default)]
@@ -125,6 +128,7 @@ impl Harness {
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
+            unset_env: argv(&p["unset_env"]).unwrap_or_default(),
             signal: crate::signal::Signal::of(&p["signal"]),
         })
     }
@@ -409,6 +413,14 @@ mod tests {
             Harness::of("codex", &p).expect("a harness").turbo.is_empty(),
             "no turbo, no flags"
         );
+    }
+
+    #[test]
+    fn unset_env_is_each_harnesses_own_list() {
+        let all = harnesses();
+        let claude = &all.find("claude-code").expect("claude").unset_env;
+        assert!(claude.iter().any(|v| v == "CLAUDE_CODE_CHILD_SESSION"));
+        assert!(all.find("codex").expect("codex").unset_env.is_empty());
     }
 
     /// A harness keeps its configuration where it keeps it, whether or not a

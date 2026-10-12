@@ -11,6 +11,16 @@ resume = ["--resume"]
 # Turbo mode, when Weft's config.toml turns it on: every permission granted and no
 # question asked, for a person who wants the agent to run on its own.
 turbo = ["--dangerously-skip-permissions"]
+# What an agent's pane does not inherit from Weft's daemon: the marks of a Claude
+# Code session the daemon was started from. Inherited, they make Claude a child
+# session that saves no transcript, so it cannot be resumed.
+unset_env = [
+  "CLAUDECODE",
+  "CLAUDE_CODE_SESSION_ID",
+  "CLAUDE_CODE_CHILD_SESSION",
+  "CLAUDE_CODE_SESSION_ATTENDED",
+  "CLAUDE_CODE_BRIDGE_SESSION_ID",
+]
 
 [config]   # where it keeps its configuration
 env = "CLAUDE_CONFIG_DIR"
