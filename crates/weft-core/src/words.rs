@@ -353,6 +353,8 @@ pub const WORDS: &[(&str, &str)] = &[
         "web.session.resume_how",
         "Resume starts {harness} again on session {session} in a new agent.",
     ),
+    ("web.session.resume_joins", "Resume joins {harness} on session {session} in a new agent."),
+    ("web.session.resume_joins_here", "Resume joins {harness} on this session in a new agent."),
     ("web.session.started", "Started"),
     ("web.session.session", "Session"),
     ("web.session.project", "Project"),

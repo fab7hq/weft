@@ -275,7 +275,9 @@ impl App {
             }
             View::Session(id) => {
                 let row = self.session_row(id)?;
-                let d = offers::session_detail(row, &self.units, &record);
+                let joins =
+                    sess!(self).harnesses.find(&row.harness).is_some_and(|h| h.resume_joins);
+                let d = offers::session_detail(row, &self.units, &record, joins);
                 session(view.clone(), &d, now, zone)
             }
         })
@@ -354,6 +356,14 @@ impl App {
         }
     }
 
+    /// A session that runs with no pane of Weft's, of a harness whose
+    /// resume joins it there.
+    pub fn joins(&self, row: &weft_core::sessions::Row) -> bool {
+        row.state == State::Running
+            && row.pane.is_none()
+            && sess!(self).harnesses.find(&row.harness).is_some_and(|h| h.resume_joins)
+    }
+
     /// `[R]ESUME THIS` on a session's Details: resumes that id at once,
     /// as the web's Resume does: the Details are that one session.
     pub(super) fn resume_shown(&mut self) -> bool {
@@ -361,7 +371,8 @@ impl App {
             return false;
         };
         let Some(row) = self.session_row(&id).cloned() else { return true };
-        if row.state == State::Running {
+        // Running, it is that pane's, unless no pane holds it and Resume joins it.
+        if row.state == State::Running && !self.joins(&row) {
             return true;
         }
         if !row.resumable {
@@ -558,16 +569,23 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
     let crumbs = vec![(d.harness.clone(), None), (state.clone(), None)];
     let mut out = Detail::new(view, crumbs, short.clone());
     let glyph = if d.state == State::Running { "●" } else { "○" };
-    let shown =
-        if d.state == State::Ended { word("state.ended").to_string() } else { state.clone() };
+    let shown = match d.state {
+        State::Ended => word("state.ended").to_string(),
+        State::Running => word("state.running").to_string(),
+        _ => state.clone(),
+    };
     out.line(format!("SESSION  {glyph} {shown}"));
-    out.line(format!(
-        "  {} ran {} – {} · {}",
-        d.harness,
-        when(d.started),
-        when(d.last),
-        asks_n(d.asks.len())
-    ));
+    if d.state == State::Running {
+        out.line(format!("  {} started {} · {}", d.harness, when(d.started), asks_n(d.asks.len())));
+    } else {
+        out.line(format!(
+            "  {} ran {} – {} · {}",
+            d.harness,
+            when(d.started),
+            when(d.last),
+            asks_n(d.asks.len())
+        ));
+    }
     out.gap();
     out.line(format!("  HARNESS      {}", d.harness));
     out.line(format!("  STATE        {state}"));
@@ -592,7 +610,12 @@ fn session(view: View, d: &SessionDetail, now: i64, zone: i64) -> Detail {
             out.link("[Enter] GO TO ITS PANE".to_string(), Link::Pane(p));
             out.pick = out.links.len() - 1;
         }
-        (State::Running, None, _) => out.line(fill("why.elsewhere", &[("harness", &d.harness)])),
+        (State::Running, None, true) => {
+            out.line(format!("[R]ESUME THIS joins {} on session {short} here.", d.harness))
+        }
+        (State::Running, None, false) => {
+            out.line(fill("why.elsewhere", &[("harness", &d.harness)]))
+        }
         (_, _, true) => {
             out.line(format!("[R]ESUME THIS starts {} again on session {short}.", d.harness))
         }

@@ -458,7 +458,8 @@ impl Project {
     /// A session's Details (T11.5).
     pub fn session(&self, id: &str) -> Result<Value, Refusal> {
         let row = self.session_row(id).ok_or(("no_session", format!("{id} is no session here")))?;
-        let d = weft_core::offers::session_detail(row, &self.units, &self.rounds.record);
+        let joins = self.files.find(&row.harness).is_some_and(|h| h.resume_joins);
+        let d = weft_core::offers::session_detail(row, &self.units, &self.rounds.record, joins);
         let mut v = serde_json::to_value(d).unwrap_or_default();
         v["agent"] = row.pane.map(|p| agent_id(&self.key, p)).into();
         Ok(v)

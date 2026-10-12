@@ -503,16 +503,24 @@ pub struct SessionDetail {
     /// The Weft pane that holds it, while one runs.
     #[serde(skip)]
     pub pane: Option<u32>,
-    /// It can be resumed: it held a conversation, and nothing runs it.
+    /// It can be resumed: it held a conversation, and nothing runs it, or
+    /// resuming it joins it where it runs.
     pub resume: bool,
+    /// It runs with no Weft pane, and its harness's resume joins it there.
+    pub joins: bool,
     pub asks: Vec<SessionAsk>,
 }
 
+/// A session's Details. `joins`: resuming a session of its harness that runs
+/// elsewhere joins it.
 pub fn session_detail(
     row: &crate::sessions::Row,
     units: &[crate::ledger::Unit],
     record: &Rounds,
+    joins: bool,
 ) -> SessionDetail {
+    let running = row.state == crate::sessions::State::Running;
+    let joins = joins && running && row.pane.is_none();
     let mut mine: Vec<&crate::ledger::Unit> =
         units.iter().filter(|u| u.session_ref.as_deref() == Some(row.id.as_str())).collect();
     mine.reverse();
@@ -526,7 +534,8 @@ pub fn session_detail(
         started: row.started,
         last: row.last,
         pane: row.pane,
-        resume: row.resumable && row.state != crate::sessions::State::Running,
+        resume: row.resumable && (!running || joins),
+        joins,
         asks: mine
             .into_iter()
             .map(|u| SessionAsk {
@@ -773,7 +782,7 @@ mod tests {
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
         let mut row = Row::of("claude", "883b9d12", State::Ended, None, 5);
         row.started = 1;
-        let d = session_detail(&row, &units, &record);
+        let d = session_detail(&row, &units, &record, false);
         let asks: Vec<_> =
             d.asks.iter().map(|a| (a.title.as_str(), a.word.say(), a.eval, a.seal)).collect();
         assert_eq!(
@@ -787,10 +796,18 @@ mod tests {
         );
         assert!(d.resume, "ended, with a conversation");
         row.state = State::Running;
-        assert!(!session_detail(&row, &units, &record).resume, "running: go to it instead");
+        assert!(!session_detail(&row, &units, &record, false).resume, "running: go to it instead");
+        // Running with no Weft pane, for a harness whose resume joins it: Resume joins it.
+        let joined = session_detail(&row, &units, &record, true);
+        assert!(joined.resume && joined.joins, "a running session no pane holds is joined");
+        row.pane = Some(2);
+        let held = session_detail(&row, &units, &record, true);
+        assert!(!held.resume && !held.joins, "a pane holds it: go to that pane");
+        row.pane = None;
         row.state = State::Quiet;
-        assert!(session_detail(&row, &units, &record).resume, "quiet: resumed after asking");
+        let quiet = session_detail(&row, &units, &record, true);
+        assert!(quiet.resume && !quiet.joins, "quiet: resumed after asking, nothing to join");
         row.resumable = false;
-        assert!(!session_detail(&row, &units, &record).resume, "only ever ready");
+        assert!(!session_detail(&row, &units, &record, false).resume, "only ever ready");
     }
 }

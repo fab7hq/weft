@@ -136,8 +136,10 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
                 add(lit("[Enter] OPEN".into()));
             }
             View::Seal(_) => add(lit("[Enter] OPEN".into())),
-            View::Session(id) => match app.session_row(id).map(|r| r.state) {
-                Some(State::Running) => add(lit("[Enter] GO TO ITS PANE".into())),
+            View::Session(id) => match app.session_row(id) {
+                Some(r) if r.state == State::Running && !app.joins(r) => {
+                    add(lit("[Enter] GO TO ITS PANE".into()))
+                }
                 _ => {
                     add(lit("[R]ESUME THIS".into()));
                     add(lit("[Enter] OPEN".into()));

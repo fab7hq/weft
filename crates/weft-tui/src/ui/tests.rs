@@ -1533,6 +1533,25 @@ fn atlas_t11_5_a_session() {
     expect_screen("atlas_t11_5", &screen(&mut a, 120, 32));
 }
 
+/// T11.9: a running session no pane of Weft's holds, of a harness whose
+/// resume joins it: [R]ESUME THIS joins it.
+#[test]
+fn atlas_t11_9_a_running_session_it_can_join() {
+    let mut a = atlas11();
+    let mut joined = past("codex", "01a12dd3-e1a3-7031-85a5-11ae2080309f", None, 0, 0, (11, 2));
+    joined.state = weft_core::sessions::State::Running;
+    joined.turn = Some(weft_core::turns::Turn::Working);
+    joined.last = joined.started + 18 * 60_000;
+    a.session_mut().sessions.push(joined);
+    a.open_view_read(
+        crate::app::View::Session("01a12dd3-e1a3-7031-85a5-11ae2080309f".into()),
+        None,
+        None,
+        None,
+    );
+    expect_screen("atlas_t11_9", &screen(&mut a, 120, 32));
+}
+
 /// T11.7: Enter on `▸ n earlier sessions` lists them under it, in the tree.
 #[test]
 fn atlas_t11_7_earlier_sessions_expanded() {
