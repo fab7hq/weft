@@ -306,6 +306,11 @@ impl Session {
             self.listen(at, &sent.harness);
         }
         let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
+        // A shared server's open stream speaks of every session it holds,
+        // this one too, even if its turn began before the stream opened.
+        if sent.shared && at.is_some() && self.streams.contains(&sent.harness) {
+            self.streamed.insert((sent.harness.clone(), sent.session.clone()));
+        }
         if let Some(at) = at {
             self.tell_agents(at);
         }

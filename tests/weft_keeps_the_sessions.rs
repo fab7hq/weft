@@ -278,6 +278,14 @@ fn a_harness_stream_gives_its_sessions_turns() {
     let s1 = std::fs::read_to_string(receipts.join("codex/s1.jsonl")).unwrap();
     assert!(s1.lines().last().unwrap().contains(r#""event":"waiting""#), "{s1}");
 
+    // A shared server's hook for a session the stream has not spoken of yet
+    // (its turn began before the stream opened): the stream covers it now,
+    // so its turn runs.
+    let shared = Sent { shared: true, ..outside(&root, "s2", "working", None) };
+    support::signal(&socket, shared);
+    let index = c.index_until(|i| row(i, "s2").is_some());
+    assert_eq!(row(&index, "s2").unwrap().state, State::Running);
+
     // A session no hook tied to a project is no one's.
     conn.write_all(status("s9", "active", &[]).as_bytes()).unwrap();
     conn.write_all(status("s1", "idle", &[]).as_bytes()).unwrap();
