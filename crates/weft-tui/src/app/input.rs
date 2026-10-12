@@ -63,19 +63,17 @@ impl App {
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
             // Picking an agent hands it the keys, as Enter on its harness does.
             Action::NextPane => {
-                let running = self.running_panes();
-                if !running.is_empty() {
-                    let next =
-                        running.iter().position(|&i| i == self.pane_focus).map_or(0, |at| at + 1);
-                    self.pane_focus = running[next % running.len()];
-                    self.focus = Focus::Agent;
+                let tabs = self.tabs();
+                if !tabs.is_empty() {
+                    let next = tabs.iter().position(|t| t.active).map_or(0, |at| at + 1);
+                    let t = &tabs[next % tabs.len()];
+                    self.show_tab(t.project, t.pane);
                 }
             }
-            // The tab's digit: the tabs are the agents running.
+            // The tab's digit: the tabs are every open project's agents running.
             Action::PickPane(n) => {
-                if let Some(&i) = self.running_panes().get((n as usize).saturating_sub(1)) {
-                    self.pane_focus = i;
-                    self.focus = Focus::Agent;
+                if let Some(t) = self.tabs().get((n as usize).saturating_sub(1)) {
+                    self.show_tab(t.project, t.pane);
                 }
             }
             Action::Ask => self.act(Act::Ask),
@@ -167,10 +165,7 @@ impl App {
                 self.focus = Focus::Weft;
                 self.select_row(row);
             }
-            Target::Tab(pane) => {
-                self.pane_focus = pane;
-                self.focus = Focus::Agent;
-            }
+            Target::Tab(project, pane) => self.show_tab(project, pane),
             // The wheel's place on an agent's screen; a click there is the agent's own.
             Target::Screen(_) => {}
         }

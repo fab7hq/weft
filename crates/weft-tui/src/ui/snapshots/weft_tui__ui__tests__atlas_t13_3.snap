@@ -1,10 +1,9 @@
 ---
 source: crates/weft-tui/src/ui/tests.rs
-assertion_line: 21
 expression: drawn
 ---
  ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
-                                            │ ▸ 1 claude    2 codex    +
+                                            │ ▸ 1 weft · claude    2 weft · codex    +
 ────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
  ▾ weft                           1 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
                                             ││ ❯                                                                       │

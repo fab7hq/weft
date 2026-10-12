@@ -43,12 +43,26 @@ pub struct Pending {
 pub enum Target {
     /// A row of `rows()`.
     Row(usize),
-    /// An agent's tab, by pane.
-    Tab(usize),
+    /// An agent's tab, by project and pane.
+    Tab(usize, usize),
     /// Where an agent's screen is drawn, by pane.
     Screen(usize),
     /// The turbo switch in the title bar.
     Turbo,
+}
+
+/// One agent's tab: where it runs, and what its tab shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tab {
+    pub project: usize,
+    pub pane: usize,
+    pub project_name: String,
+    pub harness: String,
+    pub active: bool,
+    pub waiting: bool,
+    /// Started in turbo mode, every permission granted.
+    pub turbo: bool,
+    pub ready: bool,
 }
 
 /// Where the last frame drew each thing a click can land on, as the area it
@@ -323,6 +337,39 @@ impl App {
     /// Ask can go.
     pub fn running_panes(&self) -> Vec<usize> {
         (0..self.pane_count()).filter(|&i| sess!(self).panes[i].running).collect()
+    }
+
+    /// Every open project's running agents, in the tree's order: the tabs.
+    pub fn tabs(&self) -> Vec<Tab> {
+        let mut out = Vec::new();
+        for (at, p) in self.projects.iter().enumerate() {
+            for (pane, view) in p.session.panes.iter().enumerate().filter(|(_, v)| v.running) {
+                let local = self.readiness.get(&view.harness).copied();
+                let shared = p.session.readiness.get(&view.harness).and_then(|v| v.as_str());
+                out.push(Tab {
+                    project: at,
+                    pane,
+                    project_name: p.name.clone(),
+                    harness: view.harness.clone(),
+                    active: at == self.at && pane == self.pane_focus,
+                    waiting: weft_core::turns::is_asking(view.turn),
+                    turbo: view.turbo,
+                    ready: local.unwrap_or_else(|| Readiness::of_word(shared)).is_ready(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Show an agent's tab, in whichever project it runs: that project
+    /// becomes the one acts land in, and the agent has the keys.
+    pub(crate) fn show_tab(&mut self, project: usize, pane: usize) {
+        if project != self.at {
+            self.at = project;
+            self.take_the_board();
+        }
+        self.pane_focus = pane;
+        self.focus = Focus::Agent;
     }
 
     pub fn harness_at(&self, i: usize) -> Option<&str> {

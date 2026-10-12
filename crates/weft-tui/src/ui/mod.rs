@@ -53,9 +53,9 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
     frame.render_widget(title, geo.title);
     if geo.tabs.height > 0 {
         let (line, tabs) = tab_row(app, &geo);
-        for (from, to, pane) in tabs {
+        for (from, to, project, pane) in tabs {
             let at = Rect { x: from, width: to - from, ..geo.tabs };
-            app.hits.push((at, Target::Tab(pane)));
+            app.hits.push((at, Target::Tab(project, pane)));
         }
         frame.render_widget(Paragraph::new(line), geo.tabs);
     }

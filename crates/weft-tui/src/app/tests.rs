@@ -1269,8 +1269,13 @@ fn a_click_on_an_agents_tab_goes_to_it() {
     }
     a.pane_focus = 0;
     let screen = drawn(&mut a);
-    let (y, line) = screen.lines().enumerate().find(|(_, l)| l.contains("2 codex")).expect("tabs");
-    let x = line.find("2 codex").expect("x") as u16;
+    let (y, line) = screen.lines().enumerate().find(|(_, l)| l.contains("· codex")).expect("tabs");
+    let x = line
+        .char_indices()
+        .filter(|(_, c)| *c == '2')
+        .map(|(b, _)| line[..b].chars().count())
+        .next()
+        .expect("x") as u16;
     click(&mut a, x + 2, y as u16);
     assert_eq!(a.pane_focus, 1);
     click(&mut a, 0, 29);
@@ -1307,8 +1312,14 @@ fn a_click_on_the_tab_after_a_turbo_tab_goes_to_it() {
     }
     a.session_mut().panes[0].turbo = true;
     a.pane_focus = 0;
-    let (x, y) = cell_of(&mut a, "2 codex");
-    click(&mut a, x + "2 codex".len() as u16 - 1, y);
+    let screen = drawn(&mut a);
+    let tabs = screen.lines().nth(1).expect("tabs");
+    let second = tabs
+        .rsplit_once("2 ")
+        .map(|(_, t)| format!("2 {}", t.split("    ").next().unwrap_or("")))
+        .expect("the second tab");
+    let (x, y) = cell_of(&mut a, &second);
+    click(&mut a, x + second.chars().count() as u16 - 1, y);
     assert_eq!(a.pane_focus, 1, "its last cell is its own");
 }
 
@@ -1396,7 +1407,7 @@ fn an_agent_in_turbo_mode_says_so_on_its_tab() {
     let tabs = |a: &mut App| drawn(a).lines().nth(1).unwrap_or("").to_string();
     assert!(!tabs(&mut a).contains('⚡'), "{}", tabs(&mut a));
     a.session_mut().panes[0].turbo = true;
-    assert!(tabs(&mut a).contains("1 codex ⚡"), "{}", tabs(&mut a));
+    assert!(tabs(&mut a).contains("· codex ⚡"), "{}", tabs(&mut a));
 }
 
 /// An agent that has exited carries no badge: no `⚡` on its tab, and

@@ -72,9 +72,12 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
     (Paragraph::new(line), (to <= width).then_some((from, to)))
 }
 
+/// The most of a project's name a tab shows, in cells.
+const PROJECT_IN_TAB: usize = 12;
+
 /// Agents are tabs over the pane. The focused surface's header is the accent.
 /// The tab row, and the columns each agent's tab covers, for a click.
-pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, usize)>) {
+pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, usize, usize)>) {
     let th = app.theme;
     let in_weft = app.focus == Focus::Weft;
     let mut spans: Vec<Span> = Vec::new();
@@ -130,23 +133,20 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
     }
     let mut tabs = Vec::new();
 
-    for (n, i) in app.running_panes().into_iter().enumerate() {
-        let active = i == app.pane_focus;
-        let waiting = app.waiting(i);
-        let harness = app.harness_at(i).unwrap_or("agent").to_string();
-        let ready = app.readiness(&harness).is_ready();
-        // ⚡: started in turbo mode, every permission granted.
-        let turbo = app.pane_turbo(i);
+    for (n, tab) in app.tabs().into_iter().enumerate() {
+        // A long project name is shortened, so the row keeps room for its
+        // agents and for `+`.
         let text = format!(
-            "{}{} {}{}{}{}",
-            if active { "▸ " } else { "" },
+            "{}{} {} · {}{}{}{}",
+            if tab.active { "▸ " } else { "" },
             n + 1,
-            harness,
-            if turbo { " ⚡" } else { "" },
-            if waiting { " ●" } else { "" },
-            if ready { "" } else { " ⚠" }
+            clip(&tab.project_name, PROJECT_IN_TAB),
+            tab.harness,
+            if tab.turbo { " ⚡" } else { "" },
+            if tab.waiting { " ●" } else { "" },
+            if tab.ready { "" } else { " ⚠" }
         );
-        let style = match (active, in_weft, waiting) {
+        let style = match (tab.active, in_weft, tab.waiting) {
             // In the agent the active tab carries the accent; in Weft the
             // `WORK` header does, so the tab steps back.
             (true, false, _) => Style::default().fg(th.accent()).add_modifier(Modifier::BOLD),
@@ -156,7 +156,7 @@ pub(super) fn tab_row(app: &App, geo: &Geo) -> (Line<'static>, Vec<(u16, u16, us
         };
         let from = geo.tabs.x + col;
         push(&mut spans, &mut col, text, style);
-        tabs.push((from, geo.tabs.x + col, i));
+        tabs.push((from, geo.tabs.x + col, tab.project, tab.pane));
         push(&mut spans, &mut col, "    ".into(), th.label());
     }
     push(&mut spans, &mut col, "+".into(), th.label());

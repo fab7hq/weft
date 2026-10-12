@@ -169,7 +169,10 @@ fn agents_are_tabs_over_the_pane_numbered_and_marked() {
     let drawn = screen(&mut a, 80, 24);
     let tabs = drawn.lines().nth(1).expect("a tab row");
     assert!(!tabs.contains("WORK"), "the row is the tabs, nothing else: {tabs}");
-    assert!(tabs.contains("▸ 1 codex"), "the active agent is marked: {tabs}");
+    assert!(
+        tabs.contains("▸ 1 weft-app-co… · codex"),
+        "the active agent is marked, its project shortened: {tabs}"
+    );
     assert!(tabs.trim_end().ends_with('+'), "a new agent is one click away: {tabs}");
 }
 
@@ -1075,6 +1078,35 @@ fn atlas_with_docs() -> App {
     press(&mut a, KeyCode::Up);
     assert_eq!(a.project_name(), "weft");
     a
+}
+
+/// Every open project's running agents are tabs, named project · harness,
+/// in the tree's order. A digit, Tab and a click reach an agent in another
+/// project, and what is typed then goes to that agent.
+#[test]
+fn tabs_hold_every_open_projects_agents() {
+    let mut a = atlas_with_docs();
+    let tabs = |a: &mut App| screen(a, 120, 32).lines().nth(1).expect("a tab row").to_string();
+    let row = tabs(&mut a);
+    for want in ["1 weft · claude", "2 weft · codex", "3 docs · claude"] {
+        assert!(row.contains(want), "{want}: {row}");
+    }
+    press(&mut a, KeyCode::Char('3'));
+    assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
+    assert_eq!(a.harness_at(a.pane_focus), Some("claude"));
+    assert!(tabs(&mut a).contains("▸ 3 docs · claude"), "{}", tabs(&mut a));
+    // Tab from the last agent wraps to the first, back in weft.
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Tab);
+    assert_eq!((a.project_name(), a.harness_at(a.pane_focus)), ("weft", Some("claude")));
+}
+
+/// T14.1: every project's agents as tabs.
+#[test]
+fn atlas_t14_1_every_projects_agents_as_tabs() {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('1'));
+    expect_screen("atlas_t14_1", &screen(&mut a, 120, 32));
 }
 
 /// T9.7: N starts an agent; each set-up harness starts fresh.
