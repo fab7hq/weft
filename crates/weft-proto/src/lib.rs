@@ -758,6 +758,9 @@ pub fn private_socket(name: &str) -> PathBuf {
     let dir = format!("{name}-{}-{n}", std::process::id());
     let socket = socket_path_in(&std::env::temp_dir(), format!("{dir}/d.sock"));
     if let Some(folder) = socket.parent() {
+        // Process ids come round again: what an earlier run left in a folder
+        // of this name was another daemon's.
+        let _ = std::fs::remove_dir_all(folder);
         let _ = std::fs::create_dir_all(folder);
     }
     socket

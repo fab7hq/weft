@@ -68,6 +68,9 @@ pub(crate) fn test_session_at(
     static N: AtomicU32 = AtomicU32::new(0);
     let n = N.fetch_add(1, Ordering::SeqCst);
     let mut root = std::env::temp_dir().join(format!("{scratch}-{}-{n}", std::process::id()));
+    // Process ids come round again: a folder an earlier run left under this
+    // name holds that run's record, which this test must not read.
+    let _ = std::fs::remove_dir_all(&root);
     if !folder.is_empty() {
         root.push(folder);
     }
