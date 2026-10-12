@@ -20,6 +20,8 @@ pub struct Info {
     pub name: String,
     /// The base name of its `argv[0]`, when it can be read.
     pub argv0: Option<String>,
+    /// The words after `argv[0]`, when they can be read.
+    pub args: Vec<String>,
     pub parent: u32,
     pub start: String,
     /// It has exited and is not yet reaped: gone, for anyone asking.
@@ -33,8 +35,16 @@ pub fn alive(p: &weft_core::sessions::Process) -> bool {
 }
 
 /// The first process at or above `from` whose name, or else whose
-/// `argv[0]`'s base name, is `program`'s base name.
-pub fn ancestor_named(from: u32, program: &str) -> Option<Process> {
+/// `argv[0]`'s base name, is `program`'s base name; none when that process
+/// is the harness's shared server, whose arguments hold one of `server`
+/// (ADR-0035 D4): it holds every session, so it is no session's, and the
+/// program above it only started it.
+fn walk(
+    from: u32,
+    program: &str,
+    server: &[String],
+    info: &dyn Fn(u32) -> Option<Info>,
+) -> Option<Process> {
     let want = base(program);
     let mut pid = from;
     // A chain of processes is short; this only stops a cycle from spinning.
@@ -44,6 +54,9 @@ pub fn ancestor_named(from: u32, program: &str) -> Option<Process> {
         }
         let me = info(pid)?;
         if me.name == want || me.argv0.as_deref() == Some(want) {
+            if me.args.iter().any(|a| server.contains(a)) {
+                return None;
+            }
             return Some(Process { pid, start: me.start });
         }
         if me.parent == pid {
@@ -54,9 +67,10 @@ pub fn ancestor_named(from: u32, program: &str) -> Option<Process> {
     None
 }
 
-/// The harness process this one runs under.
-pub fn harness(program: &str) -> Option<Process> {
-    ancestor_named(std::os::unix::process::parent_id(), program)
+/// The harness process this one runs under, unless it is the harness's
+/// shared server.
+pub fn harness(program: &str, server: &[String]) -> Option<Process> {
+    walk(std::os::unix::process::parent_id(), program, server, &info)
 }
 
 fn base(path: &str) -> &str {
@@ -76,13 +90,18 @@ pub fn info(pid: u32) -> Option<Info> {
     let parent = rest.get(1)?.parse().ok()?;
     let start = rest.get(19)?.to_string();
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let argv0 = cmdline.split(|b| *b == 0).next().filter(|a| !a.is_empty());
-    let argv0 = argv0.map(|a| base(&String::from_utf8_lossy(a)).to_string());
-    Some(Info { name, argv0, parent, start, zombie })
+    let mut words = cmdline.split(|b| *b == 0).map(|a| String::from_utf8_lossy(a).into_owned());
+    let argv0 = words.next().filter(|a| !a.is_empty()).map(|a| base(&a).to_string());
+    let mut args: Vec<String> = words.collect();
+    // `cmdline` ends with a NUL, which leaves one empty word after the last.
+    if args.last().is_some_and(String::is_empty) {
+        args.pop();
+    }
+    Some(Info { name, argv0, args, parent, start, zombie })
 }
 
 /// `proc_pidinfo(PROC_PIDTBSDINFO)`: the name (`p_comm`), the parent and the
-/// start time, seconds and microseconds; `argv[0]` from `KERN_PROCARGS2`.
+/// start time, seconds and microseconds; its argv from `KERN_PROCARGS2`.
 #[cfg(target_os = "macos")]
 pub fn info(pid: u32) -> Option<Info> {
     let mut bsd: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
@@ -101,9 +120,11 @@ pub fn info(pid: u32) -> Option<Info> {
         return None;
     }
     let comm: Vec<u8> = bsd.pbi_comm.iter().take_while(|c| **c != 0).map(|c| *c as u8).collect();
+    let mut words = argv(pid).unwrap_or_default().into_iter();
     Some(Info {
         name: String::from_utf8_lossy(&comm).into_owned(),
-        argv0: argv0(pid),
+        argv0: words.next().map(|a| base(&a).to_string()),
+        args: words.collect(),
         parent: bsd.pbi_ppid,
         start: format!("{}.{:06}", bsd.pbi_start_tvsec, bsd.pbi_start_tvusec),
         // `SZOMB` in <sys/proc.h>.
@@ -113,7 +134,7 @@ pub fn info(pid: u32) -> Option<Info> {
 
 /// `KERN_PROCARGS2` holds `argc`, the executable's path, padding, then argv.
 #[cfg(target_os = "macos")]
-fn argv0(pid: u32) -> Option<String> {
+fn argv(pid: u32) -> Option<Vec<String>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
     let mut buf = vec![0u8; 64 * 1024];
     let mut len = buf.len();
@@ -131,12 +152,13 @@ fn argv0(pid: u32) -> Option<String> {
     if ok != 0 || len < 4 {
         return None;
     }
+    let argc = i32::from_ne_bytes(buf[..4].try_into().ok()?) as usize;
     let rest = &buf[4..len];
     let path_end = rest.iter().position(|b| *b == 0)?;
     let args = &rest[path_end..];
     let start = args.iter().position(|b| *b != 0)?;
-    let arg = args[start..].split(|b| *b == 0).next()?;
-    Some(base(&String::from_utf8_lossy(arg)).to_string())
+    let words = args[start..].split(|b| *b == 0).take(argc);
+    Some(words.map(|a| String::from_utf8_lossy(a).into_owned()).collect())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -161,12 +183,63 @@ mod tests {
         let me = std::process::id();
         let parent = info(me).unwrap().parent;
         let up = info(parent).expect("the parent");
-        let found = ancestor_named(me, &up.name).expect("the parent, by name");
+        let found = walk(me, &up.name, &[], &info).expect("the parent, by name");
         assert_eq!(found, Process { pid: parent, start: up.start.clone() });
         // A path names its program by its base name.
         let path = format!("/somewhere/bin/{}", up.name);
-        assert_eq!(ancestor_named(me, &path).map(|p| p.pid), Some(parent));
-        assert_eq!(ancestor_named(me, "no-such-program-weft"), None);
+        assert_eq!(walk(me, &path, &[], &info).map(|p| p.pid), Some(parent));
+        assert_eq!(walk(me, "no-such-program-weft", &[], &info), None);
+    }
+
+    #[test]
+    fn a_process_reads_its_own_arguments() {
+        let me = info(std::process::id()).expect("this process");
+        assert_eq!(me.args, std::env::args().skip(1).collect::<Vec<_>>());
+    }
+
+    /// A chain of processes, child first: (pid, name, args).
+    fn chain(links: &[(u32, &str, &[&str])]) -> impl Fn(u32) -> Option<Info> {
+        let links: Vec<(u32, Info)> = links
+            .iter()
+            .enumerate()
+            .map(|(i, (pid, name, args))| {
+                let parent = links.get(i + 1).map_or(1, |l| l.0);
+                let args = args.iter().map(|a| a.to_string()).collect();
+                (
+                    *pid,
+                    Info {
+                        name: name.to_string(),
+                        argv0: Some(name.to_string()),
+                        args,
+                        parent,
+                        start: format!("{pid}.1"),
+                        zombie: false,
+                    },
+                )
+            })
+            .collect();
+        move |pid| links.iter().find(|(p, _)| *p == pid).map(|(_, i)| i.clone())
+    }
+
+    /// ADR-0035 D4: a harness's shared server holds every session, so a
+    /// hook under it names no session's process, not the server and not
+    /// the program that started the server above it.
+    #[test]
+    fn a_shared_server_is_not_a_sessions_process() {
+        let server = ["app-server".to_string()];
+        let under_server = chain(&[
+            (30, "sh", &["hook.sh"]),
+            (20, "codex", &["app-server", "--listen", "unix://"]),
+            (10, "codex", &["--yolo"]),
+        ]);
+        assert_eq!(walk(30, "codex", &server, &under_server), None);
+        let under_its_own = chain(&[(30, "sh", &["hook.sh"]), (10, "codex", &["--yolo"])]);
+        assert_eq!(
+            walk(30, "codex", &server, &under_its_own),
+            Some(Process { pid: 10, start: "10.1".into() })
+        );
+        // A harness file that names no server: the first program found, as before.
+        assert_eq!(walk(30, "codex", &[], &under_server).map(|p| p.pid), Some(20));
     }
 
     #[test]

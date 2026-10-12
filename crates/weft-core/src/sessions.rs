@@ -58,14 +58,15 @@ pub struct Process {
     pub start: String,
 }
 
-/// The process a session's receipts name last: the latest line that carries
-/// one. A resumed session's new process is written on a line of its own.
+/// The process a session's newest readable receipt names, if any. A resumed
+/// session's new process is written on a line of its own; a line with none
+/// (a hook under the harness's shared server, ADR-0035 D4) means no process
+/// holds it now.
 pub fn process(text: &str) -> Option<Process> {
-    text.lines().rev().find_map(|line| {
-        let v: serde_json::Value = serde_json::from_str(line).ok()?;
-        let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
-        Some(Process { pid, start: v.get("pid_start")?.as_str()?.to_string() })
-    })
+    let v: serde_json::Value =
+        text.lines().rev().find_map(|line| serde_json::from_str(line).ok())?;
+    let pid = u32::try_from(v.get("pid")?.as_u64()?).ok()?;
+    Some(Process { pid, start: v.get("pid_start")?.as_str()?.to_string() })
 }
 
 /// One session, as Weft's receipts for it read.
@@ -384,6 +385,20 @@ mod tests {
         .join("\n");
         assert_eq!(process(&text), Some(Process { pid: 97, start: "97.2".into() }));
         assert_eq!(process(r#"{"event":"ready","session":"s"}"#), None);
+    }
+
+    /// ADR-0035 D4: a hook under a harness's shared server records no
+    /// process, and that newest line is where the session is now: an older
+    /// line's process (the server, before its harness file named it) no
+    /// longer holds it.
+    #[test]
+    fn a_newest_line_with_no_process_names_none() {
+        let text = [
+            r#"{"event":"working","session":"s","time":"2026-10-12T04:30:00.000Z","harness":"codex","pid":45927,"pid_start":"1.1"}"#,
+            r#"{"event":"turn_ended","session":"s","time":"2026-10-12T05:00:00.000Z","harness":"codex"}"#,
+        ]
+        .join("\n");
+        assert_eq!(process(&text), None);
     }
 
     /// A session run in another program (receipts, no pane) is a row, with

@@ -73,8 +73,12 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
         sent.prompt = Some(got.text);
         sent.prompt_key = got.key;
     }
+    let server: Vec<String> = table["server_args"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|w| w.as_str().map(String::from)).collect())
+        .unwrap_or_default();
     if let Some(program) = table["program"].as_str()
-        && let Some(found) = crate::process::harness(program)
+        && let Some(found) = crate::process::harness(program, &server)
     {
         sent.pid = Some(found.pid);
         sent.pid_start = Some(found.start);
