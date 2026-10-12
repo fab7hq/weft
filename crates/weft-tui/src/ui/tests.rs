@@ -1106,6 +1106,8 @@ fn tabs_hold_every_open_projects_agents() {
 fn atlas_t14_1_every_projects_agents_as_tabs() {
     let mut a = atlas_with_docs();
     press(&mut a, KeyCode::Char('1'));
+    // As the card draws it: the keys in the list, the bar offering the split.
+    a.focus = Focus::Weft;
     expect_screen("atlas_t14_1", &screen(&mut a, 120, 32));
 }
 
