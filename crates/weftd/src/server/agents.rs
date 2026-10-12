@@ -267,14 +267,12 @@ impl Session {
                 // Everything the agent runs inherits the token: a session of
                 // another harness started inside the pane is recorded, and
                 // takes the pane from no one.
-                let p = &mut self.projects[at];
-                let mut map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-                let ours = map.iter().any(|m| m.pane == pane && m.harness == sent.harness);
-                if ours && crate::turns::signalled(&mut map, pane, &sent.session) {
-                    for (slot, m) in p.panes.iter_mut().zip(map) {
-                        slot.map = m;
-                    }
-                    self.write_map(at);
+                let ours = self.projects[at]
+                    .panes
+                    .iter()
+                    .any(|s| s.map.pane == pane && s.map.harness == sent.harness);
+                if ours {
+                    self.tie(at, pane, &sent.session);
                 }
                 (Some(at), self.projects[at].root.clone())
             }
@@ -286,15 +284,20 @@ impl Session {
                     .iter()
                     .position(|p| !p.closed && p.root.canonicalize().is_ok_and(|r| r == root));
                 let root = at.map_or(root, |at| self.projects[at].root.clone());
-                // A session a pane holds is that pane's: only its own signals move it.
-                let held = at.is_some_and(|at| {
-                    self.projects[at].panes.iter().any(|s| {
+                // A session a pane holds is that pane's: only its own signals
+                // move it. A hook from the harness's shared server names no
+                // pane, so for that session it is the pane's all the same.
+                let held = at.and_then(|at| {
+                    self.projects[at].panes.iter().find(|s| {
                         s.map.running
                             && s.map.session.as_ref().is_some_and(|b| b.session == sent.session)
                     })
                 });
-                if held {
-                    return;
+                if let Some(slot) = held {
+                    if !sent.shared {
+                        return;
+                    }
+                    sent.pane = Some(slot.map.pane);
                 }
                 (at, root)
             }
@@ -319,6 +322,18 @@ impl Session {
 }
 
 impl Session {
+    /// Tie a pane to the session it runs, in Weft's pane map.
+    pub(super) fn tie(&mut self, at: usize, pane: u32, session: &str) {
+        let p = &mut self.projects[at];
+        let mut map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
+        if crate::turns::signalled(&mut map, pane, session) {
+            for (slot, m) in p.panes.iter_mut().zip(map) {
+                slot.map = m;
+            }
+            self.write_map(at);
+        }
+    }
+
     /// Open a harness's own stream, once, when its harness file names one
     /// and its server's socket is there; with none, hooks alone apply. It is
     /// opened again on the next pane or hook after its server closes it,

@@ -119,7 +119,8 @@ fn every_session_is_kept_and_a_resume_names_exactly_its_id() {
     std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let socket = protocol::private_socket("weft-index");
-    serve(&socket, &config, serde_json::json!({}));
+    // A harness whose resume would start a session a second time.
+    serve(&socket, &config, serde_json::json!({"resume_joins": false}));
     let mut c = Client::attach(&socket, &root);
 
     // The gl case: an older session that has ended, and a newer one open in
@@ -327,5 +328,36 @@ fn a_resume_that_joins_may_resume_a_session_another_program_runs() {
     assert_eq!(resume(&mut c, "s_zed"), Err("running".into()));
     zed.kill().unwrap();
     zed.wait().unwrap();
+    let _ = c.call(Call::Shutdown);
+}
+
+/// A hook that ran under a harness's shared server names no pane: the
+/// server's variables are those of whichever pane started it. For a session
+/// a Weft pane holds, it is that pane's hook all the same.
+#[test]
+fn a_shared_servers_hook_for_a_session_a_pane_holds_is_that_panes() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let socket = protocol::private_socket("weft-shared-held");
+    serve(&socket, &config, serde_json::json!({}));
+    let mut c = Client::attach(&socket, &root);
+    support::signal(&socket, outside(&root, "s_held", "turn_ended", None));
+    let _ = c.index_until(|i| row(i, "s_held").is_some());
+    let resumed = c.call(Call::StartAgent {
+        harness: "codex".into(),
+        spec: "cat".into(),
+        session: Some("s_held".into()),
+    });
+    let pane = resumed.expect("resumed")["pane"].as_u64().unwrap() as u32;
+    let _ = c.index_until(|i| row(i, "s_held").is_some_and(|r| r.pane == Some(pane)));
+    let shared = Sent { shared: true, ..outside(&root, "s_held", "working", None) };
+    support::signal(&socket, shared);
+    let index = c.index_until(|i| {
+        row(i, "s_held").is_some_and(|r| r.turn == Some(weft_core::turns::Turn::Working))
+    });
+    assert_eq!(row(&index, "s_held").unwrap().pane, Some(pane));
     let _ = c.call(Call::Shutdown);
 }

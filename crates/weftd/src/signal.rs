@@ -8,6 +8,7 @@
 //! file the payload names, it reads only that file's end, for the line that
 //! holds it, and a file that line names as holding it.
 
+use crate::process::Holder;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -77,15 +78,27 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
         .as_array()
         .map(|a| a.iter().filter_map(|w| w.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    if let Some(program) = table["program"].as_str()
-        && let Some(found) = crate::process::harness(program, &server)
-    {
-        sent.pid = Some(found.pid);
-        sent.pid_start = Some(found.start);
+    let holder = table["program"]
+        .as_str()
+        .map_or(Holder::Unknown, |program| crate::process::harness(program, &server));
+    place(&mut sent, holder, at);
+    Some(sent)
+}
+
+/// The process that holds this hook's session, and the pane Weft started
+/// it in. A hook under the harness's shared server carries the server's
+/// variables, those of whichever pane started it, so it names no pane.
+fn place(sent: &mut weft_core::signal::Sent, holder: Holder, at: &Where) {
+    match holder {
+        Holder::Session(p) => (sent.pid, sent.pid_start) = (Some(p.pid), Some(p.start)),
+        Holder::Server => {
+            sent.shared = true;
+            return;
+        }
+        Holder::Unknown => {}
     }
     sent.pane = at.pane.as_deref().and_then(|p| p.parse().ok());
     sent.token = at.token.clone();
-    Some(sent)
 }
 
 /// How much of the end of a file holding the prompt is read: the line must
@@ -173,6 +186,23 @@ mod tests {
         });
         let _ = std::fs::remove_file(&at.socket);
         (printed, sent)
+    }
+
+    #[test]
+    fn a_hook_under_a_shared_server_names_no_pane() {
+        let mut b = bench();
+        b.at.pane = Some("3".into());
+        b.at.token = Some("ab".repeat(16));
+        let mut shared = Sent::default();
+        place(&mut shared, Holder::Server, &b.at);
+        assert_eq!(
+            (shared.shared, shared.pane, shared.token, shared.pid),
+            (true, None, None, None)
+        );
+        let mut own = Sent::default();
+        let p = crate::process::Process { pid: 7, start: "7.1".into() };
+        place(&mut own, Holder::Session(p), &b.at);
+        assert_eq!((own.shared, own.pane, own.pid), (false, Some(3), Some(7)));
     }
 
     #[test]

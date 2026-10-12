@@ -34,42 +34,43 @@ pub fn alive(p: &weft_core::sessions::Process) -> bool {
     info(p.pid).is_some_and(|me| me.start == p.start && !me.zombie)
 }
 
+/// What holds the session a hook runs for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Holder {
+    /// Its own harness process.
+    Session(Process),
+    /// The harness's shared server, whose arguments hold one of the harness
+    /// file's `server_args`: it holds every session, so it is no session's,
+    /// and the program above it only started it.
+    Server,
+    /// No process running the harness's program.
+    Unknown,
+}
+
 /// The first process at or above `from` whose name, or else whose
-/// `argv[0]`'s base name, is `program`'s base name; none when that process
-/// is the harness's shared server, whose arguments hold one of `server`:
-/// it holds every session, so it is no session's, and the program above it
-/// only started it.
-fn walk(
-    from: u32,
-    program: &str,
-    server: &[String],
-    info: &dyn Fn(u32) -> Option<Info>,
-) -> Option<Process> {
+/// `argv[0]`'s base name, is `program`'s base name.
+fn walk(from: u32, program: &str, server: &[String], info: &dyn Fn(u32) -> Option<Info>) -> Holder {
     let want = base(program);
     let mut pid = from;
     // A chain of processes is short; this only stops a cycle from spinning.
     for _ in 0..64 {
-        if pid == 0 {
-            return None;
-        }
-        let me = info(pid)?;
+        let Some(me) = info(pid).filter(|_| pid != 0) else { return Holder::Unknown };
         if me.name == want || me.argv0.as_deref() == Some(want) {
             if me.args.iter().any(|a| server.contains(a)) {
-                return None;
+                return Holder::Server;
             }
-            return Some(Process { pid, start: me.start });
+            return Holder::Session(Process { pid, start: me.start });
         }
         if me.parent == pid {
-            return None;
+            return Holder::Unknown;
         }
         pid = me.parent;
     }
-    None
+    Holder::Unknown
 }
 
-/// The harness process this one runs under, unless it is the harness's
-/// shared server.
-pub fn harness(program: &str, server: &[String]) -> Option<Process> {
+/// What holds the session of the hook this process runs for.
+pub fn harness(program: &str, server: &[String]) -> Holder {
     walk(std::os::unix::process::parent_id(), program, server, &info)
 }
 
@@ -183,12 +184,12 @@ mod tests {
         let me = std::process::id();
         let parent = info(me).unwrap().parent;
         let up = info(parent).expect("the parent");
-        let found = walk(me, &up.name, &[], &info).expect("the parent, by name");
-        assert_eq!(found, Process { pid: parent, start: up.start.clone() });
+        let found = walk(me, &up.name, &[], &info);
+        assert_eq!(found, Holder::Session(Process { pid: parent, start: up.start.clone() }));
         // A path names its program by its base name.
         let path = format!("/somewhere/bin/{}", up.name);
-        assert_eq!(walk(me, &path, &[], &info).map(|p| p.pid), Some(parent));
-        assert_eq!(walk(me, "no-such-program-weft", &[], &info), None);
+        assert_eq!(walk(me, &path, &[], &info), found);
+        assert_eq!(walk(me, "no-such-program-weft", &[], &info), Holder::Unknown);
     }
 
     #[test]
@@ -232,14 +233,17 @@ mod tests {
             (20, "codex", &["app-server", "--listen", "unix://"]),
             (10, "codex", &["--yolo"]),
         ]);
-        assert_eq!(walk(30, "codex", &server, &under_server), None);
+        assert_eq!(walk(30, "codex", &server, &under_server), Holder::Server);
         let under_its_own = chain(&[(30, "sh", &["hook.sh"]), (10, "codex", &["--yolo"])]);
         assert_eq!(
             walk(30, "codex", &server, &under_its_own),
-            Some(Process { pid: 10, start: "10.1".into() })
+            Holder::Session(Process { pid: 10, start: "10.1".into() })
         );
         // A harness file that names no server: the first program found, as before.
-        assert_eq!(walk(30, "codex", &[], &under_server).map(|p| p.pid), Some(20));
+        assert_eq!(
+            walk(30, "codex", &[], &under_server),
+            Holder::Session(Process { pid: 20, start: "20.1".into() })
+        );
     }
 
     #[test]

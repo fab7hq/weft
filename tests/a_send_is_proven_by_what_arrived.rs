@@ -91,15 +91,16 @@ fn stand_in() -> PathBuf {
 /// `silent` not at all, and then ends its turn; `transcript` records it only
 /// in a transcript, then a later step, and names that transcript only at the
 /// end of its turn 12 s later, twice; `busy` reports each as typed, but starts
-/// with a turn running that ends 3 s later. Every line also goes to
-/// `<dir>/took`.
+/// with a turn running that ends 3 s later; `shared` signals nothing of its
+/// own, as an agent whose hooks run in its harness's shared server, and the
+/// test sends them. Every line also goes to `<dir>/took`.
 fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
     let (d, h) = (dir.display(), home.display());
     let script = format!(
         "#!/bin/sh\n\
-         sig() {{ printf '%s' \"$2\" | HOME='{h}' '{weft}' signal {harness} \"$1\"; }}\n\
+         sig() {{ [ {mode} = shared ] || printf '%s' \"$2\" | HOME='{h}' '{weft}' signal {harness} \"$1\"; }}\n\
          sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
          if [ {mode} = busy ]; then\n\
            sig Busy \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
@@ -133,6 +134,7 @@ struct Bench {
     stream: UnixStream,
     lines: Lines<UnixStream>,
     id: u64,
+    shared: bool,
 }
 
 impl Bench {
@@ -189,16 +191,26 @@ impl Bench {
             std::thread::sleep(Duration::from_millis(20));
         };
         let lines = Lines::new(stream.try_clone().unwrap());
-        let mut b = Bench { _tmp: tmp, root, agent: dir, socket, stream, lines, id: 0 };
+        let mut b = Bench {
+            _tmp: tmp,
+            root,
+            agent: dir,
+            socket,
+            stream,
+            lines,
+            id: 0,
+            shared: mode == "shared",
+        };
         b.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
         let path = b.root.to_string_lossy().into_owned();
         b.call(Call::Open { rows: 24, cols: 80, path, raw: true });
         b.call(Call::StartAgent { harness: harness.into(), spec, session: None });
         b.wait(Duration::from_secs(5), |e| matches!(e, Event::Added { .. }).then_some(()));
         // Ready, by its hook: its turn is not running; or a busy one, running.
+        // One whose hooks are its server's has said nothing yet.
         let state = if mode == "busy" { Turn::Working } else { Turn::Ready };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !b.agents_are(state) {
+        while mode != "shared" && !b.agents_are(state) {
             assert!(Instant::now() < deadline, "the agent never said it was {state:?}");
         }
         b
@@ -253,7 +265,8 @@ impl Bench {
                 _ => {}
             }
         };
-        self.call(Call::Resolve { pending, yes: true, force: false });
+        // An agent that has said nothing is sent to on the person's say-so.
+        self.call(Call::Resolve { pending, yes: true, force: self.shared });
         Ok(self.wait(Duration::from_secs(10), |e| match e {
             Event::Injected { refusal, .. } => Some(refusal),
             _ => None,
@@ -271,6 +284,41 @@ impl Bench {
             }
         }
         None
+    }
+
+    /// A hook of session `s1` that ran in its harness's shared server: it
+    /// names no pane.
+    fn shared_prompt(&self, prompt: &str) {
+        let sent = weft_core::signal::Sent {
+            harness: "loom".into(),
+            hook: "Submitted".into(),
+            session: "s1".into(),
+            workspace: Some(self.root.to_string_lossy().into_owned()),
+            state: Some("working".into()),
+            forward: Some("prompt".into()),
+            prompt: Some(prompt.into()),
+            shared: true,
+            ..Default::default()
+        };
+        let mut s = UnixStream::connect(&self.socket).unwrap();
+        use std::io::Write;
+        s.write_all(&Line::Event(Event::Signal(Box::new(sent))).encode()).unwrap();
+    }
+
+    /// The session Weft's pane map ties pane 0 to, within `within`.
+    fn tied(&self, within: Duration) -> Option<String> {
+        let deadline = Instant::now() + within;
+        loop {
+            let map = std::fs::read(self.root.join(".fab7/weft/panes.json")).unwrap_or_default();
+            let map: serde_json::Value = serde_json::from_slice(&map).unwrap_or_default();
+            if let Some(s) = map["panes"][0]["session"]["session"].as_str() {
+                return Some(s.to_string());
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
     fn calls(&self) -> String {
@@ -379,4 +427,28 @@ fn a_harness_that_does_not_say_where_its_prompt_is_is_not_sent_to() {
     assert!(refused.contains("Mute"), "names the harness: {refused}");
     assert!(refused.contains("prompt"), "and why: {refused}");
     assert_eq!(b.took(), "", "nothing typed");
+}
+
+/// A fresh pane whose harness's hooks run in a shared server names no pane:
+/// the prompt Weft typed coming back, judged the Ask, ties the pane to that
+/// session.
+#[test]
+fn a_fresh_pane_under_a_shared_server_is_tied_by_wefts_send() {
+    let mut b = Bench::new("weft-proven-shared", "loom", "shared");
+    assert_eq!(b.send(), Ok(None), "typed");
+    b.shared_prompt(WORDING);
+    assert_eq!(b.tied(Duration::from_secs(5)).as_deref(), Some("s1"));
+    assert_eq!(b.notice(Duration::from_secs(1)), None, "delivered");
+}
+
+/// Another prompt coming back is not the Ask: the person is told, and the
+/// pane is tied to nothing.
+#[test]
+fn a_shared_servers_prompt_that_is_not_the_ask_ties_nothing() {
+    let mut b = Bench::new("weft-proven-shared-other", "loom", "shared");
+    assert_eq!(b.send(), Ok(None), "typed");
+    b.shared_prompt("something else");
+    let said = b.notice(Duration::from_secs(5)).expect("the person is told");
+    assert_eq!(said.as_deref(), Some("NotTheAsk"));
+    assert_eq!(b.tied(Duration::from_millis(500)), None);
 }

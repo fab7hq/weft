@@ -182,6 +182,10 @@ pub struct Sent {
     pub pane: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// The hook ran under the harness's shared server, whose variables are
+    /// those of whichever pane started it: it names no pane.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 impl Signal {

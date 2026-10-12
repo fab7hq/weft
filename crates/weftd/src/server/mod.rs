@@ -349,6 +349,9 @@ enum Wake {
         pane: u32,
         ask: String,
         answer: Result<serde_json::Value, String>,
+        /// The session to tie the pane to, when it is the Ask: a shared
+        /// server's hook named no pane.
+        tie: Option<String>,
     },
 }
 
@@ -758,8 +761,8 @@ impl Session {
                     self.streams.remove(&harness);
                     self.streamed.retain(|(h, _)| *h != harness);
                 }
-                Wake::Received { project, pane, ask, answer } => {
-                    self.received(project, pane, &ask, answer)
+                Wake::Received { project, pane, ask, answer, tie } => {
+                    self.received(project, pane, &ask, answer, tie)
                 }
             }
         }

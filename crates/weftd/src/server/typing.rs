@@ -48,6 +48,13 @@ pub(super) struct Due {
     until: std::time::Instant,
 }
 
+/// The one pane of `waiting` that `fresh` says yes to; none with none or more.
+fn only_one(waiting: &[u32], fresh: &dyn Fn(u32) -> bool) -> Option<u32> {
+    let mut found = waiting.iter().copied().filter(|p| fresh(*p));
+    let one = found.next()?;
+    found.next().is_none().then_some(one)
+}
+
 /// Whether RingFrame's answer to a received prompt says it is this Ask's
 /// submission: the one comparison is RingFrame's (`observe prompt`), with
 /// its allowances; Weft compares no bytes.
@@ -134,15 +141,34 @@ impl Session {
         at: usize,
         sent: &weft_core::signal::Sent,
     ) -> Option<crate::forward::Answered> {
-        let pane = sent.pane?;
         if sent.forward.as_deref() != Some("prompt") || sent.prompt.is_none() {
             return None;
         }
+        // A hook from the harness's shared server names no pane: it answers
+        // the send of the one pane of that harness that waits on one and is
+        // tied to no session yet, and, if it is the Ask, ties that pane.
+        let (pane, tie) = match sent.pane {
+            Some(pane) => (pane, None),
+            None if sent.shared => {
+                let p = &self.projects[at];
+                let fresh = |pane: u32| {
+                    p.panes.iter().any(|s| {
+                        s.map.pane == pane
+                            && s.map.harness == sent.harness
+                            && s.map.running
+                            && s.map.session.is_none()
+                    })
+                };
+                let waiting: Vec<u32> = p.due.iter().map(|d| d.pane).collect();
+                (only_one(&waiting, &fresh)?, Some(sent.session.clone()))
+            }
+            None => return None,
+        };
         let due = &mut self.projects[at].due;
         let Due { ask, .. } = due.remove(due.iter().position(|d| d.pane == pane)?);
         let tx = self.tx.clone();
         Some(Box::new(move |answer| {
-            let _ = tx.send(Wake::Received { project: at, pane, ask, answer });
+            let _ = tx.send(Wake::Received { project: at, pane, ask, answer, tie });
         }))
     }
 
@@ -156,9 +182,16 @@ impl Session {
         pane: u32,
         ask: &str,
         answer: Result<serde_json::Value, String>,
+        tie: Option<String>,
     ) {
         let said = match answer {
-            Ok(v) if is_the_ask(&v, ask) => return,
+            Ok(v) if is_the_ask(&v, ask) => {
+                if let Some(session) = tie {
+                    self.tie(project, pane, &session);
+                    self.tell_agents(project);
+                }
+                return;
+            }
             Ok(_) => Out::Injected { pane, refusal: Some("NotTheAsk".into()), unrecorded: None },
             // RingFrame did not say: the prompt went, unjudged.
             Err(why) => Out::Injected { pane, refusal: None, unrecorded: Some(why) },
@@ -229,5 +262,20 @@ impl Session {
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn a_shared_prompt_answers_only_the_one_fresh_pane_waiting() {
+        let fresh = |p: u32| p != 9;
+        assert_eq!(only_one(&[2], &fresh), Some(2));
+        assert_eq!(only_one(&[9, 2], &fresh), Some(2), "a tied pane is not fresh");
+        assert_eq!(only_one(&[2, 3], &fresh), None, "two waiting: cannot tell which");
+        assert_eq!(only_one(&[], &fresh), None);
     }
 }
