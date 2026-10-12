@@ -146,7 +146,7 @@ impl Remote {
 
     // --- watching ----------------------------------------------------------
 
-    /// One agent per device: the previous one is let go.
+    /// At most two agents per device, side by side: one no longer watched is let go.
     fn watch(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
         // The agent, and the one beside it when the device shows two.
         let mut next = Vec::new();
