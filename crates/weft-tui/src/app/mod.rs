@@ -65,14 +65,6 @@ pub struct Tab {
     pub ready: bool,
 }
 
-/// Two agents side by side: each side's project and pane id, left first,
-/// and the side whose agent is the one shown and given the keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Split {
-    pub sides: [(usize, u32); 2],
-    pub side: usize,
-}
-
 /// Where the last frame drew each thing a click can land on, as the area it
 /// covers. Written by `ui::draw` where it draws them, read by `on_mouse`.
 pub type Hits = Vec<(ratatui::layout::Rect, Target)>;
@@ -331,11 +323,10 @@ pub struct App {
     /// The person has moved about: the selection is theirs, and no longer
     /// lands on the first agent or work as the tree fills in.
     landed: bool,
-    /// Two agents side by side, while split.
-    split: Option<Split>,
-    /// The agent shown before the one shown now, by project and pane id:
-    /// what a split puts beside it.
-    last_tab: Option<(usize, u32)>,
+    /// The panes, each with its own tabs.
+    panes: crate::panes::Panes,
+    /// Where the panes were last drawn: what a split must leave room in.
+    panes_area: ratatui::layout::Rect,
 }
 
 impl App {
@@ -352,49 +343,80 @@ impl App {
         (0..self.pane_count()).filter(|&i| sess!(self).panes[i].running).collect()
     }
 
-    /// Every open project's running agents, in the tree's order: the tabs.
-    pub fn tabs(&self) -> Vec<Tab> {
+    /// Every open project's running agents, by project and pane id, in the
+    /// tree's order.
+    fn running_agents(&self) -> Vec<crate::panes::Agent> {
         let mut out = Vec::new();
         for (at, p) in self.projects.iter().enumerate() {
-            for (pane, view) in p.session.panes.iter().enumerate().filter(|(_, v)| v.running) {
-                let local = self.readiness.get(&view.harness).copied();
-                let shared = p.session.readiness.get(&view.harness).and_then(|v| v.as_str());
-                out.push(Tab {
-                    project: at,
-                    pane,
-                    project_name: p.name.clone(),
-                    harness: view.harness.clone(),
-                    active: at == self.at && pane == self.pane_focus,
-                    waiting: weft_core::turns::is_asking(view.turn),
-                    turbo: view.turbo,
-                    ready: local.unwrap_or_else(|| Readiness::of_word(shared)).is_ready(),
-                });
-            }
+            out.extend(p.session.panes.iter().filter(|v| v.running).map(|v| (at, v.id)));
         }
         out
     }
 
-    /// Show an agent's tab, in whichever project it runs: that project
-    /// becomes the one acts land in, and the agent has the keys. Split, it
-    /// goes on the side with the keys; the agent on the other side moves the
-    /// keys there instead.
+    /// Every open project's running agents, pane by pane, in the person's
+    /// order: the tabs, as their numbers count them.
+    pub fn tabs(&self) -> Vec<Tab> {
+        let running = self.running_agents();
+        let mut order: Vec<_> =
+            self.panes.order().into_iter().filter(|a| running.contains(a)).collect();
+        order.extend(running.into_iter().filter(|a| !order.contains(a)).collect::<Vec<_>>());
+        let mut out = Vec::new();
+        for (at, id) in order {
+            let p = &self.projects[at];
+            let Some(pane) = p.session.index_of(id) else { continue };
+            let view = &p.session.panes[pane];
+            let local = self.readiness.get(&view.harness).copied();
+            let shared = p.session.readiness.get(&view.harness).and_then(|v| v.as_str());
+            out.push(Tab {
+                project: at,
+                pane,
+                project_name: p.name.clone(),
+                harness: view.harness.clone(),
+                active: at == self.at && pane == self.pane_focus,
+                waiting: weft_core::turns::is_asking(view.turn),
+                turbo: view.turbo,
+                ready: local.unwrap_or_else(|| Readiness::of_word(shared)).is_ready(),
+            });
+        }
+        out
+    }
+
+    /// The panes, kept to the agents running and showing the agent shown.
+    pub(crate) fn sync_panes(&mut self) {
+        let running = self.running_agents();
+        self.panes.sync(&running);
+        if let Some(now) = self.shown()
+            && self.panes.active().showing() != Some(now)
+        {
+            self.panes.show(now);
+        }
+    }
+
+    pub fn panes(&self) -> &crate::panes::Panes {
+        &self.panes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panes_mut(&mut self) -> &mut crate::panes::Panes {
+        &mut self.panes
+    }
+
+    /// Where the panes are drawn, as the frame being drawn measures it.
+    pub(crate) fn note_panes_area(&mut self, area: ratatui::layout::Rect) {
+        self.panes_area = area;
+    }
+
+    /// Show an agent's tab, in whichever project it runs and in the pane
+    /// that holds it: that project becomes the one acts land in, and the
+    /// agent has the keys.
     pub(crate) fn show_tab(&mut self, project: usize, pane: usize) {
         let Some(id) =
             self.projects.get(project).and_then(|p| p.session.panes.get(pane)).map(|p| p.id)
         else {
             return;
         };
-        if let Some(mut split) = self.split_now() {
-            match split.sides.iter().position(|s| *s == (project, id)) {
-                Some(side) => split.side = side,
-                None => split.sides[split.side] = (project, id),
-            }
-            self.split = Some(split);
-        }
-        let now = self.shown();
-        if now.is_some_and(|n| n != (project, id)) {
-            self.last_tab = now;
-        }
+        self.sync_panes();
+        self.panes.show((project, id));
         self.focus_on(project, pane);
         self.focus = Focus::Agent;
     }
@@ -413,65 +435,10 @@ impl App {
         self.pane_focus = pane;
     }
 
-    /// The split, while both its agents still run.
-    pub fn split_now(&self) -> Option<Split> {
-        let split = self.split?;
-        split.sides.iter().all(|&(at, id)| self.running_pane(at, id).is_some()).then_some(split)
-    }
-
-    pub fn split(&self) -> Option<Split> {
-        self.split_now()
-    }
-
     /// A running agent's pane index, by project and pane id.
     pub fn running_pane(&self, project: usize, id: u32) -> Option<usize> {
         let s = &self.projects.get(project)?.session;
         s.index_of(id).filter(|&i| s.panes[i].running)
-    }
-
-    /// `|`: the agent shown and the one shown before it, side by side; or
-    /// one pane again, the agent with the keys kept.
-    pub(crate) fn toggle_split(&mut self) {
-        if self.split_now().is_some() {
-            self.split = None;
-            return;
-        }
-        let Some(now) = self.shown() else {
-            self.say(weft_core::words::word("why.split_needs_two"));
-            return;
-        };
-        let running = |at: usize, id: u32| self.running_pane(at, id).is_some();
-        let beside =
-            self.last_tab.filter(|&(at, id)| (at, id) != now && running(at, id)).or_else(|| {
-                self.tabs()
-                    .into_iter()
-                    .map(|t| (t.project, self.projects[t.project].session.panes[t.pane].id))
-                    .find(|&t| t != now)
-            });
-        let Some(beside) = beside else {
-            self.say(weft_core::words::word("why.split_needs_two"));
-            return;
-        };
-        self.split = Some(Split { sides: [beside, now], side: 1 });
-        self.show_work = false;
-        self.focus = Focus::Agent;
-    }
-
-    /// `Ctrl+]` while split: from the list to the left side, to the right,
-    /// back to the list. The list is not brought back: `B` does that.
-    pub(crate) fn cycle_split(&mut self, mut split: Split) {
-        match (self.focus, split.side) {
-            (Focus::Agent, 1) => self.focus = Focus::Weft,
-            (Focus::Agent, _) | (Focus::Weft, _) => {
-                split.side = if self.focus == Focus::Weft { 0 } else { 1 };
-                let (at, id) = split.sides[split.side];
-                if let Some(pane) = self.running_pane(at, id) {
-                    self.focus_on(at, pane);
-                }
-                self.split = Some(split);
-                self.focus = Focus::Agent;
-            }
-        }
     }
 
     /// A pane's screen in any project, drawn at the size given.
@@ -829,8 +796,8 @@ impl App {
             reading: None,
             listed: Default::default(),
             clock: None,
-            split: None,
-            last_tab: None,
+            panes: Default::default(),
+            panes_area: Default::default(),
             landed: false,
             projects: vec![Open::new(root, session)],
             at: 0,

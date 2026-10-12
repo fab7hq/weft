@@ -12,6 +12,7 @@ impl App {
         }
         self.hint = None;
         self.landed = true;
+        self.sync_panes();
         // The tree's search takes what is typed into it.
         if self.focus == Focus::Weft && self.tree_search_key(&key) {
             return Ok(());
@@ -62,18 +63,8 @@ impl App {
             Action::NextNeedsYou => self.next_needs_you(),
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
             // Picking an agent hands it the keys, as Enter on its harness does.
-            Action::Split => self.toggle_split(),
             Action::NextPane => {
-                // Split, the agent on the other side is not a next one.
-                let other = self.split_now().map(|s| s.sides[1 - s.side]);
-                let tabs: Vec<_> = self
-                    .tabs()
-                    .into_iter()
-                    .filter(|t| {
-                        let id = self.projects[t.project].session.panes[t.pane].id;
-                        other != Some((t.project, id))
-                    })
-                    .collect();
+                let tabs = self.tabs();
                 if !tabs.is_empty() {
                     let next = tabs.iter().position(|t| t.active).map_or(0, |at| at + 1);
                     let t = &tabs[next % tabs.len()];
@@ -117,6 +108,7 @@ impl App {
     /// A click selects, as the arrows would; the wheel, while an agent has
     /// the keys, scrolls its pane.
     pub fn on_mouse(&mut self, m: MouseEvent) {
+        self.sync_panes();
         if m.kind == MouseEventKind::Down(MouseButton::Left) {
             return self.on_click(m.column, m.row);
         }
@@ -182,9 +174,6 @@ impl App {
     }
 
     pub(crate) fn toggle_focus(&mut self) {
-        if let Some(split) = self.split_now() {
-            return self.cycle_split(split);
-        }
         self.focus = match self.focus {
             Focus::Weft => Focus::Agent,
             Focus::Agent => {
@@ -356,6 +345,7 @@ impl App {
                 {
                     // The connection goes; the agents and the record do not.
                     self.projects.remove(at);
+                    self.panes.forget_project(at);
                     self.at = self.at.min(self.projects.len() - 1);
                     self.pane_focus = 0;
                     self.selected = 0;

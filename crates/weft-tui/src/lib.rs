@@ -9,6 +9,7 @@ pub mod client;
 pub mod encode;
 pub mod keys;
 pub mod layout;
+pub mod panes;
 pub mod theme;
 pub mod ui;
 

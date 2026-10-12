@@ -34,6 +34,7 @@ use panel::*;
 use title::*;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.sync_panes();
     app.hold_rows(true);
     draw_frame(frame, app);
     app.hold_rows(false);
@@ -59,18 +60,8 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
         }
         frame.render_widget(Paragraph::new(line), geo.tabs);
     }
-    // Split with the list hidden, the rules meet the column between the halves.
-    let between = match (app.split_now(), geo.divider, geo.right) {
-        (Some(_), None, Some(right)) if app.detail().is_none() && app.eval_screen().is_none() => {
-            let (l, _) = halves(right);
-            Some(l.x + l.width - geo.top_rule.x)
-        }
-        _ => None,
-    };
-    let (top_at, top_junction) = match between {
-        Some(col) => (Some(col), '┼'),
-        None => (geo.divider, geo.top_junction),
-    };
+    let between: Option<u16> = None;
+    let (top_at, top_junction) = (geo.divider, geo.top_junction);
     frame.render_widget(rule(geo.top_rule.width, top_at, top_junction, th), geo.top_rule);
 
     if app.eval_screen().is_some() {
@@ -92,6 +83,7 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
         }
         if let Some(right) = geo.right {
+            app.note_panes_area(right);
             agent(frame, app, right);
         }
     }

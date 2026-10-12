@@ -32,5 +32,5 @@ expression: drawn
                                             ││                                                                         │
                                             │└─────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
- [A]SK   [E]VAL   [S]EAL                                                              [/] SEARCH   [|] SPLIT   [W]EFT ⌄
+ [A]SK   [E]VAL   [S]EAL                                                             [/] SEARCH   [\] LAYOUT   [W]EFT ⌄
  Weft 0.2.1 is installed - it starts when no agent is running (2 running)
