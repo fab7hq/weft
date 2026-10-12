@@ -1101,7 +1101,7 @@ fn tabs_hold_every_open_projects_agents() {
     assert_eq!((a.project_name(), a.harness_at(a.pane_focus)), ("weft", Some("claude")));
 }
 
-/// T14.1: every project's agents as tabs.
+/// Every open project's agents as tabs.
 #[test]
 fn atlas_t14_1_every_projects_agents_as_tabs() {
     let mut a = atlas_with_docs();
@@ -1163,11 +1163,11 @@ fn a_split_needs_two_agents() {
     assert_eq!(a.hint_text(), Some(weft_core::words::word("why.split_needs_two")));
 }
 
-/// T14.2: two side by side.
+/// Two agents side by side.
 #[test]
 fn atlas_t14_2_split_two_side_by_side() {
     let mut a = split_atlas();
-    // As the card: the right side current, Weft holding the keys.
+    // The right side current, Weft holding the keys.
     a.focus = Focus::Weft;
     expect_screen("atlas_t14_2", &screen(&mut a, 120, 32));
 }
