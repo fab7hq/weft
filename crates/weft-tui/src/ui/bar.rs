@@ -28,13 +28,12 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     if app.layout_bar && app.modal.is_none() {
         let lit = Style::default().fg(th.primary()).add_modifier(Modifier::BOLD);
         let keys = format!(
-            "   {}   {}    [ ]  {}   {}   {}   {}",
+            "   {}   {}    [ ]  {}   {}   {}   [ESC] DONE",
             key_by("→", "layout.right"),
             key_by("↓", "layout.down"),
             word("layout.move_tab").to_uppercase(),
             key_by("TAB", "layout.next_pane"),
             key_in("layout.join"),
-            key_by("ESC", "layout.done"),
         );
         let title = format!(" {}", word("act.layout").to_uppercase());
         return Paragraph::new(Line::from(vec![
