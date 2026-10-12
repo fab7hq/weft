@@ -36,9 +36,9 @@ pub fn alive(p: &weft_core::sessions::Process) -> bool {
 
 /// The first process at or above `from` whose name, or else whose
 /// `argv[0]`'s base name, is `program`'s base name; none when that process
-/// is the harness's shared server, whose arguments hold one of `server`
-/// (ADR-0035 D4): it holds every session, so it is no session's, and the
-/// program above it only started it.
+/// is the harness's shared server, whose arguments hold one of `server`:
+/// it holds every session, so it is no session's, and the program above it
+/// only started it.
 fn walk(
     from: u32,
     program: &str,
@@ -221,7 +221,7 @@ mod tests {
         move |pid| links.iter().find(|(p, _)| *p == pid).map(|(_, i)| i.clone())
     }
 
-    /// ADR-0035 D4: a harness's shared server holds every session, so a
+    /// A harness's shared server holds every session, so a
     /// hook under it names no session's process, not the server and not
     /// the program that started the server above it.
     #[test]

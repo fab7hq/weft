@@ -73,10 +73,13 @@ pub struct Harness {
     /// harness gives no state and forwards nothing.
     #[serde(default)]
     pub signal: Option<crate::signal::Signal>,
-    /// Its own server's event stream (`[listen]`, ADR-0035), when it keeps
+    /// Its own server's event stream (`[listen]`), when it keeps
     /// one: Weft listens to it for its sessions' turns.
     #[serde(default)]
     pub listen: Option<crate::listen::Listen>,
+    /// Resuming a session another program runs joins it.
+    #[serde(default)]
+    pub resume_joins: bool,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -135,6 +138,7 @@ impl Harness {
             unset_env: argv(&p["unset_env"]).unwrap_or_default(),
             signal: crate::signal::Signal::of(&p["signal"]),
             listen: crate::listen::Listen::of(&p["listen"]),
+            resume_joins: p["resume_joins"].as_bool().unwrap_or(false),
         })
     }
 
@@ -281,12 +285,12 @@ pub mod fixture {
 #[cfg(test)]
 mod tests {
 
-    /// Codex's `[listen]` reads what its server said in HostLab
-    /// (`codex-app-server-probe-q01`, sample 1, Codex 0.162): a turn running,
+    /// Codex's `[listen]` reads what its server said (Codex 0.162): a turn running,
     /// an interrupted one idle, an unloaded thread nothing.
     #[test]
     fn codex_listens_to_what_its_server_said() {
         let codex = Harness::of("codex", &fixture::file("codex")).expect("codex");
+        assert!(codex.resume_joins, "a resume joins the session its server runs");
         let l = codex.listen.expect("a [listen]");
         let said = |line: &str| l.heard(&serde_json::from_str(line).unwrap());
         let t = "01a12e8f-7e5f-73c2-84fe-b717d7b49322";

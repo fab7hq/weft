@@ -1,4 +1,4 @@
-//! A harness file's `[listen]` (ADR-0035 D1): the event stream a harness's
+//! A harness file's `[listen]`: the event stream a harness's
 //! own server keeps, and what each message on it means to Weft. Weft only
 //! listens: it sends the table's hello and nothing else.
 

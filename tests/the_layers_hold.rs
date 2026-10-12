@@ -36,7 +36,7 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "weft-proto",
         ],
         "the daemon does: panes, files, processes (libc reads a hook's harness process), \
-         and listens to a harness's own stream (tungstenite frames it, ADR-0035)",
+         and listens to a harness's own stream (tungstenite frames it)",
     ),
     (
         "weft-tui",

@@ -44,7 +44,7 @@ impl Session {
     /// Weft's own receipts, the pane map and the record (sessions.md, "The
     /// session index"). A pane's session is the one its signals named; a
     /// session no pane holds runs while the process its receipts name does,
-    /// or while its harness's open stream says a turn runs (ADR-0035 D4).
+    /// or while its harness's open stream says a turn runs.
     pub(super) fn agents_of(&mut self, at: usize) -> Agents {
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
@@ -95,11 +95,14 @@ impl Session {
                 format!("there is no {harness} session {id} here"),
             ));
         };
-        if row.state == weft_core::sessions::State::Running {
+        let file = self.projects[at].harnesses.find(harness);
+        // Resuming joins it where the harness says so, unless a Weft pane
+        // holds it already: that pane, not another.
+        let joins = row.pane.is_none() && file.is_some_and(|h| h.resume_joins);
+        if row.state == weft_core::sessions::State::Running && !joins {
             let held = row.pane.map_or("another program".to_string(), |p| format!("pane {p}"));
             return Err(Answer::No("running", format!("{id} is running, in {held}")));
         }
-        let file = self.projects[at].harnesses.find(harness);
         file.and_then(|h| h.resume_spec(id))
             .ok_or_else(|| Answer::No("no_harness", format!("{harness} has no resume line")))
     }
@@ -239,7 +242,7 @@ impl Session {
         if !is_id(&sent.session) || !is_id(&sent.harness) {
             return;
         }
-        // Its harness's own stream gives this session's turn (ADR-0035 D3).
+        // Its harness's own stream gives this session's turn.
         if self.streamed.contains(&(sent.harness.clone(), sent.session.clone())) {
             sent.state = None;
         }
@@ -319,7 +322,7 @@ impl Session {
     /// Open a harness's own stream, once, when its harness file names one
     /// and its server's socket is there; with none, hooks alone apply. It is
     /// opened again on the next pane or hook after its server closes it,
-    /// never on a timer (ADR-0035 D2).
+    /// never on a timer.
     pub(super) fn listen(&mut self, at: usize, harness: &str) {
         use crate::harness::OnThisMachine;
         if self.streams.contains(harness) {
@@ -344,7 +347,7 @@ impl Session {
     /// A session's turn as its harness's stream said it, recorded as a hook's
     /// would be, in the open project whose receipts already hold the session.
     /// The stream names no workspace, so a session no hook tied to a project
-    /// is no one's (ADR-0035 D3).
+    /// is no one's.
     pub(super) fn heard(&mut self, harness: String, session: String, state: String) {
         if !weft_core::sessions::is_id(&harness) || !weft_core::sessions::is_id(&session) {
             return;

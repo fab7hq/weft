@@ -7,6 +7,9 @@ title = "Codex"
 program = "codex"
 # How a recorded session is opened again; the id is appended.
 resume = ["resume"]
+# Resuming a session another program runs joins it: both are clients of the
+# same server, and the turn runs once.
+resume_joins = true
 # It repaints its viewport rather than scrolling, so its history is behind this.
 transcript = "Ctrl+T"
 # Turbo mode, when Weft's config.toml turns it on: every approval skipped. Codex has
@@ -16,7 +19,7 @@ turbo = ["--dangerously-bypass-approvals-and-sandbox"]
 
 # Codex 0.162 runs its sessions in one shared server (`codex app-server
 # --listen unix://`), started by the first Codex window, and its hooks run
-# there. That server is no session's process (ADR-0035 D4).
+# there. That server is no session's process.
 server_args = ["app-server"]
 
 [config]   # where it keeps its configuration
@@ -72,8 +75,8 @@ on = [
 ]
 
 # Its server tells every client each session's state, an interrupted turn
-# included, which no hook reports (ADR-0035; HostLab
-# codex-app-server-probe-q01, Codex 0.162). A session is the server's thread.
+# included, which no hook reports (Codex 0.162). A session is the server's
+# thread.
 # The socket is a WebSocket; `codex app-server proxy` only relays bytes to it.
 [listen]
 socket = "app-server-control/app-server-control.sock"

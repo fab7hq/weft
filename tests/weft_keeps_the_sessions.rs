@@ -69,12 +69,14 @@ impl Client {
     }
 }
 
-fn serve(socket: &Path, config: &Path, listen: Option<serde_json::Value>) {
+/// The daemon, with one harness: Codex's fixture file run as `cat`, and
+/// `extra`'s fields over it.
+fn serve(socket: &Path, config: &Path, extra: serde_json::Value) {
     let (listening, config) = (socket.to_path_buf(), config.to_path_buf());
     let mut harness = weft::harness_table::fixture::file("codex");
     harness["program"] = "cat".into();
-    if let Some(listen) = listen {
-        harness["listen"] = listen;
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        harness[k] = v.clone();
     }
     // Resumed, it reads its pane (`cat - <id>`) and keeps running.
     harness["resume"] = serde_json::json!(["-"]);
@@ -117,7 +119,7 @@ fn every_session_is_kept_and_a_resume_names_exactly_its_id() {
     std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let socket = protocol::private_socket("weft-index");
-    serve(&socket, &config, None);
+    serve(&socket, &config, serde_json::json!({}));
     let mut c = Client::attach(&socket, &root);
 
     // The gl case: an older session that has ended, and a newer one open in
@@ -179,7 +181,7 @@ fn a_session_held_by_a_running_pane_is_refused_with_the_pane() {
     let root = root.canonicalize().unwrap();
     let socket = protocol::private_socket("weft-held");
     let agents = support::agents_dir(&socket);
-    serve(&socket, &config, None);
+    serve(&socket, &config, serde_json::json!({}));
     let mut c = Client::attach(&socket, &root);
     let spec = support::agent(&agents);
     c.call(Call::StartAgent { harness: "codex".into(), spec, session: None }).unwrap();
@@ -214,7 +216,7 @@ fn taken(server: &std::os::unix::net::UnixListener) -> (UnixStream, String) {
     (conn, hello.trim_end().to_string())
 }
 
-/// ADR-0035 D1–D3: a harness's own stream gives the turn of each session a
+/// A harness's own stream gives the turn of each session a
 /// hook tied to this project, an interrupt included, which no hook reports.
 /// Hooks still tie a session to its project but no longer move a streamed
 /// one's turn. A session no hook tied is ignored. When the server closes the
@@ -234,13 +236,13 @@ fn a_harness_stream_gives_its_sessions_turns() {
     serve(
         &socket,
         &config,
-        Some(serde_json::json!({
+        serde_json::json!({"listen": {
             "socket": stream.to_string_lossy(), "transport": "lines", "session": "params.id",
             "hello": [{"method": "hi"}],
             "on": [{"method": "status", "when": {"params.flags": "asking"}, "state": "waiting"},
                    {"method": "status", "when": {"params.type": "active"}, "state": "working"},
                    {"method": "status", "when": {"params.type": "idle"}, "state": "turn_ended"}],
-        })),
+        }}),
     );
     let mut c = Client::attach(&socket, &root);
     let status = |id: &str, kind: &str, flags: &[&str]| {
@@ -291,5 +293,39 @@ fn a_harness_stream_gives_its_sessions_turns() {
     turn(&mut c, "s1", Turn::Working);
     let (_again, hello) = taken(&server);
     assert_eq!(hello, r#"{"method":"hi"}"#);
+    let _ = c.call(Call::Shutdown);
+}
+
+/// For a harness whose resume joins a live session, Resume
+/// starts its resume line on a session another program runs; one of Weft's
+/// own panes holds is still that pane's.
+#[test]
+fn a_resume_that_joins_may_resume_a_session_another_program_runs() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let socket = protocol::private_socket("weft-joins");
+    serve(&socket, &config, serde_json::json!({"resume_joins": true}));
+    let mut c = Client::attach(&socket, &root);
+    let mut zed = std::process::Command::new("sleep").arg("60").spawn().unwrap();
+    support::signal(&socket, outside(&root, "s_zed", "working", Some(zed.id())));
+    let index = c.index_until(|i| row(i, "s_zed").is_some());
+    assert_eq!(row(&index, "s_zed").unwrap().state, State::Running, "another program runs it");
+    let resume = |c: &mut Client, id: &str| {
+        c.call(Call::StartAgent {
+            harness: "codex".into(),
+            spec: "cat".into(),
+            session: Some(id.into()),
+        })
+    };
+    let pane = resume(&mut c, "s_zed").expect("joined")["pane"].as_u64().unwrap();
+    assert_eq!(panes(&root)["panes"][pane as usize]["spec"], "cat - s_zed");
+    // Now a Weft pane holds it: that pane, not another.
+    let _ = c.index_until(|i| row(i, "s_zed").is_some_and(|r| r.pane == Some(pane as u32)));
+    assert_eq!(resume(&mut c, "s_zed"), Err("running".into()));
+    zed.kill().unwrap();
+    zed.wait().unwrap();
     let _ = c.call(Call::Shutdown);
 }

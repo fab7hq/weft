@@ -1,4 +1,4 @@
-//! Listening to a harness's own event stream (ADR-0035 D1, D2): connect to
+//! Listening to a harness's own event stream: connect to
 //! the Unix socket its harness file names, send the table's hello, and hand
 //! on each session and state a message gives. Nothing else is ever sent.
 //!

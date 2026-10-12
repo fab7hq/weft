@@ -192,7 +192,7 @@ fn weft_names_no_harness_in_what_it_ships_or_runs() {
 
 /// What a harness's own stream says, from its fixture harness file: the
 /// socket, the methods it is greeted with and read by, and the arguments
-/// that mark its shared server (ADR-0035). A harness's stream is an adapter,
+/// that mark its shared server. A harness's stream is an adapter,
 /// and the adapter is data.
 fn stream_words() -> Vec<String> {
     let dir = root().join("crates/weft-core/tests/fixtures/harnesses");

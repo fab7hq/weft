@@ -332,7 +332,7 @@ enum Wake {
     },
     /// A hook, from `weft signal`.
     Signal(Box<weft_core::signal::Sent>),
-    /// A session's turn, as its harness's own stream said it (ADR-0035).
+    /// A session's turn, as its harness's own stream said it.
     Heard {
         harness: String,
         session: String,
@@ -363,10 +363,10 @@ pub struct Session {
     forwarders: crate::forward::Forwarders,
     /// The file lines already forwarded as a prompt, by harness and session.
     forwarded: std::collections::HashSet<String>,
-    /// The harnesses whose own stream is open (ADR-0035 D2).
+    /// The harnesses whose own stream is open.
     streams: std::collections::HashSet<String>,
     /// The sessions, by harness, whose turn an open stream has spoken of: a
-    /// hook no longer moves it (ADR-0035 D3).
+    /// hook no longer moves it.
     streamed: std::collections::HashSet<(String, String)>,
     clients: Clients,
     tx: Sender<Wake>,

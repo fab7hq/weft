@@ -60,7 +60,7 @@ pub struct Process {
 
 /// The process a session's newest readable receipt names, if any. A resumed
 /// session's new process is written on a line of its own; a line with none
-/// (a hook under the harness's shared server, ADR-0035 D4) means no process
+/// (a hook under the harness's shared server) means no process
 /// holds it now.
 pub fn process(text: &str) -> Option<Process> {
     let v: serde_json::Value =
@@ -74,7 +74,7 @@ pub fn process(text: &str) -> Option<Process> {
 pub struct Heard {
     pub session: crate::turns::Session,
     pub process: Option<Process>,
-    /// Its harness's own stream, open now, has spoken of it (ADR-0035 D4).
+    /// Its harness's own stream, open now, has spoken of it.
     pub streamed: bool,
 }
 
@@ -153,7 +153,7 @@ pub fn index(
             match &h.process {
                 Some(p) if alive(p) => State::Running,
                 Some(_) => State::Ended,
-                // Its harness's stream says a turn runs (ADR-0035 D4 rule 1).
+                // Its harness's stream says a turn runs.
                 None if h.streamed && matches!(s.latest, Turn::Working | Turn::Waiting) => {
                     State::Running
                 }
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(process(r#"{"event":"ready","session":"s"}"#), None);
     }
 
-    /// ADR-0035 D4: a hook under a harness's shared server records no
+    /// A hook under a harness's shared server records no
     /// process, and that newest line is where the session is now: an older
     /// line's process (the server, before its harness file named it) no
     /// longer holds it.
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(index(&[quiet], &[], &[], &alive)[0].state, State::Quiet, "nothing to read");
     }
 
-    /// ADR-0035 D4 rule 1: a session its harness's open stream says is
+    /// A session its harness's open stream says is
     /// working or waiting runs, though no process of its own holds it; one
     /// the stream says is idle reads "last active", as does a working one no
     /// stream speaks of (an interrupted turn its hooks never ended).

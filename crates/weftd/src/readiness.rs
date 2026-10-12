@@ -99,6 +99,7 @@ mod tests {
             manifest: None,
             signal: None,
             listen: None,
+            resume_joins: false,
         }
     }
 
