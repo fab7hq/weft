@@ -2623,6 +2623,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "toml",
+ "tungstenite",
  "vt100",
  "weft-core",
  "weft-proto",

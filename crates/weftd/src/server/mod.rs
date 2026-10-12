@@ -332,6 +332,16 @@ enum Wake {
     },
     /// A hook, from `weft signal`.
     Signal(Box<weft_core::signal::Sent>),
+    /// A session's turn, as its harness's own stream said it (ADR-0035).
+    Heard {
+        harness: String,
+        session: String,
+        state: String,
+    },
+    /// A harness's stream ended: its server closed it.
+    Unheard {
+        harness: String,
+    },
     /// What RingFrame made of the prompt a pane received after Weft's send of
     /// `ask`.
     Received {
@@ -353,6 +363,11 @@ pub struct Session {
     forwarders: crate::forward::Forwarders,
     /// The file lines already forwarded as a prompt, by harness and session.
     forwarded: std::collections::HashSet<String>,
+    /// The harnesses whose own stream is open (ADR-0035 D2).
+    streams: std::collections::HashSet<String>,
+    /// The sessions, by harness, whose turn an open stream has spoken of: a
+    /// hook no longer moves it (ADR-0035 D3).
+    streamed: std::collections::HashSet<(String, String)>,
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
@@ -639,6 +654,8 @@ impl Session {
             receipts,
             forwarders: crate::forward::Forwarders::new(outside.clone()),
             forwarded: Default::default(),
+            streams: Default::default(),
+            streamed: Default::default(),
             clients: Clients::default(),
             tx,
             next_pending: 1,
@@ -736,6 +753,11 @@ impl Session {
                 }
                 Wake::Workspace { project, setup } => self.set_up(project, setup),
                 Wake::Signal(sent) => self.signal(*sent),
+                Wake::Heard { harness, session, state } => self.heard(harness, session, state),
+                Wake::Unheard { harness } => {
+                    self.streams.remove(&harness);
+                    self.streamed.retain(|(h, _)| *h != harness);
+                }
                 Wake::Received { project, pane, ask, answer } => {
                     self.received(project, pane, &ask, answer)
                 }

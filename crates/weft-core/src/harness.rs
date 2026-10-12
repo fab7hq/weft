@@ -73,6 +73,10 @@ pub struct Harness {
     /// harness gives no state and forwards nothing.
     #[serde(default)]
     pub signal: Option<crate::signal::Signal>,
+    /// Its own server's event stream (`[listen]`, ADR-0035), when it keeps
+    /// one: Weft listens to it for its sessions' turns.
+    #[serde(default)]
+    pub listen: Option<crate::listen::Listen>,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -130,6 +134,7 @@ impl Harness {
             turbo: argv(&p["turbo"]).unwrap_or_default(),
             unset_env: argv(&p["unset_env"]).unwrap_or_default(),
             signal: crate::signal::Signal::of(&p["signal"]),
+            listen: crate::listen::Listen::of(&p["listen"]),
         })
     }
 

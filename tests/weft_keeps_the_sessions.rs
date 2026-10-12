@@ -69,10 +69,13 @@ impl Client {
     }
 }
 
-fn serve(socket: &Path, config: &Path) {
+fn serve(socket: &Path, config: &Path, listen: Option<serde_json::Value>) {
     let (listening, config) = (socket.to_path_buf(), config.to_path_buf());
     let mut harness = weft::harness_table::fixture::file("codex");
     harness["program"] = "cat".into();
+    if let Some(listen) = listen {
+        harness["listen"] = listen;
+    }
     // Resumed, it reads its pane (`cat - <id>`) and keeps running.
     harness["resume"] = serde_json::json!(["-"]);
     let harnesses = weft::harness_table::Harnesses(vec![
@@ -114,7 +117,7 @@ fn every_session_is_kept_and_a_resume_names_exactly_its_id() {
     std::fs::create_dir_all(&root).unwrap();
     let root = root.canonicalize().unwrap();
     let socket = protocol::private_socket("weft-index");
-    serve(&socket, &config);
+    serve(&socket, &config, None);
     let mut c = Client::attach(&socket, &root);
 
     // The gl case: an older session that has ended, and a newer one open in
@@ -176,7 +179,7 @@ fn a_session_held_by_a_running_pane_is_refused_with_the_pane() {
     let root = root.canonicalize().unwrap();
     let socket = protocol::private_socket("weft-held");
     let agents = support::agents_dir(&socket);
-    serve(&socket, &config);
+    serve(&socket, &config, None);
     let mut c = Client::attach(&socket, &root);
     let spec = support::agent(&agents);
     c.call(Call::StartAgent { harness: "codex".into(), spec, session: None }).unwrap();
@@ -189,5 +192,98 @@ fn a_session_held_by_a_running_pane_is_refused_with_the_pane() {
         session: Some("s_here".into()),
     };
     assert_eq!(c.call(again), Err("running".into()));
+    let _ = c.call(Call::Shutdown);
+}
+
+/// A client of a fake harness server: the one connection `server` takes
+/// within 5 s, and the first line it sent.
+fn taken(server: &std::os::unix::net::UnixListener) -> (UnixStream, String) {
+    use std::io::BufRead;
+    server.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let conn = loop {
+        match server.accept() {
+            Ok((conn, _)) => break conn,
+            Err(_) => assert!(Instant::now() < deadline, "weftd never opened the stream"),
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    conn.set_nonblocking(false).unwrap();
+    let mut hello = String::new();
+    std::io::BufReader::new(conn.try_clone().unwrap()).read_line(&mut hello).unwrap();
+    (conn, hello.trim_end().to_string())
+}
+
+/// ADR-0035 D1–D3: a harness's own stream gives the turn of each session a
+/// hook tied to this project, an interrupt included, which no hook reports.
+/// Hooks still tie a session to its project but no longer move a streamed
+/// one's turn. A session no hook tied is ignored. When the server closes the
+/// stream, hooks are the source again, and the next hook opens it again.
+#[test]
+fn a_harness_stream_gives_its_sessions_turns() {
+    use std::io::Write;
+    use weft_core::turns::Turn;
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let stream = home.path().join("harness-server.sock");
+    let server = std::os::unix::net::UnixListener::bind(&stream).unwrap();
+    let socket = protocol::private_socket("weft-stream");
+    serve(
+        &socket,
+        &config,
+        Some(serde_json::json!({
+            "socket": stream.to_string_lossy(), "transport": "lines", "session": "params.id",
+            "hello": [{"method": "hi"}],
+            "on": [{"method": "status", "when": {"params.flags": "asking"}, "state": "waiting"},
+                   {"method": "status", "when": {"params.type": "active"}, "state": "working"},
+                   {"method": "status", "when": {"params.type": "idle"}, "state": "turn_ended"}],
+        })),
+    );
+    let mut c = Client::attach(&socket, &root);
+    let status = |id: &str, kind: &str, flags: &[&str]| {
+        format!(
+            "{}\n",
+            serde_json::json!({"method": "status", "params": {"id": id, "type": kind, "flags": flags}})
+        )
+    };
+    let turn = |c: &mut Client, id: &str, want: Turn| {
+        c.index_until(|i| row(i, id).is_some_and(|r| r.turn == Some(want)));
+    };
+
+    // A hook ties s1 to this project, and opens the stream with its hello.
+    support::signal(&socket, outside(&root, "s1", "working", None));
+    let (mut conn, hello) = taken(&server);
+    assert_eq!(hello, r#"{"method":"hi"}"#);
+    // An interrupted turn: idle on the stream, no hook at all.
+    conn.write_all(status("s1", "idle", &[]).as_bytes()).unwrap();
+    turn(&mut c, "s1", Turn::TurnEnded);
+    conn.write_all(status("s1", "active", &["asking"]).as_bytes()).unwrap();
+    turn(&mut c, "s1", Turn::Waiting);
+
+    // A hook no longer moves it: its turn stays the stream's.
+    support::signal(&socket, outside(&root, "s1", "working", None));
+    std::thread::sleep(Duration::from_millis(500));
+    let receipts = home.path().join("sessions").join(weft_core::sessions::project_key(&root));
+    let s1 = std::fs::read_to_string(receipts.join("codex/s1.jsonl")).unwrap();
+    assert!(s1.lines().last().unwrap().contains(r#""event":"waiting""#), "{s1}");
+
+    // A session no hook tied to a project is no one's.
+    conn.write_all(status("s9", "active", &[]).as_bytes()).unwrap();
+    conn.write_all(status("s1", "idle", &[]).as_bytes()).unwrap();
+    let index = c.index_until(|i| row(i, "s1").is_some_and(|r| r.turn == Some(Turn::TurnEnded)));
+    assert!(row(&index, "s9").is_none());
+    assert!(!receipts.join("codex/s9.jsonl").exists());
+
+    // The server closes the stream: hooks move the turn again, and the next
+    // hook opens the stream again.
+    drop(conn);
+    std::thread::sleep(Duration::from_millis(500));
+    support::signal(&socket, outside(&root, "s1", "working", None));
+    turn(&mut c, "s1", Turn::Working);
+    let (_again, hello) = taken(&server);
+    assert_eq!(hello, r#"{"method":"hi"}"#);
     let _ = c.call(Call::Shutdown);
 }

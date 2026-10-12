@@ -202,6 +202,7 @@ impl Session {
                     token,
                 });
                 self.write_map(project);
+                self.listen(project, &harness_name);
                 self.clients.broadcast(
                     project,
                     &Out::Added { pane: id, harness: harness_name, spec: spec.to_string(), turbo },
@@ -229,6 +230,10 @@ impl Session {
         use weft_core::sessions::is_id;
         if !is_id(&sent.session) || !is_id(&sent.harness) {
             return;
+        }
+        // Its harness's own stream gives this session's turn (ADR-0035 D3).
+        if self.streamed.contains(&(sent.harness.clone(), sent.session.clone())) {
+            sent.state = None;
         }
         // A line of a file is forwarded once per session: a later hook that
         // finds the same newest line has received nothing new.
@@ -283,6 +288,9 @@ impl Session {
                 (at, root)
             }
         };
+        if let Some(at) = at {
+            self.listen(at, &sent.harness);
+        }
         let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
         if let Some(at) = at {
             self.tell_agents(at);
@@ -296,6 +304,69 @@ impl Session {
             self.received_nothing(at, pane);
         }
         self.forwarders.send(&root, sent, answered);
+    }
+}
+
+impl Session {
+    /// Open a harness's own stream, once, when its harness file names one
+    /// and its server's socket is there; with none, hooks alone apply. It is
+    /// opened again on the next pane or hook after its server closes it,
+    /// never on a timer (ADR-0035 D2).
+    pub(super) fn listen(&mut self, at: usize, harness: &str) {
+        use crate::harness::OnThisMachine;
+        if self.streams.contains(harness) {
+            return;
+        }
+        let Some(h) = self.projects.get(at).and_then(|p| p.harnesses.find(harness)) else { return };
+        let Some(listen) = h.listen.clone() else { return };
+        let socket = h.config_home().join(&listen.socket);
+        if !socket.exists() {
+            return;
+        }
+        self.streams.insert(harness.to_string());
+        let (tx, harness) = (self.tx.clone(), harness.to_string());
+        std::thread::spawn(move || {
+            let _ = crate::listen::run(&socket, &listen, |session, state| {
+                let _ = tx.send(Wake::Heard { harness: harness.clone(), session, state });
+            });
+            let _ = tx.send(Wake::Unheard { harness });
+        });
+    }
+
+    /// A session's turn as its harness's stream said it, recorded as a hook's
+    /// would be, in the open project whose receipts already hold the session.
+    /// The stream names no workspace, so a session no hook tied to a project
+    /// is no one's (ADR-0035 D3).
+    pub(super) fn heard(&mut self, harness: String, session: String, state: String) {
+        if !weft_core::sessions::is_id(&harness) || !weft_core::sessions::is_id(&session) {
+            return;
+        }
+        let file = |root: &Path| {
+            crate::receipts::project_dir(&self.receipts, root)
+                .join(&harness)
+                .join(format!("{session}.jsonl"))
+        };
+        let Some(at) = self.projects.iter().position(|p| !p.closed && file(&p.root).exists())
+        else {
+            return;
+        };
+        self.streamed.insert((harness.clone(), session.clone()));
+        let ended = matches!(state.as_str(), "turn_ended" | "ended");
+        let root = self.projects[at].root.clone();
+        let sent = weft_core::signal::Sent {
+            harness,
+            session: session.clone(),
+            state: Some(state),
+            ..Default::default()
+        };
+        let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
+        self.tell_agents(at);
+        // A send into the pane that holds it was waiting for this turn's end.
+        let holds = |s: &&Slot| s.map.session.as_ref().is_some_and(|b| b.session == session);
+        if ended && let Some(pane) = self.projects[at].panes.iter().find(holds).map(|s| s.map.pane)
+        {
+            self.received_nothing(at, pane);
+        }
     }
 }
 

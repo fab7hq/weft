@@ -30,11 +30,13 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "portable-pty",
             "serde_json",
             "toml",
+            "tungstenite",
             "vt100",
             "weft-core",
             "weft-proto",
         ],
-        "the daemon does: panes, files, processes (libc reads a hook's harness process)",
+        "the daemon does: panes, files, processes (libc reads a hook's harness process), \
+         and listens to a harness's own stream (tungstenite frames it, ADR-0035)",
     ),
     (
         "weft-tui",

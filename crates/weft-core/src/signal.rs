@@ -306,7 +306,7 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
 }
 
 /// The value at a dotted path.
-fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
+pub(crate) fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(v, |v, key| v.get(key))
 }
 

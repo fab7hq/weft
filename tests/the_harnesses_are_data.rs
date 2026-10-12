@@ -190,6 +190,54 @@ fn weft_names_no_harness_in_what_it_ships_or_runs() {
     assert!(found.is_empty(), "Weft still names a harness:\n{}", found.join("\n"));
 }
 
+/// What a harness's own stream says, from its fixture harness file: the
+/// socket, the methods it is greeted with and read by, and the arguments
+/// that mark its shared server (ADR-0035). A harness's stream is an adapter,
+/// and the adapter is data.
+fn stream_words() -> Vec<String> {
+    let dir = root().join("crates/weft-core/tests/fixtures/harnesses");
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).expect("fixture harness files").flatten() {
+        let id = entry.path().file_stem().and_then(|s| s.to_str()).expect("an id").to_string();
+        let h = weft_core::harness::fixture::file(&id);
+        let l = &h["listen"];
+        let texts = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|m| m["method"].as_str().map(String::from))
+                .collect()
+        };
+        out.extend(l["socket"].as_str().map(String::from));
+        out.extend(texts(&l["hello"]));
+        out.extend(texts(&l["on"]));
+        out.extend(
+            h["server_args"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|a| a.as_str().map(String::from)),
+        );
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+#[test]
+fn no_harness_stream_is_in_wefts_code() {
+    let words = stream_words();
+    let mut found = Vec::new();
+    for (path, text) in files(WEFT) {
+        for (n, line) in lines(&path, &text, true) {
+            for w in words.iter().filter(|w| line.contains(w.as_str())) {
+                found.push(format!("{}:{n} names {w}: {}", path.display(), line.trim()));
+            }
+        }
+    }
+    assert!(found.is_empty(), "a harness's stream is in Weft's code:\n{}", found.join("\n"));
+}
+
 #[test]
 fn no_hook_or_screen_text_is_left_in_either_programs_code() {
     let quoted: Vec<String> = harness_words().iter().map(|w| format!("\"{w}\"")).collect();

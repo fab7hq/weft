@@ -15,6 +15,7 @@ pub mod eval_view;
 pub mod harness;
 pub mod inject;
 pub mod ledger;
+pub mod listen;
 pub mod offers;
 pub mod onboarding;
 pub mod projects;
