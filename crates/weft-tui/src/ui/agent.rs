@@ -10,6 +10,9 @@ pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
         frame.render_widget(no_agent(app, area), area);
         return;
     }
+    if app.panes().count() > 1 {
+        return panes(frame, app, area);
+    }
     let th = app.theme;
     let block = if app.focus == Focus::Agent {
         Block::bordered()
@@ -142,4 +145,80 @@ pub(super) fn no_agent(app: &App, area: Rect) -> Paragraph<'static> {
     }
     lines.push(Line::styled("   [N] starts an agent.".to_string(), th.label()));
     Paragraph::new(lines)
+}
+
+/// Every pane at its place, each with its own tab bar above its frame and
+/// its agent drawn at the frame's size. A window too small for the layout
+/// shows the pane with the keys alone; the layout is kept.
+fn panes(frame: &mut Frame, app: &mut App, area: Rect) {
+    let th = app.theme;
+    let active = app.panes().active().id;
+    let mut rects = app.panes().rects(area);
+    if !app.panes().fits(area) {
+        rects = vec![(active, area)];
+    }
+    let numbers = app.tabs();
+    for (id, r) in rects {
+        let Some(pane) = app.panes().pane(id).cloned() else { continue };
+        let keys = id == active;
+        let bar = Rect { height: 1, ..r };
+        let mut spans = vec![Span::raw(" ")];
+        let mut col = bar.x + 1;
+        for (i, &(at, aid)) in pane.tabs.iter().enumerate() {
+            let Some(idx) = app.running_pane(at, aid) else { continue };
+            let Some(n) = numbers.iter().position(|t| (t.project, t.pane) == (at, idx)) else {
+                continue;
+            };
+            let tab = &numbers[n];
+            if i > 0 {
+                spans.push(Span::raw("    "));
+                col += 4;
+            }
+            let shown = i == pane.shown;
+            let text = format!(
+                "{}{} {} · {}{}",
+                if shown { "▸ " } else { "" },
+                n + 1,
+                clip(&tab.project_name, PROJECT_IN_TAB),
+                tab.harness,
+                if tab.turbo { " ⚡" } else { "" },
+            );
+            let style = match (shown, keys && app.focus == Focus::Agent) {
+                (true, true) => Style::default().fg(th.accent()).add_modifier(Modifier::BOLD),
+                (true, false) => Style::default().fg(th.primary()).add_modifier(Modifier::BOLD),
+                _ => Style::default().fg(th.primary()),
+            };
+            let from = col;
+            col += cells(&text) as u16;
+            spans.push(Span::styled(text, style));
+            app.hits.push((Rect { x: from, width: col - from, ..bar }, Target::Tab(at, idx)));
+            for (mark, on, style) in
+                [(" ●", tab.waiting, th.needs_you()), (" ⚠", !tab.ready, th.needs_you())]
+            {
+                if on {
+                    spans.push(Span::styled(mark, style));
+                    col += cells(mark) as u16;
+                }
+            }
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), bar);
+        let body = Rect { y: r.y + 1, height: r.height.saturating_sub(1), ..r };
+        let block = match (keys, app.focus == Focus::Agent) {
+            (true, true) => Block::bordered()
+                .border_type(BorderType::Thick)
+                .border_style(Style::default().fg(th.warp())),
+            (true, false) => Block::bordered().border_style(Style::default().fg(th.warp())),
+            _ => Block::bordered().border_style(th.rule()),
+        };
+        let inside = block.inner(body);
+        frame.render_widget(block, body);
+        let Some((at, aid)) = pane.showing() else { continue };
+        let Some(idx) = app.running_pane(at, aid) else { continue };
+        if keys {
+            app.hits.push((inside, Target::Screen(idx)));
+        }
+        app.with_pane_screen_in(at, idx, inside.height, inside.width, |screen| {
+            frame.render_widget(PseudoTerminal::new(screen), inside);
+        });
+    }
 }

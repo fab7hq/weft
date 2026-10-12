@@ -73,7 +73,7 @@ pub(super) fn title_bar(app: &App, width: u16) -> (Paragraph<'static>, Option<(u
 }
 
 /// The most of a project's name a tab shows, in cells.
-const PROJECT_IN_TAB: usize = 12;
+pub(super) const PROJECT_IN_TAB: usize = 12;
 
 /// Agents are tabs over the pane. The focused surface's header is the accent.
 /// The tab row, and the columns each agent's tab covers, for a click.

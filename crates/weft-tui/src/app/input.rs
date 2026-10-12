@@ -13,6 +13,10 @@ impl App {
         self.hint = None;
         self.landed = true;
         self.sync_panes();
+        if self.layout_bar {
+            self.on_layout_key(key.code);
+            return Ok(());
+        }
         // The tree's search takes what is typed into it.
         if self.focus == Focus::Weft && self.tree_search_key(&key) {
             return Ok(());
@@ -62,6 +66,7 @@ impl App {
             Action::Back => self.back(),
             Action::NextNeedsYou => self.next_needs_you(),
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
+            Action::Layout => self.layout_bar = true,
             // Picking an agent hands it the keys, as Enter on its harness does.
             Action::NextPane => {
                 let tabs = self.tabs();
@@ -173,7 +178,51 @@ impl App {
         }
     }
 
+    /// The layout bar's keys; every other key is ignored until Esc.
+    fn on_layout_key(&mut self, code: event::KeyCode) {
+        use crate::panes::Axis;
+        use event::KeyCode as K;
+        match code {
+            K::Right => self.layout(|p, area| p.split(Axis::Right, area)),
+            K::Down => self.layout(|p, area| p.split(Axis::Down, area)),
+            K::Char(c @ ('[' | ']')) => self.layout(|p, _| {
+                p.move_tab(if c == '[' { -1 } else { 1 });
+                Ok(())
+            }),
+            K::Tab => self.layout(|p, _| {
+                p.to_next_pane();
+                Ok(())
+            }),
+            K::Char('j' | 'J') => self.layout(|p, _| {
+                p.join();
+                Ok(())
+            }),
+            K::Esc | K::Left => self.layout_bar = false,
+            _ => {}
+        }
+    }
+
     pub(crate) fn toggle_focus(&mut self) {
+        // More than one pane: the list, then each pane in turn.
+        let panes: Vec<u32> = self.panes.panes().iter().map(|p| p.id).collect();
+        if panes.len() > 1 {
+            let here = panes.iter().position(|&id| id == self.panes.active().id);
+            let next = match self.focus {
+                Focus::Weft => panes.first(),
+                Focus::Agent => here.and_then(|i| panes.get(i + 1)),
+            };
+            match next.copied() {
+                Some(id) => {
+                    self.layout(|p, _| {
+                        p.focus(id);
+                        Ok(())
+                    });
+                    self.focus = Focus::Agent;
+                }
+                None => self.focus = Focus::Weft,
+            }
+            return;
+        }
         self.focus = match self.focus {
             Focus::Weft => Focus::Agent,
             Focus::Agent => {

@@ -325,6 +325,8 @@ pub struct App {
     landed: bool,
     /// The panes, each with its own tabs.
     panes: crate::panes::Panes,
+    /// The layout bar is open: its keys are the only ones Weft reads.
+    pub layout_bar: bool,
     /// Where the panes were last drawn: what a split must leave room in.
     panes_area: ratatui::layout::Rect,
 }
@@ -396,14 +398,35 @@ impl App {
         &self.panes
     }
 
-    #[cfg(test)]
-    pub(crate) fn panes_mut(&mut self) -> &mut crate::panes::Panes {
-        &mut self.panes
-    }
-
     /// Where the panes are drawn, as the frame being drawn measures it.
     pub(crate) fn note_panes_area(&mut self, area: ratatui::layout::Rect) {
         self.panes_area = area;
+    }
+
+    /// A change to the layout: the agent the pane with the keys shows is the
+    /// one shown, and a refusal says why.
+    pub(crate) fn layout(
+        &mut self,
+        change: impl FnOnce(
+            &mut crate::panes::Panes,
+            ratatui::layout::Rect,
+        ) -> Result<(), crate::panes::Refusal>,
+    ) {
+        self.sync_panes();
+        let area = self.panes_area;
+        if let Err(why) = change(&mut self.panes, area) {
+            self.say(word(why.word()));
+            return;
+        }
+        if let Some((at, id)) = self.panes.active().showing()
+            && let Some(pane) = self.running_pane(at, id)
+        {
+            self.focus_on(at, pane);
+        }
+        // Beside more than one pane, the list hides to make room, as B does.
+        if self.panes.count() > 1 {
+            self.show_work = false;
+        }
     }
 
     /// Show an agent's tab, in whichever project it runs and in the pane
@@ -797,6 +820,7 @@ impl App {
             listed: Default::default(),
             clock: None,
             panes: Default::default(),
+            layout_bar: false,
             panes_area: Default::default(),
             landed: false,
             projects: vec![Open::new(root, session)],
@@ -1651,6 +1675,10 @@ impl App {
 
     pub fn pane_text(&self, pane: usize) -> Option<String> {
         sess!(self).panes.get(pane).map(|p| p.contents())
+    }
+
+    pub fn pane_text_in(&self, project: usize, pane: usize) -> Option<String> {
+        self.projects.get(project)?.session.panes.get(pane).map(|p| p.contents())
     }
 
     pub fn pane_scroll_offset(&self, pane: usize) -> Option<usize> {

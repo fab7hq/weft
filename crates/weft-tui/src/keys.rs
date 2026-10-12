@@ -50,6 +50,8 @@ pub enum Key {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     ToggleFocus,
+    /// Open the layout bar.
+    Layout,
     /// Start another agent.
     NewAgent,
     /// Switch to the nth agent, counting from one.
@@ -123,6 +125,7 @@ pub fn route(chord: Chord, focus: Focus, toggle: Toggle) -> Action {
         // `Esc` is never Weft's; it belongs to the agent.
         Key::Esc => Action::Ignore,
         Key::Char(' ') => Action::NextNeedsYou,
+        Key::Char('\\') => Action::Layout,
         Key::Char(c) if c.is_ascii_digit() && c != '0' => {
             Action::PickPane(c.to_digit(10).unwrap_or(1) as u8)
         }

@@ -82,8 +82,9 @@ fn draw_frame(frame: &mut Frame, app: &mut App) {
         if let Some(divider) = geo.divider_area {
             frame.render_widget(Paragraph::new(vlines(divider.height, th)), divider);
         }
+        // A split hides the list, so the room it must leave is the body's.
+        app.note_panes_area(geo.content);
         if let Some(right) = geo.right {
-            app.note_panes_area(right);
             agent(frame, app, right);
         }
     }
@@ -123,13 +124,17 @@ struct Geo {
 }
 
 fn geometry(app: &App, area: Rect) -> Geo {
-    let tab_height = if app.pane_count() > 0 { 1 } else { 0 };
+    // More than one pane, each draws its own tab bar: no row of tabs and no
+    // rule above them.
+    let blocked = app.detail().is_some() || app.eval_screen().is_some();
+    let panes = app.pane_count() > 0 && app.panes().count() > 1 && !blocked;
+    let tab_height = if app.pane_count() > 0 && !panes { 1 } else { 0 };
     let rows = RLayout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(tab_height),
-            Constraint::Length(1),
+            Constraint::Length(if panes { 0 } else { 1 }),
             Constraint::Min(1),
             Constraint::Length(1),
             Constraint::Length(1),

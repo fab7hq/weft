@@ -1,7 +1,7 @@
 //! What the screen shows, read the way a person reads it.
 
 use super::*;
-use crate::app::tests::{app, press, unit};
+use crate::app::tests::{app, ctrl, press, unit};
 use crate::ledger::{Check, Sent, Verdict};
 use crossterm::event::KeyCode;
 use ratatui::Terminal;
@@ -1111,17 +1111,44 @@ fn atlas_t14_1_every_projects_agents_as_tabs() {
     expect_screen("atlas_t14_1", &screen(&mut a, 120, 32));
 }
 
+/// The layout bar's keys, pressed from the list, then closed.
+fn layout(a: &mut App, keys: &[KeyCode]) {
+    a.focus = Focus::Weft;
+    press(a, KeyCode::Char('\\'));
+    for &k in keys {
+        press(a, k);
+    }
+    press(a, KeyCode::Esc);
+}
+
+/// The Atlas's sample with docs open, its claude moved to a pane on the
+/// right; the keys in the list.
+fn two_panes() -> App {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('3'));
+    layout(&mut a, &[KeyCode::Right]);
+    // The left pane showing its first tab, as the card draws it.
+    for n in ['1', '3'] {
+        a.focus = Focus::Weft;
+        press(&mut a, KeyCode::Char(n));
+    }
+    a.focus = Focus::Weft;
+    a
+}
+
+fn names(a: &App) -> Vec<String> {
+    a.tabs().iter().map(|t| format!("{} · {}", t.project_name, t.harness)).collect()
+}
+
 /// The tabs count pane by pane: an agent moved to a pane of its own is
 /// numbered after the first pane's, and its digit still reaches it there.
+/// Tab goes on through every pane.
 #[test]
 fn tabs_are_numbered_pane_by_pane() {
     let mut a = atlas_with_docs();
     press(&mut a, KeyCode::Char('1'));
     let moved = (0, a.session().panes[a.pane_focus].id);
-    a.panes_mut().split(crate::panes::Axis::Right, Rect::new(0, 0, 120, 28)).expect("split");
-    let names = |a: &App| {
-        a.tabs().iter().map(|t| format!("{} · {}", t.project_name, t.harness)).collect::<Vec<_>>()
-    };
+    layout(&mut a, &[KeyCode::Right]);
     assert_eq!(names(&a), ["weft · codex", "docs · claude", "weft · claude"]);
     a.focus = Focus::Weft;
     press(&mut a, KeyCode::Char('1'));
@@ -1135,6 +1162,157 @@ fn tabs_are_numbered_pane_by_pane() {
     a.focus = Focus::Weft;
     press(&mut a, KeyCode::Tab);
     assert_eq!(a.panes().active().id, a.panes().panes()[0].id);
+}
+
+/// `\` opens the layout bar; its keys split, move the tab with the keys and
+/// join, and every other key is the bar's until Esc. `|` no longer splits.
+#[test]
+fn the_layout_bar_splits_moves_and_joins() {
+    let mut a = atlas_with_docs();
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('|'));
+    assert_eq!(a.panes().count(), 1, "| is not a key any more");
+    press(&mut a, KeyCode::Char('3'));
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('\\'));
+    assert!(a.layout_bar);
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.panes().count(), 2);
+    assert_eq!(a.harness_at(a.pane_focus), Some("claude"));
+    assert_eq!(a.project_name(), "docs", "the tab with the keys moved, and kept them");
+    assert!(!a.show_work(), "the list hides to make room");
+    // A pane of one agent does not split, and says why.
+    press(&mut a, KeyCode::Down);
+    assert_eq!(a.hint_text(), Some(weft_core::words::word("why.split_needs_two")));
+    // A key the bar has no use for does nothing.
+    press(&mut a, KeyCode::Char('a'));
+    assert!(a.modal.is_none() && a.layout_bar);
+    // Tab moves it into the next pane, whose pane it left closing.
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(a.panes().count(), 1);
+    assert_eq!(names(&a).last().map(String::as_str), Some("docs · claude"));
+    press(&mut a, KeyCode::Char('['));
+    assert_eq!(names(&a), ["weft · claude", "docs · claude", "weft · codex"]);
+    press(&mut a, KeyCode::Down);
+    assert_eq!(a.panes().count(), 2);
+    press(&mut a, KeyCode::Char('j'));
+    assert_eq!(a.panes().count(), 1);
+    assert_eq!(names(&a), ["weft · claude", "weft · codex", "docs · claude"]);
+    press(&mut a, KeyCode::Esc);
+    assert!(!a.layout_bar);
+}
+
+/// Each pane is drawn at its place with its agent told that size; Ctrl+]
+/// goes from the list to each pane in turn and back; what is typed reaches
+/// only the pane with the keys.
+#[test]
+fn each_pane_gets_its_size_and_the_keys_reach_only_the_pane_with_them() {
+    let mut a = two_panes();
+    let _ = screen(&mut a, 120, 32);
+    let (left, right) = (a.pane_size_in(0, 0), a.pane_size_in(1, 0));
+    assert_eq!((left, right), ((25, 58), (25, 57)));
+    ctrl(&mut a, ']');
+    assert_eq!((a.project_name(), a.focus), ("weft", Focus::Agent));
+    assert_eq!(a.panes().active().id, a.panes().panes()[0].id);
+    ctrl(&mut a, ']');
+    assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
+    press(&mut a, KeyCode::Char('q'));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while std::time::Instant::now() < deadline && !a.pane_text(0).unwrap_or_default().contains('q')
+    {
+        let _ = a.turn(std::time::Duration::from_millis(50));
+    }
+    assert!(a.pane_text(0).unwrap_or_default().contains('q'), "docs' claude got it");
+    assert!(!a.pane_text_in(0, 0).unwrap_or_default().contains('q'), "weft's did not");
+    ctrl(&mut a, ']');
+    assert_eq!(a.focus, Focus::Weft);
+}
+
+/// A window too small for the layout shows the pane with the keys alone,
+/// and the layout comes back when it fits again.
+#[test]
+fn a_window_too_small_for_the_layout_shows_the_pane_with_the_keys_alone() {
+    let mut a = two_panes();
+    let narrow = screen(&mut a, 70, 32);
+    assert_eq!(narrow.lines().nth(2).map(|l| l.matches('┌').count()), Some(1), "{narrow}");
+    assert!(narrow.contains("docs · claude") && !narrow.contains("weft · codex"), "{narrow}");
+    assert_eq!(a.panes().count(), 2, "the layout is kept");
+    let wide = screen(&mut a, 120, 32);
+    assert_eq!(wide.lines().nth(2).map(|l| l.matches('┌').count()), Some(2), "{wide}");
+}
+
+/// Two panes side by side, each with its own tabs.
+#[test]
+fn atlas_t15_1_two_panes_side_by_side() {
+    let mut a = two_panes();
+    expect_screen("atlas_t15_1", &screen(&mut a, 120, 32));
+}
+
+/// The layout bar, the left pane's tab with the keys.
+#[test]
+fn atlas_t15_2_the_layout_bar() {
+    let mut a = two_panes();
+    press(&mut a, KeyCode::Char('1'));
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('\\'));
+    expect_screen("atlas_t15_2", &screen(&mut a, 120, 32));
+}
+
+/// One pane below the other.
+#[test]
+fn atlas_t15_3_one_below_the_other() {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('3'));
+    layout(&mut a, &[KeyCode::Down]);
+    for n in ['1', '3'] {
+        a.focus = Focus::Weft;
+        press(&mut a, KeyCode::Char(n));
+    }
+    a.focus = Focus::Weft;
+    expect_screen("atlas_t15_3", &screen(&mut a, 120, 32));
+}
+
+/// Show the nth tab of that name by its number, from the list.
+fn go(a: &mut App, name: &str, nth: usize) {
+    let n = names(a).iter().enumerate().filter(|(_, n)| *n == name).nth(nth).map(|(i, _)| i);
+    let n = n.unwrap_or_else(|| panic!("{name} #{nth}: {:?}", names(a)));
+    a.focus = Focus::Weft;
+    press(a, KeyCode::Char(char::from_digit(n as u32 + 1, 10).expect("a digit")));
+}
+
+/// Four panes, the most: a fifth split says so and nothing moves.
+#[test]
+fn atlas_t15_4_four_panes_the_most() {
+    let mut a = atlas_with_docs();
+    a.open_project(&a.root().with_file_name("docs").to_string_lossy());
+    a.add("codex", "/bin/cat").expect("codex in docs");
+    a.add("claude", "/bin/cat").expect("a second claude in docs");
+    a.settle();
+    let _ = screen(&mut a, 120, 32);
+    // As the card lays them out: one each above, the right one docs' codex;
+    // weft's codex below on the left, docs' two claudes on the right.
+    go(&mut a, "docs · codex", 0);
+    layout(&mut a, &[KeyCode::Right]);
+    go(&mut a, "weft · codex", 0);
+    layout(&mut a, &[KeyCode::Down]);
+    for _ in 0..2 {
+        go(&mut a, "docs · claude", 0);
+        layout(&mut a, &[KeyCode::Tab]);
+    }
+    go(&mut a, "docs · codex", 0);
+    layout(&mut a, &[KeyCode::Down]);
+    go(&mut a, "docs · claude", 1);
+    layout(&mut a, &[KeyCode::Tab, KeyCode::Tab]);
+    let shown: Vec<_> = a.panes().panes().iter().map(|p| p.tabs.len()).collect();
+    assert_eq!(shown, [1, 1, 1, 2], "{:?}", names(&a));
+    go(&mut a, "docs · claude", 1);
+    let before = names(&a);
+    a.focus = Focus::Weft;
+    press(&mut a, KeyCode::Char('\\'));
+    press(&mut a, KeyCode::Right);
+    assert_eq!(a.hint_text(), Some(weft_core::words::word("why.four_panes")));
+    assert_eq!((a.panes().count(), names(&a)), (4, before), "nothing moved");
+    expect_screen("atlas_t15_4", &screen(&mut a, 120, 32));
 }
 
 /// T9.7: N starts an agent; each set-up harness starts fresh.

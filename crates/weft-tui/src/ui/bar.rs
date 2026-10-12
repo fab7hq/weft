@@ -25,6 +25,23 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
         // One key is Weft's in the agent: the way back.
         return plain(&format!("   {}  BACK TO WEFT", app.toggle.label()));
     }
+    if app.layout_bar && app.modal.is_none() {
+        let lit = Style::default().fg(th.primary()).add_modifier(Modifier::BOLD);
+        let keys = format!(
+            "   {}   {}    [ ]  {}   {}   {}   {}",
+            key_by("→", "layout.right"),
+            key_by("↓", "layout.down"),
+            word("layout.move_tab").to_uppercase(),
+            key_by("TAB", "layout.next_pane"),
+            key_in("layout.join"),
+            key_by("ESC", "layout.done"),
+        );
+        let title = format!(" {}", word("act.layout").to_uppercase());
+        return Paragraph::new(Line::from(vec![
+            Span::styled(title, lit),
+            Span::styled(keys, Style::default().fg(th.primary())),
+        ]));
+    }
     match &app.modal {
         // `Enter` does what is picked everywhere; [H]ELP says so once, and no
         // bar spends its room on it.
@@ -173,9 +190,10 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     }
     let menu = key(app, "[W]EFT ⌄", Act::WeftMenu);
     let search = Span::styled("[/] SEARCH", Style::default().fg(th.primary()));
+    let lit = Style::default().fg(th.primary());
     let split = Span::styled(
         format!("[\\] {}", word("act.layout").to_uppercase()),
-        Style::default().fg(th.primary()),
+        if app.panes().count() > 1 { lit.add_modifier(Modifier::BOLD) } else { lit },
     );
     let right = vec![search, Span::raw("   "), split, Span::raw("   "), menu, Span::raw(" ")];
     Paragraph::new(spread(spans, right, width))
@@ -252,6 +270,11 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         (Some(Modal::Allow { .. }), _) => " A device gets in only after you say yes here.".into(),
         (Some(_), _) => String::new(),
         (None, Focus::Agent) => " Every other key goes to the agent, Esc included.".into(),
+        (None, Focus::Weft) if app.layout_bar => {
+            let tab = app.tabs().into_iter().find(|t| t.active);
+            let name = tab.map(|t| format!("{} · {}", t.project_name, t.harness));
+            format!(" {}", fill("hint.layout", &[("tab", &name.unwrap_or_default())]))
+        }
         (None, Focus::Weft) if app.waiting_here() => format!(
             " {} is asking you something. Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")
