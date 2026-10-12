@@ -38,15 +38,32 @@ pub fn run(
     mut heard: impl FnMut(String, String),
 ) -> std::io::Result<()> {
     let mut stream = open(listen.transport, UnixStream::connect(socket)?)?;
-    for hello in &listen.hello {
-        stream.send(&hello.to_string())?;
-    }
-    while let Some(text) = stream.next()? {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Some((session, state)) = listen.heard(&v)
-        {
+    let mut message = |text: &str| {
+        let v: serde_json::Value = serde_json::from_str(text).ok()?;
+        if let Some((session, state)) = listen.heard(&v) {
             heard(session, state);
         }
+        Some(v)
+    };
+    // A request in the hello (it has an id) is answered before the next is
+    // sent: a server may take a message sent before it answers for nothing,
+    // and then say nothing more. An error in answer opens no stream.
+    for hello in &listen.hello {
+        stream.send(&hello.to_string())?;
+        let Some(id) = hello.get("id") else { continue };
+        loop {
+            let Some(text) = stream.next()? else { return Ok(()) };
+            let Some(v) = message(&text) else { continue };
+            if v.get("id") == Some(id) {
+                if let Some(e) = v.get("error") {
+                    return Err(std::io::Error::other(format!("the hello was refused: {e}")));
+                }
+                break;
+            }
+        }
+    }
+    while let Some(text) = stream.next()? {
+        message(&text);
     }
     Ok(())
 }
@@ -127,5 +144,70 @@ mod tests {
     fn no_socket_is_no_stream() {
         let dir = tempfile::tempdir().unwrap();
         assert!(run(&dir.path().join("none.sock"), &listen("lines"), |_, _| {}).is_err());
+    }
+
+    /// A hello message that is a request (it has an id) is answered before
+    /// the next is sent: a server that has not answered it yet may take the
+    /// next for nothing, and then say nothing more.
+    #[test]
+    fn a_hello_request_is_answered_before_the_next_is_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("server.sock");
+        let server = UnixListener::bind(&socket).unwrap();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = server.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(2))).unwrap();
+            let mut lines = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            lines.read_line(&mut first).unwrap();
+            // Slow to answer: nothing more may arrive meanwhile.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            stream.set_nonblocking(true).unwrap();
+            let mut early = String::new();
+            let early = lines.read_line(&mut early).map(|n| n > 0).unwrap_or(false);
+            stream.set_nonblocking(false).unwrap();
+            let mut w = stream;
+            writeln!(w, r#"{{"id":1,"result":{{}}}}"#).unwrap();
+            let mut second = String::new();
+            let _ = lines.read_line(&mut second);
+            writeln!(w, "{}", SAID[0]).unwrap();
+            tx.send((early, second.trim_end().to_string())).unwrap();
+        });
+        let l = Listen::of(&serde_json::json!({
+            "socket": "s", "transport": "lines", "session": "params.id",
+            "hello": [{"id": 1, "method": "hi"}, {"method": "ready"}],
+            "on": [{"method": "status", "when": {"params.type": "active"}, "state": "working"}],
+        }))
+        .unwrap();
+        let mut heard = Vec::new();
+        let _ = run(&socket, &l, |s, st| heard.push((s, st)));
+        let (early, second) = rx.recv().unwrap();
+        assert!(!early, "the next hello went before the request was answered");
+        assert_eq!(second, r#"{"method":"ready"}"#);
+        assert_eq!(heard, [("t1".into(), "working".into())]);
+    }
+
+    /// A hello request answered with an error opens no stream.
+    #[test]
+    fn a_hello_refused_opens_no_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("server.sock");
+        let server = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let (stream, _) = server.accept().unwrap();
+            let mut lines = BufReader::new(stream.try_clone().unwrap());
+            let mut first = String::new();
+            lines.read_line(&mut first).unwrap();
+            let mut w = stream;
+            writeln!(w, r#"{{"id":1,"error":{{"message":"no"}}}}"#).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+        let l = Listen::of(&serde_json::json!({
+            "socket": "s", "transport": "lines", "session": "params.id",
+            "hello": [{"id": 1, "method": "hi"}], "on": [],
+        }))
+        .unwrap();
+        assert!(run(&socket, &l, |_, _| {}).is_err());
     }
 }

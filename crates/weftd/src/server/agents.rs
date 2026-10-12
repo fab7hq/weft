@@ -357,9 +357,14 @@ impl Session {
         self.streams.insert(harness.to_string());
         let (tx, harness) = (self.tx.clone(), harness.to_string());
         std::thread::spawn(move || {
-            let _ = crate::listen::run(&socket, &listen, |session, state| {
+            eprintln!("weft: listening to {harness}'s stream at {}", socket.display());
+            let ended = crate::listen::run(&socket, &listen, |session, state| {
                 let _ = tx.send(Wake::Heard { harness: harness.clone(), session, state });
             });
+            match ended {
+                Ok(()) => eprintln!("weft: {harness}'s stream closed"),
+                Err(e) => eprintln!("weft: {harness}'s stream ended: {e}"),
+            }
             let _ = tx.send(Wake::Unheard { harness });
         });
     }
