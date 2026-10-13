@@ -1701,7 +1701,7 @@ dependencies = [
 
 [[package]]
 name = "ringframe"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -2540,7 +2540,7 @@ dependencies = [
 
 [[package]]
 name = "weft"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2559,7 +2559,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2569,7 +2569,7 @@ dependencies = [
 
 [[package]]
 name = "weft-proto"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "serde_json",
  "weft-core",
@@ -2577,7 +2577,7 @@ dependencies = [
 
 [[package]]
 name = "weft-remote"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "base64ct",
@@ -2599,7 +2599,7 @@ dependencies = [
 
 [[package]]
 name = "weft-tui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "weftd"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "libc",
