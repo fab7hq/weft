@@ -121,7 +121,7 @@ pub(super) fn help_lines(app: &App) -> Vec<String> {
         ("Tab", "next agent"),
         ("1-9", "that agent"),
         ("\\", "layout"),
-        (toggle, "switch active pane"),
+        (toggle, "into · out of the agent"),
         ("⌫", "close the project"),
     ];
     let ringframe = [

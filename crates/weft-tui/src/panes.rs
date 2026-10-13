@@ -194,18 +194,6 @@ impl Panes {
         self.drop_tab(agent, Drop::Edge { pane, side }, area)
     }
 
-    /// The tab with the keys one place along its bar.
-    pub fn move_tab(&mut self, by: isize) {
-        let active = self.active;
-        self.with_pane(active, |p| {
-            let to = p.shown as isize + by;
-            if (0..p.tabs.len() as isize).contains(&to) {
-                p.tabs.swap(p.shown, to as usize);
-                p.shown = to as usize;
-            }
-        });
-    }
-
     /// The tab with the keys into the next pane, as its last tab. False with
     /// one pane, where there is no next.
     pub fn to_next_pane(&mut self) -> bool {
@@ -588,20 +576,6 @@ mod tests {
             ]
         );
         assert_eq!(p.order(), vec![(0, 1), (1, 1), (0, 2), (2, 1), (2, 2)]);
-    }
-
-    #[test]
-    fn brackets_move_the_tab_with_the_keys_along_its_bar() {
-        let mut p = five();
-        p.show((0, 2));
-        p.move_tab(-1);
-        assert_eq!(p.order()[..2], [(0, 2), (0, 1)]);
-        assert_eq!(p.active().showing(), Some((0, 2)));
-        p.move_tab(-1);
-        assert_eq!(p.order()[0], (0, 2), "the first stays first");
-        p.move_tab(1);
-        p.move_tab(1);
-        assert_eq!(p.order()[2], (0, 2));
     }
 
     #[test]

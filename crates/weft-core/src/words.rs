@@ -191,9 +191,20 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.layout.split_down", "Split down"),
     ("web.layout.next_pane", "Move tab to the next pane"),
     ("web.layout.join", "Join all panes"),
-    ("hint.layout", "→ and ↓ move {tab}, the tab with the keys, to a new pane on that side."),
+    ("hint.layout", "→ and ↓ split {tab}'s pane; M moves {tab} into the next pane."),
+    (
+        "hint.layout_alone",
+        "{tab} is alone in its pane: M moves it into the next pane, and this pane closes.",
+    ),
     ("hint.tabs", "Tab, 1–9: every open project's agents."),
-    ("hint.split", "Ctrl+] moves the keys between the list and each pane. [B] shows the list."),
+    (
+        "hint.split",
+        "Tab, 1–9 select an agent; Ctrl+] goes into the one with the keys. [B] shows the list.",
+    ),
+    (
+        "hint.selected",
+        "Tab, 1–9 select an agent, Enter enters it, ← goes back to the list. [B] shows the list.",
+    ),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys, the
     // same on a phone and a desktop.

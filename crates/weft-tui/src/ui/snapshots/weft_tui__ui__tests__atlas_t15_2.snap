@@ -32,5 +32,5 @@ expression: drawn
 │                                                          │ │                                                         │
 └──────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
- LAYOUT   [→] RIGHT   [↓] DOWN    [ ]  MOVE TAB   [TAB] NEXT PANE   [J]OIN   [ESC] DONE
- → and ↓ move weft · claude, the tab with the keys, to a new pane on that side.
+ LAYOUT   [→] RIGHT   [↓] DOWN   [TAB] NEXT PANE   [M]OVE TAB   [J]OIN   [ESC] DONE
+ → and ↓ split weft · claude's pane; M moves weft · claude into the next pane.

@@ -33,6 +33,23 @@ impl App {
             self.on_eval_action(action);
             return Ok(());
         }
+        // A pane selected: Enter enters it, ← goes back to the list, and the
+        // arrows go back to picking rows there.
+        if self.pane_selected && self.detail.is_none() {
+            match action {
+                Action::Open => {
+                    self.focus = Focus::Agent;
+                    return Ok(());
+                }
+                Action::Back => {
+                    self.pane_selected = false;
+                    self.show_work = true;
+                    return Ok(());
+                }
+                Action::Pick(_) => self.pane_selected = false,
+                _ => {}
+            }
+        }
         match action {
             Action::EvalView => self.open_eval_view(),
             Action::Diff => {}
@@ -66,7 +83,10 @@ impl App {
             Action::Back => self.back(),
             Action::NextNeedsYou => self.next_needs_you(),
             Action::ToggleSidebar => self.act(Act::ToggleSidebar),
-            Action::Layout => self.layout_bar = true,
+            Action::Layout => {
+                self.layout_bar = true;
+                self.pane_selected = true;
+            }
             // Picking an agent hands it the keys, as Enter on its harness does.
             Action::NextPane => {
                 let tabs = self.tabs();
@@ -266,11 +286,15 @@ impl App {
         match code {
             K::Right => self.layout(|p, area| p.split(Axis::Right, area)),
             K::Down => self.layout(|p, area| p.split(Axis::Down, area)),
-            K::Char(c @ ('[' | ']')) => self.layout(|p, _| {
-                p.move_tab(if c == '[' { -1 } else { 1 });
+            // Tab selects the next pane, as it selects the next agent elsewhere.
+            K::Tab => self.layout(|p, _| {
+                let ids: Vec<u32> = p.panes().iter().map(|x| x.id).collect();
+                if let Some(at) = ids.iter().position(|&id| id == p.active().id) {
+                    p.focus(ids[(at + 1) % ids.len()]);
+                }
                 Ok(())
             }),
-            K::Tab => self.layout(|p, _| {
+            K::Char('m' | 'M') => self.layout(|p, _| {
                 p.to_next_pane();
                 Ok(())
             }),
@@ -283,33 +307,13 @@ impl App {
         }
     }
 
+    /// `Ctrl+]`: into the agent selected (from the list, the pane with the
+    /// keys), or out of it, the agent still selected.
     pub(crate) fn toggle_focus(&mut self) {
-        // More than one pane: the list, then each pane in turn.
-        let panes: Vec<u32> = self.panes.panes().iter().map(|p| p.id).collect();
-        if panes.len() > 1 {
-            let here = panes.iter().position(|&id| id == self.panes.active().id);
-            let next = match self.focus {
-                Focus::Weft => panes.first(),
-                Focus::Agent => here.and_then(|i| panes.get(i + 1)),
-            };
-            match next.copied() {
-                Some(id) => {
-                    self.layout(|p, _| {
-                        p.focus(id);
-                        Ok(())
-                    });
-                    self.focus = Focus::Agent;
-                }
-                None => self.focus = Focus::Weft,
-            }
-            return;
-        }
         self.focus = match self.focus {
             Focus::Weft => Focus::Agent,
             Focus::Agent => {
-                // Coming back lands on the work list, which is what `Ctrl+]`
-                // out of the agent is for.
-                self.show_work = true;
+                self.pane_selected = true;
                 Focus::Weft
             }
         };

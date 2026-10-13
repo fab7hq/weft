@@ -33,4 +33,4 @@ expression: drawn
 └──────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  [A]SK   [E]VAL   [S]EAL                                                             [/] SEARCH   [\] LAYOUT   [W]EFT ⌄
- Ctrl+] moves the keys between the list and each pane. [B] shows the list.
+ Tab, 1–9 select an agent, Enter enters it, ← goes back to the list. [B] shows the list.

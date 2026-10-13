@@ -709,13 +709,15 @@ fn the_toggle_moves_between_weft_and_the_agent_both_ways() {
 }
 
 #[test]
-fn coming_back_out_of_the_agent_shows_the_work_list_again() {
+fn coming_back_out_of_the_agent_leaves_it_selected_and_left_shows_the_list() {
     let mut a = app();
     press(&mut a, KeyCode::Char('b'));
     assert!(!a.show_work());
     ctrl(&mut a, ']');
     ctrl(&mut a, ']');
-    assert!(a.show_work(), "Ctrl+] back from the agent lands on the list");
+    assert_eq!((a.focus, a.pane_selected), (Focus::Weft, true), "out of the agent, still selected");
+    press(&mut a, KeyCode::Left);
+    assert!(a.show_work() && !a.pane_selected, "← goes back to the list");
 }
 
 #[test]

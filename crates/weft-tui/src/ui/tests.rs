@@ -744,7 +744,7 @@ fn help_says_what_enter_does_once_and_update_sits_above_help() {
     let a = app();
     let help = help_lines(&a).join("\n");
     assert!(help.contains("open/proceed"), "{help}");
-    assert!(help.contains("switch active pane"), "{help}");
+    assert!(help.contains("into · out of the agent"), "{help}");
     assert!(help.contains("T  turbo mode"), "{help}");
     let at = |key: &str| {
         help.lines().position(|l| l.contains(key)).unwrap_or_else(|| panic!("{key} in {help}"))
@@ -1092,7 +1092,7 @@ fn tabs_hold_every_open_projects_agents() {
         assert!(row.contains(want), "{want}: {row}");
     }
     press(&mut a, KeyCode::Char('3'));
-    assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
+    assert_eq!((a.project_name(), a.focus, a.pane_selected), ("docs", Focus::Weft, true));
     assert_eq!(a.harness_at(a.pane_focus), Some("claude"));
     assert!(tabs(&mut a).contains("▸ 3 docs · claude"), "{}", tabs(&mut a));
     // Tab from the last agent wraps to the first, back in weft.
@@ -1106,8 +1106,9 @@ fn tabs_hold_every_open_projects_agents() {
 fn atlas_t14_1_every_projects_agents_as_tabs() {
     let mut a = atlas_with_docs();
     press(&mut a, KeyCode::Char('1'));
-    // As the card draws it: the keys in the list, the bar offering the split.
-    a.focus = Focus::Weft;
+    // As the card draws it: back in the list, no pane selected.
+    press(&mut a, KeyCode::Left);
+    assert!(!a.pane_selected);
     expect_screen("atlas_t14_1", &screen(&mut a, 120, 32));
 }
 
@@ -1164,57 +1165,98 @@ fn tabs_are_numbered_pane_by_pane() {
     assert_eq!(a.panes().active().id, a.panes().panes()[0].id);
 }
 
-/// `\` opens the layout bar; its keys split, move the tab with the keys and
-/// join, and every other key is the bar's until Esc. `|` no longer splits.
+/// `Tab` and `1`–`9` select an agent, in any pane, and leave Weft's keys
+/// Weft's; `Enter` enters it; `Ctrl+]` steps back out to it, selected; `←`
+/// goes back to the list; `Ctrl+]` from the list goes straight in.
 #[test]
-fn the_layout_bar_splits_moves_and_joins() {
+fn tab_and_digits_select_an_agent_and_enter_enters_it() {
+    let mut a = atlas_with_docs();
+    press(&mut a, KeyCode::Char('3'));
+    layout(&mut a, &[KeyCode::Right]);
+    a.pane_selected = false;
+    press(&mut a, KeyCode::Char('1'));
+    assert_eq!((a.focus, a.pane_selected), (Focus::Weft, true));
+    assert_eq!((a.project_name(), a.harness_at(a.pane_focus)), ("weft", Some("claude")));
+    press(&mut a, KeyCode::Tab);
+    assert_eq!((a.focus, a.harness_at(a.pane_focus)), (Focus::Weft, Some("codex")));
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(
+        (a.focus, a.project_name()),
+        (Focus::Weft, "docs"),
+        "into the other pane, still selected"
+    );
+    assert_eq!(a.panes().active().id, a.panes().panes()[1].id);
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, Focus::Agent);
+    ctrl(&mut a, ']');
+    assert_eq!((a.focus, a.pane_selected, a.project_name()), (Focus::Weft, true, "docs"));
+    press(&mut a, KeyCode::Left);
+    assert_eq!((a.focus, a.pane_selected), (Focus::Weft, false));
+    assert!(a.show_work(), "back in the list");
+    ctrl(&mut a, ']');
+    assert_eq!(
+        (a.focus, a.project_name()),
+        (Focus::Agent, "docs"),
+        "straight into the pane with the keys"
+    );
+}
+
+/// `\` opens the layout bar: `→` and `↓` split the selected pane, `Tab`
+/// selects the next pane and moves nothing, `M` moves the shown tab into the
+/// next pane (one leaving its pane empty closes it, which the hint says
+/// first), `J` joins, and every other key is the bar's until Esc. `|` and `[`
+/// do nothing.
+#[test]
+fn the_layout_bar_splits_selects_moves_and_joins() {
     let mut a = atlas_with_docs();
     a.focus = Focus::Weft;
     press(&mut a, KeyCode::Char('|'));
     assert_eq!(a.panes().count(), 1, "| is not a key any more");
     press(&mut a, KeyCode::Char('3'));
-    a.focus = Focus::Weft;
     press(&mut a, KeyCode::Char('\\'));
     assert!(a.layout_bar);
     press(&mut a, KeyCode::Right);
     assert_eq!(a.panes().count(), 2);
-    assert_eq!(a.harness_at(a.pane_focus), Some("claude"));
-    assert_eq!(a.project_name(), "docs", "the tab with the keys moved, and kept them");
+    assert_eq!((a.project_name(), a.harness_at(a.pane_focus)), ("docs", Some("claude")));
     assert!(!a.show_work(), "the list hides to make room");
-    // A pane of one agent does not split, and says why.
     press(&mut a, KeyCode::Down);
     assert_eq!(a.hint_text(), Some(weft_core::words::word("why.split_needs_two")));
-    // A key the bar has no use for does nothing.
     press(&mut a, KeyCode::Char('a'));
     assert!(a.modal.is_none() && a.layout_bar);
-    // Tab moves it into the next pane, whose pane it left closing.
+    // Tab selects the other pane; nothing moves.
     press(&mut a, KeyCode::Tab);
-    assert_eq!(a.panes().count(), 1);
-    assert_eq!(names(&a).last().map(String::as_str), Some("docs · claude"));
-    press(&mut a, KeyCode::Char('['));
+    assert_eq!(a.panes().count(), 2);
+    assert_eq!(a.panes().active().id, a.panes().panes()[0].id);
+    assert_eq!(names(&a), ["weft · claude", "weft · codex", "docs · claude"]);
+    // M moves its shown tab into the next pane.
+    press(&mut a, KeyCode::Char('m'));
     assert_eq!(names(&a), ["weft · claude", "docs · claude", "weft · codex"]);
+    press(&mut a, KeyCode::Char('['));
+    assert_eq!(names(&a), ["weft · claude", "docs · claude", "weft · codex"], "[ moves nothing");
+    // Weft's claude is alone in its pane now: the hint says M closes it.
+    press(&mut a, KeyCode::Tab);
+    assert_eq!(a.panes().active().tabs.len(), 1);
+    let drawn = screen(&mut a, 120, 32);
+    assert!(drawn.lines().last().is_some_and(|l| l.contains("closes")), "{drawn}");
+    press(&mut a, KeyCode::Char('m'));
+    assert_eq!(a.panes().count(), 1);
     press(&mut a, KeyCode::Down);
     assert_eq!(a.panes().count(), 2);
     press(&mut a, KeyCode::Char('j'));
     assert_eq!(a.panes().count(), 1);
-    assert_eq!(names(&a), ["weft · claude", "weft · codex", "docs · claude"]);
     press(&mut a, KeyCode::Esc);
     assert!(!a.layout_bar);
 }
 
-/// Each pane is drawn at its place with its agent told that size; Ctrl+]
-/// goes from the list to each pane in turn and back; what is typed reaches
-/// only the pane with the keys.
+/// Each pane is drawn at its place with its agent told that size; what is
+/// typed reaches only the pane entered.
 #[test]
 fn each_pane_gets_its_size_and_the_keys_reach_only_the_pane_with_them() {
     let mut a = two_panes();
     let _ = screen(&mut a, 120, 32);
     let (left, right) = (a.pane_size_in(0, 0), a.pane_size_in(1, 0));
     assert_eq!((left, right), ((25, 58), (25, 57)));
-    ctrl(&mut a, ']');
-    assert_eq!((a.project_name(), a.focus), ("weft", Focus::Agent));
-    assert_eq!(a.panes().active().id, a.panes().panes()[0].id);
-    ctrl(&mut a, ']');
+    press(&mut a, KeyCode::Enter);
     assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
     press(&mut a, KeyCode::Char('q'));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -1225,7 +1267,7 @@ fn each_pane_gets_its_size_and_the_keys_reach_only_the_pane_with_them() {
     assert!(a.pane_text(0).unwrap_or_default().contains('q'), "docs' claude got it");
     assert!(!a.pane_text_in(0, 0).unwrap_or_default().contains('q'), "weft's did not");
     ctrl(&mut a, ']');
-    assert_eq!(a.focus, Focus::Weft);
+    assert_eq!((a.focus, a.pane_selected), (Focus::Weft, true));
 }
 
 /// A window too small for the layout shows the pane with the keys alone,
@@ -1241,11 +1283,21 @@ fn a_window_too_small_for_the_layout_shows_the_pane_with_the_keys_alone() {
     assert_eq!(wide.lines().nth(2).map(|l| l.matches('┌').count()), Some(2), "{wide}");
 }
 
-/// Two panes side by side, each with its own tabs.
+/// Two panes side by side, each with its own tabs, the right one selected.
 #[test]
 fn atlas_t15_1_two_panes_side_by_side() {
     let mut a = two_panes();
+    assert!(a.pane_selected);
     expect_screen("atlas_t15_1", &screen(&mut a, 120, 32));
+}
+
+/// The right pane entered: every key its agent's.
+#[test]
+fn atlas_t15_6_entered() {
+    let mut a = two_panes();
+    press(&mut a, KeyCode::Enter);
+    assert_eq!(a.focus, Focus::Agent);
+    expect_screen("atlas_t15_6", &screen(&mut a, 120, 32));
 }
 
 /// The layout bar, the left pane's tab with the keys.
@@ -1297,12 +1349,12 @@ fn atlas_t15_4_four_panes_the_most() {
     layout(&mut a, &[KeyCode::Down]);
     for _ in 0..2 {
         go(&mut a, "docs · claude", 0);
-        layout(&mut a, &[KeyCode::Tab]);
+        layout(&mut a, &[KeyCode::Char('m')]);
     }
     go(&mut a, "docs · codex", 0);
     layout(&mut a, &[KeyCode::Down]);
     go(&mut a, "docs · claude", 1);
-    layout(&mut a, &[KeyCode::Tab, KeyCode::Tab]);
+    layout(&mut a, &[KeyCode::Char('m'), KeyCode::Char('m')]);
     let shown: Vec<_> = a.panes().panes().iter().map(|p| p.tabs.len()).collect();
     assert_eq!(shown, [1, 1, 1, 2], "{:?}", names(&a));
     go(&mut a, "docs · claude", 1);
@@ -1374,7 +1426,7 @@ fn a_dragged_tab_reorders_moves_splits_and_joins() {
     let at = tab_at(&mut a, "docs · claude");
     mouse(&mut a, MouseEventKind::Down(MouseButton::Left), at);
     mouse(&mut a, MouseEventKind::Up(MouseButton::Left), at);
-    assert_eq!((a.project_name(), a.focus), ("docs", Focus::Agent));
+    assert_eq!((a.project_name(), a.focus, a.pane_selected), ("docs", Focus::Weft, true));
     assert_eq!(names(&a), ["weft · codex", "docs · claude", "weft · claude"]);
 }
 
@@ -1582,12 +1634,20 @@ fn focus_moves_the_frames_state() {
     a.focus = Focus::Weft;
     let weft = screen(&mut a, 120, 32);
     assert!(weft.contains('┌') && !weft.contains('┏'), "{weft}");
-    // Enter on its harness, a tab's digit or Tab gives the agent the keys.
-    for key in [KeyCode::Enter, KeyCode::Char('2'), KeyCode::Tab] {
+    // Enter on its harness gives the agent the keys; a tab's digit or Tab
+    // selects it, and Enter then enters it.
+    for keys in [
+        &[KeyCode::Enter][..],
+        &[KeyCode::Char('2'), KeyCode::Enter],
+        &[KeyCode::Tab, KeyCode::Enter],
+    ] {
         a.focus = Focus::Weft;
+        a.pane_selected = false;
         assert!(a.select(|r| matches!(r, crate::app::Row::Agent { .. })));
-        press(&mut a, key);
-        assert_eq!(a.focus, Focus::Agent, "{key:?}");
+        for &key in keys {
+            press(&mut a, key);
+        }
+        assert_eq!(a.focus, Focus::Agent, "{keys:?}");
     }
     let agent = screen(&mut a, 120, 32);
     assert!(agent.contains('┏') && !agent.contains('┌'), "{agent}");

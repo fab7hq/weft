@@ -210,7 +210,12 @@ fn geometry(app: &App, area: Rect) -> Geo {
             geo.right = Some(content);
         }
         Layout::Single { .. } => {
-            if app.show_work() && app.focus == Focus::Weft && app.detail().is_none() {
+            // One surface at a time: an agent selected is shown, not the list.
+            if app.show_work()
+                && app.focus == Focus::Weft
+                && !app.pane_selected
+                && app.detail().is_none()
+            {
                 geo.list = Some(content);
             } else {
                 geo.right = Some(content);

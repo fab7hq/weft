@@ -28,11 +28,11 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     if app.layout_bar && app.modal.is_none() {
         let lit = Style::default().fg(th.primary()).add_modifier(Modifier::BOLD);
         let keys = format!(
-            "   {}   {}    [ ]  {}   {}   {}   [ESC] DONE",
+            "   {}   {}   {}   {}   {}   [ESC] DONE",
             key_by("→", "layout.right"),
             key_by("↓", "layout.down"),
-            word("layout.move_tab").to_uppercase(),
             key_by("TAB", "layout.next_pane"),
+            key_in("layout.move_tab"),
             key_in("layout.join"),
         );
         let title = format!(" {}", word("act.layout").to_uppercase());
@@ -273,8 +273,12 @@ pub(super) fn hint(app: &App) -> Paragraph<'static> {
         (None, Focus::Weft) if app.layout_bar => {
             let tab = app.tabs().into_iter().find(|t| t.active);
             let name = tab.map(|t| format!("{} · {}", t.project_name, t.harness));
-            format!(" {}", fill("hint.layout", &[("tab", &name.unwrap_or_default())]))
+            // Alone in its pane, the tab moved out closes it: said first.
+            let alone = app.panes().count() > 1 && app.panes().active().tabs.len() == 1;
+            let key = if alone { "hint.layout_alone" } else { "hint.layout" };
+            format!(" {}", fill(key, &[("tab", &name.unwrap_or_default())]))
         }
+        (None, Focus::Weft) if app.pane_selected => format!(" {}", word("hint.selected")),
         (None, Focus::Weft) if app.waiting_here() => format!(
             " {} is asking you something. Weft never answers for you.",
             app.harness_at(app.pane_focus).unwrap_or("the agent")

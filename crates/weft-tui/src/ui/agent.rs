@@ -14,10 +14,13 @@ pub(super) fn agent(frame: &mut Frame, app: &mut App, area: Rect) {
         return panes(frame, app, area);
     }
     let th = app.theme;
+    // Entered, heavy and blue; selected, blue; in the list, grey.
     let block = if app.focus == Focus::Agent {
         Block::bordered()
             .border_type(BorderType::Thick)
             .border_style(Style::default().fg(th.warp()))
+    } else if app.pane_selected || app.layout_bar {
+        Block::bordered().border_style(Style::default().fg(th.warp()))
     } else {
         Block::bordered().border_style(th.rule())
     };
@@ -211,7 +214,9 @@ fn panes(frame: &mut Frame, app: &mut App, area: Rect) {
             (true, true) => Block::bordered()
                 .border_type(BorderType::Thick)
                 .border_style(Style::default().fg(th.warp())),
-            (true, false) => Block::bordered().border_style(Style::default().fg(th.warp())),
+            (true, false) if app.pane_selected || app.layout_bar => {
+                Block::bordered().border_style(Style::default().fg(th.warp()))
+            }
             _ => Block::bordered().border_style(th.rule()),
         };
         let inside = block.inner(body);

@@ -340,6 +340,9 @@ pub struct App {
     panes: crate::panes::Panes,
     /// The layout bar is open: its keys are the only ones Weft reads.
     pub layout_bar: bool,
+    /// A pane is selected: Weft's keys are still Weft's, and `Tab` and
+    /// `1`–`9` go on choosing among every pane's agents until one is entered.
+    pub pane_selected: bool,
     /// A tab held by the mouse.
     pub drag: Option<Drag>,
     /// Where the layout is kept between runs.
@@ -447,6 +450,7 @@ impl App {
         }
         self.kept_layout = None;
         self.save_layout();
+        self.pane_selected = true;
         if let Some((at, id)) = self.panes.active().showing()
             && let Some(pane) = self.running_pane(at, id)
         {
@@ -487,9 +491,9 @@ impl App {
         let _ = std::fs::write(file, weft_core::layout::write(&kept));
     }
 
-    /// Show an agent's tab, in whichever project it runs and in the pane
-    /// that holds it: that project becomes the one acts land in, and the
-    /// agent has the keys.
+    /// Select an agent's tab, in whichever project it runs and in the pane
+    /// that holds it: that project becomes the one acts land in. Weft keeps
+    /// the keys until the agent is entered.
     pub(crate) fn show_tab(&mut self, project: usize, pane: usize) {
         let Some(id) =
             self.projects.get(project).and_then(|p| p.session.panes.get(pane)).map(|p| p.id)
@@ -499,7 +503,8 @@ impl App {
         self.sync_panes();
         self.panes.show((project, id));
         self.focus_on(project, pane);
-        self.focus = Focus::Agent;
+        self.focus = Focus::Weft;
+        self.pane_selected = true;
     }
 
     /// The agent shown, by project and pane id.
@@ -879,6 +884,7 @@ impl App {
             clock: None,
             panes: Default::default(),
             layout_bar: false,
+            pane_selected: false,
             drag: None,
             layout_file: None,
             kept_layout: None,
