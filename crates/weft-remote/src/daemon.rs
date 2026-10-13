@@ -215,6 +215,7 @@ mod tests {
                 pane: Some(0),
                 text: Some("hi".into()),
                 eval: None,
+                start: None,
             },
             Call::Act {
                 act: "check".into(),
@@ -222,6 +223,7 @@ mod tests {
                 pane: None,
                 text: None,
                 eval: None,
+                start: None,
             },
             Call::Act {
                 act: "decide".into(),
@@ -229,6 +231,7 @@ mod tests {
                 pane: None,
                 text: None,
                 eval: None,
+                start: None,
             },
             Call::Act {
                 act: "send".into(),
@@ -236,6 +239,7 @@ mod tests {
                 pane: None,
                 text: None,
                 eval: None,
+                start: None,
             },
             Call::Act {
                 act: "follow_up".into(),
@@ -243,9 +247,22 @@ mod tests {
                 pane: Some(0),
                 text: Some("more".into()),
                 eval: None,
+                start: None,
             },
-            Call::Resolve { pending: "pnd_1".into(), yes: true, force: false },
-            Call::Resolve { pending: "pnd_1".into(), yes: true, force: true },
+            Call::Resolve {
+                pending: "pnd_1".into(),
+                yes: true,
+                force: false,
+                to: None,
+                start: None,
+            },
+            Call::Resolve {
+                pending: "pnd_1".into(),
+                yes: true,
+                force: true,
+                to: None,
+                start: None,
+            },
             Call::StartAgent {
                 harness: "sh".into(),
                 spec: "sh resume s".into(),

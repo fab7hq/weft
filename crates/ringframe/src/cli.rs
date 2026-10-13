@@ -83,7 +83,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             s(&["--ask", "--reason"], &["--attributed"], &["--ask"], false, NONE)
         }
         ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
-        ("ask", Some("copy")) => s(&["--ask"], &["--body"], &["--ask"], false, NONE),
+        ("ask", Some("copy")) => s(&["--ask", "--host"], &["--body"], &["--ask"], false, NONE),
         ("ask", Some("delivery")) => {
             s(&["--ask", "--state", "--reason"], &["--handoff"], &["--ask"], false, NONE)
         }
@@ -235,7 +235,10 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         }
         ("ask", Some("cancel")) => "record that the person said no",
         ("ask", Some("submitted")) => "the person attests they submitted the prompt",
-        ("ask", Some("copy")) => "the compiled prompt, verbatim; --body drops its command prefix",
+        ("ask", Some("copy")) => {
+            "the compiled prompt, verbatim; --body drops its command prefix; --host gives it as \
+             that host takes it, with how it has to be sent"
+        }
         ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
         ("ask", Some("list")) => "every compiled Ask, oldest first",
         ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
@@ -635,13 +638,15 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
     let (ws, outcome) = dispatch(&ns, ws, read_stdin);
     let (code, body) = match outcome {
         Outcome::Ok(code, result) => {
-            if matches!(
-                (ns.cmd.as_str(), sub.as_deref()),
-                ("ask", Some("copy"))
-                    | ("eval", Some("show"))
-                    | ("eval", Some("window"))
-                    | ("eval", Some("commits"))
-            ) {
+            if result.is_string()
+                && matches!(
+                    (ns.cmd.as_str(), sub.as_deref()),
+                    ("ask", Some("copy"))
+                        | ("eval", Some("show"))
+                        | ("eval", Some("window"))
+                        | ("eval", Some("commits"))
+                )
+            {
                 return Run {
                     code,
                     out: result.as_str().unwrap_or_default().to_string(),
@@ -1044,6 +1049,14 @@ fn ask_command(ns: &Parsed, ws: Workspace, actor: Value, what: &str) -> (Workspa
             // `--body` is the prompt without the command its prefix names, so
             // a person typing the command has something to paste that needs no
             // slicing.
+            // `--host` is the prompt as another host takes it: that host's
+            // command for the same capability, then the same wording.
+            if let Some(host) = ns.one("--host") {
+                return match ask::prompt_for_host(&ws, &id, host) {
+                    Ok(v) => (ws, Outcome::Ok(0, v)),
+                    Err(e) => (ws, from_ask_error(e)),
+                };
+            }
             let got = if ns.has("--body") {
                 ask::prompt_body(&ws, &id)
             } else {
@@ -1458,6 +1471,11 @@ mod tests {
             let (code, out, _) = c.go(&["ask", "copy", "--ask", &id]);
             assert_eq!(code, 0);
             assert_eq!(out, "Fix login.\n");
+            // As Codex takes it: its own command to plan by, then the wording.
+            let (code, out, _) = c.go(&["ask", "copy", "--ask", &id, "--host", "codex"]);
+            assert_eq!(code, 0);
+            assert_eq!(out["prompt"], "/plan Fix login.\n");
+            assert_eq!(out["delivery"]["mode"], "/plan");
 
             let (code, out, _) = c.go(&[
                 "ask",

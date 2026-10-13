@@ -19,18 +19,18 @@ expression: drawn
                                             ││                                                                         │
                                             ││                                                                         │
                                             ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
-                                            ││                                                                         │
                                             │└─────────────────────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
  WHAT DO YOU WANT DONE?
  _
 
  SEND TO
+     1 weft · claude
+   ▸ 2 weft · codex
 
-     claude
-   ▸ codex
+ START AN AGENT
+     claude · start fresh
+     codex · start fresh
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  [↑↓] SEND TO   [Enter] ASK   [←] CANCEL
  The agent will ask you which approach to take, in its own pane.

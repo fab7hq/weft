@@ -44,6 +44,11 @@ pub(super) fn action_bar(app: &App, width: u16) -> Paragraph<'static> {
     match &app.modal {
         // `Enter` does what is picked everywhere; [H]ELP says so once, and no
         // bar spends its room on it.
+        // A send can go elsewhere: its bar reads as Ask's does.
+        Some(Modal::Bar(Bar::Send(p))) if p.sends.is_some() => {
+            let (to, send) = (word("ask.send_to"), key_by("Enter", "act.send"));
+            return plain(&format!(" [↑↓] {to}   {send}   {}", key_by("←", "act.cancel")));
+        }
         Some(Modal::Bar(bar)) => {
             let act = match bar {
                 Bar::Send(_) => key_by("Enter", "act.send"),

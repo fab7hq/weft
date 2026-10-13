@@ -136,6 +136,8 @@ pub struct Staged {
     pub what: String,
     pub why: String,
     pub payload: Vec<u8>,
+    /// The Ask whose prompt this sends, when it sends one.
+    pub sends: Option<String>,
 }
 
 pub struct Session {
@@ -505,8 +507,8 @@ impl Session {
                     self.rounds = rounds;
                     self.boards += 1;
                 }
-                Event::Pending { id, pane, what, why, payload } => {
-                    self.waiting.push(Staged { id, pane, what, why, payload });
+                Event::Pending { id, pane, what, why, payload, sends } => {
+                    self.waiting.push(Staged { id, pane, what, why, payload, sends });
                 }
                 Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
                 Event::Injected { refusal, unrecorded, .. } => {
@@ -568,6 +570,7 @@ impl Session {
         pane: Option<usize>,
         text: Option<&str>,
         eval: Option<&str>,
+        start: Option<&str>,
     ) -> Result<u64> {
         self.last_refusal = None;
         self.unrecorded = None;
@@ -578,6 +581,7 @@ impl Session {
             pane,
             text: text.map(str::to_string),
             eval: eval.map(str::to_string),
+            start: start.map(str::to_string),
         })
     }
 
@@ -629,7 +633,24 @@ impl Session {
 
     /// Yes or no, by id. Whoever answers first answers for everyone.
     pub fn resolve(&mut self, pending: &str, yes: bool, force: bool) -> Result<()> {
-        self.tell(Call::Resolve { pending: pending.to_string(), yes, force }).map(|_| ())
+        let call =
+            Call::Resolve { pending: pending.to_string(), yes, force, to: None, start: None };
+        self.tell(call).map(|_| ())
+    }
+
+    /// Yes to a send, into another agent here (by index) or a new one of a
+    /// harness, instead of the one it was staged for.
+    pub fn resolve_to(
+        &mut self,
+        pending: &str,
+        force: bool,
+        to: Option<usize>,
+        start: Option<&str>,
+    ) -> Result<()> {
+        let to = to.map(|p| self.id_at(p)).transpose()?;
+        let start = start.map(str::to_string);
+        let call = Call::Resolve { pending: pending.to_string(), yes: true, force, to, start };
+        self.tell(call).map(|_| ())
     }
 
     pub fn resize(&mut self, pane: usize, rows: u16, cols: u16) -> Result<()> {

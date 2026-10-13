@@ -39,6 +39,8 @@ struct On<'a> {
     pane: Option<u32>,
     text: Option<&'a str>,
     eval: Option<&'a str>,
+    /// A harness to start a new agent of, to ask in instead of `pane`.
+    start: Option<&'a str>,
 }
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
@@ -793,7 +795,7 @@ impl Session {
     /// One of RingFrame's three acts. The daemon works out what to type and
     /// where it goes; a client only names the act.
     fn act(&mut self, client: u64, at: usize, act: &str, on: On) -> Answer {
-        let On { unit: unit_id, pane, text, eval } = on;
+        let On { unit: unit_id, pane, text, eval, start } = on;
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
         // Eval acts on the Open round and Seal on an Eval's:
@@ -829,6 +831,20 @@ impl Session {
         let unit = unit_id.and_then(|id| units.iter().find(|u| u.ask_id == id).cloned());
         let built = match act {
             "ask" | "follow_up" => {
+                // A new agent, when the person picked one: started now, on
+                // their Enter, and asked once it is ready.
+                let pane = match start {
+                    Some(harness) => match self.start_for(client, at, harness) {
+                        Some(pane) => Some(pane),
+                        None => {
+                            return Answer::No(
+                                "no_pane",
+                                format!("Weft could not start {harness}"),
+                            );
+                        }
+                    },
+                    None => pane,
+                };
                 let Some(pane) = pane else {
                     return Answer::No("no_pane", "an Ask needs a pane to go into".into());
                 };
@@ -871,7 +887,7 @@ impl Session {
                 if let Some(why) = self.cannot_prove(at, pane) {
                     return Answer::No("no_receipt", why);
                 }
-                match crate::acts::send(self.outside.as_ref(), &root, &unit) {
+                match crate::acts::send(self.outside.as_ref(), &root, &unit, &unit.harness) {
                     Ok(built) => (built, pane),
                     Err(why) => return Answer::No("refused", why),
                 }
@@ -1524,7 +1540,16 @@ impl Session {
                     "pendings": self.projects[at]
                         .waiting
                         .iter()
-                        .map(|w| weft_proto::pending_json(&w.id, w.pane, &w.what, &w.why, &w.payload))
+                        .map(|w| {
+                            weft_proto::pending_json(
+                                &w.id,
+                                w.pane,
+                                &w.what,
+                                &w.why,
+                                &w.payload,
+                                w.sends.as_deref(),
+                            )
+                        })
                         .collect::<Vec<_>>(),
                     "readiness": readiness_json(&self.projects[at].readiness),
                     "routing": routing_json(&self.projects[at].routing),
@@ -1595,6 +1620,7 @@ impl Session {
                     what: what.clone(),
                     why: why.clone(),
                     payload: bytes.clone(),
+                    sends: None,
                 };
                 self.projects[at].waiting.push(Waiting {
                     id: id.clone(),
@@ -1609,13 +1635,14 @@ impl Session {
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
             }
-            Call::Act { act, unit, pane, text, eval } => {
+            Call::Act { act, unit, pane, text, eval, start } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let on = On {
                     unit: unit.as_deref(),
                     pane,
                     text: text.as_deref(),
                     eval: eval.as_deref(),
+                    start: start.as_deref(),
                 };
                 return Ok(self.act(client, at, &act, on));
             }
@@ -1702,14 +1729,32 @@ impl Session {
                     }
                 }
             }
-            Call::Resolve { pending, yes, force } => {
+            Call::Resolve { pending, yes, force, to, start } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // Taken, not read: whoever answers first answers for everyone,
                 // and a second answer finds nothing to answer.
                 let Some(i) = self.projects[at].waiting.iter().position(|w| w.id == pending) else {
                     return Ok(Answer::No("gone", "that was already answered".into()));
                 };
-                let w = self.projects[at].waiting.remove(i);
+                // Another agent, or a new one: the person's pick beside a send.
+                let into = match (yes, to, start) {
+                    (true, Some(pane), _)
+                        if Some(pane) != Some(self.projects[at].waiting[i].pane) =>
+                    {
+                        match self.send_elsewhere(at, i, Into::Pane(pane)) {
+                            Ok(into) => Some(into),
+                            Err((code, why)) => return Ok(Answer::No(code, why)),
+                        }
+                    }
+                    (true, None, Some(harness)) => {
+                        match self.send_elsewhere(at, i, Into::Start(harness)) {
+                            Ok(into) => Some(into),
+                            Err((code, why)) => return Ok(Answer::No(code, why)),
+                        }
+                    }
+                    _ => None,
+                };
+                let mut w = self.projects[at].waiting.remove(i);
                 self.clients.broadcast(at, &Out::Resolved { id: pending, yes });
                 if !yes {
                     return Ok(Answer::nothing());
@@ -1718,6 +1763,19 @@ impl Session {
                 if let Err(why) = recorded_first(self.outside.as_ref(), &root, w.confirm.as_deref())
                 {
                     return Ok(Answer::No("not_recorded", why));
+                }
+                if let Some(into) = into {
+                    let pane = match into.to {
+                        Into::Pane(pane) => pane,
+                        Into::Start(harness) => match self.start_for(client, at, &harness) {
+                            Some(pane) => pane,
+                            None => {
+                                let why = format!("Weft could not start {harness}");
+                                return Ok(Answer::No("no_pane", why));
+                            }
+                        },
+                    };
+                    (w.pane, w.payload, w.how) = (pane, into.built.payload, into.built.how);
                 }
                 self.type_it(at, w, force);
             }

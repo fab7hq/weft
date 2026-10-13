@@ -1658,6 +1658,7 @@ fn focus_moves_the_frames_state() {
 fn atlas_t4_1_ask_empty() {
     let mut a = atlas();
     press(&mut a, KeyCode::Char('a'));
+    fresh(&mut a);
     expect_screen("atlas_t4_1", &screen(&mut a, 120, 32));
 }
 
@@ -1669,6 +1670,8 @@ fn staged(pane: usize, asking: weft_core::offers::Asking, payload: &str) -> crat
         payload: payload.as_bytes().to_vec(),
         what: asking.what,
         why: asking.why,
+        sends: None,
+        to: crate::app::Dest::Pane(pane),
     }
 }
 
@@ -1681,6 +1684,85 @@ fn atlas_t4_5_the_bar_ready_to_ask() {
         staged(0, asking, "Read the build number from the environment and show it on /health");
     a.modal = Some(Modal::Bar(Bar::Send(pending)));
     expect_screen("atlas_t4_5", &screen(&mut a, 120, 32));
+}
+
+/// The cards' START AN AGENT: claude and codex, each fresh.
+fn fresh(a: &mut App) {
+    a.settle();
+    a.set_starts(
+        ["claude", "codex"]
+            .map(|h| crate::app::Start {
+                harness: h.into(),
+                label: format!("{h} · start fresh"),
+                spec: h.into(),
+            })
+            .to_vec(),
+    );
+}
+
+fn typed(a: &mut App, text: &str) {
+    for c in text.chars() {
+        press(a, KeyCode::Char(c));
+    }
+}
+
+/// T4.3: Ask with SEND TO in two parts: the agents as their tabs, then
+/// START AN AGENT.
+#[test]
+fn atlas_t4_3_ask_two_agents_to_send_to() {
+    let mut a = atlas();
+    press(&mut a, KeyCode::Char('a'));
+    fresh(&mut a);
+    typed(&mut a, "Read the build number from the environment and show it on /health");
+    expect_screen("atlas_t4_3", &screen(&mut a, 120, 32));
+    // On past the agents, a new one of each harness; and round again.
+    let picked = |a: &App| match &a.modal {
+        Some(Modal::Ask { target, .. }) => target.clone(),
+        other => panic!("{other:?}"),
+    };
+    press(&mut a, KeyCode::Down);
+    assert_eq!(picked(&a), crate::app::Dest::Start("claude".into()));
+    press(&mut a, KeyCode::Down);
+    press(&mut a, KeyCode::Down);
+    assert_eq!(picked(&a), crate::app::Dest::Pane(0), "it wraps");
+}
+
+/// T4.4: Follow up: the agent that wrote the work on top, and picked.
+#[test]
+fn atlas_t4_4_follow_up() {
+    let mut a = atlas();
+    assert!(a.select(|r| matches!(r, crate::app::Row::Ask { unit: 1, .. })), "health endpoint");
+    press(&mut a, KeyCode::Char('f'));
+    fresh(&mut a);
+    typed(&mut a, "Read the build number from the environment, not a literal");
+    expect_screen("atlas_t4_4", &screen(&mut a, 120, 32));
+}
+
+/// T4.6: Proceed's bar, with SEND TO: the agent that wrote it on top and
+/// picked, the other agents, then START AN AGENT.
+#[test]
+fn atlas_t4_6_the_bar_ready_to_send() {
+    let mut a = atlas();
+    assert!(a.select(|r| matches!(r, crate::app::Row::Ask { unit: 1, .. })), "health endpoint");
+    fresh(&mut a);
+    let unit = a.selected_unit().cloned().expect("health endpoint");
+    let asking = weft_core::offers::sending(&unit, &weft_core::inject::Handoff::Whole);
+    let mut pending = staged(
+        1,
+        asking,
+        "Implement /health: read BUILD_NUMBER from the environment at startup;\n\
+         fall back to \"unknown\". Add a test that sets it and checks the reply.",
+    );
+    pending.sends = Some("ask_3".into());
+    a.modal = Some(Modal::Bar(Bar::Send(pending)));
+    expect_screen("atlas_t4_6", &screen(&mut a, 120, 32));
+    // Down picks the next agent, then a new one; Enter sends there.
+    press(&mut a, KeyCode::Down);
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    assert_eq!(p.to, crate::app::Dest::Pane(0));
+    press(&mut a, KeyCode::Down);
+    let Some(Modal::Bar(Bar::Send(p))) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    assert_eq!(p.to, crate::app::Dest::Start("claude".into()));
 }
 
 /// T4.11: the agent has not said it is ready: CANCEL beside SEND ANYWAY.

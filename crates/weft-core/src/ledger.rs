@@ -118,7 +118,7 @@ impl Delivery {
 
 /// What `ask.compiled` says about how the prompt has to be submitted. An
 /// event from before RingFrame recorded this yields the default: no mode.
-fn delivery_of(data: &Value) -> Delivery {
+pub fn delivery_of(data: &Value) -> Delivery {
     let d = data.get("delivery").cloned().unwrap_or(Value::Null);
     let text = |key: &str| d.get(key).and_then(Value::as_str).map(str::to_string);
     Delivery {

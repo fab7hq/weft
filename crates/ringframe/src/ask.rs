@@ -970,7 +970,7 @@ pub fn submission_as(
         if v.submissions.iter().any(|s| s["data"]["state"] == "observed") {
             continue;
         }
-        if let Some(m) = prompt_match(ws, &compiled["data"], sha256)? {
+        if let Some(m) = prompt_match(ws, &compiled["data"], sha256, host)? {
             hits.push((ask_id, m, v.delivery.is_some()));
         }
     }
@@ -999,6 +999,7 @@ fn prompt_match(
     ws: &Workspace,
     compiled: &Value,
     sha256: &str,
+    host: &str,
 ) -> Result<Option<String>, AskError> {
     let reference = &compiled["prompt"];
     if str_of(reference, "sha256") == sha256 {
@@ -1032,7 +1033,60 @@ fn prompt_match(
             return Ok(Some("host_prefix_stripped".into()));
         }
     }
+    // Sent into another host, the prompt went in that host's own way for the
+    // same capability: its command in front of the same body.
+    if !host.is_empty() && host != str_of(&compiled["host"], "name") {
+        let body = data.strip_prefix(prefix.as_bytes()).unwrap_or(&data);
+        let theirs =
+            [host_prefix(host, &str_of(compiled, "selected_capability")).as_bytes(), body].concat();
+        let mut end = theirs.len();
+        while end > 0 && theirs[end - 1] == b'\n' {
+            end -= 1;
+        }
+        if digest::sha256_bytes(&theirs) == sha256 || digest::sha256_bytes(&theirs[..end]) == sha256
+        {
+            return Ok(Some("receiving_host_prefix".into()));
+        }
+    }
     Ok(None)
+}
+
+/// The command a host puts in front of a prompt for this capability: its
+/// profile's prefix, or none when its profile has no such capability or no
+/// prefix for it.
+fn host_prefix(host: &str, capability: &str) -> String {
+    profiles::of(host)
+        .ok()
+        .and_then(|p| profiles::capability(&p, capability).cloned())
+        .map(|c| str_of(&c, "prompt_prefix"))
+        .unwrap_or_default()
+}
+
+/// The prompt as another host takes it, and how it has to reach that host.
+///
+/// The wording is the compiled prompt's, never changed: only the command in
+/// front of it is that host's for the same capability, or none when it has
+/// none. For the host it was compiled for, it is `prompt.txt` as it is.
+pub fn prompt_for_host(ws: &Workspace, ask_id: &str, host: &str) -> Result<Value, AskError> {
+    let rec = record(ws, ask_id)?;
+    let d = &rec.compiled.expect("compiled")["data"];
+    if host == str_of(&d["host"], "name") {
+        return Ok(json!({
+            "ask_id": ask_id, "host": host,
+            "prompt": prompt_text(ws, ask_id)?,
+            "delivery": d.get("delivery").cloned().unwrap_or(Value::Null),
+        }));
+    }
+    let body = prompt_body(ws, ask_id)?;
+    let capability = str_of(d, "selected_capability");
+    let profile = profiles::of(host).map_err(|e| ledger("ask.host", e.0))?;
+    let cap = profiles::capability(&profile, &capability).cloned().unwrap_or_else(|| json!({}));
+    let prompt = format!("{}{body}", str_of(&cap, "prompt_prefix"));
+    Ok(json!({
+        "ask_id": ask_id, "host": host,
+        "delivery": delivery_block(&profile, &cap, prompt.as_bytes()),
+        "prompt": prompt,
+    }))
 }
 
 /// The prompt without the command its prefix names.
@@ -2818,6 +2872,60 @@ mod tests {
             assert_eq!(sub["ask_id"], out["ask_id"]);
             assert_eq!(sub["match"], "host_prefix_stripped");
             assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
+        });
+    }
+
+    #[test]
+    fn another_host_takes_the_same_wording_with_its_own_command_or_none() {
+        bench(|ws| {
+            let out = codex_plan(ws, "one", b"/plan Fix the login bug.\n");
+            let id = str_of(&out, "ask_id");
+            let own = prompt_for_host(ws, &id, "codex").unwrap();
+            assert_eq!(own["prompt"], "/plan Fix the login bug.\n");
+            assert_eq!(own["delivery"]["mode"], "/plan");
+            // Antigravity plans with its own /plan, a mode it shows.
+            let agy = prompt_for_host(ws, &id, "antigravity").unwrap();
+            assert_eq!(agy["prompt"], "/plan Fix the login bug.\n");
+            assert_eq!(agy["delivery"]["prefix_bytes"], 6);
+            // Claude Code has no command to plan by: the wording alone.
+            let claude = prompt_for_host(ws, &id, "claude-code").unwrap();
+            assert_eq!(claude["prompt"], "Fix the login bug.\n");
+            assert_eq!(claude["delivery"]["mode"], Value::Null);
+            assert_eq!(claude["delivery"]["prefix_bytes"], 0);
+        });
+    }
+
+    #[test]
+    fn a_prompt_sent_into_another_host_is_its_submission_there() {
+        bench(|home| {
+            // A host that plans by another command, and hands its hook the
+            // prompt whole.
+            let dir = config::config_dir().join("harnesses");
+            let codex = std::fs::read_to_string(dir.join("codex.toml")).unwrap();
+            let other = codex
+                .replace("host = \"codex\"", "host = \"other\"")
+                .replace("profile_id = \"codex\"", "profile_id = \"other\"")
+                .replace("prompt_prefix = \"/plan \"", "prompt_prefix = \"/think \"");
+            std::fs::write(dir.join("other.toml"), other).unwrap();
+            let out = codex_plan(home, "one", b"/plan Fix the login bug.\n");
+            let id = str_of(&out, "ask_id");
+            assert_eq!(
+                prompt_for_host(home, &id, "other").unwrap()["prompt"],
+                "/think Fix the login bug.\n"
+            );
+            let rec = capture(home, "other", "s-9", "/think Fix the login bug.", None);
+            let sub = submission_from_capture(
+                home,
+                "other",
+                "s-9",
+                &str_of(&rec, "sha256"),
+                "hook:UserPromptSubmit",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(sub["ask_id"], out["ask_id"]);
+            assert_eq!(sub["match"], "receiving_host_prefix");
+            assert_eq!(sub["host"]["name"], "other");
         });
     }
 

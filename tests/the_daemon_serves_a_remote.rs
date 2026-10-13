@@ -167,10 +167,19 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
             what: "Ready to send".into(),
             why: "the exact wording".into(),
             payload: b"echo staged-earlier".to_vec(),
+            sends: None,
         })
     );
 
-    remote.answer(Call::Resolve { pending: id.clone(), yes: false, force: false }).unwrap();
+    remote
+        .answer(Call::Resolve {
+            pending: id.clone(),
+            yes: false,
+            force: false,
+            to: None,
+            start: None,
+        })
+        .unwrap();
     tui.wait_for(|e| {
         matches!(e, Event::Resolved { id: got, yes: false } if *got == id).then_some(())
     });

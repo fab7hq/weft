@@ -187,6 +187,17 @@ pub fn ask_copy(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<Vec<u
     run(out, project, &["ask", "copy", "--ask", ask_id])
 }
 
+/// An Ask's prompt as another host takes it: that host's command for the
+/// same capability in front of the same wording, and how it has to be sent.
+pub fn ask_for_host(
+    out: &dyn Outside,
+    project: &Path,
+    ask_id: &str,
+    host: &str,
+) -> Result<Value, Error> {
+    json(out, project, &["ask", "copy", "--ask", ask_id, "--host", host])
+}
+
 /// How this harness's skills are invoked. Read from the profile rather than
 /// assumed, because RingFrame owns the answer and it differs by host.
 pub fn invocation_prefix(out: &dyn Outside, project: &Path, host: &str) -> Result<String, Error> {

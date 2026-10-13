@@ -419,7 +419,9 @@ impl App {
                 if let Some(target) = target
                     && self.guard(Act::Ask)
                 {
+                    let target = Dest::Pane(target);
                     self.modal = Some(Modal::Ask { text: String::new(), target, follows: None });
+                    self.look_for_agents(Opening::Nothing);
                 }
             }
             (Act::Eval, Some(Row::Open { eval, .. })) if self.detail.is_none() => match eval {

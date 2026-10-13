@@ -690,7 +690,9 @@ fn a_project_that_routes_nothing_behaves_exactly_as_before() {
 fn asking_opens_on_the_harness_the_project_asks_in() {
     let mut a = routed(&[("ask", "codex")]);
     a.act(Act::Ask);
-    let Some(Modal::Ask { target, .. }) = a.modal.clone() else { panic!("{:?}", a.modal) };
+    let Some(Modal::Ask { target: Dest::Pane(target), .. }) = a.modal.clone() else {
+        panic!("{:?}", a.modal)
+    };
     assert_eq!(a.harness_at(target), Some("codex"));
 }
 
@@ -759,7 +761,7 @@ fn an_agent_that_named_no_session_yet_is_listed_and_can_be_asked() {
     assert!(rows.contains("AGENTS") && rows.contains("● codex"), "{rows}");
     assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session.is_empty())));
     press(&mut a, KeyCode::Char('a'));
-    assert!(matches!(a.modal, Some(Modal::Ask { target: 0, .. })), "{:?}", a.modal);
+    assert!(matches!(a.modal, Some(Modal::Ask { target: Dest::Pane(0), .. })), "{:?}", a.modal);
 }
 
 #[test]
@@ -863,16 +865,23 @@ fn send_to_picks_the_agent_with_the_arrows_and_asks_it() {
     a.set_readiness("claude-code", Readiness::Ready);
     press(&mut a, KeyCode::Char('a'));
     let target = |a: &App| match &a.modal {
-        Some(Modal::Ask { target, .. }) => *target,
+        Some(Modal::Ask { target, .. }) => target.clone(),
         other => panic!("{other:?}"),
     };
-    assert_eq!(target(&a), 0);
+    // The agents, in their tabs' order, then a new one of each harness.
+    let rows = a.send_to(None);
+    assert_eq!(rows[..2], [Dest::Pane(0), Dest::Pane(1)]);
+    assert_eq!(target(&a), Dest::Pane(0));
     press(&mut a, KeyCode::Down);
-    assert_eq!(target(&a), 1);
-    press(&mut a, KeyCode::Down);
-    assert_eq!(target(&a), 0, "it wraps");
-    press(&mut a, KeyCode::Up);
-    assert_eq!(target(&a), 1);
+    assert_eq!(target(&a), Dest::Pane(1));
+    for _ in 1..rows.len() {
+        press(&mut a, KeyCode::Down);
+    }
+    assert_eq!(target(&a), Dest::Pane(0), "it wraps");
+    for _ in 0..rows.len() - 1 {
+        press(&mut a, KeyCode::Up);
+    }
+    assert_eq!(target(&a), Dest::Pane(1));
     for c in "new thing".chars() {
         press(&mut a, KeyCode::Char(c));
     }
@@ -967,6 +976,8 @@ fn pending_for(pane: usize) -> Pending {
         payload: b"anything".to_vec(),
         what: "send".into(),
         why: Vec::new(),
+        sends: None,
+        to: Dest::Pane(pane),
     }
 }
 

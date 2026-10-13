@@ -36,6 +36,19 @@ pub struct Pending {
     pub payload: Vec<u8>,
     pub what: String,
     pub why: Vec<String>,
+    /// The Ask whose prompt this sends, when it sends one: it can go to
+    /// another agent here, or a new one (SEND TO).
+    pub sends: Option<String>,
+    /// Where it goes: the agent it was staged for, until the person picks.
+    pub to: Dest,
+}
+
+/// Where a prompt goes: an agent running in this project, by pane, or a new
+/// agent of a harness, started for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Dest {
+    Pane(usize),
+    Start(String),
 }
 
 /// What a click can land on.
@@ -194,7 +207,7 @@ pub enum Modal {
     /// Composing an intent; a follow-up also says what work it is about.
     Ask {
         text: String,
-        target: usize,
+        target: Dest,
         follows: Option<Follows>,
     },
     /// Something did not work, said plainly.
@@ -1232,8 +1245,13 @@ impl App {
     fn do_inject(&mut self, pending: &Pending) {
         // Weft types on its own only into an agent that said it is
         // ready. Anything else is the person's to allow; sending is the
-        // default, since they asked for it a key ago.
-        if let Err(why) = weft_core::turns::may_type(self.pane_turn(pending.pane)) {
+        // default, since they asked for it a key ago. A new agent is
+        // waited for by the daemon.
+        let into = match pending.to {
+            Dest::Pane(i) => Some(i),
+            Dest::Start(_) => None,
+        };
+        if let Some(Err(why)) = into.map(|i| weft_core::turns::may_type(self.pane_turn(i))) {
             self.modal = Some(Modal::Bar(Bar::SendAnyway { pending: pending.clone(), why }));
             self.modal_choice = 0;
             return;
@@ -1244,14 +1262,21 @@ impl App {
     /// The agent had not said it was ready, and the person said to type
     /// anyway: the decision is theirs.
     fn do_inject_forcing(&mut self, pending: &Pending, force: bool) {
-        match sess!(self).resolve(&pending.staged, true, force) {
+        let (to, start) = match &pending.to {
+            Dest::Pane(i) if *i == pending.pane => (None, None),
+            Dest::Pane(i) => (Some(*i), None),
+            Dest::Start(harness) => (None, Some(harness.as_str())),
+        };
+        match sess!(self).resolve_to(&pending.staged, force, to, start) {
             Ok(()) => {
                 self.modal = None;
                 // The detail view blocks the screen; the person goes where the
-                // keys went, into the agent.
+                // keys went, into the agent. A new one opens as it starts.
                 self.detail = None;
-                self.focus = Focus::Agent;
-                self.pane_focus = pending.pane;
+                if let Dest::Pane(i) = pending.to {
+                    self.focus = Focus::Agent;
+                    self.pane_focus = i;
+                }
             }
             Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
@@ -1280,12 +1305,19 @@ impl App {
         self.ask_first("send", Some(&id), None, None, None);
     }
 
-    fn send_ask(&mut self, text: String, target: usize, follows: Option<Follows>) {
-        match follows {
-            Some(f) => {
-                self.ask_first("follow_up", Some(&f.ask_id), Some(target), Some(&text), None)
-            }
-            None => self.ask_first("ask", None, Some(target), Some(&text), None),
+    fn send_ask(&mut self, text: String, target: Dest, follows: Option<Follows>) {
+        // A new agent is started now, on this Enter, and asked once ready.
+        let (pane, start) = match &target {
+            Dest::Pane(i) => (Some(*i), None),
+            Dest::Start(harness) => (None, Some(harness.as_str())),
+        };
+        let (act, unit) = match &follows {
+            Some(f) => ("follow_up", Some(f.ask_id.as_str())),
+            None => ("ask", None),
+        };
+        match sess!(self).act(act, unit, pane, Some(&text), None, start) {
+            Ok(call) => self.await_answer(call, Then::Confirm),
+            Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
     }
 
@@ -1324,9 +1356,62 @@ impl App {
         // The compose box opens on the harness this project asks in, when it
         // says. The person can still pick another before sending — routing is
         // where Weft starts, not somewhere it holds them.
-        let target =
-            self.routing.get("ask").and_then(|name| self.pane_for(name)).unwrap_or(self.pane_focus);
+        // A follow-up goes, to start with, to the agent that wrote the work.
+        let wrote = self.wrote(follows.as_ref());
+        let routed = self.routing.get("ask").and_then(|name| self.pane_for(name));
+        let target = Dest::Pane(wrote.or(routed).unwrap_or(self.pane_focus));
         self.modal = Some(Modal::Ask { text: String::new(), target, follows });
+        // What a new agent could be, for the rows under START AN AGENT.
+        self.look_for_agents(Opening::Nothing);
+    }
+
+    /// The agent that wrote a work a follow-up is about: one running its
+    /// harness, where its prompt arrived if it did. None for an Ask.
+    pub fn wrote(&self, follows: Option<&Follows>) -> Option<usize> {
+        let id = &follows?.ask_id;
+        let unit = sess!(self).units.iter().find(|u| u.ask_id == *id)?;
+        let harness = unit.arrived.as_ref().map_or(unit.harness.as_str(), |a| a.host.as_str());
+        let running = self.running_panes();
+        running.into_iter().find(|&i| self.harness_at(i) == Some(harness))
+    }
+
+    /// SEND TO, in order: the agent that wrote it, always first; then this
+    /// project's other running agents as their tabs are ordered; then a new
+    /// agent of each harness set up here, as `[N]` offers them.
+    pub fn send_to(&self, wrote: Option<usize>) -> Vec<Dest> {
+        let mut out: Vec<Dest> = wrote.map(Dest::Pane).into_iter().collect();
+        let here = self.tabs().into_iter().filter(|t| t.project == self.at).map(|t| t.pane);
+        out.extend(here.filter(|&i| Some(i) != wrote).map(Dest::Pane));
+        out.extend(self.fresh_starts().into_iter().map(|s| Dest::Start(s.harness)));
+        out
+    }
+
+    /// A SEND TO row as the person reads it: an agent by its tab's name, a
+    /// new one as `[N]` names it.
+    pub fn dest_label(&self, to: &Dest) -> String {
+        match to {
+            Dest::Pane(i) => {
+                let tabs = self.tabs();
+                match tabs.iter().position(|t| t.project == self.at && t.pane == *i) {
+                    Some(n) => format!("{} {} · {}", n + 1, tabs[n].project_name, tabs[n].harness),
+                    None => self.harness_at(*i).unwrap_or("agent").to_string(),
+                }
+            }
+            Dest::Start(harness) => self
+                .fresh_starts()
+                .into_iter()
+                .find(|s| s.harness == *harness)
+                .map_or_else(|| harness.clone(), |s| s.label),
+        }
+    }
+
+    /// The next row of SEND TO, up or down, from the one picked.
+    pub fn step_dest(&self, wrote: Option<usize>, from: &Dest, down: bool) -> Dest {
+        let rows = self.send_to(wrote);
+        let n = rows.len().max(1);
+        let at = rows.iter().position(|d| d == from).unwrap_or(0);
+        let next = if down { (at + 1) % n } else { (at + n - 1) % n };
+        rows.get(next).cloned().unwrap_or_else(|| from.clone())
     }
 
     /// What starting an agent could mean here. Asked when the picker opens,
@@ -1399,7 +1484,7 @@ impl App {
         text: Option<&str>,
         eval: Option<&str>,
     ) {
-        match sess!(self).act(act, unit, pane, text, eval) {
+        match sess!(self).act(act, unit, pane, text, eval, None) {
             Ok(call) => self.await_answer(call, Then::Confirm),
             Err(e) => self.modal = Some(Modal::Note(said(&e.to_string()))),
         }
@@ -1420,14 +1505,20 @@ impl App {
             return;
         };
         let Some(pane) = s.index_of(w.pane) else { return };
+        let sends = w.sends.clone();
         self.modal = Some(Modal::Bar(Bar::Send(Pending {
             staged: w.id,
             pane,
             payload: w.payload,
             what: w.what,
             why: w.why.lines().map(str::to_string).collect(),
+            sends: w.sends,
+            to: Dest::Pane(pane),
         })));
         self.modal_choice = 0;
+        if sends.is_some() {
+            self.look_for_agents(Opening::Nothing);
+        }
     }
 
     // --- the drawer ----------------------------------------------------------

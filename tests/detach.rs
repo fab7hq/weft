@@ -505,14 +505,26 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 
     // The second client answers. The first is told, and its own answer finds
     // nothing left to answer.
-    two.send(Call::Resolve { pending: id_two.clone(), yes: true, force: false });
+    two.send(Call::Resolve {
+        pending: id_two.clone(),
+        yes: true,
+        force: false,
+        to: None,
+        start: None,
+    });
     assert_eq!(one.wait_for_resolved(), (id_one.clone(), true));
     assert!(one.wait_for("ship the endpoint", 3).contains("ship the endpoint"), "typed once");
 
     // And the first client's own answer finds nothing left to answer, rather
     // than typing the prompt a second time.
     assert_eq!(
-        one.answer(Call::Resolve { pending: id_one, yes: true, force: false }),
+        one.answer(Call::Resolve {
+            pending: id_one,
+            yes: true,
+            force: false,
+            to: None,
+            start: None
+        }),
         Err("gone".to_string())
     );
 
@@ -553,6 +565,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
         pane: None,
         text: None,
         eval: None,
+        start: None,
     };
     let pending_pane = |c: &mut Client| {
         c.wait_until(|e| match e {
@@ -665,12 +678,13 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
         pane: None,
         text: None,
         eval: None,
+        start: None,
     });
     let id = a.wait_until(|e| match e {
         Event::Pending { id, .. } => Some(id),
         _ => None,
     });
-    a.send(Call::Resolve { pending: id, yes: true, force: false });
+    a.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
     a.wait_for_resolved();
 
     let began = Instant::now();
@@ -737,6 +751,7 @@ fn an_agent_started_for_an_eval_resumes_nobodys_session() {
         pane: None,
         text: None,
         eval: None,
+        start: None,
     });
     c.wait_for_added();
 
@@ -949,7 +964,7 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     // once, and is refused only when the wait is over.
     let id = stage(&mut c, "not-yet");
     let asked = Instant::now();
-    c.send(Call::Resolve { pending: id, yes: true, force: false });
+    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
     assert_eq!(c.injected_within(Duration::from_secs(2)), None, "waited for, not refused");
 
     // The person types in it and presses Enter, and its hook says it is
@@ -963,13 +978,13 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     assert!(asked.elapsed() >= Duration::from_secs(14), "after the wait: {:?}", asked.elapsed());
 
     let id = stage(&mut c, "anyway-typed");
-    c.send(Call::Resolve { pending: id, yes: true, force: true });
+    c.send(Call::Resolve { pending: id, yes: true, force: true, to: None, start: None });
     assert_eq!(c.wait_for_refusal(), None, "the person said to type it anyway");
 
     agent_says(&socket, &root, "codex", 0, "c1", "turn_ended");
     c.wait_for_state(Some(Turn::TurnEnded));
     let id = stage(&mut c, "now-typed");
-    c.send(Call::Resolve { pending: id, yes: true, force: false });
+    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
     assert_eq!(c.wait_for_refusal(), None);
 
     let mut stop = Client::attach(&socket, &root);
@@ -1113,6 +1128,7 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
         pane: None,
         text: None,
         eval: eval.map(str::to_string),
+        start: None,
     };
     assert_eq!(c.answer(act("decide", None)), Err("no_eval".into()));
     assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));

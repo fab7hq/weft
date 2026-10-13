@@ -66,7 +66,8 @@ pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
     if let Some(said) = say_handoff(how, &unit.harness) {
         why.push(said);
     }
-    Asking { what: format!("Ready to send to {}", unit.harness), why }
+    // Where it goes is picked beside it (SEND TO), so the title names none.
+    Asking { what: "Ready to send".into(), why }
 }
 
 /// Running Check or Decide, in whichever harness this project routes it to.

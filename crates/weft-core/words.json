@@ -70,6 +70,7 @@
   "select.eval": "Select an Eval to Seal it.",
   "select.open": "Select Open to Eval its Asks.",
   "send.no_prompt": "Weft does not send an Ask to {harness}: its harness file does not say where the prompt it received is, so Weft could not tell whether the Ask arrived.",
+  "send.wrote_it": "wrote it",
   "start.fresh": "{harness} · start fresh",
   "start.none": "No harness is set up for RingFrame yet. [U]PDATE sets one up.",
   "start.title": "Start an agent",

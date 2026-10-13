@@ -533,9 +533,7 @@ impl Remote {
             Heard::Event(CONTROL, _) => {}
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
             Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
-            Heard::Event(at, Event::Pending { id, pane, what, why, payload }) => {
-                self.pending_added(at, Event::Pending { id, pane, what, why, payload })
-            }
+            Heard::Event(at, pending @ Event::Pending { .. }) => self.pending_added(at, pending),
             Heard::Event(_, Event::Resolved { id, yes }) => {
                 if self.pendings.remove(&id).is_some() {
                     self.to_devices(&json!({"type": "resolved", "id": id, "yes": yes}));

@@ -128,6 +128,7 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
         pane: None,
         text: None,
         eval: None,
+        start: None,
     };
     let pending = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
         wait(frames, stream, |e| match e {

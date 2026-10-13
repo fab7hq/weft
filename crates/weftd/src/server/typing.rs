@@ -62,7 +62,62 @@ fn is_the_ask(answer: &serde_json::Value, ask: &str) -> bool {
     answer["submission"]["ask_id"].as_str() == Some(ask)
 }
 
+/// Where a send goes instead of the agent it was staged for.
+pub(super) enum Into {
+    /// Another agent here, by pane.
+    Pane(u32),
+    /// A new agent of this harness, started once the person says yes.
+    Start(String),
+}
+
+/// A send's other agent, and the prompt as that agent's harness takes it.
+pub(super) struct Elsewhere {
+    pub(super) to: Into,
+    pub(super) built: crate::acts::Built,
+}
+
 impl Session {
+    /// Check a send can go to another agent, or a new one, and build the
+    /// prompt that harness takes, before anything is started or typed.
+    pub(super) fn send_elsewhere(
+        &mut self,
+        at: usize,
+        waiting: usize,
+        to: Into,
+    ) -> Result<Elsewhere, (&'static str, String)> {
+        let Some(ask) = self.projects[at].waiting[waiting].sends.clone() else {
+            return Err(("not_a_send", "only an Ask's prompt can go to another agent".into()));
+        };
+        let p = &mut self.projects[at];
+        let harness = match &to {
+            Into::Pane(pane) => match p.slot(*pane) {
+                Some(slot) => {
+                    if !slot.pane.running() {
+                        return Err(("no_pane", format!("agent {pane} is not running")));
+                    }
+                    slot.map.harness.clone()
+                }
+                None => return Err(("no_pane", format!("there is no agent {pane} here"))),
+            },
+            Into::Start(harness) if p.harnesses.find(harness).is_some() => harness.clone(),
+            Into::Start(harness) => {
+                return Err(("no_harness", format!("{harness} is not set up here")));
+            }
+        };
+        if let Some(why) = self.cannot_prove_in(at, &harness) {
+            return Err(("no_receipt", why));
+        }
+        let units = self.projects[at].ledger.units();
+        let Some(unit) = units.iter().find(|u| u.ask_id == ask) else {
+            return Err(("no_unit", "that Ask is not on the board".into()));
+        };
+        let root = self.projects[at].root.clone();
+        match crate::acts::send(self.outside.as_ref(), &root, unit, &harness) {
+            Ok(built) => Ok(Elsewhere { to, built }),
+            Err(why) => Err(("refused", why)),
+        }
+    }
+
     /// Type a prompt that was said yes to, once its agent is ready: its turn
     /// is not running, by its hooks, and its screen has not changed
     /// for [`STARTED_QUIET`]. A busy agent, or one still
@@ -228,13 +283,17 @@ impl Session {
     /// Why Weft cannot prove a send to this pane, when it cannot: its
     /// harness file does not say where the prompt it received is.
     pub(super) fn cannot_prove(&mut self, at: usize, pane: u32) -> Option<String> {
-        let p = &mut self.projects[at];
-        let name = p.slot(pane)?.map.harness.clone();
-        let harness = p.harnesses.find(&name);
+        let name = self.projects[at].slot(pane)?.map.harness.clone();
+        self.cannot_prove_in(at, &name)
+    }
+
+    /// The same, for a harness by name, before any agent of it is started.
+    pub(super) fn cannot_prove_in(&self, at: usize, name: &str) -> Option<String> {
+        let harness = self.projects[at].harnesses.find(name);
         if harness.and_then(|h| h.signal.as_ref()).is_some_and(|s| s.prompt.is_some()) {
             return None;
         }
-        let title = harness.map_or(name.as_str(), |h| h.title.as_str());
+        let title = harness.map_or(name, |h| h.title.as_str());
         Some(weft_core::words::fill("send.no_prompt", &[("harness", title)]))
     }
 
@@ -249,6 +308,7 @@ impl Session {
             what: what.clone(),
             why: why.clone(),
             payload: built.payload.clone(),
+            sends: built.ask_id.clone(),
         };
         self.projects[at].waiting.push(Waiting {
             id: id.clone(),

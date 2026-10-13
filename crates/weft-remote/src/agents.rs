@@ -572,12 +572,21 @@ impl Project {
         {
             return Err(said(why));
         }
+        // An Ask can go into a new agent, of a harness this project starts.
+        let start = match m["start"].as_str().filter(|_| asking) {
+            Some(harness) => {
+                self.start(harness)?;
+                Some(harness.to_string())
+            }
+            None => None,
+        };
         Ok(Call::Act {
             act: daemon.into(),
             unit: unit.map(|i| self.units[i].ask_id.clone()),
-            pane: pane.filter(|_| asking),
+            pane: pane.filter(|_| asking && start.is_none()),
             text: text.filter(|_| asking),
             eval,
+            start,
         })
     }
 
@@ -805,6 +814,7 @@ mod tests {
             pane,
             text: text.map(str::to_string),
             eval: None,
+            start: None,
         }
     }
 
@@ -862,6 +872,7 @@ mod tests {
             pane: None,
             text: None,
             eval: Some("evl_1".into()),
+            start: None,
         };
         assert_eq!(act(&p, json!({"act": "seal", "project": "weft", "eval": "evl_1"})), Ok(sealed));
     }
@@ -958,6 +969,23 @@ mod tests {
             Ok(Call::StartAgent { harness: "codex".into(), spec: "codex".into(), session: None })
         );
         assert_eq!(p.start("sh").unwrap_err().0, "no_harness");
+    }
+
+    /// An Ask into a new agent names a harness this project starts, and no
+    /// pane: the daemon starts it on the person's Enter.
+    #[test]
+    fn an_ask_into_a_new_agent_names_a_harness_offered_fresh() {
+        let mut p = opened();
+        p.available(&json!({"starts": [
+            {"harness": "codex", "label": "codex · start fresh", "spec": "codex", "session": null}]}));
+        let ask = json!({"act": "ask", "agent": "x", "text": "do it", "start": "codex"});
+        let mut want = call("ask", None, None, Some("do it"));
+        if let Call::Act { start, .. } = &mut want {
+            *start = Some("codex".into());
+        }
+        assert_eq!(act(&p, ask), Ok(want));
+        let nowhere = json!({"act": "ask", "agent": "x", "text": "do it", "start": "sh"});
+        assert_eq!(act(&p, nowhere).unwrap_err().0, "no_harness");
     }
 
     /// T11.2's payload: the Ask, its breadcrumb, and its session as AGENTS

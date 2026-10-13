@@ -30,10 +30,19 @@ pub struct Built {
 
 /// Send a compiled prompt. The wording is RingFrame's, read back through its
 /// CLI, and Weft does not touch it.
-pub fn send(out: &dyn Outside, root: &Path, unit: &Unit) -> Result<Built, String> {
-    let payload = ringframe::ask_copy(out, root, &unit.ask_id)
-        .map_err(|e| format!("RingFrame would not hand over the wording: {e:?}"))?;
-    let how = Handoff::choose(&unit.delivery);
+/// Into the harness it was composed in, it goes as RingFrame compiled it;
+/// into another, in that harness's own way for the same capability, or as
+/// plain text. The wording is the same either way.
+pub fn send(out: &dyn Outside, root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
+    let refused = |e| format!("RingFrame would not hand over the wording: {e:?}");
+    let (payload, how) = if into == unit.harness {
+        let payload = ringframe::ask_copy(out, root, &unit.ask_id).map_err(refused)?;
+        (payload, Handoff::choose(&unit.delivery))
+    } else {
+        let theirs = ringframe::ask_for_host(out, root, &unit.ask_id, into).map_err(refused)?;
+        let prompt = theirs["prompt"].as_str().unwrap_or_default().as_bytes().to_vec();
+        (prompt, Handoff::choose(&weft_core::ledger::delivery_of(&theirs)))
+    };
     Ok(Built {
         asking: weft_core::offers::sending(unit, &how),
         payload,

@@ -398,13 +398,12 @@ impl App {
                     text.pop();
                     self.modal = Some(Modal::Ask { text, target, follows });
                 }
-                // SEND TO is a list, picked as Remote's devices are.
+                // SEND TO is a list, picked as Remote's devices are: the
+                // agents, then a new one of each harness.
                 event::KeyCode::Up | event::KeyCode::Down => {
-                    let running = self.running_panes();
-                    let n = running.len().max(1);
-                    let at = running.iter().position(|&i| i == target).unwrap_or(0);
-                    let step = if key.code == event::KeyCode::Up { n - 1 } else { 1 };
-                    target = running.get((at + step) % n).copied().unwrap_or(target);
+                    let wrote = self.wrote(follows.as_ref());
+                    let down = key.code == event::KeyCode::Down;
+                    target = self.step_dest(wrote, &target, down);
                     self.modal = Some(Modal::Ask { text, target, follows });
                 }
                 event::KeyCode::Char(c) => {
@@ -424,6 +423,15 @@ impl App {
             Modal::StartAgent { .. } => self.fresh_starts().len().max(1),
             _ => 1,
         };
+        // A send's SEND TO: the agent that wrote it, the others, a new one.
+        if let Modal::Bar(Bar::Send(mut p)) = modal.clone()
+            && p.sends.is_some()
+            && matches!(key.code, event::KeyCode::Up | event::KeyCode::Down)
+        {
+            p.to = self.step_dest(Some(p.pane), &p.to, key.code == event::KeyCode::Down);
+            self.modal = Some(Modal::Bar(Bar::Send(p)));
+            return Ok(());
+        }
         match key.code {
             // The agent picker is the same picker wherever it is drawn.
             event::KeyCode::Up if matches!(modal, Modal::StartAgent { .. }) => self.pick_agent(-1),

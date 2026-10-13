@@ -311,6 +311,8 @@ impl Remote {
             return self.ask(at, Call::Dismiss, conn, req, Carries::Nothing);
         }
         let (at, pane) = match m["act"].as_str() {
+            // Into a new agent of a harness the project starts (remote.md §6).
+            Some("ask" | "follow_up") if m["start"].is_string() => (self.project_named(m)?, None),
             Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
             // Eval and Seal act on a round of a project (remote.md §6).
             Some("eval" | "seal") => (self.project_named(m)?, None),
@@ -386,7 +388,7 @@ impl Remote {
         if force && !self.not_ready.contains(id) {
             return Err(("not_allowed", "send anyway follows not_ready".into()));
         }
-        let (at, pane) = self
+        let (at, staged) = self
             .pendings
             .get(id)
             .map(|(at, p)| {
@@ -399,7 +401,27 @@ impl Remote {
                 )
             })
             .ok_or(("gone", "that was already answered".to_string()))?;
-        if yes && !force {
+        // A send can go to another agent here, or a new one (remote.md §6).
+        let to = match m["to"].as_str() {
+            Some(agent) => match self.find(agent) {
+                Some((there, pane)) if there == at => Some(pane),
+                _ => return Err(("no_agent", format!("there is no agent {agent} here"))),
+            },
+            None => None,
+        };
+        let start = m["start"].as_str().map(str::to_string);
+        if let Some(harness) = &start {
+            self.projects[at].as_ref().expect("an open project").agents.start(harness)?;
+        }
+        if (to.is_some() || start.is_some())
+            && self.pendings.get(id).is_some_and(|(_, p)| p["sends"].is_null())
+        {
+            return Err(("not_a_send", "only an Ask's prompt can go to another agent".into()));
+        }
+        // A new agent is waited for by the daemon; one already running has to
+        // have said it is ready.
+        let pane = if start.is_some() { None } else { to.or(staged) };
+        if yes && !force && start.is_none() {
             let turn = self.projects[at].as_ref().zip(pane).and_then(|(o, p)| o.agents.turn_of(p));
             if let Err(why) = weft_core::turns::may_type(turn) {
                 self.not_ready.insert(id.to_string());
@@ -412,7 +434,7 @@ impl Remote {
         self.not_ready.remove(id);
         self.ask(
             at,
-            Call::Resolve { pending: id.into(), yes, force: force && yes },
+            Call::Resolve { pending: id.into(), yes, force: force && yes, to, start },
             conn,
             req,
             Carries::Nothing,
@@ -594,10 +616,11 @@ impl Remote {
     /// A pending, as devices are sent it: `text` is exactly what will be
     /// typed.
     pub(super) fn pending_added(&mut self, at: usize, event: Event) {
-        let Event::Pending { id, pane, what, why, payload } = event else { return };
+        let Event::Pending { id, pane, what, why, payload, sends } = event else { return };
+        // `sends`: the Ask whose prompt this is, which can go to another agent.
         let message = json!({"type": "pending", "id": id, "agent": self.agent_id(at, pane),
                              "what": what, "why": why,
-                             "text": String::from_utf8_lossy(&payload)});
+                             "text": String::from_utf8_lossy(&payload), "sends": sends});
         self.to_devices(&message);
         self.pendings.insert(id, (at, message));
     }

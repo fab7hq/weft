@@ -7,8 +7,9 @@
 //! does not say where its received prompt is.
 //!
 //! The harnesses are made up: `loom`, whose hooks report the line its
-//! composer took, through the real `weft signal`, and `mute`, whose
-//! `[signal]` names no prompt. Its own test binary because it puts a
+//! composer took, through the real `weft signal`; `weave`, the same under
+//! another name, which takes a prompt with its own command in front; and
+//! `mute`, whose `[signal]` names no prompt. Its own test binary because it puts a
 //! stand-in `ringframe` first on PATH.
 
 use std::os::unix::net::UnixStream;
@@ -67,9 +68,11 @@ fn stand_in() -> PathBuf {
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
             "#!/bin/sh\nws=$2\nprintf '%s\\n' \"$*\" >> \"$ws/calls.log\"\ncase \"$*\" in\n  \
+             *\"ask copy\"*\"--host weave\"*) \
+               printf '{{\"prompt\":\"/weave {WORDING}\",\"delivery\":{{\"prefix_bytes\":0}}}}' ;;\n  \
              *\"ask copy\"*) printf '{WORDING}' ;;\n  \
              *\"observe prompt\"*) got=$(cat)\n    \
-               if [ \"$got\" = '{WORDING}' ]; then \
+               if [ \"$got\" = '{WORDING}' ] || [ \"$got\" = '/weave {WORDING}' ]; then \
                  printf '{{\"recorded\":true,\"submission\":{{\"ask_id\":\"ask_1\"}}}}'; \
                else printf '{{\"recorded\":true,\"submission\":null}}'; fi ;;\n  \
              *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  \
@@ -126,10 +129,20 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     format!("/bin/sh {}", path.display())
 }
 
+/// `weave`'s file: `loom`'s, under its own name, started as the made-up
+/// agent `spec` runs.
+fn weave(spec: &str) -> String {
+    let (program, script) = spec.split_once(' ').expect("/bin/sh and a script");
+    LOOM.replace("title = \"Loom\"", "title = \"Weave\"")
+        .replace("program = \"loom\"", &format!("program = \"{program}\"\nargs = [\"{script}\"]"))
+}
+
 struct Bench {
     _tmp: tempfile::TempDir,
     root: PathBuf,
     agent: PathBuf,
+    /// Where a `weave` agent, started for a send, writes what it took.
+    weave: PathBuf,
     socket: PathBuf,
     stream: UnixStream,
     lines: Lines<UnixStream>,
@@ -172,11 +185,15 @@ impl Bench {
 
         let dir = tmp.path().join("agent");
         let spec = agent(&dir, &home, harness, mode);
+        let woven = tmp.path().join("weave");
+        let weave = weave(&agent(&woven, &home, "weave", "true"));
+        std::fs::write(files.join("weave.toml"), &weave).unwrap();
         let socket = protocol::private_socket(name);
         let (listening, config) = (socket.clone(), tmp.path().join("config.toml"));
         let harnesses = weft::harness_table::Harnesses::read(vec![
             ("loom".into(), LOOM.into()),
             ("mute".into(), MUTE.into()),
+            ("weave".into(), weave),
         ])
         .0;
         std::thread::spawn(move || {
@@ -195,6 +212,7 @@ impl Bench {
             _tmp: tmp,
             root,
             agent: dir,
+            weave: woven,
             socket,
             stream,
             lines,
@@ -249,12 +267,18 @@ impl Bench {
     /// The person's yes to sending the Ask: what the daemon answered the
     /// send itself, when it refused it, else the first `injected` after.
     fn send(&mut self) -> Result<Option<String>, String> {
+        self.send_to(None, None)
+    }
+
+    /// As `send`, into another agent here (`to`) or a new one (`start`).
+    fn send_to(&mut self, to: Option<u32>, start: Option<&str>) -> Result<Option<String>, String> {
         let act = self.call(Call::Act {
             act: "send".into(),
             unit: Some("ask_1".into()),
             pane: None,
             text: None,
             eval: None,
+            start: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         let pending = loop {
@@ -266,11 +290,46 @@ impl Bench {
             }
         };
         // An agent that has said nothing is sent to on the person's say-so.
-        self.call(Call::Resolve { pending, yes: true, force: self.shared });
-        Ok(self.wait(Duration::from_secs(10), |e| match e {
-            Event::Injected { refusal, .. } => Some(refusal),
+        let start = start.map(str::to_string);
+        let yes = self.call(Call::Resolve { pending, yes: true, force: self.shared, to, start });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while Instant::now() < deadline {
+            match self.next(Duration::from_millis(100)) {
+                Some(Line::Error { id, message, .. }) if id == yes => return Err(message),
+                Some(Line::Event(Event::Injected { refusal, .. })) => return Ok(refusal),
+                _ => {}
+            }
+        }
+        panic!("nothing was typed");
+    }
+
+    /// Start a `weave` agent here, as the person would; its pane, once it
+    /// said it is ready.
+    fn start_weave(&mut self) -> u32 {
+        let spec = format!("/bin/sh {}", self.weave.join("agent.sh").display());
+        self.call(Call::StartAgent { harness: "weave".into(), spec, session: None });
+        let pane = self.wait(Duration::from_secs(5), |e| match e {
+            Event::Added { pane, harness, .. } if harness == "weave" => Some(pane),
             _ => None,
-        }))
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.agents_are_all(Turn::Ready) {
+            assert!(Instant::now() < deadline, "weave never said it was ready");
+        }
+        pane
+    }
+
+    fn agents_are_all(&mut self, state: Turn) -> bool {
+        match self.next(Duration::from_millis(100)) {
+            Some(Line::Event(Event::Agents { panes, .. })) => {
+                panes.len() > 1 && panes.iter().all(|p| *p == Some(state))
+            }
+            _ => false,
+        }
+    }
+
+    fn woven(&self) -> String {
+        std::fs::read_to_string(self.weave.join("took")).unwrap_or_default()
     }
 
     /// The next `injected` within `within`, if one comes.
@@ -451,4 +510,64 @@ fn a_shared_servers_prompt_that_is_not_the_ask_ties_nothing() {
     let said = b.notice(Duration::from_secs(5)).expect("the person is told");
     assert_eq!(said.as_deref(), Some("NotTheAsk"));
     assert_eq!(b.tied(Duration::from_millis(500)), None);
+}
+
+/// A send can go into another agent running here, of another harness: it
+/// takes the same wording in its own way, and what it reports receiving is
+/// the Ask's arrival.
+#[test]
+fn a_send_goes_into_another_agent_here_in_its_harnesss_own_way() {
+    let mut b = Bench::new("weft-elsewhere-pane", "loom", "true");
+    let pane = b.start_weave();
+    assert_eq!(b.send_to(Some(pane), None), Ok(None), "typed");
+    assert_eq!(b.notice(Duration::from_secs(3)), None, "delivered: nothing to tell the person");
+    assert_eq!(b.woven(), format!("/weave {WORDING}\n"));
+    assert_eq!(b.took(), "", "not into the agent that wrote it");
+}
+
+/// A send can go into a new agent: Weft starts it on the person's yes, waits
+/// until it is ready, then types.
+#[test]
+fn a_send_goes_into_a_new_agent_started_for_it() {
+    let mut b = Bench::new("weft-elsewhere-new", "loom", "true");
+    assert_eq!(b.send_to(None, Some("weave")), Ok(None), "typed");
+    assert_eq!(b.notice(Duration::from_secs(3)), None, "delivered");
+    assert_eq!(b.woven(), format!("/weave {WORDING}\n"));
+    assert_eq!(b.took(), "");
+}
+
+/// No new agent is started for a send Weft could not prove, or of a harness
+/// that is not set up here; nothing is typed.
+#[test]
+fn a_new_agent_weft_could_not_prove_a_send_to_is_not_started() {
+    let mut b = Bench::new("weft-elsewhere-refused", "loom", "true");
+    let refused = b.send_to(None, Some("mute")).expect_err("no receipt");
+    assert!(refused.contains("Mute"), "{refused}");
+    let refused = b.send_to(None, Some("nowhere")).expect_err("not set up");
+    assert!(refused.contains("not set up"), "{refused}");
+    assert_eq!((b.took(), b.woven()), (String::new(), String::new()));
+}
+
+/// An Ask can go into a new agent: started on the person's Enter, and the
+/// Ask staged for it there.
+#[test]
+fn an_ask_into_a_new_agent_starts_it_and_stages_the_ask_there() {
+    let mut b = Bench::new("weft-elsewhere-ask", "loom", "true");
+    b.call(Call::Act {
+        act: "ask".into(),
+        unit: None,
+        pane: None,
+        text: Some("Ship the docs.".into()),
+        eval: None,
+        start: Some("weave".into()),
+    });
+    let started = b.wait(Duration::from_secs(5), |e| match e {
+        Event::Added { pane, harness, .. } if harness == "weave" => Some(pane),
+        _ => None,
+    });
+    let staged = b.wait(Duration::from_secs(5), |e| match e {
+        Event::Pending { pane, sends, .. } => Some((pane, sends)),
+        _ => None,
+    });
+    assert_eq!(staged, (started, None), "an Ask sends no Ask's prompt yet");
 }

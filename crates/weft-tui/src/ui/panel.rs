@@ -80,13 +80,16 @@ pub(super) fn panel_body(app: &App, modal: &Modal) -> Vec<String> {
                 Some(last) => last.push('_'),
                 None => lines.push("_".into()),
             }
-            lines.extend([String::new(), word("ask.send_to").into(), String::new()]);
+            lines.extend([String::new(), word("ask.send_to").into()]);
             lines
         }
         Modal::Bar(Bar::Send(p)) => {
             let mut lines = p.why.clone();
             lines.push(String::new());
             lines.extend(String::from_utf8_lossy(&p.payload).lines().map(str::to_string));
+            if p.sends.is_some() {
+                lines.extend([String::new(), word("ask.send_to").into()]);
+            }
             lines
         }
         Modal::StartAgent { .. } => {
@@ -207,13 +210,34 @@ pub(super) fn panel_choices(app: &App, modal: &Modal) -> Vec<String> {
             word("act.cancel").into(),
         ],
         Modal::StartAgent { .. } => app.fresh_starts().iter().map(|c| c.label.clone()).collect(),
-        Modal::Ask { .. } => app
-            .running_panes()
-            .into_iter()
-            .map(|i| app.harness_at(i).unwrap_or("agent").to_string())
-            .collect(),
+        Modal::Ask { follows, .. } => {
+            send_to_rows(app, app.wrote(follows.as_ref())).into_iter().map(|(l, _)| l).collect()
+        }
+        Modal::Bar(Bar::Send(p)) if p.sends.is_some() => {
+            send_to_rows(app, Some(p.pane)).into_iter().map(|(l, _)| l).collect()
+        }
         _ => Vec::new(),
     }
+}
+
+/// SEND TO's rows: the agents, then, under START AN AGENT, a new one of each
+/// harness. A heading and the line before it pick nothing.
+fn send_to_rows(app: &App, wrote: Option<usize>) -> Vec<(String, Option<Dest>)> {
+    let mut rows = Vec::new();
+    for to in app.send_to(wrote) {
+        if matches!(to, Dest::Start(_))
+            && !rows.iter().any(|(_, d)| matches!(d, Some(Dest::Start(_))))
+        {
+            rows.push((String::new(), None));
+            rows.push((word("start.title").to_uppercase(), None));
+        }
+        let mut label = app.dest_label(&to);
+        if matches!(to, Dest::Pane(i) if Some(i) == wrote) {
+            label = format!("{label}   {}", word("send.wrote_it"));
+        }
+        rows.push((label, Some(to)));
+    }
+    rows
 }
 
 pub(super) fn panel(app: &App, area: Rect) -> Paragraph<'static> {
@@ -243,12 +267,27 @@ pub(super) fn panel(app: &App, area: Rect) -> Paragraph<'static> {
             if warning.as_deref() == Some(l.as_str()) { th.needs_you() } else { th.label() },
         ));
     }
-    let at = match modal {
-        Modal::Ask { target, .. } => {
-            app.running_panes().iter().position(|i| i == target).unwrap_or(0)
-        }
-        _ => app.modal_choice,
+    // SEND TO's rows say which is picked themselves; a heading is drawn as
+    // the body is, without the room a row is indented by.
+    let send_to = match modal {
+        Modal::Ask { target, follows, .. } => Some((app.wrote(follows.as_ref()), target)),
+        Modal::Bar(Bar::Send(p)) if p.sends.is_some() => Some((Some(p.pane), &p.to)),
+        _ => None,
     };
+    if let Some((wrote, to)) = send_to {
+        for (label, dest) in send_to_rows(app, wrote) {
+            let picked = dest.as_ref() == Some(to);
+            drawn.push(match dest {
+                None => Line::styled(format!(" {label}"), th.label()),
+                Some(_) => Line::styled(
+                    format!("   {} {label}", if picked { "▸" } else { " " }),
+                    if picked { th.selected() } else { th.label() },
+                ),
+            });
+        }
+        return Paragraph::new(drawn);
+    }
+    let at = app.modal_choice;
     for (i, choice) in choices.iter().enumerate() {
         let picked = i == at;
         let style = if picked { th.selected() } else { th.label() };

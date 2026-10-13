@@ -1,0 +1,36 @@
+---
+source: crates/weft-tui/src/ui/tests.rs
+expression: drawn
+---
+ ╸┃╺ WEFT                                                                                         [T]URBO OFF   OPEN  2
+                                            │ ▸ 1 weft · claude    2 weft · codex    +
+────────────────────────────────────────────┼───────────────────────────────────────────────────────────────────────────
+ ▾ weft                           1 open  ⌫ │┌─────────────────────────────────────────────────────────────────────────┐
+                                            ││ ❯                                                                       │
+  AGENTS                2 running · 0 ended ││                                                                         │
+  ● claude fix login            ready 11:29 ││                                                                         │
+  ● codex  health endpo…   turn ended 10:52 ││                                                                         │
+                                            ││                                                                         │
+  WORK                                      ││                                                                         │
+  ▾ Open · since Eval 1                   1 ││                                                                         │
+    fix login         claude          ASKED ││                                                                         │
+  ▾ Eval 1 · drifted · 0.67 · not sealed  1 ││                                                                         │
+    health endpoint   codex                 ││                                                                         │
+                                            │└─────────────────────────────────────────────────────────────────────────┘
+────────────────────────────────────────────┴───────────────────────────────────────────────────────────────────────────
+ READY TO SEND
+ This is the exact wording. Weft will not change it.
+
+ Implement /health: read BUILD_NUMBER from the environment at startup;
+ fall back to "unknown". Add a test that sets it and checks the reply.
+
+ SEND TO
+   ▸ 2 weft · codex   wrote it
+     1 weft · claude
+
+ START AN AGENT
+     claude · start fresh
+     codex · start fresh
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ [↑↓] SEND TO   [Enter] SEND   [←] CANCEL
+ Weft never types into an agent without asking you first.

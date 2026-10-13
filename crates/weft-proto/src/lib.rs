@@ -95,6 +95,9 @@ pub enum Call {
         text: Option<String>,
         /// The Eval a Seal seals (`decide`): its round, and only its Asks.
         eval: Option<String>,
+        /// An Ask or follow-up into a new agent of this harness, started for
+        /// it, rather than into `pane`.
+        start: Option<String>,
     },
     /// Record the person's yes for an Ask whose chooser never got one.
     ConfirmAsk {
@@ -152,6 +155,10 @@ pub enum Call {
         /// The person saw what Weft read off the screen and said to type it
         /// anyway. The inference is Weft's; the decision is theirs.
         force: bool,
+        /// A send of an Ask typed into this pane instead of the one it was
+        /// staged for, or into a new agent of this harness, started for it.
+        to: Option<u32>,
+        start: Option<String>,
     },
     /// A newer Weft is installed in `versions/<version>`: the
     /// daemon starts again on it once no agent is running. Needs no hello,
@@ -216,6 +223,9 @@ pub enum Event {
         what: String,
         why: String,
         payload: Vec<u8>,
+        /// The Ask whose prompt this sends, when it sends one: it can go to
+        /// another agent, or a new one (`pending.resolve`'s `to`, `start`).
+        sends: Option<String>,
     },
     /// It was answered. Once.
     Resolved {
@@ -401,9 +411,11 @@ impl Call {
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),
                        "what": what, "why": why}),
             ),
-            Call::Act { act, unit, pane, text, eval } => {
-                ("act", json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval}))
-            }
+            Call::Act { act, unit, pane, text, eval, start } => (
+                "act",
+                json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval,
+                       "start": start}),
+            ),
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit, pane, lines } => {
                 ("read", json!({"what": what, "unit": unit, "pane": pane, "lines": lines}))
@@ -418,9 +430,10 @@ impl Call {
             Call::StartAtLogin { on, program, path } => {
                 ("service.login", json!({"on": on, "program": program, "path": path}))
             }
-            Call::Resolve { pending, yes, force } => {
-                ("pending.resolve", json!({"pending": pending, "yes": yes, "force": force}))
-            }
+            Call::Resolve { pending, yes, force, to, start } => (
+                "pending.resolve",
+                json!({"pending": pending, "yes": yes, "force": force, "to": to, "start": start}),
+            ),
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
             Call::Update { version } => ("update", json!({"version": version})),
@@ -468,6 +481,7 @@ impl Call {
                 pane: n("pane").map(|n| n as u32),
                 text: s("text"),
                 eval: s("eval"),
+                start: s("start"),
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read {
@@ -499,6 +513,8 @@ impl Call {
                     yes: p.get("yes")?.as_bool()?,
                     // Absent from an older client, which never forced.
                     force: p.get("force").and_then(Value::as_bool).unwrap_or(false),
+                    to: n("to").map(|n| n as u32),
+                    start: s("start"),
                 }
             }
             "detach" => Call::Detach,
@@ -530,11 +546,9 @@ impl Event {
             Event::Units { units, records, rounds } => {
                 ("units", json!({"units": units, "records": records, "rounds": rounds}))
             }
-            Event::Pending { id, pane, what, why, payload } => (
-                "pending.added",
-                json!({"id": id, "pane": pane, "what": what, "why": why,
-                       "payload": b64(payload)}),
-            ),
+            Event::Pending { id, pane, what, why, payload, sends } => {
+                ("pending.added", pending_json(id, *pane, what, why, payload, sends.as_deref()))
+            }
             Event::Resolved { id, yes } => ("pending.resolved", json!({"id": id, "yes": yes})),
             Event::Injected { pane, refusal, unrecorded } => {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
@@ -591,6 +605,7 @@ impl Event {
                 what: s("what")?,
                 why: s("why")?,
                 payload: un_b64(p.get("payload")?.as_str()?)?,
+                sends: s("sends"),
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
@@ -638,8 +653,16 @@ pub fn output_of(v: &Value) -> Option<(u32, Vec<u8>)> {
 }
 
 /// A pending as `project.open` lists it: the shape `pending.added` carries.
-pub fn pending_json(id: &str, pane: u32, what: &str, why: &str, payload: &[u8]) -> Value {
-    json!({"id": id, "pane": pane, "what": what, "why": why, "payload": b64(payload)})
+pub fn pending_json(
+    id: &str,
+    pane: u32,
+    what: &str,
+    why: &str,
+    payload: &[u8],
+    sends: Option<&str>,
+) -> Value {
+    json!({"id": id, "pane": pane, "what": what, "why": why, "payload": b64(payload),
+           "sends": sends})
 }
 
 /// Reads one back, as the event it would have been.
@@ -905,13 +928,34 @@ mod tests {
             Call::Resize { pane: 1, rows: 24, cols: 80 },
             Call::Attach { pane: 1, form: "screen".into() },
             Call::Attach { pane: 1, form: "none".into() },
-            Call::Resolve { pending: "pnd_1".into(), yes: false, force: false },
+            Call::Resolve {
+                pending: "pnd_1".into(),
+                yes: false,
+                force: false,
+                to: None,
+                start: None,
+            },
+            Call::Resolve {
+                pending: "pnd_1".into(),
+                yes: true,
+                force: false,
+                to: Some(3),
+                start: None,
+            },
+            Call::Resolve {
+                pending: "pnd_1".into(),
+                yes: true,
+                force: false,
+                to: None,
+                start: Some("codex".into()),
+            },
             Call::Act {
                 act: "send".into(),
                 unit: Some("ask_1".into()),
                 pane: None,
                 text: None,
                 eval: None,
+                start: None,
             },
             Call::Act {
                 act: "ask".into(),
@@ -919,6 +963,15 @@ mod tests {
                 pane: Some(1),
                 text: Some("do it".into()),
                 eval: None,
+                start: None,
+            },
+            Call::Act {
+                act: "ask".into(),
+                unit: None,
+                pane: None,
+                text: Some("do it".into()),
+                eval: None,
+                start: Some("codex".into()),
             },
             Call::Act {
                 act: "decide".into(),
@@ -926,6 +979,7 @@ mod tests {
                 pane: None,
                 text: None,
                 eval: Some("evl_1".into()),
+                start: None,
             },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read { what: "judges".into(), unit: "ask_1".into(), pane: None, lines: None },
@@ -1018,6 +1072,7 @@ mod tests {
                 what: "Ready to send".into(),
                 why: "the exact wording".into(),
                 payload: b"/plan ship it".to_vec(),
+                sends: Some("ask_1".into()),
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
@@ -1103,13 +1158,14 @@ mod tests {
 
     #[test]
     fn a_pending_listed_on_opening_reads_as_the_event_it_was() {
-        let listed = pending_json("pnd_3", 1, "Ready to send", "why", b"/plan \x1b");
+        let listed = pending_json("pnd_3", 1, "Ready to send", "why", b"/plan \x1b", None);
         let event = Event::Pending {
             id: "pnd_3".into(),
             pane: 1,
             what: "Ready to send".into(),
             why: "why".into(),
             payload: b"/plan \x1b".to_vec(),
+            sends: None,
         };
         assert_eq!(pending_of(&listed), Some(event));
     }
