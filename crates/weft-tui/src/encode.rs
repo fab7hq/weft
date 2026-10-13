@@ -8,6 +8,30 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub fn encode(key: KeyEvent) -> Option<Vec<u8>> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // A cursor or editing key with Shift, Alt or Ctrl carries them as xterm's
+    // modifier parameter (1 + Shift 1 + Alt 2 + Ctrl 4): Shift+Left is
+    // ESC [1;2D, which a harness may bind and a plain Left would lose.
+    let param = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    if param > 1 {
+        let modified = match key.code {
+            KeyCode::Up => Some(format!("\x1b[1;{param}A")),
+            KeyCode::Down => Some(format!("\x1b[1;{param}B")),
+            KeyCode::Right => Some(format!("\x1b[1;{param}C")),
+            KeyCode::Left => Some(format!("\x1b[1;{param}D")),
+            KeyCode::Home => Some(format!("\x1b[1;{param}H")),
+            KeyCode::End => Some(format!("\x1b[1;{param}F")),
+            KeyCode::PageUp => Some(format!("\x1b[5;{param}~")),
+            KeyCode::PageDown => Some(format!("\x1b[6;{param}~")),
+            KeyCode::Delete => Some(format!("\x1b[3;{param}~")),
+            KeyCode::Insert => Some(format!("\x1b[2;{param}~")),
+            _ => None,
+        };
+        if let Some(seq) = modified {
+            return Some(seq.into_bytes());
+        }
+    }
 
     let mut bytes = match key.code {
         KeyCode::Char(c) if ctrl => {
@@ -122,6 +146,21 @@ mod tests {
     fn arrows_are_the_usual_escape_sequences() {
         assert_eq!(encode(k(KeyCode::Up)), Some(b"\x1b[A".to_vec()));
         assert_eq!(encode(k(KeyCode::Left)), Some(b"\x1b[D".to_vec()));
+    }
+
+    #[test]
+    fn a_modified_arrow_keeps_its_modifiers() {
+        let with = |code, m| encode(KeyEvent::new(code, m));
+        assert_eq!(with(KeyCode::Left, KeyModifiers::SHIFT), Some(b"\x1b[1;2D".to_vec()));
+        assert_eq!(with(KeyCode::Right, KeyModifiers::ALT), Some(b"\x1b[1;3C".to_vec()));
+        assert_eq!(with(KeyCode::Up, KeyModifiers::CONTROL), Some(b"\x1b[1;5A".to_vec()));
+        assert_eq!(
+            with(KeyCode::Down, KeyModifiers::SHIFT | KeyModifiers::CONTROL),
+            Some(b"\x1b[1;6B".to_vec())
+        );
+        assert_eq!(with(KeyCode::End, KeyModifiers::SHIFT), Some(b"\x1b[1;2F".to_vec()));
+        assert_eq!(with(KeyCode::PageUp, KeyModifiers::SHIFT), Some(b"\x1b[5;2~".to_vec()));
+        assert_eq!(with(KeyCode::Delete, KeyModifiers::CONTROL), Some(b"\x1b[3;5~".to_vec()));
     }
 
     #[test]
