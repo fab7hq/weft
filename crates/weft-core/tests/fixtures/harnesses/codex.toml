@@ -50,7 +50,8 @@ on = ["enabled", "installed"]
 # these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
 # two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
 # `ringframe observe` (D9).
-# No SessionStart row: it runs only with the first prompt (W5 q05).
+# No SessionStart row: it runs only with the first prompt. Its server says a
+# new session began, ready, as the TUI starts ([listen], thread/started).
 # PostToolUse forwards nothing: a failed command also arrives there, so its
 # outcome cannot be told.
 # A typed prompt is in UserPromptSubmit's payload. A `/goal` fires no prompt
@@ -87,6 +88,7 @@ hello = [
 ]
 session = "params.threadId"
 on = [
+  { method = "thread/started", when = { "params.thread.ephemeral" = false, "params.thread.threadSource" = "user", "params.thread.status.type" = "idle" }, session = "params.thread.id", workspace = "params.thread.cwd", state = "ready" },
   { method = "thread/status/changed", when = { "params.status.activeFlags" = "waitingOnApproval" },  state = "waiting" },
   { method = "thread/status/changed", when = { "params.status.activeFlags" = "waitingOnUserInput" }, state = "waiting" },
   { method = "thread/status/changed", when = { "params.status.type" = "active" },                    state = "working" },

@@ -337,8 +337,7 @@ enum Wake {
     /// A session's turn, as its harness's own stream said it.
     Heard {
         harness: String,
-        session: String,
-        state: String,
+        heard: weft_core::listen::Heard,
     },
     /// A harness's stream ended: its server closed it.
     Unheard {
@@ -758,7 +757,7 @@ impl Session {
                 }
                 Wake::Workspace { project, setup } => self.set_up(project, setup),
                 Wake::Signal(sent) => self.signal(*sent),
-                Wake::Heard { harness, session, state } => self.heard(harness, session, state),
+                Wake::Heard { harness, heard } => self.heard(harness, heard),
                 Wake::Unheard { harness } => {
                     self.streams.remove(&harness);
                     self.streamed.retain(|(h, _)| *h != harness);

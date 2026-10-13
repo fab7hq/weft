@@ -362,15 +362,26 @@ impl Session {
         let Some(h) = self.projects.get(at).and_then(|p| p.harnesses.find(harness)) else { return };
         let Some(listen) = h.listen.clone() else { return };
         let socket = h.config_home().join(&listen.socket);
-        if !socket.exists() {
+        // An agent just started may be the one that starts its harness's
+        // server: its socket is waited for while the agent starts, so the
+        // stream is open when the server says the agent's session began.
+        let starting = self.projects[at]
+            .panes
+            .iter()
+            .any(|s| s.map.harness == harness && s.map.session.is_none() && s.map.running);
+        if !socket.exists() && !starting {
             return;
         }
         self.streams.insert(harness.to_string());
         let (tx, harness) = (self.tx.clone(), harness.to_string());
         std::thread::spawn(move || {
+            let until = std::time::Instant::now() + super::typing::STARTED_TIMEOUT;
+            while !socket.exists() && std::time::Instant::now() < until {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
             eprintln!("weft: listening to {harness}'s stream at {}", socket.display());
-            let ended = crate::listen::run(&socket, &listen, |session, state| {
-                let _ = tx.send(Wake::Heard { harness: harness.clone(), session, state });
+            let ended = crate::listen::run(&socket, &listen, |heard| {
+                let _ = tx.send(Wake::Heard { harness: harness.clone(), heard });
             });
             match ended {
                 Ok(()) => eprintln!("weft: {harness}'s stream closed"),
@@ -384,7 +395,8 @@ impl Session {
     /// would be, in the open project whose receipts already hold the session.
     /// The stream names no workspace, so a session no hook tied to a project
     /// is no one's.
-    pub(super) fn heard(&mut self, harness: String, session: String, state: String) {
+    pub(super) fn heard(&mut self, harness: String, heard: weft_core::listen::Heard) {
+        let weft_core::listen::Heard { session, state, workspace } = heard;
         if !weft_core::sessions::is_id(&harness) || !weft_core::sessions::is_id(&session) {
             return;
         }
@@ -393,7 +405,8 @@ impl Session {
                 .join(&harness)
                 .join(format!("{session}.jsonl"))
         };
-        let Some(at) = self.projects.iter().position(|p| !p.closed && file(&p.root).exists())
+        let known = self.projects.iter().position(|p| !p.closed && file(&p.root).exists());
+        let Some(at) = known.or_else(|| self.began(&harness, &session, workspace.as_deref()))
         else {
             return;
         };
@@ -414,6 +427,32 @@ impl Session {
         {
             self.received_nothing(at, pane);
         }
+    }
+}
+
+impl Session {
+    /// A session no hook has named yet, begun in an open project's
+    /// directory: the one agent of its harness there that runs no session
+    /// yet is the one that began it, and is tied to it. With none, or two
+    /// that could be it, nothing is tied.
+    fn began(&mut self, harness: &str, session: &str, workspace: Option<&str>) -> Option<usize> {
+        let at = workspace.map(Path::new).and_then(|dir| {
+            let dir = dir.canonicalize().ok()?;
+            self.projects
+                .iter()
+                .position(|p| !p.closed && p.root.canonicalize().ok().as_deref() == Some(&*dir))
+        })?;
+        let fresh: Vec<u32> = self.projects[at]
+            .panes
+            .iter_mut()
+            .filter_map(|s| {
+                let fresh = s.map.harness == harness && s.map.session.is_none();
+                (fresh && s.pane.running()).then_some(s.map.pane)
+            })
+            .collect();
+        let [pane] = fresh[..] else { return None };
+        self.tie(at, pane, session);
+        Some(at)
     }
 }
 

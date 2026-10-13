@@ -68,6 +68,8 @@ fn stand_in() -> PathBuf {
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
             "#!/bin/sh\nws=$2\nprintf '%s\\n' \"$*\" >> \"$ws/calls.log\"\ncase \"$*\" in\n  \
+             *\"ask copy\"*\"--host spool\"*) \
+               printf '{{\"prompt\":\"{WORDING}\",\"delivery\":{{\"prefix_bytes\":0}}}}' ;;\n  \
              *\"ask copy\"*\"--host weave\"*) \
                printf '{{\"prompt\":\"/weave {WORDING}\",\"delivery\":{{\"prefix_bytes\":0}}}}' ;;\n  \
              *\"ask copy\"*) printf '{WORDING}' ;;\n  \
@@ -96,7 +98,7 @@ fn stand_in() -> PathBuf {
 /// end of its turn 12 s later, twice; `busy` reports each as typed, but starts
 /// with a turn running that ends 3 s later; `shared` signals nothing of its
 /// own, as an agent whose hooks run in its harness's shared server, and the
-/// test sends them. Every line also goes to `<dir>/took`.
+/// test sends them; `quiet` says nothing until its first prompt, as Codex. Every line also goes to `<dir>/took`.
 fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
@@ -104,7 +106,7 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     let script = format!(
         "#!/bin/sh\n\
          sig() {{ [ {mode} = shared ] || printf '%s' \"$2\" | HOME='{h}' '{weft}' signal {harness} \"$1\"; }}\n\
-         sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
+         [ {mode} = quiet ] || sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
          if [ {mode} = busy ]; then\n\
            sig Busy \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
            (sleep 3; sig Idle \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\") &\n\
@@ -137,10 +139,35 @@ fn weave(spec: &str) -> String {
         .replace("program = \"loom\"", &format!("program = \"{program}\"\nargs = [\"{script}\"]"))
 }
 
+/// `spool`'s file: `loom`'s hooks, said only from the first prompt on, and a
+/// server whose stream says when a session began, ready, and where: its
+/// socket is `srv.sock` in `server`.
+fn spool(spec: &str, server: &Path) -> String {
+    let (program, script) = spec.split_once(' ').expect("/bin/sh and a script");
+    let listen = r#"
+[listen]
+socket = "srv.sock"
+transport = "lines"
+session = "params.threadId"
+on = [
+  { method = "thread/started", when = { "params.thread.ephemeral" = false }, session = "params.thread.id", workspace = "params.thread.cwd", state = "ready" },
+]
+"#;
+    let file = LOOM
+        .replace("title = \"Loom\"", "title = \"Spool\"")
+        .replace("program = \"loom\"", &format!("program = \"{program}\"\nargs = [\"{script}\"]"))
+        .replace("default = \".loom\"", &format!("default = \"{}\"", server.display()));
+    format!("{file}{listen}")
+}
+
 struct Bench {
     _tmp: tempfile::TempDir,
     root: PathBuf,
     agent: PathBuf,
+    /// Where `spool`'s server keeps its socket.
+    server: PathBuf,
+    /// What a `spool` agent took.
+    spooled: PathBuf,
     /// Where a `weave` agent, started for a send, writes what it took.
     weave: PathBuf,
     socket: PathBuf,
@@ -188,12 +215,17 @@ impl Bench {
         let woven = tmp.path().join("weave");
         let weave = weave(&agent(&woven, &home, "weave", "true"));
         std::fs::write(files.join("weave.toml"), &weave).unwrap();
+        let (spooled, server) = (tmp.path().join("spool"), tmp.path().join("server"));
+        std::fs::create_dir_all(&server).unwrap();
+        let spool = spool(&agent(&spooled, &home, "spool", "quiet"), &server);
+        std::fs::write(files.join("spool.toml"), &spool).unwrap();
         let socket = protocol::private_socket(name);
         let (listening, config) = (socket.clone(), tmp.path().join("config.toml"));
         let harnesses = weft::harness_table::Harnesses::read(vec![
             ("loom".into(), LOOM.into()),
             ("mute".into(), MUTE.into()),
             ("weave".into(), weave),
+            ("spool".into(), spool),
         ])
         .0;
         std::thread::spawn(move || {
@@ -213,6 +245,8 @@ impl Bench {
             root,
             agent: dir,
             weave: woven,
+            server,
+            spooled,
             socket,
             stream,
             lines,
@@ -570,4 +604,32 @@ fn an_ask_into_a_new_agent_starts_it_and_stages_the_ask_there() {
         _ => None,
     });
     assert_eq!(staged, (started, None), "an Ask sends no Ask's prompt yet");
+}
+
+/// A new agent of a harness that says nothing until its first prompt is ready
+/// when its server's stream says its session began in this project: the one
+/// fresh agent of that harness here is tied to it, and typed into. The server
+/// starts after the agent, as Codex's first TUI starts it.
+#[test]
+fn a_new_agent_is_ready_when_its_servers_stream_says_its_session_began() {
+    let mut b = Bench::new("weft-stream-began", "loom", "true");
+    let (server, root) = (b.server.join("srv.sock"), b.root.clone());
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(500));
+        let listener = std::os::unix::net::UnixListener::bind(&server).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        // Another program's short session in the same directory first.
+        for (id, ephemeral) in [("t-title", true), ("s1", false)] {
+            let line = serde_json::json!({"method": "thread/started", "params": {"thread": {
+                "id": id, "cwd": root, "ephemeral": ephemeral, "status": {"type": "idle"}}}});
+            use std::io::Write;
+            writeln!(stream, "{line}").unwrap();
+        }
+        std::thread::sleep(Duration::from_secs(30));
+    });
+    assert_eq!(b.send_to(None, Some("spool")), Ok(None), "typed, unforced");
+    assert_eq!(b.notice(Duration::from_secs(3)), None, "delivered");
+    let took = std::fs::read_to_string(b.spooled.join("took")).unwrap_or_default();
+    assert_eq!(took, format!("{WORDING}\n"));
+    assert_eq!(b.took(), "", "not into the agent that wrote it");
 }

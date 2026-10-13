@@ -31,17 +31,17 @@ fn open(transport: Transport, stream: UnixStream) -> std::io::Result<Box<dyn Fra
 }
 
 /// Read the stream at `socket` until its server closes it, calling `heard`
-/// with each session and its state. An error is how it ended.
+/// with what each message said. An error is how it ended.
 pub fn run(
     socket: &Path,
     listen: &Listen,
-    mut heard: impl FnMut(String, String),
+    mut heard: impl FnMut(weft_core::listen::Heard),
 ) -> std::io::Result<()> {
     let mut stream = open(listen.transport, UnixStream::connect(socket)?)?;
     let mut message = |text: &str| {
         let v: serde_json::Value = serde_json::from_str(text).ok()?;
-        if let Some((session, state)) = listen.heard(&v) {
-            heard(session, state);
+        if let Some(said) = listen.heard(&v) {
+            heard(said);
         }
         Some(v)
     };
@@ -126,7 +126,8 @@ mod tests {
     fn a_websocket_stream_is_greeted_and_read_until_it_closes() {
         let (socket, _dir, hello) = serve("websocket");
         let mut heard = Vec::new();
-        run(&socket, &listen("websocket"), |s, st| heard.push((s, st))).expect("closed cleanly");
+        run(&socket, &listen("websocket"), |h| heard.push((h.session, h.state)))
+            .expect("closed cleanly");
         assert_eq!(hello.recv().unwrap(), r#"{"method":"hi"}"#);
         assert_eq!(heard, [("t1".into(), "working".into()), ("t1".into(), "turn_ended".into())]);
     }
@@ -135,7 +136,7 @@ mod tests {
     fn a_stream_of_lines_is_greeted_and_read_until_it_closes() {
         let (socket, _dir, hello) = serve("lines");
         let mut heard = Vec::new();
-        run(&socket, &listen("lines"), |s, st| heard.push((s, st))).expect("closed");
+        run(&socket, &listen("lines"), |h| heard.push((h.session, h.state))).expect("closed");
         assert_eq!(hello.recv().unwrap(), r#"{"method":"hi"}"#);
         assert_eq!(heard, [("t1".into(), "working".into()), ("t1".into(), "turn_ended".into())]);
     }
@@ -143,7 +144,7 @@ mod tests {
     #[test]
     fn no_socket_is_no_stream() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(run(&dir.path().join("none.sock"), &listen("lines"), |_, _| {}).is_err());
+        assert!(run(&dir.path().join("none.sock"), &listen("lines"), |_| {}).is_err());
     }
 
     /// A hello message that is a request (it has an id) is answered before
@@ -181,7 +182,7 @@ mod tests {
         }))
         .unwrap();
         let mut heard = Vec::new();
-        let _ = run(&socket, &l, |s, st| heard.push((s, st)));
+        let _ = run(&socket, &l, |h| heard.push((h.session, h.state)));
         let (early, second) = rx.recv().unwrap();
         assert!(!early, "the next hello went before the request was answered");
         assert_eq!(second, r#"{"method":"ready"}"#);
@@ -208,6 +209,6 @@ mod tests {
             "hello": [{"id": 1, "method": "hi"}], "on": [],
         }))
         .unwrap();
-        assert!(run(&socket, &l, |_, _| {}).is_err());
+        assert!(run(&socket, &l, |_| {}).is_err());
     }
 }

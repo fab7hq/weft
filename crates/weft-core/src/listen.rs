@@ -39,6 +39,22 @@ pub struct Row {
     #[serde(default)]
     pub when: serde_json::Map<String, Value>,
     pub state: String,
+    /// Where this message names its session, when not where the table says.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// Where this message names the session's working directory, when it
+    /// does: a session no hook has named yet can be told by it.
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+/// What one message said: a session, the state it is in, and its working
+/// directory when the message names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+    pub session: String,
+    pub state: String,
+    pub workspace: Option<String>,
 }
 
 impl Listen {
@@ -48,7 +64,7 @@ impl Listen {
 
     /// The session a message names and the state the first matching row
     /// gives it; none for a message no row is for.
-    pub fn heard(&self, message: &Value) -> Option<(String, String)> {
+    pub fn heard(&self, message: &Value) -> Option<Heard> {
         let method = message.get("method")?.as_str()?;
         let row = self.on.iter().find(|r| {
             r.method == method
@@ -58,8 +74,12 @@ impl Listen {
                     None => false,
                 })
         })?;
-        let session = crate::signal::value_at(message, &self.session)?.as_str()?;
-        Some((session.to_string(), row.state.clone()))
+        let at = |path: &str| crate::signal::value_at(message, path)?.as_str().map(str::to_string);
+        Some(Heard {
+            session: at(row.session.as_deref().unwrap_or(&self.session))?,
+            state: row.state.clone(),
+            workspace: row.workspace.as_deref().and_then(at),
+        })
     }
 }
 
@@ -94,13 +114,42 @@ mod tests {
         let l = listen();
         assert_eq!(l.transport, Transport::Websocket);
         assert_eq!(l.hello.len(), 2);
-        assert_eq!(l.heard(&status("active", &[])), Some(("t1".into(), "working".into())));
+        assert_eq!(l.heard(&status("active", &[])), said("t1", "working"));
         assert_eq!(
             l.heard(&status("active", &["other", "asking"])),
-            Some(("t1".into(), "waiting".into())),
+            said("t1", "waiting"),
             "a list that holds it"
         );
-        assert_eq!(l.heard(&status("idle", &[])), Some(("t1".into(), "turn_ended".into())));
+        assert_eq!(l.heard(&status("idle", &[])), said("t1", "turn_ended"));
+    }
+
+    fn said(session: &str, state: &str) -> Option<Heard> {
+        Some(Heard { session: session.into(), state: state.into(), workspace: None })
+    }
+
+    /// A new session, named where its message names it, with its working
+    /// directory; a session of the harness's own (here `ephemeral`) is not one.
+    #[test]
+    fn a_row_can_name_the_session_and_its_workspace_where_its_message_does() {
+        let table: toml::Table = r#"
+            socket = "s"
+            transport = "websocket"
+            session = "params.threadId"
+            on = [
+              { method = "started", when = { "params.thread.ephemeral" = false }, session = "params.thread.id", workspace = "params.thread.cwd", state = "ready" },
+            ]
+        "#
+        .parse()
+        .unwrap();
+        let l = Listen::of(&serde_json::to_value(table).unwrap()).expect("a [listen]");
+        let started = |ephemeral| json!({"method": "started", "params": {"thread": {"id": "t9", "cwd": "/work/weft", "ephemeral": ephemeral}}});
+        let heard = Heard {
+            session: "t9".into(),
+            state: "ready".into(),
+            workspace: Some("/work/weft".into()),
+        };
+        assert_eq!(l.heard(&started(false)), Some(heard));
+        assert_eq!(l.heard(&started(true)), None);
     }
 
     #[test]

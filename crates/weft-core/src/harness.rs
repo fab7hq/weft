@@ -297,25 +297,27 @@ mod tests {
         let codex = Harness::of("codex", &fixture::file("codex")).expect("codex");
         assert!(codex.resume_joins, "a resume joins the session its server runs");
         let l = codex.listen.expect("a [listen]");
-        let said = |line: &str| l.heard(&serde_json::from_str(line).unwrap());
+        let said = |line: &str| {
+            l.heard(&serde_json::from_str(line).unwrap()).map(|h| (h.session, h.state, h.workspace))
+        };
         let t = "01a12e8f-7e5f-73c2-84fe-b717d7b49322";
         assert_eq!(
             said(&format!(
                 r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"active","activeFlags":[]}}}},"emittedAtMs":1791782530983}}"#
             )),
-            Some((t.into(), "working".into()))
+            Some((t.into(), "working".into(), None))
         );
         assert_eq!(
             said(&format!(
                 r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"active","activeFlags":["waitingOnApproval"]}}}}}}"#
             )),
-            Some((t.into(), "waiting".into()))
+            Some((t.into(), "waiting".into(), None))
         );
         assert_eq!(
             said(&format!(
                 r#"{{"method":"thread/status/changed","params":{{"threadId":"{t}","status":{{"type":"idle"}}}},"emittedAtMs":1791782534750}}"#
             )),
-            Some((t.into(), "turn_ended".into()))
+            Some((t.into(), "turn_ended".into(), None))
         );
         assert_eq!(
             said(&format!(
@@ -323,6 +325,18 @@ mod tests {
             )),
             None
         );
+        // A new session, as the TUI starts: ready, in its working directory.
+        // The server's own short sessions (a title) are not one.
+        let started = |ephemeral: bool, source: &str| {
+            format!(
+                r#"{{"method":"thread/started","params":{{"thread":{{"id":"{t}","cwd":"/work/weft","ephemeral":{ephemeral},"threadSource":"{source}","status":{{"type":"idle"}},"turns":[]}}}}}}"#
+            )
+        };
+        assert_eq!(
+            said(&started(false, "user")),
+            Some((t.into(), "ready".into(), Some("/work/weft".into())))
+        );
+        assert_eq!(said(&started(true, "thread_title")), None);
     }
     use super::fixture::{file, harnesses, text};
     use super::*;
