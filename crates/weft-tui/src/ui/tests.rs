@@ -1970,6 +1970,41 @@ fn atlas_t11_9_a_running_session_it_can_join() {
     expect_screen("atlas_t11_9", &screen(&mut a, 120, 32));
 }
 
+/// Enter on a session that runs with no pane of Weft's (Weft restarted, the
+/// harness's own server still holding it) opens its Details, where Resume
+/// joins it, when its harness's resume joins; otherwise it says another
+/// program runs it.
+#[test]
+fn enter_on_a_running_session_no_pane_holds_opens_its_details_to_join_it() {
+    use crate::app::{Row, View};
+    let mut a = atlas11();
+    for (harness, id) in [
+        ("codex", "01a12dd3-e1a3-7031-85a5-11ae2080309f"),
+        ("claude", "c1a12dd3-e1a3-7031-85a5-11ae2080309f"),
+    ] {
+        let mut running = past(harness, id, None, 0, 0, (11, 2));
+        running.state = weft_core::sessions::State::Running;
+        running.turn = Some(weft_core::turns::Turn::Working);
+        // Running sessions come first, as the daemon orders them.
+        a.session_mut().sessions.insert(0, running);
+    }
+    let on = |id: &'static str| move |r: &Row| matches!(r, Row::Agent { agent, .. } if agent.session == id);
+    assert!(a.select(on("01a12dd3-e1a3-7031-85a5-11ae2080309f")), "codex's row in the tree");
+    press(&mut a, KeyCode::Enter);
+    assert!(
+        matches!(a.detail().map(|d| &d.view), Some(View::Session(id)) if id == "01a12dd3-e1a3-7031-85a5-11ae2080309f"),
+        "its Details, where Resume joins it"
+    );
+    press(&mut a, KeyCode::Esc);
+    assert!(a.select(on("c1a12dd3-e1a3-7031-85a5-11ae2080309f")), "claude's row in the tree");
+    press(&mut a, KeyCode::Enter);
+    assert!(a.detail().is_none());
+    assert_eq!(
+        a.hint_text(),
+        Some(weft_core::words::fill("why.elsewhere", &[("harness", "claude")]).as_str())
+    );
+}
+
 /// T11.7: Enter on `▸ n earlier sessions` lists them under it, in the tree.
 #[test]
 fn atlas_t11_7_earlier_sessions_expanded() {

@@ -341,9 +341,13 @@ impl App {
         }
     }
 
-    /// A session: its pane while one holds it; one another program runs says
-    /// so; an ended or quiet one opens its Details (T11.5).
+    /// A session: its pane while one holds it; one that runs with no pane of
+    /// Weft's opens its Details when its harness's resume joins it there
+    /// (Weft restarted, the harness's own server still holding it), and
+    /// otherwise says another program runs it; an ended or quiet one opens
+    /// its Details.
     pub(super) fn go_to_session(&mut self, id: &str, pane: Option<u32>, state: State) {
+        let joins = self.session_row(id).is_some_and(|r| self.joins(r));
         match (state, pane.and_then(|p| sess!(self).index_of(p))) {
             (State::Running, Some(i)) => {
                 self.detail = None;
@@ -351,6 +355,7 @@ impl App {
                 self.pane_focus = i;
                 self.focus = Focus::Agent;
             }
+            (State::Running, None) if joins => self.open_view(View::Session(id.to_string())),
             (State::Running, None) => {
                 let harness = self.session_row(id).map(|r| r.harness.clone()).unwrap_or_default();
                 self.say(Why::of("why.elsewhere", &harness).say());
