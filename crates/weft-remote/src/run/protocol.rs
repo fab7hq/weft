@@ -173,16 +173,9 @@ impl Remote {
         for gone in was.into_iter().filter(|w| !now.contains(w)) {
             self.unwatch(conn, gone);
         }
-        for ((at, pane), w) in next {
-            // Nobody at the Mac, or an agent this device started: the device's
-            // size and the keys, so it fills the device's pane (remote.md §9).
-            let mine = self.conns.get(&conn).is_some_and(|c| c.started.contains(&(at, pane)));
-            if let (Some(rows), Some(cols)) = (dimension(w, "rows"), dimension(w, "cols"))
-                && (self.away() || mine)
-            {
-                self.call(at, Call::Resize { pane, rows, cols });
-                self.drive(conn, at, pane);
-            }
+        // Watching changes nothing on the Mac: Weft owns an agent's size, and a
+        // device draws the agent at it (remote.md §9).
+        for ((at, pane), _) in next {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.needs_full.insert((at, pane));
             }
@@ -231,14 +224,13 @@ impl Remote {
 
     // --- the keys ----------------------------------------------------------
 
-    /// The size the device draws this agent at: the pane takes it before the
-    /// device's first key (remote.md §9).
+    /// A device's size, from an app that still sends one before its keys:
+    /// taken and changes nothing, since Weft owns an agent's size (remote.md §9).
     fn size(&mut self, m: &Value) -> Result<bool, Refusal> {
-        let (at, pane) = self.agent(m)?;
-        let (Some(rows), Some(cols)) = (dimension(m, "rows"), dimension(m, "cols")) else {
+        self.agent(m)?;
+        if dimension(m, "rows").is_none() || dimension(m, "cols").is_none() {
             return Err(("bad_request", "a size is rows and cols".into()));
-        };
-        self.call(at, Call::Resize { pane, rows, cols });
+        }
         Ok(false)
     }
 

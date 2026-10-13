@@ -225,10 +225,11 @@ fn watching_sends_the_screen_whole_then_as_it_changes() {
     }
 }
 
-/// A device with four panes watches four agents: a whole screen of each,
-/// each at its own size; a fifth is ignored. `welcome` says `panes`.
+/// A device with four panes watches four agents: a whole screen of each, at
+/// the agent's own size, whatever the device's panes are; a fifth is ignored.
+/// `welcome` says `panes`.
 #[test]
-fn a_device_watches_four_agents_each_at_its_own_size() {
+fn a_device_watches_four_agents_each_at_the_agents_size() {
     let mut h = Harness::start("watch-four");
     let _shells: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|n| h.shell(n)).collect();
     let (mut d, welcome) = h.allowed("d_1");
@@ -248,7 +249,7 @@ fn a_device_watches_four_agents_each_at_its_own_size() {
         }
     }
     for i in 0..4 {
-        assert_eq!(whole[&id(i)], (json!(20 + i), json!(40 + i)), "agent {i}");
+        assert_eq!(whole[&id(i)], (json!(24), json!(80)), "agent {i}");
     }
     // The fifth's output never comes; the first's does.
     d.send(json!({"type": "keys", "agent": id(4), "bytes": "ZWNobyBub3Qtd2F0Y2hlZA0=", "req": 1}));
@@ -267,8 +268,8 @@ fn a_device_watches_four_agents_each_at_its_own_size() {
     }
 }
 
-/// A device may watch a second agent beside the first, each at its own
-/// size: both screens come, each whole first, and the second is let go when
+/// A device may watch a second agent beside the first, each at the
+/// agent's own size: both screens come, each whole first, and the second is let go when
 /// the device watches one again. A machine says it can, in its welcome.
 #[test]
 fn a_device_watches_two_agents_side_by_side() {

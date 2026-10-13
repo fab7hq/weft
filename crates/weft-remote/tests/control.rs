@@ -99,18 +99,36 @@ fn up_to_a_screen(d: &mut common::Device, agent: &str) -> (Vec<String>, serde_js
     }
 }
 
-/// Opening an agent while nobody has used the Mac for a while: the device's
-/// size, and the keys, so its terminal fills its pane (remote.md §9).
+/// Weft owns an agent's size (remote.md §9): opening it while nobody has used
+/// the Mac for a while keeps its size and gives the device no keys.
 #[test]
-fn opening_an_agent_while_the_mac_is_away_takes_the_devices_size() {
+fn opening_an_agent_while_the_mac_is_away_keeps_its_size() {
     let mut h = Harness::start("watch-away");
     let _shell = h.shell("work");
     let (mut d, _) = h.allowed("d_1");
     let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
     d.send(json!({"type": "watch", "agent": agent, "rows": 30, "cols": 40}));
     let (seen, screen) = up_to_a_screen(&mut d, &agent);
-    assert!(seen.contains(&"control".to_string()), "the keys are the device's: {seen:?}");
-    assert_eq!((screen["rows"].clone(), screen["cols"].clone()), (json!(30), json!(40)));
+    assert!(!seen.contains(&"control".to_string()), "{seen:?}");
+    assert_eq!((screen["rows"].clone(), screen["cols"].clone()), (json!(24), json!(80)));
+}
+
+/// Typing from a device, after the size an older app sends first: the keys
+/// are the device's, and the agent keeps its size.
+#[test]
+fn typing_from_a_device_keeps_the_agents_size() {
+    let mut h = Harness::start("typing-size");
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    d.send(json!({"type": "watch", "agent": agent}));
+    assert_eq!(d.next_of("screen")["cols"], 80);
+    d.send(json!({"type": "size", "agent": agent, "rows": 30, "cols": 40}));
+    d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 1}));
+    assert_eq!(d.next_of("control")["by"], "you");
+    // The shell's echo of what was typed, at the agent's own size.
+    let m = d.next_of("screen");
+    assert_eq!((m["rows"].clone(), m["cols"].clone()), (json!(24), json!(80)), "{m}");
 }
 
 /// While someone is using the Mac, watching keeps the Mac's size and keys.

@@ -11,7 +11,7 @@ use serde_json::json;
 #[test]
 fn a_stalled_device_delays_no_one_and_starts_again_from_a_whole_screen() {
     let mut h = Harness::start("stalled");
-    let _shell = h.shell("busy");
+    let mut shell = h.shell("busy");
     let (mut a, _) = h.allowed("d_a");
     let agent = a.agents(1)[0]["agent"].as_str().unwrap().to_string();
     let (mut b, _) = h.allowed("d_b");
@@ -19,8 +19,8 @@ fn a_stalled_device_delays_no_one_and_starts_again_from_a_whole_screen() {
         d.send(json!({"type": "watch", "agent": agent}));
         assert_eq!(d.next_of("screen")["full"], true);
     }
-    // A big screen that changes all the time.
-    a.send(json!({"type": "size", "agent": agent, "rows": 100, "cols": 300}));
+    // A big screen that changes all the time: the Mac's size, which Weft owns.
+    shell.tui.call(weft_proto::Call::Resize { pane: 0, rows: 100, cols: 300 });
     // The resize is a whole screen for both; b takes it before it stalls, so
     // any whole screen it gets later is the one a stall earns.
     while b.next_of("screen")["rows"] != 100 {}
