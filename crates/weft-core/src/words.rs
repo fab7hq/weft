@@ -339,6 +339,9 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.menu.settings", "Settings…"),
     // The agent's pane (M3.6, M3.7): whose history, and the message box's own name.
     ("web.agent.message_box", "Message"),
+    // The desktop's toggle for the list of agents and works.
+    ("web.list.hide", "Hide the list"),
+    ("web.list.show", "Show the list"),
     ("web.agent.nothing_scrolled", "Nothing of {harness}'s has scrolled away yet."),
     (
         "web.agent.own_history",

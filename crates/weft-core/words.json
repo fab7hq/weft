@@ -171,6 +171,8 @@
   "web.link.connecting": "Connecting",
   "web.link.reconnecting": "Reconnecting",
   "web.link.refused": "Refused",
+  "web.list.hide": "Hide the list",
+  "web.list.show": "Show the list",
   "web.machines.no_address": "has not reported an address yet",
   "web.machines.remove": "Remove",
   "web.machines.remove_sure": "Remove {machine} from your account?",
