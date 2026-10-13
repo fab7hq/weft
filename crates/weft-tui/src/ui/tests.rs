@@ -2055,16 +2055,13 @@ fn enter_on_each_row_goes_where_t11_1_says() {
     assert!(a.select(|r| matches!(r, Row::Seal { seal, .. } if seal.n == 4)));
     press(&mut a, KeyCode::Enter);
     assert_eq!(view(&a), Some(View::Seal("sel_4".into())));
-    // A session another program runs reads the same; Enter says what Weft
-    // cannot do to it.
+    // A session that runs with no pane of Weft's: codex's resume joins it,
+    // so Enter opens its Details, where Resume joins it.
     a.close_all_details();
     a.session_mut().sessions[0].pane = None;
     assert!(a.select(|r| matches!(r, Row::Agent { agent, .. } if agent.session == "c1")));
     press(&mut a, KeyCode::Enter);
-    assert_eq!(
-        a.hint_text(),
-        Some("codex runs in another program: Weft can't show it or type into it.")
-    );
+    assert_eq!(view(&a), Some(View::Session("c1".into())));
     assert_eq!(a.focus, Focus::Weft);
 }
 
