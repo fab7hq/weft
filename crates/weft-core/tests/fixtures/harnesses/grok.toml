@@ -1,0 +1,64 @@
+# Weft harness file: Grok Build. What Weft needs to start this harness, pick a
+# session back up and set its plugin up, and nothing RingFrame reads: RingFrame's
+# own facts about it are in its profile. Shipped by fab7; `install.sh` and
+# `weft update` copy it into ~/.fab7/weft/harnesses/, replaced on every update.
+# Never edit the copy.
+title = "Grok Build"
+# Its installer also links itself as `agent`, Cursor's program name: `grok` is its own.
+program = "grok"
+# How a recorded session is opened again; the id is appended. It keeps its id.
+resume = ["--resume"]
+# No `transcript`: its full-screen TUI scrolls its own history.
+# Turbo mode, when Weft's config.toml turns it on: every tool approved without asking.
+turbo = ["--always-approve"]
+
+[config]   # where it keeps its configuration
+env = "GROK_HOME"
+default = ".grok"
+
+[plugin]   # the argv for each, as Weft's readiness and RingFrame views run them
+list = ["plugin", "list", "--json"]
+add_marketplace = ["plugin", "marketplace", "add", "fab7hq/fab7"]
+# An install asks for trust; Weft's step is the person's request for it.
+install = ["plugin", "install", "rf@fab7", "--trust"]
+update_marketplace = ["plugin", "marketplace", "update", "fab7"]
+update = ["plugin", "update", "rf"]
+# Taking it out again, for a local reinstall.
+uninstall = ["plugin", "uninstall", "rf"]
+remove_marketplace = ["plugin", "marketplace", "remove", "fab7"]
+
+[plugin.listing]   # a bare array of installed plugins, named by `name` (`rf`), not `rf@fab7`
+installed = ["."]
+available = []
+name = "name"
+want = ["rf"]
+
+# What each of its hooks means to Weft. RingFrame's plugin registers these hooks,
+# every one running `weft-signal <id> <hook>`; fab7's check keeps the two in step.
+# Payload paths are dotted; `forward` passes a prompt or a tool to
+# `ringframe observe`.
+# Every payload carries Claude Code's snake_case fields beside its own camelCase
+# ones, and `prompt` is the text as typed: a long paste whole, and `/plan <text>`
+# as `<text>` (grok 1.0.52).
+# A question is `ask_user_question`; a permission or a plan's approval says so
+# only as a `permission_prompt` notification. Closing a session sends
+# `SessionEnd`, then a `Stop` whose reason is `shutdown`: only an `end_turn` Stop
+# ends a turn. An interrupt is `StopCancelled`.
+[signal]
+session = "session_id"
+workspace = "cwd"
+prompt = "prompt"
+tool = "tool_name"
+command = "tool_input.command"
+on = [
+  { hook = "SessionStart",                             state = "ready" },
+  { hook = "UserPromptSubmit",                         state = "working",    forward = "prompt" },
+  { hook = "PreToolUse",  tool = "ask_user_question",  state = "waiting" },
+  { hook = "Notification", when = { notificationType = "permission_prompt" }, state = "waiting" },
+  { hook = "PostToolUse",                              state = "working",    forward = "tool", outcome = "succeeded" },
+  { hook = "PostToolUseFailure",                       state = "working",    forward = "tool", outcome = "failed" },
+  { hook = "Stop",        when = { reason = "end_turn" }, state = "turn_ended" },
+  { hook = "StopCancelled",                            state = "turn_ended" },
+  { hook = "StopFailure",                              state = "turn_ended" },
+  { hook = "SessionEnd",                               state = "ended" },
+]

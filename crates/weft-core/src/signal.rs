@@ -867,6 +867,56 @@ mod tests {
         assert_eq!(s.asking(&json!({"session_id": "c1"}), &|_| Some((0, String::new()))), None);
     }
 
+    /// Grok Build's hooks, as 1.0.52 sends them: both namings, `/plan <text>`
+    /// arriving as `<text>`, a plan's approval only as a notification, and a
+    /// closing session's `Stop` that ends no turn.
+    #[test]
+    fn grok_hooks_read_as_its_harness_file_says() {
+        let s = signal("grok");
+        let base = json!({"hookEventName": "x", "sessionId": "g1", "session_id": "g1", "cwd": "/w", "workspaceRoot": "/w/"});
+        let with = |extra: Value| {
+            let mut p = base.clone();
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            p
+        };
+        let state =
+            |hook: &str, extra: Value| s.sent("grok", hook, &with(extra)).and_then(|m| m.state);
+        assert_eq!(state("SessionStart", json!({"source": "new"})).as_deref(), Some("ready"));
+        let typed = s
+            .sent("grok", "UserPromptSubmit", &with(json!({"prompt": "Write a one-line plan."})))
+            .unwrap();
+        assert_eq!(
+            (typed.state.as_deref(), typed.prompt.as_deref()),
+            (Some("working"), Some("Write a one-line plan."))
+        );
+        assert_eq!(
+            state("PreToolUse", json!({"tool_name": "ask_user_question"})).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(state("PreToolUse", json!({"tool_name": "run_terminal_command"})), None);
+        assert_eq!(
+            state("Notification", json!({"notificationType": "permission_prompt"})).as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(state("Notification", json!({"notificationType": "idle_prompt"})), None);
+        let ran = s.sent("grok", "PostToolUse", &with(json!({"tool_name": "run_terminal_command", "tool_input": {"command": "echo hi"}}))).unwrap();
+        assert_eq!(
+            (ran.tool.as_deref(), ran.command.as_deref(), ran.outcome.as_deref()),
+            (Some("run_terminal_command"), Some("echo hi"), Some("succeeded"))
+        );
+        assert_eq!(state("Stop", json!({"reason": "end_turn"})).as_deref(), Some("turn_ended"));
+        assert_eq!(
+            state("StopCancelled", json!({"reason": "user_interrupt"})).as_deref(),
+            Some("turn_ended")
+        );
+        assert_eq!(state("SessionEnd", json!({"reason": "shutdown"})).as_deref(), Some("ended"));
+        assert_eq!(
+            state("Stop", json!({"reason": "shutdown"})),
+            None,
+            "the Stop after SessionEnd ends no turn"
+        );
+    }
+
     #[test]
     fn a_payload_with_no_session_sends_nothing() {
         let s = signal("claude-code");

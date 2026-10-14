@@ -265,12 +265,13 @@ impl Harnesses {
 pub mod fixture {
     use super::*;
 
-    /// The text of a fixture harness file: `claude-code`, `codex` or `antigravity`.
+    /// The text of a fixture harness file: `claude-code`, `codex`, `antigravity` or `grok`.
     pub fn text(name: &str) -> &'static str {
         match name {
             "claude-code" => include_str!("../tests/fixtures/harnesses/claude-code.toml"),
             "codex" => include_str!("../tests/fixtures/harnesses/codex.toml"),
             "antigravity" => include_str!("../tests/fixtures/harnesses/antigravity.toml"),
+            "grok" => include_str!("../tests/fixtures/harnesses/grok.toml"),
             other => panic!("no fixture harness file {other}"),
         }
     }

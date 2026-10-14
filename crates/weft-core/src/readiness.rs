@@ -280,6 +280,25 @@ mod tests {
         assert_eq!(read(&nested, &json!({"plugins": []})), Readiness::Missing(Gap::Marketplace));
     }
 
+    /// Grok Build's own listing, as `grok plugin list --json` prints it
+    /// (1.0.52): a bare array naming `rf`, with its marketplace beside it.
+    #[test]
+    fn grok_is_set_up_when_its_listing_has_rf() {
+        let grok = harness("grok");
+        let listed = json!([{"status": "installed", "name": "rf", "repo_key": "grok-2d0563d8",
+                             "version": "0.2.0", "marketplace": "fab7"}]);
+        assert_eq!(read(&grok, &listed), Readiness::Ready);
+        assert_eq!(
+            read(&grok, &json!([])),
+            Readiness::Missing(Gap::Marketplace),
+            "nothing: its marketplace first"
+        );
+        assert_eq!(
+            read(&grok, &json!([{"status": "installed", "name": "other"}])),
+            Readiness::Missing(Gap::Marketplace)
+        );
+    }
+
     /// The version is read under the same name readiness looks for, so a
     /// harness that lists `rf` can be shown behind as one listing `rf@fab7` is.
     #[test]
