@@ -122,8 +122,9 @@ struct Conn {
     started: HashSet<(usize, u32)>,
     /// What it last said it shows: in the foreground, and which agent.
     seen: Option<(bool, Option<String>)>,
-    /// The agent whose Conversation it shows, and the cursor it has read to.
-    following: Option<Following>,
+    /// The agents whose Conversation it shows, one to each of its panes, and
+    /// the cursor each has been read to.
+    following: Vec<Following>,
 }
 
 /// An agent a device follows: what was added after `after` is read once a

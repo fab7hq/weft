@@ -32,7 +32,12 @@ fn grok_beside(dir: &Path) {
 
 /// A project with a Grok pane: the shell, its token, and its transcript's path.
 fn grok_pane(h: &Harness) -> (Shell, String, PathBuf) {
-    let shell = h.shell_of("conversation", "grok");
+    grok_pane_in(h, "conversation", "g1")
+}
+
+/// A Grok pane in this project, its session's transcript named for the session.
+fn grok_pane_in(h: &Harness, project: &str, session: &str) -> (Shell, String, PathBuf) {
+    let shell = h.shell_of(project, "grok");
     let pane = shell.project.with_extension("pane");
     let deadline = Instant::now() + Duration::from_secs(5);
     while !pane.exists() {
@@ -40,17 +45,21 @@ fn grok_pane(h: &Harness) -> (Shell, String, PathBuf) {
         std::thread::sleep(Duration::from_millis(20));
     }
     let token = std::fs::read_to_string(&pane).unwrap().lines().next().unwrap().to_string();
-    let transcript = h.dir.join("grok-home/sessions/%2Fp/g1/updates.jsonl");
+    let transcript = h.dir.join(format!("grok-home/sessions/%2F{project}/{session}/updates.jsonl"));
     std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
     (shell, token, transcript)
 }
 
 /// What the pane's hook says, naming its transcript.
 fn hook(h: &Harness, shell: &Shell, token: &str, transcript: &Path) {
+    hook_of(h, shell, token, transcript, "g1");
+}
+
+fn hook_of(h: &Harness, shell: &Shell, token: &str, transcript: &Path, session: &str) {
     let sent = Sent {
         harness: "grok".into(),
         hook: "SessionStart".into(),
-        session: "g1".into(),
+        session: session.into(),
         workspace: Some(shell.project.to_string_lossy().into_owned()),
         state: Some("ready".into()),
         pane: Some(0),
@@ -193,4 +202,63 @@ fn a_device_that_falls_behind_starts_over() {
     );
     d.send(json!({"type": "read", "what": "conversation", "agent": agent, "req": 2}));
     assert_eq!(d.answer(2)["type"], "ok", "still connected");
+}
+
+/// A device with two panes in Conversation follows both agents; when one
+/// pane leaves Conversation the other is still followed.
+#[test]
+fn a_device_follows_each_of_its_panes_and_one_closing_leaves_the_other() {
+    let mut h = Harness::with("conversation-panes", grok_beside);
+    let (one, token1, t1) = grok_pane_in(&h, "one", "g1");
+    let (two, token2, t2) = grok_pane_in(&h, "two", "g2");
+    let (mut d, _) = h.allowed("d_1");
+    let rows = d.agents(2);
+    let id = |p: &str| {
+        rows.iter().find(|r| r["project"] == p).unwrap()["agent"].as_str().unwrap().to_string()
+    };
+    let (a1, a2) = (id("one"), id("two"));
+    std::fs::write(&t1, format!("{}\n", line("user_message_chunk", "one"))).unwrap();
+    std::fs::write(&t2, format!("{}\n", line("user_message_chunk", "two"))).unwrap();
+    hook_of(&h, &one, &token1, &t1, "g1");
+    hook_of(&h, &two, &token2, &t2, "g2");
+    let after = |d: &mut common::Device, agent: &str, req: i64| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            d.send(json!({"type": "read", "what": "conversation", "agent": agent, "req": req}));
+            if let Some(a) = d.answer(req)["conversation"]["after"].as_str() {
+                return a.to_string();
+            }
+            assert!(Instant::now() < deadline, "the hook's path never reached weftd");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let (c1, c2) = (after(&mut d, &a1, 1), after(&mut d, &a2, 2));
+    d.send(
+        json!({"type": "follow", "agent": a1, "after": c1, "also": [{"agent": a2, "after": c2}]}),
+    );
+    let grow = |t: &Path, text: &str| {
+        let mut f = std::fs::OpenOptions::new().append(true).open(t).unwrap();
+        writeln!(f, "{}", line("agent_message_chunk", text)).unwrap();
+    };
+    grow(&t1, "reply one");
+    grow(&t2, "reply two");
+    let mut heard = std::collections::BTreeSet::new();
+    while heard.len() < 2 {
+        let m = d.next_of("conversation");
+        heard.insert(m["agent"].as_str().unwrap().to_string());
+    }
+    assert_eq!(heard, [a1.clone(), a2.clone()].into());
+
+    // The first pane leaves Conversation: the second is still followed.
+    d.send(json!({"type": "follow", "agent": a2, "after": c2}));
+    grow(&t1, "unheard");
+    grow(&t2, "still heard");
+    let m = d.next_of("conversation");
+    assert_eq!(m["agent"], a2.as_str(), "{m}");
+    assert!(m.to_string().contains("still heard"), "{m}");
+    d.ws.get_mut().set_read_timeout(Some(Duration::from_millis(2_500))).unwrap();
+    while let Ok(tungstenite::Message::Text(t)) = d.ws.read() {
+        let m: Value = serde_json::from_str(t.as_str()).unwrap();
+        assert!(m["type"] != "conversation" || m["agent"] != a1.as_str(), "{m}");
+    }
 }

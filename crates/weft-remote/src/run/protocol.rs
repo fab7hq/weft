@@ -703,33 +703,54 @@ fn dimension(m: &Value, key: &str) -> Option<u16> {
 // --- following a conversation ----------------------------------------------
 
 impl Remote {
-    /// `follow {agent, after}`: this device shows that agent's Conversation
-    /// from `after`; `follow null` (or no agent) stops it. One a device.
+    /// `follow {agent, after, also}`: this device shows these agents'
+    /// Conversations, each from its cursor, at most `PANES`; one it already
+    /// follows keeps the cursor it was read to. `follow null` stops them all.
     fn follow(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
-        let next = match m["agent"] {
-            Value::Null => None,
-            _ => {
-                let (at, pane) = self.agent(m)?;
-                let after = m["after"].as_str().ok_or(("bad_request", "no after".to_string()))?;
-                Some(super::Following { at, pane, after: after.into(), reading: false })
-            }
+        let also = match &m["also"] {
+            Value::Array(list) => list.iter().collect(),
+            Value::Null => Vec::new(),
+            one => vec![one],
         };
+        let was =
+            self.conns.get_mut(&conn).map(|c| std::mem::take(&mut c.following)).unwrap_or_default();
+        let mut next: Vec<super::Following> = Vec::new();
+        for f in std::iter::once(m).chain(also).filter(|f| !f["agent"].is_null()).take(PANES) {
+            let (at, pane) = self.agent(f)?;
+            if next.iter().any(|n| (n.at, n.pane) == (at, pane)) {
+                continue;
+            }
+            let after = f["after"].as_str().ok_or(("bad_request", "no after".to_string()))?;
+            next.push(match was.iter().find(|w| (w.at, w.pane) == (at, pane)) {
+                Some(w) => {
+                    super::Following { at, pane, after: w.after.clone(), reading: w.reading }
+                }
+                None => super::Following { at, pane, after: after.into(), reading: false },
+            });
+        }
         if let Some(c) = self.conns.get_mut(&conn) {
             c.following = next;
         }
         Ok(false)
     }
 
-    /// Once a second: what each followed agent's file added. Nothing is read
-    /// while no device follows one.
+    /// The device's follow of this agent, if it still has one.
+    fn following(&mut self, conn: u64, (at, pane): (usize, u32)) -> Option<&mut super::Following> {
+        let c = self.conns.get_mut(&conn)?;
+        c.following.iter_mut().find(|f| (f.at, f.pane) == (at, pane))
+    }
+
+    /// Once a second: what each followed agent's file added, one read at a
+    /// time for each. Nothing is read while no device follows one.
     pub(super) fn read_followed(&mut self) {
         let due: Vec<(u64, usize, u32, String)> = self
             .conns
             .iter_mut()
-            .filter_map(|(id, c)| {
-                let f = c.following.as_mut().filter(|f| !f.reading)?;
-                f.reading = true;
-                Some((*id, f.at, f.pane, f.after.clone()))
+            .flat_map(|(id, c)| {
+                c.following.iter_mut().filter(|f| !f.reading).map(move |f| {
+                    f.reading = true;
+                    (*id, f.at, f.pane, f.after.clone())
+                })
             })
             .collect();
         for (conn, at, pane, after) in due {
@@ -748,7 +769,7 @@ impl Remote {
                     self.calls.insert((at, id), asked);
                 }
                 None => {
-                    if let Some(f) = self.conns.get_mut(&conn).and_then(|c| c.following.as_mut()) {
+                    if let Some(f) = self.following(conn, (at, pane)) {
                         f.reading = false;
                     }
                 }
@@ -760,18 +781,16 @@ impl Remote {
     /// it, or `reset` when it must read the newest page again (the file
     /// changed, or the device fell behind), or `readable: false`.
     fn followed(&mut self, conn: u64, (at, pane): (usize, u32), answer: Option<Value>) {
-        let Some(c) = self.conns.get_mut(&conn) else { return };
         // A read for an agent the device no longer follows is dropped.
-        let Some(f) = c.following.as_mut().filter(|f| (f.at, f.pane) == (at, pane)) else {
-            return;
-        };
+        let Some(f) = self.following(conn, (at, pane)) else { return };
         f.reading = false;
+        let queued = self.conns.get(&conn).map_or(0, |c| c.outbox.queued());
         let read = answer.map(|v| v["conversation"].clone()).unwrap_or(Value::Null);
-        let queued = c.outbox.queued();
         let agent = self.agent_id(at, pane);
+        // Only this agent's follow ends; the device's other panes keep theirs.
         let stop = |s: &mut Self| {
             if let Some(c) = s.conns.get_mut(&conn) {
-                c.following = None;
+                c.following.retain(|f| (f.at, f.pane) != (at, pane));
             }
         };
         let told = |s: &mut Self, m: Value| {
@@ -796,7 +815,7 @@ impl Remote {
         if queued + messages.len() > crate::socket::QUEUE {
             return told(self, json!({"type": "conversation", "agent": agent, "reset": true}));
         }
-        if let Some(f) = self.conns.get_mut(&conn).and_then(|c| c.following.as_mut()) {
+        if let Some(f) = self.following(conn, (at, pane)) {
             f.after = after.to_string();
         }
         for m in messages {
