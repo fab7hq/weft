@@ -181,6 +181,20 @@ fn a_pane_reads_the_transcript_its_hook_named_and_nothing_else() {
     // A read wrote nothing.
     assert_eq!(files(home.path()), weft_files);
 
+    // The agent ends (its program reads the end of its input): its pane reads like any other.
+    c.answer(Call::Input { pane: 0, bytes: vec![4] });
+    c.stream.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+    loop {
+        match c.lines.next() {
+            Ok(Some(Line::Event(Event::Exited { pane: 0 }))) => break,
+            Ok(Some(_)) => {}
+            other => panic!("the agent never ended: {other:?}"),
+        }
+    }
+    let ended = c.conversation(None, None);
+    assert_eq!(ended["readable"], true, "{ended}");
+    assert!(ended["items"].as_array().unwrap().iter().any(|i| i["kind"] == "step"));
+
     // A hook that names a file outside the home, or another session's.
     let outside = home.path().join("elsewhere/g1/updates.jsonl");
     std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
