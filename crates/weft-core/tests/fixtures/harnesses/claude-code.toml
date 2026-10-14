@@ -65,3 +65,21 @@ on = [
   { hook = "Stop",                                     state = "turn_ended" },
   { hook = "SessionEnd",                               state = "ended" },
 ]
+
+# Its own transcript, `projects/<project>/<session>.jsonl` (Claude Code 2.1.296,
+# recorded in HostLab, as the Agent SDK's `SessionMessage` reads it). The
+# person's messages are user entries Claude Code marks human; its other user
+# entries are tool results, interruptions and injected context. Thinking,
+# attachments and bookkeeping entries are not drawn.
+[conversation]
+verified = "2.1.296 (Claude Code)"
+path = "transcript_path"
+find = "projects/*/{session}.jsonl"
+time = "timestamp"
+skip = ["isSidechain", "isMeta"]
+person = { when = { type = "user", "origin.kind" = "human" }, text = "message.content" }
+agent = { when = { type = "assistant" }, text = "message.content" }
+steps = { when = { type = "assistant" }, in = "message.content", kind = "tool_use", call = "id", tool = "name", input = "input" }
+outcomes = { when = { type = "user" }, in = "message.content", kind = "tool_result", call = "tool_use_id", failed = { is_error = true } }
+argument = { Bash = "command", Read = "file_path", Edit = "file_path", MultiEdit = "file_path", Write = "file_path", NotebookEdit = "notebook_path", Grep = "pattern", Glob = "pattern", WebFetch = "url", WebSearch = "query", Agent = "description" }
+names = { Edit = "Update", MultiEdit = "Update" }

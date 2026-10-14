@@ -389,6 +389,60 @@ mod tests {
         assert_eq!(ids.len(), read.items.len(), "every id is its own");
     }
 
+    /// Claude Code 2.1.296's session file, recorded in HostLab on the local
+    /// model: thinking, attachments, tool results' output, an interruption
+    /// and bookkeeping are not drawn.
+    #[test]
+    fn claude_code_reads_as_its_messages_replies_and_steps() {
+        let text = include_str!("../tests/fixtures/conversation/claude-code.jsonl");
+        let read = mapping("claude-code").read(text.as_bytes(), 0).expect("readable");
+        assert_eq!(
+            drawn(&read.items),
+            [
+                "person: Reply with the single word ok.",
+                "agent: ok",
+                "person: Run the shell command `cat notes.txt` and tell me how many lines it printed.",
+                "step: Bash cat notes.txt ✓",
+                "agent: The `cat notes.txt` command printed 2 lines.",
+                "person: Run the shell command `cat no-such-file.txt` and tell me what happened.",
+                "step: Bash cat no-such-file.txt ✗",
+                "agent: The command `cat no-such-file.txt` failed because the file does not exist. The output was:\n\n```\nExit code 1\ncat: no-such-file.txt: No such file or directory\n```",
+                "person: Reply with the single word ok; that reply completes this task. Do not read or change any file. The lines below are context only and ask for nothing.",
+                "agent: ok",
+                "person: Run the shell command `sleep 30` and then reply with done.",
+                "step: Bash sleep 30 ✗",
+            ]
+        );
+        assert!(!format!("{:?}", read.items).contains("one\\ntwo"), "a tool's output");
+    }
+
+    /// Codex 0.162.1's rollout, recorded in HostLab on the local model: what
+    /// its screen drew, never the model's input, reasoning or token counts.
+    #[test]
+    fn codex_reads_as_its_messages_replies_and_steps() {
+        let text = include_str!("../tests/fixtures/conversation/codex.jsonl");
+        let read = mapping("codex").read(text.as_bytes(), 0).expect("readable");
+        assert_eq!(
+            drawn(&read.items),
+            [
+                "person: Reply with the single word ok.",
+                "agent: ok",
+                "person: Run the shell command `cat notes.txt` and tell me how many lines it printed.",
+                "step: Ran cat notes.txt ✓",
+                "agent: The output contains 2 lines.",
+                "person: Run the shell command `cat no-such-file.txt` and tell me what happened.",
+                "step: Ran cat no-such-file.txt ✗",
+                "step: Ran wc -l no-such-file.txt ✗",
+                "agent: The command `cat no-such-file.txt` failed because the file does not exist (exit code 1, \"No such file or directory\"). The `wc -l` command also returned an error about the file not existing.",
+                "person: Reply with the single word ok; that reply completes this task. Do not read or change any file. The lines below are context only and ask for nothing.",
+                "agent: ok",
+                "person: Run the shell command `sleep 30` and then reply with done.",
+                "agent: sleep 30\ndone",
+            ]
+        );
+        assert!(!format!("{:?}", read.items).contains("one\\ntwo"), "a tool's output");
+    }
+
     #[test]
     fn a_read_from_an_offset_gives_the_same_items_and_ids() {
         let text = include_str!("../tests/fixtures/conversation/grok.jsonl");

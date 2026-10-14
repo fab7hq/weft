@@ -109,3 +109,24 @@ on = [
   { method = "thread/status/changed", when = { "params.status.type" = "active" },                    state = "working" },
   { method = "thread/status/changed", when = { "params.status.type" = "idle" },                      state = "turn_ended" },
 ]
+
+# Its own transcript, the rollout file (codex-cli 0.162.1, recorded in
+# HostLab). Read from what its screen drew (`event_msg` `item_completed`), not
+# the model's input (`response_item`), which also holds injected context as
+# user messages. Each step is written once it completes, so it carries its own
+# outcome.
+[conversation]
+verified = "codex-cli 0.162.1"
+path = "transcript_path"
+find = "sessions/*/*/*/rollout-*-{session}.jsonl"
+time = "timestamp"
+person = { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "UserMessage" }, text = "payload.item.content" }
+agent = { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "AgentMessage" }, text = "payload.item.content" }
+steps = [
+  { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "CommandExecution" },
+    name = "Ran", input = "payload.item.command", failed = { "payload.item.status" = "failed" } },
+  { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "FileChange" },
+    name = "Edited", input = "payload.item.changes.@key", failed = { "payload.item.status" = "failed" } },
+  { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "McpToolCall" },
+    tool = "payload.item.tool", input = "payload.item.arguments", failed = { "payload.item.status" = "failed" } },
+]
