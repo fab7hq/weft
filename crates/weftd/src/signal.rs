@@ -267,8 +267,10 @@ mod tests {
             (Some("Bash"), Some("npm test"), Some("succeeded"))
         );
         assert_eq!((sent.pane, sent.token.as_deref()), (Some(3), Some("ab".repeat(16).as_str())));
+        // The transcript's path, which `[conversation]` names; never its output.
+        assert_eq!(sent.transcript.as_deref(), Some("/secret"));
         let wire = serde_json::to_string(&sent).unwrap();
-        assert!(!wire.contains("SECRET") && !wire.contains("secret"), "{wire}");
+        assert!(!wire.contains("SECRET"), "{wire}");
     }
 
     #[test]

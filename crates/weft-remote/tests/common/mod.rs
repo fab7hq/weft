@@ -330,7 +330,7 @@ impl Harness {
     pub fn allowed(&mut self, id: &str) -> (Device, Value) {
         let mut d = self.device();
         d.send(
-            json!({"type": "pair", "v": 1, "device": id, "name": "iPhone", "assertion": good(id)}),
+            json!({"type": "pair", "v": 2, "device": id, "name": "iPhone", "assertion": good(id)}),
         );
         assert_eq!(d.next()["type"], "asking");
         self.tui.wait_view(|v| v["asking"]["device"] == id);
@@ -338,7 +338,7 @@ impl Harness {
         let paired = d.next();
         assert_eq!(paired["type"], "paired", "{paired}");
         let token = paired["token"].as_str().unwrap().to_string();
-        d.send(json!({"type": "hello", "v": 1, "device": id, "token": token}));
+        d.send(json!({"type": "hello", "v": 2, "device": id, "token": token}));
         let welcome = d.next();
         assert_eq!(welcome["type"], "welcome", "{welcome}");
         d.welcomed = welcome["agents"].as_array().cloned();
@@ -419,6 +419,11 @@ pub struct Shell {
 impl Harness {
     /// A project with a shell running in it, as the TUI starts one.
     pub fn shell(&self, name: &str) -> Shell {
+        self.shell_of(name, "sh")
+    }
+
+    /// The same, started as this harness.
+    pub fn shell_of(&self, name: &str, harness: &str) -> Shell {
         let project = self.dir.join(name);
         std::fs::create_dir_all(&project).unwrap();
         let mut tui = Tui::connect(&self.socket);
@@ -440,7 +445,7 @@ impl Harness {
         // Through `/bin/sh`: a script just written may still be open in a
         // process another thread is forking, and executing it then fails.
         let spec = format!("/bin/sh {}", agent.display());
-        tui.call(Call::StartAgent { harness: "sh".into(), spec, session: None });
+        tui.call(Call::StartAgent { harness: harness.into(), spec, session: None });
         Shell { tui, project }
     }
 }

@@ -9,6 +9,7 @@
 
 pub mod account;
 pub mod agents;
+pub mod conversation;
 pub mod daemon;
 pub mod devices;
 pub mod health;

@@ -508,8 +508,9 @@ impl Session {
         before: Option<String>,
         after: Option<String>,
     ) -> Answer {
-        use crate::conversation::{self as c, Cursor};
+        use crate::conversation as c;
         use crate::harness::OnThisMachine;
+        use weft_core::conversation::Cursor;
         let p = &self.projects[at];
         let Some(slot) = pane.and_then(|n| p.panes.iter().find(|s| s.map.pane == n)) else {
             return Answer::No("no_pane", "there is no such pane here".into());

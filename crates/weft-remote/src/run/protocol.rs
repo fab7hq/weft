@@ -37,6 +37,7 @@ impl Remote {
             Some("resolve") => self.resolve(conn, m, &req),
             Some("read") => self.read(conn, m, &req),
             Some("seen") => self.seen(conn, m),
+            Some("follow") => self.follow(conn, m),
             Some("push") => self.push_subscription(conn, m),
             Some("ping") => {
                 self.send(conn, json!({"type": "pong", "t": m["t"]}));
@@ -85,6 +86,9 @@ impl Remote {
 
     pub(super) fn answered(&mut self, at: usize, id: u64, answer: Result<Value, (String, String)>) {
         let Some(asked) = self.calls.remove(&(at, id)) else { return };
+        if let Carries::Follow(conn, at, pane) = asked.carries {
+            return self.followed(conn, (at, pane), answer.ok());
+        }
         if let Carries::Part(g, part) = asked.carries {
             return self.gathered(g, part, answer.ok());
         }
@@ -116,7 +120,16 @@ impl Remote {
                             c.started.insert((at, pane));
                         }
                     }
-                    Carries::Starts | Carries::Part(..) => {}
+                    Carries::Conversation(agent) => {
+                        let (page, rest) = crate::conversation::page(&v["conversation"], &agent);
+                        ok["conversation"] = page;
+                        self.send(asked.conn, ok);
+                        for m in rest {
+                            self.send(asked.conn, m);
+                        }
+                        return;
+                    }
+                    Carries::Starts | Carries::Part(..) | Carries::Follow(..) => {}
                 }
                 self.send(asked.conn, ok);
             }
@@ -435,6 +448,27 @@ impl Remote {
 
     fn read(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let what = m["what"].as_str();
+        if what == Some("conversation") {
+            if req.is_null() {
+                return Err(("bad_request", "a read is answered by its req".into()));
+            }
+            let (at, pane) = self.agent(m)?;
+            let before = match &m["before"] {
+                Value::Null => None,
+                Value::String(b) => Some(b.clone()),
+                _ => return Err(("bad_request", "before is a cursor".into())),
+            };
+            let call = Call::Read {
+                what: "conversation".into(),
+                unit: String::new(),
+                pane: Some(pane),
+                lines: None,
+                before,
+                after: None,
+            };
+            let agent = self.agent_id(at, pane);
+            return self.ask(at, call, conn, req, Carries::Conversation(agent));
+        }
         if what == Some("history") {
             let (at, pane) = self.agent(m)?;
             let call = Call::Read {
@@ -664,4 +698,109 @@ impl Remote {
 /// A size's rows or cols, as a device sends them.
 fn dimension(m: &Value, key: &str) -> Option<u16> {
     m[key].as_u64().filter(|n| (2..=1000).contains(n)).map(|n| n as u16)
+}
+
+// --- following a conversation ----------------------------------------------
+
+impl Remote {
+    /// `follow {agent, after}`: this device shows that agent's Conversation
+    /// from `after`; `follow null` (or no agent) stops it. One a device.
+    fn follow(&mut self, conn: u64, m: &Value) -> Result<bool, Refusal> {
+        let next = match m["agent"] {
+            Value::Null => None,
+            _ => {
+                let (at, pane) = self.agent(m)?;
+                let after = m["after"].as_str().ok_or(("bad_request", "no after".to_string()))?;
+                Some(super::Following { at, pane, after: after.into(), reading: false })
+            }
+        };
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.following = next;
+        }
+        Ok(false)
+    }
+
+    /// Once a second: what each followed agent's file added. Nothing is read
+    /// while no device follows one.
+    pub(super) fn read_followed(&mut self) {
+        let due: Vec<(u64, usize, u32, String)> = self
+            .conns
+            .iter_mut()
+            .filter_map(|(id, c)| {
+                let f = c.following.as_mut().filter(|f| !f.reading)?;
+                f.reading = true;
+                Some((*id, f.at, f.pane, f.after.clone()))
+            })
+            .collect();
+        for (conn, at, pane, after) in due {
+            let call = Call::Read {
+                what: "conversation".into(),
+                unit: String::new(),
+                pane: Some(pane),
+                lines: None,
+                before: None,
+                after: Some(after),
+            };
+            match self.call(at, call) {
+                Some(id) => {
+                    let carries = Carries::Follow(conn, at, pane);
+                    let asked = Asked { conn, req: Value::Null, carries };
+                    self.calls.insert((at, id), asked);
+                }
+                None => {
+                    if let Some(f) = self.conns.get_mut(&conn).and_then(|c| c.following.as_mut()) {
+                        f.reading = false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// What a followed agent's file grew by: sent to the device that follows
+    /// it, or `reset` when it must read the newest page again (the file
+    /// changed, or the device fell behind), or `readable: false`.
+    fn followed(&mut self, conn: u64, (at, pane): (usize, u32), answer: Option<Value>) {
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        // A read for an agent the device no longer follows is dropped.
+        let Some(f) = c.following.as_mut().filter(|f| (f.at, f.pane) == (at, pane)) else {
+            return;
+        };
+        f.reading = false;
+        let read = answer.map(|v| v["conversation"].clone()).unwrap_or(Value::Null);
+        let queued = c.outbox.queued();
+        let agent = self.agent_id(at, pane);
+        let stop = |s: &mut Self| {
+            if let Some(c) = s.conns.get_mut(&conn) {
+                c.following = None;
+            }
+        };
+        let told = |s: &mut Self, m: Value| {
+            stop(s);
+            s.send(conn, m);
+        };
+        if read["reset"] == true {
+            return told(self, json!({"type": "conversation", "agent": agent, "reset": true}));
+        }
+        if read["readable"] != true {
+            return told(self, json!({"type": "conversation", "agent": agent, "readable": false}));
+        }
+        let (Some(items), Some(after)) = (read["items"].as_array(), read["after"].as_str()) else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let messages = crate::conversation::grown(items, after, &agent);
+        // A device this far behind starts over from the newest page rather
+        // than be sent more than its queue holds.
+        if queued + messages.len() > crate::socket::QUEUE {
+            return told(self, json!({"type": "conversation", "agent": agent, "reset": true}));
+        }
+        if let Some(f) = self.conns.get_mut(&conn).and_then(|c| c.following.as_mut()) {
+            f.after = after.to_string();
+        }
+        for m in messages {
+            self.send(conn, m);
+        }
+    }
 }

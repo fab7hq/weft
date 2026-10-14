@@ -12,7 +12,7 @@
 use serde_json::{Value, json};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use weft_core::conversation::{Conversation, Item};
+use weft_core::conversation::{Conversation, Cursor, Item};
 
 /// Most items in a page.
 pub const PAGE: usize = 50;
@@ -74,25 +74,6 @@ fn matches(part: &str, name: &str) -> bool {
         }
     }
     rest.is_empty()
-}
-
-/// Where a read stands in one file: which file (it may be replaced) and the
-/// byte offset of a line's start. Opaque to a device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Cursor {
-    pub file: u64,
-    pub at: u64,
-}
-
-impl Cursor {
-    pub fn text(self) -> String {
-        format!("{}-{}", self.file, self.at)
-    }
-
-    pub fn of(text: &str) -> Option<Self> {
-        let (file, at) = text.split_once('-')?;
-        Some(Cursor { file: file.parse().ok()?, at: at.parse().ok()? })
-    }
 }
 
 /// What a read gives a device.
@@ -174,7 +155,7 @@ pub fn page(c: &Conversation, path: Option<&Path>, before: Option<Cursor>) -> An
         cut = bytes;
     }
     // At most a page, of whole lines: a line's items are never split.
-    let line = |i: &Item| i.id.split('.').next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+    let line = |i: &Item| Cursor::line(&i.id).unwrap_or(0);
     let mut first = items.len().saturating_sub(PAGE);
     if first > 0 {
         let cut_line = line(&items[first]);

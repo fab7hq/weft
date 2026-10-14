@@ -33,7 +33,7 @@ fn a_machine_that_is_signed_out_says_so() {
         "signed_out",
     );
     let mut d = Device::connect(port(&h));
-    d.send(json!({"type": "pair", "v": 1, "device": "d_1", "name": "iPhone", "assertion": good("d_1")}));
+    d.send(json!({"type": "pair", "v": 2, "device": "d_1", "name": "iPhone", "assertion": good("d_1")}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "signed_out"}));
 }
 

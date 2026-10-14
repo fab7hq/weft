@@ -136,6 +136,35 @@ pub enum Kind {
     Outcome,
 }
 
+/// Where a read stands in one transcript: which file (it may be replaced)
+/// and the byte offset of a line's start. Opaque to a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cursor {
+    pub file: u64,
+    pub at: u64,
+}
+
+impl Cursor {
+    pub fn text(self) -> String {
+        format!("{}-{}", self.file, self.at)
+    }
+
+    pub fn of(text: &str) -> Option<Self> {
+        let (file, at) = text.split_once('-')?;
+        Some(Cursor { file: file.parse().ok()?, at: at.parse().ok()? })
+    }
+
+    /// The offset of the line an item came from, by its id.
+    pub fn line(id: &str) -> Option<u64> {
+        id.split('.').next()?.parse().ok()
+    }
+
+    /// In the same file, at the line an item came from.
+    pub fn at_item(self, id: &str) -> Option<Self> {
+        Some(Cursor { file: self.file, at: Self::line(id)? })
+    }
+}
+
 /// The items of some whole lines, and how many bytes they took.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Read {

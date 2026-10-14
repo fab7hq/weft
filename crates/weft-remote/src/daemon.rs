@@ -154,7 +154,14 @@ pub fn allowed(call: &Call) -> bool {
         Call::Read { what, .. } => {
             matches!(
                 what.as_str(),
-                "history" | "wording" | "source" | "judges" | "seal" | "eval" | "window"
+                "history"
+                    | "wording"
+                    | "source"
+                    | "judges"
+                    | "seal"
+                    | "eval"
+                    | "window"
+                    | "conversation"
             )
         }
         _ => false,

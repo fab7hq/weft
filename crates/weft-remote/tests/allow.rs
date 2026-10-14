@@ -23,7 +23,7 @@ fn a_stranger_or_a_flood_is_refused_without_asking_the_person() {
     ];
     for (what, a) in bad {
         let mut d = h.device();
-        d.send(json!({"type": "pair", "v": 1, "device": "d_x", "name": "Phone", "assertion": a}));
+        d.send(json!({"type": "pair", "v": 2, "device": "d_x", "name": "Phone", "assertion": a}));
         assert_eq!(d.next(), json!({"type": "refused", "code": "not_owner"}), "{what}");
         assert!(d.closed_within(Duration::from_secs(2)), "{what}: closed");
     }
@@ -32,7 +32,7 @@ fn a_stranger_or_a_flood_is_refused_without_asking_the_person() {
         let id = format!("d_{n}");
         let mut d = h.device();
         d.send(
-            json!({"type": "pair", "v": 1, "device": id, "name": "Phone", "assertion": good(&id)}),
+            json!({"type": "pair", "v": 2, "device": id, "name": "Phone", "assertion": good(&id)}),
         );
         assert_eq!(d.next()["type"], "asking");
         h.tui.wait_view(|v| v["asking"]["device"] == id.as_str());
@@ -42,7 +42,7 @@ fn a_stranger_or_a_flood_is_refused_without_asking_the_person() {
     let views = h.tui.views(Duration::from_millis(500));
     let mut d = h.device();
     d.send(
-        json!({"type": "pair", "v": 1, "device": "d_3", "name": "Phone", "assertion": good("d_3")}),
+        json!({"type": "pair", "v": 2, "device": "d_3", "name": "Phone", "assertion": good("d_3")}),
     );
     assert_eq!(d.next(), json!({"type": "refused", "code": "busy"}), "a fourth in ten minutes");
     let views: Vec<_> = views.into_iter().chain(h.tui.views(Duration::from_millis(800))).collect();
@@ -73,7 +73,7 @@ fn a_removed_device_is_closed_at_once() {
 fn a_device_that_is_not_allowed_is_refused_at_hello() {
     let h = Harness::start("unknown");
     let mut d = h.device();
-    d.send(json!({"type": "hello", "v": 1, "device": "d_nobody", "token": "guess"}));
+    d.send(json!({"type": "hello", "v": 2, "device": "d_nobody", "token": "guess"}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "unknown_device"}));
     assert!(d.closed_within(Duration::from_secs(1)));
     let mut d = h.device();
@@ -88,14 +88,14 @@ fn a_device_that_is_not_allowed_is_refused_at_hello() {
 fn another_version_is_refused_as_such() {
     let mut h = Harness::start("version");
     let mut d = h.device();
-    d.send(json!({"type": "hello", "v": 0, "device": "d_old", "token": "t"}));
+    d.send(json!({"type": "hello", "v": 1, "device": "d_old", "token": "t"}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "machine"}));
     let views = h.tui.views(Duration::from_millis(300));
     let mut d = h.device();
-    d.send(json!({"type": "pair", "v": 0, "device": "d_old", "name": "Phone", "assertion": good("d_old")}));
+    d.send(json!({"type": "pair", "v": 1, "device": "d_old", "name": "Phone", "assertion": good("d_old")}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "machine"}));
     let mut d = h.device();
-    d.send(json!({"type": "hello", "v": 2, "device": "d_new", "token": "t"}));
+    d.send(json!({"type": "hello", "v": 3, "device": "d_new", "token": "t"}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "page"}));
     let views: Vec<_> = views.into_iter().chain(h.tui.views(Duration::from_millis(500))).collect();
     assert!(views.iter().all(|v| v["asking"].is_null()), "{views:?}");

@@ -181,6 +181,11 @@ impl Outbox {
         true
     }
 
+    /// How many messages wait to be written.
+    pub fn queued(&self) -> usize {
+        self.0.0.lock().expect("outbox").items.len()
+    }
+
     pub fn is_stale(&self) -> bool {
         self.0.0.lock().expect("outbox").stale
     }

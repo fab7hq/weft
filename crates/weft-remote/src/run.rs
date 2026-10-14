@@ -27,7 +27,7 @@ use crate::view::View;
 mod protocol;
 
 /// The remote protocol's version.
-pub const VERSION: u64 = 1;
+pub const VERSION: u64 = 2;
 /// The most agents a device may watch at once: one to each of its panes.
 pub const PANES: usize = 4;
 /// How long the person has to answer a device asking to be allowed.
@@ -122,6 +122,17 @@ struct Conn {
     started: HashSet<(usize, u32)>,
     /// What it last said it shows: in the foreground, and which agent.
     seen: Option<(bool, Option<String>)>,
+    /// The agent whose Conversation it shows, and the cursor it has read to.
+    following: Option<Following>,
+}
+
+/// An agent a device follows: what was added after `after` is read once a
+/// second, and only one read at a time.
+struct Following {
+    at: usize,
+    pane: u32,
+    after: String,
+    reading: bool,
 }
 
 /// A call made for a device's request, waiting for the daemon's answer.
@@ -144,6 +155,10 @@ enum Carries {
     Starts,
     /// One part of a read being gathered, by its gathering.
     Part(u64, Part),
+    /// A page of an agent's conversation, by the agent's id.
+    Conversation(String),
+    /// What a followed agent's file grew by, for this device and agent.
+    Follow(u64, usize, u32),
 }
 
 /// The daemon's reads one device read is gathered from.
@@ -885,6 +900,7 @@ impl Remote {
         }
         self.open_projects();
         self.push_due();
+        self.read_followed();
     }
 
     fn socket(&mut self, s: Socket) {
