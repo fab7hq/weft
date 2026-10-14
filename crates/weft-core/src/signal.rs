@@ -29,7 +29,65 @@ pub struct Signal {
     /// What every hook prints, unless its row says otherwise.
     #[serde(default)]
     pub reply: Option<String>,
+    /// Questions the harness asks without stopping the turn.
+    #[serde(default)]
+    pub questions: Option<Questions>,
     pub on: Vec<Row>,
+}
+
+/// Questions a harness asks its person without stopping the turn, kept in a
+/// file of JSON lines the payload names (a transcript). A line with `asked`'s
+/// fields asks one, its id at `id`; a line with `answered`'s fields whose
+/// text at `answer` begins with `begins` answers every question whose id it
+/// holds; a line with `typed`'s fields that holds no `begins` is the person
+/// typing to the harness, past every question asked before it. A question is
+/// pending when it is asked and no later line answers it or is typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Questions {
+    /// The payload path of the file's path.
+    pub file: String,
+    pub asked: serde_json::Map<String, Value>,
+    pub id: String,
+    pub answered: serde_json::Map<String, Value>,
+    pub answer: String,
+    pub begins: String,
+    pub typed: serde_json::Map<String, Value>,
+}
+
+impl Questions {
+    /// Whether a question is pending in this end of the file. Only lines
+    /// that hold `begins`, or every text value of `asked`, are read.
+    pub fn pending(&self, tail: &str) -> bool {
+        let fields = |v: &Value, want: &serde_json::Map<String, Value>| {
+            want.iter().all(|(p, w)| value_at(v, p) == Some(w))
+        };
+        let mentions = |line: &str, want: &serde_json::Map<String, Value>| {
+            want.values().filter_map(Value::as_str).all(|w| line.contains(w))
+        };
+        let mut open: Vec<String> = Vec::new();
+        for line in tail.lines() {
+            let answers = line.contains(self.begins.as_str());
+            if !answers && !mentions(line, &self.asked) && !mentions(line, &self.typed) {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+            if !answers && fields(&v, &self.typed) {
+                open.clear();
+            } else if fields(&v, &self.asked)
+                && let Some(id) = text_at(&v, &self.id).filter(|id| !id.is_empty())
+            {
+                open.push(id);
+            } else if answers
+                && fields(&v, &self.answered)
+                && let Some(text) = text_at(&v, &self.answer)
+                && text.starts_with(self.begins.as_str())
+            {
+                open.retain(|id| !text.contains(id.as_str()));
+            }
+        }
+        !open.is_empty()
+    }
 }
 
 /// Where a forwarded prompt is: one place, or a list tried in order, for a
@@ -186,6 +244,10 @@ pub struct Sent {
     /// those of whichever pane started it: it names no pane.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shared: bool,
+    /// Whether a question asked without stopping the turn is pending, when
+    /// this hook read them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asking: Option<bool>,
 }
 
 impl Signal {
@@ -266,6 +328,19 @@ impl Signal {
         })
     }
 
+    /// Whether a question is pending, when the table names questions and
+    /// the payload's file reads. `tail` reads a file's end, as for a prompt.
+    pub fn asking(
+        &self,
+        payload: &Value,
+        tail: &dyn Fn(&str) -> Option<(u64, String)>,
+    ) -> Option<bool> {
+        let q = self.questions.as_ref()?;
+        let file = text_at(payload, &q.file)?;
+        let (_, end) = tail(&file)?;
+        Some(q.pending(&end))
+    }
+
     /// What this hook prints: its row's reply, else the table's.
     pub fn reply(&self, hook: &str, payload: &Value) -> Option<&str> {
         self.row(hook, payload).and_then(|r| r.reply.as_deref()).or(self.reply.as_deref())
@@ -309,9 +384,12 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
     }
 }
 
-/// The value at a dotted path.
+/// The value at a dotted path; a number steps into a list.
 pub(crate) fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
-    path.split('.').try_fold(v, |v, key| v.get(key))
+    path.split('.').try_fold(v, |v, key| match v {
+        Value::Array(all) => all.get(key.parse::<usize>().ok()?),
+        _ => v.get(key),
+    })
 }
 
 /// The text at a dotted payload path; for a list, its first entry.
@@ -675,6 +753,64 @@ mod tests {
         let typed = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl", "prompt": "fix it"});
         let got = s.prompt_in("UserPromptSubmit", &typed, &end, &whole).expect("typed");
         assert_eq!((got.text.as_str(), got.key), ("fix it", None), "the payload first");
+    }
+
+    #[test]
+    fn a_codex_question_that_does_not_stop_the_turn_is_pending_until_answered() {
+        let s = signal("codex");
+        let payload = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl"});
+        // As Codex 0.162.1 records them: the question, the call's output, and
+        // later the person's answer naming the call.
+        let asked = |id: &str| {
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "thread_id": "c1",
+                "item": {"type": "AgentMessage", "id": id, "phase": "final_answer", "delivery": "async",
+                         "content": [{"type": "Text", "text": "Red or blue?"}],
+                         "questions": [{"title": "Red or blue?", "options": null}]}}})
+        };
+        let accepted = |id: &str| {
+            json!({"type": "response_item", "payload": {"type": "function_call_output", "call_id": id,
+                "output": "{\"accepted\":true}"}})
+        };
+        let answer = |id: &str| {
+            let reply = format!(
+                "<send_user_message_question_reply>\n[{{\"answer\":\"blue\",\"question\":\"Red or blue?\",\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"{id}\\\",0]\"}}]\n</send_user_message_question_reply>"
+            );
+            json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": reply}]}})
+        };
+        let typed = json!({"type": "event_msg", "payload": {"type": "item_completed",
+            "item": {"type": "UserMessage", "content": [{"type": "text", "text": "carry on"}]}}});
+        let replied = |id: &str| {
+            json!({"type": "event_msg", "payload": {"type": "item_completed",
+                "item": {"type": "UserMessage", "content": [{"type": "text",
+                    "text": format!("<send_user_message_question_reply>\n[{{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"{id}\\\",0]\"}}]")}]}}})
+        };
+        let file = |lines: &[Value]| lines.iter().map(|v| format!("{v}\n")).collect::<String>();
+        let at = |text: String| s.asking(&payload, &move |_| Some((0, text.clone())));
+
+        assert_eq!(at(file(&[asked("call_a"), accepted("call_a")])), Some(true), "asked");
+        assert_eq!(
+            at(file(&[asked("call_a"), typed.clone()])),
+            Some(false),
+            "the person typed past it"
+        );
+        assert_eq!(at(file(&[typed.clone(), asked("call_a")])), Some(true), "typed before it");
+        assert_eq!(
+            at(file(&[asked("call_a"), asked("call_b"), replied("call_a")])),
+            Some(true),
+            "an answer is not typing past the others"
+        );
+        assert_eq!(at(file(&[asked("call_a"), answer("call_a")])), Some(false), "answered");
+        assert_eq!(
+            at(file(&[asked("call_a"), asked("call_b"), answer("call_a")])),
+            Some(true),
+            "one of two answered"
+        );
+        assert_eq!(at(file(&[answer("call_a"), asked("call_a")])), Some(true), "asked again after");
+        assert_eq!(at(file(&[accepted("call_a")])), Some(false), "nothing asked");
+        // A harness without the table, or a payload naming no file, reads none.
+        assert_eq!(signal("claude-code").asking(&payload, &|_| Some((0, String::new()))), None);
+        assert_eq!(s.asking(&json!({"session_id": "c1"}), &|_| Some((0, String::new()))), None);
     }
 
     #[test]

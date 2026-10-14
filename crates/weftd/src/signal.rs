@@ -74,6 +74,8 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
         sent.prompt = Some(got.text);
         sent.prompt_key = got.key;
     }
+    // A question asked without stopping the turn, read on every hook.
+    sent.asking = signal.asking(&payload, &end);
     let server: Vec<String> = table["server_args"]
         .as_array()
         .map(|a| a.iter().filter_map(|w| w.as_str().map(String::from)).collect())
@@ -151,7 +153,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let harnesses = dir.path().join("harnesses");
         std::fs::create_dir_all(&harnesses).unwrap();
-        for name in ["claude-code", "antigravity"] {
+        for name in ["claude-code", "antigravity", "codex"] {
             std::fs::write(
                 harnesses.join(format!("{name}.toml")),
                 weft_core::harness::fixture::text(name),
@@ -245,6 +247,30 @@ mod tests {
         assert_eq!((sent.pane, sent.token.as_deref()), (Some(3), Some("ab".repeat(16).as_str())));
         let wire = serde_json::to_string(&sent).unwrap();
         assert!(!wire.contains("SECRET") && !wire.contains("secret"), "{wire}");
+    }
+
+    #[test]
+    fn every_hook_reads_whether_a_question_is_pending_in_the_transcript() {
+        let b = bench();
+        let transcript = b.at.harnesses.join("rollout.jsonl");
+        let asked = serde_json::json!({"type": "event_msg", "payload": {"type": "item_completed",
+            "item": {"type": "AgentMessage", "id": "call_q1", "delivery": "async",
+                     "questions": [{"title": "Red or blue?"}]}}});
+        std::fs::write(&transcript, format!("{asked}\n")).unwrap();
+        let payload =
+            serde_json::json!({"session_id": "c1", "cwd": "/w", "transcript_path": transcript,
+            "tool_name": "Bash", "tool_input": {"command": "ls"}})
+            .to_string();
+        let (_, sent) = heard(&b.at, &["codex", "PostToolUse"], &payload);
+        assert_eq!(sent.expect("weftd heard it").asking, Some(true));
+        let answer = serde_json::json!({"type": "response_item", "payload": {"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "<send_user_message_question_reply>\n[{\"questionItemId\":\"[\\\"request_user_input_async\\\",\\\"call_q1\\\",0]\"}]"}]}});
+        std::fs::write(&transcript, format!("{asked}\n{answer}\n")).unwrap();
+        let (_, sent) = heard(&b.at, &["codex", "Stop"], &payload);
+        assert_eq!(sent.expect("weftd heard it").asking, Some(false));
+        // A harness that names no questions says nothing of them.
+        let (_, sent) = heard(&b.at, &["claude-code", "Stop"], &payload);
+        assert_eq!(sent.expect("weftd heard it").asking, None);
     }
 
     #[test]

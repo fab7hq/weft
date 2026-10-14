@@ -76,6 +76,10 @@ pub fn read(harness: &str, id: &str, text: &str) -> Option<Session> {
             continue;
         };
         let Some(at) = v.get("time").and_then(Value::as_str).and_then(millis) else { continue };
+        // A question asked without stopping the turn, still unanswered: the
+        // harness is asking its person, whatever its turn is doing.
+        let asking = v.get("asking") == Some(&Value::Bool(true));
+        let turn = if asking && turn != Turn::Ended { Turn::Waiting } else { turn };
         match &mut out {
             None => {
                 out = Some(Session {

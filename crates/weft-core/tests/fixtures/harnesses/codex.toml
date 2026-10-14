@@ -75,6 +75,21 @@ on = [
   { hook = "Stop",                                     state = "turn_ended", forward = "prompt" },
 ]
 
+# A question asked without stopping the turn (`request_user_input_async`)
+# returns at once, and its server raises no flag for it: its transcript keeps
+# it, as an item_completed whose item is delivered "async", its id the call's.
+# The person's answer is a user message that begins with the marker below and
+# names that id; a message the person types after it is past it. Pending until
+# then: NEEDS YOU (codex 0.162.1).
+[signal.questions]
+file = "transcript_path"
+asked = { type = "event_msg", "payload.type" = "item_completed", "payload.item.delivery" = "async" }
+id = "payload.item.id"
+answered = { type = "response_item", "payload.type" = "message", "payload.role" = "user" }
+answer = "payload.content.0.text"
+begins = "<send_user_message_question_reply>"
+typed = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "UserMessage" }
+
 # Its server tells every client each session's state, an interrupted turn
 # included, which no hook reports (Codex 0.162). A session is the server's
 # thread.

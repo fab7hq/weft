@@ -24,12 +24,14 @@ pub fn project_dir(base: &Path, root: &Path) -> PathBuf {
     base.join(weft_core::sessions::project_key(root))
 }
 
-/// Append the line this signal makes, when its event or its process differs
-/// from the session's last line. A signal with no event, or a harness or
-/// session that is not only an id, names no file. True when a line was added.
+/// Append the line this signal makes, when its event, its process or
+/// whether a question is pending differs from the session's last line. A
+/// signal with no event keeps the last line's, when it says whether a
+/// question is pending; a line keeps the last line's `asking` unless its
+/// signal says, and an ended session asks nothing. A harness or session that
+/// is not only an id names no file. True when a line was added.
 pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Result<bool> {
     use weft_core::sessions::is_id;
-    let Some(event) = sent.state.as_deref() else { return Ok(false) };
     if !is_id(&sent.harness) || !is_id(&sent.session) {
         return Ok(false);
     }
@@ -37,10 +39,20 @@ pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Resul
     let path = dir.join(format!("{}.jsonl", sent.session));
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let last: Option<Value> = text.lines().last().and_then(|l| serde_json::from_str(l).ok());
+    let event = match (sent.state.as_deref(), sent.asking, &last) {
+        (Some(event), _, _) => event.to_string(),
+        (None, Some(_), Some(l)) if l["event"].is_string() => {
+            l["event"].as_str().unwrap_or_default().to_string()
+        }
+        _ => return Ok(false),
+    };
+    let was_asking = last.as_ref().is_some_and(|l| l["asking"] == true);
+    let asking = event != "ended" && sent.asking.unwrap_or(was_asking);
     let same = last.is_some_and(|l| {
-        l["event"] == event
+        l["event"] == event.as_str()
             && l["pid"] == json!(sent.pid)
             && l["pid_start"] == json!(sent.pid_start)
+            && was_asking == asking
     });
     if same {
         return Ok(false);
@@ -50,6 +62,9 @@ pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Resul
     if let (Some(pid), Some(start)) = (sent.pid, &sent.pid_start) {
         line["pid"] = json!(pid);
         line["pid_start"] = json!(start);
+    }
+    if asking {
+        line["asking"] = json!(true);
     }
     std::fs::create_dir_all(&dir)?;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
@@ -131,6 +146,50 @@ mod tests {
         let key = weft_core::sessions::project_key(root);
         assert_eq!(key.len(), 12);
         assert!(project_dir(base, root).ends_with(key));
+    }
+
+    #[test]
+    fn a_pending_question_is_kept_until_a_hook_reads_none_and_an_ended_session_drops_it() {
+        let base = tempfile::tempdir().unwrap();
+        let (base, root) = (base.path(), Path::new("/work/thing"));
+        let asked = |event: Option<&str>, asking: Option<bool>| Sent {
+            state: event.map(str::to_string),
+            asking,
+            ..sent("working", None)
+        };
+        let reads = |base: &Path| -> Option<weft_core::turns::Turn> {
+            let text =
+                std::fs::read_to_string(project_dir(base, root).join("claude-code/s1.jsonl"))
+                    .ok()?;
+            weft_core::turns::read("claude-code", "s1", &text).map(|s| s.latest)
+        };
+        use weft_core::turns::Turn;
+        assert!(record(base, root, &asked(Some("working"), Some(false)), 1000).unwrap());
+        // A hook whose state the server's stream gives (none) still records the question.
+        assert!(record(base, root, &asked(None, Some(true)), 2000).unwrap());
+        assert_eq!(lines(base, root)[1]["event"], "working", "the last event, kept");
+        assert_eq!(lines(base, root)[1]["asking"], true);
+        assert_eq!(reads(base), Some(Turn::Waiting), "NEEDS YOU while the turn works");
+        // The server's turn end says nothing of questions: the question stays.
+        assert!(record(base, root, &asked(Some("turn_ended"), None), 3000).unwrap());
+        assert_eq!(lines(base, root)[2]["asking"], true);
+        assert_eq!(reads(base), Some(Turn::Waiting));
+        assert!(
+            !record(base, root, &asked(Some("turn_ended"), Some(true)), 4000).unwrap(),
+            "a repeat"
+        );
+        // A hook that reads it answered clears it.
+        assert!(record(base, root, &asked(None, Some(false)), 5000).unwrap());
+        assert!(lines(base, root)[3].get("asking").is_none());
+        assert_eq!(reads(base), Some(Turn::TurnEnded));
+        // Asked again, then the session ends: an ended session asks nothing.
+        assert!(record(base, root, &asked(None, Some(true)), 6000).unwrap());
+        assert!(record(base, root, &asked(Some("ended"), None), 7000).unwrap());
+        assert!(lines(base, root)[5].get("asking").is_none());
+        assert_eq!(reads(base), Some(Turn::Ended));
+        // No line yet and no event: nothing to keep.
+        let fresh = tempfile::tempdir().unwrap();
+        assert!(!record(fresh.path(), root, &asked(None, Some(true)), 1).unwrap());
     }
 
     #[test]
