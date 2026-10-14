@@ -222,6 +222,7 @@ impl Session {
                     wants: HashMap::from([(client, size)]),
                     turbo,
                     token,
+                    transcript: None,
                 });
                 self.write_map(project);
                 self.listen(project, &harness_name);
@@ -313,6 +314,15 @@ impl Session {
                 (at, root)
             }
         };
+        // The transcript a hook names is its pane's, for its Conversation.
+        if let (Some(at), Some(pane), Some(path)) = (at, sent.pane, sent.transcript.take())
+            && let Some(slot) = self.projects[at]
+                .panes
+                .iter_mut()
+                .find(|s| s.map.pane == pane && s.map.harness == sent.harness)
+        {
+            slot.transcript = Some(path.into());
+        }
         if let Some(at) = at {
             self.listen(at, &sent.harness);
         }
@@ -485,4 +495,42 @@ fn project_of(path: &str) -> Option<PathBuf> {
         }
     }
     Some(path)
+}
+
+impl Session {
+    /// `read conversation`: a pane's newest page, the page before a cursor,
+    /// or what was added after one. A harness without `[conversation]`, or no
+    /// file known, found or allowed, reads as unreadable, never refused.
+    pub(super) fn conversation(
+        &self,
+        at: usize,
+        pane: Option<u32>,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> Answer {
+        use crate::conversation::{self as c, Cursor};
+        use crate::harness::OnThisMachine;
+        let p = &self.projects[at];
+        let Some(slot) = pane.and_then(|n| p.panes.iter().find(|s| s.map.pane == n)) else {
+            return Answer::No("no_pane", "there is no such pane here".into());
+        };
+        let cursor = |t: Option<String>| t.map(|t| Cursor::of(&t).ok_or(())).transpose();
+        let (Ok(before), Ok(after)) = (cursor(before), cursor(after)) else {
+            return Answer::No("bad_request", "that cursor is not one weftd gave".into());
+        };
+        let Some(h) = p.harnesses.find(&slot.map.harness) else {
+            return Answer::Ok(c::Answer::Unreadable.json());
+        };
+        let Some(mapping) = h.conversation.as_ref() else {
+            return Answer::Ok(c::Answer::Unreadable.json());
+        };
+        let session = slot.map.session.as_ref().map(|b| b.session.as_str());
+        let path =
+            session.and_then(|s| c::file(mapping, &h.config_home(), s, slot.transcript.as_deref()));
+        let read = match after {
+            Some(after) => c::after(mapping, path.as_deref(), after),
+            None => c::page(mapping, path.as_deref(), before),
+        };
+        Answer::Ok(read.json())
+    }
 }

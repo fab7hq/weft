@@ -98,6 +98,7 @@ mod tests {
             unset_env: Vec::new(),
             manifest: None,
             signal: None,
+            conversation: None,
             listen: None,
             resume_joins: false,
             server_args: Vec::new(),

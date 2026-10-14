@@ -84,6 +84,10 @@ pub struct Harness {
     /// which holds every session and so is no session's process.
     #[serde(default)]
     pub server_args: Vec<String>,
+    /// How its own transcript reads as a conversation (`[conversation]`).
+    /// Without it, its conversation cannot be shown.
+    #[serde(default)]
+    pub conversation: Option<crate::conversation::Conversation>,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -144,6 +148,11 @@ impl Harness {
             listen: crate::listen::Listen::of(&p["listen"]),
             resume_joins: p["resume_joins"].as_bool().unwrap_or(false),
             server_args: argv(&p["server_args"]).unwrap_or_default(),
+            // A table that does not read (no `verified`) defines no harness.
+            conversation: match &p["conversation"] {
+                Value::Null => None,
+                table => Some(crate::conversation::Conversation::of(table)?),
+            },
         })
     }
 

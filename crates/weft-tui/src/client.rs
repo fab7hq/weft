@@ -597,6 +597,8 @@ impl Session {
             unit: unit.to_string(),
             pane: None,
             lines: None,
+            before: None,
+            after: None,
         })
     }
 

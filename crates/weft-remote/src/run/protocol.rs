@@ -442,6 +442,8 @@ impl Remote {
                 unit: String::new(),
                 pane: Some(pane),
                 lines: Some(HISTORY),
+                before: None,
+                after: None,
             };
             let key = self.projects[at].as_ref().and_then(|o| o.agents.transcript(pane));
             return self.ask(at, call, conn, req, Carries::History(key));
@@ -533,7 +535,14 @@ impl Remote {
     /// Ask the daemon for one part of a gathering.
     fn read_part(&mut self, g: u64, part: Part, what: &str, unit: String) {
         let Some(at) = self.gathering.get(&g).map(|r| r.at) else { return };
-        let call = Call::Read { what: what.into(), unit, pane: None, lines: None };
+        let call = Call::Read {
+            what: what.into(),
+            unit,
+            pane: None,
+            lines: None,
+            before: None,
+            after: None,
+        };
         if let Some(id) = self.call(at, call) {
             self.calls.insert(
                 (at, id),

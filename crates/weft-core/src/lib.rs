@@ -10,6 +10,7 @@
 
 pub mod board;
 pub mod config;
+pub mod conversation;
 pub mod eval_stages;
 pub mod eval_view;
 pub mod harness;

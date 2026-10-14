@@ -252,6 +252,10 @@ pub struct Sent {
     /// this hook read them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asking: Option<bool>,
+    /// The harness's own transcript, where `[conversation]` `path` names it:
+    /// kept per pane in weftd's memory, never recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<String>,
 }
 
 impl Signal {

@@ -82,6 +82,9 @@ struct Slot {
     /// `$WEFT_PANE_TOKEN`: 128 random bits, kept here and nowhere else. A
     /// signal naming this pane counts only with it.
     token: String,
+    /// The harness's own transcript, as its hooks last named it: kept here
+    /// and nowhere else, for its Conversation.
+    transcript: Option<std::path::PathBuf>,
 }
 
 impl Slot {
@@ -1655,7 +1658,7 @@ impl Session {
                     },
                 );
             }
-            Call::Read { what, unit, pane, lines } => {
+            Call::Read { what, unit, pane, lines, before, after } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 if what == "history" {
                     let lines = lines.map_or(HISTORY_MAX, |n| n as usize).min(HISTORY_MAX);
@@ -1665,6 +1668,9 @@ impl Session {
                         }
                         None => Answer::No("no_pane", "there is no such pane here".into()),
                     });
+                }
+                if what == "conversation" {
+                    return Ok(self.conversation(at, pane, before, after));
                 }
                 return Ok(self.read(at, &what, &unit));
             }

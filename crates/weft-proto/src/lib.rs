@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 3;
+pub const PROTOCOL: u64 = 4;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -111,6 +111,10 @@ pub enum Call {
         unit: String,
         pane: Option<u32>,
         lines: Option<u64>,
+        /// A conversation's cursors: the page before one, or what was
+        /// added after one.
+        before: Option<String>,
+        after: Option<String>,
     },
     /// The RingFrame view (`[U]`): `look` at RingFrame's configuration and
     /// every harness file, `locate` one whose program is at `path`, `run` one's
@@ -417,9 +421,11 @@ impl Call {
                        "start": start}),
             ),
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
-            Call::Read { what, unit, pane, lines } => {
-                ("read", json!({"what": what, "unit": unit, "pane": pane, "lines": lines}))
-            }
+            Call::Read { what, unit, pane, lines, before, after } => (
+                "read",
+                json!({"what": what, "unit": unit, "pane": pane, "lines": lines,
+                       "before": before, "after": after}),
+            ),
             Call::Setup { act, harness, path } => {
                 ("setup", json!({"act": act, "harness": harness, "path": path}))
             }
@@ -489,6 +495,8 @@ impl Call {
                 unit: s("unit").unwrap_or_default(),
                 pane: n("pane").map(|n| n as u32),
                 lines: n("lines"),
+                before: s("before"),
+                after: s("after"),
             },
             "setup" => Call::Setup {
                 act: s("act")?,
@@ -982,12 +990,21 @@ mod tests {
                 start: None,
             },
             Call::ConfirmAsk { unit: "ask_1".into() },
-            Call::Read { what: "judges".into(), unit: "ask_1".into(), pane: None, lines: None },
+            Call::Read {
+                what: "judges".into(),
+                unit: "ask_1".into(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: None,
+            },
             Call::Read {
                 what: "history".into(),
                 unit: String::new(),
                 pane: Some(2),
                 lines: Some(40),
+                before: None,
+                after: None,
             },
             Call::Setup {
                 act: "locate".into(),

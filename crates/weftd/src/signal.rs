@@ -76,6 +76,9 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
     }
     // A question asked without stopping the turn, read on every hook.
     sent.asking = signal.asking(&payload, &end);
+    sent.transcript = table["conversation"]["path"]
+        .as_str()
+        .and_then(|p| weft_core::signal::text_at(&payload, p));
     let server: Vec<String> = table["server_args"]
         .as_array()
         .map(|a| a.iter().filter_map(|w| w.as_str().map(String::from)).collect())
@@ -153,7 +156,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let harnesses = dir.path().join("harnesses");
         std::fs::create_dir_all(&harnesses).unwrap();
-        for name in ["claude-code", "antigravity", "codex"] {
+        for name in ["claude-code", "antigravity", "codex", "grok"] {
             std::fs::write(
                 harnesses.join(format!("{name}.toml")),
                 weft_core::harness::fixture::text(name),
@@ -222,6 +225,25 @@ mod tests {
         assert_eq!(hook(&b.at, &["--reply", "{}"], ""), "{}\n");
         assert_eq!(hook(&b.at, &["claude-code", "Stop"], r#"{"session_id":"s1"}"#), "");
         assert_eq!(hook(&b.at, &[], ""), "");
+    }
+
+    /// A harness whose `[conversation]` names its transcript sends that path
+    /// too; one without sends none, whatever its payload holds.
+    #[test]
+    fn the_transcript_path_reaches_weftd_only_where_conversation_names_it() {
+        let b = bench();
+        let payload = r#"{"session_id":"g1","cwd":"/w","transcript_path":"/h/.grok/sessions/w/g1/updates.jsonl"}"#;
+        let (_, sent) = heard(&b.at, &["grok", "SessionStart"], payload);
+        assert_eq!(
+            sent.unwrap().transcript.as_deref(),
+            Some("/h/.grok/sessions/w/g1/updates.jsonl")
+        );
+        let (_, sent) = heard(
+            &b.at,
+            &["antigravity", "PostToolUse"],
+            r#"{"conversationId":"a1","workspacePaths":["/w"],"transcriptPath":"/t.jsonl"}"#,
+        );
+        assert_eq!(sent.map(|s| s.transcript), Some(None));
     }
 
     #[test]

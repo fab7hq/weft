@@ -62,3 +62,28 @@ on = [
   { hook = "StopFailure",                              state = "turn_ended" },
   { hook = "SessionEnd",                               state = "ended" },
 ]
+
+# Its own transcript, `updates.jsonl` in the session's folder: ACP session
+# updates, the person's message and the agent's reply each one chunk, a step a
+# `tool_call` and its outcome a later `tool_call_update` (grok 1.0.52, recorded
+# in HostLab). Thoughts, hook runs and turn ends are not drawn.
+[conversation]
+verified = "grok 1.0.52"
+path = "transcript_path"
+find = "sessions/*/{session}/updates.jsonl"
+time = "timestamp"
+person = { when = { "params.update.sessionUpdate" = "user_message_chunk" }, text = "params.update.content.text" }
+agent = { when = { "params.update.sessionUpdate" = "agent_message_chunk" }, text = "params.update.content.text" }
+steps = { when = { "params.update.sessionUpdate" = "tool_call" }, tool = "params.update.title", input = "params.update.rawInput", call = "params.update.toolCallId" }
+outcomes = { when = { "params.update.sessionUpdate" = "tool_call_update", "params.update.status" = ["completed", "failed"] }, call = "params.update.toolCallId", failed = { "params.update.status" = "failed" } }
+
+[conversation.argument]
+run_terminal_command = "command"
+ask_user_question = "questions.0.question"
+write = "file_path"
+
+[conversation.names]
+run_terminal_command = "Run"
+ask_user_question = "Ask"
+write = "Write"
+exit_plan_mode = "Plan"
