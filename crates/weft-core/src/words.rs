@@ -193,6 +193,18 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.layout.split_down", "Split down"),
     ("web.layout.next_pane", "Move tab to the next pane"),
     ("web.layout.join", "Join all panes"),
+    // An agent's two views, Terminal and Conversation (web app only).
+    ("web.view.terminal", "Terminal"),
+    ("web.view.conversation", "Conversation"),
+    ("web.steps.one", "1 tool step"),
+    ("web.steps.many", "{n} tool steps"),
+    ("web.step.running", "running"),
+    ("web.waiting.for_you", "{harness} is waiting for you — "),
+    ("web.waiting.answer", "answer in Terminal ›"),
+    (
+        "web.conversation.unreadable",
+        "{harness}'s conversation cannot be shown here — Terminal shows everything.",
+    ),
     ("hint.layout", "→ and ↓ split {tab}'s pane; M moves {tab} into the next pane."),
     (
         "hint.layout_alone",
