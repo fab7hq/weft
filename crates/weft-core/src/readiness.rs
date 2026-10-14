@@ -197,15 +197,17 @@ mod tests {
         assert_eq!(read(&harness("codex"), &available), Readiness::Missing(Gap::Plugin));
     }
 
-    /// Captured from `agy plugin list` (Antigravity 1.2.12) once `rf` is
-    /// installed: `imports`, named by `name`, and no marketplace at all.
+    /// Captured from `agy plugin list --json` (Antigravity 1.3.5) once `rf`
+    /// is installed: a bare array, named by `name`, and no marketplace at all.
     fn antigravity(names: &[&str]) -> Value {
         let rows: Vec<Value> = names
             .iter()
-            .map(|n| json!({"name": n, "source": "antigravity",
-                            "importedAt": "2026-09-27T06:18:59Z", "components": ["skills", "hooks"]}))
+            .map(|n| {
+                json!({"name": n, "enabled": true, "version": "0.2.0", "source": "antigravity",
+                            "skills": ["ask", "eval", "seal"], "hooks": ["rf-state"]})
+            })
             .collect();
-        json!({"imports": rows})
+        json!(rows)
     }
 
     /// A harness with no marketplace to add has its plugin by name alone.
@@ -213,7 +215,14 @@ mod tests {
     fn a_harness_with_no_marketplaces_is_ready_when_it_has_the_plugin() {
         assert_eq!(read(&without(), &antigravity(&["rf"])), Readiness::Ready);
         assert_eq!(read(&without(), &antigravity(&["other"])), Readiness::Missing(Gap::Plugin));
-        assert_eq!(read(&without(), &json!({"imports": []})), Readiness::Missing(Gap::Plugin));
+        assert_eq!(read(&without(), &json!([])), Readiness::Missing(Gap::Plugin));
+        let mut off = antigravity(&["rf"]);
+        off[0]["enabled"] = json!(false);
+        assert_eq!(read(&without(), &off), Readiness::Missing(Gap::Plugin), "disabled");
+        assert_eq!(
+            crate::sync::installed(&without(), &antigravity(&["rf"])).as_deref(),
+            Some("0.2.0")
+        );
         // And the two with marketplaces read exactly as before.
         assert_eq!(read(&with(), &claude(true)), Readiness::Ready);
         assert_eq!(read(&with(), &antigravity(&["rf"])), Readiness::Missing(Gap::Marketplace));
@@ -306,7 +315,7 @@ mod tests {
         let version =
             |h: &crate::harness::Harness, listing: Value| crate::sync::installed(h, &listing);
         assert_eq!(
-            version(&without(), json!({"imports": [{"name": "rf", "version": "0.1.2"}]}))
+            version(&without(), json!([{"name": "rf", "enabled": true, "version": "0.1.2"}]))
                 .as_deref(),
             Some("0.1.2"),
             "no marketplaces: `rf`"

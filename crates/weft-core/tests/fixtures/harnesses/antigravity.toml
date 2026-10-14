@@ -16,7 +16,7 @@ turbo = ["--dangerously-skip-permissions"]
 default = ".gemini/antigravity-cli"
 
 [plugin]   # argv, as Weft's readiness and RingFrame views run them; it has no marketplace commands
-list = ["plugin", "list"]
+list = ["plugin", "list", "--json"]
 # No marketplace to add (`plugin install rf@fab7` answers "unknown marketplace"):
 # it installs from the repository, cloned at the plugin's own path, named `rf` by
 # its plugin.json. A second install replaces it exactly, so it is also the update.
@@ -25,17 +25,14 @@ update = ["plugin", "install", "https://github.com/fab7hq/fab7/tree/main/product
 # Taking it out again, for a local reinstall. It keeps no cache: an install
 # replaces the plugin exactly.
 uninstall = ["plugin", "uninstall", "rf"]
-# Its listing gives no version: the installed plugin's own plugin.json does,
-# under ~/.gemini/config/plugins (agy 1.2.12), beside the configuration home.
-manifest = "../config/plugins/rf/plugin.json"
 
 [plugin.listing]   # how what `list` answers reads: where it has them, what names one, and what says one is off
-installed = ["imports"]
+# `--json` prints a bare array, `[]` when nothing is installed, and each row
+# gives its version (agy 1.3.4 and 1.3.5; plain `list` answers in words).
+installed = ["."]
 available = []
 name = "name"
-on = []
-# What `list` prints, instead of JSON, when nothing is installed.
-none = "No imported plugins."
+on = ["enabled"]
 
 # What each of its hooks means to Weft (ADR-0030 D4). RingFrame's plugin registers
 # these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
