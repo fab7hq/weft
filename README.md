@@ -24,7 +24,7 @@ across it.
 - [weft.getfab7.com](https://weft.getfab7.com): the same agents from a phone
   or browser ([fab7hq/weft-app](https://github.com/fab7hq/weft-app))
 
-Works with Claude Code, Codex and Antigravity.
+Works with Claude Code, Codex, Antigravity and Grok Build.
 
 ## Install
 
