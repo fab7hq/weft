@@ -193,6 +193,10 @@ pub struct Row {
     /// The row matches only this tool.
     #[serde(default)]
     pub tool: Option<String>,
+    /// The row matches only a payload with these fields: dotted paths and the
+    /// value each must have, or a list of values one of which it must have.
+    #[serde(default)]
+    pub when: serde_json::Map<String, Value>,
     /// `ready`, `working`, `waiting`, `turn_ended` or `ended`.
     #[serde(default)]
     pub state: Option<String>,
@@ -260,7 +264,8 @@ impl Signal {
     /// that tool first, else one naming none.
     pub fn row(&self, hook: &str, payload: &Value) -> Option<&Row> {
         let tool = self.tool.as_deref().and_then(|p| text_at(payload, p));
-        let of_hook = || self.on.iter().filter(move |r| r.hook == hook);
+        let of_hook =
+            || self.on.iter().filter(move |r| r.hook == hook && fields_match(payload, &r.when));
         of_hook()
             .find(|r| r.tool.is_some() && r.tool == tool)
             .or_else(|| of_hook().find(|r| r.tool.is_none()))
@@ -384,6 +389,23 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
     }
 }
 
+/// Whether every dotted path holds its value, or one of a list of values.
+/// The value at a path may itself be a list that holds it.
+pub(crate) fn fields_match(v: &Value, want: &serde_json::Map<String, Value>) -> bool {
+    want.iter().all(|(path, want)| {
+        let got = value_at(v, path);
+        let is = |want: &Value| match got {
+            Some(Value::Array(items)) => items.contains(want),
+            Some(got) => got == want,
+            None => false,
+        };
+        match want {
+            Value::Array(any) => any.iter().any(is),
+            one => is(one),
+        }
+    })
+}
+
 /// The value at a dotted path; a number steps into a list.
 pub(crate) fn value_at<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
     path.split('.').try_fold(v, |v, key| match v {
@@ -431,6 +453,38 @@ mod tests {
         assert_eq!(s.row("PreToolUse", &other), None, "no row for another tool");
         assert_eq!(s.row("NoSuchHook", &asking), None);
         assert_eq!(s.sent("claude-code", "PreToolUse", &other), None, "nothing to send");
+    }
+
+    #[test]
+    fn a_row_with_when_matches_only_payloads_with_those_fields() {
+        let s = Signal::of(&json!({
+            "session": "session_id", "workspace": "cwd",
+            "on": [
+                {"hook": "Notification", "when": {"notificationType": "permission_prompt"}, "state": "waiting"},
+                {"hook": "Notification", "when": {"notificationType": ["elicitation_dialog", "other_dialog"]}, "state": "waiting"},
+                {"hook": "Stop", "when": {"reason": "end_turn"}, "state": "turn_ended"},
+            ],
+        }))
+        .expect("a [signal] that reads");
+        let note = |kind: &str| json!({"session_id": "s1", "notificationType": kind});
+        assert_eq!(
+            s.row("Notification", &note("permission_prompt")).unwrap().state.as_deref(),
+            Some("waiting")
+        );
+        assert_eq!(
+            s.row("Notification", &note("elicitation_dialog")).unwrap().state.as_deref(),
+            Some("waiting"),
+            "one of a list"
+        );
+        assert_eq!(s.row("Notification", &note("idle_prompt")), None, "another notification");
+        assert_eq!(s.row("Notification", &json!({"session_id": "s1"})), None, "the field missing");
+        let stop = |reason: &str| json!({"session_id": "s1", "reason": reason});
+        assert_eq!(s.row("Stop", &stop("end_turn")).unwrap().state.as_deref(), Some("turn_ended"));
+        assert_eq!(
+            s.sent("grok", "Stop", &stop("shutdown")),
+            None,
+            "a session's last Stop is no turn's end"
+        );
     }
 
     #[test]

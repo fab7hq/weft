@@ -66,14 +66,10 @@ impl Listen {
     /// gives it; none for a message no row is for.
     pub fn heard(&self, message: &Value) -> Option<Heard> {
         let method = message.get("method")?.as_str()?;
-        let row = self.on.iter().find(|r| {
-            r.method == method
-                && r.when.iter().all(|(path, want)| match crate::signal::value_at(message, path) {
-                    Some(Value::Array(items)) => items.contains(want),
-                    Some(got) => got == want,
-                    None => false,
-                })
-        })?;
+        let row = self
+            .on
+            .iter()
+            .find(|r| r.method == method && crate::signal::fields_match(message, &r.when))?;
         let at = |path: &str| crate::signal::value_at(message, path)?.as_str().map(str::to_string);
         Some(Heard {
             session: at(row.session.as_deref().unwrap_or(&self.session))?,
