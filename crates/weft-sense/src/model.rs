@@ -1330,7 +1330,7 @@ impl SenseModel {
             .with_context(|| format!("read {}", manifest_path.display()))?;
         let manifest: BundleManifest =
             serde_json::from_slice(&manifest_bytes).context("parse manifest.json")?;
-        if manifest.schema != "fab7.sense.bundle/1" {
+        if manifest.schema != "fab7.sense.bundle/2" {
             bail!("unsupported Sense bundle schema: {}", manifest.schema);
         }
 
@@ -1486,11 +1486,18 @@ impl SenseModel {
     /// Run tokenization and dual-head ONNX inference on a pre-formatted `[SURFACE]` or `[CONV]` string.
     pub fn infer_raw_text(&self, text: &str) -> ([f32; 8], [f32; 5], Vec<u32>) {
         let ids = self.tokenizer.encode(text, self.max_seq_len);
-        let (surf, conv) = self.forward_ids(&ids);
+        let (surf, conv, _) = self.forward_ids(&ids);
         (surf, conv, ids)
     }
 
-    fn forward_ids(&self, ids: &[u32]) -> ([f32; 8], [f32; 5]) {
+    /// The pooled vector both heads read, for `text` as it is: what entries are
+    /// compared by when the closest reply is looked for.
+    pub fn embed(&self, text: &str) -> Vec<f32> {
+        let ids = self.tokenizer.encode(text, self.max_seq_len);
+        self.forward_ids(&ids).2.to_vec()
+    }
+
+    fn forward_ids(&self, ids: &[u32]) -> ([f32; 8], [f32; 5], [f32; 384]) {
         INFER_SCRATCH.with(|cell| {
             let mut s = cell.borrow_mut();
             self.forward_ids_with_scratch(ids, &mut s)
@@ -1501,7 +1508,7 @@ impl SenseModel {
         &self,
         ids: &[u32],
         s: &mut InferenceScratch,
-    ) -> ([f32; 8], [f32; 5]) {
+    ) -> ([f32; 8], [f32; 5], [f32; 384]) {
         const D: usize = 384;
         const D3: usize = 1152;
         const HEADS: usize = 12;
@@ -1745,7 +1752,7 @@ impl SenseModel {
         gelu_in_place(&mut conv_hidden);
         w.conv_fc2.forward(&conv_hidden, 1, &mut conv_logits, scratch);
 
-        (surf_logits, conv_logits)
+        (surf_logits, conv_logits, pooled)
     }
 
     pub fn temperature(&self) -> f32 {
@@ -2495,18 +2502,18 @@ mod tests {
     fn sha256_mismatch_is_rejected_and_default_home_resolves_current_json() {
         let src_dir = test_bundle_dir();
         let tmp = tempfile::tempdir().unwrap();
-        let ver_dir = tmp.path().join(".fab7/weft/sense/versions/0.1.0");
+        let ver_dir = tmp.path().join(".fab7/weft/sense/versions/0.2.0");
         fs::create_dir_all(&ver_dir).unwrap();
         for name in ["manifest.json", "sense.int8.onnx", "tokenizer.json"] {
             fs::copy(src_dir.join(name), ver_dir.join(name)).unwrap();
         }
         let current_json = tmp.path().join(".fab7/weft/sense/current.json");
-        fs::write(&current_json, r#"{"version":"0.1.0","path":"versions/0.1.0"}"#).unwrap();
+        fs::write(&current_json, r#"{"version":"0.2.0","path":"versions/0.2.0"}"#).unwrap();
 
         let loaded = SenseModel::load_default_home(tmp.path())
             .unwrap()
             .expect("should load from current.json");
-        assert_eq!(loaded.version(), "0.1.0");
+        assert_eq!(loaded.version(), "0.2.0");
 
         // Tamper with tokenizer.json and verify SHA-256 rejection
         fs::write(ver_dir.join("tokenizer.json"), b"{}").unwrap();

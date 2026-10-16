@@ -15,6 +15,7 @@ struct GoldenVector {
     confidence_bp: u16,
     surface_logits: [f32; 8],
     conversation_logits: [f32; 5],
+    embedding: Vec<f32>,
 }
 
 fn test_bundle_dir() -> PathBuf {
@@ -31,7 +32,7 @@ fn test_bundle_dir() -> PathBuf {
 fn golden_vectors_parity_and_p99_latency_under_5ms() {
     let dir = test_bundle_dir();
     let model = SenseModel::load(&dir).expect("SenseModel::load should succeed");
-    assert_eq!(model.version(), "0.1.0");
+    assert_eq!(model.version(), "0.2.0");
 
     let golden_raw =
         fs::read_to_string(dir.join("golden_vectors.jsonl")).expect("read golden_vectors.jsonl");
@@ -61,6 +62,14 @@ fn golden_vectors_parity_and_p99_latency_under_5ms() {
                 "golden vector {idx} conv logit diff too large: {a} vs {b}"
             );
         }
+
+        // The pooled vector both heads read, for the suggestions' nearest replies.
+        let embedding = model.embed(&vec.text);
+        assert_eq!(embedding.len(), vec.embedding.len(), "golden vector {idx} embedding width");
+        let dot: f32 = embedding.iter().zip(&vec.embedding).map(|(a, b)| a * b).sum();
+        let norm = |v: &[f32]| v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let cosine = dot / (norm(&embedding) * norm(&vec.embedding));
+        assert!(cosine > 0.999, "golden vector {idx} embedding cosine {cosine}");
 
         if vec.head == "surface" {
             surface_count += 1;
