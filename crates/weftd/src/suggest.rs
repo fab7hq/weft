@@ -103,6 +103,25 @@ pub fn of_session(
     )
 }
 
+/// The whole index of a project, built again from its sources: every Ask in
+/// its record and every session its receipts know, each read whole.
+pub fn build(config: &Path, root: &Path, harnesses: &weft_core::harness::Harnesses) -> Vec<Entry> {
+    use crate::harness::OnThisMachine;
+    let mut ledger = crate::ledger::Ledger::at(root);
+    ledger.refresh();
+    let mut entries = of_asks(root, &ledger.units());
+    let mut turns = crate::turns::Turns::default();
+    turns.refresh(&crate::receipts::project_dir(&crate::receipts::base_of(config), root));
+    for heard in turns.heard() {
+        let s = heard.session;
+        let Some(h) = harnesses.find(&s.harness) else { continue };
+        let Some(mapping) = h.conversation.as_ref() else { continue };
+        let at = (s.first / 1000).max(0) as u64;
+        entries.extend(of_session(mapping, &h.config_home(), &s.harness, &s.id, None, root, at));
+    }
+    entries
+}
+
 /// Put `fresh` in place of the entries read from `source` (`ask:` for every Ask).
 pub fn replace(entries: &mut Vec<Entry>, source: &str, fresh: Vec<Entry>) {
     let all_asks = source == "ask:";

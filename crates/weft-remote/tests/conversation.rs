@@ -262,3 +262,48 @@ fn a_device_follows_each_of_its_panes_and_one_closing_leaves_the_other() {
         assert!(m["type"] != "conversation" || m["agent"] != a1.as_str(), "{m}");
     }
 }
+
+#[test]
+fn what_the_person_sent_is_kept_for_suggestions_once_its_turn_ends() {
+    use std::os::unix::fs::PermissionsExt;
+    let h = Harness::with("suggest", grok_beside);
+    let (shell, token, transcript) = grok_pane_in(&h, "sending", "g1");
+    hook_of(&h, &shell, &token, &transcript, "g1");
+    let said = format!(
+        "{}\n{}\n",
+        line("user_message_chunk", "run the login tests"),
+        line("agent_message_chunk", "Both pass.")
+    );
+    std::fs::write(&transcript, said).unwrap();
+    let ended = Sent {
+        harness: "grok".into(),
+        hook: "Stop".into(),
+        session: "g1".into(),
+        workspace: Some(shell.project.to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        pane: Some(0),
+        token: Some(token.clone()),
+        transcript: Some(transcript.to_string_lossy().into_owned()),
+        ..Sent::default()
+    };
+    let mut s = std::os::unix::net::UnixStream::connect(&h.socket).unwrap();
+    s.write_all(&Line::Event(Event::Signal(Box::new(ended))).encode()).unwrap();
+    let kept = h.dir.join("suggest");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let file = loop {
+        let found =
+            std::fs::read_dir(&kept).into_iter().flatten().flatten().map(|e| e.path()).find(|p| {
+                std::fs::read_to_string(p).is_ok_and(|t| t.contains("run the login tests"))
+            });
+        if let Some(f) = found {
+            break f;
+        }
+        assert!(Instant::now() < deadline, "the message never reached the index");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(std::fs::read_to_string(&file).unwrap().contains("session:g1"));
+    // Only the index is there: no part file is left behind.
+    let names: Vec<_> = std::fs::read_dir(&kept).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert!(names.iter().all(|n| n.to_string_lossy().ends_with(".json")), "{names:?}");
+}

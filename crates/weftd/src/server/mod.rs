@@ -134,6 +134,9 @@ struct Project {
     /// The record, followed here rather than in every client. One reader, and
     /// clients are told what it says.
     ledger: crate::ledger::Ledger,
+    /// What the person sent here, for suggestions: loaded or built in the
+    /// background when the project opens, nothing until then.
+    suggest: Option<Vec<weft_core::suggest::Entry>>,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -306,6 +309,14 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
+    /// A project's suggestion entries were read: all of them (`source` none),
+    /// or again from one source. `built`: built again, so not kept yet.
+    Suggested {
+        root: PathBuf,
+        source: Option<String>,
+        entries: Vec<weft_core::suggest::Entry>,
+        built: bool,
+    },
     /// Time to send screen frames: ten times a second.
     Frames,
     /// A harness answered what it has installed. Asked off the run loop,
@@ -751,6 +762,9 @@ impl Session {
                 Wake::Tick => {
                     self.follow_the_record();
                     self.update_when_idle();
+                }
+                Wake::Suggested { root, source, entries, built } => {
+                    self.suggested(&root, source, entries, built)
                 }
                 Wake::Checked => {
                     let open: Vec<usize> =
@@ -1319,6 +1333,52 @@ impl Session {
         self.clients.broadcast(at, &Out::Readiness { states });
     }
 
+    /// Load a project's suggestion entries, or build them again when there
+    /// are none kept or they are of an old version, off the run loop.
+    fn read_suggestions(&mut self, at: usize) {
+        let (config, root) = (self.config.clone(), self.projects[at].root.clone());
+        let harnesses = self.projects[at].harnesses.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let (entries, built) = match crate::suggest::load(&config, &root) {
+                Some(kept) => (kept, false),
+                None => (crate::suggest::build(&config, &root, &harnesses), true),
+            };
+            let _ = tx.send(Wake::Suggested { root, source: None, entries, built });
+        });
+    }
+
+    /// Take a project's suggestion entries, or one source's again, and keep
+    /// them. Only this loop writes the index, so two writes never cross.
+    fn suggested(
+        &mut self,
+        root: &Path,
+        source: Option<String>,
+        entries: Vec<weft_core::suggest::Entry>,
+        built: bool,
+    ) {
+        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
+            return;
+        };
+        match source {
+            None => {
+                if built {
+                    let _ = crate::suggest::save(&self.config, root, &entries);
+                }
+                p.suggest = Some(entries);
+            }
+            Some(source) => {
+                // Not loaded yet: the load reads this source too.
+                let Some(all) = p.suggest.as_mut() else { return };
+                let before = all.clone();
+                crate::suggest::replace(all, &source, entries);
+                if *all != before {
+                    let _ = crate::suggest::save(&self.config, root, all);
+                }
+            }
+        }
+    }
+
     /// Tell each project's clients when its record has moved, or an agent's
     /// state has.
     fn follow_the_record(&mut self) {
@@ -1332,6 +1392,10 @@ impl Session {
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
+                let p = &self.projects[at];
+                let asks = crate::suggest::of_asks(&p.root, &p.ledger.units());
+                let root = p.root.clone();
+                self.suggested(&root, Some("ask:".into()), asks, false);
             }
             self.tell_agents(at);
         }
@@ -1567,6 +1631,7 @@ impl Session {
                     panes: Vec::new(),
                     next_pane: 0,
                     ledger,
+                    suggest: None,
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.
@@ -1592,6 +1657,7 @@ impl Session {
                     reopened: None,
                 });
                 let at = self.projects.len() - 1;
+                self.read_suggestions(at);
                 // A map a daemon before this one left names panes that are gone.
                 self.write_map(at);
                 self.write_projects();
@@ -1927,6 +1993,8 @@ impl Session {
                 let root = self.projects[at].root.clone();
                 let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
                 crate::state::remove_open_project(weft_dir, &root);
+                crate::suggest::forget(&self.config, &root);
+                self.projects[at].suggest = None;
                 self.acted_in(at);
                 // Closed once the answer is sent: closing ends this client's
                 // connection to it.

@@ -405,6 +405,12 @@ impl Session {
             }
             self.tell_agents(at);
         }
+        // A turn ended: what the person sent in it is in its transcript now.
+        if let Some(at) = at
+            && matches!(sent.state.as_deref(), Some("turn_ended" | "ended"))
+        {
+            self.read_session_suggestions(at, &sent);
+        }
         let answered = at.and_then(|at| self.answers_a_send(at, &sent));
         // A turn that ended with nothing received: the send's wait is over.
         if answered.is_none()
@@ -571,6 +577,35 @@ fn project_of(path: &str) -> Option<PathBuf> {
 }
 
 impl Session {
+    /// Read one session's messages again for suggestions, off the run loop.
+    fn read_session_suggestions(&mut self, at: usize, sent: &weft_core::signal::Sent) {
+        use crate::harness::OnThisMachine;
+        let p = &self.projects[at];
+        let Some(h) = p.harnesses.find(&sent.harness) else { return };
+        let Some(mapping) = h.conversation.clone() else { return };
+        let named = sent
+            .pane
+            .and_then(|n| p.panes.iter().find(|s| s.map.pane == n && s.map.harness == sent.harness))
+            .and_then(|s| s.transcript.clone());
+        let (home, harness, session, root) =
+            (h.config_home(), sent.harness.clone(), sent.session.clone(), p.root.clone());
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let at = (crate::turns::now_millis() / 1000).max(0) as u64;
+            let entries = crate::suggest::of_session(
+                &mapping,
+                &home,
+                &harness,
+                &session,
+                named.as_deref(),
+                &root,
+                at,
+            );
+            let source = Some(format!("session:{session}"));
+            let _ = tx.send(super::Wake::Suggested { root, source, entries, built: false });
+        });
+    }
+
     /// `read conversation`: a pane's newest page, the page before a cursor,
     /// or what was added after one. A harness without `[conversation]`, or no
     /// file known, found or allowed, reads as unreadable, never refused.
