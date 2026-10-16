@@ -331,6 +331,7 @@ fn render_ask_sheet(
                 .child(
                     div()
                         .font_mono()
+                        .font_mono()
                         .font_weight(600)
                         .font_size(11)
                         .style("letter-spacing", "0.08em")
@@ -720,6 +721,7 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
         if !d.findings.is_empty() {
             body = body.child(
                 div()
+                    .font_mono()
                     .font_weight(600)
                     .font_size(11)
                     .style("letter-spacing", "0.08em")
@@ -750,6 +752,7 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
         if !d.checks.is_empty() {
             body = body.child(
                 div()
+                    .font_mono()
                     .font_weight(600)
                     .font_size(11)
                     .style("letter-spacing", "0.08em")
@@ -783,6 +786,7 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
         if !d.asks.is_empty() {
             body = body.child(
                 div()
+                    .font_mono()
                     .font_weight(600)
                     .font_size(11)
                     .style("letter-spacing", "0.08em")
@@ -1125,6 +1129,7 @@ fn render_seal_detail(props: &SheetProps, project: &str, seal_id: &str) -> Eleme
         if !d.asks.is_empty() {
             body = body.child(
                 div()
+                    .font_mono()
                     .font_weight(600)
                     .font_size(11)
                     .style("letter-spacing", "0.08em")
@@ -1616,6 +1621,7 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                 .items_start()
                 .child(
                     div()
+                        .font_mono()
                         .font_weight(600)
                         .font_size(11)
                         .style("letter-spacing", "0.08em")
@@ -1625,6 +1631,7 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                 .child(weft_box)
                 .child(
                     div()
+                        .font_mono()
                         .font_weight(600)
                         .font_size(11)
                         .style("letter-spacing", "0.08em")
@@ -1807,7 +1814,7 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                     div()
                         .font_size(12)
                         .color(if online { palette::TEAL } else { palette::DIM })
-                        .text(if online { "●" } else { "○" }),
+                        .text(if online { "●" } else { "□" }),
                 )
                 .child(div().flex_1().font_weight(600).font_size(14).text(dev_name.clone()))
                 .child(div().font_size(13).color(palette::MUTED).text(status))
@@ -1929,7 +1936,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
                     div()
                         .font_size(13)
                         .color(if is_sel { palette::BLUE_BORDER } else { palette::MUTED })
-                        .text(if is_sel { "●" } else { "○" }),
+                        .text(if is_sel { "■" } else { "□" }),
                 )
                 .child(
                     div()
@@ -1943,6 +1950,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
         body = body
             .child(
                 div()
+                    .font_mono()
                     .font_weight(600)
                     .font_size(11)
                     .style("letter-spacing", "0.08em")
@@ -1975,7 +1983,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
                 div()
                     .font_size(13)
                     .color(if is_sel { palette::BLUE_BORDER } else { palette::MUTED })
-                    .text(if is_sel { "●" } else { "○" }),
+                    .text(if is_sel { "■" } else { "□" }),
             )
             .child(
                 div()
@@ -1990,6 +1998,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
     body = body
         .child(
             div()
+                .font_mono()
                 .font_weight(600)
                 .font_size(11)
                 .style("letter-spacing", "0.08em")
