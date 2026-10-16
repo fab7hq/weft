@@ -12,7 +12,7 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 # Zed's weekly GPUI snapshot, pinned: a newer one is a deliberate bump of both.
 gpui = { package = "gpui-pre", version = "=0.3.9" }
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["runtime_shaders"] }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["font-kit", "runtime_shaders"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.151"
 weft-core = { path = "../weft-core" }

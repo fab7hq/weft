@@ -202,12 +202,21 @@ impl WeftDesktopApp {
         } else {
             self.clients.push(client);
         }
+        // An agent already in some pane stays where it is: one agent in two
+        // panes would be sized by both.
         for pane_id in running_panes {
-            self.ensure_tab_in_active_pane(SavedPaneTab {
-                project: p.clone(),
-                pane: pane_id,
-                view: self.state.settings.default_view,
+            let shown = self.state.panes.groups.iter().any(|g| {
+                g.tabs.iter().any(|t| {
+                    weft_core::state::normalize_project_path(&t.project) == p && t.pane == pane_id
+                })
             });
+            if !shown {
+                self.ensure_tab_in_active_pane(SavedPaneTab {
+                    project: p.clone(),
+                    pane: pane_id,
+                    view: self.state.settings.default_view,
+                });
+            }
         }
     }
 
@@ -2172,6 +2181,33 @@ mod tests {
             rows: 50,
             cols: 150,
         }));
+    }
+
+    #[test]
+    fn a_restored_split_keeps_each_agent_in_its_own_pane() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().to_path_buf();
+        let root = PathBuf::from("/work/weft");
+        let mut initial = WeftState::default();
+        initial.open_projects = vec![root.clone()];
+        let tab = |pane| SavedPaneTab { project: root.clone(), pane, view: PaneViewMode::Terminal };
+        initial.panes.layout = weft_core::state::SplitLayout::TwoColumns;
+        initial.panes.groups = vec![
+            SavedTabGroup { active_tab: 0, tabs: vec![tab(0)] },
+            SavedTabGroup { active_tab: 0, tabs: vec![tab(1)] },
+        ];
+        save_state_to_home(&home, &initial).unwrap();
+        let mut app = WeftDesktopApp::from_state_disconnected(home, "studio");
+        let mut client = ProjectClient::disconnected(root.clone(), "weft");
+        client.panes = vec![
+            PaneView::new(0, "sh".into(), "sh".into()),
+            PaneView::new(1, "sh".into(), "sh".into()),
+        ];
+        app.integrate_connected_client(client);
+        assert_eq!(
+            app.state.panes.groups, initial.panes.groups,
+            "nothing shown twice, nothing moved"
+        );
     }
 
     #[test]
