@@ -90,10 +90,6 @@ pub enum ActiveSheet {
         project: String,
         session: String,
     },
-    StartAgent {
-        project: String,
-        selected_harness: usize,
-    },
     Updates,
     Remote,
 }
@@ -576,64 +572,6 @@ impl WeftDesktopApp {
         if action == "open_remote" {
             self.menu_open = false;
             self.active_sheet = Some(ActiveSheet::Remote);
-            return;
-        }
-        if action == "open_start_sheet" {
-            let default_proj = match &self.selection {
-                Some(TreeSelection::Project { project })
-                | Some(TreeSelection::Agent { project, .. })
-                | Some(TreeSelection::EarlierSessions { project })
-                | Some(TreeSelection::OpenGroup { project })
-                | Some(TreeSelection::Ask { project, .. })
-                | Some(TreeSelection::EvalGroup { project, .. })
-                | Some(TreeSelection::SealedGroup { project })
-                | Some(TreeSelection::Seal { project, .. }) => project.clone(),
-                None => self.clients.first().map(|c| c.name.clone()).unwrap_or_default(),
-            };
-            self.active_sheet =
-                Some(ActiveSheet::StartAgent { project: default_proj, selected_harness: 0 });
-            return;
-        }
-        if let Some(proj) = action.strip_prefix("select_start_project:") {
-            if let Some(ActiveSheet::StartAgent { project, .. }) = &mut self.active_sheet {
-                *project = proj.to_string();
-            }
-            return;
-        }
-        if let Some(idx_str) = action.strip_prefix("select_start_harness:")
-            && let Ok(idx) = idx_str.parse::<usize>()
-        {
-            if let Some(ActiveSheet::StartAgent { selected_harness, .. }) = &mut self.active_sheet {
-                *selected_harness = idx;
-            }
-            return;
-        }
-        if action == "submit_start_sheet" {
-            if let Some(ActiveSheet::StartAgent { project, selected_harness }) =
-                self.active_sheet.take()
-            {
-                let harnesses = self.harnesses();
-                let h_name = harnesses
-                    .0
-                    .get(selected_harness)
-                    .or_else(|| harnesses.0.first())
-                    .map(|h| h.name.clone());
-                let target_proj = if !project.is_empty() {
-                    Some(project)
-                } else {
-                    self.clients.first().map(|c| c.name.clone())
-                };
-                match (target_proj, h_name) {
-                    (Some(p), Some(h)) => {
-                        self.start_agent_in_project(&p, &h, None);
-                    }
-                    _ => {
-                        self.bottom_bar = BottomBarState::WhyNot {
-                            sentence: words::word("open.empty_title").to_string(),
-                        };
-                    }
-                }
-            }
             return;
         }
         if action == "close_sheet" {
@@ -2597,6 +2535,9 @@ mod tests {
         assert_eq!(style(grid, "background"), Some(palette::TERMINAL_BG));
         assert!(grid.find_layer("hairline grid").is_some());
         assert!(grid.find_layer("woven mark").is_some());
+        // An agent starts only from a project's +: the empty workspace says so and holds no button.
+        assert_eq!(grid.find_layer("woven said").unwrap().all_text(), words::word("workspace.empty"));
+        assert!(grid.find_layer("btn Start an agent").is_none());
 
         app.dispatch("start_agent:weft:claude");
         app.dispatch("start_agent:weft:codex");
@@ -2643,8 +2584,6 @@ mod tests {
         for action in [
             "toggle_menu",
             "close_popovers",
-            "open_start_sheet",
-            "close_sheet",
             "bar_act_ask",
             "close_sheet",
             "open_updates",

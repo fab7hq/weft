@@ -313,14 +313,10 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
                         )
                         .child(
                             div()
-                                .layer("btn Start an agent")
-                                .on_click("open_start_sheet")
-                                .pad(7, 18)
-                                .bg(palette::SURFACE)
-                                .border(palette::LINE)
-                                .font_weight(600)
+                                .layer("woven said")
                                 .font_size(13)
-                                .text(words::word("start.title")),
+                                .color(palette::MUTED)
+                                .text(words::word("workspace.empty")),
                         ),
                 ),
         );

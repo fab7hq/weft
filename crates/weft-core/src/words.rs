@@ -68,6 +68,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("tree.written_down", "Nothing is written down until it is set up."),
     ("start.title", "Start an agent"),
+    ("workspace.empty", "Open a project to get started."),
     ("start.fresh", "{harness} · start fresh"),
     ("start.none", "No harness is set up for RingFrame yet. Updates… in ☰ sets one up."),
     // The acts, as a bar or a button names them.
@@ -419,9 +420,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.earlier.foot", "newest first · scroll for more"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
-    ("web.start.project", "IN WHICH PROJECT"),
-    ("web.start.harness", "WHICH HARNESS"),
-    ("web.start.nothing_yet", "nothing yet"),
     ("web.start.in", "Start an agent in {project}"),
     (
         "web.start.none",
