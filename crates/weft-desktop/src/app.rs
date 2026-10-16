@@ -1622,24 +1622,32 @@ impl WeftDesktopApp {
             }));
         }
 
-        if let Some(sheet) = &self.active_sheet {
-            body = body.child(render_sheet(&SheetProps {
+        let sheet = self.active_sheet.as_ref().map(|sheet| {
+            render_sheet(&SheetProps {
                 sheet,
                 projects: &projects,
                 clients: &self.clients,
                 harnesses: &harnesses,
                 updates_count: updates_available,
                 bottom_bar: &self.bottom_bar,
-            }));
-        } else {
-            body = body.child(render_panes_workspace(&PanesProps {
-                panes: &self.state.panes,
-                clients: &self.clients,
-                layout_menu_pane: self.layout_menu_pane,
-                conversations: &self.conversations,
-                unfolded_steps: &self.unfolded_steps,
-                message_draft: &self.message_draft,
-            }));
+            })
+        });
+        // Ask docks under the panes it is about; every other sheet takes the
+        // workspace's place.
+        let docked = matches!(self.active_sheet, Some(ActiveSheet::Ask { .. }));
+        match sheet {
+            Some(sheet) if !docked => body = body.child(sheet),
+            dock => {
+                body = body.child(render_panes_workspace(&PanesProps {
+                    panes: &self.state.panes,
+                    clients: &self.clients,
+                    layout_menu_pane: self.layout_menu_pane,
+                    conversations: &self.conversations,
+                    unfolded_steps: &self.unfolded_steps,
+                    message_draft: &self.message_draft,
+                    dock,
+                }))
+            }
         }
 
         if self.menu_open || self.plus_popover_project.is_some() || self.layout_menu_pane.is_some()
@@ -2617,6 +2625,15 @@ mod tests {
         }
         let focused = two.find_layer("pane").expect("the focused pane");
         assert_eq!(style(focused, "border"), Some("2px solid #58a6ff"));
+
+        // Ask docks under the panes, in the message row's place.
+        app.dispatch("open_ask:weft:s1");
+        assert!(matches!(app.active_sheet, Some(ActiveSheet::Ask { .. })));
+        let asking = app.render();
+        let workspace = asking.find_layer("workspace").expect("the panes stay");
+        assert!(workspace.find_layer("sheet Ask").is_some(), "docked in the workspace");
+        assert!(workspace.find_layer("pane").is_some());
+        assert!(workspace.find_layer("the message row").is_none());
     }
 
     #[test]

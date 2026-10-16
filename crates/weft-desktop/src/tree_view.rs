@@ -257,19 +257,20 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
     let mut pop = div()
         .layer("plus popover")
         .style("position", "absolute")
-        .style("top", "92px")
+        .style("top", "84px")
         .style("left", "190px")
         .w(210)
         .flex_col()
-        .pad(6, 0)
-        .bg(palette::SURFACE)
-        .border(palette::LINE)
+        .bg(palette::SURFACE_ALT)
+        .border(palette::BLUE_BORDER)
         .child(
             div()
-                .pad(5, 14)
-                .font_size(11)
+                .pad(6, 12)
+                .border_bottom(palette::LINE)
+                .font_mono()
+                .font_size(10)
                 .font_weight(600)
-                .style("letter-spacing", "0.06em")
+                .style("letter-spacing", "0.08em")
                 .color(palette::DIM)
                 .text(format!("NEW AGENT IN {}", project_name.to_uppercase())),
         );
@@ -279,17 +280,21 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
             .layer(format!("plus harness {}", h.name))
             .on_click(format!("start_agent:{}:{}", project_name, h.name))
             .flex_row()
-            .pad(8, 14)
+            .pad(8, 12)
             .items_center()
             .justify_between();
         if idx == 0 {
-            row = row.bg(palette::SELECTED_BG).child(
-                div()
-                    .font_size(13)
-                    .color(palette::BLUE_BORDER)
-                    .font_weight(600)
-                    .text(h.title.clone()),
-            );
+            row = row
+                .style("position", "relative")
+                .bg(palette::SELECTED_BG)
+                .child(edge_bar("left", 2, palette::BLUE_BORDER))
+                .child(
+                    div()
+                        .font_size(13)
+                        .color(palette::BLUE_BORDER)
+                        .font_weight(600)
+                        .text(h.title.clone()),
+                );
         } else {
             row = row.child(div().font_size(13).text(h.title.clone()));
         }

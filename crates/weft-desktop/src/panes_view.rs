@@ -225,6 +225,8 @@ pub struct PanesProps<'a> {
     pub conversations: &'a HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: &'a HashSet<(PathBuf, u32, usize)>,
     pub message_draft: &'a str,
+    /// What sits under the panes: the docked Ask in place of the message row.
+    pub dock: Option<Element>,
 }
 
 /// The empty workspace's hairline grid: a line every 32 px, enough for any
@@ -392,8 +394,10 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
 
     container = container.child(grid);
 
-    // The focused pane's message row.
-    if let Some(group) = props.panes.groups.get(focused_idx)
+    // The docked Ask, or the focused pane's message row.
+    if let Some(dock) = &props.dock {
+        container = container.child(dock.clone());
+    } else if let Some(group) = props.panes.groups.get(focused_idx)
         && let Some(active_tab) =
             group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
         && let Some((proj_name, harness, ..)) = resolve_tab_info(props.clients, active_tab)
@@ -716,7 +720,13 @@ fn render_conversation_viewport(
             .map(|h| h.conversation.is_some())
             .unwrap_or(true);
 
-    let mut chat_col = div().layer("chat column").w(680).flex_col().gap(16).items_start();
+    let mut chat_col = div()
+        .layer("chat column")
+        .self_stretch()
+        .style("max-width", "740px")
+        .flex_col()
+        .gap(16)
+        .items_start();
 
     if !supports_conversation {
         chat_col = chat_col.child(
@@ -734,6 +744,7 @@ fn render_conversation_viewport(
             &tab.project,
             tab.pane,
             props.unfolded_steps,
+            turn == Some(Turn::Waiting),
         );
     }
 
@@ -744,10 +755,15 @@ fn render_conversation_viewport(
             div()
                 .layer("waiting line")
                 .on_click(format!("set_tab_view:{g_idx}:{t_idx}:terminal"))
-                .font_size(13)
-                .style("line-height", "19px")
+                .self_stretch()
+                .flex_row()
+                .pad(8, 14)
+                .items_center()
+                .justify_between()
+                .bg(palette::AMBER_BG)
+                .border(palette::AMBER_BORDER)
+                .font_size(12)
                 .color(palette::AMBER)
-                .style("white-space", "nowrap")
                 .child(span(waiting_prefix))
                 .child(span(waiting_cta).font_weight(600)),
         );
@@ -758,8 +774,9 @@ fn render_conversation_viewport(
         .self_stretch()
         .flex_1()
         .flex_col()
-        .pad(20, 24)
+        .pad(24, 20)
         .items_center()
+        .bg(palette::TERMINAL_BG)
         .style("min-height", "0")
         .style("overflow-y", "auto")
         .style("overflow-x", "hidden")
@@ -773,7 +790,11 @@ fn append_conversation_items(
     project: &PathBuf,
     pane: u32,
     unfolded_steps: &HashSet<(PathBuf, u32, usize)>,
+    waiting: bool,
 ) -> Element {
+    // The last thing the agent said leads with its state: the square while it
+    // waits for you, the circle otherwise.
+    let last_agent = items.iter().rposition(|it| it.kind == Kind::Agent);
     // Map call IDs to settled outcomes
     let mut outcomes: HashMap<&str, Option<bool>> = HashMap::new();
     for item in items {
@@ -796,21 +817,23 @@ fn append_conversation_items(
                 chat_col = chat_col.child(
                     div()
                         .layer("msg you")
-                        .style("align-self", "flex-end")
-                        .style("max-width", "540px")
+                        .self_stretch()
+                        .style("position", "relative")
                         .flex_col()
                         .gap(4)
-                        .items_start()
-                        .pad(10, 14)
-                        .bg(palette::SELECTED_BG)
-                        .border(palette::BLUE_BORDER)
+                        .style("padding", "12px 16px 12px 19px")
+                        .bg(palette::SURFACE)
+                        .border(palette::LINE)
+                        .child(edge_bar("left", 3, palette::BLUE_BORDER))
                         .child(
                             div()
+                                .self_stretch()
                                 .flex_row()
-                                .gap(8)
-                                .items_baseline()
-                                .child(div().font_size(12).color(palette::BLUE_BORDER).text("you"))
-                                .child(div().font_size(11).color(palette::MUTED).text(clock)),
+                                .justify_between()
+                                .font_mono()
+                                .font_size(11)
+                                .child(span("YOU").font_weight(600).color(palette::BLUE_BORDER))
+                                .child(span(clock).color(palette::DIM)),
                         )
                         .child(
                             div().font_size(14).style("line-height", "21px").text(text.to_string()),
@@ -827,25 +850,33 @@ fn append_conversation_items(
                 };
                 let text = items[i].text.as_deref().unwrap_or("");
                 let clock = format_item_clock(items[i].at);
+                let (shape, colour) = if waiting && last_agent == Some(i) {
+                    ("■", palette::AMBER)
+                } else {
+                    ("●", palette::TEAL)
+                };
                 chat_col = chat_col.child(
                     div()
                         .layer(layer)
-                        .style("align-self", "flex-start")
-                        .style("max-width", "640px")
+                        .self_stretch()
+                        .style("position", "relative")
                         .flex_col()
                         .gap(4)
+                        .style("padding", "4px 0 4px 16px")
+                        .child(edge_bar("left", 2, palette::LINE))
                         .child(
                             div()
                                 .flex_row()
                                 .gap(8)
                                 .items_baseline()
+                                .font_mono()
+                                .font_size(11)
                                 .child(
-                                    div()
-                                        .font_size(12)
-                                        .color(palette::MUTED)
-                                        .text(harness.to_string()),
+                                    span(format!("{shape} {harness}"))
+                                        .font_weight(600)
+                                        .color(colour),
                                 )
-                                .child(div().font_size(11).color(palette::MUTED).text(clock)),
+                                .child(span(clock).color(palette::DIM)),
                         )
                         .child(
                             div().font_size(14).style("line-height", "21px").text(text.to_string()),
@@ -906,22 +937,25 @@ fn render_step_block(
     let mut box_el = div()
         .layer(if is_open { "tool steps open" } else { "tool steps folded" })
         .on_click(toggle_act)
-        .style("align-self", "flex-start")
-        .w(560)
+        .self_stretch()
+        .style("position", "relative")
         .flex_col()
-        .gap(3)
-        .style("padding", "7px 12px 9px 12px")
+        .gap(4)
+        .style("padding", "8px 14px 8px 16px")
         .bg(palette::SURFACE_ALT)
         .border(palette::LINE)
+        .child(edge_bar("left", 2, palette::TEAL))
         .font_mono()
         .font_size(12)
-        .style("line-height", "18px")
-        .child(
-            div()
-                .color(palette::MUTED)
-                .style("white-space", "nowrap")
-                .text(format!("{caret} {count_label}")),
-        );
+        .style("line-height", "18px");
+    let mut head = div()
+        .color(palette::MUTED)
+        .style("white-space", "nowrap")
+        .text(format!("{caret} {count_label}"));
+    if is_open {
+        head = head.style("padding-bottom", "4px").border_bottom(palette::LINE);
+    }
+    box_el = box_el.child(head);
 
     if is_open {
         for s in steps {
@@ -930,7 +964,7 @@ fn render_step_block(
             let failed =
                 s.call.as_deref().and_then(|c| outcomes.get(c).copied().flatten()).or(s.failed);
             let (badge, badge_color) = match failed {
-                Some(true) => ("✗", palette::AMBER),
+                Some(true) => ("✗", palette::RED),
                 Some(false) => ("✓", palette::TEAL),
                 None => (words::word("web.step.running"), palette::MUTED),
             };
@@ -939,9 +973,9 @@ fn render_step_block(
                     .layer(format!("step {tool}"))
                     .flex_row()
                     .gap(12)
-                    .style("padding-left", "16px")
                     .items_baseline()
-                    .child(div().w(72).shrink_0().color(palette::TEXT).text(tool))
+                    .child(div().shrink_0().color(badge_color).text(badge))
+                    .child(div().w(64).shrink_0().color(palette::TEXT).text(tool))
                     .child(
                         div()
                             .flex_1()
@@ -950,8 +984,7 @@ fn render_step_block(
                             .style("overflow", "hidden")
                             .style("text-overflow", "ellipsis")
                             .text(arg),
-                    )
-                    .child(div().color(badge_color).text(badge)),
+                    ),
             );
         }
     }

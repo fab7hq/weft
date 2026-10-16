@@ -8,7 +8,7 @@ use weft_core::words;
 
 use crate::app::BottomBarState;
 use crate::daemon::{ProjectClient, Staged};
-use crate::gpui::{Element, div, palette};
+use crate::gpui::{Element, div, palette, span};
 use crate::tree_view::TreeSelection;
 
 pub struct BottomBarProps<'a> {
@@ -189,143 +189,105 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
         div()
             .layer(format!("disposition {disp}"))
             .on_click(format!("select_seal_disposition:{project}:{eval}:{disp}"))
-            .pad(7, 14)
+            .pad(6, 12)
             .bg(if is_sel { palette::SELECTED_BG } else { palette::SURFACE })
             .border(if is_sel { palette::BLUE_BORDER } else { palette::LINE })
-            .font_weight(600)
-            .font_size(13)
-            .color(if is_sel { palette::BLUE_BORDER } else { palette::TEXT })
+            .font_weight(if is_sel { 600 } else { 400 })
+            .font_size(12)
+            .color(if is_sel { palette::BLUE_BORDER } else { palette::MUTED })
             .text(label)
     };
 
     div()
         .layer("Seal disposition bar")
         .self_stretch()
-        .flex_col()
-        .gap(10)
-        .pad(14, 20)
-        .items_start()
+        .flex_row()
+        .gap(8)
+        .pad(12, 20)
+        .items_center()
         .bg(palette::SURFACE_ALT)
-        .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
+        .style("border-top", format!("2px solid {}", palette::AMBER_BORDER))
+        .child(span("■").font_mono().color(palette::AMBER))
+        .child(div().font_weight(600).font_size(14).text("Seal this Eval round"))
+        .child(div().flex_1())
+        .child(chip("accepted", "accepted"))
+        .child(chip("deferred", "parked"))
+        .child(chip("rejected", "rejected"))
+        .child(chip("abandoned", "dropped"))
+        .child(div().w(12))
         .child(
             div()
-                .self_stretch()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(div().font_weight(600).font_size(15).text("Seal this Eval round"))
-                .child(div().flex_1()),
+                .layer("btn Cancel")
+                .on_click("cancel_bottom_bar")
+                .pad(7, 16)
+                .bg(palette::SURFACE)
+                .border(palette::LINE)
+                .font_weight(600)
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(words::word("act.cancel")),
         )
         .child(
             div()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(chip("accepted", "accepted"))
-                .child(chip("deferred", "parked"))
-                .child(chip("rejected", "rejected"))
-                .child(chip("abandoned", "dropped")),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .items_center()
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .layer("btn Cancel")
-                        .on_click("cancel_bottom_bar")
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .text(words::word("act.cancel")),
-                )
-                .child(
-                    div()
-                        .layer("btn Seal")
-                        .on_click(format!("confirm_seal_disposition:{project}:{eval}:{selected}"))
-                        .pad(9, 18)
-                        .bg(palette::BLUE)
-                        .border(palette::BLUE_BORDER)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::CANVAS)
-                        .text(words::word("act.seal")),
-                ),
+                .layer("btn Seal")
+                .on_click(format!("confirm_seal_disposition:{project}:{eval}:{selected}"))
+                .pad(7, 16)
+                .bg(palette::BLUE)
+                .border(palette::BLUE_BORDER)
+                .bevel()
+                .font_weight(600)
+                .font_size(13)
+                .color(palette::CANVAS)
+                .text(words::word("act.seal")),
         )
 }
 
 fn render_quit_bar() -> Element {
+    let btn = |layer: &str, act: &str, label: &str| {
+        div()
+            .layer(layer)
+            .on_click(act)
+            .pad(8, 16)
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .font_weight(600)
+            .font_size(13)
+            .text(label)
+    };
     div()
         .layer("Quit Weft bar")
         .self_stretch()
-        .flex_col()
-        .gap(8)
-        .pad(14, 20)
-        .items_start()
+        .flex_row()
+        .gap(12)
+        .pad(12, 20)
+        .items_center()
         .bg(palette::SURFACE_ALT)
         .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
         .child(
             div()
-                .self_stretch()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(div().font_weight(600).font_size(15).text("Quit Weft?"))
-                .child(div().flex_1()),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .font_size(13)
-                .color(palette::MUTED)
-                .text("Your agents are still running. You can leave them running in the background, or stop them now."),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .items_center()
-                .child(div().flex_1())
+                .flex_1()
+                .flex_col()
+                .gap(2)
+                .child(div().font_weight(600).font_size(14).text("Quit Weft?"))
                 .child(
                     div()
-                        .layer("btn Cancel")
-                        .on_click("cancel_bottom_bar")
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .text(words::word("act.cancel")),
-                )
-                .child(
-                    div()
-                        .layer("btn Stop agents and quit")
-                        .on_click("quit_stop_agents")
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::AMBER)
-                        .text("Stop agents and quit"),
-                )
-                .child(
-                    div()
-                        .layer("btn Leave running and quit")
-                        .on_click("quit_leave_running")
-                        .pad(9, 18)
-                        .bg(palette::BLUE).border(palette::BLUE_BORDER)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::CANVAS)
-                        .text("Leave running and quit"),
+                        .font_size(12)
+                        .color(palette::MUTED)
+                        .text("Your agents are still running. You can leave them running in the background, or stop them now."),
                 ),
+        )
+        .child(btn("btn Cancel", "cancel_bottom_bar", words::word("act.cancel")).color(palette::MUTED))
+        .child(
+            btn("btn Stop agents and quit", "quit_stop_agents", "Stop agents and quit")
+                .border(palette::AMBER_BORDER)
+                .color(palette::AMBER),
+        )
+        .child(
+            btn("btn Leave running and quit", "quit_leave_running", "Leave running and quit")
+                .bg(palette::BLUE)
+                .border(palette::BLUE_BORDER)
+                .bevel()
+                .color(palette::CANVAS),
         )
 }
 

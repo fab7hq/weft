@@ -58,14 +58,13 @@ pub fn render_menu_popover(
     remote_devices: usize,
     updates_count: usize,
 ) -> Element {
-    let divider = || div().h(1).bg(palette::LINE).style("margin", "4px 0");
-
     let turbo_badge = if turbo {
         div()
             .layer("turbo toggle badge")
-            .pad(3, 10)
+            .pad(3, 9)
             .bg(palette::AMBER_BG)
-            .border(palette::AMBER)
+            .border(palette::AMBER_BORDER)
+            .font_mono()
             .font_size(11)
             .font_weight(600)
             .color(palette::AMBER)
@@ -74,9 +73,10 @@ pub fn render_menu_popover(
     } else {
         div()
             .layer("turbo toggle badge")
-            .pad(3, 10)
-            .bg(palette::SURFACE_ALT)
+            .pad(3, 9)
+            .bg(palette::SURFACE)
             .border(palette::LINE)
+            .font_mono()
             .font_size(11)
             .font_weight(600)
             .color(palette::MUTED)
@@ -87,9 +87,10 @@ pub fn render_menu_popover(
     let login_badge = if start_at_login {
         div()
             .layer("login toggle badge")
-            .pad(3, 10)
+            .pad(3, 9)
             .bg(palette::SELECTED_BG)
             .border(palette::BLUE_BORDER)
+            .font_mono()
             .font_size(11)
             .font_weight(600)
             .color(palette::BLUE_BORDER)
@@ -98,9 +99,10 @@ pub fn render_menu_popover(
     } else {
         div()
             .layer("login toggle badge")
-            .pad(3, 10)
-            .bg(palette::SURFACE_ALT)
+            .pad(3, 9)
+            .bg(palette::SURFACE)
             .border(palette::LINE)
+            .font_mono()
             .font_size(11)
             .font_weight(600)
             .color(palette::MUTED)
@@ -133,29 +135,29 @@ pub fn render_menu_popover(
         .style("position", "absolute")
         .style("top", "8px")
         .style("right", "16px")
-        .w(340)
+        .w(310)
         .flex_col()
-        .pad(6, 0)
-        .bg(palette::SURFACE)
+        .bg(palette::SURFACE_ALT)
         .border(palette::LINE)
         .child(
             div()
                 .layer("menu Open project")
+                .border_bottom(palette::LINE)
                 .on_click("open_project_dialog")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
-                .child(div().font_size(14).text("Open project…"))
-                .child(div().font_size(12).color(palette::DIM).text("⌘O")),
+                .child(div().font_size(13).text("Open project…"))
+                .child(div().font_mono().font_size(11).color(palette::DIM).text("⌘O")),
         )
-        .child(divider())
         .child(
             div()
                 .layer("menu Turbo")
+                .border_bottom(palette::LINE)
                 .on_click("toggle_turbo")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
                 .gap(12)
@@ -165,7 +167,7 @@ pub fn render_menu_popover(
                         .style("min-width", "0")
                         .flex_col()
                         .gap(2)
-                        .child(div().font_size(14).text("⚡ Turbo"))
+                        .child(div().font_size(13).text("⚡ Turbo"))
                         .child(
                             div()
                                 .font_size(11)
@@ -178,9 +180,10 @@ pub fn render_menu_popover(
         .child(
             div()
                 .layer("menu Start at login")
+                .border_bottom(palette::LINE)
                 .on_click("toggle_start_at_login")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
                 .gap(12)
@@ -190,7 +193,7 @@ pub fn render_menu_popover(
                         .style("min-width", "0")
                         .flex_col()
                         .gap(2)
-                        .child(div().font_size(14).text("Start at login"))
+                        .child(div().font_size(13).text("Start at login"))
                         .child(
                             div()
                                 .font_size(11)
@@ -200,19 +203,20 @@ pub fn render_menu_popover(
                 )
                 .child(login_badge),
         )
-        .child(divider())
         .child(
             div()
                 .layer("menu Remote")
+                .border_bottom(palette::LINE)
                 .on_click("open_remote")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
-                .child(div().font_size(14).text("Remote…"))
+                .child(div().font_size(13).text("Remote…"))
                 .child(
                     div()
-                        .font_size(12)
+                        .font_mono()
+                        .font_size(11)
                         .color(if remote_on { palette::TEAL } else { palette::MUTED })
                         .text(remote_status),
                 ),
@@ -220,15 +224,17 @@ pub fn render_menu_popover(
         .child(
             div()
                 .layer("menu Updates")
+                .border_bottom(palette::LINE)
                 .on_click("open_updates")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
-                .child(div().font_size(14).text("Updates…"))
+                .child(div().font_size(13).text("Updates…"))
                 .child(
                     div()
-                        .font_size(12)
+                        .font_mono()
+                        .font_size(11)
                         .color(if updates_count > 0 {
                             palette::BLUE_BORDER
                         } else {
@@ -237,18 +243,17 @@ pub fn render_menu_popover(
                         .text(updates_status),
                 ),
         )
-        .child(divider())
         .child(
             div()
                 .layer("menu Quit Weft")
                 .on_click("request_quit")
                 .flex_row()
-                .pad(9, 16)
+                .pad(10, 14)
                 .items_center()
                 .justify_between()
                 .bg(palette::SELECTED_BG)
-                .child(div().font_size(14).color(palette::BLUE_BORDER).text("Quit Weft…"))
-                .child(div().font_size(12).color(palette::BLUE_BORDER).text("⌘Q")),
+                .child(div().font_size(13).color(palette::BLUE_BORDER).text("Quit Weft…"))
+                .child(div().font_mono().font_size(11).color(palette::BLUE_BORDER).text("⌘Q")),
         )
 }
 
@@ -265,7 +270,7 @@ fn render_ask_sheet(
         words::word("ask.title")
     };
 
-    let mut targets = div().flex_col().gap(6).self_stretch();
+    let mut targets = div().flex_row().gap(6).style("flex-wrap", "wrap");
     if let Some(proj) = props.projects.iter().find(|p| p.name == project) {
         for a in proj.agents.rows.iter().filter(|a| a.state == SessionState::Running) {
             let is_sel = target_session == Some(a.session.as_str())
@@ -291,79 +296,68 @@ fn render_ask_sheet(
 
     div()
         .layer("sheet Ask")
-        .flex_1()
         .self_stretch()
+        .shrink_0()
         .flex_col()
+        .gap(12)
+        .pad(16, 20)
         .items_start()
+        .bg(palette::SURFACE_ALT)
+        .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
+        .child(div().font_weight(600).font_size(15).text(title))
         .child(
-            div()
+            textarea_el()
+                .layer("ask input")
                 .self_stretch()
-                .flex_row()
-                .pad(12, 20)
-                .items_center()
-                .border_bottom(palette::LINE)
-                .child(div().flex_1().font_weight(600).font_size(16).text(title)),
+                .h(78)
+                .pad(10, 12)
+                .bg(palette::SURFACE)
+                .border(palette::BLUE_BORDER)
+                .font_size(14)
+                .style("line-height", "20px")
+                .color(palette::TEXT)
+                .style("resize", "none")
+                .style("outline", "none")
+                .placeholder(words::word("ask.title"))
+                .text(draft.to_string()),
         )
         .child(
             div()
                 .self_stretch()
-                .flex_1()
-                .flex_col()
+                .flex_row()
                 .gap(12)
-                .pad(18, 20)
-                .items_start()
-                .child(
-                    textarea_el()
-                        .layer("ask input")
-                        .self_stretch()
-                        .h(140)
-                        .pad(12, 14)
-                        .bg(palette::SURFACE)
-                        .border(palette::BLUE_BORDER)
-                        .font_size(14)
-                        .color(palette::TEXT)
-                        .style("resize", "none")
-                        .style("outline", "none")
-                        .placeholder(words::word("ask.title"))
-                        .text(draft.to_string()),
-                )
+                .items_center()
                 .child(
                     div()
+                        .font_mono()
                         .font_weight(600)
                         .font_size(11)
                         .style("letter-spacing", "0.08em")
-                        .color(palette::DIM)
+                        .color(palette::MUTED)
                         .text(words::word("ask.send_to")),
                 )
-                .child(targets),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .pad(10, 20)
-                .items_center()
-                .border_top(palette::LINE)
+                .child(targets)
+                .child(div().flex_1())
                 .child(
                     div()
                         .layer("btn Cancel")
                         .on_click("close_sheet")
-                        .pad(9, 18)
+                        .pad(8, 18)
                         .bg(palette::SURFACE)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
+                        .color(palette::MUTED)
                         .text(words::word("act.cancel")),
                 )
-                .child(div().flex_1())
                 .child(
                     div()
                         .layer("btn Ask")
                         .on_click("submit_ask_sheet")
-                        .pad(9, 18)
+                        .pad(8, 18)
                         .bg(palette::BLUE)
                         .border(palette::BLUE_BORDER)
+                        .bevel()
                         .font_weight(600)
                         .font_size(14)
                         .color(palette::CANVAS)
