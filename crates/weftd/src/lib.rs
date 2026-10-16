@@ -24,6 +24,7 @@ pub mod server;
 pub mod service;
 pub mod signal;
 pub mod state;
+pub mod suggest;
 pub mod sync;
 pub mod turns;
 pub mod versions;

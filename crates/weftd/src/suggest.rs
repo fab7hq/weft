@@ -1,0 +1,227 @@
+//! The suggestion index, kept on the person's machine:
+//! `~/.fab7/weft/suggest/<project key>.json`, readable only by them.
+//!
+//! It holds what the person sent: each Ask's own words (`source.txt`, never
+//! the compiled prompt) and their messages in each session's transcript, each
+//! with the agent's reply before it. It is derived: missing or of an old
+//! version, it is built again from those sources, and it goes when its project
+//! is dismissed. Nothing in it is sent anywhere.
+
+use std::path::{Path, PathBuf};
+
+use weft_core::conversation::Conversation;
+use weft_core::ledger::Unit;
+use weft_core::suggest::{Entry, Stored};
+
+/// Where the indexes live, beside Weft's `config.toml`.
+pub fn dir(config: &Path) -> PathBuf {
+    config.with_file_name("suggest")
+}
+
+/// One project's index.
+pub fn file(config: &Path, root: &Path) -> PathBuf {
+    dir(config).join(format!("{}.json", weft_core::sessions::project_key(root)))
+}
+
+/// The project's kept entries, unless there are none or they are of an old version.
+pub fn load(config: &Path, root: &Path) -> Option<Vec<Entry>> {
+    let text = std::fs::read_to_string(file(config, root)).ok()?;
+    Stored::from_json(&text, &root.to_string_lossy()).map(|s| s.entries)
+}
+
+/// Keep the project's entries, readable only by the person: the folder 0700,
+/// the file 0600, written whole and then put in place.
+pub fn save(config: &Path, root: &Path, entries: &[Entry]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+    let folder = dir(config);
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder)?;
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
+    let path = file(config, root);
+    let part = path.with_extension("part");
+    let text = Stored::new(&root.to_string_lossy(), entries.to_vec()).to_json();
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&part)?;
+    f.write_all(text.as_bytes())?;
+    std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600))?;
+    std::fs::rename(part, path)
+}
+
+/// Forget the project's index.
+pub fn forget(config: &Path, root: &Path) {
+    let _ = std::fs::remove_file(file(config, root));
+}
+
+/// What the project's Asks give: each one's own words, when it was asked.
+pub fn of_asks(root: &Path, units: &[Unit]) -> Vec<Entry> {
+    let asks = root.join(".fab7/rf/asks");
+    units
+        .iter()
+        .filter(|u| {
+            !u.ask_id.is_empty() && u.ask_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .filter_map(|u| {
+            let words = std::fs::read_to_string(asks.join(&u.ask_id).join("source.txt")).ok()?;
+            let words = words.trim();
+            (!words.is_empty()).then(|| Entry {
+                text: words.to_string(),
+                reply: String::new(),
+                harness: u.harness.clone(),
+                project: root.to_string_lossy().into_owned(),
+                at: weft_core::turns::millis(&u.asked_at).map_or(0, |ms| (ms / 1000).max(0) as u64),
+                source: format!("ask:{}", u.ask_id),
+            })
+        })
+        .collect()
+}
+
+/// What one session's transcript gives, read whole; nothing when it cannot be found or read.
+pub fn of_session(
+    mapping: &Conversation,
+    home: &Path,
+    harness: &str,
+    session: &str,
+    named: Option<&Path>,
+    root: &Path,
+    at: u64,
+) -> Vec<Entry> {
+    let Some(path) = crate::conversation::file(mapping, home, session, named) else {
+        return Vec::new();
+    };
+    let Ok(bytes) = std::fs::read(path) else { return Vec::new() };
+    let Ok(read) = mapping.read(&bytes, 0) else { return Vec::new() };
+    weft_core::suggest::from_conversation(
+        &read.items,
+        harness,
+        &root.to_string_lossy(),
+        session,
+        at,
+    )
+}
+
+/// Put `fresh` in place of the entries read from `source` (`ask:` for every Ask).
+pub fn replace(entries: &mut Vec<Entry>, source: &str, fresh: Vec<Entry>) {
+    let all_asks = source == "ask:";
+    entries.retain(|e| if all_asks { !e.source.starts_with("ask:") } else { e.source != source });
+    entries.extend(fresh);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use weft_core::harness::fixture::file as harness_file;
+
+    const GROK: &str = include_str!("../../weft-core/tests/fixtures/conversation/grok.jsonl");
+
+    fn entry(text: &str, source: &str) -> Entry {
+        Entry {
+            text: text.into(),
+            reply: String::new(),
+            harness: "claude".into(),
+            project: "/work/weft".into(),
+            at: 1,
+            source: source.into(),
+        }
+    }
+
+    #[test]
+    fn the_index_is_kept_under_suggest_readable_only_by_the_person_and_forgotten() {
+        let weft = tempfile::tempdir().unwrap();
+        let config = weft.path().join("config.toml");
+        let root = Path::new("/work/weft");
+        assert_eq!(load(&config, root), None, "nothing kept yet");
+        let kept = vec![entry("run the tests", "session:s1")];
+        save(&config, root, &kept).unwrap();
+        assert_eq!(load(&config, root), Some(kept));
+        assert_eq!(load(&config, Path::new("/work/docs")), None, "another project's is its own");
+        let path = file(&config, root);
+        assert!(path.starts_with(weft.path().join("suggest")));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::metadata(dir(&config)).unwrap().permissions().mode() & 0o777, 0o700);
+        // Nothing else is written: no part file is left beside it.
+        let names: Vec<_> =
+            std::fs::read_dir(weft.path()).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("suggest")]);
+        assert_eq!(std::fs::read_dir(dir(&config)).unwrap().count(), 1);
+        forget(&config, root);
+        assert!(!path.exists());
+        assert_eq!(load(&config, root), None);
+    }
+
+    #[test]
+    fn an_index_of_an_old_version_is_not_loaded() {
+        let weft = tempfile::tempdir().unwrap();
+        let config = weft.path().join("config.toml");
+        let root = Path::new("/work/weft");
+        save(&config, root, &[entry("run the tests", "session:s1")]).unwrap();
+        let path = file(&config, root);
+        let old = std::fs::read_to_string(&path).unwrap().replace("\"version\":1", "\"version\":0");
+        std::fs::write(&path, old).unwrap();
+        assert_eq!(load(&config, root), None);
+    }
+
+    #[test]
+    fn each_ask_gives_its_own_words_and_not_its_compiled_prompt() {
+        let root = tempfile::tempdir().unwrap();
+        let asks = root.path().join(".fab7/rf/asks");
+        for (id, words) in [("ask_1", "Show the build number on /health"), ("ask_2", "  ")] {
+            std::fs::create_dir_all(asks.join(id)).unwrap();
+            std::fs::write(asks.join(id).join("source.txt"), words).unwrap();
+            std::fs::write(asks.join(id).join("prompt.txt"), "COMPILED").unwrap();
+        }
+        let unit = |id: &str| Unit {
+            ask_id: id.into(),
+            harness: "codex".into(),
+            asked_at: "2026-10-17T01:00:00Z".into(),
+            ..Default::default()
+        };
+        let got =
+            of_asks(root.path(), &[unit("ask_1"), unit("ask_2"), unit("ask_3"), unit("../x")]);
+        assert_eq!(
+            got.len(),
+            1,
+            "an empty Ask, a missing one and an id that is not one give nothing"
+        );
+        assert_eq!(got[0].text, "Show the build number on /health");
+        assert_eq!((got[0].harness.as_str(), got[0].source.as_str()), ("codex", "ask:ask_1"));
+        assert_eq!(
+            got[0].at,
+            weft_core::turns::millis("2026-10-17T01:00:00Z").unwrap() as u64 / 1000
+        );
+    }
+
+    #[test]
+    fn a_session_gives_the_persons_messages_from_its_whole_transcript() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("sessions/%2Fw/s1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("updates.jsonl"), GROK).unwrap();
+        let grok = Conversation::of(&harness_file("grok")["conversation"]).unwrap();
+        let got = of_session(&grok, home.path(), "grok", "s1", None, Path::new("/w"), 5);
+        assert!(!got.is_empty());
+        assert!(
+            got.iter()
+                .all(|e| e.harness == "grok" && e.source == "session:s1" && e.project == "/w")
+        );
+        assert!(
+            got.iter().skip(1).any(|e| !e.reply.is_empty()),
+            "a later message has the reply before it"
+        );
+        assert!(of_session(&grok, home.path(), "grok", "s2", None, Path::new("/w"), 5).is_empty());
+    }
+
+    #[test]
+    fn one_source_is_replaced_and_every_ask_together() {
+        let mut all =
+            vec![entry("a", "session:s1"), entry("b", "session:s2"), entry("c", "ask:ask_1")];
+        replace(&mut all, "session:s1", vec![entry("a2", "session:s1")]);
+        replace(&mut all, "ask:", vec![entry("d", "ask:ask_2")]);
+        let texts: Vec<_> = all.iter().map(|e| e.text.as_str()).collect();
+        assert_eq!(texts, ["b", "a2", "d"]);
+    }
+}
