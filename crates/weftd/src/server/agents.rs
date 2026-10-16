@@ -84,7 +84,72 @@ impl Session {
         let alive =
             |proc: &weft_core::sessions::Process| !p.gone.contains(&(proc.pid, proc.start.clone()));
         let index = weft_core::sessions::index(&heard, &map, &p.ledger.units(), &alive);
-        (crate::turns::pane_states(&map, &sessions), index)
+        let raw_states = crate::turns::pane_states(&map, &sessions);
+        let states = raw_states
+            .into_iter()
+            .zip(p.panes.iter())
+            .map(|(hook_turn, slot)| {
+                if !slot.map.running {
+                    return hook_turn;
+                }
+                crate::turns::refine_turn_with_sense(
+                    hook_turn,
+                    slot.sensed_surface.map(|r| r.state),
+                )
+            })
+            .collect();
+        (states, index)
+    }
+
+    /// Evaluate `weft-sense` Head 1 when a pane's PTY output has settled for
+    /// 150 ms at `seq`.
+    pub(super) fn sense_pane_if_settled(&mut self, at: usize, pane: u32, seq: u64) {
+        let Some(p) = self.projects.get(at) else { return };
+        let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else { return };
+        if slot.pane.current_seq() != seq || slot.sense_settled_seq == seq {
+            return;
+        }
+        self.sense_pane_now(at, pane);
+        self.tell_agents(at);
+    }
+
+    /// Evaluate `weft-sense` Head 1 on `pane` now (after a 150 ms settle or
+    /// when a hook signal arrives).
+    pub(super) fn sense_pane_now(&mut self, at: usize, pane: u32) {
+        let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
+        let p = &mut self.projects[at];
+        p.turns.refresh(&dir);
+        let sessions = p.turns.sessions();
+        let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
+        let raw_states = crate::turns::pane_states(&map, &sessions);
+        let Some(idx) = p.panes.iter().position(|s| s.map.pane == pane) else { return };
+        let hook_turn = raw_states.get(idx).copied().flatten();
+        let slot = &mut p.panes[idx];
+        let (alt_screen, (rows, cols), (cursor_row, cursor_col), bottom_lines, seq) =
+            slot.pane.surface_snapshot();
+        if bottom_lines.is_empty() {
+            slot.sensed_surface = None;
+            return;
+        }
+        let ms_since_last_output = slot.last_output_at.elapsed().as_millis().max(150) as u64;
+        let harness = slot.map.harness.clone();
+        let reading = self.sense.read().ok().and_then(|guard| {
+            let model = guard.as_ref()?;
+            model.evaluate_surface(&weft_sense::PaneSnapshot {
+                harness: &harness,
+                hook_state: crate::turns::turn_hook_name(hook_turn),
+                alt_screen,
+                rows,
+                cols,
+                cursor_row,
+                cursor_col,
+                ms_since_last_output,
+                bottom_lines: &bottom_lines,
+                seq,
+            })
+        });
+        slot.sense_settled_seq = seq;
+        slot.sensed_surface = reading;
     }
 
     /// The command line that resumes `id`, when the index holds it for this
@@ -202,12 +267,12 @@ impl Session {
         ]);
         match Pane::spawn_args(harness, &program, &argv, &cwd, &env, size.0, size.1) {
             Ok(mut pane) => {
-                // Every byte a pane prints goes to the session, which records
-                // it for replay and forwards it to whoever is attached.
+                // Every byte a pane prints goes to the session, which forwards
+                // it, numbered, to whoever is attached.
                 let sink = pane.stream_output();
                 std::thread::spawn(move || {
-                    while let Ok((_, bytes)) = sink.recv() {
-                        if tx.send(Wake::Output { project, pane: id, bytes }).is_err() {
+                    while let Ok((seq, bytes)) = sink.recv() {
+                        if tx.send(Wake::Output { project, pane: id, seq, bytes }).is_err() {
                             return;
                         }
                     }
@@ -217,12 +282,14 @@ impl Session {
                 self.projects[project].panes.push(Slot {
                     map: crate::turns::Started::new(id, harness, spec, now, resumed),
                     pane,
-                    replay: Vec::new(),
                     size,
                     wants: HashMap::from([(client, size)]),
                     turbo,
                     token,
                     transcript: None,
+                    last_output_at: std::time::Instant::now(),
+                    sense_settled_seq: 0,
+                    sensed_surface: None,
                 });
                 self.write_map(project);
                 self.listen(project, &harness_name);
@@ -333,6 +400,9 @@ impl Session {
             self.streamed.insert((sent.harness.clone(), sent.session.clone()));
         }
         if let Some(at) = at {
+            if let Some(pane) = sent.pane {
+                self.sense_pane_now(at, pane);
+            }
             self.tell_agents(at);
         }
         let answered = at.and_then(|at| self.answers_a_send(at, &sent));
@@ -430,11 +500,14 @@ impl Session {
             ..Default::default()
         };
         let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
+        let holds = |s: &&Slot| s.map.session.as_ref().is_some_and(|b| b.session == session);
+        let held_pane = self.projects[at].panes.iter().find(holds).map(|s| s.map.pane);
+        if let Some(pane) = held_pane {
+            self.sense_pane_now(at, pane);
+        }
         self.tell_agents(at);
         // A send into the pane that holds it was waiting for this turn's end.
-        let holds = |s: &&Slot| s.map.session.as_ref().is_some_and(|b| b.session == session);
-        if ended && let Some(pane) = self.projects[at].panes.iter().find(holds).map(|s| s.map.pane)
-        {
+        if ended && let Some(pane) = held_pane {
             self.received_nothing(at, pane);
         }
     }
@@ -528,9 +601,13 @@ impl Session {
         let session = slot.map.session.as_ref().map(|b| b.session.as_str());
         let path =
             session.and_then(|s| c::file(mapping, &h.config_home(), s, slot.transcript.as_deref()));
+        let sense_guard = self.sense.read().ok();
+        let sense = sense_guard.as_ref().and_then(|g| g.as_ref());
         let read = match after {
-            Some(after) => c::after(mapping, path.as_deref(), after),
-            None => c::page(mapping, path.as_deref(), before),
+            Some(after) => {
+                c::after_with_sense(mapping, &slot.map.harness, path.as_deref(), after, sense)
+            }
+            None => c::page_with_sense(mapping, &slot.map.harness, path.as_deref(), before, sense),
         };
         Answer::Ok(read.json())
     }

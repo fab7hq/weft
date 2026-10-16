@@ -1,0 +1,192 @@
+{
+  "chunk": 128,
+  "cols": 100,
+  "frames": [
+    {
+      "alternate": true,
+      "bottom": [],
+      "contents": "",
+      "cursor": [
+        0,
+        0
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     loading"
+      ],
+      "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading",
+      "cursor": [
+        4,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     loading",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything"
+      ],
+      "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything",
+      "cursor": [
+        26,
+        26
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     loading",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "cursor": [
+        26,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     loading",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "cursor": [
+        26,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     loading",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "cursor": [
+        26,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     /runs/screens-q01/ws",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "cursor": [
+        26,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  >_ OpenAI Codex (v0.158.0)",
+        "     /runs/screens-q01/ws",
+        "  A hunch is a perfectly respectable starting point.",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "contents": " \n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
+      "cursor": [
+        26,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  Update available(v0.158.0)",
+        "     /runs/screens-q01/ws",
+        "  A hunch is a perfectly respectable starting point.",
+        "›"
+      ],
+      "contents": " \n  Update available(v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "cursor": [
+        1,
+        18
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  Update available · 0.158.0 → 0.159.3",
+        "  Release notes: https://github.com/openai/c",
+        "  A hunch is a perfectly respectable starting point.",
+        "›"
+      ],
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/c\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "cursor": [
+        2,
+        44
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  Update available · 0.158.0 → 0.159.3",
+        "  Release notes: https://github.com/openai/codex/releases/latest",
+        "› 1. Update now (runs `npm install -g @openai/codex`)                       ",
+        "›"
+      ],
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                       \n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "cursor": [
+        4,
+        76
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  Update available · 0.158.0 → 0.159.3",
+        "  Release notes: https://github.com/openai/codex/releases/latest",
+        "› 1. Update now (runs `npm install -g @openai/codex`)                                               ",
+        "  2. Skip",
+        "  3. Skip until next version",
+        "  enter",
+        "›"
+      ],
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                                               \n  2. Skip\n  3. Skip until next version\n\n  enter\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
+      "cursor": [
+        8,
+        7
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "  Update available · 0.158.0 → 0.159.3",
+        "  Release notes: https://github.com/openai/codex/releases/latest",
+        "› 1. Update now (runs `npm install -g @openai/codex`)                                               ",
+        "  2. Skip",
+        "  3. Skip until next version",
+        "  enter continue · esc skip"
+      ],
+      "contents": " \n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)                                               \n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n ",
+      "cursor": [
+        26,
+        1
+      ]
+    }
+  ],
+  "rows": 30
+}

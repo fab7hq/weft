@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 4;
+pub const PROTOCOL: u64 = 5;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -187,8 +187,10 @@ pub enum Event {
     Panes {
         panes: Vec<PaneInfo>,
     },
+    /// What a harness printed, as chunk `seq` of its pane.
     Output {
         pane: u32,
+        seq: u64,
         bytes: Vec<u8>,
     },
     /// A pane's screen, to the one client that attached to it: escape codes
@@ -538,8 +540,8 @@ impl Event {
     fn parts(&self) -> (&'static str, Value) {
         match self {
             Event::Panes { panes } => ("panes", json!({"panes": panes_json(panes)})),
-            Event::Output { pane, bytes } => {
-                ("pane.output", json!({"pane": pane, "bytes": b64(bytes)}))
+            Event::Output { pane, seq, bytes } => {
+                ("pane.output", json!({"pane": pane, "seq": seq, "bytes": b64(bytes)}))
             }
             Event::Screen { pane, seq, full, rows, cols, bytes } => (
                 "pane.screen",
@@ -583,9 +585,11 @@ impl Event {
         let n = |k: &str| p.get(k).and_then(Value::as_u64);
         Some(match method {
             "panes" => Event::Panes { panes: panes_of(p.get("panes")?)? },
-            "pane.output" => {
-                Event::Output { pane: n("pane")? as u32, bytes: un_b64(p.get("bytes")?.as_str()?)? }
-            }
+            "pane.output" => Event::Output {
+                pane: n("pane")? as u32,
+                seq: n("seq")?,
+                bytes: un_b64(p.get("bytes")?.as_str()?)?,
+            },
             "pane.screen" => Event::Screen {
                 pane: n("pane")? as u32,
                 seq: n("seq")?,
@@ -650,14 +654,32 @@ impl Event {
     }
 }
 
-/// A pane's bytes, in the shape `pane.output` uses.
-pub fn output_json(pane: u32, bytes: &[u8]) -> Value {
-    json!({"pane": pane, "bytes": b64(bytes)})
+/// A pane's screen as `project.open` gives it to a `raw` client: escape
+/// codes that draw it, history and all, on a fresh terminal of `rows` ×
+/// `cols`, as of the pane's chunk `seq`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenScreen {
+    pub pane: u32,
+    pub seq: u64,
+    pub rows: u16,
+    pub cols: u16,
+    pub bytes: Vec<u8>,
+}
+
+pub fn screen_json(s: &OpenScreen) -> Value {
+    json!({"pane": s.pane, "seq": s.seq, "rows": s.rows, "cols": s.cols, "bytes": b64(&s.bytes)})
 }
 
 /// Reads one back.
-pub fn output_of(v: &Value) -> Option<(u32, Vec<u8>)> {
-    Some((v.get("pane")?.as_u64()? as u32, un_b64(v.get("bytes")?.as_str()?)?))
+pub fn screen_of(v: &Value) -> Option<OpenScreen> {
+    let n = |k: &str| v.get(k).and_then(Value::as_u64);
+    Some(OpenScreen {
+        pane: n("pane")? as u32,
+        seq: n("seq")?,
+        rows: n("rows")? as u16,
+        cols: n("cols")? as u16,
+        bytes: un_b64(v.get("bytes")?.as_str()?)?,
+    })
 }
 
 /// A pending as `project.open` lists it: the shape `pending.added` carries.
@@ -1057,7 +1079,7 @@ mod tests {
                     turbo: true,
                 }],
             },
-            Event::Output { pane: 0, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
+            Event::Output { pane: 0, seq: 7, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
             Event::Screen {
                 pane: 0,
                 seq: 41,

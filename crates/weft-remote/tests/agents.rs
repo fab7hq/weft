@@ -60,7 +60,7 @@ fn two_projects_make_one_list_with_ids_that_stay_the_same() {
         let mut projects = Vec::new();
         for (at, path) in open.iter().enumerate() {
             let p = daemon::Project::open(socket, path, at, tx.clone()).unwrap();
-            assert_eq!(p.opened["replay"], serde_json::json!([]), "opened with no raw output");
+            assert_eq!(p.opened["screens"], serde_json::json!([]), "opened with no raw output");
             projects.push(Project::opened(path, &p.opened));
         }
         // Anything that arrives meanwhile is taken, as the loop would.

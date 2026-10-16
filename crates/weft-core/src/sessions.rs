@@ -9,7 +9,9 @@
 /// A project's key: the first 12 hex digits of the SHA-256 of its path.
 pub fn project_key(path: &std::path::Path) -> String {
     use sha2::{Digest, Sha256};
-    let digest = Sha256::digest(path.to_string_lossy().as_bytes());
+    let s = path.to_string_lossy();
+    let trimmed = if s.len() > 1 { s.trim_end_matches('/') } else { &s };
+    let digest = Sha256::digest(trimmed.as_bytes());
     digest.iter().take(6).map(|b| format!("{b:02x}")).collect()
 }
 
@@ -144,6 +146,15 @@ pub fn index(
     alive: &dyn Fn(&Process) -> bool,
 ) -> Vec<Row> {
     let named = |harness: &str, id: &str| is_id(harness) && is_id(id);
+    let mut newest_for_proc: std::collections::HashMap<(u32, &str), i64> = Default::default();
+    for h in heard.iter().filter(|h| named(&h.session.harness, &h.session.id)) {
+        if let Some(p) = &h.process {
+            let entry = newest_for_proc.entry((p.pid, p.start.as_str())).or_insert(h.session.at);
+            if h.session.at > *entry {
+                *entry = h.session.at;
+            }
+        }
+    }
     let mut rows: Vec<Row> = Vec::new();
     for h in heard.iter().filter(|h| named(&h.session.harness, &h.session.id)) {
         let s = &h.session;
@@ -151,7 +162,12 @@ pub fn index(
             State::Ended
         } else {
             match &h.process {
-                Some(p) if alive(p) => State::Running,
+                Some(p)
+                    if alive(p)
+                        && newest_for_proc.get(&(p.pid, p.start.as_str())) == Some(&s.at) =>
+                {
+                    State::Running
+                }
                 Some(_) => State::Ended,
                 // Its harness's stream says a turn runs.
                 None if h.streamed && matches!(s.latest, Turn::Working | Turn::Waiting) => {

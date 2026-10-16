@@ -165,6 +165,12 @@ pub fn look_as_they_answer(
             .latest
             .as_deref()
             .is_some_and(|l| weft_core::sync::older(env!("CARGO_PKG_VERSION"), l));
+    let sense_have = text("sense_installed").or_else(crate::versions::default_sense_version);
+    let sense_latest = text("sense_latest");
+    let (sense_line, sense_step) =
+        weft_core::sync::sense(sense_have.as_deref(), sense_latest.as_deref());
+    (view.sense, view.sense_behind, view.sense_latest) =
+        (sense_line, sense_step.is_some(), sense_latest);
     let mut states = Vec::new();
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();

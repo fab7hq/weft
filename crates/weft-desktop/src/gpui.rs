@@ -1,0 +1,350 @@
+//! Pure-Rust GPUI declarative element tree, Toile `atlas` renderer, and native
+//! macOS `NSOpenPanel` folder/file dialogs (`ADR-0002`).
+
+use std::path::PathBuf;
+
+/// Toile `atlas` visual tokens (`ADR-0002`).
+pub mod palette {
+    pub const CANVAS: &str = "#090d16";
+    pub const SURFACE: &str = "#101726";
+    pub const SURFACE_ALT: &str = "#0b111d";
+    pub const TERMINAL_BG: &str = "#05080f";
+    pub const SELECTED_BG: &str = "#16233a";
+    pub const TITLEBAR_BG: &str = "#151b28";
+    pub const LINE: &str = "#253550";
+    pub const TEXT: &str = "#f1f3f7";
+    pub const MUTED: &str = "#a2adbd";
+    pub const DIM: &str = "#6e7b8f";
+    pub const AMBER: &str = "#edbb5b";
+    pub const AMBER_BG: &str = "#2a2011";
+    pub const TEAL: &str = "#39c5bb";
+    pub const BLUE: &str = "#388bfd";
+    pub const BLUE_BORDER: &str = "#58a6ff";
+    pub const RED: &str = "#f85149";
+}
+
+/// Declarative GPUI element node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Element {
+    pub tag: &'static str,
+    pub layer_name: Option<String>,
+    pub id: Option<String>,
+    pub role: Option<String>,
+    pub aria_label: Option<String>,
+    pub aria_selected: Option<bool>,
+    pub placeholder: Option<String>,
+    pub styles: Vec<(String, String)>,
+    pub attrs: Vec<(String, String)>,
+    pub text: Option<String>,
+    pub action: Option<String>,
+    pub children: Vec<Element>,
+}
+
+pub fn div() -> Element {
+    Element {
+        tag: "div",
+        layer_name: None,
+        id: None,
+        role: None,
+        aria_label: None,
+        aria_selected: None,
+        placeholder: None,
+        styles: Vec::new(),
+        attrs: Vec::new(),
+        text: None,
+        action: None,
+        children: Vec::new(),
+    }
+}
+
+pub fn span(t: impl Into<String>) -> Element {
+    let mut el = div();
+    el.tag = "span";
+    el.text = Some(t.into());
+    el
+}
+
+pub fn input_el() -> Element {
+    let mut el = div();
+    el.tag = "input";
+    el
+}
+
+pub fn textarea_el() -> Element {
+    let mut el = div();
+    el.tag = "textarea";
+    el
+}
+
+impl Element {
+    pub fn layer(mut self, name: impl Into<String>) -> Self {
+        self.layer_name = Some(name.into());
+        self
+    }
+
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    pub fn role(mut self, role: impl Into<String>) -> Self {
+        self.role = Some(role.into());
+        self
+    }
+
+    pub fn aria_label(mut self, label: impl Into<String>) -> Self {
+        self.aria_label = Some(label.into());
+        self
+    }
+
+    pub fn aria_selected(mut self, selected: bool) -> Self {
+        self.aria_selected = Some(selected);
+        self
+    }
+
+    pub fn placeholder(mut self, p: impl Into<String>) -> Self {
+        self.placeholder = Some(p.into());
+        self
+    }
+
+    pub fn attr(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
+        self.attrs.push((k.into(), v.into()));
+        self
+    }
+
+    pub fn style(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
+        let k = k.into();
+        let v = v.into();
+        if let Some(existing) = self.styles.iter_mut().find(|(ek, _)| *ek == k) {
+            existing.1 = v;
+        } else {
+            self.styles.push((k, v));
+        }
+        self
+    }
+
+    pub fn flex_row(self) -> Self {
+        self.style("display", "flex").style("flex-direction", "row")
+    }
+
+    pub fn flex_col(self) -> Self {
+        self.style("display", "flex").style("flex-direction", "column")
+    }
+
+    pub fn items_center(self) -> Self {
+        self.style("align-items", "center")
+    }
+
+    pub fn items_start(self) -> Self {
+        self.style("align-items", "flex-start")
+    }
+
+    pub fn items_baseline(self) -> Self {
+        self.style("align-items", "baseline")
+    }
+
+    pub fn justify_between(self) -> Self {
+        self.style("justify-content", "space-between")
+    }
+
+    pub fn justify_center(self) -> Self {
+        self.style("justify-content", "center")
+    }
+
+    pub fn justify_end(self) -> Self {
+        self.style("justify-content", "flex-end")
+    }
+
+    pub fn self_stretch(self) -> Self {
+        self.style("align-self", "stretch")
+    }
+
+    pub fn flex_1(self) -> Self {
+        self.style("flex", "1 1 0").style("min-width", "0").style("min-height", "0")
+    }
+
+    pub fn shrink_0(self) -> Self {
+        self.style("flex-shrink", "0")
+    }
+
+    pub fn gap(self, px: u32) -> Self {
+        self.style("gap", format!("{px}px"))
+    }
+
+    pub fn w(self, px: u32) -> Self {
+        self.style("width", format!("{px}px"))
+    }
+
+    pub fn h(self, px: u32) -> Self {
+        self.style("height", format!("{px}px"))
+    }
+
+    pub fn pad(self, v: u32, h: u32) -> Self {
+        self.style("padding", format!("{v}px {h}px"))
+    }
+
+    pub fn bg(self, color: &str) -> Self {
+        self.style("background", color)
+    }
+
+    pub fn color(self, color: &str) -> Self {
+        self.style("color", color)
+    }
+
+    pub fn font_size(self, px: u32) -> Self {
+        self.style("font-size", format!("{px}px"))
+    }
+
+    pub fn font_weight(self, w: u32) -> Self {
+        self.style("font-weight", w.to_string())
+    }
+
+    pub fn font_mono(self) -> Self {
+        self.style("font-family", "'JetBrains Mono'")
+    }
+
+    pub fn rounded(self, px: u32) -> Self {
+        self.style("border-radius", format!("{px}px"))
+    }
+
+    pub fn border(self, color: &str) -> Self {
+        self.style("border", format!("1px solid {color}"))
+    }
+
+    pub fn border_bottom(self, color: &str) -> Self {
+        self.style("border-bottom", format!("1px solid {color}"))
+    }
+
+    pub fn border_top(self, color: &str) -> Self {
+        self.style("border-top", format!("1px solid {color}"))
+    }
+
+    pub fn border_right(self, color: &str) -> Self {
+        self.style("border-right", format!("1px solid {color}"))
+    }
+
+    pub fn text(mut self, t: impl Into<String>) -> Self {
+        self.text = Some(t.into());
+        self
+    }
+
+    pub fn on_click(mut self, action: impl Into<String>) -> Self {
+        self.action = Some(action.into());
+        self
+    }
+
+    pub fn child(mut self, child: Element) -> Self {
+        self.children.push(child);
+        self
+    }
+
+    pub fn children(mut self, iter: impl IntoIterator<Item = Element>) -> Self {
+        self.children.extend(iter);
+        self
+    }
+
+    /// Find the first descendant or self matching `layer-name`.
+    pub fn find_layer(&self, name: &str) -> Option<&Element> {
+        if self.layer_name.as_deref() == Some(name) {
+            return Some(self);
+        }
+        for c in &self.children {
+            if let Some(found) = c.find_layer(name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Find the first descendant or self with `on_click` action `act`.
+    pub fn find_action(&self, act: &str) -> Option<&Element> {
+        if self.action.as_deref() == Some(act) {
+            return Some(self);
+        }
+        for c in &self.children {
+            if let Some(found) = c.find_action(act) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Collect all visible text in pre-order traversal.
+    pub fn all_text(&self) -> String {
+        let mut out = String::new();
+        self.collect_text(&mut out);
+        out
+    }
+
+    fn collect_text(&self, out: &mut String) {
+        if let Some(t) = &self.text {
+            if !out.is_empty() && !out.ends_with(' ') && !out.ends_with('\n') {
+                out.push(' ');
+            }
+            out.push_str(t);
+        }
+        for c in &self.children {
+            c.collect_text(out);
+        }
+    }
+}
+
+/// Native macOS file/folder picker abstraction (`NSOpenPanel` on macOS,
+/// injectable in tests).
+pub trait FileDialog: Send + Sync {
+    fn pick_folder(&self) -> Option<PathBuf>;
+    fn pick_file(&self, title: &str) -> Option<PathBuf>;
+}
+
+/// Default macOS `NSOpenPanel` dialog implementation.
+#[derive(Default)]
+pub struct MacFileDialog;
+
+impl FileDialog for MacFileDialog {
+    fn pick_folder(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            let out = std::process::Command::new("/usr/bin/osascript")
+                .args([
+                    "-e",
+                    "POSIX path of (choose folder with prompt \"Open a project in Weft\")",
+                ])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!path.is_empty())
+                .then(|| weft_core::state::normalize_project_path(std::path::Path::new(&path)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            None
+        }
+    }
+
+    fn pick_file(&self, title: &str) -> Option<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            let script = format!(
+                "POSIX path of (choose file with prompt \"{}\")",
+                title.replace('"', "\\\"")
+            );
+            let out = std::process::Command::new("/usr/bin/osascript")
+                .args(["-e", &script])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = title;
+            None
+        }
+    }
+}

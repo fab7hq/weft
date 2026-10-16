@@ -1,17 +1,16 @@
 //! Screen frames for a client that attached to a pane (remote.md D2, D3).
 //!
 //! On each 100 ms tick, every attachment whose pane printed since its last
-//! frame is sent the pane's visible screen: whole the first time and after a
-//! resize, else as the difference from the screen it was sent last. The
-//! screen is read from the pane's own parser under its lock, with the number
-//! of the last chunk in it, so a frame always shows bytes the pane has seen.
-//! A quiet pane sends nothing.
+//! frame is sent the pane's visible screen: whole the first time, after a
+//! resize and when the alternate screen switched, else as the difference
+//! from the screen it was sent last. The screen is read from the pane's own
+//! terminal under its lock, with the number of the last chunk in it, so a
+//! frame always shows bytes the pane has seen. A quiet pane sends nothing.
 //!
-//! Taken from the pane at each frame rather than kept by a parser per
-//! attachment, as remote.md first had it: a parser started from
-//! `state_formatted()` while the pane is in the alternate screen has no normal
-//! screen behind it, and shows the wrong one when the harness leaves. The
-//! pane's visible screen is small; its scrollback is never copied.
+//! Only the visible screen is sent, never the normal screen behind the
+//! alternate one: a device that starts while the alternate screen is on gets
+//! the whole screen again when the harness leaves it. The pane's scrollback
+//! is never copied.
 
 use super::*;
 
@@ -22,7 +21,7 @@ pub(super) struct Attachment {
     /// The pane printed since the last frame.
     pub(super) dirty: bool,
     /// What this client was sent last, as a screen to diff against.
-    last: Option<vt100::Screen>,
+    last: Option<weft_term::Snapshot>,
 }
 
 impl Session {
@@ -63,26 +62,27 @@ impl Session {
             let Some(slot) = self.projects.get_mut(a.project).and_then(|p| p.slot(a.pane)) else {
                 return false;
             };
-            // The size the pane was last given, which its parser has.
+            // The size the pane was last given, which its terminal has.
             let size = slot.size;
             let resized = a.last.as_ref().is_some_and(|l| l.size() != size);
             if !(a.dirty || resized) {
                 return true;
             }
             a.dirty = false;
-            let (formatted, seq) = slot.pane.screen_at();
-            let mut now = vt100::Parser::new(size.0, size.1, 0);
-            now.process(&formatted);
-            let (full, bytes) = match &a.last {
-                Some(last) if !resized => (false, now.screen().state_diff(last)),
-                _ => (true, formatted),
-            };
-            if !full && bytes.is_empty() {
+            let frame = slot.pane.frame(a.last.as_ref());
+            if !frame.full && frame.bytes.is_empty() {
                 return true;
             }
-            a.last = Some(now.screen().clone());
+            a.last = Some(frame.shown);
             let (rows, cols) = size;
-            let frame = Out::Screen { pane: a.pane, seq, full, rows, cols, bytes };
+            let frame = Out::Screen {
+                pane: a.pane,
+                seq: frame.seq,
+                full: frame.full,
+                rows,
+                cols,
+                bytes: frame.bytes,
+            };
             self.clients.send_to(a.client, &Line::Event(frame));
             true
         });

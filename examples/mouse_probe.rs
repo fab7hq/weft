@@ -10,12 +10,12 @@ fn main() -> anyhow::Result<()> {
     let argv: Vec<&str> = extra.iter().map(String::as_str).collect();
     let pane = Pane::spawn_args("probe", &prog, &argv, &cwd, &[], 40, 120)?;
     std::thread::sleep(std::time::Duration::from_secs(10));
-    pane.with_screen(|s| {
+    pane.with_term(|s| {
         println!(
             "{prog}: mode={:?} encoding={:?} alt={:?}",
-            s.mouse_protocol_mode(),
-            s.mouse_protocol_encoding(),
-            s.alternate_screen()
+            s.modes().mouse,
+            s.modes().mouse_encoding,
+            s.alt_screen()
         );
     });
     Ok(())

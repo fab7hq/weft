@@ -16,3 +16,7 @@ daemons = { max-threads = 4 }
 [[profile.default.overrides]]
 filter = 'kind(test)'
 test-group = 'daemons'
+
+[[profile.default.overrides]]
+filter = 'package(weft-sense) & kind(test)'
+threads-required = 'num-cpus'

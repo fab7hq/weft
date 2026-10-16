@@ -337,11 +337,11 @@ impl Session {
         if let Some(r) = opened.get("routing") {
             session.routing = weft_core::routing::Routing::opened(r);
         }
-        for chunk in opened.get("replay").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
-            if let Some((pane, bytes)) = weft_proto::output_of(chunk)
-                && let Some(p) = session.view(pane)
+        for screen in opened.get("screens").and_then(|v| v.as_array()).unwrap_or(&Vec::new()) {
+            if let Some(s) = weft_proto::screen_of(screen)
+                && let Some(p) = session.view(s.pane)
             {
-                p.feed(&bytes);
+                p.feed(&s.bytes);
             }
         }
         Ok(session)
@@ -470,7 +470,7 @@ impl Session {
                         })
                         .collect();
                 }
-                Event::Output { pane, bytes } => {
+                Event::Output { pane, bytes, .. } => {
                     if let Some(p) = self.view(pane) {
                         p.feed(&bytes);
                     }

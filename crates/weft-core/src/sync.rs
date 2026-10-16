@@ -134,6 +134,25 @@ pub fn older(have: &str, latest: &str) -> bool {
     let parts = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
     parts(have) < parts(latest)
 }
+
+/// Sense bundle's line: where the installed `~/.fab7/weft/sense/current.json`
+/// bundle stands against the latest release, and the step that updates and
+/// hot-reloads it (`ADR-0003`, `D7.2`).
+pub fn sense(have: Option<&str>, latest: Option<&str>) -> (String, Option<Step>) {
+    let have = have.map(|s| s.trim_start_matches('v')).filter(|s| !s.is_empty());
+    let latest = latest.map(|s| s.trim_start_matches('v')).filter(|s| !s.is_empty());
+    match (have, latest) {
+        (Some(h), Some(l)) if older(h, l) => {
+            (format!("{h} → {l}"), Some(Step::new("weft", &["update", "--sense"])))
+        }
+        (None, Some(l)) => {
+            (format!("not installed → {l}"), Some(Step::new("weft", &["update", "--sense"])))
+        }
+        (Some(h), Some(_)) => (format!("{h} is the latest"), None),
+        (Some(h), None) => (format!("{h} is installed"), None),
+        (None, None) => ("could not reach the latest release".into(), None),
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +199,22 @@ mod tests {
         assert!(step.is_none());
         assert_eq!(weft("0.2.1", Some("0.2.1"), false).0, "0.2.1 is the latest");
         assert_eq!(weft("0.2.1", None, false).0, "could not reach the latest release");
+    }
+
+    #[test]
+    fn sense_is_behind_current_or_uninstalled() {
+        let (line, step) = sense(Some("0.1.0"), Some("0.2.0"));
+        assert_eq!(
+            (line.as_str(), step.map(|s| s.line())),
+            ("0.1.0 → 0.2.0", Some("weft update --sense".into()))
+        );
+        assert_eq!(sense(Some("0.2.0"), Some("0.2.0")).0, "0.2.0 is the latest");
+        assert_eq!(sense(Some("0.2.0"), None).0, "0.2.0 is installed");
+        let (line, step) = sense(None, Some("0.2.0"));
+        assert_eq!(
+            (line.as_str(), step.map(|s| s.line())),
+            ("not installed → 0.2.0", Some("weft update --sense".into()))
+        );
     }
 
     #[test]

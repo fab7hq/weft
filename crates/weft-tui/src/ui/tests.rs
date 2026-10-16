@@ -707,6 +707,7 @@ fn the_ringframe_view_lists_every_harness_by_name_with_what_it_needs() {
             row("zed", "Zed Agent", State::Ready { version: Some("0.1.3".into()) }),
         ],
         note: None,
+        ..View::default()
     });
     a.modal = Some(crate::app::Modal::RingFrame);
     a.modal_choice = 0;

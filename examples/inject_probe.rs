@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
     pane.send(b"\r")?;
     std::thread::sleep(Duration::from_secs(8));
 
-    let bracketed = pane.with_screen(|s| s.bracketed_paste());
+    let bracketed = pane.with_term(|s| s.bracketed_paste());
     println!("--- bracketed paste advertised: {bracketed} ---");
 
     match pane.inject(payload.as_bytes()) {
@@ -32,6 +32,6 @@ fn main() -> anyhow::Result<()> {
     }
     std::thread::sleep(Duration::from_secs(6));
 
-    println!("{}", pane.with_screen(|s| s.contents()));
+    println!("{}", pane.with_term(|s| s.contents()));
     Ok(())
 }

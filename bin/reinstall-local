@@ -26,11 +26,11 @@ fab7=${FAB7_DIR:-$(CDPATH= cd -- "$root/../fab7" 2>/dev/null && pwd || true)}
 bin_dir=${WEFT_BIN_DIR:-$HOME/.local/bin}
 
 printf 'Building from %s\n' "$root"
-( cd "$root" && cargo build --release --locked --bin weft --bin ringframe )
+( cd "$root" && cargo build --release --locked --bin weft --bin ringframe --bin weft-desktop )
 
 mkdir -p "$bin_dir"
 # Weft in its version's folder and `weft` a link to it, as `install.sh` lays
-# it out; RingFrame replaced in place. Each replaced rather than
+# it out; RingFrame and weft-desktop replaced in place. Each replaced rather than
 # written through, so a running binary is undisturbed.
 version=$("$root/target/release/weft" --version | sed 's/^weft //')
 versions="$HOME/.fab7/weft/versions"
@@ -44,8 +44,11 @@ mv -f "$bin_dir/weft.new" "$bin_dir/weft"
 cp "$root/target/release/ringframe" "$bin_dir/ringframe.new"
 chmod 755 "$bin_dir/ringframe.new"
 mv "$bin_dir/ringframe.new" "$bin_dir/ringframe"
-for name in weft ringframe; do
-    printf '  binary  %-10s %s\n' "$name" "$("$bin_dir/$name" --version 2>/dev/null || echo installed)"
+cp "$root/target/release/weft-desktop" "$bin_dir/weft-desktop.new"
+chmod 755 "$bin_dir/weft-desktop.new"
+mv "$bin_dir/weft-desktop.new" "$bin_dir/weft-desktop"
+for name in weft ringframe weft-desktop; do
+    printf '  binary  %-12s %s\n' "$name" "$("$bin_dir/$name" --version 2>/dev/null || echo installed)"
 done
 
 if [ -n "$fab7" ] && [ -d "$fab7/products/ringframe/config" ]; then

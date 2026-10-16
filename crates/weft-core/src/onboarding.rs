@@ -133,6 +133,14 @@ pub struct View {
     pub configuration: String,
     #[serde(default)]
     pub configuration_behind: bool,
+    /// Sense model bundle: what it stands at in `~/.fab7/weft/sense/`, and
+    /// whether a newer bundle is available to hot-reload (`ADR-0003`, `D7.2`).
+    #[serde(default)]
+    pub sense: String,
+    #[serde(default)]
+    pub sense_latest: Option<String>,
+    #[serde(default)]
+    pub sense_behind: bool,
     /// The latest release has not answered yet: `latest`, `plugin` and
     /// `configuration` say nothing until it has.
     #[serde(default)]
@@ -163,6 +171,7 @@ impl View {
     pub fn needs_anything(&self) -> bool {
         self.weft_behind
             || self.configuration_behind
+            || self.sense_behind
             || self.rows.iter().any(|r| {
                 matches!(r.state, State::Behind { .. } | State::NotSetUp | State::Failed { .. })
             })
@@ -188,8 +197,19 @@ impl View {
         }
     }
 
+    /// The mark of Sense's row (`D7.2`).
+    pub fn sense_mark(&self) -> &'static str {
+        match () {
+            _ if self.sense_behind => "↑",
+            _ if self.sense.is_empty() && self.sense_latest.is_none() && self.latest.is_none() => {
+                "?"
+            }
+            _ => "✓",
+        }
+    }
+
     /// Both releases were reached and nothing is behind: Weft, RingFrame's
-    /// configuration and every plugin that is in a harness.
+    /// configuration, Sense, and every plugin that is in a harness.
     pub fn up_to_date(&self) -> bool {
         !self.pending_release
             && self.weft_latest.is_some()
@@ -197,14 +217,16 @@ impl View {
             && !self.weft_behind
             && !self.weft_waiting
             && !self.configuration_behind
+            && !self.sense_behind
             && !self.rows.iter().any(|r| matches!(r.state, State::Behind { .. }))
     }
 
-    /// Whether `[P]ROCEED` has anything to run: the configuration, and every
-    /// harness to set up or update. Finding a program is the person's to say.
+    /// Whether `[P]ROCEED` has anything to run: the configuration, Sense, and
+    /// every harness to set up or update. Finding a program is the person's to say.
     pub fn proceeds(&self) -> bool {
         self.weft_behind
             || self.configuration_behind
+            || self.sense_behind
             || self.rows.iter().any(|r| matches!(r.state.next(), Some(Next::SetUp | Next::Update)))
     }
 

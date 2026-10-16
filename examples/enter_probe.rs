@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     }
     std::thread::sleep(Duration::from_secs(6));
 
-    let bracketed = pane.with_screen(|s| s.bracketed_paste());
+    let bracketed = pane.with_term(|s| s.bracketed_paste());
     println!("bracketed paste advertised: {bracketed}");
 
     for (label, wrap, delay) in [
@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(4));
 
         // If the text is still sitting in the composer, Enter did not submit.
-        let screen = pane.with_screen(|s| s.contents());
+        let screen = pane.with_term(|s| s.contents());
         let stuck = screen.lines().any(|l| {
             let t = l.trim();
             (t.starts_with('›') || t.starts_with('❯') || t.starts_with('>')) && t.contains(&marker)

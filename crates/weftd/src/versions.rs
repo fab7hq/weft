@@ -82,6 +82,142 @@ pub fn newest(versions: &Path) -> Option<PathBuf> {
     own(versions, &link)
 }
 
+/// Active Sense bundle pointer in `<weft_dir>/sense/current.json` (`ADR-0003`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenseCurrent {
+    pub version: String,
+    pub path: PathBuf,
+}
+
+/// Read `<weft_dir>/sense/current.json`, resolving relative paths against
+/// `<weft_dir>/sense/`.
+pub fn sense_current(weft_dir: &Path) -> Option<SenseCurrent> {
+    let sense_root = weft_dir.join("sense");
+    let text = std::fs::read_to_string(sense_root.join("current.json")).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let version = val["version"].as_str()?.to_string();
+    let mut path = PathBuf::from(val["path"].as_str()?);
+    if !path.is_absolute() {
+        path = sense_root.join(&path);
+    }
+    path.join("manifest.json").is_file().then_some(SenseCurrent { version, path })
+}
+
+/// The installed Sense bundle version under `weft_dir`, if any.
+pub fn sense_version(weft_dir: &Path) -> Option<String> {
+    sense_current(weft_dir).map(|c| c.version)
+}
+
+/// The installed Sense bundle version in `$HOME/.fab7/weft/sense/current.json`
+/// (falling back to `$HOME/.fab7/sense/fab7-sense-v1/manifest.json`).
+pub fn default_sense_version() -> Option<String> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if let Some(ver) = sense_version(&home.join(".fab7/weft")) {
+        return Some(ver);
+    }
+    let fallback = home.join(".fab7/sense/fab7-sense-v1/manifest.json");
+    let text = std::fs::read_to_string(fallback).ok()?;
+    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
+    val["version"].as_str().filter(|v| !v.is_empty()).map(str::to_string)
+}
+
+/// Load the active `SenseModel` from `<weft_dir>/sense/current.json`, falling
+/// back to `$HOME/.fab7/sense/fab7-sense-v1/` when `fallback_home` is true.
+pub fn load_sense(weft_dir: &Path, fallback_home: bool) -> Option<weft_sense::SenseModel> {
+    if let Some(cur) = sense_current(weft_dir)
+        && let Ok(model) = weft_sense::SenseModel::load(&cur.path)
+    {
+        return Some(model);
+    }
+    if fallback_home && let Some(home) = std::env::var_os("HOME") {
+        return weft_sense::SenseModel::load_default_home(Path::new(&home)).ok().flatten();
+    }
+    None
+}
+
+/// Copy a candidate Sense bundle into `<weft_dir>/sense/versions/<version>.tmp`,
+/// verify all SHA-256 digests and ONNX/tokenizer weights via `SenseModel::load`,
+/// atomically promote to `<weft_dir>/sense/versions/<version>`, update
+/// `<weft_dir>/sense/current.json`, and prune older versions (`ADR-0003`).
+pub fn install_sense_bundle(
+    weft_dir: &Path,
+    source_dir: &Path,
+) -> anyhow::Result<(SenseCurrent, weft_sense::SenseModel)> {
+    let manifest_text = std::fs::read_to_string(source_dir.join("manifest.json"))?;
+    let manifest_val: serde_json::Value = serde_json::from_str(&manifest_text)?;
+    let version = manifest_val["version"]
+        .as_str()
+        .filter(|v| {
+            !v.is_empty()
+                && !v.starts_with('.')
+                && v.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        })
+        .ok_or_else(|| anyhow::anyhow!("invalid or missing version in Sense manifest.json"))?
+        .to_string();
+
+    let sense_root = weft_dir.join("sense");
+    let versions_dir = sense_root.join("versions");
+    std::fs::create_dir_all(&versions_dir)?;
+
+    let tmp_dir = versions_dir.join(format!("{version}.tmp"));
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir)?;
+
+    for name in [
+        "manifest.json",
+        "sense.int8.onnx",
+        "model.int8.onnx",
+        "tokenizer.json",
+        "calibration.json",
+    ] {
+        let src_file = source_dir.join(name);
+        if src_file.is_file() {
+            std::fs::copy(&src_file, tmp_dir.join(name))?;
+        }
+    }
+
+    // Verify SHA-256 digests and load the ONNX/tokenizer bundle before promoting.
+    if let Err(err) = weft_sense::SenseModel::load(&tmp_dir) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(err);
+    }
+
+    let final_dir = versions_dir.join(&version);
+    if final_dir.exists() {
+        let _ = std::fs::remove_dir_all(&final_dir);
+    }
+    std::fs::rename(&tmp_dir, &final_dir)?;
+
+    let model = weft_sense::SenseModel::load(&final_dir)?;
+    let current = SenseCurrent { version, path: final_dir.clone() };
+    let current_tmp = sense_root.join("current.json.tmp");
+    let current_path = sense_root.join("current.json");
+    let mut json = serde_json::to_string_pretty(&serde_json::json!({
+        "version": current.version,
+        "path": current.path,
+    }))?;
+    json.push('\n');
+    std::fs::write(&current_tmp, json)?;
+    std::fs::rename(&current_tmp, &current_path)?;
+
+    prune(&versions_dir, std::slice::from_ref(&final_dir));
+    Ok((current, model))
+}
+
+/// Install a new Sense bundle and atomically swap `slot` in memory with zero
+/// downtime for running panes (`ADR-0003`).
+pub fn hot_reload_sense(
+    weft_dir: &Path,
+    source_dir: &Path,
+    slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
+) -> anyhow::Result<SenseCurrent> {
+    let (current, model) = install_sense_bundle(weft_dir, source_dir)?;
+    if let Ok(mut guard) = slot.write() {
+        *guard = Some(model);
+    }
+    Ok(current)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +285,64 @@ mod tests {
         other.wait().unwrap();
         assert_eq!(prune(&versions, std::slice::from_ref(&new)).len(), 1, "it ended: removed");
         let _ = std::fs::remove_dir_all(versions.parent().unwrap());
+    }
+
+    fn stage_sense_bundle(dst: &Path, version: &str) {
+        let workspace_bundle =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sense/dist/fab7-sense-v1");
+        let src = if workspace_bundle.exists() {
+            workspace_bundle
+        } else {
+            let home = std::env::var_os("HOME").expect("HOME");
+            PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
+        };
+        std::fs::create_dir_all(dst).unwrap();
+        for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
+            let p = src.join(name);
+            if p.exists() {
+                std::fs::copy(p, dst.join(name)).unwrap();
+            }
+        }
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(src.join("manifest.json")).unwrap())
+                .unwrap();
+        manifest["version"] = serde_json::json!(version);
+        std::fs::write(dst.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn sense_bundle_install_verifies_sha256_prunes_old_and_hot_reloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join(".fab7/weft");
+        let v1_src = tmp.path().join("src_0.1.0");
+        let v2_src = tmp.path().join("src_0.2.0");
+        stage_sense_bundle(&v1_src, "0.1.0");
+        stage_sense_bundle(&v2_src, "0.2.0");
+
+        let slot = std::sync::Arc::new(std::sync::RwLock::new(None));
+
+        // 1. Install and hot-reload 0.1.0
+        let c1 = hot_reload_sense(&weft_dir, &v1_src, &slot).unwrap();
+        assert_eq!(c1.version, "0.1.0");
+        assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.1.0"));
+        assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.1.0"));
+        assert!(weft_dir.join("sense/versions/0.1.0/manifest.json").is_file());
+
+        // 2. Tamper with a candidate bundle and verify SHA-256 rejection leaves 0.1.0 active
+        let bad_src = tmp.path().join("src_bad");
+        stage_sense_bundle(&bad_src, "0.1.5");
+        std::fs::write(bad_src.join("tokenizer.json"), b"{}").unwrap();
+        assert!(hot_reload_sense(&weft_dir, &bad_src, &slot).is_err());
+        assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.1.0"));
+        assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.1.0"));
+
+        // 3. Hot-reload 0.2.0 in place and verify 0.1.0 is pruned while 0.2.0 is active
+        let c2 = hot_reload_sense(&weft_dir, &v2_src, &slot).unwrap();
+        assert_eq!(c2.version, "0.2.0");
+        assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.2.0"));
+        assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.2.0"));
+        assert!(weft_dir.join("sense/versions/0.2.0/manifest.json").is_file());
+        assert!(!weft_dir.join("sense/versions/0.1.0").exists(), "old Sense version pruned");
     }
 }

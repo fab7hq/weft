@@ -400,7 +400,7 @@ mod tests {
                     ),
                     (
                         "config/harnesses/antigravity.toml",
-                        "69d406f9ec1e4c9f0a4d00368fb6f648785a5811553599037f2683b926a7b1e1",
+                        "028aa80cf72974f8a658a97a56e65d17e97be3a5f33b9a1802aae99ac73d99b7",
                     ),
                     (
                         "config/harnesses/claude-code.toml",

@@ -157,17 +157,23 @@ impl Client {
         })
     }
 
-    /// What this project's panes had printed when it was opened.
+    /// What this project's panes showed when it was opened, history and
+    /// screen, drawn from the screens the answer gave.
     fn replay(&self) -> String {
         self.opened
-            .get("replay")
+            .get("screens")
             .and_then(|v| v.as_array())
-            .map(|chunks| {
-                chunks
+            .map(|screens| {
+                screens
                     .iter()
-                    .filter_map(weft::protocol::output_of)
-                    .map(|(_, bytes)| String::from_utf8_lossy(&bytes).into_owned())
-                    .collect()
+                    .filter_map(weft::protocol::screen_of)
+                    .map(|s| {
+                        let mut term = weft_term::Term::new(s.rows, s.cols, 10_000, |_| {});
+                        term.feed(&s.bytes);
+                        term.history(2000)
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             })
             .unwrap_or_default()
     }

@@ -21,8 +21,8 @@ fn main() -> anyhow::Result<()> {
     std::thread::sleep(std::time::Duration::from_secs(seconds));
 
     let running = pane.running();
-    let (rows, cols) = pane.with_screen(|s| s.size());
-    let contents = pane.with_screen(|s| s.contents());
+    let (rows, cols) = pane.with_term(|s| s.size());
+    let contents = pane.with_term(|s| s.contents());
     println!("--- {program} in a Weft pane · {cols}x{rows} · running={running} ---");
     println!("{contents}");
     Ok(())

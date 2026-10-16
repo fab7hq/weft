@@ -19,7 +19,7 @@ struct Drive {
 
 impl Drive {
     fn screen(&self) -> String {
-        self.pane.with_screen(|s| s.contents())
+        self.pane.with_term(|s| s.contents())
     }
 
     fn send(&mut self, bytes: &[u8]) {

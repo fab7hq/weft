@@ -3,9 +3,9 @@
 //! The server owns the pane processes. A client is one view of them: closing
 //! it, losing an SSH connection, or quitting Weft leaves the agents working.
 //!
-//! What a client sees on attaching is a replay of everything the panes have
-//! printed, so a client that arrives late reconstructs exactly the screen a
-//! client that never left would be showing.
+//! What a client sees on attaching is each pane's screen, its modes and its
+//! recent history, then every chunk printed after it, so a client that
+//! arrives late shows the screen a client that never left would be showing.
 //!
 //! **One daemon, many projects.** A client names its project when it attaches
 //! and sees only that project's panes, numbered from one within it. Nothing
@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use anyhow::Result;
@@ -44,14 +45,6 @@ struct On<'a> {
 }
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
-/// Everything a pane has printed since it started, so a late client can be
-/// shown the same screen as an early one.
-///
-/// Bounded: a long-running agent would otherwise grow without limit. Dropping
-/// the oldest bytes loses scrollback, never the current screen, because a
-/// terminal's state is rebuilt by replaying what remains.
-const REPLAY_LIMIT: usize = 4 * 1024 * 1024;
-
 /// The most lines of a pane's history one `read` answers.
 const HISTORY_MAX: usize = 2_000;
 
@@ -69,7 +62,6 @@ struct Slot {
     /// `panes.json`.
     map: crate::turns::Started,
     pane: Pane,
-    replay: Vec<u8>,
     /// The size the agent was last given, and the size each window last
     /// drew it at. A pane takes the size of the window that last focused it
     /// or typed into it, so two windows of different sizes never squeeze an
@@ -85,6 +77,11 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
+    /// When the pane last printed output, and the PTY sequence and reading
+    /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
+    last_output_at: std::time::Instant,
+    sense_settled_seq: u64,
+    sensed_surface: Option<weft_sense::SurfaceReading>,
 }
 
 impl Slot {
@@ -98,12 +95,8 @@ impl Slot {
         }
     }
 
-    fn record(&mut self, bytes: &[u8]) {
-        self.replay.extend_from_slice(bytes);
-        if self.replay.len() > REPLAY_LIMIT {
-            let cut = self.replay.len() - REPLAY_LIMIT;
-            self.replay.drain(..cut);
-        }
+    fn record(&mut self) {
+        self.last_output_at = std::time::Instant::now();
     }
 }
 
@@ -262,8 +255,8 @@ impl Clients {
     }
 
     /// A pane's bytes, to everyone watching this project who asked for them.
-    fn broadcast_output(&mut self, project: usize, pane: u32, bytes: Vec<u8>) {
-        let wire = Line::Event(Out::Output { pane, bytes }).encode();
+    fn broadcast_output(&mut self, project: usize, pane: u32, seq: u64, bytes: Vec<u8>) {
+        let wire = Line::Event(Out::Output { pane, seq, bytes }).encode();
         let (watching, quiet) = (&self.watching, &self.quiet);
         self.sinks.retain(|id, s| {
             watching.get(id) != Some(&project)
@@ -293,12 +286,19 @@ enum Wake {
         call_id: u64,
         call: Call,
     },
-    /// A chunk a pane printed. Its number stays with the pane: a frame takes
-    /// the number of the screen it reads (`screens.rs`).
+    /// A chunk a pane printed, and its number: a client that drew the
+    /// pane's screen as of a number skips the chunks it already holds.
     Output {
         project: usize,
         pane: u32,
+        seq: u64,
         bytes: Vec<u8>,
+    },
+    /// A pane's PTY output settled for 150 ms at `seq`: run `weft-sense` Head 1.
+    SenseSettle {
+        project: usize,
+        pane: u32,
+        seq: u64,
     },
     Exited {
         project: usize,
@@ -398,6 +398,9 @@ pub struct Session {
     /// A newer Weft installed beside this one, by its version: started on
     /// once no agent runs.
     update: Option<String>,
+    /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
+    #[allow(dead_code)]
+    sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
     /// This daemon's own version, held while it runs so it is never removed
     /// from under it.
     _held: Option<crate::versions::Held>,
@@ -655,6 +658,11 @@ impl Session {
             }
         });
 
+        let weft_dir = config.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let sense = Arc::new(std::sync::RwLock::new(crate::versions::load_sense(
+            &weft_dir,
+            harnesses.is_none(),
+        )));
         let mut session = Session {
             projects: Vec::new(),
             socket: socket.to_path_buf(),
@@ -674,6 +682,7 @@ impl Session {
             supervisor: Default::default(),
             dismissed: None,
             update: None,
+            sense,
             _held: crate::versions::hold_own(),
         };
         // Older versions nothing runs any more are removed: never this one,
@@ -716,12 +725,24 @@ impl Session {
                         self.close_if_idle(at);
                     }
                 }
-                Wake::Output { project, pane, bytes } => {
+                Wake::Output { project, pane, seq: chunk, bytes } => {
+                    let mut seq = None;
                     if let Some(slot) = self.projects.get_mut(project).and_then(|p| p.slot(pane)) {
-                        slot.record(&bytes);
+                        slot.record();
+                        seq = Some(slot.pane.current_seq());
                     }
                     self.printed(project, pane);
-                    self.clients.broadcast_output(project, pane, bytes);
+                    self.clients.broadcast_output(project, pane, chunk, bytes);
+                    if let Some(seq) = seq {
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(150));
+                            let _ = tx.send(Wake::SenseSettle { project, pane, seq });
+                        });
+                    }
+                }
+                Wake::SenseSettle { project, pane, seq } => {
+                    self.sense_pane_if_settled(project, pane, seq);
                 }
                 Wake::Frames => self.frames(),
                 Wake::Exited { project, pane } => {
@@ -797,6 +818,12 @@ impl Session {
     /// One of RingFrame's three acts. The daemon works out what to type and
     /// where it goes; a client only names the act.
     fn act(&mut self, client: u64, at: usize, act: &str, on: On) -> Answer {
+        let act = match act {
+            "eval" => "check",
+            "seal" => "decide",
+            "proceed" => "send",
+            other => other,
+        };
         let On { unit: unit_id, pane, text, eval, start } = on;
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
@@ -1040,13 +1067,17 @@ impl Session {
     fn setup(&mut self, at: usize, act: &str, harness: &str, path: &str) -> Answer {
         let tx = self.tx.clone();
         let config_path = self.config.clone();
+        let sense_slot = Arc::clone(&self.sense);
         let harnesses = self.projects[at].harnesses.clone();
         let (act, harness, path) = (act.to_string(), harness.to_string(), path.to_string());
         let out = self.outside.clone();
-        if !matches!(act.as_str(), "look" | "locate" | "run" | "all") {
+        if !matches!(act.as_str(), "look" | "locate" | "run" | "all" | "sense") {
             return Answer::No("unknown_act", format!("the RingFrame view has no {act}"));
         }
-        if matches!(act.as_str(), "locate" | "run") && harnesses.find(&harness).is_none() {
+        if matches!(act.as_str(), "locate" | "run")
+            && harness != "sense"
+            && harnesses.find(&harness).is_none()
+        {
             return Answer::No(
                 "unknown_harness",
                 format!("Weft has no harness file for {harness}"),
@@ -1054,6 +1085,7 @@ impl Session {
         }
         std::thread::spawn(move || {
             use crate::onboarding::{look, look_as_they_answer, pending, proceed, run, runs, with};
+            let weft_dir = config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
             let show = |v: &weft_core::onboarding::View| {
                 let view = serde_json::to_value(v).unwrap_or_default();
                 let _ = tx.send(Wake::Setup { project: at, view });
@@ -1093,49 +1125,123 @@ impl Session {
                     }
                     Err(e) => note = Some(e),
                 },
-                "run" | "all" => {
-                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
-                    // Weft first: it brings RingFrame's program with it, and the
-                    // steps after it run on that.
-                    if act == "all" && base.weft_behind {
-                        let updating = weft_core::onboarding::View {
-                            weft: "updating…".into(),
-                            ..base.clone()
-                        };
-                        show(&updating);
-                        let step = vec![weft_core::sync::Step::new("weft", &["update"])];
+                "sense" => {
+                    if !path.is_empty() {
+                        if let Err(e) = crate::versions::hot_reload_sense(
+                            &weft_dir,
+                            Path::new(&path),
+                            &sense_slot,
+                        ) {
+                            note = Some(format!("Sense update failed: {e}"));
+                        }
+                    } else {
+                        let step = vec![weft_core::sync::Step::new("weft", &["update", "--sense"])];
                         if let Some(weft_core::onboarding::State::Failed { step, said }) =
                             proceed(out, step, |_| {})
                         {
                             note = Some(format!("{step} failed: {said}"));
-                        }
-                        weft = crate::onboarding::weft_check(out, true);
-                    }
-                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
-                    if act == "all" && base.configuration_behind {
-                        let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
-                        if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                            proceed(out, sync, |_| {})
+                        } else if let Some(model) = crate::versions::load_sense(&weft_dir, false)
+                            && let Ok(mut guard) = sense_slot.write()
                         {
-                            note = Some(format!("{step} failed: {said}"));
+                            *guard = Some(model);
                         }
-                        check = out.release(true);
                     }
-                    let (base, _) = look(out, &harnesses, &check, &weft, cli);
-                    let todo: Vec<String> = base
-                        .rows
-                        .iter()
-                        .filter(|r| if act == "run" { r.name == harness } else { runs(r) })
-                        .map(|r| r.name.clone())
-                        .collect();
-                    for name in todo {
-                        let h = harnesses.find(&name).cloned().expect("a row is a harness");
-                        let latest = base.plugin.clone();
-                        if let Some(state) = run(out, &h, cli, latest.as_deref(), |state| {
-                            show(&with(base.clone(), &name, state));
-                        }) {
-                            failed = Some((name, state));
-                            break;
+                }
+                "run" | "all" => {
+                    if act == "run" && harness == "sense" {
+                        if !path.is_empty() {
+                            if let Err(e) = crate::versions::hot_reload_sense(
+                                &weft_dir,
+                                Path::new(&path),
+                                &sense_slot,
+                            ) {
+                                note = Some(format!("Sense update failed: {e}"));
+                            }
+                        } else {
+                            let step =
+                                vec![weft_core::sync::Step::new("weft", &["update", "--sense"])];
+                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                                proceed(out, step, |_| {})
+                            {
+                                note = Some(format!("{step} failed: {said}"));
+                            } else if let Some(model) =
+                                crate::versions::load_sense(&weft_dir, false)
+                                && let Ok(mut guard) = sense_slot.write()
+                            {
+                                *guard = Some(model);
+                            }
+                        }
+                    } else {
+                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        // Weft first: it brings RingFrame's program with it, and the
+                        // steps after it run on that.
+                        if act == "all" && base.weft_behind {
+                            let updating = weft_core::onboarding::View {
+                                weft: "updating…".into(),
+                                ..base.clone()
+                            };
+                            show(&updating);
+                            let step = vec![weft_core::sync::Step::new("weft", &["update"])];
+                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                                proceed(out, step, |_| {})
+                            {
+                                note = Some(format!("{step} failed: {said}"));
+                            }
+                            weft = crate::onboarding::weft_check(out, true);
+                        }
+                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        if act == "all" && base.configuration_behind {
+                            let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
+                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                                proceed(out, sync, |_| {})
+                            {
+                                note = Some(format!("{step} failed: {said}"));
+                            }
+                            check = out.release(true);
+                        }
+                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        if act == "all" && base.sense_behind {
+                            if !path.is_empty() {
+                                if let Err(e) = crate::versions::hot_reload_sense(
+                                    &weft_dir,
+                                    Path::new(&path),
+                                    &sense_slot,
+                                ) {
+                                    note = Some(format!("Sense update failed: {e}"));
+                                }
+                            } else {
+                                let step = vec![weft_core::sync::Step::new(
+                                    "weft",
+                                    &["update", "--sense"],
+                                )];
+                                if let Some(weft_core::onboarding::State::Failed { step, said }) =
+                                    proceed(out, step, |_| {})
+                                {
+                                    note = Some(format!("{step} failed: {said}"));
+                                } else if let Some(model) =
+                                    crate::versions::load_sense(&weft_dir, false)
+                                    && let Ok(mut guard) = sense_slot.write()
+                                {
+                                    *guard = Some(model);
+                                }
+                            }
+                        }
+                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        let todo: Vec<String> = base
+                            .rows
+                            .iter()
+                            .filter(|r| if act == "run" { r.name == harness } else { runs(r) })
+                            .map(|r| r.name.clone())
+                            .collect();
+                        for name in todo {
+                            let h = harnesses.find(&name).cloned().expect("a row is a harness");
+                            let latest = base.plugin.clone();
+                            if let Some(state) = run(out, &h, cli, latest.as_deref(), |state| {
+                                show(&with(base.clone(), &name, state));
+                            }) {
+                                failed = Some((name, state));
+                                break;
+                            }
                         }
                     }
                 }
@@ -1148,6 +1254,13 @@ impl Session {
                 v.note = note.clone();
                 show(&v);
             });
+            if let Some(ver) = crate::versions::sense_version(&weft_dir).or_else(|| {
+                sense_slot.read().ok().and_then(|g| g.as_ref().map(|m| m.version().to_string()))
+            }) {
+                let (line, step) = weft_core::sync::sense(Some(&ver), v.sense_latest.as_deref());
+                v.sense = line;
+                v.sense_behind = step.is_some();
+            }
             v.note = note;
             if let Some((name, state)) = failed {
                 v = with(v, &name, state);
@@ -1264,15 +1377,24 @@ impl Session {
         self.clients.broadcast(at, &Out::Workspace { setup, gap });
     }
 
-    /// Open again the projects `projects.json` lists, as an earlier daemon
-    /// left it: each reopened now, with no agent running in it.
+    /// Open again the projects `projects.json` (or `state.json` when absent) lists, as an
+    /// earlier daemon left it: each reopened now, with no agent running in it.
     fn reopen(&mut self, mark: bool) {
-        let text = std::fs::read_to_string(self.config.with_file_name("projects.json"))
-            .unwrap_or_default();
+        let weft_dir = self.config.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let proj_file = weft_dir.join("projects.json");
+        let paths: Vec<PathBuf> = if proj_file.exists() {
+            let text = std::fs::read_to_string(&proj_file).unwrap_or_default();
+            weft_core::projects::read(&text)
+                .into_iter()
+                .map(|o| weft_core::state::normalize_project_path(&o.path))
+                .collect()
+        } else {
+            crate::state::load(&weft_dir).open_projects
+        };
         let now = crate::turns::now_millis();
-        for listed in weft_core::projects::read(&text) {
-            if listed.path.is_dir() && self.projects.iter().all(|p| p.root != listed.path) {
-                let at = self.project_at(listed.path);
+        for path in paths {
+            if path.is_dir() && self.projects.iter().all(|p| p.root != path) {
+                let at = self.project_at(path);
                 self.projects[at].reopened = mark.then_some(now);
             }
         }
@@ -1328,7 +1450,8 @@ impl Session {
         }
     }
 
-    /// The projects open here, beside `config.toml`, for a window's picker.
+    /// The projects open here, beside `config.toml`, synced atomically to both
+    /// `state.json` and `projects.json` (`ADR-0003`).
     fn write_projects(&self) {
         let open: Vec<_> = self
             .projects
@@ -1336,10 +1459,8 @@ impl Session {
             .filter(|p| !p.closed)
             .map(|p| weft_core::projects::Opened { path: p.root.clone(), opened: p.opened })
             .collect();
-        write_whole(
-            &self.config.with_file_name("projects.json"),
-            weft_core::projects::write(&open),
-        );
+        let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
+        crate::state::sync_open_projects(weft_dir, &open);
     }
 
     /// The board and the records behind it. Read here so that nothing opens a
@@ -1418,8 +1539,12 @@ impl Session {
 
     /// The project at this path, opened if this is the first client to ask.
     fn project_at(&mut self, root: PathBuf) -> usize {
+        let root = weft_core::state::normalize_project_path(&root);
         match self.projects.iter().position(|p| p.root == root && !p.closed) {
-            Some(at) => at,
+            Some(at) => {
+                self.projects[at].root = root;
+                at
+            }
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
                 let (harnesses, unread) = match &self.harnesses {
@@ -1520,22 +1645,31 @@ impl Session {
                 let panes = self.pane_infos(at);
                 let (agent_panes, sessions) = self.agents_of(at);
                 // Everything comes back in the answer — the board, the panes,
-                // and a replay of what each has printed — rather than as
+                // and each pane's screen with its history — rather than as
                 // events sent before it. A client that waits for its answer
                 // cannot miss what it asked for, and events from here on carry
-                // only what changes.
-                let replay: Vec<_> = self.projects[at]
+                // only what changes: output numbered after the screen's.
+                let screens: Vec<_> = self.projects[at]
                     .panes
                     .iter()
-                    .filter(|s| raw && !s.replay.is_empty())
-                    .map(|s| weft_proto::output_json(s.map.pane, &s.replay))
+                    .filter(|_| raw)
+                    .map(|s| {
+                        let (bytes, seq, (rows, cols)) = s.pane.screen_at(HISTORY_MAX);
+                        weft_proto::screen_json(&weft_proto::OpenScreen {
+                            pane: s.map.pane,
+                            seq,
+                            rows,
+                            cols,
+                            bytes,
+                        })
+                    })
                     .collect();
                 return Ok(Answer::Ok(serde_json::json!({
                     "panes": weft_proto::panes_json(&panes),
                     "units": serde_json::to_value(&units).unwrap_or_default(),
                     "records": records,
                     "rounds": rounds,
-                    "replay": replay,
+                    "screens": screens,
                     // What is already waiting on a person, so a client that
                     // arrives after it was staged can still answer it.
                     "remote": self.clients.remote.as_ref().map(|(_, v)| v),
@@ -1790,6 +1924,9 @@ impl Session {
             Call::Update { version } => return Ok(self.update_to(version)),
             Call::Dismiss => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                let root = self.projects[at].root.clone();
+                let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
+                crate::state::remove_open_project(weft_dir, &root);
                 self.acted_in(at);
                 // Closed once the answer is sent: closing ends this client's
                 // connection to it.
@@ -1797,10 +1934,8 @@ impl Session {
             }
             Call::Shutdown => {
                 // The person's stop: the next daemon opens nothing again.
-                write_whole(
-                    &self.config.with_file_name("projects.json"),
-                    weft_core::projects::write(&[]),
-                );
+                let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
+                crate::state::sync_open_projects(weft_dir, &[]);
                 return Ok(Answer::Done);
             }
         }
@@ -1833,19 +1968,470 @@ mod confirming {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_replay_keeps_the_recent_past_and_drops_the_distant_one() {
-        let mut slot_replay = Vec::new();
-        let mut record = |bytes: &[u8]| {
-            slot_replay.extend_from_slice(bytes);
-            if slot_replay.len() > REPLAY_LIMIT {
-                let cut = slot_replay.len() - REPLAY_LIMIT;
-                slot_replay.drain(..cut);
-            }
+    fn stage_sense_bundle_at(dst: &Path, version: &str) {
+        let workspace_bundle =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sense/dist/fab7-sense-v1");
+        let src = if workspace_bundle.exists() {
+            workspace_bundle
+        } else {
+            let home = std::env::var_os("HOME").expect("HOME");
+            PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
         };
-        record(&vec![b'o'; REPLAY_LIMIT]);
-        record(b"the newest output");
-        assert_eq!(slot_replay.len(), REPLAY_LIMIT, "bounded");
-        assert!(slot_replay.ends_with(b"the newest output"), "the present survives");
+        std::fs::create_dir_all(dst).unwrap();
+        for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
+            let p = src.join(name);
+            if p.exists() {
+                std::fs::copy(p, dst.join(name)).unwrap();
+            }
+        }
+        let mut manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(src.join("manifest.json")).unwrap())
+                .unwrap();
+        manifest["version"] = serde_json::json!(version);
+        std::fs::write(dst.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn hot_reloading_sense_bundle_in_weftd_keeps_running_panes_alive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join("weft");
+        let proj_dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        std::fs::create_dir_all(&proj_dir).unwrap();
+
+        let v1_src = tmp.path().join("sense_0.1.0");
+        let v2_src = tmp.path().join("sense_0.2.0");
+        stage_sense_bundle_at(&v1_src, "0.1.0");
+        stage_sense_bundle_at(&v2_src, "0.2.0");
+        crate::versions::install_sense_bundle(&weft_dir, &v1_src).unwrap();
+
+        let sock = weft_dir.join("weft.sock");
+        let cfg = weft_dir.join("config.toml");
+        std::fs::write(&cfg, "").unwrap();
+
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let sock_srv = sock.clone();
+        let cfg_srv = cfg.clone();
+        let srv = std::thread::spawn(move || {
+            let _ = Session::serve_with(&sock_srv, &cfg_srv, Some(harnesses));
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&sock) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let stream = UnixStream::connect(&sock).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+
+        weft_proto::send(
+            &mut writer,
+            &Line::Call { id: 1, call: Call::Hello { client: "test".into(), protocol: PROTOCOL } }
+                .encode(),
+        )
+        .unwrap();
+        let _ = reader.next().unwrap();
+
+        weft_proto::send(
+            &mut writer,
+            &Line::Call {
+                id: 2,
+                call: Call::Open {
+                    path: proj_dir.display().to_string(),
+                    rows: 24,
+                    cols: 80,
+                    raw: true,
+                },
+            }
+            .encode(),
+        )
+        .unwrap();
+        let _ = reader.next().unwrap();
+
+        // Verify state.json and projects.json were atomically written on project open
+        let saved_state = crate::state::load(&weft_dir);
+        assert_eq!(saved_state.open_projects, vec![proj_dir.clone()]);
+
+        // Start a persistent shell pane and print its PID before Sense hot-reload
+        weft_proto::send(
+            &mut writer,
+            &Line::Call {
+                id: 3,
+                call: Call::StartAgent {
+                    harness: "claude-code".into(),
+                    spec: "/bin/sh".into(),
+                    session: None,
+                },
+            }
+            .encode(),
+        )
+        .unwrap();
+        let mut pane_id = None;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(Line::Result { id: 3, result })) = reader.next() {
+                pane_id = result["pane"].as_u64().map(|n| n as u32);
+                break;
+            }
+        }
+        let pane_id = pane_id.expect("started pane");
+        weft_proto::send(
+            &mut writer,
+            &Line::Call {
+                id: 4,
+                call: Call::Input { pane: pane_id, bytes: b"echo PID_BEFORE=$$\n".to_vec() },
+            }
+            .encode(),
+        )
+        .unwrap();
+
+        // Trigger Sense bundle hot-reload to 0.2.0 via Call::Setup
+        weft_proto::send(
+            &mut writer,
+            &Line::Call {
+                id: 5,
+                call: Call::Setup {
+                    act: "sense".into(),
+                    harness: "sense".into(),
+                    path: v2_src.display().to_string(),
+                },
+            }
+            .encode(),
+        )
+        .unwrap();
+
+        let mut updated_to_v2 = false;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(Line::Event(Out::Setup { view }))) = reader.next()
+                && view["sense"].as_str().is_some_and(|s| s.contains("0.2.0"))
+            {
+                updated_to_v2 = true;
+                break;
+            }
+        }
+        assert!(updated_to_v2, "weftd hot-reloaded Sense 0.2.0 in place");
+        assert_eq!(crate::versions::sense_version(&weft_dir).as_deref(), Some("0.2.0"));
+
+        // Verify the running pane was never restarted and still has the exact same shell PID
+        weft_proto::send(
+            &mut writer,
+            &Line::Call {
+                id: 6,
+                call: Call::Input { pane: pane_id, bytes: b"echo PID_AFTER=$$\n".to_vec() },
+            }
+            .encode(),
+        )
+        .unwrap();
+
+        let mut pid_before = None;
+        let mut pid_after = None;
+        while std::time::Instant::now() < deadline && (pid_before.is_none() || pid_after.is_none())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            weft_proto::send(
+                &mut writer,
+                &Line::Call {
+                    id: 7,
+                    call: Call::Read {
+                        what: "history".into(),
+                        unit: String::new(),
+                        pane: Some(pane_id),
+                        lines: Some(50),
+                        before: None,
+                        after: None,
+                    },
+                }
+                .encode(),
+            )
+            .unwrap();
+            while let Ok(Some(line)) = reader.next() {
+                if let Line::Result { id: 7, result } = line {
+                    let hist = result["text"].as_str().unwrap_or_default();
+                    for l in hist.lines() {
+                        if let Some(rest) = l.strip_prefix("PID_BEFORE=")
+                            && rest.chars().all(|c| c.is_ascii_digit())
+                            && !rest.is_empty()
+                        {
+                            pid_before = Some(rest.to_string());
+                        }
+                        if let Some(rest) = l.strip_prefix("PID_AFTER=")
+                            && rest.chars().all(|c| c.is_ascii_digit())
+                            && !rest.is_empty()
+                        {
+                            pid_after = Some(rest.to_string());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        assert!(pid_before.is_some(), "pane printed PID before hot-reload");
+        assert_eq!(pid_before, pid_after, "pane PID unchanged across Sense hot-reload");
+
+        weft_proto::send(&mut writer, &Line::Call { id: 8, call: Call::Shutdown }.encode())
+            .unwrap();
+        let _ = srv.join();
+    }
+
+    #[test]
+    fn sense_refines_unhooked_waiting_and_post_stop_goal_continuation_in_weftd() {
+        let dir = tempfile::tempdir().unwrap();
+        let weft_dir = dir.path().join(".fab7/weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let socket = weft_dir.join("weft.sock");
+        let config = weft_dir.join("config.toml");
+        std::fs::write(&config, "").unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../sense/dist/fab7-sense-v1");
+        crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
+
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let srv_sock = socket.clone();
+        let srv_cfg = config.clone();
+        let srv = std::thread::spawn(move || {
+            let _ = Session::serve_with(&srv_sock, &srv_cfg, Some(harnesses));
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&socket) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+
+        fn call(
+            writer: &mut UnixStream,
+            reader: &mut Lines<UnixStream>,
+            id: u64,
+            c: Call,
+        ) -> (serde_json::Value, Vec<Out>) {
+            weft_proto::send(writer, &Line::Call { id, call: c }.encode()).unwrap();
+            let mut events = Vec::new();
+            while let Ok(Some(line)) = reader.next() {
+                match line {
+                    Line::Result { id: rid, result } if rid == id => return (result, events),
+                    Line::Event(ev) => events.push(ev),
+                    _ => {}
+                }
+            }
+            panic!("did not receive Result for call {id}");
+        }
+
+        call(
+            &mut writer,
+            &mut reader,
+            1,
+            Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL },
+        );
+        call(
+            &mut writer,
+            &mut reader,
+            2,
+            Call::Open { path: project.display().to_string(), rows: 40, cols: 120, raw: true },
+        );
+
+        // 1. Spawn an Antigravity pane and emit `PreInvocation` ("working"), then print an
+        // un-hooked Antigravity permission prompt and verify weftd transitions it to Turn::Waiting.
+        let token_file = dir.path().join("agy.token");
+        let agy_script = dir.path().join("agy-mock.sh");
+        std::fs::write(
+            &agy_script,
+            format!(
+                "#!/bin/sh\nstty raw -echo 2>/dev/null || true\nprintf '%s' \"$WEFT_PANE_TOKEN\" > '{}'\nexec /bin/cat\n",
+                token_file.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&agy_script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let (res, _) = call(
+            &mut writer,
+            &mut reader,
+            3,
+            Call::StartAgent {
+                harness: "antigravity".into(),
+                spec: agy_script.display().to_string(),
+                session: None,
+            },
+        );
+        let agy_pane = res["pane"].as_u64().unwrap() as u32;
+
+        while !token_file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let agy_token = std::fs::read_to_string(&token_file).unwrap();
+
+        let agy_transcript = dir.path().join("agy-transcript.jsonl");
+        std::fs::write(
+            &agy_transcript,
+            include_str!("../../../weft-core/tests/fixtures/conversation/antigravity.jsonl"),
+        )
+        .unwrap();
+
+        // Send PreInvocation hook ("working") tying session "s-agy-1"
+        weft_proto::send(
+            &mut writer,
+            &Line::Event(Out::Signal(Box::new(weft_core::signal::Sent {
+                pane: Some(agy_pane),
+                token: Some(agy_token.clone()),
+                harness: "antigravity".into(),
+                session: "s-agy-1".into(),
+                state: Some("working".into()),
+                ..Default::default()
+            })))
+            .encode(),
+        )
+        .unwrap();
+
+        let perm_prompt = concat!(
+            "\x1b[2J\x1b[H",
+            "◈ Propose command: rm -f /tmp/hostlab-perm-probe && touch /tmp/hostlab-perm-probe\r\n",
+            "  Allow execution of this command?\r\n",
+            "  ❯ 1. Yes, run command\r\n",
+            "    2. Always allow in this workspace\r\n",
+            "    3. No, cancel (Esc)\r\n"
+        );
+        call(
+            &mut writer,
+            &mut reader,
+            4,
+            Call::Input { pane: agy_pane, bytes: perm_prompt.as_bytes().to_vec() },
+        );
+
+        let mut saw_waiting = false;
+        let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < wait_until && !saw_waiting {
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
+                && panes.first().copied().flatten() == Some(Turn::Waiting)
+            {
+                saw_waiting = true;
+            }
+        }
+        assert!(
+            saw_waiting,
+            "un-hooked Antigravity permission prompt transitions effective Turn to Turn::Waiting after 150ms settle"
+        );
+
+        // 2. Spawn a Claude Code pane, print a post-Stop /goal continuation check screen,
+        // emit Stop ("turn_ended"), and verify weftd keeps Turn::Working and refuses direct send (D10.2 / D4.11).
+        let claude_token_file = dir.path().join("claude.token");
+        let claude_script = dir.path().join("claude-mock.sh");
+        std::fs::write(
+            &claude_script,
+            format!(
+                "#!/bin/sh\nstty raw -echo 2>/dev/null || true\nprintf '%s' \"$WEFT_PANE_TOKEN\" > '{}'\nexec /bin/cat\n",
+                claude_token_file.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&claude_script, std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+
+        let (res2, _) = call(
+            &mut writer,
+            &mut reader,
+            5,
+            Call::StartAgent {
+                harness: "claude-code".into(),
+                spec: claude_script.display().to_string(),
+                session: None,
+            },
+        );
+        let claude_pane = res2["pane"].as_u64().unwrap() as u32;
+        while !claude_token_file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let claude_token = std::fs::read_to_string(&claude_token_file).unwrap();
+
+        let post_hook_screen = concat!(
+            "\x1b[2J\x1b[38;1H",
+            "● Done.\r\n",
+            "◦ Verifying goal completion with judge… (12s · esc to interrupt)\r\n",
+            "❯ "
+        );
+        call(
+            &mut writer,
+            &mut reader,
+            6,
+            Call::Input { pane: claude_pane, bytes: post_hook_screen.as_bytes().to_vec() },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        weft_proto::send(
+            &mut writer,
+            &Line::Event(Out::Signal(Box::new(weft_core::signal::Sent {
+                pane: Some(claude_pane),
+                token: Some(claude_token),
+                harness: "claude-code".into(),
+                session: "s-claude-1".into(),
+                state: Some("turn_ended".into()),
+                ..Default::default()
+            })))
+            .encode(),
+        )
+        .unwrap();
+
+        // Even though the Stop ("turn_ended") hook arrived, WorkingPostHook keeps effective Turn::Working!
+        let mut saw_claude_working = false;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until {
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
+                && panes.get(claude_pane as usize).copied().flatten() == Some(Turn::Working)
+            {
+                saw_claude_working = true;
+                break;
+            }
+        }
+        assert!(
+            saw_claude_working,
+            "post-Stop /goal continuation check keeps effective Turn::Working in weftd"
+        );
+
+        // Once the screen settles to IdleReady, effective Turn transitions to Turn::TurnEnded.
+        let idle_screen = concat!(
+            "\x1b[2J\x1b[38;1H",
+            "● Done.\r\n",
+            "❯ \r\n",
+            "  ⏵⏵ bypass permissions on · 42% context"
+        );
+        call(
+            &mut writer,
+            &mut reader,
+            7,
+            Call::Input { pane: claude_pane, bytes: idle_screen.as_bytes().to_vec() },
+        );
+        let mut saw_claude_ended = false;
+        let until2 = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until2 {
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
+                && panes.get(claude_pane as usize).copied().flatten() == Some(Turn::TurnEnded)
+            {
+                saw_claude_ended = true;
+                break;
+            }
+        }
+        assert!(
+            saw_claude_ended,
+            "once screen settles to IdleReady after WorkingPostHook, effective Turn transitions to TurnEnded"
+        );
+
+        weft_proto::send(&mut writer, &Line::Call { id: 99, call: Call::Shutdown }.encode())
+            .unwrap();
+        let _ = srv.join();
     }
 }

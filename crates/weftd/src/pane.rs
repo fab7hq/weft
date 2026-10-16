@@ -12,14 +12,15 @@ use anyhow::Result;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 use weft_core::inject::{self, Handoff, PaneState, Refusal, Step};
+use weft_term::{Snapshot, Term};
 
 /// Where a pane's output goes, numbered, once someone asks for the stream.
 type Tap = Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>;
 
 pub struct Pane {
     pub title: String,
-    parser: Arc<Mutex<vt100::Parser>>,
-    /// The number of the last chunk the parser took, moved only while its
+    term: Arc<Mutex<Term>>,
+    /// The number of the last chunk the terminal took, moved only while its
     /// lock is held: a screen read under that lock holds every chunk up to
     /// this number and none after (remote.md D1).
     seq: Arc<AtomicU64>,
@@ -27,37 +28,11 @@ pub struct Pane {
     /// listening to never accumulates output it will not be asked for.
     tap: Tap,
     master: Box<dyn MasterPty + Send>,
-    /// Shared with the reader, which answers the harness's cursor-position
-    /// queries as a terminal would.
+    /// Shared with the terminal, which answers what the harness asks about
+    /// it (where the cursor is, what it is, its colours) as a terminal would.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn Child + Send + Sync>,
     injecting: bool,
-}
-
-/// Where each cursor-position query in `bytes` ends (`ESC [ 6 n`, or the DEC
-/// form `ESC [ ? 6 n` when the flag is set), in order.
-fn cursor_queries(bytes: &[u8]) -> Vec<(usize, bool)> {
-    let mut out = Vec::new();
-    let mut at = 0;
-    while at + 4 <= bytes.len() {
-        if bytes[at..].starts_with(b"\x1b[6n") {
-            out.push((at + 4, false));
-            at += 4;
-        } else if bytes[at..].starts_with(b"\x1b[?6n") {
-            out.push((at + 5, true));
-            at += 5;
-        } else {
-            at += 1;
-        }
-    }
-    out
-}
-
-/// How many bytes at the end of `bytes` could be the start of a query the next
-/// read finishes, to be held until then.
-fn query_prefix_at_end(bytes: &[u8]) -> usize {
-    let starts: [&[u8]; 5] = [b"\x1b[?6", b"\x1b[6", b"\x1b[?", b"\x1b[", b"\x1b"];
-    starts.iter().find(|s| bytes.ends_with(s)).map_or(0, |s| s.len())
 }
 
 impl Pane {
@@ -96,45 +71,32 @@ impl Pane {
         let child = pair.slave.spawn_command(cmd)?;
         drop(pair.slave);
 
-        let parser = Arc::new(Mutex::new(vt100::Parser::new(rows, cols, 10_000)));
+        let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
+        let answer = Arc::clone(&writer);
+        // A harness that asks about its terminal waits for the answer, and
+        // some give up and quit without it.
+        let term = Arc::new(Mutex::new(Term::new(rows, cols, 10_000, move |reply| {
+            if let Ok(mut w) = answer.lock() {
+                let _ = w.write_all(reply);
+                let _ = w.flush();
+            }
+        })));
         let seq = Arc::new(AtomicU64::new(0));
         let tap: Tap = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
-        let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
-        let sink = Arc::clone(&parser);
+        let sink = Arc::clone(&term);
         let tap_reader = Arc::clone(&tap);
-        let answer = Arc::clone(&writer);
         let numbering = Arc::clone(&seq);
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
-            // The start of a query a read cut in two, held for the next read.
-            let mut held: Vec<u8> = Vec::new();
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 {
                     break;
                 }
-                let mut bytes = std::mem::take(&mut held);
-                bytes.extend_from_slice(&buf[..n]);
-                let keep = query_prefix_at_end(&bytes);
-                held = bytes.split_off(bytes.len() - keep);
+                let bytes = buf[..n].to_vec();
                 let mut number = 0;
-                if let Ok(mut p) = sink.lock() {
-                    // A harness that asks where the cursor is waits for the
-                    // answer, and some give up and quit without it: answer
-                    // each query from the screen as it stands at that byte.
-                    let mut from = 0;
-                    for (end, private) in cursor_queries(&bytes) {
-                        p.process(&bytes[from..end]);
-                        from = end;
-                        let (row, col) = p.screen().cursor_position();
-                        let mark = if private { "?" } else { "" };
-                        let reply = format!("\x1b[{mark}{};{}R", row + 1, col + 1);
-                        if let Ok(mut w) = answer.lock() {
-                            let _ = w.write_all(reply.as_bytes());
-                            let _ = w.flush();
-                        }
-                    }
-                    p.process(&bytes[from..]);
+                if let Ok(mut t) = sink.lock() {
+                    t.feed(&bytes);
                     number = numbering.fetch_add(1, Ordering::SeqCst) + 1;
                 }
                 // The same bytes go to whoever is streaming this pane, so a
@@ -146,11 +108,6 @@ impl Pane {
                     *t = None;
                 }
             }
-            if !held.is_empty()
-                && let Ok(mut p) = sink.lock()
-            {
-                p.process(&held);
-            }
             if let Ok(mut t) = tap_reader.lock() {
                 *t = None;
             }
@@ -158,7 +115,7 @@ impl Pane {
 
         Ok(Self {
             title: title.into(),
-            parser,
+            term,
             seq,
             tap,
             master: pair.master,
@@ -189,44 +146,57 @@ impl Pane {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Screen state for rendering. Held briefly; the reader thread is writing.
-    pub fn with_screen<T>(&self, f: impl FnOnce(&vt100::Screen) -> T) -> T {
-        let parser = self.parser.lock().expect("pane parser");
-        f(parser.screen())
+    /// The terminal, for reading. Held briefly; the reader thread is writing.
+    pub fn with_term<T>(&self, f: impl FnOnce(&Term) -> T) -> T {
+        let term = self.term.lock().expect("pane terminal");
+        f(&term)
     }
 
-    /// The screen as escape codes that redraw it, and the number of the last
-    /// chunk in it, read under one lock (remote.md D2).
-    pub fn screen_at(&self) -> (Vec<u8>, u64) {
-        let parser = self.parser.lock().expect("pane parser");
-        (parser.screen().state_formatted(), self.seq.load(Ordering::SeqCst))
+    /// The screen as escape codes that redraw it on a fresh terminal of its
+    /// size, with up to `history` lines behind it, the number of the last
+    /// chunk in it and that size, read under one lock.
+    pub fn screen_at(&self, history: usize) -> (Vec<u8>, u64, (u16, u16)) {
+        let term = self.term.lock().expect("pane terminal");
+        (term.formatted(history), self.seq.load(Ordering::SeqCst), term.size())
+    }
+
+    /// The next frame for a device that last drew `last`: the change from
+    /// it, or the whole visible screen (`full`) when there is no last, the
+    /// size changed or the alternate screen switched. Read under one lock
+    /// with the number of the last chunk in it.
+    pub fn frame(&self, last: Option<&Snapshot>) -> Frame {
+        let term = self.term.lock().expect("pane terminal");
+        let (full, bytes) = match last.and_then(|l| term.diff(l)) {
+            Some(change) => (false, change),
+            None => (true, term.formatted(0)),
+        };
+        Frame { full, bytes, shown: term.snapshot(), seq: self.seq.load(Ordering::SeqCst) }
+    }
+
+    pub fn current_seq(&self) -> u64 {
+        self.seq.load(Ordering::SeqCst)
+    }
+
+    /// Snapshot of the live screen for `weft-sense` Head 1:
+    /// `(alt_screen, (rows, cols), (cursor_row, cursor_col), bottom_lines, seq)`.
+    pub fn surface_snapshot(&self) -> (bool, (u16, u16), (u16, u16), Vec<String>, u64) {
+        let term = self.term.lock().expect("pane terminal");
+        let (rows, cols) = term.size();
+        let cursor = term.cursor();
+        let alt = term.alt_screen();
+        let mut lines: Vec<String> =
+            term.rows().into_iter().filter(|l| !l.trim().is_empty()).collect();
+        if lines.len() > 15 {
+            lines.drain(..lines.len() - 15);
+        }
+        let seq = self.seq.load(Ordering::SeqCst);
+        (alt, (rows, cols), cursor, lines, seq)
     }
 
     /// The last `lines` of what the pane printed, scrollback then screen, as
     /// plain text: the history a device scrolls back through (remote.md D7).
-    /// Read under the parser lock, leaving the pane scrolled where it was.
     pub fn history(&self, lines: usize) -> String {
-        let mut parser = self.parser.lock().expect("pane parser");
-        let screen = parser.screen_mut();
-        let (was, (rows, cols)) = (screen.scrollback(), screen.size());
-        screen.set_scrollback(usize::MAX);
-        let mut out: Vec<String> = Vec::new();
-        // Back as far as it goes, then a screen's height at a time: at each
-        // offset the top rows are the oldest not taken yet.
-        let mut back = screen.scrollback();
-        while back > 0 {
-            screen.set_scrollback(back);
-            let take = back.min(rows as usize);
-            out.extend(screen.rows(0, cols).take(take));
-            back -= take;
-        }
-        screen.set_scrollback(0);
-        out.extend(screen.rows(0, cols));
-        screen.set_scrollback(was);
-        while out.last().is_some_and(|l| l.trim().is_empty()) {
-            out.pop();
-        }
-        out.split_off(out.len().saturating_sub(lines)).join("\n")
+        self.term.lock().expect("pane terminal").history(lines)
     }
 
     /// Move back through what the pane has already printed.
@@ -240,25 +210,21 @@ impl Pane {
     /// instead sends nothing here, so this moves nothing: its history lives
     /// inside it, behind the key its harness file names (`transcript`).
     pub fn scroll(&mut self, delta: i32) {
-        let mut parser = self.parser.lock().expect("pane parser");
-        let screen = parser.screen_mut();
-        let at = screen.scrollback() as i32;
-        let next = (at + delta).max(0) as usize;
-        screen.set_scrollback(next);
+        self.term.lock().expect("pane terminal").scroll(delta);
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.parser.lock().expect("pane parser").screen().scrollback()
+        self.term.lock().expect("pane terminal").scroll_offset()
     }
 
     /// Jump back to the live output.
     pub fn scroll_to_bottom(&mut self) {
-        self.parser.lock().expect("pane parser").screen_mut().set_scrollback(0);
+        self.term.lock().expect("pane terminal").scroll_to_bottom();
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) -> Result<()> {
         self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })?;
-        self.parser.lock().expect("pane parser").screen_mut().set_size(rows, cols);
+        self.term.lock().expect("pane terminal").resize(rows, cols);
         Ok(())
     }
 
@@ -333,7 +299,7 @@ impl Pane {
         last: &mut (std::time::Instant, String),
         still: std::time::Duration,
     ) -> bool {
-        let screen = self.with_screen(|s| s.contents());
+        let screen = self.with_term(|t| t.contents());
         if screen != last.1 {
             *last = (std::time::Instant::now(), screen);
             return false;
@@ -351,11 +317,11 @@ impl Pane {
         let naming = |screen: String| -> Vec<String> {
             screen.lines().filter(|l| l.contains(active)).map(|l| l.trim().to_string()).collect()
         };
-        let before = naming(self.with_screen(|s| s.contents()));
+        let before = naming(self.with_term(|t| t.contents()));
         self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            let now = naming(self.with_screen(|s| s.contents()));
+            let now = naming(self.with_term(|t| t.contents()));
             if !now.is_empty() && now != before {
                 std::thread::sleep(inject::SUBMIT_SETTLE);
                 return Ok(true);
@@ -401,7 +367,7 @@ impl Pane {
     }
 
     fn bracketed_paste(&self) -> bool {
-        self.with_screen(|s| s.bracketed_paste())
+        self.with_term(|t| t.bracketed_paste())
     }
 
     /// Whether the screen changed from `before` and then held still for
@@ -424,6 +390,15 @@ impl Pane {
         }
         changed
     }
+}
+
+/// A screen frame for a device: see [`Pane::frame`].
+pub struct Frame {
+    pub full: bool,
+    pub bytes: Vec<u8>,
+    /// What the device shows once it draws this frame.
+    pub shown: Snapshot,
+    pub seq: u64,
 }
 
 /// An injection that was *attempted*. Never evidence that it arrived: only
@@ -451,7 +426,7 @@ mod tests {
     #[test]
     fn a_pane_runs_a_real_process_and_renders_its_output() {
         let pane = sh("printf 'hello from a pane'");
-        let text = pane.with_screen(|s| s.contents());
+        let text = pane.with_term(|t| t.contents());
         assert!(text.contains("hello from a pane"), "screen was: {text:?}");
     }
 
@@ -465,7 +440,7 @@ mod tests {
         let mut pane =
             Pane::spawn_args("test", "bash", &["-c", script], "/tmp", &[], 24, 80).expect("spawn");
         std::thread::sleep(std::time::Duration::from_millis(1500));
-        let text = pane.with_screen(|s| s.contents());
+        let text = pane.with_term(|t| t.contents());
         assert!(text.contains("got=1;4;"), "the cursor sat after `abc`, row 1 column 4: {text:?}");
         pane.stop();
     }
@@ -477,18 +452,66 @@ mod tests {
         let mut pane =
             Pane::spawn_args("test", "bash", &["-c", script], "/tmp", &env, 24, 80).expect("spawn");
         std::thread::sleep(std::time::Duration::from_millis(500));
-        let text = pane.with_screen(|s| s.contents());
+        let text = pane.with_term(|t| t.contents());
         assert!(text.contains("home=unset pane=7;"), "screen was: {text:?}");
         pane.stop();
     }
 
+    /// What Sense reads off a pane (the bottom rows, the cursor, the
+    /// alternate screen) is what vt100 showed for the same recorded output:
+    /// the model was trained on that text. Rows end at their last character.
     #[test]
-    fn a_cursor_query_is_found_whole_or_cut_by_a_read() {
-        assert_eq!(cursor_queries(b"x\x1b[6ny\x1b[?6n"), [(5, false), (11, true)]);
-        assert!(cursor_queries(b"\x1b[60m\x1b[6").is_empty(), "not a query, and not one yet");
-        assert_eq!(query_prefix_at_end(b"abc\x1b[6"), 3, "held for the next read");
-        assert_eq!(query_prefix_at_end(b"abc\x1b"), 1);
-        assert_eq!(query_prefix_at_end(b"abc"), 0);
+    fn sense_sees_the_rows_it_was_trained_on() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/screens");
+        for (name, rows, cols) in [("claude", 30, 100), ("codex", 30, 100), ("less", 24, 80)] {
+            let golden: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(dir.join(format!("{name}.text.json"))).unwrap(),
+            )
+            .unwrap();
+            let want = golden["frames"].as_array().unwrap().last().unwrap();
+            // The recorded bytes exactly as recorded: no newline translation.
+            let script = format!(
+                "stty -opost -echo; cat '{}'; sleep 5",
+                dir.join(format!("{name}.bin")).display()
+            );
+            let mut pane =
+                Pane::spawn_args("test", "sh", &["-c", &script], "/tmp", &[], rows, cols)
+                    .expect("spawn");
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let (alt, _, cursor, bottom, _) = pane.surface_snapshot();
+            let want_bottom: Vec<&str> = want["bottom"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l.as_str().unwrap().trim_end_matches(' '))
+                .collect();
+            assert_eq!(bottom, want_bottom, "{name}");
+            assert_eq!(alt, want["alternate"].as_bool().unwrap(), "{name}");
+            assert_eq!(
+                [cursor.0 as u64, cursor.1 as u64],
+                [want["cursor"][0].as_u64().unwrap(), want["cursor"][1].as_u64().unwrap()],
+                "{name}"
+            );
+            pane.stop();
+        }
+    }
+
+    /// A harness asking what its terminal is (DA1) and what its background
+    /// is (OSC 11) gets one answer to each, and nothing more.
+    #[test]
+    fn a_pane_answers_what_it_is_and_its_background_once() {
+        let script = "stty -echo; printf '\\033[c'; IFS= read -r -t 3 -d c da; \
+             printf '\\033]11;?\\007'; IFS= read -r -t 3 -d $'\\a' bg; \
+             IFS= read -r -t 1 -n 1 more; \
+             printf ' da=%s; bg=%s; more=%d;' \"${da#*[}\" \"${bg#*;}\" \"${#more}\"";
+        let mut pane =
+            Pane::spawn_args("test", "bash", &["-c", script], "/tmp", &[], 24, 200).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        let text = pane.with_term(|t| t.contents());
+        assert!(text.contains("da=?6;"), "a VT102's identity: {text:?}");
+        assert!(text.contains("bg=rgb:0505/0808/0f0f;"), "the Atlas background: {text:?}");
+        assert!(text.contains("more=0;"), "one answer each: {text:?}");
+        pane.stop();
     }
 
     #[test]
@@ -525,7 +548,7 @@ mod tests {
         let attempt = pane.inject_as(b"/plan ship it", &how).expect("typed");
         assert!(attempt.submitted, "{attempt:?}");
         std::thread::sleep(std::time::Duration::from_millis(300));
-        let text = pane.with_screen(|s| s.contents());
+        let text = pane.with_term(|t| t.contents());
         assert!(text.contains("SUBMITTED[ship it]"), "the body was dropped: {text:?}");
         pane.stop();
     }
@@ -724,10 +747,10 @@ while True:
             "the listener sees what the pane printed"
         );
         // And the pane's own screen still has it: the tap is a copy, not a move.
-        assert!(pane.with_screen(|s| s.contents()).contains("streamed-to-the-server"));
+        assert!(pane.with_term(|t| t.contents()).contains("streamed-to-the-server"));
     }
 
-    /// Each chunk is numbered as the parser takes it, so a screen taken at
+    /// Each chunk is numbered as the terminal takes it, so a screen taken at
     /// one number holds every chunk up to it and none after (remote.md D1).
     #[test]
     fn each_chunk_a_pane_prints_is_numbered_in_order() {
@@ -746,7 +769,7 @@ while True:
         }
         assert!(seqs.len() > 1, "more than one chunk: {seqs:?}");
         assert!(seqs.windows(2).all(|w| w[0] < w[1]), "strictly increasing: {seqs:?}");
-        let (_, at) = pane.screen_at();
+        let (_, at, _) = pane.screen_at(0);
         // The shell's prompt may follow as one more chunk, so at least.
         assert!(at >= *seqs.last().unwrap(), "the screen has taken every chunk sent: {at}");
         pane.stop();
@@ -756,16 +779,16 @@ while True:
     fn a_pane_scrolls_back_through_what_it_printed() {
         let mut pane = sh("for i in $(seq 1 60); do echo line-$i; done");
         assert_eq!(pane.scroll_offset(), 0, "starts at the live output");
-        assert!(pane.with_screen(|s| s.contents()).contains("line-60"));
+        assert!(pane.with_term(|t| t.contents()).contains("line-60"));
 
         pane.scroll(30);
         assert_eq!(pane.scroll_offset(), 30);
-        let scrolled = pane.with_screen(|s| s.contents());
+        let scrolled = pane.with_term(|t| t.contents());
         assert!(scrolled.contains("line-20"), "older output is reachable: {scrolled:?}");
 
         pane.scroll_to_bottom();
         assert_eq!(pane.scroll_offset(), 0);
-        assert!(pane.with_screen(|s| s.contents()).contains("line-60"));
+        assert!(pane.with_term(|t| t.contents()).contains("line-60"));
     }
 
     #[test]
@@ -779,7 +802,7 @@ while True:
     fn a_pane_resizes_without_losing_its_screen() {
         let mut pane = sh("printf 'resize me'");
         pane.resize(30, 100).expect("resize");
-        assert!(pane.with_screen(|s| s.contents()).contains("resize me"));
-        assert_eq!(pane.with_screen(|s| s.size()), (30, 100));
+        assert!(pane.with_term(|t| t.contents()).contains("resize me"));
+        assert_eq!(pane.with_term(|t| t.size()), (30, 100));
     }
 }

@@ -1,0 +1,257 @@
+{
+  "chunk": 128,
+  "cols": 80,
+  "frames": [
+    {
+      "alternate": true,
+      "bottom": [
+        "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃",
+        "┌────"
+      ],
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌────",
+      "cursor": [
+        1,
+        5
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃",
+        "┌──────────┐",
+        "│ box 表 ✓ │",
+        "└──────────┘",
+        "line 1 — 第1行 ✓",
+        "line 2 — 第2行 ✓"
+      ],
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓",
+      "cursor": [
+        5,
+        16
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃",
+        "┌──────────┐",
+        "│ box 表 ✓ │",
+        "└──────────┘",
+        "line 1 — 第1行 ✓",
+        "line 2 — 第2行 ✓",
+        "line 3 — 第3行 ✓",
+        "line 4 — 第4行 ✓",
+        "line 5 — 第5行 ✓",
+        "line 6 — 第6行 ✓",
+        "line 7 — 第7行 ✓",
+        "line 8"
+      ],
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8",
+      "cursor": [
+        11,
+        6
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "│ box 表 ✓ │",
+        "└──────────┘",
+        "line 1 — 第1行 ✓",
+        "line 2 — 第2行 ✓",
+        "line 3 — 第3行 ✓",
+        "line 4 — 第4行 ✓",
+        "line 5 — 第5行 ✓",
+        "line 6 — 第6行 ✓",
+        "line 7 — 第7行 ✓",
+        "line 8 — 第8行 ✓",
+        "line 9 — 第9行 ✓",
+        "line 10 — 第10行 ✓",
+        "line 11 — 第11行 ✓",
+        "line 12 — 第12行 ✓",
+        "line 13 "
+      ],
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 ",
+      "cursor": [
+        16,
+        8
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 4 — 第4行 ✓",
+        "line 5 — 第5行 ✓",
+        "line 6 — 第6行 ✓",
+        "line 7 — 第7行 ✓",
+        "line 8 — 第8行 ✓",
+        "line 9 — 第9行 ✓",
+        "line 10 — 第10行 ✓",
+        "line 11 — 第11行 ✓",
+        "line 12 — 第12行 ✓",
+        "line 13 — 第13行 ✓",
+        "line 14 — 第14行 ✓",
+        "line 15 — 第15行 ✓",
+        "line 16 — 第16行 ✓",
+        "line 17 — 第17行 ✓",
+        "line 1"
+      ],
+      "contents": "Weft screens: 漢字のテスト 한국어 中文 — emoji 🚀✅ and combining é̃\n┌──────────┐\n│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 1",
+      "cursor": [
+        21,
+        6
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 8 — 第8行 ✓",
+        "line 9 — 第9行 ✓",
+        "line 10 — 第10行 ✓",
+        "line 11 — 第11行 ✓",
+        "line 12 — 第12行 ✓",
+        "line 13 — 第13行 ✓",
+        "line 14 — 第14行 ✓",
+        "line 15 — 第15行 ✓",
+        "line 16 — 第16行 ✓",
+        "line 17 — 第17行 ✓",
+        "line 18 — 第18行 ✓",
+        "line 19 — 第19行 ✓",
+        "line 20 — 第20行 ✓",
+        "line 21 — 第21行 ✓",
+        "line 2"
+      ],
+      "contents": "│ box 表 ✓ │\n└──────────┘\nline 1 — 第1行 ✓\nline 2 — 第2行 ✓\nline 3 — 第3行 ✓\nline 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 2",
+      "cursor": [
+        23,
+        6
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 13 — 第13行 ✓",
+        "line 14 — 第14行 ✓",
+        "line 15 — 第15行 ✓",
+        "line 16 — 第16行 ✓",
+        "line 17 — 第17行 ✓",
+        "line 18 — 第18行 ✓",
+        "line 19 — 第19行 ✓",
+        "line 20 — 第20行 ✓",
+        "line 21 — 第21行 ✓",
+        "line 22 — 第22行 ✓",
+        "line 23 — 第23行 ✓",
+        "line 24 — 第24行 ✓",
+        "line 25 — 第25行 ✓",
+        "line 26 — 第26行 ✓",
+        "line"
+      ],
+      "contents": "line 4 — 第4行 ✓\nline 5 — 第5行 ✓\nline 6 — 第6行 ✓\nline 7 — 第7行 ✓\nline 8 — 第8行 ✓\nline 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline",
+      "cursor": [
+        23,
+        4
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 18 — 第18行 ✓",
+        "line 19 — 第19行 ✓",
+        "line 20 — 第20行 ✓",
+        "line 21 — 第21行 ✓",
+        "line 22 — 第22行 ✓",
+        "line 23 — 第23行 ✓",
+        "line 24 — 第24行 ✓",
+        "line 25 — 第25行 ✓",
+        "line 26 — 第26行 ✓",
+        "line 27 — 第27行 ✓",
+        "line 28 — 第28行 ✓",
+        "line 29 — 第29行 ✓",
+        "line 30 — 第30行 ✓",
+        "line 31 — 第31行 ✓",
+        "li"
+      ],
+      "contents": "line 9 — 第9行 ✓\nline 10 — 第10行 ✓\nline 11 — 第11行 ✓\nline 12 — 第12行 ✓\nline 13 — 第13行 ✓\nline 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nli",
+      "cursor": [
+        23,
+        2
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 22 — 第22行 ✓",
+        "line 23 — 第23行 ✓",
+        "line 24 — 第24行 ✓",
+        "line 25 — 第25行 ✓",
+        "line 26 — 第26行 ✓",
+        "line 27 — 第27行 ✓",
+        "line 28 — 第28行 ✓",
+        "line 29 — 第29行 ✓",
+        "line 30 — 第30行 ✓",
+        "line 31 — 第31行 ✓",
+        "line 32 — 第32行 ✓",
+        "line 33 — 第33行 ✓",
+        "line 34 — 第34行 ✓",
+        "line 35 — 第35行 ✓",
+        "line 36 — 第36行 ✓"
+      ],
+      "contents": "line 14 — 第14行 ✓\nline 15 — 第15行 ✓\nline 16 — 第16行 ✓\nline 17 — 第17行 ✓\nline 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓",
+      "cursor": [
+        23,
+        0
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 27 — 第27行 ✓",
+        "line 28 — 第28行 ✓",
+        "line 29 — 第29行 ✓",
+        "line 30 — 第30行 ✓",
+        "line 31 — 第31行 ✓",
+        "line 32 — 第32行 ✓",
+        "line 33 — 第33行 ✓",
+        "line 34 — 第34行 ✓",
+        "line 35 — 第35行 ✓",
+        "line 36 — 第36行 ✓",
+        "line 37 — 第37行 ✓",
+        "line 38 — 第38行 ✓",
+        "line 39 — 第39行 ✓",
+        "line 40 — 第40行 ✓",
+        "line 41 — 第41行 ✓"
+      ],
+      "contents": "line 18 — 第18行 ✓\nline 19 — 第19行 ✓\nline 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓\nline 37 — 第37行 ✓\nline 38 — 第38行 ✓\nline 39 — 第39行 ✓\nline 40 — 第40行 ✓\nline 41 — 第41行 ✓",
+      "cursor": [
+        23,
+        18
+      ]
+    },
+    {
+      "alternate": true,
+      "bottom": [
+        "line 29 — 第29行 ✓",
+        "line 30 — 第30行 ✓",
+        "line 31 — 第31行 ✓",
+        "line 32 — 第32行 ✓",
+        "line 33 — 第33行 ✓",
+        "line 34 — 第34行 ✓",
+        "line 35 — 第35行 ✓",
+        "line 36 — 第36行 ✓",
+        "line 37 — 第37行 ✓",
+        "line 38 — 第38行 ✓",
+        "line 39 — 第39行 ✓",
+        "line 40 — 第40行 ✓",
+        "line 41 — 第41行 ✓",
+        "line 42 — 第42行 ✓",
+        ":"
+      ],
+      "contents": "line 20 — 第20行 ✓\nline 21 — 第21行 ✓\nline 22 — 第22行 ✓\nline 23 — 第23行 ✓\nline 24 — 第24行 ✓\nline 25 — 第25行 ✓\nline 26 — 第26行 ✓\nline 27 — 第27行 ✓\nline 28 — 第28行 ✓\nline 29 — 第29行 ✓\nline 30 — 第30行 ✓\nline 31 — 第31行 ✓\nline 32 — 第32行 ✓\nline 33 — 第33行 ✓\nline 34 — 第34行 ✓\nline 35 — 第35行 ✓\nline 36 — 第36行 ✓\nline 37 — 第37行 ✓\nline 38 — 第38行 ✓\nline 39 — 第39行 ✓\nline 40 — 第40行 ✓\nline 41 — 第41行 ✓\nline 42 — 第42行 ✓\n:",
+      "cursor": [
+        23,
+        1
+      ]
+    }
+  ],
+  "rows": 24
+}

@@ -62,6 +62,19 @@ pub struct TextRule {
     pub when: Map<String, Value>,
     /// The path of its text: a string, or a list of blocks whose `type` is `text`.
     pub text: String,
+    /// Optional open/close envelope markers around the message body.
+    #[serde(default)]
+    pub between: Option<[String; 2]>,
+}
+
+/// Semantic entry classification from `weft-sense` Head 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassifiedEntry {
+    PersonMessage,
+    AgentReply,
+    ToolOk,
+    ToolErr,
+    InternalSkip,
 }
 
 /// A tool step: an entry, or each block of a list in it.
@@ -102,6 +115,9 @@ pub struct OutcomeRule {
     pub call: String,
     #[serde(default)]
     pub failed: Option<Map<String, Value>>,
+    /// Optional path of free-text outcome content (classified by Head 2 or exit-code text).
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// One thing drawn, as a device receives it.
@@ -186,6 +202,19 @@ impl Conversation {
 
     /// The items of `bytes`, which start at `offset` in the file.
     pub fn read(&self, bytes: &[u8], offset: u64) -> Result<Read, Unreadable> {
+        self.read_with_classifier(bytes, offset, |_, _| None)
+    }
+
+    /// The items of `bytes`, refined by a semantic entry classifier (`weft-sense` Head 2).
+    pub fn read_with_classifier<F>(
+        &self,
+        bytes: &[u8],
+        offset: u64,
+        mut classify: F,
+    ) -> Result<Read, Unreadable>
+    where
+        F: FnMut(&str, &str) -> Option<ClassifiedEntry>,
+    {
         let mut items = Vec::new();
         let mut start = 0;
         while let Some(n) = bytes[start..].iter().position(|&b| b == b'\n') {
@@ -197,7 +226,7 @@ impl Conversation {
             }
             let entry: Value = serde_json::from_slice(line).map_err(|_| Unreadable)?;
             let before = items.len();
-            self.entry(&entry, &mut items);
+            self.entry(&entry, &mut items, &mut classify);
             for (n, item) in items[before..].iter_mut().enumerate() {
                 item.id = format!("{at}.{n}");
             }
@@ -207,10 +236,18 @@ impl Conversation {
 
     /// One entry's items, in order: a message or reply, its steps, then the
     /// outcomes it holds.
-    fn entry(&self, entry: &Value, items: &mut Vec<Item>) {
+    fn entry<F>(&self, entry: &Value, items: &mut Vec<Item>, classify: &mut F)
+    where
+        F: FnMut(&str, &str) -> Option<ClassifiedEntry>,
+    {
         if self.skip.iter().any(|p| path(entry, p) == Some(&Value::Bool(true))) {
             return;
         }
+        let entry_type = entry
+            .get("type")
+            .or_else(|| entry.get("role"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
         let at = path(entry, &self.time).and_then(time);
         let item = |kind| Item {
             id: String::new(),
@@ -223,29 +260,51 @@ impl Conversation {
             failed: None,
         };
         for (kind, rules) in [(Kind::Person, &self.person), (Kind::Agent, &self.agent)] {
-            let said = rules
-                .list()
-                .iter()
-                .find(|r| fields(entry, &r.when))
-                .and_then(|r| path(entry, &r.text))
-                .map(text_of);
+            let said = rules.list().iter().find(|r| fields(entry, &r.when)).and_then(|r| {
+                let raw = path(entry, &r.text).map(text_of)?;
+                if kind == Kind::Person {
+                    if raw.contains("<SYSTEM_MESSAGE>") || raw.contains("<user-prompt-submit-hook>")
+                    {
+                        return None;
+                    }
+                    if r.between.is_some()
+                        && matches!(classify(entry_type, &raw), Some(ClassifiedEntry::InternalSkip))
+                    {
+                        return None;
+                    }
+                }
+                match &r.between {
+                    Some([open, close]) => between_markers(&raw, open, close)
+                        .or_else(|| (!raw.trim_start().starts_with('<')).then_some(raw)),
+                    None => Some(raw),
+                }
+            });
             if let Some(said) = said.filter(|s| !s.is_empty()) {
                 items.push(Item { text: Some(said), ..item(kind) });
                 break;
             }
         }
         for rule in self.steps.list().iter().filter(|r| fields(entry, &r.when)) {
-            for block in blocks(entry, rule.within.as_deref(), rule.kind.as_deref()) {
+            for (idx, block) in
+                blocks(entry, rule.within.as_deref(), rule.kind.as_deref()).into_iter().enumerate()
+            {
                 let tool = rule.name.clone().or_else(|| string(block, rule.tool.as_deref()?));
                 let Some(tool) = tool else { continue };
                 let input = rule.input.as_deref().and_then(|p| input(block, p));
                 let failed = rule.failed.as_ref().is_some_and(|f| fields(block, f));
+                let call = rule.call.as_deref().and_then(|p| {
+                    string(block, p).or_else(|| {
+                        path(entry, p)
+                            .and_then(Value::as_i64)
+                            .map(|step_idx| (step_idx + 1 + idx as i64).to_string())
+                    })
+                });
                 items.push(Item {
                     arg: Some(self.argument_of(&tool, input.as_ref())),
                     tool: Some(self.names.get(&tool).cloned().unwrap_or(tool)),
                     // A step joined to a later outcome is running until it comes.
                     failed: if rule.call.is_some() { failed.then_some(true) } else { Some(failed) },
-                    call: rule.call.as_deref().and_then(|p| string(block, p)),
+                    call,
                     ..item(Kind::Step)
                 });
             }
@@ -253,7 +312,29 @@ impl Conversation {
         for rule in self.outcomes.iter().flat_map(Rules::list).filter(|r| fields(entry, &r.when)) {
             for block in blocks(entry, rule.within.as_deref(), rule.kind.as_deref()) {
                 let Some(call) = string(block, &rule.call) else { continue };
-                let failed = rule.failed.as_ref().is_some_and(|f| fields(block, f));
+                let field_failed = rule.failed.as_ref().is_some_and(|f| fields(block, f));
+                let failed = if field_failed {
+                    true
+                } else if let Some(text_path) = rule.text.as_deref() {
+                    let snippet = path(block, text_path).map(text_of).unwrap_or_default();
+                    if let Some(explicit) = explicit_exit_failure(&snippet) {
+                        explicit
+                    } else {
+                        let outcome_type = if rule.within.is_some() {
+                            rule.kind.as_deref().unwrap_or(entry_type)
+                        } else {
+                            entry_type
+                        };
+                        match classify(outcome_type, &snippet) {
+                            Some(ClassifiedEntry::ToolErr) => true,
+                            Some(ClassifiedEntry::ToolOk) => false,
+                            Some(ClassifiedEntry::InternalSkip) => continue,
+                            _ => text_indicates_failure(&snippet),
+                        }
+                    }
+                } else {
+                    false
+                };
                 items.push(Item { call: Some(call), failed: Some(failed), ..item(Kind::Outcome) });
             }
         }
@@ -270,8 +351,34 @@ impl Conversation {
             Value::Object(table) => table.values().find_map(Value::as_str),
             _ => None,
         };
-        text.and_then(|t| t.lines().next()).unwrap_or_default().to_string()
+        let line = text.and_then(|t| t.lines().next()).unwrap_or_default();
+        line.strip_prefix('"').and_then(|s| s.strip_suffix('"')).unwrap_or(line).to_string()
     }
+}
+
+fn between_markers(text: &str, open: &str, close: &str) -> Option<String> {
+    let rest = text.split_once(open)?.1;
+    Some(rest.rsplit_once(close)?.0.to_string())
+}
+
+fn explicit_exit_failure(snippet: &str) -> Option<bool> {
+    for prefix in ["exited with code ", "Exit code: ", "exit code ", "status "] {
+        if let Some(rest) = snippet.split(prefix).nth(1)
+            && let Some(first) = rest.trim_start().chars().next()
+            && first.is_ascii_digit()
+        {
+            return Some(first != '0');
+        }
+    }
+    None
+}
+
+fn text_indicates_failure(snippet: &str) -> bool {
+    explicit_exit_failure(snippet).unwrap_or_else(|| {
+        snippet.contains("Encountered error in ")
+            || snippet.contains("Command failed")
+            || snippet.contains("Permission denied")
+    })
 }
 
 /// The value at a dotted path: a number steps into a list, and `-1` is its
@@ -297,7 +404,11 @@ fn input(v: &Value, dotted: &str) -> Option<Value> {
 }
 
 fn string(v: &Value, dotted: &str) -> Option<String> {
-    path(v, dotted)?.as_str().map(str::to_string)
+    match path(v, dotted)? {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => n.as_i64().map(|i| i.to_string()),
+        _ => None,
+    }
 }
 
 /// Whether every path holds its value, or one of a list of values.
@@ -470,6 +581,56 @@ mod tests {
             ]
         );
         assert!(!format!("{:?}", read.items).contains("one\\ntwo"), "a tool's output");
+    }
+
+    /// Antigravity 1.3.5's `transcript.jsonl`, recorded in HostLab on the local
+    /// model, with `<USER_REQUEST>` envelopes stripped, `<SYSTEM_MESSAGE>` turns
+    /// skipped, and free-text `GENERIC` / `TOOL_RESPONSE` step outcomes settled
+    /// as `✓` / `✗` (and refined by `read_with_classifier`).
+    #[test]
+    fn antigravity_reads_as_its_messages_replies_and_steps() {
+        let text = include_str!("../tests/fixtures/conversation/antigravity.jsonl");
+        let read = mapping("antigravity")
+            .read_with_classifier(text.as_bytes(), 0, |entry_type, snippet| {
+                if entry_type == "USER_INPUT" && snippet.contains("<SYSTEM_MESSAGE>") {
+                    return Some(ClassifiedEntry::InternalSkip);
+                }
+                if matches!(entry_type, "GENERIC" | "TOOL_RESPONSE") {
+                    if snippet.contains("exited with code 1") {
+                        return Some(ClassifiedEntry::ToolErr);
+                    }
+                    if snippet.contains("exited with code 0") {
+                        return Some(ClassifiedEntry::ToolOk);
+                    }
+                }
+                None
+            })
+            .expect("readable");
+        assert_eq!(
+            drawn(&read.items),
+            [
+                "person: Reply with the single word ok.",
+                "agent: ok",
+                "person: Run the shell command `cat notes.txt` and tell me how many lines it printed.",
+                "step: Run cat notes.txt ✓",
+                "agent: The command printed 2 lines:\n\n```\none\ntwo\n```",
+                "person: Run the shell command `cat no-such-file.txt` and tell me what happened.",
+                "step: Run cat no-such-file.txt ✗",
+                "agent: The command exited with return code `1` and printed the following error message:\n\n```\ncat: no-such-file.txt: No such file or directory\n```",
+                "person: Reply with the single word ok; that reply completes this task. Do not read or change any file. The lines below are context only and ask for nothing.",
+                "agent: ok",
+                "person: Run the shell command `sleep 30` and then reply with done.",
+                "step: Run sleep 30 running",
+            ]
+        );
+        assert!(
+            !format!("{:?}", read.items).contains("SYSTEM_MESSAGE"),
+            "<SYSTEM_MESSAGE> is never drawn"
+        );
+        assert!(
+            !format!("{:?}", read.items).contains("ADDITIONAL_METADATA"),
+            "<ADDITIONAL_METADATA> is never drawn"
+        );
     }
 
     #[test]

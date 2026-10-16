@@ -40,7 +40,7 @@ fn main() -> anyhow::Result<()> {
     let attempt = pane.inject_as(prompt.as_bytes(), &how).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     println!("attempt:  {attempt:?}");
     std::thread::sleep(std::time::Duration::from_secs(12));
-    let screen = pane.with_screen(|s| s.contents());
+    let screen = pane.with_term(|s| s.contents());
     for l in screen
         .lines()
         .filter(|l| !l.trim().is_empty())

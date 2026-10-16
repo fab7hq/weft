@@ -23,6 +23,17 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
         "the wire carries the rules' types and nothing else",
     ),
     (
+        "weft-sense",
+        &["anyhow", "serde", "serde_json", "sha2"],
+        "the dual-head classifier normalizes screens and transcript entries and runs its bundle; \
+         it never touches panes, the ledger, or the wire",
+    ),
+    (
+        "weft-term",
+        &["alacritty_terminal"],
+        "the terminal emulates and writes escape codes; it reaches nothing",
+    ),
+    (
         "weftd",
         &[
             "anyhow",
@@ -31,12 +42,14 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "serde_json",
             "toml",
             "tungstenite",
-            "vt100",
             "weft-core",
             "weft-proto",
+            "weft-sense",
+            "weft-term",
         ],
         "the daemon does: panes, files, processes (libc reads a hook's harness process), \
-         and listens to a harness's own stream (tungstenite frames it)",
+         listens to a harness's own stream (tungstenite frames it), and refines turns/conversations \
+         with weft-sense",
     ),
     (
         "weft-tui",
@@ -51,6 +64,21 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "weft-proto",
         ],
         "the client draws, and asks the daemon for everything else",
+    ),
+    (
+        "weft-desktop",
+        &[
+            "anyhow",
+            "gpui",
+            "gpui_platform",
+            "serde",
+            "serde_json",
+            "weft-core",
+            "weft-proto",
+            "weft-term",
+        ],
+        "the desktop client draws the Toile atlas screens with GPUI, persists UI state, and asks \
+         the daemon for everything else; never weftd",
     ),
     (
         "weft-remote",

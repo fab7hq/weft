@@ -114,8 +114,38 @@ fn identity(meta: &std::fs::Metadata) -> u64 {
     meta.ino()
 }
 
+fn classify_with_sense(
+    sense: Option<&weft_sense::SenseModel>,
+    harness: &str,
+    entry_type: &str,
+    snippet: &str,
+) -> Option<weft_core::conversation::ClassifiedEntry> {
+    use weft_core::conversation::ClassifiedEntry;
+    use weft_sense::{ConversationEntry, TranscriptSnippet};
+    let reading =
+        sense?.classify_conversation_entry(&TranscriptSnippet { harness, entry_type, snippet })?;
+    Some(match reading.kind {
+        ConversationEntry::PersonMessage => ClassifiedEntry::PersonMessage,
+        ConversationEntry::AgentReply => ClassifiedEntry::AgentReply,
+        ConversationEntry::ToolOk => ClassifiedEntry::ToolOk,
+        ConversationEntry::ToolErr => ClassifiedEntry::ToolErr,
+        ConversationEntry::InternalSkip => ClassifiedEntry::InternalSkip,
+    })
+}
+
 /// The newest page, or the page that ends where `before` starts.
 pub fn page(c: &Conversation, path: Option<&Path>, before: Option<Cursor>) -> Answer {
+    page_with_sense(c, "unknown", path, before, None)
+}
+
+/// The newest page, refined by `weft-sense` Head 2 when available.
+pub fn page_with_sense(
+    c: &Conversation,
+    harness: &str,
+    path: Option<&Path>,
+    before: Option<Cursor>,
+    sense: Option<&weft_sense::SenseModel>,
+) -> Answer {
     let Some(mut f) = path.and_then(|p| std::fs::File::open(p).ok()) else {
         return Answer::Unreadable;
     };
@@ -146,7 +176,9 @@ pub fn page(c: &Conversation, path: Option<&Path>, before: Option<Cursor>) -> An
                 continue;
             }
         };
-        let Ok(read) = c.read(&bytes[start..], from + start as u64) else {
+        let Ok(read) = c.read_with_classifier(&bytes[start..], from + start as u64, |et, snip| {
+            classify_with_sense(sense, harness, et, snip)
+        }) else {
             return Answer::Unreadable;
         };
         items.splice(0..0, read.items);
@@ -177,6 +209,17 @@ pub fn page(c: &Conversation, path: Option<&Path>, before: Option<Cursor>) -> An
 
 /// What was added after a cursor.
 pub fn after(c: &Conversation, path: Option<&Path>, after: Cursor) -> Answer {
+    after_with_sense(c, "unknown", path, after, None)
+}
+
+/// What was added after a cursor, refined by `weft-sense` Head 2 when available.
+pub fn after_with_sense(
+    c: &Conversation,
+    harness: &str,
+    path: Option<&Path>,
+    after: Cursor,
+    sense: Option<&weft_sense::SenseModel>,
+) -> Answer {
     let Some(mut f) = path.and_then(|p| std::fs::File::open(p).ok()) else {
         return Answer::Unreadable;
     };
@@ -191,7 +234,9 @@ pub fn after(c: &Conversation, path: Option<&Path>, after: Cursor) -> Answer {
     if f.seek(SeekFrom::Start(after.at)).and_then(|_| f.read_to_end(&mut bytes)).is_err() {
         return Answer::Unreadable;
     }
-    match c.read(&bytes, after.at) {
+    match c.read_with_classifier(&bytes, after.at, |et, snip| {
+        classify_with_sense(sense, harness, et, snip)
+    }) {
         Err(_) => Answer::Unreadable,
         Ok(read) if read.end == 0 => Answer::Same,
         Ok(read) => Answer::Grown {
@@ -335,5 +380,36 @@ mod tests {
         assert_eq!(page(&grok(), None, None), Answer::Unreadable);
         let (_h, path) = home("s1", "not json\n");
         assert_eq!(page(&grok(), Some(&path), None), Answer::Unreadable);
+    }
+
+    #[test]
+    fn antigravity_conversation_reads_with_sense_head2() {
+        let agy = Conversation::of(&harness_file("antigravity")["conversation"]).unwrap();
+        let agy_fixture =
+            include_str!("../../weft-core/tests/fixtures/conversation/antigravity.jsonl");
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("brain/s-agy/.system_generated/logs");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("transcript.jsonl");
+        std::fs::write(&path, agy_fixture).unwrap();
+
+        let found = file(&agy, home.path(), "s-agy", None).expect("found by brain/{session} find");
+        assert_eq!(found, path.canonicalize().unwrap());
+
+        let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../sense/dist/fab7-sense-v1");
+        let sense = weft_sense::SenseModel::load(&bundle).ok();
+        let Answer::Page { items, .. } =
+            page_with_sense(&agy, "antigravity", Some(&found), None, sense.as_ref())
+        else {
+            panic!("expected readable Antigravity conversation page");
+        };
+        let outcomes: Vec<Option<bool>> =
+            items.iter().filter(|i| i.kind == Kind::Outcome).map(|i| i.failed).collect();
+        assert_eq!(outcomes, vec![Some(false), Some(true)]);
+        assert!(
+            !items.iter().any(|i| i.text.as_deref().is_some_and(|t| t.contains("SYSTEM_MESSAGE"))),
+            "<SYSTEM_MESSAGE> is filtered out"
+        );
     }
 }

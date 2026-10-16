@@ -1,0 +1,25 @@
+[package]
+name = "weft-desktop"
+version = "0.5.0"
+edition = "2024"
+license = "Apache-2.0"
+
+[[bin]]
+name = "weft-desktop"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+# Zed's weekly GPUI snapshot, pinned: a newer one is a deliberate bump of both.
+gpui = { package = "gpui-pre", version = "=0.3.9" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["runtime_shaders"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0.151"
+weft-core = { path = "../weft-core" }
+weft-proto = { path = "../weft-proto" }
+weft-term = { path = "../weft-term" }
+
+[dev-dependencies]
+tempfile = "3"
+weft-core = { path = "../weft-core", features = ["fixtures"] }
+weftd = { path = "../weftd" }

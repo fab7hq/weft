@@ -8,7 +8,7 @@ fn main() {
     let rows: u16 = a.next().and_then(|s| s.parse().ok()).unwrap_or(24);
     let cols: u16 = a.next().and_then(|s| s.parse().ok()).unwrap_or(100);
     let bytes = std::fs::read(&path).expect("read");
-    let mut parser = vt100::Parser::new(rows, cols, 0);
-    parser.process(&bytes);
-    println!("{}", parser.screen().contents());
+    let mut term = weft_term::Term::new(rows, cols, 0, |_| {});
+    term.feed(&bytes);
+    println!("{}", term.contents());
 }

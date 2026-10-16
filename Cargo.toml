@@ -30,7 +30,7 @@ insta = "1"
 weft-core = { path = "crates/weft-core", features = ["fixtures"] }
 sha2 = "0.10"
 tempfile = "3"
-vt100 = "0.16.2"
+weft-term = { path = "crates/weft-term" }
 
 # No debug info in dev and test builds. On macOS debug info keeps every object
 # file in target/debug/deps, and cargo never removes the stale ones: about 4,500
@@ -38,3 +38,15 @@ vt100 = "0.16.2"
 # spent 30 s listing them. Panics still name their file and line.
 [profile.dev]
 debug = false
+
+[profile.dev.package.weft-sense]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.test.package.weft-sense]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+

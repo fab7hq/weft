@@ -270,7 +270,7 @@ fn weft_reads_a_screen_only_where_it_guards_its_own_typing() {
             if let Some(name) = line.split("fn ").nth(1).and_then(|r| r.split(['(', '<']).next()) {
                 inside = name.trim().to_string();
             }
-            if line.contains("with_screen(") && !SCREEN_READS.contains(&inside.as_str()) {
+            if line.contains("with_term(") && !SCREEN_READS.contains(&inside.as_str()) {
                 found.push(format!("{}:{n} in {inside}: {}", path.display(), line.trim()));
             }
         }

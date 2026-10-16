@@ -14,9 +14,10 @@ serde_json = "1.0.151"
 toml = "1.1.6"
 # A harness's own event stream: blocking, one thread per stream.
 tungstenite = "0.30.0"
-vt100 = "0.16.2"
 weft-core = { path = "../weft-core" }
 weft-proto = { path = "../weft-proto" }
+weft-sense = { path = "../weft-sense" }
+weft-term = { path = "../weft-term" }
 
 [dev-dependencies]
 weft-core = { path = "../weft-core", features = ["fixtures"] }

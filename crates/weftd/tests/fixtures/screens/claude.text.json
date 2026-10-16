@@ -1,0 +1,537 @@
+{
+  "chunk": 128,
+  "cols": 100,
+  "frames": [
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "........."
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n.........",
+      "cursor": [
+        1,
+        9
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░",
+      "cursor": [
+        4,
+        54
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░",
+      "cursor": [
+        7,
+        4
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓",
+      "cursor": [
+        8,
+        52
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░",
+      "cursor": [
+        11,
+        36
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██",
+      "cursor": [
+        13,
+        8
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "Welcome to Claude Code v2.1.283",
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█",
+      "cursor": [
+        15,
+        8
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "..........................................................",
+        "     *                                       █████▓▓░",
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started."
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.",
+      "cursor": [
+        19,
+        1
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "                                 *         ███▓░     ░░",
+        "            ░░░░░░                        ███▓░",
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To chan"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To chan",
+      "cursor": [
+        20,
+        8
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "    ░░░   ░░░░░░░░░░                      ███▓░",
+        "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓",
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯",
+      "cursor": [
+        23,
+        2
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "                                             ░▓▓███▓▓░",
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4."
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4.",
+      "cursor": [
+        25,
+        6
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        " *                                 ░░░░",
+        "                                 ░░░░░░░░",
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)",
+      "cursor": [
+        27,
+        3
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "                               ░░░░░░░░░░░░░░░░",
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only"
+      ],
+      "contents": "Welcome to Claude Code v2.1.283\n..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only",
+      "cursor": [
+        28,
+        34
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
+      ],
+      "contents": "..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+      "cursor": [
+        29,
+        36
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "       █████████                                        *",
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
+      ],
+      "contents": "..........................................................\n\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+      "cursor": [
+        29,
+        79
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "      ██▄█████▄██                        *",
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function"
+      ],
+      "contents": "\n     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function",
+      "cursor": [
+        29,
+        13
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        "       █████████      *",
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");             "
+      ],
+      "contents": "     *                                       █████▓▓░\n                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");             ",
+      "cursor": [
+        29,
+        49
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log"
+      ],
+      "contents": "                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log",
+      "cursor": [
+        29,
+        18
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        ".......█ █   █ █..........................................",
+        " Let's get started.",
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log(\"Hello, Claude!\");                                                          "
+      ],
+      "contents": "                                 *         ███▓░     ░░\n            ░░░░░░                        ███▓░\n    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log(\"Hello, Claude!\");                                                          ",
+      "cursor": [
+        29,
+        95
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log(\"Hello, Claude!\");                                                          ",
+        "  3  }",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
+      ],
+      "contents": "    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log(\"Hello, Claude!\");                                                          \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+      "cursor": [
+        29,
+        22
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        " Choose the text style that looks best with your terminal",
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log(\"Hello, Claude!\");                                                          ",
+        "  3  }",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌"
+      ],
+      "contents": "    ░░░   ░░░░░░░░░░                      ███▓░\n   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log(\"Hello, Claude!\");                                                          \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+      "cursor": [
+        29,
+        65
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log(\"Hello, Claude!\");                                                          ",
+        "  3  }",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  Sy"
+      ],
+      "contents": "   ░░░░░░░░░░░░░░░░░░░    *                ██▓░░      ▓\n                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log(\"Hello, Claude!\");                                                          \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  Sy",
+      "cursor": [
+        29,
+        4
+      ]
+    },
+    {
+      "alternate": false,
+      "bottom": [
+        " To change this later, run /theme",
+        "   1. Auto (match terminal)",
+        " ❯ 2. Dark mode ✔",
+        "   3. Light mode",
+        "   4. Dark mode (colorblind-friendly)",
+        "   5. Light mode (colorblind-friendly)",
+        "   6. Dark mode (ANSI colors only)",
+        "   7. Light mode (ANSI colors only)",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  1  function greet() {",
+        "  2 -  console.log(\"Hello, World!\");                                                           ",
+        "  2 +  console.log(\"Hello, Claude!\");                                                          ",
+        "  3  }",
+        " ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+        "  Syntax theme: Monokai Extended (ctrl+t to disable)"
+      ],
+      "contents": "                                             ░▓▓███▓▓░\n *                                 ░░░░\n                                 ░░░░░░░░\n                               ░░░░░░░░░░░░░░░░\n       █████████                                        *\n      ██▄█████▄██                        *\n       █████████      *\n.......█ █   █ █..........................................\n\n Let's get started.\n\n Choose the text style that looks best with your terminal\n To change this later, run /theme\n\n   1. Auto (match terminal)\n ❯ 2. Dark mode ✔\n   3. Light mode\n   4. Dark mode (colorblind-friendly)\n   5. Light mode (colorblind-friendly)\n   6. Dark mode (ANSI colors only)\n   7. Light mode (ANSI colors only)\n\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  1  function greet() {\n  2 -  console.log(\"Hello, World!\");                                                           \n  2 +  console.log(\"Hello, Claude!\");                                                          \n  3  }\n ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\n  Syntax theme: Monokai Extended (ctrl+t to disable)",
+      "cursor": [
+        15,
+        1
+      ]
+    }
+  ],
+  "rows": 30
+}

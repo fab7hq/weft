@@ -228,7 +228,7 @@ mod tests {
     }
 
     /// A harness whose `[conversation]` names its transcript sends that path
-    /// too; one without sends none, whatever its payload holds.
+    /// too; one without (or a field `[conversation]` does not name) sends none.
     #[test]
     fn the_transcript_path_reaches_weftd_only_where_conversation_names_it() {
         let b = bench();
@@ -242,6 +242,12 @@ mod tests {
             &b.at,
             &["antigravity", "PostToolUse"],
             r#"{"conversationId":"a1","workspacePaths":["/w"],"transcriptPath":"/t.jsonl"}"#,
+        );
+        assert_eq!(sent.and_then(|s| s.transcript).as_deref(), Some("/t.jsonl"));
+        let (_, sent) = heard(
+            &b.at,
+            &["antigravity", "PostToolUse"],
+            r#"{"conversationId":"a1","workspacePaths":["/w"],"transcript_path":"/t.jsonl"}"#,
         );
         assert_eq!(sent.map(|s| s.transcript), Some(None));
     }

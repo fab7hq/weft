@@ -118,7 +118,7 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     });
 
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
-    assert_eq!(remote.opened["replay"], serde_json::json!([]), "no replay either");
+    assert_eq!(remote.opened["screens"], serde_json::json!([]), "no screens either");
 
     tui.send(Call::Input { pane, bytes: b"printf 'printed-after\\n'\n".to_vec() });
     let staged = tui.answer(Call::Stage {

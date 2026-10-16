@@ -150,16 +150,27 @@ impl Handoff {
 
 /// One ordered submission: the payload byte-exact, a wait, then Enter alone.
 pub fn compose(payload: &[u8], bracketed_paste: bool) -> Vec<Step> {
-    let body = if bracketed_paste {
-        let mut b = Vec::with_capacity(PASTE_START.len() + payload.len() + PASTE_END.len());
-        b.extend_from_slice(PASTE_START);
-        b.extend_from_slice(payload);
-        b.extend_from_slice(PASTE_END);
-        b
-    } else {
-        payload.to_vec()
-    };
+    let body = paste(payload, bracketed_paste);
     vec![Step::Write(body), Step::Wait(ENTER_DELAY), Step::Write(ENTER.to_vec())]
+}
+
+/// Text as a terminal pastes it: inside the paste markers when the program
+/// asked for them, so it arrives as one paste and never as typed keys. A
+/// marker inside the text is dropped, so the text cannot end its own paste.
+pub fn paste(text: &[u8], bracketed_paste: bool) -> Vec<u8> {
+    if !bracketed_paste {
+        return text.to_vec();
+    }
+    let mut b = Vec::with_capacity(PASTE_START.len() + text.len() + PASTE_END.len());
+    b.extend_from_slice(PASTE_START);
+    let mut rest = text;
+    while let Some(at) = rest.windows(PASTE_END.len()).position(|w| w == PASTE_END) {
+        b.extend_from_slice(&rest[..at]);
+        rest = &rest[at + PASTE_END.len()..];
+    }
+    b.extend_from_slice(rest);
+    b.extend_from_slice(PASTE_END);
+    b
 }
 
 /// The slash command a payload opens with, if it opens with one: such a
@@ -198,6 +209,12 @@ mod tests {
                 Step::Write(b"\r".to_vec()),
             ]
         );
+    }
+
+    #[test]
+    fn a_paste_cannot_end_itself() {
+        assert_eq!(paste(b"a\x1b[201~b", true), b"\x1b[200~ab\x1b[201~".to_vec());
+        assert_eq!(paste(b"two\nlines", false), b"two\nlines".to_vec());
     }
 
     #[test]

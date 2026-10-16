@@ -95,6 +95,43 @@ pub fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+/// The `[HOOK:<hook_state>]` label for a hook `Turn`.
+pub fn turn_hook_name(turn: Option<Turn>) -> Option<&'static str> {
+    match turn {
+        Some(Turn::Ready) => Some("ready"),
+        Some(Turn::Working) => Some("working"),
+        Some(Turn::Waiting) => Some("waiting"),
+        Some(Turn::TurnEnded) => Some("turn_ended"),
+        Some(Turn::Ended) => Some("ended"),
+        None => None,
+    }
+}
+
+/// Refine a pane's hook `Turn` (Rank 1) with `weft-sense` Head 1's calibrated
+/// `SurfaceState` (Rank 3) per ADR-0001 / spec §3.1.
+pub fn refine_turn_with_sense(
+    hook_turn: Option<Turn>,
+    surface: Option<weft_sense::SurfaceState>,
+) -> Option<Turn> {
+    use weft_sense::SurfaceState::*;
+    match (hook_turn, surface) {
+        // Rank 1: Hook waiting is authoritative.
+        (Some(Turn::Waiting), _) => Some(Turn::Waiting),
+        // Un-hooked interactive prompt while Hook is Working or None -> Turn::Waiting.
+        (
+            Some(Turn::Working) | None,
+            Some(WaitingPermission | WaitingQuestion | WaitingTrustOrAuth),
+        ) => Some(Turn::Waiting),
+        // Post-Stop /goal continuation check while Hook is TurnEnded or Ready -> Turn::Working until IdleReady.
+        (
+            Some(Turn::TurnEnded | Turn::Ready),
+            Some(WorkingPostHook | WorkingGenerating | WorkingTool),
+        ) => Some(Turn::Working),
+        // Any other state leaves Hook Turn unchanged.
+        (turn, _) => turn,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +164,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
         assert!(turns.refresh(&dir).is_empty(), "nothing new was said");
         assert!(turns.sessions().is_empty());
+    }
+
+    #[test]
+    fn refine_turn_with_sense_follows_authority_hierarchy() {
+        use weft_sense::SurfaceState::*;
+        // Rank 1: Hook Waiting is always authoritative.
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::Waiting), Some(IdleReady)),
+            Some(Turn::Waiting)
+        );
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::Waiting), Some(WorkingGenerating)),
+            Some(Turn::Waiting)
+        );
+        // Un-hooked waiting prompt (e.g. Antigravity permission prompt) while Hook is Working or None -> Turn::Waiting.
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::Working), Some(WaitingPermission)),
+            Some(Turn::Waiting)
+        );
+        assert_eq!(refine_turn_with_sense(None, Some(WaitingQuestion)), Some(Turn::Waiting));
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::Working), Some(WaitingTrustOrAuth)),
+            Some(Turn::Waiting)
+        );
+        // Post-Stop /goal continuation check while Hook is TurnEnded or Ready -> Turn::Working until IdleReady.
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::TurnEnded), Some(WorkingPostHook)),
+            Some(Turn::Working)
+        );
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::Ready), Some(WorkingGenerating)),
+            Some(Turn::Working)
+        );
+        assert_eq!(
+            refine_turn_with_sense(Some(Turn::TurnEnded), Some(IdleReady)),
+            Some(Turn::TurnEnded)
+        );
+        assert_eq!(refine_turn_with_sense(Some(Turn::TurnEnded), None), Some(Turn::TurnEnded));
     }
 }
