@@ -226,7 +226,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.tree.needs_you", "● needs you"),
     ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
     ("web.why.start_an_agent", "Start an agent first — on {machine}."),
-    ("web.why.set_up_on", "Set it up on {machine}: ☰ › Updates…."),
+    ("web.why.set_up_on", "Set it up on {machine} from ☰ › Updates…"),
     ("web.act.keys", "Keys"),
     ("web.agent.back", "Back to the tree"),
     ("web.back.tree", "‹ weft"),

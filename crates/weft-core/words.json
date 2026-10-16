@@ -279,7 +279,7 @@
   "web.waiting.for_you": "{harness} is waiting for you — ",
   "web.why.four_panes": "Four panes at most. Move a tab into another pane, or Join all panes.",
   "web.why.not_connected": "Not connected to the machine.",
-  "web.why.set_up_on": "Set it up on {machine}: ☰ › Updates….",
+  "web.why.set_up_on": "Set it up on {machine} from ☰ › Updates…",
   "web.why.start_an_agent": "Start an agent first — on {machine}.",
   "why.cannot_ask": "Weft could not ask {harness} whether it is set up.",
   "why.closed": "{title} is closed. Follow up asks again.",
