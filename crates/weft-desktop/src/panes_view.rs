@@ -552,17 +552,13 @@ fn render_pane_group(
         } else {
             el.color(palette::MUTED)
         };
-        // Split, each pane's tab leads with its status; alone, a tab marks
-        // only an agent that needs you.
-        if split && let Some((glyph, colour)) = shape {
+        // Every tab leads with its agent's status.
+        if let Some((glyph, colour)) = shape {
             el = el.child(span(glyph).font_mono().font_size(10).color(colour));
         }
         el = el.child(div().style("white-space", "nowrap").text(label));
         if turbo {
             el = el.child(span("⚡").font_size(11).color(palette::AMBER));
-        }
-        if !split && let Some(("■", colour)) = shape {
-            el = el.child(span("■").font_mono().font_size(11).color(colour));
         }
         // Its close shows on the tab in front, in the pane you are in.
         if is_active && (focused || !split) {
