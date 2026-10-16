@@ -565,7 +565,8 @@ fn render_pane_group(
         if !split && let Some(("■", colour)) = shape {
             el = el.child(span("■").font_mono().font_size(11).color(colour));
         }
-        if is_active {
+        // Its close shows on the tab in front, in the pane you are in.
+        if is_active && (focused || !split) {
             el = el.child(
                 span("✕")
                     .layer("close tab")
