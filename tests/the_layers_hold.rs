@@ -73,12 +73,14 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "gpui_platform",
             "serde",
             "serde_json",
+            "unicode-segmentation",
             "weft-core",
             "weft-proto",
             "weft-term",
         ],
-        "the desktop client draws the Toile atlas screens with GPUI, persists UI state, and asks \
-         the daemon for everything else; never weftd",
+        "the desktop client draws the Toile screens with GPUI, edits its text fields a whole \
+         character at a time, persists UI state, and asks the daemon for everything else; never \
+         weftd",
     ),
     (
         "weft-remote",
