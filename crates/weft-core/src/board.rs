@@ -87,6 +87,21 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
     }
 }
 
+/// The act the bar puts forward for a unit, highlighted and never pressed:
+/// once its agent's turn has really ended, Eval for work that went and that
+/// nothing has judged, and Seal for work an Eval found aligned.
+pub fn suggested(unit: &Unit, turn: Option<crate::turns::Turn>) -> Option<Act> {
+    if turn != Some(crate::turns::Turn::TurnEnded) {
+        return None;
+    }
+    let aligned = unit.check.as_ref().is_some_and(|c| c.verdict == crate::ledger::Verdict::Matches);
+    match next_step(unit)? {
+        Next::Eval => Some(Act::Eval),
+        Next::Seal if aligned => Some(Act::Seal),
+        _ => None,
+    }
+}
+
 /// A pane, as everything outside the daemon sees one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneInfo {
@@ -337,6 +352,35 @@ mod tests {
             judged_by: None,
         });
         assert_eq!(follow_up_of(&u), "evl_1");
+    }
+
+    #[test]
+    fn once_the_turn_has_ended_the_bar_puts_forward_eval_then_seal() {
+        use crate::ledger::{Check, Verdict};
+        use crate::turns::Turn;
+        let judged =
+            |verdict| Check { eval_id: "evl_1".into(), verdict, agreement: 1.0, judged_by: None };
+        let went = unit("codex", Sent::TakenByAgent);
+        assert_eq!(suggested(&went, Some(Turn::TurnEnded)), Some(Act::Eval));
+        // Still working, or asking its person something: nothing is put forward.
+        for turn in
+            [Some(Turn::Working), Some(Turn::Waiting), Some(Turn::Ready), Some(Turn::Ended), None]
+        {
+            assert_eq!(suggested(&went, turn), None, "{turn:?}");
+        }
+        let mut aligned = went.clone();
+        aligned.check = Some(judged(Verdict::Matches));
+        assert_eq!(suggested(&aligned, Some(Turn::TurnEnded)), Some(Act::Seal));
+        // A drifted Eval or one without proof is the person's to read first.
+        for verdict in [Verdict::DoesntMatch, Verdict::NotEnoughProof] {
+            let mut u = went.clone();
+            u.check = Some(judged(verdict));
+            assert_eq!(suggested(&u, Some(Turn::TurnEnded)), None, "{verdict:?}");
+        }
+        aligned.sealed = Some("accepted".into());
+        assert_eq!(suggested(&aligned, Some(Turn::TurnEnded)), None);
+        // Not yet sent: nothing to judge.
+        assert_eq!(suggested(&unit("codex", Sent::ReadyToSend), Some(Turn::TurnEnded)), None);
     }
 
     /// Everything a second client would have to assemble. That it is this
