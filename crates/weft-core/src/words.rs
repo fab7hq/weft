@@ -255,7 +255,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.machines.remove_sure", "Remove {machine} from your account?"),
     (
         "web.machines.remove_what",
-        "{machine} leaves this list. Weft on {machine} is not touched; it joins again with W → R.",
+        "{machine} leaves this list. Weft on {machine} is not touched; it joins again from ☰ › Remote… there.",
     ),
     ("web.add.title", "Add a machine"),
     ("web.add.signed_in", "Signed in as {login}"),
@@ -345,7 +345,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     (
         "web.settings.stays",
-        "Projects, setup, turbo and Remote stay on your machine. Signing out keeps this device allowed on your machines; remove it there with W → R.",
+        "Projects, setup, turbo and Remote stay on your machine. Signing out keeps this device allowed on your machines; remove it there, from ☰ › Remote…",
     ),
     ("web.settings.privacy", "Privacy"),
     ("web.menu.settings", "Settings…"),
