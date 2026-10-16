@@ -11,5 +11,6 @@ pub mod panes_view;
 pub mod sheets;
 pub mod terminal_input;
 pub mod terminal_view;
+pub mod text_field;
 pub mod tree_view;
 pub mod window;

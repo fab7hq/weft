@@ -2543,7 +2543,10 @@ mod tests {
         assert!(grid.find_layer("hairline grid").is_some());
         assert!(grid.find_layer("woven mark").is_some());
         // An agent starts only from a project's +: the empty workspace says so and holds no button.
-        assert_eq!(grid.find_layer("woven said").unwrap().all_text(), words::word("workspace.empty"));
+        assert_eq!(
+            grid.find_layer("woven said").unwrap().all_text(),
+            words::word("workspace.empty")
+        );
         assert!(grid.find_layer("btn Start an agent").is_none());
 
         app.dispatch("start_agent:weft:claude");
