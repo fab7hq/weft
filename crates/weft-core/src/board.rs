@@ -223,7 +223,7 @@ impl Board<'_> {
         let why = self.why_not(act)?;
         let mut said = why.say();
         if why.key == "why.not_set_up" {
-            said.push_str(" [U]PDATE sets it up.");
+            said.push_str(" Updates… in ☰ sets it up.");
         }
         Some(said)
     }
@@ -406,7 +406,7 @@ mod tests {
         let units = [judged];
         let b = board(&units, &panes, READY, &routing);
         let said = b.unavailable(Act::Proceed).expect("no [P] once judged");
-        assert!(said.contains("FOLLOW UP"), "{said}");
+        assert!(said.contains("Follow up"), "{said}");
     }
 
     #[test]
@@ -468,7 +468,7 @@ mod tests {
         let b = board(&units, &panes, missing, &none);
         let said = b.unavailable(Act::Proceed).expect("not set up");
         assert!(said.contains("codex is not set up"), "{said}");
-        assert!(said.contains("[U]PDATE"), "and says what fixes it: {said}");
+        assert!(said.contains("Updates… in ☰"), "and says what fixes it: {said}");
     }
 
     #[test]

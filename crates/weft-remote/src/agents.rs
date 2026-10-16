@@ -885,7 +885,7 @@ mod tests {
             refused(&p, json!({"act": "proceed", "unit": "ask_1"})),
             (
                 "why.nothing_to_send",
-                "fix login has nothing to send. [F] FOLLOW UP asks for more.".into()
+                "fix login has nothing to send. Follow up asks for more.".into()
             )
         );
         assert_eq!(refused(&p, json!({"act": "proceed", "unit": "ask_9"})).0, "no_unit");

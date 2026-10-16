@@ -1369,7 +1369,7 @@ fn proceed_on_a_sent_asks_details_says_why_and_sends_nothing() {
     press(&mut a, KeyCode::Char('p'));
     assert!(a.modal.is_none(), "nothing is sent: {:?}", a.modal);
     let said = a.hint_text().unwrap_or_default().to_string();
-    assert!(said.ends_with("has nothing to send. [F] FOLLOW UP asks for more."), "{said}");
+    assert!(said.ends_with("has nothing to send. Follow up asks for more."), "{said}");
 }
 
 /// Sent on the person's yes, and what the agent reported it received was not
@@ -1446,7 +1446,7 @@ fn a_sent_ask_is_never_sent_again_by_proceed() {
     assert!(a.modal.is_none(), "{:?}", a.modal);
     assert_eq!(
         a.hint_text(),
-        Some("health endpoint has nothing to send. [F] FOLLOW UP asks for more.")
+        Some("health endpoint has nothing to send. Follow up asks for more.")
     );
 }
 
@@ -1501,7 +1501,7 @@ fn proceed_does_the_step_the_selected_row_is_actually_waiting_on() {
     assert!(a.modal.is_none(), "{:?}", a.modal);
     assert_eq!(
         a.hint_text(),
-        Some("health endpoint has nothing to send. [F] FOLLOW UP asks for more.")
+        Some("health endpoint has nothing to send. Follow up asks for more.")
     );
 }
 
@@ -1585,7 +1585,7 @@ fn the_verb_is_live_when_there_is_a_step_and_dim_when_there_is_not() {
 
     let a = with_unit(Sent::Arrived { exact: true });
     assert!(!a.proceeds());
-    assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("FOLLOW UP")));
+    assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("Follow up")));
     assert_eq!(a.unavailable(Act::Eval), None, "its Eval is the person's to run");
 
     let mut a = app();
@@ -1596,7 +1596,7 @@ fn the_verb_is_live_when_there_is_a_step_and_dim_when_there_is_not() {
     // where Proceed is pressed.
     a.open_view(View::Work("ask_1".into()));
     a.settle();
-    assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("FOLLOW UP")));
+    assert!(a.unavailable(Act::Proceed).is_some_and(|s| s.contains("Follow up")));
 }
 
 #[test]

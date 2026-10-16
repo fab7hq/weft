@@ -33,4 +33,4 @@ expression: drawn
 └──────────────────────────────────────────────────────────┘ └─────────────────────────────────────────────────────────┘
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
  LAYOUT   [→] RIGHT   [↓] DOWN   [TAB] NEXT PANE   [M]OVE TAB   [J]OIN   [ESC] DONE
- Four panes at most. Move a tab into another pane, or [J]OIN.
+ Four panes at most. Move a tab into another pane, or Join all panes.
