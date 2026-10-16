@@ -448,9 +448,9 @@ pub fn fill(key: &str, with: &[(&str, &str)]) -> String {
 
 /// The table as `words.json`, the web app's language pack: one object, key
 /// to word.
+/// Its keys sorted, whichever order serde_json keeps a map in for the build.
 pub fn json() -> String {
-    let map: serde_json::Map<String, serde_json::Value> =
-        WORDS.iter().map(|(k, w)| (k.to_string(), (*w).into())).collect();
+    let map: std::collections::BTreeMap<&str, &str> = WORDS.iter().copied().collect();
     serde_json::to_string_pretty(&map).unwrap_or_default() + "\n"
 }
 
