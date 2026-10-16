@@ -21,6 +21,8 @@ weft-proto = { path = "../weft-proto" }
 weft-term = { path = "../weft-term" }
 
 [dev-dependencies]
+# A window without a screen, for typing into the text fields in tests.
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
 tempfile = "3"
 ttf-parser = "0.25"
 weft-core = { path = "../weft-core", features = ["fixtures"] }

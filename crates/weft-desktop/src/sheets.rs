@@ -21,17 +21,19 @@ pub struct SheetProps<'a> {
     pub harnesses: &'a Harnesses,
     pub updates_count: usize,
     pub bottom_bar: &'a crate::app::BottomBarState,
+    /// What the open Ask's field holds.
+    pub ask_draft: &'a str,
 }
 
 /// Render the active right-pane sheet (`D4.x`, `D6.x`, `D7.2`, `D8.3`, `D9.2`, `D11.x`).
 pub fn render_sheet(props: &SheetProps) -> Element {
     match props.sheet {
-        ActiveSheet::Ask { project, target_session, follow_up_unit, draft } => render_ask_sheet(
+        ActiveSheet::Ask { project, target_session, follow_up_unit } => render_ask_sheet(
             props,
             project,
             target_session.as_deref(),
             follow_up_unit.as_deref(),
-            draft,
+            props.ask_draft,
         ),
         ActiveSheet::WorkDetail { project, unit } => render_work_detail(props, project, unit),
         ActiveSheet::EvalDetail { project, eval } => render_eval_detail(props, project, eval),
@@ -307,7 +309,7 @@ fn render_ask_sheet(
             textarea_el()
                 .layer("ask input")
                 .self_stretch()
-                .h(78)
+                .style("min-height", "78px")
                 .pad(10, 12)
                 .bg(palette::SURFACE)
                 .border(palette::BLUE_BORDER)

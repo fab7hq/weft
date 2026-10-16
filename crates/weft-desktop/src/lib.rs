@@ -12,5 +12,6 @@ pub mod sheets;
 pub mod terminal_input;
 pub mod terminal_view;
 pub mod text_field;
+pub mod text_input;
 pub mod tree_view;
 pub mod window;

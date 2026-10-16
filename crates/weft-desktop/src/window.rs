@@ -1,17 +1,21 @@
 //! Native macOS GPU-accelerated desktop window (`gpui` Metal renderer) for
 //! `WeftDesktopApp`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ::gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, FocusHandle, Focusable,
-    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Window, WindowBounds as GpuiWindowBounds, WindowOptions,
-    div as gpui_div, point, prelude::*, px, rgba, size,
+    AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, EntityInputHandler,
+    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement, Styled, UTF16Selection, Window,
+    WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div, point, prelude::*, px, rgba,
+    size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -19,6 +23,8 @@ use weft_core::state::WindowBounds;
 use crate::app::WeftDesktopApp;
 use crate::gpui::{Element, FileDialog, MacFileDialog, palette};
 use crate::terminal_input::{self, Act, Button, Held};
+use crate::text_field::{Outcome, TextField};
+use crate::text_input::{self as field_view, FieldElement, Look, Painted};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ActiveInput {
@@ -26,6 +32,31 @@ enum ActiveInput {
     Search,
     MessageRow,
     AskSheet,
+}
+
+/// The text field `which` names, when it is one and is there.
+fn field(app: &mut WeftDesktopApp, which: ActiveInput) -> Option<&mut TextField> {
+    match which {
+        ActiveInput::Search => Some(&mut app.search),
+        ActiveInput::MessageRow => Some(&mut app.message),
+        ActiveInput::AskSheet => app.ask_draft_mut(),
+        ActiveInput::Terminal => None,
+    }
+}
+
+/// A key as the text key table names it: `ctrl-alt-shift-cmd-key`.
+fn chord(ks: &::gpui::Keystroke) -> String {
+    let m = ks.modifiers;
+    let mut c = String::new();
+    for (on, name) in
+        [(m.control, "ctrl-"), (m.alt, "alt-"), (m.shift, "shift-"), (m.platform, "cmd-")]
+    {
+        if on {
+            c.push_str(name);
+        }
+    }
+    c.push_str(&ks.key);
+    c
 }
 
 pub(crate) struct SharedState {
@@ -55,6 +86,8 @@ struct GpuiDesktopView {
     wheel_accum: f32,
     /// The pane a drag is selecting in.
     selecting: Option<(PathBuf, u32)>,
+    /// Where the focused text field was last painted.
+    painted: Rc<RefCell<Painted>>,
 }
 
 impl Focusable for GpuiDesktopView {
@@ -222,6 +255,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                         active_input: ActiveInput::Terminal,
                         wheel_accum: 0.0,
                         selecting: None,
+                        painted: Rc::default(),
                     }
                 })
             },
@@ -259,7 +293,7 @@ impl GpuiDesktopView {
                 {
                     let token = format!(" @{} ", file.display());
                     if let Some(draft) = guard.app.ask_draft_mut() {
-                        draft.push_str(&token);
+                        draft.paste(&token);
                     }
                     guard.dirty = true;
                 }
@@ -300,6 +334,17 @@ impl GpuiDesktopView {
         let ks = &event.keystroke;
         let key = ks.key.as_str();
         let mods = ks.modifiers;
+
+        // A text field takes its keys from the table; a character goes on to
+        // the window's text input, which an input method composes.
+        if self.active_input != ActiveInput::Terminal {
+            if self.field_key(event, cx) {
+                cx.stop_propagation();
+            }
+            if !(mods.platform && matches!(key, "q" | "o" | "b")) {
+                return;
+            }
+        }
 
         // Global shortcuts: Cmd+Q, Cmd+O, Cmd+B, Cmd+V
         if mods.platform {
@@ -346,138 +391,19 @@ impl GpuiDesktopView {
                     return;
                 }
                 "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        if let Ok(mut guard) = self.shared.lock() {
-                            match self.active_input {
-                                ActiveInput::Search => {
-                                    guard.app.search_query.push_str(&text.replace('\n', " "));
-                                }
-                                ActiveInput::MessageRow => {
-                                    guard.app.message_draft.push_str(&text.replace('\n', " "));
-                                }
-                                ActiveInput::AskSheet => {
-                                    if let Some(draft) = guard.app.ask_draft_mut() {
-                                        draft.push_str(&text);
-                                    }
-                                }
-                                ActiveInput::Terminal => {
-                                    let bracketed = guard
-                                        .app
-                                        .active_pane_view_mut()
-                                        .is_some_and(|p| p.bracketed_paste());
-                                    let bytes = terminal_input::paste(&text, bracketed);
-                                    guard.app.send_active_pane_input(&bytes);
-                                    let _ = guard.app.pump();
-                                }
-                            }
-                        }
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                        && let Ok(mut guard) = self.shared.lock()
+                    {
+                        let bracketed =
+                            guard.app.active_pane_view_mut().is_some_and(|p| p.bracketed_paste());
+                        let bytes = terminal_input::paste(&text, bracketed);
+                        guard.app.send_active_pane_input(&bytes);
+                        let _ = guard.app.pump();
                         cx.notify();
                     }
                     return;
                 }
                 _ => {}
-            }
-        }
-
-        // Handle text fields when Search, MessageRow, or AskSheet is focused
-        if self.active_input != ActiveInput::Terminal {
-            match key {
-                "escape" => {
-                    self.active_input = ActiveInput::Terminal;
-                    cx.notify();
-                    return;
-                }
-                "backspace" => {
-                    if let Ok(mut guard) = self.shared.lock() {
-                        match self.active_input {
-                            ActiveInput::Search => {
-                                if mods.platform || mods.alt {
-                                    guard.app.search_query.clear();
-                                } else {
-                                    guard.app.search_query.pop();
-                                }
-                            }
-                            ActiveInput::MessageRow => {
-                                if mods.platform || mods.alt {
-                                    guard.app.message_draft.clear();
-                                } else {
-                                    guard.app.message_draft.pop();
-                                }
-                            }
-                            ActiveInput::AskSheet => {
-                                if let Some(draft) = guard.app.ask_draft_mut() {
-                                    draft.pop();
-                                }
-                            }
-                            ActiveInput::Terminal => {}
-                        }
-                    }
-                    cx.notify();
-                    return;
-                }
-                "enter" => {
-                    if let Ok(mut guard) = self.shared.lock() {
-                        match self.active_input {
-                            ActiveInput::Search => {}
-                            ActiveInput::MessageRow => {
-                                guard.app.dispatch("send_message_row");
-                            }
-                            ActiveInput::AskSheet => {
-                                if mods.platform || mods.control {
-                                    guard.app.dispatch("submit_ask_sheet");
-                                    self.active_input = ActiveInput::Terminal;
-                                } else if let Some(draft) = guard.app.ask_draft_mut() {
-                                    draft.push('\n');
-                                }
-                            }
-                            ActiveInput::Terminal => {}
-                        }
-                    }
-                    cx.notify();
-                    return;
-                }
-                "space" => {
-                    if !mods.control && !mods.platform {
-                        if let Ok(mut guard) = self.shared.lock() {
-                            match self.active_input {
-                                ActiveInput::Search => guard.app.search_query.push(' '),
-                                ActiveInput::MessageRow => guard.app.message_draft.push(' '),
-                                ActiveInput::AskSheet => {
-                                    if let Some(draft) = guard.app.ask_draft_mut() {
-                                        draft.push(' ');
-                                    }
-                                }
-                                ActiveInput::Terminal => {}
-                            }
-                        }
-                        cx.notify();
-                    }
-                    return;
-                }
-                _ => {
-                    if !mods.control && !mods.platform {
-                        let typed = ks
-                            .key_char
-                            .as_deref()
-                            .or_else(|| (key.chars().count() == 1).then_some(key));
-                        if let Some(ch) = typed {
-                            if let Ok(mut guard) = self.shared.lock() {
-                                match self.active_input {
-                                    ActiveInput::Search => guard.app.search_query.push_str(ch),
-                                    ActiveInput::MessageRow => guard.app.message_draft.push_str(ch),
-                                    ActiveInput::AskSheet => {
-                                        if let Some(draft) = guard.app.ask_draft_mut() {
-                                            draft.push_str(ch);
-                                        }
-                                    }
-                                    ActiveInput::Terminal => {}
-                                }
-                            }
-                            cx.notify();
-                        }
-                    }
-                    return;
-                }
             }
         }
 
@@ -496,6 +422,39 @@ impl GpuiDesktopView {
             }
         }
         cx.notify();
+    }
+
+    /// A key in the focused text field, as the key table says; whether it was one.
+    fn field_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
+        let which = self.active_input;
+        let Ok(mut guard) = self.shared.lock() else { return false };
+        let Some(f) = field(&mut guard.app, which) else { return false };
+        // While an input method composes, its keys are its own.
+        if f.marked.is_some() {
+            return false;
+        }
+        let Some(outcome) = f.key(&chord(&event.keystroke)) else { return false };
+        match outcome {
+            Outcome::Copy(text) => cx.write_to_clipboard(ClipboardItem::new_string(text)),
+            Outcome::Paste => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                    f.paste(&text);
+                }
+            }
+            Outcome::Send => match which {
+                ActiveInput::MessageRow => guard.app.dispatch("send_message_row"),
+                ActiveInput::AskSheet => {
+                    guard.app.dispatch("submit_ask_sheet");
+                    self.active_input = ActiveInput::Terminal;
+                }
+                _ => {}
+            },
+            // With no suggestion shown, Escape leaves the field.
+            Outcome::Drop => self.active_input = ActiveInput::Terminal,
+            Outcome::Take | Outcome::Changed | Outcome::Nothing => {}
+        }
+        cx.notify();
+        true
     }
 
     /// The cell under `at` in a pane's terminal, `(row, col)` from 0.
@@ -928,11 +887,12 @@ impl GpuiDesktopView {
             d = d.border_1().border_color(parse_color(palette::BLUE_BORDER));
         }
 
-        // Handle input & textarea elements natively
+        // A text field: its words drawn by the field element, the pointer
+        // placing the caret and dragging a selection.
         if el.tag == "input" || el.tag == "textarea" {
             let target_input = if el.id.as_deref() == Some("tree-search") {
                 ActiveInput::Search
-            } else if el.tag == "textarea" {
+            } else if el.tag == "textarea" && el.layer_name.as_deref() == Some("ask input") {
                 ActiveInput::AskSheet
             } else {
                 ActiveInput::MessageRow
@@ -941,28 +901,74 @@ impl GpuiDesktopView {
             if is_focused && target_input != ActiveInput::Search {
                 d = d.border_1().border_color(parse_color(palette::BLUE_BORDER));
             }
-            let val = el.text.as_deref().unwrap_or("");
-            let placeholder = el.placeholder.as_deref().unwrap_or("");
-            let (display_str, display_color) = if is_focused {
-                (format!("{val}▏"), parse_color(palette::TEXT))
-            } else if !val.is_empty() {
-                (val.to_string(), parse_color(palette::TEXT))
-            } else {
-                (placeholder.to_string(), parse_color(palette::DIM))
+            let lh = text_style.line_height.unwrap_or(text_style.font_size * 1.4);
+            let look = Look {
+                line_height: lh,
+                color: parse_color(palette::TEXT),
+                placeholder: parse_color(palette::DIM),
+                caret: parse_color(palette::TEXT),
+                selection: parse_color("#388bfd55"),
+                max_lines: if target_input == ActiveInput::Search { 1 } else { 6 },
             };
-            d = d
+            let snapshot = self.shared.lock().ok().and_then(|mut g| {
+                field(&mut g.app, target_input).map(|f| {
+                    (f.text().to_string(), f.selection(), f.cursor(), f.marked.clone(), f.shape())
+                })
+            });
+            let Some((text, selection, cursor, marked, shape)) = snapshot else {
+                return d.into_any_element();
+            };
+            // Only the focused field's paint is kept for the pointer and the input method.
+            let painted = if is_focused { Rc::clone(&self.painted) } else { Rc::default() };
+            let element = FieldElement {
+                view: cx.entity(),
+                focus: self.focus_handle.clone(),
+                focused: is_focused,
+                text,
+                selection,
+                cursor,
+                marked,
+                placeholder: el.placeholder.clone().unwrap_or_default(),
+                shape,
+                look,
+                painted,
+            };
+            return d
                 .cursor_text()
-                .text_color(display_color)
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
                         this.focus_handle.focus(window, cx);
+                        let was = this.active_input == target_input;
                         this.active_input = target_input;
+                        let at =
+                            if was { this.painted.borrow().index_for(e.position) } else { None };
+                        if let Ok(mut guard) = this.shared.lock()
+                            && let Some(f) = field(&mut guard.app, target_input)
+                            && let Some(at) = at
+                        {
+                            if e.modifiers.shift { f.select_to(at) } else { f.select(at..at) }
+                        }
                         cx.notify();
                     }),
                 )
-                .child(display_str);
-            return d.into_any_element();
+                .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
+                    if e.pressed_button != Some(MouseButton::Left)
+                        || this.active_input != target_input
+                    {
+                        return;
+                    }
+                    let Some(at) = this.painted.borrow().index_for(e.position) else { return };
+                    if let Ok(mut guard) = this.shared.lock()
+                        && let Some(f) = field(&mut guard.app, target_input)
+                    {
+                        f.select_to(at);
+                    }
+                    cx.notify();
+                }))
+                .child(element)
+                .into_any_element();
         }
 
         // Clicking anywhere on the search pill focuses Search
@@ -1050,6 +1056,119 @@ impl GpuiDesktopView {
     }
 }
 
+/// The window's text input, for the field that has the keyboard: typing,
+/// what an input method composes and commits, and where it puts its window.
+impl EntityInputHandler for GpuiDesktopView {
+    fn text_for_range(
+        &mut self,
+        range: Range<usize>,
+        adjusted: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let mut guard = self.shared.lock().ok()?;
+        let text = field(&mut guard.app, self.active_input)?.text().to_string();
+        let bytes = field_view::range_from_utf16(&text, &range);
+        adjusted.replace(field_view::range_to_utf16(&text, &bytes));
+        Some(text[bytes].to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let mut guard = self.shared.lock().ok()?;
+        let f = field(&mut guard.app, self.active_input)?;
+        Some(UTF16Selection {
+            range: field_view::range_to_utf16(f.text(), &f.selection()),
+            reversed: f.reversed(),
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let mut guard = self.shared.lock().ok()?;
+        let f = field(&mut guard.app, self.active_input)?;
+        f.marked.as_ref().map(|m| field_view::range_to_utf16(f.text(), m))
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        if let Ok(mut guard) = self.shared.lock()
+            && let Some(f) = field(&mut guard.app, self.active_input)
+        {
+            f.marked = None;
+        }
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Ok(mut guard) = self.shared.lock()
+            && let Some(f) = field(&mut guard.app, self.active_input)
+        {
+            let bytes = range.map(|r| field_view::range_from_utf16(f.text(), &r));
+            match bytes {
+                Some(r) => f.replace(Some(r), text, true),
+                None if f.marked.is_some() => f.replace(None, text, false),
+                None => f.type_text(text),
+            }
+        }
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<Range<usize>>,
+        text: &str,
+        selected: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Ok(mut guard) = self.shared.lock()
+            && let Some(f) = field(&mut guard.app, self.active_input)
+        {
+            let bytes = range.map(|r| field_view::range_from_utf16(f.text(), &r));
+            let inside = selected.map(|r| field_view::range_from_utf16(text, &r));
+            f.mark(bytes, text, inside);
+        }
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range: Range<usize>,
+        _element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let text = {
+            let mut guard = self.shared.lock().ok()?;
+            field(&mut guard.app, self.active_input)?.text().to_string()
+        };
+        self.painted.borrow().bounds_for(field_view::range_from_utf16(&text, &range))
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        at: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let ix = self.painted.borrow().index_for(at)?;
+        let mut guard = self.shared.lock().ok()?;
+        Some(field_view::to_utf16(field(&mut guard.app, self.active_input)?.text(), ix))
+    }
+}
+
 impl Render for GpuiDesktopView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let root_el = if let Ok(guard) = self.shared.lock() {
@@ -1131,4 +1250,89 @@ fn parse_color(s: &str) -> Rgba {
         }
     }
     rgba(0x00000000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::gpui::{TestAppContext, VisualTestContext};
+
+    /// The desktop's view in a window without a screen, a pane open and the message row focused.
+    fn opened(
+        cx: &mut TestAppContext,
+    ) -> (tempfile::TempDir, Arc<Mutex<SharedState>>, &mut VisualTestContext) {
+        let (tmp, mut app) = crate::app::tests::sample_app(false);
+        app.dispatch("start_agent:weft:claude");
+        let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
+        let view_shared = Arc::clone(&shared);
+        let (_view, cx) = cx.add_window_view(|window, cx| {
+            let focus_handle = cx.focus_handle();
+            focus_handle.focus(window, cx);
+            GpuiDesktopView {
+                shared: view_shared,
+                focus_handle,
+                active_input: ActiveInput::MessageRow,
+                wheel_accum: 0.0,
+                selecting: None,
+                painted: Rc::default(),
+            }
+        });
+        cx.run_until_parked();
+        (tmp, shared, cx)
+    }
+
+    /// Run `test` with a window context, on a thread with a main thread's stack:
+    /// the screen's element tree is deep.
+    fn windowed(test: impl FnOnce(&mut TestAppContext) + Send + 'static) {
+        std::thread::Builder::new()
+            .stack_size(8 << 20)
+            .spawn(move || test(&mut TestAppContext::single()))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    fn message(shared: &Arc<Mutex<SharedState>>) -> String {
+        shared.lock().unwrap().app.message.text().to_string()
+    }
+
+    #[test]
+    fn typing_goes_into_the_message_row_shift_enter_adds_a_line_and_enter_sends() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            cx.simulate_input("fix 日本");
+            cx.simulate_keystrokes("shift-enter");
+            cx.simulate_input("then test it");
+            assert_eq!(message(&shared), "fix 日本\nthen test it");
+            cx.simulate_keystrokes("alt-left alt-backspace");
+            assert_eq!(message(&shared), "fix 日本\nthen it");
+            cx.simulate_keystrokes("cmd-z");
+            assert_eq!(message(&shared), "fix 日本\nthen test it");
+            cx.simulate_keystrokes("enter");
+            assert_eq!(message(&shared), "", "sent");
+        });
+    }
+
+    #[test]
+    fn escape_leaves_the_field_and_keys_go_to_the_agent_again() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            cx.simulate_input("ab");
+            cx.simulate_keystrokes("escape");
+            cx.simulate_input("c");
+            assert_eq!(message(&shared), "ab");
+        });
+    }
+
+    #[test]
+    fn a_pasted_message_keeps_its_lines_and_a_pasted_search_does_not() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo".into()));
+            cx.simulate_keystrokes("cmd-v");
+            assert_eq!(message(&shared), "one\ntwo");
+            shared.lock().unwrap().app.search.paste("one\ntwo");
+            assert_eq!(shared.lock().unwrap().app.search.text(), "one two");
+        });
+    }
 }

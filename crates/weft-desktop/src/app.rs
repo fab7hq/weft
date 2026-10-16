@@ -23,6 +23,7 @@ use crate::panes_view::{
     render_panes_workspace, split_pane_down, split_pane_right,
 };
 use crate::sheets::{SheetProps, render_menu_popover, render_sheet};
+use crate::text_field::{Shape, TextField};
 use crate::tree_view::{TreeProps, TreeSelection, render_plus_popover, render_tree};
 
 /// Load `WeftState` from `<home>/.fab7/weft/state.json` (falling back to
@@ -62,34 +63,12 @@ pub fn save_state_to_home(home: &Path, state: &WeftState) -> Result<()> {
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveSheet {
-    Ask {
-        project: String,
-        target_session: Option<String>,
-        follow_up_unit: Option<String>,
-        draft: String,
-    },
-    WorkDetail {
-        project: String,
-        unit: String,
-    },
-    EvalDetail {
-        project: String,
-        eval: String,
-    },
-    EvalView {
-        project: String,
-        eval: String,
-        by_file: bool,
-        selected_step: usize,
-    },
-    SealDetail {
-        project: String,
-        seal: String,
-    },
-    SessionDetail {
-        project: String,
-        session: String,
-    },
+    Ask { project: String, target_session: Option<String>, follow_up_unit: Option<String> },
+    WorkDetail { project: String, unit: String },
+    EvalDetail { project: String, eval: String },
+    EvalView { project: String, eval: String, by_file: bool, selected_step: usize },
+    SealDetail { project: String, seal: String },
+    SessionDetail { project: String, session: String },
     Updates,
     Remote,
 }
@@ -112,7 +91,8 @@ pub struct WeftDesktopApp {
     pub state: WeftState,
     pub clients: Vec<ProjectClient>,
     pub selection: Option<TreeSelection>,
-    pub search_query: String,
+    /// The tree's search field.
+    pub search: TextField,
     pub plus_popover_project: Option<String>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -122,7 +102,9 @@ pub struct WeftDesktopApp {
     pub unfolded_earlier: HashSet<String>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: HashSet<(PathBuf, u32, usize)>,
-    pub message_draft: String,
+    /// The message row's field, and the open Ask's.
+    pub message: TextField,
+    pub ask: TextField,
     pub clipboard: String,
     pub active_sheet: Option<ActiveSheet>,
     pub bottom_bar: BottomBarState,
@@ -142,7 +124,7 @@ impl WeftDesktopApp {
             state,
             clients: Vec::new(),
             selection: None,
-            search_query: String::new(),
+            search: TextField::new(Shape::Line),
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -152,7 +134,8 @@ impl WeftDesktopApp {
             unfolded_earlier: HashSet::new(),
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
-            message_draft: String::new(),
+            message: TextField::new(Shape::Area),
+            ask: TextField::new(Shape::Area),
             clipboard: String::new(),
             active_sheet: None,
             bottom_bar: BottomBarState::None,
@@ -248,7 +231,7 @@ impl WeftDesktopApp {
             state,
             clients,
             selection: None,
-            search_query: String::new(),
+            search: TextField::new(Shape::Line),
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -258,7 +241,8 @@ impl WeftDesktopApp {
             unfolded_earlier: HashSet::new(),
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
-            message_draft: String::new(),
+            message: TextField::new(Shape::Area),
+            ask: TextField::new(Shape::Area),
             clipboard: String::new(),
             active_sheet: None,
             bottom_bar: BottomBarState::None,
@@ -481,19 +465,15 @@ impl WeftDesktopApp {
     }
 
     /// Set the draft text in the open `Ask` / `Follow up` sheet.
-    pub fn set_ask_draft(&mut self, text: impl Into<String>) {
-        if let Some(ActiveSheet::Ask { draft, .. }) = &mut self.active_sheet {
-            *draft = text.into();
+    pub fn set_ask_draft(&mut self, text: &str) {
+        if matches!(self.active_sheet, Some(ActiveSheet::Ask { .. })) {
+            self.ask.set_text(text);
         }
     }
 
-    /// Borrow the draft string of the open `Ask` / `Follow up` sheet mutably.
-    pub fn ask_draft_mut(&mut self) -> Option<&mut String> {
-        if let Some(ActiveSheet::Ask { draft, .. }) = &mut self.active_sheet {
-            Some(draft)
-        } else {
-            None
-        }
+    /// The open `Ask` / `Follow up` sheet's field.
+    pub fn ask_draft_mut(&mut self) -> Option<&mut TextField> {
+        matches!(self.active_sheet, Some(ActiveSheet::Ask { .. })).then_some(&mut self.ask)
     }
 
     /// Scroll the active pane's terminal scrollback buffer by `delta` lines.
@@ -551,7 +531,7 @@ impl WeftDesktopApp {
             return;
         }
         if action == "clear_search" {
-            self.search_query.clear();
+            self.search.set_text("");
             return;
         }
         if action == "open_project_dialog" {
@@ -623,11 +603,11 @@ impl WeftDesktopApp {
                             return;
                         }
                     }
+                    self.ask = TextField::new(Shape::Area);
                     self.active_sheet = Some(ActiveSheet::Ask {
                         project: project.clone(),
                         target_session: Some(session.clone()),
                         follow_up_unit: None,
-                        draft: String::new(),
                     });
                 }
                 _ => {
@@ -692,9 +672,10 @@ impl WeftDesktopApp {
             return;
         }
         if action == "submit_ask_sheet" {
-            if let Some(ActiveSheet::Ask { project, target_session, follow_up_unit, draft }) =
+            if let Some(ActiveSheet::Ask { project, target_session, follow_up_unit }) =
                 self.active_sheet.take()
             {
+                let draft = self.ask.text().to_string();
                 self.submit_ask(
                     &project,
                     target_session.as_deref(),
@@ -707,11 +688,11 @@ impl WeftDesktopApp {
         if let Some(rest) = action.strip_prefix("open_follow_up:")
             && let Some((proj, unit)) = rest.split_once(':')
         {
+            self.ask = TextField::new(Shape::Area);
             self.active_sheet = Some(ActiveSheet::Ask {
                 project: proj.to_string(),
                 target_session: None,
                 follow_up_unit: Some(unit.to_string()),
-                draft: String::new(),
             });
             return;
         }
@@ -1070,7 +1051,8 @@ impl WeftDesktopApp {
             return;
         }
         if action == "send_message_row" {
-            let text = std::mem::take(&mut self.message_draft);
+            let text = self.message.text().to_string();
+            self.message.set_text("");
             if !text.is_empty() {
                 let g_idx = self
                     .state
@@ -1137,11 +1119,11 @@ impl WeftDesktopApp {
         if let Some(rest) = action.strip_prefix("open_ask:")
             && let Some((proj, session)) = rest.split_once(':')
         {
+            self.ask = TextField::new(Shape::Area);
             self.active_sheet = Some(ActiveSheet::Ask {
                 project: proj.to_string(),
                 target_session: Some(session.to_string()),
                 follow_up_unit: None,
-                draft: String::new(),
             });
             return;
         }
@@ -1551,7 +1533,7 @@ impl WeftDesktopApp {
             body = body.child(render_tree(&TreeProps {
                 projects: &projects,
                 selection: self.selection.as_ref(),
-                search_query: &self.search_query,
+                search_query: self.search.text(),
                 plus_popover_project: self.plus_popover_project.as_deref(),
                 harnesses: &harnesses,
                 turbo: self.state.settings.turbo,
@@ -1568,6 +1550,7 @@ impl WeftDesktopApp {
                 harnesses: &harnesses,
                 updates_count: updates_available,
                 bottom_bar: &self.bottom_bar,
+                ask_draft: self.ask.text(),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the
@@ -1582,7 +1565,7 @@ impl WeftDesktopApp {
                     layout_menu_pane: self.layout_menu_pane,
                     conversations: &self.conversations,
                     unfolded_steps: &self.unfolded_steps,
-                    message_draft: &self.message_draft,
+                    message_draft: self.message.text(),
                     dock,
                 }))
             }
@@ -1646,7 +1629,7 @@ impl WeftDesktopApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
     use weft_core::conversation::{Item, Kind};
@@ -1865,14 +1848,14 @@ mod tests {
         assert!(tree.find_layer("row group Sealed").is_some());
 
         // Search filtering (D11.8)
-        app.search_query = "login".into();
+        app.search.set_text("login");
         let searched = app.render();
         let stree = searched.find_layer("tree").unwrap();
         assert!(stree.all_text().contains("2 match"));
         assert!(stree.find_layer("row ask fix login").is_some());
         assert!(stree.find_layer("row ask telemetry").is_none());
         app.dispatch("clear_search");
-        assert!(app.search_query.is_empty());
+        assert!(app.search.text().is_empty());
 
         // Collapsing the tree (D15.7)
         app.dispatch("toggle_sidebar");
@@ -2483,7 +2466,7 @@ mod tests {
         out
     }
 
-    fn sample_app(turbo: bool) -> (tempfile::TempDir, WeftDesktopApp) {
+    pub(crate) fn sample_app(turbo: bool) -> (tempfile::TempDir, WeftDesktopApp) {
         let tmp = tempfile::tempdir().unwrap();
         let initial = WeftState {
             open_projects: vec![PathBuf::from("/work/weft")],
