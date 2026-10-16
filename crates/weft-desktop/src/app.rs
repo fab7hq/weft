@@ -102,8 +102,9 @@ pub struct WeftDesktopApp {
     pub unfolded_earlier: HashSet<String>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: HashSet<(PathBuf, u32, usize)>,
-    /// The message row's field, and the open Ask's.
-    pub message: TextField,
+    /// Each agent's message field, by its project and pane: switching
+    /// agents brings each one's draft back. The open Ask's field.
+    pub messages: HashMap<(PathBuf, u32), TextField>,
     pub ask: TextField,
     pub clipboard: String,
     pub active_sheet: Option<ActiveSheet>,
@@ -134,7 +135,7 @@ impl WeftDesktopApp {
             unfolded_earlier: HashSet::new(),
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
-            message: TextField::new(Shape::Area),
+            messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
             clipboard: String::new(),
             active_sheet: None,
@@ -241,7 +242,7 @@ impl WeftDesktopApp {
             unfolded_earlier: HashSet::new(),
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
-            message: TextField::new(Shape::Area),
+            messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
             clipboard: String::new(),
             active_sheet: None,
@@ -424,7 +425,19 @@ impl WeftDesktopApp {
         let _ = self.save_state();
     }
 
-    /// Resize the active pane's terminal viewport (`rows`, `cols`).
+    /// The message field of the agent in front.
+    pub fn message_field(&mut self) -> &mut TextField {
+        let key = self.active_tab().map_or_else(Default::default, |t| (t.project, t.pane));
+        self.messages.entry(key).or_insert_with(|| TextField::new(Shape::Area))
+    }
+
+    /// What the agent in front's message field holds.
+    fn message_text(&self) -> &str {
+        self.active_tab()
+            .and_then(|t| self.messages.get(&(t.project, t.pane)))
+            .map_or("", TextField::text)
+    }
+
     /// The tab in front of the focused pane group.
     fn active_tab(&self) -> Option<SavedPaneTab> {
         let panes = &self.state.panes;
@@ -1051,8 +1064,8 @@ impl WeftDesktopApp {
             return;
         }
         if action == "send_message_row" {
-            let text = self.message.text().to_string();
-            self.message.set_text("");
+            let text = self.message_field().text().to_string();
+            self.message_field().set_text("");
             if !text.is_empty() {
                 let g_idx = self
                     .state
@@ -1565,7 +1578,7 @@ impl WeftDesktopApp {
                     layout_menu_pane: self.layout_menu_pane,
                     conversations: &self.conversations,
                     unfolded_steps: &self.unfolded_steps,
-                    message_draft: self.message.text(),
+                    message_draft: self.message_text(),
                     dock,
                 }))
             }
@@ -2514,6 +2527,28 @@ pub(crate) mod tests {
         for act in ["btn Ask (row)", "btn Eval (row)", "btn Seal (row)"] {
             assert!(dom.find_layer(act).is_none(), "{act}");
         }
+    }
+
+    #[test]
+    fn each_agent_keeps_its_own_draft_and_switching_never_carries_one_across() {
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        app.dispatch("start_agent:weft:claude");
+        app.dispatch("start_agent:weft:codex");
+        // codex is in front.
+        app.message_field().type_text("fix the lint");
+        app.dispatch("select_tab:0:0");
+        assert_eq!(app.message_field().text(), "", "claude's own field");
+        app.message_field().type_text("run the tests");
+        app.dispatch("select_tab:0:1");
+        assert_eq!(app.message_field().text(), "fix the lint");
+        let dom = app.render();
+        let row = dom.find_layer("the message row").expect("the message row");
+        assert!(row.all_text().contains("fix the lint"));
+        app.dispatch("send_message_row");
+        assert_eq!(app.message_field().text(), "", "sent");
+        app.dispatch("select_tab:0:0");
+        assert_eq!(app.message_field().text(), "run the tests");
     }
 
     #[test]

@@ -38,7 +38,7 @@ enum ActiveInput {
 fn field(app: &mut WeftDesktopApp, which: ActiveInput) -> Option<&mut TextField> {
     match which {
         ActiveInput::Search => Some(&mut app.search),
-        ActiveInput::MessageRow => Some(&mut app.message),
+        ActiveInput::MessageRow => Some(app.message_field()),
         ActiveInput::AskSheet => app.ask_draft_mut(),
         ActiveInput::Terminal => None,
     }
@@ -1293,7 +1293,7 @@ mod tests {
     }
 
     fn message(shared: &Arc<Mutex<SharedState>>) -> String {
-        shared.lock().unwrap().app.message.text().to_string()
+        shared.lock().unwrap().app.message_field().text().to_string()
     }
 
     #[test]
