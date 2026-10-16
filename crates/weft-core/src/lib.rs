@@ -30,6 +30,7 @@ pub mod signal;
 pub mod state;
 pub mod suggest;
 pub mod sync;
+pub mod text_keys;
 pub mod tree;
 pub mod turns;
 pub mod words;
