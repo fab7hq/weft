@@ -304,6 +304,92 @@ fn what_the_person_sent_is_kept_for_suggestions_once_its_turn_ends() {
     assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     assert!(std::fs::read_to_string(&file).unwrap().contains("session:g1"));
     // Only the index is there: no part file is left behind.
-    let names: Vec<_> = std::fs::read_dir(&kept).unwrap().flatten().map(|e| e.file_name()).collect();
+    let names: Vec<_> =
+        std::fs::read_dir(&kept).unwrap().flatten().map(|e| e.file_name()).collect();
     assert!(names.iter().all(|n| n.to_string_lossy().ends_with(".json")), "{names:?}");
+}
+
+#[test]
+fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
+    let h = Harness::with("suggestions", |dir| {
+        grok_beside(dir);
+        // On for this machine: suggestions are off unless a line turns them on.
+        let config = dir.join("config.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("suggest = true\n{text}")).unwrap();
+    });
+    let (mut shell, token, transcript) = grok_pane_in(&h, "suggesting", "g1");
+    hook_of(&h, &shell, &token, &transcript, "g1");
+    let said = [
+        line("user_message_chunk", "run the login tests"),
+        line("agent_message_chunk", "Both pass."),
+        line("user_message_chunk", "commit these changes"),
+        line("agent_message_chunk", "Both pass."),
+    ];
+    std::fs::write(&transcript, said.join("\n") + "\n").unwrap();
+    let ended = Sent {
+        harness: "grok".into(),
+        hook: "Stop".into(),
+        session: "g1".into(),
+        workspace: Some(shell.project.to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        pane: Some(0),
+        token: Some(token.clone()),
+        transcript: Some(transcript.to_string_lossy().into_owned()),
+        ..Sent::default()
+    };
+    let mut s = std::os::unix::net::UnixStream::connect(&h.socket).unwrap();
+    s.write_all(&Line::Event(Event::Signal(Box::new(ended))).encode()).unwrap();
+    let mut suggest = |draft: &str| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let got = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: draft.into() });
+            if got.get("text").is_some() {
+                break got;
+            }
+            assert!(Instant::now() < deadline, "nothing suggested for {draft:?}: {got}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    assert_eq!(suggest("run the")["text"], " login tests");
+    assert_eq!(suggest("")["text"], "commit these changes", "what followed a reply like the last");
+    assert!(suggest("run the")["score"].as_f64().is_some_and(|s| s > 0.0 && s <= 1.0));
+    let none = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "zebra crossing".into() });
+    assert_eq!(none, json!({}));
+    let missing = shell.tui.ask(weft_proto::Call::Suggest { pane: 7, draft: String::new() });
+    assert_eq!(missing, json!({"error": "no_pane"}));
+}
+
+#[test]
+fn suggestions_are_off_unless_turned_on() {
+    let h = Harness::with("unsuggested", grok_beside);
+    let (mut shell, token, transcript) = grok_pane_in(&h, "quiet", "g1");
+    hook_of(&h, &shell, &token, &transcript, "g1");
+    std::fs::write(&transcript, line("user_message_chunk", "run the login tests") + "\n").unwrap();
+    let ended = Sent {
+        harness: "grok".into(),
+        hook: "Stop".into(),
+        session: "g1".into(),
+        workspace: Some(shell.project.to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        pane: Some(0),
+        token: Some(token.clone()),
+        transcript: Some(transcript.to_string_lossy().into_owned()),
+        ..Sent::default()
+    };
+    let mut s = std::os::unix::net::UnixStream::connect(&h.socket).unwrap();
+    s.write_all(&Line::Event(Event::Signal(Box::new(ended))).encode()).unwrap();
+    // The message is kept all the same; only the field is not offered it.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_dir(h.dir.join("suggest"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("run the login tests")))
+    {
+        assert!(Instant::now() < deadline, "the message never reached the index");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let got = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "run the".into() });
+    assert_eq!(got, json!({}));
 }

@@ -182,6 +182,25 @@ impl Tui {
         self.out.write_all(&Line::Call { id, call }.encode()).unwrap();
     }
 
+    /// Send a call and wait for its result, skipping everything else.
+    #[allow(dead_code)]
+    pub fn ask(&mut self, call: Call) -> Value {
+        let id = self.next;
+        self.call(call);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        self.out.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        while Instant::now() < deadline {
+            match self.lines.next() {
+                Ok(Some(Line::Result { id: got, result })) if got == id => return result,
+                Ok(Some(Line::Error { id: got, code, .. })) if got == id => {
+                    return json!({"error": code});
+                }
+                _ => continue,
+            }
+        }
+        panic!("no answer to call {id}");
+    }
+
     /// An act for weft remote, as the TUI sends it.
     pub fn act(&mut self, act: Value) {
         self.call(Call::Remote { act });

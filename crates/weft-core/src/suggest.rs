@@ -423,6 +423,19 @@ pub fn from_conversation(
     out
 }
 
+/// The agent's whole reply after the person's last message: what the next
+/// prompt follows. Empty while nothing has been said since.
+pub fn last_reply(items: &[crate::conversation::Item]) -> String {
+    use crate::conversation::Kind;
+    let from = items.iter().rposition(|i| i.kind == Kind::Person).map_or(0, |n| n + 1);
+    items[from..]
+        .iter()
+        .filter(|i| i.kind == Kind::Agent)
+        .filter_map(|i| i.text.as_deref().map(str::trim).filter(|t| !t.is_empty()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The index as it is kept on the person's machine: one project's entries.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Stored {
@@ -693,6 +706,8 @@ mod tests {
         let untimed =
             from_conversation(&[item(Kind::Person, "hi", None)], "claude", "/work/weft", "8b2e", 7);
         assert_eq!(untimed[0].at, 7);
+        assert_eq!(last_reply(&items[..4]), "Reading it.\nDone. Both tests pass.");
+        assert_eq!(last_reply(&items), "", "nothing said since the last message");
     }
 
     #[test]

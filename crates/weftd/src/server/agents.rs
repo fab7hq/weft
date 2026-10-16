@@ -287,6 +287,7 @@ impl Session {
                     turbo,
                     token,
                     transcript: None,
+                    reply: Default::default(),
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
@@ -589,18 +590,23 @@ impl Session {
             .and_then(|s| s.transcript.clone());
         let (home, harness, session, root) =
             (h.config_home(), sent.harness.clone(), sent.session.clone(), p.root.clone());
-        let tx = self.tx.clone();
+        let (tx, sense, pane) = (self.tx.clone(), std::sync::Arc::clone(&self.sense), sent.pane);
         std::thread::spawn(move || {
             let at = (crate::turns::now_millis() / 1000).max(0) as u64;
-            let entries = crate::suggest::of_session(
-                &mapping,
-                &home,
-                &harness,
-                &session,
-                named.as_deref(),
-                &root,
-                at,
-            );
+            let items = crate::suggest::items_of(&mapping, &home, &session, named.as_deref());
+            let items = items.unwrap_or_default();
+            let project = root.to_string_lossy().into_owned();
+            let entries =
+                weft_core::suggest::from_conversation(&items, &harness, &project, &session, at);
+            // The next prompt follows this reply, by its words and its embedding.
+            let reply = weft_core::suggest::last_reply(&items);
+            let near = match sense.read().ok().as_deref().and_then(Option::as_ref) {
+                Some(model) if !reply.is_empty() => model.embed(&reply),
+                _ => Vec::new(),
+            };
+            if let Some(pane) = pane {
+                let _ = tx.send(super::Wake::Replied { root: root.clone(), pane, reply, near });
+            }
             let source = Some(format!("session:{session}"));
             let _ = tx.send(super::Wake::Suggested { root, source, entries, built: false });
         });

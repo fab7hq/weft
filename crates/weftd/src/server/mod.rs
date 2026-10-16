@@ -77,6 +77,9 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
+    /// The agent's last reply and Sense's embedding of it, read when its turn
+    /// ended: what the next prompt follows.
+    reply: (String, Vec<f32>),
     /// When the pane last printed output, and the PTY sequence and reading
     /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
     last_output_at: std::time::Instant,
@@ -139,6 +142,8 @@ struct Project {
     suggest: Option<Vec<weft_core::suggest::Entry>>,
     /// Its replies are being embedded: one pass at a time.
     embedding: bool,
+    /// `suggest = true`: the message field gets suggestions here.
+    suggest_on: bool,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -319,6 +324,15 @@ enum Wake {
         entries: Vec<weft_core::suggest::Entry>,
         built: bool,
     },
+    /// The habits every project's suggestions share, read at start.
+    Habits(Vec<weft_core::suggest::Entry>),
+    /// An agent's turn ended: its last reply, and Sense's embedding of it.
+    Replied {
+        root: PathBuf,
+        pane: u32,
+        reply: String,
+        near: Vec<f32>,
+    },
     /// Sense embedded a project's replies.
     Embedded {
         root: PathBuf,
@@ -416,6 +430,9 @@ pub struct Session {
     /// A newer Weft installed beside this one, by its version: started on
     /// once no agent runs.
     update: Option<String>,
+    /// The short messages every kept index holds, read in the background at
+    /// start: the habits every project's suggestions share.
+    habits: Vec<weft_core::suggest::Entry>,
     /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
     #[allow(dead_code)]
     sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
@@ -700,6 +717,7 @@ impl Session {
             supervisor: Default::default(),
             dismissed: None,
             update: None,
+            habits: Vec::new(),
             sense,
             _held: crate::versions::hold_own(),
         };
@@ -719,6 +737,10 @@ impl Session {
         // the list is empty. After an update nothing ended: they are open.
         session.reopen(!updated);
         session.remote_from_config();
+        let (habits_of, tx) = (config.to_path_buf(), session.tx.clone());
+        std::thread::spawn(move || {
+            let _ = tx.send(Wake::Habits(crate::suggest::habits(&habits_of)));
+        });
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
         outcome
@@ -774,6 +796,17 @@ impl Session {
                     self.suggested(&root, source, entries, built)
                 }
                 Wake::Embedded { root, vectors } => self.embedded(&root, vectors),
+                Wake::Habits(entries) => self.habits = entries,
+                Wake::Replied { root, pane, reply, near } => {
+                    if let Some(slot) = self
+                        .projects
+                        .iter_mut()
+                        .find(|p| p.root == root && !p.closed)
+                        .and_then(|p| p.panes.iter_mut().find(|s| s.map.pane == pane))
+                    {
+                        slot.reply = (reply, near);
+                    }
+                }
                 Wake::Checked => {
                     let open: Vec<usize> =
                         (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
@@ -1388,6 +1421,42 @@ impl Session {
         self.embed_suggestions(root);
     }
 
+    /// `pane.suggest`: what the pane's message field could show, or nothing:
+    /// suggestions off here, no such pane, or nothing near enough.
+    fn suggestion(&self, client: u64, pane: u32, draft: &str) -> Answer {
+        let Some(at) = self.project_of(client) else { return Answer::no_project() };
+        let p = &self.projects[at];
+        let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else {
+            return Answer::No("no_pane", "there is no such pane here".into());
+        };
+        let found = p.suggest_on.then(|| {
+            // Every other open project's short messages count as habits too.
+            let open: Vec<weft_core::suggest::Entry> = self
+                .projects
+                .iter()
+                .filter(|o| o.root != p.root && !o.closed)
+                .flat_map(|o| o.suggest.iter().flatten().cloned())
+                .collect();
+            let others: Vec<_> = self.habits.iter().cloned().chain(open).collect();
+            let now = (crate::turns::now_millis() / 1000).max(0) as u64;
+            let (reply, near) = (&slot.reply.0, &slot.reply.1);
+            let own = p.suggest.as_deref().unwrap_or_default();
+            crate::suggest::answer(
+                own,
+                &others,
+                &p.root,
+                &slot.map.harness,
+                draft,
+                (reply, near),
+                now,
+            )
+        });
+        match found.flatten() {
+            Some(s) => Answer::Ok(serde_json::json!({"text": s.text, "score": s.score})),
+            None => Answer::Ok(serde_json::json!({})),
+        }
+    }
+
     /// Embed the replies not embedded yet, off the run loop, when Sense is loaded.
     fn embed_suggestions(&mut self, root: &Path) {
         let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
@@ -1682,6 +1751,7 @@ impl Session {
                     ledger,
                     suggest: None,
                     embedding: false,
+                    suggest_on: config.suggest(),
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.
@@ -1862,6 +1932,7 @@ impl Session {
                 }
             }
             Call::Attach { pane, form } => return Ok(self.attach(client, pane, &form)),
+            Call::Suggest { pane, draft } => return Ok(self.suggestion(client, pane, &draft)),
             Call::Stage { pane, bytes, how, what, why } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let id = format!("pnd_{}", self.next_pending);

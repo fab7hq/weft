@@ -80,6 +80,18 @@ pub fn of_asks(root: &Path, units: &[Unit]) -> Vec<Entry> {
         .collect()
 }
 
+/// A session's transcript, read whole; nothing when it cannot be found or read.
+pub fn items_of(
+    mapping: &Conversation,
+    home: &Path,
+    session: &str,
+    named: Option<&Path>,
+) -> Option<Vec<weft_core::conversation::Item>> {
+    let path = crate::conversation::file(mapping, home, session, named)?;
+    let bytes = std::fs::read(path).ok()?;
+    mapping.read(&bytes, 0).ok().map(|r| r.items)
+}
+
 /// What one session's transcript gives, read whole; nothing when it cannot be found or read.
 pub fn of_session(
     mapping: &Conversation,
@@ -90,18 +102,51 @@ pub fn of_session(
     root: &Path,
     at: u64,
 ) -> Vec<Entry> {
-    let Some(path) = crate::conversation::file(mapping, home, session, named) else {
-        return Vec::new();
-    };
-    let Ok(bytes) = std::fs::read(path) else { return Vec::new() };
-    let Ok(read) = mapping.read(&bytes, 0) else { return Vec::new() };
-    weft_core::suggest::from_conversation(
-        &read.items,
-        harness,
-        &root.to_string_lossy(),
-        session,
-        at,
-    )
+    let items = items_of(mapping, home, session, named).unwrap_or_default();
+    weft_core::suggest::from_conversation(&items, harness, &root.to_string_lossy(), session, at)
+}
+
+/// The short messages every kept index holds, for the habits every project shares.
+pub fn habits(config: &Path) -> Vec<Entry> {
+    std::fs::read_dir(dir(config))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|t| {
+            serde_json::from_str::<Stored>(&t).ok().filter(|s| s.version == Stored::VERSION)
+        })
+        .flat_map(|s| s.entries)
+        .filter(|e| e.text.trim().chars().count() <= SHORT)
+        .collect()
+}
+
+/// A habit is this short at most: longer messages stay in their own project.
+const SHORT: usize = 80;
+
+/// What `pane.suggest` answers: the rest of `draft`, or with none typed the
+/// next prompt after `reply` (and Sense's embedding of it, `near`). `own` is
+/// the project's entries; `others` every other project's short ones.
+pub fn answer(
+    own: &[Entry],
+    others: &[Entry],
+    root: &Path,
+    harness: &str,
+    draft: &str,
+    reply: (&str, &[f32]),
+    now: u64,
+) -> Option<weft_core::suggest::Suggestion> {
+    let project = root.to_string_lossy();
+    let all: Vec<Entry> =
+        own.iter().chain(others.iter().filter(|e| e.project != project)).cloned().collect();
+    let index = weft_core::suggest::Index::new(&all, &project);
+    if draft.is_empty() {
+        let near = (!reply.1.is_empty()).then_some(reply.1);
+        index.next(reply.0, near, harness, now)
+    } else {
+        index.complete(draft, harness, now)
+    }
 }
 
 /// The whole index of a project, built again from its sources: every Ask in
@@ -291,5 +336,41 @@ mod tests {
         assert_eq!((all[0].near.clone(), all[1].near.clone()), (vec![5.0], vec![7.0]));
         assert!(unembedded(&all).is_empty());
         assert!(!embedded(&mut all, vec![(("session:s9".into(), "x".into(), 1), vec![1.0])]));
+    }
+
+    #[test]
+    fn the_answer_completes_a_draft_or_gives_the_next_prompt_and_habits_come_from_every_index() {
+        let root = Path::new("/work/weft");
+        let mut done = entry("commit these changes", "session:s1");
+        done.reply = "Done. All the tests pass.".into();
+        let own = [done, entry("run the login tests", "session:s1")];
+        let got = answer(&own, &[], root, "claude", "run the", ("", &[]), 10).unwrap();
+        assert_eq!(got.text, " login tests");
+        let next =
+            answer(&own, &[], root, "claude", "", ("Done. The tests pass.", &[]), 10).unwrap();
+        assert_eq!(next.text, "commit these changes");
+        assert_eq!(answer(&own, &[], root, "claude", "", ("", &[]), 10), None, "no reply yet");
+
+        // Another project's habit: sent in two projects.
+        let other =
+            |p: &str| Entry { project: p.into(), ..entry("open a pull request", "session:o") };
+        let weft = tempfile::tempdir().unwrap();
+        let config = weft.path().join("config.toml");
+        save(&config, Path::new("/work/a"), &[other("/work/a")]).unwrap();
+        save(
+            &config,
+            Path::new("/work/b"),
+            &[
+                other("/work/b"),
+                Entry { project: "/work/b".into(), ..entry(&"long ".repeat(30), "session:o") },
+            ],
+        )
+        .unwrap();
+        let shared = habits(&config);
+        assert_eq!(shared.len(), 2, "only the short ones: {shared:?}");
+        assert_eq!(
+            answer(&own, &shared, root, "claude", "open a", ("", &[]), 10).unwrap().text,
+            " pull request"
+        );
     }
 }
