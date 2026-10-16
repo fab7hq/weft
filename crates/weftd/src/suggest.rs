@@ -74,6 +74,7 @@ pub fn of_asks(root: &Path, units: &[Unit]) -> Vec<Entry> {
                 project: root.to_string_lossy().into_owned(),
                 at: weft_core::turns::millis(&u.asked_at).map_or(0, |ms| (ms / 1000).max(0) as u64),
                 source: format!("ask:{}", u.ask_id),
+                near: Vec::new(),
             })
         })
         .collect()
@@ -129,6 +130,34 @@ pub fn replace(entries: &mut Vec<Entry>, source: &str, fresh: Vec<Entry>) {
     entries.extend(fresh);
 }
 
+/// An entry, as its embedding is matched back to it.
+pub type Key = (String, String, u64);
+
+fn key(e: &Entry) -> Key {
+    (e.source.clone(), e.text.clone(), e.at)
+}
+
+/// The replies not embedded yet, each with its entry's key.
+pub fn unembedded(entries: &[Entry]) -> Vec<(Key, String)> {
+    entries
+        .iter()
+        .filter(|e| e.near.is_empty() && !e.reply.trim().is_empty())
+        .map(|e| (key(e), e.reply.clone()))
+        .collect()
+}
+
+/// Give each entry its reply's embedding; whether any was given.
+pub fn embedded(entries: &mut [Entry], vectors: Vec<(Key, Vec<f32>)>) -> bool {
+    let mut any = false;
+    for (k, v) in vectors {
+        for e in entries.iter_mut().filter(|e| e.near.is_empty() && key(e) == k) {
+            e.near = v.clone();
+            any = true;
+        }
+    }
+    any
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +174,7 @@ mod tests {
             project: "/work/weft".into(),
             at: 1,
             source: source.into(),
+            near: Vec::new(),
         }
     }
 
@@ -242,5 +272,24 @@ mod tests {
         replace(&mut all, "ask:", vec![entry("d", "ask:ask_2")]);
         let texts: Vec<_> = all.iter().map(|e| e.text.as_str()).collect();
         assert_eq!(texts, ["b", "a2", "d"]);
+    }
+
+    #[test]
+    fn replies_are_embedded_once_and_matched_back_to_their_entries() {
+        let mut all =
+            vec![entry("a", "session:s1"), entry("b", "session:s1"), entry("c", "ask:ask_1")];
+        all[0].reply = "Done.".into();
+        all[1].reply = "Failed.".into();
+        let todo = unembedded(&all);
+        assert_eq!(
+            todo.iter().map(|(_, r)| r.as_str()).collect::<Vec<_>>(),
+            ["Done.", "Failed."],
+            "an Ask has no reply to embed"
+        );
+        let vectors = todo.into_iter().map(|(k, r)| (k, vec![r.len() as f32])).collect();
+        assert!(embedded(&mut all, vectors));
+        assert_eq!((all[0].near.clone(), all[1].near.clone()), (vec![5.0], vec![7.0]));
+        assert!(unembedded(&all).is_empty());
+        assert!(!embedded(&mut all, vec![(("session:s9".into(), "x".into(), 1), vec![1.0])]));
     }
 }

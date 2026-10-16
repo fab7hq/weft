@@ -137,6 +137,8 @@ struct Project {
     /// What the person sent here, for suggestions: loaded or built in the
     /// background when the project opens, nothing until then.
     suggest: Option<Vec<weft_core::suggest::Entry>>,
+    /// Its replies are being embedded: one pass at a time.
+    embedding: bool,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -316,6 +318,11 @@ enum Wake {
         source: Option<String>,
         entries: Vec<weft_core::suggest::Entry>,
         built: bool,
+    },
+    /// Sense embedded a project's replies.
+    Embedded {
+        root: PathBuf,
+        vectors: Vec<(crate::suggest::Key, Vec<f32>)>,
     },
     /// Time to send screen frames: ten times a second.
     Frames,
@@ -766,6 +773,7 @@ impl Session {
                 Wake::Suggested { root, source, entries, built } => {
                     self.suggested(&root, source, entries, built)
                 }
+                Wake::Embedded { root, vectors } => self.embedded(&root, vectors),
                 Wake::Checked => {
                     let open: Vec<usize> =
                         (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
@@ -1377,6 +1385,47 @@ impl Session {
                 }
             }
         }
+        self.embed_suggestions(root);
+    }
+
+    /// Embed the replies not embedded yet, off the run loop, when Sense is loaded.
+    fn embed_suggestions(&mut self, root: &Path) {
+        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
+            return;
+        };
+        let todo = p.suggest.as_deref().map(crate::suggest::unembedded).unwrap_or_default();
+        if p.embedding || todo.is_empty() {
+            return;
+        }
+        p.embedding = true;
+        let (sense, tx, root) = (Arc::clone(&self.sense), self.tx.clone(), root.to_path_buf());
+        std::thread::spawn(move || {
+            let vectors = match sense.read().ok().as_deref().and_then(Option::as_ref) {
+                Some(model) => {
+                    todo.into_iter().map(|(k, reply)| (k, model.embed(&reply))).collect()
+                }
+                None => Vec::new(),
+            };
+            let _ = tx.send(Wake::Embedded { root, vectors });
+        });
+    }
+
+    /// Take Sense's embeddings of a project's replies, and keep them.
+    fn embedded(&mut self, root: &Path, vectors: Vec<(crate::suggest::Key, Vec<f32>)>) {
+        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
+            return;
+        };
+        p.embedding = false;
+        let got = !vectors.is_empty();
+        if let Some(all) = p.suggest.as_mut()
+            && crate::suggest::embedded(all, vectors)
+        {
+            let _ = crate::suggest::save(&self.config, root, all);
+        }
+        // What changed meanwhile is embedded next; with no Sense, nothing is.
+        if got {
+            self.embed_suggestions(root);
+        }
     }
 
     /// Tell each project's clients when its record has moved, or an agent's
@@ -1632,6 +1681,7 @@ impl Session {
                     next_pane: 0,
                     ledger,
                     suggest: None,
+                    embedding: false,
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.

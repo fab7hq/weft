@@ -17,6 +17,10 @@ pub struct Entry {
     /// Where it was read from, `ask:<id>` or `session:<id>`, so one source is read again on its own.
     #[serde(default)]
     pub source: String,
+    /// The reply before it as Sense embeds it: what the next prompt is chosen
+    /// by. Empty until it is embedded; BM25 stands in meanwhile.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near: Vec<f32>,
 }
 
 /// What goes after the caret, and how sure it is (0 to 1).
@@ -40,6 +44,8 @@ const MAX_LEN: usize = 500;
 const HALF_LIFE: f64 = 14.0 * 86_400.0;
 /// A message sent to another harness counts this much.
 const OTHER_HARNESS: f64 = 0.5;
+/// Replies this close by Sense's embedding (cosine) or closer count as alike.
+const NEAR: f64 = 0.6;
 
 impl Index {
     pub fn new(entries: &[Entry], project: &str) -> Self {
@@ -65,20 +71,30 @@ impl Index {
         self.own.complete(draft, harness, now).or_else(|| self.habits.complete(draft, harness, now))
     }
 
-    /// What is usually sent next after a reply like `reply`.
-    pub fn next(&self, reply: &str, harness: &str, now: u64) -> Option<Suggestion> {
+    /// What is usually sent next after a reply like `reply`, compared by
+    /// Sense's embedding of it (`near`) where the entries have theirs.
+    pub fn next(
+        &self,
+        reply: &str,
+        near: Option<&[f32]>,
+        harness: &str,
+        now: u64,
+    ) -> Option<Suggestion> {
         if words(reply).is_empty() {
             return None;
         }
-        self.own.next(reply, harness, now).or_else(|| self.habits.next(reply, harness, now))
+        self.own
+            .next(reply, near, harness, now)
+            .or_else(|| self.habits.next(reply, near, harness, now))
     }
 }
 
 /// Messages that count as one, sent once or more.
 struct Item {
-    /// The latest one's words and the reply before it.
+    /// The latest one's words and the reply before it, with its embedding.
     text: String,
     reply: String,
+    near: Vec<f32>,
     at: u64,
     count: usize,
     harnesses: Vec<String>,
@@ -124,6 +140,7 @@ impl Layer {
                     if e.at > i.at {
                         i.text = e.text.clone();
                         i.reply = e.reply.clone();
+                        i.near = e.near.clone();
                         i.at = e.at;
                     }
                     if !i.harnesses.contains(&e.harness) {
@@ -138,6 +155,7 @@ impl Layer {
                     Item {
                         text: e.text.clone(),
                         reply: e.reply.clone(),
+                        near: e.near.clone(),
                         at: e.at,
                         count: 1,
                         harnesses: vec![e.harness.clone()],
@@ -167,9 +185,20 @@ impl Layer {
         })
     }
 
-    fn next(&self, reply: &str, harness: &str, now: u64) -> Option<Suggestion> {
+    fn next(
+        &self,
+        reply: &str,
+        near: Option<&[f32]>,
+        harness: &str,
+        now: u64,
+    ) -> Option<Suggestion> {
         let query = words(reply);
         self.best(harness, now, |i, n| {
+            // By embedding where both have one, else by the reply's words.
+            if let Some(q) = near.filter(|q| !i.near.is_empty() && q.len() == i.near.len()) {
+                let c = cosine(q, &i.near);
+                return (c >= NEAR).then(|| (i.text.clone(), c));
+            }
             let b = self.replies.score(n, &query);
             (b > 0.0).then(|| (i.text.clone(), b / (b + 1.0)))
         })
@@ -191,6 +220,14 @@ impl Layer {
             })
             .max_by(|a, b| a.score.total_cmp(&b.score))
     }
+}
+
+/// How alike two embeddings are, from -1 to 1.
+fn cosine(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f64 = a.iter().zip(b).map(|(x, y)| f64::from(*x) * f64::from(*y)).sum();
+    let norm = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+    let n = norm(a) * norm(b);
+    if n == 0.0 { 0.0 } else { dot / n }
 }
 
 /// Okapi BM25 over a fixed set of documents.
@@ -375,6 +412,7 @@ pub fn from_conversation(
                         project: project.into(),
                         at: item.at.map_or(at, |ms| (ms / 1000).max(0) as u64),
                         source: format!("session:{session}"),
+                        near: Vec::new(),
                     });
                 }
                 reply.clear();
@@ -427,6 +465,7 @@ mod tests {
             project: project.into(),
             at: NOW - days_ago * DAY,
             source: String::new(),
+            near: Vec::new(),
         }
     }
 
@@ -537,15 +576,15 @@ mod tests {
             "weft",
         );
         assert_eq!(
-            ix.next("Done. The login tests pass.", "claude", NOW).unwrap().text,
+            ix.next("Done. The login tests pass.", None, "claude", NOW).unwrap().text,
             "commit these changes"
         );
         assert_eq!(
-            ix.next("The linker failed again.", "claude", NOW).unwrap().text,
+            ix.next("The linker failed again.", None, "claude", NOW).unwrap().text,
             "try again with logging on"
         );
-        assert_eq!(ix.next("Something else entirely.", "claude", NOW), None);
-        assert_eq!(ix.next("", "claude", NOW), None);
+        assert_eq!(ix.next("Something else entirely.", None, "claude", NOW), None);
+        assert_eq!(ix.next("", None, "claude", NOW), None);
     }
 
     #[test]
@@ -555,7 +594,7 @@ mod tests {
             "weft",
         );
         assert_eq!(ix.complete("/rf", "claude", NOW), None);
-        assert_eq!(ix.next("Done. All the tests pass.", "claude", NOW), None);
+        assert_eq!(ix.next("Done. All the tests pass.", None, "claude", NOW), None);
     }
 
     #[test]
@@ -654,5 +693,38 @@ mod tests {
         let untimed =
             from_conversation(&[item(Kind::Person, "hi", None)], "claude", "/work/weft", "8b2e", 7);
         assert_eq!(untimed[0].at, 7);
+    }
+
+    #[test]
+    fn with_embeddings_the_next_prompt_follows_the_nearest_reply_whatever_its_words() {
+        let with = |text: &str, reply: &str, near: Vec<f32>| Entry {
+            near,
+            ..sent(text, reply, "claude", "weft", 1)
+        };
+        let ix = Index::new(
+            &[
+                with("commit these changes", "Every check is green.", vec![1.0, 0.0, 0.0]),
+                with("try again with logging on", "The linker gave up.", vec![0.0, 1.0, 0.0]),
+            ],
+            "weft",
+        );
+        // No word in common, but the embeddings are close.
+        let green = [0.9, 0.1, 0.0];
+        assert_eq!(
+            ix.next("All tests pass now.", Some(&green), "claude", NOW).unwrap().text,
+            "commit these changes"
+        );
+        // Far from both: nothing, however many words it shares.
+        let far = [0.0, 0.0, 1.0];
+        assert_eq!(ix.next("Every check is green.", Some(&far), "claude", NOW), None);
+        // An entry not embedded yet is compared by its words.
+        let plain = Index::new(
+            &[sent("commit these changes", "Every check is green.", "claude", "weft", 1)],
+            "weft",
+        );
+        assert_eq!(
+            plain.next("Every check is green.", Some(&green), "claude", NOW).unwrap().text,
+            "commit these changes"
+        );
     }
 }
