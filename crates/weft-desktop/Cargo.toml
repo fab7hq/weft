@@ -21,5 +21,6 @@ weft-term = { path = "../weft-term" }
 
 [dev-dependencies]
 tempfile = "3"
+ttf-parser = "0.25"
 weft-core = { path = "../weft-core", features = ["fixtures"] }
 weftd = { path = "../weftd" }

@@ -153,6 +153,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
     });
 
     gpui_platform::application().run(move |cx: &mut App| {
+        crate::fonts::load(cx);
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -694,7 +695,7 @@ impl GpuiDesktopView {
             .font_weight(text_style.font_weight);
 
         if text_style.font_mono {
-            d = d.font_family("Menlo");
+            d = d.font_family(crate::fonts::MONO);
         }
         if let Some(lh) = text_style.line_height {
             d = d.line_height(px(lh));
@@ -1074,6 +1075,7 @@ impl Render for GpuiDesktopView {
             .flex_col()
             .bg(parse_color(palette::CANVAS))
             .text_color(parse_color(palette::TEXT))
+            .font_family(crate::fonts::SANS)
             .child(self.build_gpui_element(&root_el, root_text, false, "0", cx))
     }
 }

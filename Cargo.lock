@@ -6732,6 +6732,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "ttf-parser",
  "weft-core",
  "weft-proto",
  "weft-term",

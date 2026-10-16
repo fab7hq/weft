@@ -6,15 +6,15 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    App, Bounds, FontStyle, FontWeight, Hsla, IntoElement, Pixels, Rgba, SharedString,
-    StrikethroughStyle, Styled, TextAlign, TextRun, UnderlineStyle, Window, canvas, fill, font,
-    point, px, size,
+    App, Bounds, Font, FontFeatures, FontStyle, FontWeight, Hsla, IntoElement, Pixels, Rgba,
+    SharedString, StrikethroughStyle, Styled, TextAlign, TextRun, UnderlineStyle, Window, canvas,
+    fill, font, point, px, size,
 };
 use weft_term::palette;
 
 use crate::window::SharedState;
 
-pub const FONT: &str = "Menlo";
+pub const FONT: &str = crate::fonts::MONO;
 pub const FONT_SIZE: f32 = 12.0;
 pub const LINE_HEIGHT: f32 = 18.0;
 
@@ -66,9 +66,15 @@ pub(crate) fn terminal(
     .size_full()
 }
 
+/// The grid's font: one character to a cell, so no ligatures, as
+/// xterm.js draws it on the web.
+fn grid_font() -> Font {
+    Font { features: FontFeatures::disable_ligatures(), ..font(FONT) }
+}
+
 fn cell_width(window: &Window) -> f32 {
     let text = window.text_system();
-    let id = text.resolve_font(&font(FONT));
+    let id = text.resolve_font(&grid_font());
     text.advance(id, px(FONT_SIZE), 'm').map(|s| f32::from(s.width)).unwrap_or(FONT_SIZE * 0.6)
 }
 
@@ -161,7 +167,7 @@ impl Style {
     }
 
     fn run(&self, len: usize) -> TextRun {
-        let mut f = font(FONT);
+        let mut f = grid_font();
         if self.bold {
             f.weight = FontWeight::BOLD;
         }
@@ -193,6 +199,13 @@ fn hsla(c: weft_term::palette::Rgb) -> Hsla {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_grid_draws_each_character_in_its_own_cell_without_ligatures() {
+        let f = grid_font();
+        assert_eq!(f.family.as_ref(), crate::fonts::MONO);
+        assert!(f.features.tag_value_list().contains(&("calt".to_string(), 0)));
+    }
 
     #[test]
     fn a_rectangle_holds_whole_cells_only() {

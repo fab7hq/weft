@@ -4,6 +4,7 @@
 pub mod app;
 pub mod bottom_bar;
 pub mod daemon;
+pub mod fonts;
 pub mod gpui;
 pub mod header;
 pub mod panes_view;
