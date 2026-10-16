@@ -827,19 +827,19 @@ impl GpuiDesktopView {
                         d = d.bg(parse_color(v));
                     }
                 }
-                "border-radius" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.rounded(px(n));
-                    }
-                }
                 "border" => {
                     if let Some(c) = parse_border_color(v) {
-                        d = d.border_1().border_color(c);
+                        d = if v.starts_with("2px") { d.border_2() } else { d.border_1() };
+                        d = d.border_color(c);
                     }
                 }
+                // The guideline's bevel, `inset 0 -2px 0`: the nearest a GPUI
+                // div draws is a 2 px bottom border in the border's colour.
+                "box-shadow" if v.starts_with("inset 0 -2px") => d = d.border_b_2(),
                 "border-top" => {
                     if let Some(c) = parse_border_color(v) {
-                        d = d.border_t_1().border_color(c);
+                        d = if v.starts_with("2px") { d.border_t_2() } else { d.border_t_1() };
+                        d = d.border_color(c);
                     }
                 }
                 "border-bottom" => {
@@ -918,7 +918,7 @@ impl GpuiDesktopView {
 
         // Root window layer fills the entire native GPUI window
         if el.layer_name.as_deref() == Some("window") {
-            d = d.size_full().flex_1().rounded(px(0.0));
+            d = d.size_full().flex_1();
         }
 
         // Highlight search box border when Search input is active

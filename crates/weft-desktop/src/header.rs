@@ -1,15 +1,13 @@
-//! Toile `atlas` `52px` top bar and macOS window titlebar (`D2.6`, `D2.9`, `D9.9`, `D15.7`).
+//! The 48 px top bar and the macOS window titlebar.
 
 use weft_core::words;
 
-use crate::gpui::{Element, div, palette};
+use crate::gpui::{Element, div, palette, span};
 
 #[derive(Debug, Clone)]
 pub struct HeaderProps {
     pub machine: String,
     pub sidebar_open: bool,
-    pub turbo: bool,
-    pub updates_available: usize,
     pub needs_you: usize,
     pub menu_open: bool,
 }
@@ -25,9 +23,9 @@ pub fn render_titlebar(machine: &str) -> Element {
         .items_center()
         .bg(palette::TITLEBAR_BG)
         .border_bottom(palette::LINE)
-        .child(div().w(12).h(12).shrink_0().rounded(6).bg("#ff5f57"))
-        .child(div().w(12).h(12).shrink_0().rounded(6).bg("#febc2e"))
-        .child(div().w(12).h(12).shrink_0().rounded(6).bg("#28c840"))
+        .child(div().w(12).h(12).shrink_0().bg("#ff5f57"))
+        .child(div().w(12).h(12).shrink_0().bg("#febc2e"))
+        .child(div().w(12).h(12).shrink_0().bg("#28c840"))
         .child(
             div()
                 .flex_1()
@@ -39,8 +37,8 @@ pub fn render_titlebar(machine: &str) -> Element {
         .child(div().w(52).h(4).shrink_0())
 }
 
-/// Render the Toile `atlas` `52px` top bar (`the list's toggle`, `╸┃╺ WEFT`,
-/// machine name, `⚡ turbo` pill, `↑ n updates` pill, `NEEDS YOU n` pill, `☰`).
+/// Render the top bar: the list's toggle, the woven mark, the machine, what
+/// needs you, and `☰`. Turbo shows on each agent's title, Updates in `☰`.
 pub fn render_header(props: &HeaderProps) -> Element {
     let toggle_label = if props.sidebar_open {
         words::word("web.list.hide")
@@ -51,7 +49,6 @@ pub fn render_header(props: &HeaderProps) -> Element {
     let toggle_icon = div()
         .w(14)
         .h(11)
-        .rounded(2)
         .border(icon_color)
         .flex_row()
         .items_center()
@@ -73,7 +70,6 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .flex_row()
         .pad(6, 8)
         .items_center()
-        .rounded(8)
         .bg(if props.sidebar_open { palette::SELECTED_BG } else { palette::SURFACE })
         .border(if props.sidebar_open { palette::BLUE_BORDER } else { palette::LINE })
         .child(toggle_icon);
@@ -84,85 +80,54 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .items_center()
         .child(
             div()
+                .flex_row()
                 .font_mono()
                 .font_weight(700)
                 .font_size(12)
                 .style("line-height", "18px")
-                .color(palette::TEAL)
-                .text("╸┃╺"),
+                .child(span("╸").color(palette::TEAL))
+                .child(span("┃").color(palette::BLUE_BORDER))
+                .child(span("╺").color(palette::TEAL)),
         )
-        .child(div().font_weight(600).font_size(15).color(palette::TEAL).text("WEFT"));
+        .child(
+            div()
+                .font_weight(700)
+                .font_size(15)
+                .style("letter-spacing", "0.04em")
+                .color(palette::TEAL)
+                .text("WEFT"),
+        );
 
     let mut bar = div()
         .layer("header")
         .self_stretch()
-        .h(52)
+        .h(48)
         .flex_row()
         .gap(12)
-        .pad(8, 20)
+        .pad(0, 16)
         .items_center()
+        .bg(palette::CANVAS)
         .border_bottom(palette::LINE)
         .child(toggle)
         .child(brand)
         .child(div().font_weight(600).font_size(15).text(props.machine.clone()))
         .child(div().flex_1().flex_row().items_center());
 
-    if props.turbo {
-        bar = bar.child(
-            div()
-                .layer("turbo pill")
-                .on_click("toggle_turbo")
-                .flex_row()
-                .gap(5)
-                .pad(3, 10)
-                .items_center()
-                .bg("#3a2c0c")
-                .rounded(20)
-                .child(
-                    div()
-                        .font_size(12)
-                        .color(palette::AMBER)
-                        .text(format!("⚡ {}", words::word("web.turbo"))),
-                ),
-        );
-    }
-
-    if props.updates_available > 0 {
-        let label = if props.updates_available == 1 {
-            "↑ 1 update".to_string()
-        } else {
-            format!("↑ {} updates", props.updates_available)
-        };
-        bar = bar.child(
-            div()
-                .layer("updates pill")
-                .on_click("open_updates")
-                .flex_row()
-                .gap(5)
-                .pad(3, 10)
-                .items_center()
-                .bg(palette::SELECTED_BG)
-                .rounded(20)
-                .border(palette::BLUE_BORDER)
-                .child(div().font_size(12).color(palette::BLUE_BORDER).text(label)),
-        );
-    }
-
     if props.needs_you > 0 {
         bar = bar.child(
             div()
-                .layer("needs you pill")
+                .layer("needs you tag")
                 .flex_row()
-                .pad(3, 10)
+                .gap(6)
+                .pad(4, 10)
                 .items_center()
-                .bg("#3a2c0c")
-                .rounded(20)
-                .child(
-                    div()
-                        .font_size(12)
-                        .color(palette::AMBER)
-                        .text(format!("NEEDS YOU {}", props.needs_you)),
-                ),
+                .bg(palette::AMBER_BG)
+                .border(palette::AMBER_BORDER)
+                .font_mono()
+                .font_size(12)
+                .color(palette::AMBER)
+                .child(span("■"))
+                .child(span(format!("NEEDS YOU {}", props.needs_you))),
         );
     }
 
@@ -172,8 +137,9 @@ pub fn render_header(props: &HeaderProps) -> Element {
             .role("button")
             .aria_label("Menu")
             .on_click("toggle_menu")
+            .pad(4, 8)
             .font_weight(600)
-            .font_size(19)
+            .font_size(18)
             .text("☰"),
     )
 }

@@ -1,5 +1,5 @@
-//! Collapsible `380px` `Tree` (`D2.6`, `D2.9`, `D9.9`, `D11.1`, `D11.8`, `D15.7`)
-//! built over `weft_core::tree` and `weft_core::words`.
+//! The tree: one-line rows of projects, agents and their work, each agent
+//! led by its status shape, built over `weft_core::tree` and `weft_core::words`.
 
 use weft_core::harness::Harnesses;
 use weft_core::sessions::State;
@@ -7,7 +7,7 @@ use weft_core::tree::{self, Agent, Ask, Group, Project};
 use weft_core::turns::Turn;
 use weft_core::words;
 
-use crate::gpui::{Element, div, input_el, palette, span};
+use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
 
 /// Which row in the `Tree` is currently selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,11 +37,10 @@ pub struct TreeProps<'a> {
 pub fn render_tree(props: &TreeProps) -> Element {
     let mut tree_el = div()
         .layer("tree")
-        .w(380)
+        .w(340)
         .shrink_0()
         .self_stretch()
         .flex_col()
-        .style("padding", "2px 0")
         .items_start()
         .style("min-height", "0")
         .style("overflow-y", "auto")
@@ -85,28 +84,24 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 continue;
             }
             any_match = true;
+            let turbo =
+                props.clients.iter().find(|c| c.name == proj.name).map_or(props.turbo, |c| c.turbo);
             tree_el = tree_el.child(render_search_project_row(proj, total));
             if !matching_agents.is_empty() {
-                tree_el = tree_el.child(render_section_header(
-                    "section AGENTS",
-                    words::word("tree.agents"),
-                    "",
-                ));
+                tree_el = tree_el
+                    .child(render_section_header("section AGENTS", words::word("tree.agents")));
                 for a in matching_agents {
                     let selected = props.selection
                         == Some(&TreeSelection::Agent {
                             project: proj.name.clone(),
                             session: a.session.clone(),
                         });
-                    tree_el = tree_el.child(render_agent_row(&proj.name, a, selected));
+                    tree_el = tree_el.child(render_agent_row(&proj.name, a, selected, turbo));
                 }
             }
             if !matching_asks.is_empty() {
-                tree_el = tree_el.child(render_section_header(
-                    "section WORK",
-                    words::word("tree.work"),
-                    "",
-                ));
+                tree_el =
+                    tree_el.child(render_section_header("section WORK", words::word("tree.work")));
                 for ask in matching_asks {
                     let selected = props.selection
                         == Some(&TreeSelection::Ask {
@@ -142,23 +137,17 @@ pub fn render_tree(props: &TreeProps) -> Element {
             tree_el = tree_el.child(render_setup_checklist(needs));
         }
 
-        // AGENTS section
-        let counts = words::fill(
-            "tree.counts",
-            &[("n", &proj.agents.running.to_string()), ("m", &proj.agents.ended.to_string())],
-        );
-        tree_el = tree_el.child(render_section_header(
-            "section AGENTS",
-            words::word("tree.agents"),
-            &counts,
-        ));
+        let turbo =
+            props.clients.iter().find(|c| c.name == proj.name).map_or(props.turbo, |c| c.turbo);
+        tree_el =
+            tree_el.child(render_section_header("section AGENTS", words::word("tree.agents")));
         for a in &proj.agents.rows {
             let selected = props.selection
                 == Some(&TreeSelection::Agent {
                     project: proj.name.clone(),
                     session: a.session.clone(),
                 });
-            tree_el = tree_el.child(render_agent_row(&proj.name, a, selected));
+            tree_el = tree_el.child(render_agent_row(&proj.name, a, selected, turbo));
         }
         if proj.agents.earlier > 0 {
             let earlier_unfolded = props.unfolded_earlier.contains(&proj.name);
@@ -177,12 +166,12 @@ pub fn render_tree(props: &TreeProps) -> Element {
                         .on_click(format!("open_earlier:{}", proj.name))
                         .self_stretch()
                         .shrink_0()
-                        .h(28)
+                        .h(30)
                         .flex_row()
-                        .gap(8)
-                        .style("padding", "0 16px 0 52px")
+                        .style("padding", "0 16px 0 32px")
                         .items_center()
-                        .child(div().font_size(13).color(palette::BLUE_BORDER).text(earlier_label)),
+                        .border_bottom(palette::LINE)
+                        .child(div().font_size(12).color(palette::BLUE_BORDER).text(earlier_label)),
                 );
             } else if let Some(client) = props.clients.iter().find(|c| c.name == proj.name) {
                 let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
@@ -203,17 +192,12 @@ pub fn render_tree(props: &TreeProps) -> Element {
                             project: proj.name.clone(),
                             session: a.session.clone(),
                         });
-                    tree_el = tree_el.child(render_agent_row(&proj.name, &a, selected));
+                    tree_el = tree_el.child(render_agent_row(&proj.name, &a, selected, turbo));
                 }
             }
         }
 
-        // WORK section
-        tree_el = tree_el.child(render_section_header(
-            "section WORK",
-            words::word("tree.work"),
-            words::word("tree.by_round"),
-        ));
+        tree_el = tree_el.child(render_section_header("section WORK", words::word("tree.work")));
 
         let open_selected =
             props.selection == Some(&TreeSelection::OpenGroup { project: proj.name.clone() });
@@ -279,9 +263,7 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
         .flex_col()
         .pad(6, 0)
         .bg(palette::SURFACE)
-        .rounded(12)
         .border(palette::LINE)
-        .style("box-shadow", "0 12px 32px rgba(0,0,0,0.65)")
         .child(
             div()
                 .pad(5, 14)
@@ -324,23 +306,18 @@ fn render_search_box(query: &str) -> Element {
     let active = !query.trim().is_empty();
     let mut box_el = div()
         .layer("search")
-        .w(348)
-        .h(36)
+        .self_stretch()
+        .h(38)
         .shrink_0()
         .flex_row()
         .gap(8)
         .items_center()
-        .style("position", "sticky")
-        .style("top", "0")
-        .style("z-index", "2")
-        .style("margin", "8px 16px 6px")
-        .pad(0, 14)
-        .bg(palette::SURFACE)
-        .border(if active { palette::BLUE_BORDER } else { palette::LINE })
-        .rounded(20)
+        .pad(0, 16)
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(if active { palette::BLUE_BORDER } else { palette::LINE })
         .font_size(13)
-        .color(if active { palette::TEXT } else { palette::MUTED })
-        .child(span("⌕").shrink_0().color(palette::MUTED))
+        .color(if active { palette::TEXT } else { palette::DIM })
+        .child(span("⌕").shrink_0().font_mono().color(palette::MUTED))
         .child(
             input_el()
                 .id("tree-search")
@@ -369,6 +346,51 @@ fn render_search_box(query: &str) -> Element {
     box_el
 }
 
+/// A tree row: one line, `indent` from the left, a line below it, and the
+/// selection's fill and bar when it is selected.
+fn row(layer: impl Into<String>, height: u32, indent: u32, selected: bool) -> Element {
+    let mut el = div()
+        .layer(layer)
+        .self_stretch()
+        .shrink_0()
+        .h(height)
+        .flex_row()
+        .gap(10)
+        .items_center()
+        .style("overflow", "hidden")
+        .border_bottom(palette::LINE);
+    el = el.style("padding", format!("0 16px 0 {indent}px"));
+    if selected {
+        el = el.style("position", "relative").bg(palette::SELECTED_BG).child(edge_bar(
+            "left",
+            3,
+            palette::BLUE_BORDER,
+        ));
+    }
+    el
+}
+
+/// One line of text that ends in an ellipsis when it does not fit.
+fn line(t: impl Into<String>) -> Element {
+    div()
+        .style("white-space", "nowrap")
+        .style("overflow", "hidden")
+        .style("text-overflow", "ellipsis")
+        .text(t)
+}
+
+fn caret(folded: bool) -> &'static str {
+    if folded { "▸" } else { "▾" }
+}
+
+fn count(n: usize) -> Element {
+    div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(n.to_string())
+}
+
+fn chevron() -> Element {
+    div().shrink_0().font_weight(600).font_size(14).color(palette::DIM).text("›")
+}
+
 fn render_search_project_row(proj: &Project, matches: usize) -> Element {
     div()
         .layer(format!("row {}", proj.name))
@@ -390,58 +412,23 @@ fn render_search_project_row(proj: &Project, matches: usize) -> Element {
 }
 
 fn render_project_row(proj: &Project, selected: bool) -> Element {
-    let caret = if proj.folded { "▸" } else { "▾" };
-    let mut counts = div().font_size(12).flex_row().style("flex-wrap", "wrap");
-    if proj.open > 0 && proj.needs > 0 {
-        counts = counts
-            .child(div().style("white-space", "pre-wrap").color(palette::MUTED).text(format!(
-                "{} {} · ",
-                proj.open,
-                words::word("title.open")
-            )))
-            .child(
-                div()
-                    .style("white-space", "pre-wrap")
-                    .color(palette::AMBER)
-                    .text(format!("{} ●", proj.needs)),
-            );
-    } else if proj.open > 0 {
-        counts = counts.child(div().color(palette::MUTED).text(format!(
-            "{} {}",
-            proj.open,
-            words::word("title.open")
-        )));
-    } else if proj.needs > 0 {
-        counts = counts.child(div().color(palette::AMBER).text(format!("{} ●", proj.needs)));
-    }
-
-    let mut row = div()
-        .layer(format!("row {}", proj.name))
+    let mut el = row(format!("row {}", proj.name), 40, 16, selected)
         .on_click(format!("select_project:{}", proj.name))
-        .self_stretch()
-        .shrink_0()
-        .h(46)
-        .flex_row()
-        .gap(10)
-        .pad(0, 16)
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
+        .child(
+            div()
+                .on_click(format!("toggle_project:{}", proj.name))
+                .font_size(12)
+                .color(palette::MUTED)
+                .text(caret(proj.folded)),
+        )
+        .child(div().flex_1().font_weight(600).font_size(14).text(proj.name.clone()));
+    // Folded, a project still says what waits in it.
+    if proj.folded && proj.needs > 0 {
+        el = el.child(
+            div().font_mono().font_size(11).color(palette::AMBER).text(format!("■ {}", proj.needs)),
+        );
     }
-
-    row.child(
-        div()
-            .on_click(format!("toggle_project:{}", proj.name))
-            .font_size(13)
-            .color(palette::MUTED)
-            .text(caret),
-    )
-    .child(div().flex_1().font_weight(600).font_size(15).text(proj.name.clone()))
-    .child(counts)
-    .child(
+    el = el.child(
         div()
             .layer(format!("plus {}", proj.name))
             .role("button")
@@ -449,24 +436,26 @@ fn render_project_row(proj: &Project, selected: bool) -> Element {
             .on_click(format!("toggle_plus:{}", proj.name))
             .flex_row()
             .pad(2, 7)
-            .bg(palette::SELECTED_BG)
-            .rounded(6)
-            .border(palette::BLUE_BORDER)
-            .font_size(14)
-            .color(palette::BLUE_BORDER)
-            .font_weight(600)
-            .text("+"),
-    )
-    .child(
-        div()
-            .layer(format!("close {}", proj.name))
-            .role("button")
-            .aria_label(words::word("act.close"))
-            .on_click(format!("close_project:{}", proj.name))
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .font_mono()
             .font_size(13)
-            .color(palette::DIM)
-            .text("⌫"),
-    )
+            .color(palette::MUTED)
+            .text("+"),
+    );
+    if selected {
+        el = el.child(
+            div()
+                .layer(format!("close {}", proj.name))
+                .role("button")
+                .aria_label(words::word("act.close"))
+                .on_click(format!("close_project:{}", proj.name))
+                .font_size(13)
+                .color(palette::DIM)
+                .text("⌫"),
+        );
+    }
+    el
 }
 
 fn render_setup_checklist(needs: &weft_core::workspace::Needs) -> Element {
@@ -489,42 +478,45 @@ fn render_setup_checklist(needs: &weft_core::workspace::Needs) -> Element {
     el
 }
 
-fn render_section_header(layer: &str, title: &str, right: &str) -> Element {
-    let mut el = div()
+fn render_section_header(layer: &str, title: &str) -> Element {
+    div()
         .layer(layer)
         .self_stretch()
         .shrink_0()
-        .h(20)
+        .h(22)
         .flex_row()
+        .items_center()
         .style("padding", "0 16px 0 32px")
-        .style("align-items", "flex-end")
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(palette::LINE)
         .child(
             div()
-                .flex_1()
+                .font_mono()
                 .font_weight(600)
-                .font_size(11)
+                .font_size(10)
                 .style("letter-spacing", "0.08em")
                 .color(palette::DIM)
                 .text(title),
-        );
-    if !right.is_empty() {
-        el = el.child(div().font_size(12).color(palette::DIM).text(right));
-    }
-    el
+        )
 }
 
-fn render_agent_row(project: &str, a: &Agent, selected: bool) -> Element {
-    let subtitle = a.title.as_deref().unwrap_or(words::word("tree.no_ask"));
-    let layer_name = format!("row agent {} {}", a.harness, subtitle);
-    let (dot, dot_color) = match (a.state, a.turn) {
-        (State::Running, Some(Turn::Waiting)) => ("●", palette::AMBER),
+/// The status an agent's row leads with: a circle while it runs, a square
+/// while it waits for you, a hollow square once it has ended.
+pub fn status_shape(state: State, turn: Option<Turn>) -> (&'static str, &'static str) {
+    match (state, turn) {
+        (State::Running, Some(Turn::Waiting)) => ("■", palette::AMBER),
         (State::Running, _) => ("●", palette::TEAL),
-        _ => ("○", palette::DIM),
-    };
-    let clock = format_clock(a.at);
-    let state_str = tree::state_word(a, &clock);
-    let state_color = if a.turn == Some(Turn::Waiting) { palette::AMBER } else { palette::MUTED };
+        _ => ("□", palette::DIM),
+    }
+}
 
+fn render_agent_row(project: &str, a: &Agent, selected: bool, turbo: bool) -> Element {
+    let layer_name = match &a.title {
+        Some(t) => format!("row agent {} {t}", a.harness),
+        None => format!("row agent {}", a.harness),
+    };
+    let (shape, shape_color) = status_shape(a.state, a.turn);
+    let running = a.state == State::Running;
     let sess_key = if a.session.is_empty() {
         match a.pane {
             Some(pid) => format!("pane:{pid}"),
@@ -534,416 +526,151 @@ fn render_agent_row(project: &str, a: &Agent, selected: bool) -> Element {
         a.session.clone()
     };
 
-    let mut row = div()
-        .layer(layer_name)
-        .on_click(format!("select_agent:{}:{}", project, sess_key))
-        .self_stretch()
-        .shrink_0()
-        .h(44)
-        .flex_row()
-        .gap(8)
-        .style("padding", "0 16px 0 32px")
+    let mut title = div()
+        .flex_1()
+        .style("min-width", "0")
         .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
+        .flex_row()
+        .gap(6)
+        .items_baseline()
+        .child(
+            div()
+                .shrink_0()
+                .font_size(13)
+                .font_weight(if selected { 600 } else { 500 })
+                .style("white-space", "nowrap")
+                .color(if running { palette::TEXT } else { palette::MUTED })
+                .text(a.harness.clone()),
+        );
+    if turbo && running {
+        title = title.child(div().shrink_0().font_size(11).color(palette::AMBER).text("⚡"));
+    }
+    if let Some(t) = &a.title {
+        title = title.child(div().shrink_0().color(palette::DIM).text("·")).child(
+            line(t.clone()).font_size(13).color(if running {
+                palette::MUTED
+            } else {
+                palette::DIM
+            }),
+        );
     }
 
-    row = row.child(div().shrink_0().font_size(12).color(dot_color).w(10).text(dot)).child(
-        div()
-            .flex_1()
-            .style("min-width", "0")
-            .style("overflow", "hidden")
-            .flex_col()
-            .gap(1)
-            .child(
-                div()
-                    .flex_row()
-                    .gap(6)
-                    .items_baseline()
-                    .style("min-width", "0")
-                    .style("overflow", "hidden")
-                    .child(
-                        div()
-                            .font_size(13)
-                            .font_weight(500)
-                            .style("white-space", "nowrap")
-                            .color(if a.state == State::Running {
-                                palette::TEXT
-                            } else {
-                                palette::MUTED
-                            })
-                            .text(a.harness.clone()),
-                    )
-                    .child(
-                        div()
-                            .font_size(12)
-                            .color(state_color)
-                            .style("white-space", "nowrap")
-                            .style("overflow", "hidden")
-                            .style("text-overflow", "ellipsis")
-                            .text(state_str),
-                    ),
-            )
-            .child(
-                div()
-                    .font_size(12)
-                    .color(if a.title.is_some() { palette::MUTED } else { palette::DIM })
-                    .style("white-space", "nowrap")
-                    .style("overflow", "hidden")
-                    .style("text-overflow", "ellipsis")
-                    .text(subtitle),
-            ),
-    );
+    let mut el = row(layer_name, 36, 32, selected)
+        .on_click(format!("select_agent:{}:{}", project, sess_key))
+        .child(div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape))
+        .child(title);
 
-    if selected && a.state == State::Running && a.pane.is_some() {
-        row = row.child(
-            div()
-                .layer("btn Ask (row)")
-                .on_click(format!("open_ask:{}:{}", project, sess_key))
-                .shrink_0()
-                .flex_row()
-                .gap(6)
-                .pad(4, 10)
-                .items_center()
-                .justify_center()
-                .bg(palette::SURFACE)
-                .rounded(7)
-                .border(palette::LINE)
-                .child(div().font_weight(600).font_size(12).text(words::word("act.ask"))),
-        );
-    } else if selected && !a.session.is_empty() {
-        row = row.child(
+    if selected && !running && !a.session.is_empty() {
+        el = el.child(
             div()
                 .layer("btn Resume (row)")
                 .on_click(format!("resume_session:{}:{}:{}", project, a.harness, a.session))
                 .shrink_0()
-                .flex_row()
-                .gap(6)
-                .pad(4, 10)
-                .items_center()
-                .justify_center()
+                .pad(2, 8)
                 .bg(palette::SURFACE)
-                .rounded(7)
                 .border(palette::LINE)
-                .child(div().font_weight(600).font_size(12).text(words::word("act.resume"))),
+                .font_weight(600)
+                .font_size(12)
+                .text(words::word("act.resume")),
         );
     }
 
-    row.child(div().shrink_0().font_size(12).color(palette::DIM).text(clock))
+    el.child(
+        div()
+            .shrink_0()
+            .font_mono()
+            .font_size(11)
+            .color(if selected { palette::MUTED } else { palette::DIM })
+            .text(format_clock(a.at)),
+    )
 }
 
 fn render_open_group_row(proj: &Project, selected: bool) -> Element {
-    let caret = if proj.work.open.folded { "▸" } else { "▾" };
-    let mut label = div()
-        .flex_1()
-        .style("min-width", "0")
-        .flex_row()
-        .gap(6)
-        .items_baseline()
-        .style("overflow", "hidden")
-        .child(
-            div()
-                .font_weight(600)
-                .font_size(13)
-                .style("white-space", "nowrap")
-                .text(words::word("tree.open")),
-        );
-    if let Some(since) = proj.work.open.since {
-        label = label.child(
-            div()
-                .font_size(12)
-                .color(palette::MUTED)
-                .style("white-space", "nowrap")
-                .style("overflow", "hidden")
-                .style("text-overflow", "ellipsis")
-                .text(format!("· {}", words::fill("tree.since", &[("n", &since.to_string())]))),
-        );
-    }
-
-    let mut row = div()
-        .layer("row group Open")
-        .on_click(format!("select_open:{}", proj.name))
-        .self_stretch()
-        .shrink_0()
-        .h(38)
-        .flex_row()
+    row("row group Open", 36, 32, selected)
         .gap(8)
-        .style("padding", "0 16px 0 32px")
-        .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
-    }
-
-    row = row
+        .on_click(format!("select_open:{}", proj.name))
         .child(
             div()
                 .on_click(format!("toggle_open:{}", proj.name))
                 .shrink_0()
-                .font_size(13)
+                .font_size(12)
                 .color(palette::MUTED)
-                .text(caret),
+                .text(caret(proj.work.open.folded)),
         )
-        .child(label);
-
-    if proj.work.open.count > 0 {
-        row = row.child(
-            div()
-                .layer("btn Eval (row)")
-                .on_click(format!("act_eval:{}", proj.name))
-                .shrink_0()
-                .flex_row()
-                .gap(6)
-                .pad(4, 10)
-                .items_center()
-                .justify_center()
-                .bg(palette::SURFACE)
-                .rounded(7)
-                .border(palette::LINE)
-                .child(div().font_weight(600).font_size(12).text(words::word("act.eval"))),
-        );
-    }
-
-    row.child(
-        div()
-            .shrink_0()
-            .font_size(12)
-            .color(palette::MUTED)
-            .style("min-width", "16px")
-            .style("text-align", "right")
-            .text(proj.work.open.count.to_string()),
-    )
+        .child(div().flex_1().font_weight(600).font_size(13).text(words::word("tree.open")))
+        .child(count(proj.work.open.count))
 }
 
 fn render_ask_row(project: &str, ask: &Ask, selected: bool) -> Element {
     let meta = match ask.word {
-        Some(w) => format!("{} · {}", ask.harness, w.say()),
+        Some(w) => format!("{} · {}", w.say(), ask.harness),
         None => ask.harness.clone(),
     };
-    let mut row = div()
-        .layer(format!("row ask {}", ask.title))
+    row(format!("row ask {}", ask.title), 34, 48, selected)
         .on_click(format!("select_ask:{}:{}", project, ask.unit))
-        .self_stretch()
-        .shrink_0()
-        .h(44)
-        .flex_row()
-        .gap(8)
-        .style("padding", "0 16px 0 48px")
-        .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
-    }
-
-    row.child(
-        div()
-            .flex_1()
-            .style("min-width", "0")
-            .style("overflow", "hidden")
-            .flex_col()
-            .gap(1)
-            .child(
-                div()
-                    .font_size(13)
-                    .font_weight(500)
-                    .color(palette::TEXT)
-                    .style("white-space", "nowrap")
-                    .style("overflow", "hidden")
-                    .style("text-overflow", "ellipsis")
-                    .text(ask.title.clone()),
-            )
-            .child(
-                div()
-                    .font_size(12)
-                    .color(palette::MUTED)
-                    .style("white-space", "nowrap")
-                    .style("overflow", "hidden")
-                    .style("text-overflow", "ellipsis")
-                    .text(meta),
-            ),
-    )
-    .child(div().shrink_0().font_weight(600).font_size(14).color(palette::DIM).text("›"))
+        .child(line(ask.title.clone()).flex_1().font_size(13).color(palette::TEXT))
+        .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
+        .child(chevron())
 }
 
 fn render_eval_group_row(project: &str, g: &Group, selected: bool) -> Element {
-    let caret = if g.folded { "▸" } else { "▾" };
     let title = words::fill("tree.eval", &[("n", &g.n.to_string())]);
-    let mut summary = div()
-        .font_size(12)
-        .style("white-space", "nowrap")
+    let mut label = div()
+        .flex_1()
         .style("min-width", "0")
         .style("overflow", "hidden")
-        .flex_row();
-
-    if g.judging {
-        summary = summary.child(div().color(palette::AMBER).text(words::word("tree.judging")));
-    } else if let Some(v) = g.verdict {
-        let (v_word, v_color) = match v {
-            "aligned" => (words::word("verdict.aligned"), palette::TEAL),
-            "drifted" => (words::word("verdict.drifted"), palette::AMBER),
-            _ => (words::word("verdict.incomplete"), palette::AMBER),
-        };
-        summary = summary.child(div().style("white-space", "pre").color(v_color).text(v_word));
-        if let Some(agr) = &g.agreement {
-            summary = summary.child(
-                div()
-                    .style("white-space", "pre")
-                    .color(palette::MUTED)
-                    .text(format!(" · {agr} · ")),
-            );
-        } else {
-            summary =
-                summary.child(div().style("white-space", "pre").color(palette::MUTED).text(" · "));
-        }
-        summary = summary.child(
-            div()
-                .style("white-space", "pre")
-                .color(palette::AMBER)
-                .text(words::word("tree.not_sealed")),
-        );
-    }
-
-    let mut row = div()
-        .layer(format!("row group {title}"))
-        .on_click(format!("select_eval:{}:{}", project, g.eval))
-        .self_stretch()
-        .shrink_0()
-        .h(38)
         .flex_row()
-        .gap(8)
-        .style("padding", "0 16px 0 32px")
-        .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
+        .gap(6)
+        .items_baseline()
+        .child(div().shrink_0().font_weight(600).font_size(13).text(title.clone()));
+    let verdict = if g.judging {
+        Some((words::word("tree.judging").to_string(), palette::AMBER))
+    } else {
+        g.verdict.map(|v| {
+            let (word, colour) = match v {
+                "aligned" => (words::word("verdict.aligned"), palette::TEAL),
+                "drifted" => (words::word("verdict.drifted"), palette::AMBER),
+                _ => (words::word("verdict.incomplete"), palette::AMBER),
+            };
+            match &g.agreement {
+                Some(agr) => (format!("{word} {agr}"), colour),
+                None => (word.to_string(), colour),
+            }
+        })
+    };
+    if let Some((v, colour)) = verdict {
+        label = label
+            .child(div().shrink_0().font_size(12).color(palette::DIM).text("·"))
+            .child(line(v).font_size(12).color(colour));
     }
-
-    row = row
+    row(format!("row group {title}"), 36, 32, selected)
+        .gap(8)
+        .on_click(format!("select_eval:{}:{}", project, g.eval))
         .child(
             div()
                 .on_click(format!("toggle_eval:{}:{}", project, g.eval))
                 .shrink_0()
-                .font_size(13)
+                .font_size(12)
                 .color(palette::MUTED)
-                .text(caret),
+                .text(caret(g.folded)),
         )
-        .child(
-            div()
-                .flex_1()
-                .style("min-width", "0")
-                .flex_row()
-                .gap(6)
-                .items_baseline()
-                .style("overflow", "hidden")
-                .child(
-                    div().font_weight(600).font_size(13).style("white-space", "nowrap").text(title),
-                )
-                .child(div().font_size(12).color(palette::DIM).text("·"))
-                .child(summary),
-        );
-
-    if !g.judging {
-        row = row.child(
-            div()
-                .layer("btn Seal (row)")
-                .on_click(format!("open_seal:{}:{}", project, g.eval))
-                .shrink_0()
-                .flex_row()
-                .gap(6)
-                .pad(4, 10)
-                .items_center()
-                .justify_center()
-                .bg(palette::SURFACE)
-                .rounded(7)
-                .border(palette::LINE)
-                .child(div().font_weight(600).font_size(12).text(words::word("act.seal"))),
-        );
-    }
-
-    row.child(
-        div()
-            .shrink_0()
-            .font_size(12)
-            .color(palette::MUTED)
-            .style("min-width", "16px")
-            .style("text-align", "right")
-            .text(g.count.to_string()),
-    )
+        .child(label)
+        .child(count(g.count))
 }
 
 fn render_sealed_group_row(proj: &Project, selected: bool) -> Element {
-    let caret = if proj.work.sealed.folded { "▸" } else { "▾" };
-    let seals_word = if proj.work.sealed.seals == 1 {
-        words::word("tree.seals_one").to_string()
-    } else {
-        words::fill("tree.seals", &[("n", &proj.work.sealed.seals.to_string())])
-    };
-    let mut row = div()
-        .layer("row group Sealed")
-        .on_click(format!("toggle_sealed:{}", proj.name))
-        .self_stretch()
-        .shrink_0()
-        .h(38)
-        .flex_row()
+    row("row group Sealed", 36, 32, selected)
         .gap(8)
-        .style("padding", "0 16px 0 32px")
-        .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
-    }
-
-    row.child(div().shrink_0().font_size(13).color(palette::MUTED).text(caret))
-        .child(
-            div()
-                .flex_1()
-                .style("min-width", "0")
-                .flex_row()
-                .gap(6)
-                .items_baseline()
-                .style("overflow", "hidden")
-                .child(
-                    div()
-                        .font_weight(600)
-                        .font_size(13)
-                        .style("white-space", "nowrap")
-                        .text(words::word("tree.sealed")),
-                )
-                .child(
-                    div()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .style("white-space", "nowrap")
-                        .style("overflow", "hidden")
-                        .style("text-overflow", "ellipsis")
-                        .text(format!("· {seals_word}")),
-                ),
-        )
+        .on_click(format!("toggle_sealed:{}", proj.name))
         .child(
             div()
                 .shrink_0()
                 .font_size(12)
                 .color(palette::MUTED)
-                .style("min-width", "16px")
-                .style("text-align", "right")
-                .text(proj.work.sealed.asks.to_string()),
+                .text(caret(proj.work.sealed.folded)),
         )
+        .child(div().flex_1().font_weight(600).font_size(13).text(words::word("tree.sealed")))
+        .child(count(proj.work.sealed.asks))
 }
 
 fn render_seal_row(project: &str, srow: &tree::SealRow, selected: bool) -> Element {
@@ -952,53 +679,12 @@ fn render_seal_row(project: &str, srow: &tree::SealRow, selected: bool) -> Eleme
         Some(en) => format!("{} · Eval {en}", srow.decision),
         None => srow.decision.clone(),
     };
-    let mut row = div()
-        .layer(format!("row seal {title}"))
+    row(format!("row seal {title}"), 34, 48, selected)
         .on_click(format!("select_seal:{}:{}", project, srow.seal))
-        .self_stretch()
-        .shrink_0()
-        .h(44)
-        .flex_row()
-        .gap(8)
-        .style("padding", "0 16px 0 48px")
-        .style("overflow", "hidden")
-        .items_center();
-
-    if selected {
-        row = row
-            .bg(palette::SELECTED_BG)
-            .style("border-left", format!("3px solid {}", palette::BLUE_BORDER));
-    }
-
-    row.child(
-        div()
-            .flex_1()
-            .style("min-width", "0")
-            .style("overflow", "hidden")
-            .flex_col()
-            .gap(1)
-            .child(
-                div()
-                    .font_size(13)
-                    .font_weight(500)
-                    .color(palette::TEXT)
-                    .style("white-space", "nowrap")
-                    .style("overflow", "hidden")
-                    .style("text-overflow", "ellipsis")
-                    .text(title),
-            )
-            .child(
-                div()
-                    .font_size(12)
-                    .color(palette::MUTED)
-                    .style("white-space", "nowrap")
-                    .style("overflow", "hidden")
-                    .style("text-overflow", "ellipsis")
-                    .text(meta),
-            ),
-    )
-    .child(div().shrink_0().font_size(12).color(palette::DIM).text(srow.asks.to_string()))
-    .child(div().shrink_0().font_weight(600).font_size(14).color(palette::DIM).text("›"))
+        .child(line(title).flex_1().font_size(13).color(palette::TEXT))
+        .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
+        .child(count(srow.asks))
+        .child(chevron())
 }
 
 fn format_clock(ms: i64) -> String {

@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-/// Toile `atlas` visual tokens (`ADR-0002`).
+/// The design guideline's tokens (`tokens.css`, from Toile's `weft`).
 pub mod palette {
     pub const CANVAS: &str = "#090d16";
     pub const SURFACE: &str = "#101726";
@@ -12,15 +12,19 @@ pub mod palette {
     pub const SELECTED_BG: &str = "#16233a";
     pub const TITLEBAR_BG: &str = "#151b28";
     pub const LINE: &str = "#253550";
+    pub const LINE_HOVER: &str = "#3a4a66";
     pub const TEXT: &str = "#f1f3f7";
     pub const MUTED: &str = "#a2adbd";
     pub const DIM: &str = "#6e7b8f";
     pub const AMBER: &str = "#edbb5b";
+    pub const AMBER_BORDER: &str = "#d29922";
     pub const AMBER_BG: &str = "#2a2011";
     pub const TEAL: &str = "#39c5bb";
+    pub const TEAL_BG: &str = "#0c2628";
     pub const BLUE: &str = "#388bfd";
     pub const BLUE_BORDER: &str = "#58a6ff";
     pub const RED: &str = "#f85149";
+    pub const RED_BG: &str = "#2d1216";
 }
 
 /// Declarative GPUI element node.
@@ -54,6 +58,17 @@ pub fn div() -> Element {
         text: None,
         action: None,
         children: Vec::new(),
+    }
+}
+
+/// A bar of `colour` along one side of its parent, over its own lines: a div
+/// draws its border in one colour, so a selection's bar is a child of its own.
+/// The parent is `position: relative`.
+pub fn edge_bar(side: &str, width: u32, colour: &str) -> Element {
+    let bar = div().style("position", "absolute").bg(colour);
+    match side {
+        "top" => bar.style("top", "0").style("left", "0").style("right", "0").h(width),
+        _ => bar.style("top", "0").style("left", "0").style("bottom", "0").w(width),
     }
 }
 
@@ -203,8 +218,9 @@ impl Element {
         self.style("font-family", "'JetBrains Mono'")
     }
 
-    pub fn rounded(self, px: u32) -> Self {
-        self.style("border-radius", format!("{px}px"))
+    /// The guideline's keycap bevel, `inset 0 -2px 0`.
+    pub fn bevel(self) -> Self {
+        self.style("box-shadow", "inset 0 -2px 0")
     }
 
     pub fn border(self, color: &str) -> Self {
@@ -346,5 +362,48 @@ impl FileDialog for MacFileDialog {
             let _ = title;
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::palette::*;
+
+    /// The value `tokens.css` gives a custom property.
+    fn token(name: &str) -> String {
+        let css = include_str!("../tokens.css");
+        let at =
+            css.find(&format!("{name}:")).unwrap_or_else(|| panic!("{name} not in tokens.css"));
+        let value = &css[at + name.len() + 1..];
+        value[..value.find(';').unwrap()].trim().to_string()
+    }
+
+    #[test]
+    fn the_palette_is_the_guideline_tokens() {
+        for (ours, name) in [
+            (CANVAS, "--fab7-canvas"),
+            (SURFACE, "--fab7-surface"),
+            (SURFACE_ALT, "--fab7-panel"),
+            (TERMINAL_BG, "--fab7-void"),
+            (SELECTED_BG, "--fab7-selected"),
+            (TITLEBAR_BG, "--fab7-titlebar"),
+            (LINE, "--fab7-line"),
+            (LINE_HOVER, "--fab7-line-hover"),
+            (TEXT, "--fab7-text"),
+            (MUTED, "--fab7-muted"),
+            (DIM, "--fab7-faint"),
+            (AMBER, "--fab7-amber-text"),
+            (AMBER_BORDER, "--fab7-amber"),
+            (AMBER_BG, "--fab7-amber-bg"),
+            (TEAL, "--fab7-teal"),
+            (TEAL_BG, "--fab7-teal-bg"),
+            (BLUE, "--fab7-button"),
+            (BLUE_BORDER, "--fab7-accent"),
+            (RED, "--fab7-danger"),
+            (RED_BG, "--fab7-danger-bg"),
+        ] {
+            assert_eq!(ours, token(name), "{name}");
+        }
+        assert_eq!(token("--weft-radius"), "0px");
     }
 }

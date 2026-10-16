@@ -1,17 +1,18 @@
-//! Editor-style 4-pane split layout (`D15.1`–`D15.4`), draggable tab bars,
-//! layout menu, `vt100` terminal view, `Terminal | Conversation` switch
-//! (`D12.1`–`D12.4`), `D3.4` `NEEDS YOU` (`↑ ↓ ⏎ Esc`) strip, and `MessageRow`.
+//! The workspace: up to four panes split edge to edge, their flush tab
+//! strips, the layout menu, the `Terminal | Conversation` switch and the
+//! message row.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use weft_core::conversation::{Item, Kind};
+use weft_core::sessions::State;
 use weft_core::state::{PaneViewMode, SavedPaneTab, SavedPanesLayout, SavedTabGroup, SplitLayout};
 use weft_core::turns::Turn;
 use weft_core::words;
 
 use crate::daemon::ProjectClient;
-use crate::gpui::{Element, div, input_el, palette, span};
+use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
 
 /// Where a dragged tab is dropped (`D15.4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,51 +227,108 @@ pub struct PanesProps<'a> {
     pub message_draft: &'a str,
 }
 
-/// Render the right-side multi-pane workspace (`D15.1`–`D15.4`, `D12.1`–`D12.4`, `D3.4`).
+/// The empty workspace's hairline grid: a line every 32 px, enough for any
+/// window, cut to the workspace.
+fn hairline_grid() -> Element {
+    let line = "#25355038";
+    let mut grid = div()
+        .layer("hairline grid")
+        .style("position", "absolute")
+        .style("inset", "0")
+        .style("overflow", "hidden");
+    for i in 0..100 {
+        grid = grid
+            .child(
+                div()
+                    .style("position", "absolute")
+                    .style("left", format!("{}px", i * 32))
+                    .style("top", "0")
+                    .w(1)
+                    .style("height", "100%")
+                    .bg(line),
+            )
+            .child(
+                div()
+                    .style("position", "absolute")
+                    .style("top", format!("{}px", i * 32))
+                    .style("left", "0")
+                    .h(1)
+                    .style("width", "100%")
+                    .bg(line),
+            );
+    }
+    grid
+}
+
+/// Render the workspace: the panes edge to edge with 1 px lines between
+/// them, or the blueprint grid when no agent is open.
 pub fn render_panes_workspace(props: &PanesProps) -> Element {
     let mut container =
         div().layer("workspace").flex_1().self_stretch().flex_col().style("min-height", "0");
 
     if props.panes.groups.is_empty() {
-        let woven = "╸┃╺╸┃╺╸┃╺╸┃╺\n┃╺╸┃╺╸┃╺╸┃╺╸\n╺╸┃╺╸┃╺╸┃╺╸┃\n╸┃╺╸┃╺╸┃╺╸┃╺\n┃╺╸┃╺╸┃╺╸┃╺╸\n╺╸┃╺╸┃╺╸┃╺╸┃\n╸┃╺╸┃╺╸┃╺╸┃╺";
+        let mark = || {
+            div()
+                .flex_row()
+                .font_mono()
+                .font_weight(700)
+                .font_size(12)
+                .child(span("╸").color(palette::TEAL))
+                .child(span("┃").color(palette::BLUE_BORDER))
+                .child(span("╺").color(palette::TEAL))
+        };
+        let weave = |indent: u32| {
+            let mut r = div().flex_row().gap(6).style("padding-left", format!("{indent}px"));
+            for _ in 0..4 {
+                r = r.child(mark());
+            }
+            r
+        };
         return container.child(
             div()
                 .layer("empty panes")
                 .flex_1()
                 .self_stretch()
-                .flex_col()
-                .gap(24)
-                .items_center()
-                .justify_center()
+                .style("position", "relative")
+                .bg(palette::TERMINAL_BG)
+                .child(hairline_grid())
                 .child(
                     div()
-                        .layer("woven mark")
-                        .font_mono()
-                        .font_weight(700)
-                        .font_size(22)
-                        .style("line-height", "26px")
-                        .color(palette::TEAL)
-                        .style("white-space", "pre")
-                        .style("user-select", "none")
-                        .text(woven),
-                )
-                .child(
-                    div()
-                        .layer("btn Start an agent")
-                        .on_click("open_start_sheet")
-                        .flex_row()
-                        .gap(8)
-                        .pad(10, 18)
+                        .style("position", "absolute")
+                        .style("inset", "0")
+                        .flex_col()
+                        .gap(16)
                         .items_center()
                         .justify_center()
-                        .bg(palette::SURFACE)
-                        .rounded(8)
-                        .border(palette::LINE)
                         .child(
-                            div().font_weight(600).font_size(14).text(words::word("start.title")),
+                            div()
+                                .layer("woven mark")
+                                .flex_col()
+                                .gap(6)
+                                .child(weave(0))
+                                .child(weave(7))
+                                .child(weave(0)),
+                        )
+                        .child(
+                            div()
+                                .layer("btn Start an agent")
+                                .on_click("open_start_sheet")
+                                .pad(7, 18)
+                                .bg(palette::SURFACE)
+                                .border(palette::LINE)
+                                .style("box-shadow", "inset 0 -2px 0")
+                                .font_weight(600)
+                                .font_size(13)
+                                .text(words::word("start.title")),
                         ),
                 ),
         );
+    }
+
+    let split = props.panes.groups.len() > 1;
+    let focused_idx = props.panes.focused_group.min(props.panes.groups.len().saturating_sub(1));
+    if split && let Some(group) = props.panes.groups.get(focused_idx) {
+        container = container.child(render_split_toolbar(props, focused_idx, group));
     }
 
     let group_els: Vec<Element> = props
@@ -278,7 +336,7 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
         .groups
         .iter()
         .enumerate()
-        .map(|(g_idx, g)| render_pane_group(props, g_idx, g))
+        .map(|(g_idx, g)| render_pane_group(props, g_idx, g, split))
         .collect();
 
     let grid = match (props.panes.layout, group_els.len()) {
@@ -334,158 +392,202 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
 
     container = container.child(grid);
 
-    // Focused pane's D3.4 NEEDS YOU strip (when in Terminal mode and Waiting)
-    // and bottom MessageRow (`the message row`).
-    let focused_idx = props.panes.focused_group.min(props.panes.groups.len().saturating_sub(1));
+    // The focused pane's message row.
     if let Some(group) = props.panes.groups.get(focused_idx)
         && let Some(active_tab) =
             group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
-        && let Some((proj_name, harness, turn, _turbo, _running, _contents)) =
-            resolve_tab_info(props.clients, active_tab)
+        && let Some((proj_name, harness, ..)) = resolve_tab_info(props.clients, active_tab)
     {
-        if active_tab.view == PaneViewMode::Terminal && turn == Some(Turn::Waiting) {
-            container = container.child(render_needs_you_strip(focused_idx));
-        }
         container = container.child(render_message_row(&proj_name, &harness, props.message_draft));
     }
 
     container
 }
 
-fn render_pane_group(props: &PanesProps, g_idx: usize, group: &SavedTabGroup) -> Element {
-    let active_idx = group.active_tab.min(group.tabs.len().saturating_sub(1));
-    let active_tab = group.tabs.get(active_idx);
-
-    let mut tabs_row = div()
-        .layer("tabs, scrolling")
-        .flex_1()
-        .flex_row()
-        .gap(6)
-        .items_center()
-        .style("overflow", "hidden");
-
-    for (t_idx, tab) in group.tabs.iter().enumerate() {
-        let is_active = t_idx == active_idx;
-        let (proj_name, harness, turn, turbo, running, _) = resolve_tab_info(props.clients, tab)
-            .unwrap_or_else(|| {
-                (
-                    tab.project
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("project")
-                        .to_string(),
-                    "agent".to_string(),
-                    None,
-                    false,
-                    false,
-                    String::new(),
-                )
-            });
-        let label = format!("{proj_name} · {harness}");
-        let mut pill = div()
-            .layer(format!("tab {label}"))
-            .on_click(format!("select_tab:{g_idx}:{t_idx}"))
-            .attr("draggable", "true")
-            .flex_row()
-            .gap(6)
-            .pad(6, 12)
-            .items_center()
-            .rounded(16)
-            .bg(if is_active { palette::SELECTED_BG } else { palette::SURFACE })
-            .border(if is_active { palette::BLUE_BORDER } else { palette::LINE })
-            .font_size(13)
-            .color(if is_active { palette::TEXT } else { palette::MUTED });
-
-        if turn == Some(Turn::Waiting) {
-            pill = pill.child(div().font_size(11).color(palette::AMBER).text("●"));
-        } else if !running {
-            pill = pill.child(div().font_size(11).color(palette::DIM).text("○"));
+/// What a tab shows: the agent's status shape when it is not plainly
+/// running, its name, and ⚡ in Turbo.
+fn tab_label(
+    props: &PanesProps,
+    tab: &SavedPaneTab,
+) -> (String, Option<(&'static str, &'static str)>, bool) {
+    match resolve_tab_info(props.clients, tab) {
+        Some((proj_name, harness, turn, turbo, running, _)) => {
+            let state = if running { State::Running } else { State::Ended };
+            let shape = crate::tree_view::status_shape(state, turn);
+            (format!("{proj_name} · {harness}"), Some(shape), turbo && running)
         }
-        pill = pill.child(
-            div()
-                .font_weight(if is_active { 600 } else { 400 })
-                .style("white-space", "nowrap")
-                .text(label),
-        );
-        if turbo {
-            pill = pill.child(div().font_size(12).color(palette::AMBER).text("⚡"));
+        None => {
+            let proj = tab.project.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+            (format!("{proj} · agent"), None, false)
         }
-        pill = pill.child(
-            span("✕")
-                .on_click(format!("close_tab:{g_idx}:{t_idx}"))
-                .font_size(11)
-                .color(palette::DIM),
-        );
-        tabs_row = tabs_row.child(pill);
     }
+}
 
-    let current_view = active_tab.map(|t| t.view).unwrap_or(PaneViewMode::Terminal);
-    let term_selected = current_view == PaneViewMode::Terminal;
-    let conv_selected = current_view == PaneViewMode::Conversation;
-
-    let view_switch = div()
-        .layer("view switch")
-        .flex_row()
-        .pad(2, 2)
-        .items_center()
-        .rounded(8)
-        .bg(palette::SURFACE)
-        .border(palette::LINE)
-        .font_size(12)
-        .font_weight(600)
-        .child(
-            div()
-                .layer(if term_selected { "seg Terminal selected" } else { "seg Terminal" })
-                .on_click(format!("set_tab_view:{g_idx}:{active_idx}:terminal"))
-                .pad(4, 10)
-                .rounded(6)
-                .bg(if term_selected { palette::SELECTED_BG } else { "transparent" })
-                .color(if term_selected { palette::TEXT } else { palette::MUTED })
-                .text(words::word("web.view.terminal")),
-        )
-        .child(
-            div()
-                .layer(if conv_selected { "seg Conversation selected" } else { "seg Conversation" })
-                .on_click(format!("set_tab_view:{g_idx}:{active_idx}:conversation"))
-                .pad(4, 10)
-                .rounded(6)
-                .bg(if conv_selected { palette::SELECTED_BG } else { "transparent" })
-                .color(if conv_selected { palette::TEXT } else { palette::MUTED })
-                .text(words::word("web.view.conversation")),
-        );
-
+/// The view switch and the layout button, for the focused pane.
+fn render_view_controls(g_idx: usize, active_idx: usize, view: PaneViewMode) -> Vec<Element> {
+    let seg = |selected: bool, layer: &str, mode: &str, word: &str| {
+        let mut el = div()
+            .layer(if selected { format!("{layer} selected") } else { layer.to_string() })
+            .on_click(format!("set_tab_view:{g_idx}:{active_idx}:{mode}"))
+            .pad(4, 12)
+            .font_size(12)
+            .text(word.to_string());
+        if selected {
+            el = el.bg(palette::SELECTED_BG).color(palette::BLUE_BORDER).font_weight(600)
+        } else {
+            el = el.bg(palette::SURFACE).color(palette::MUTED)
+        }
+        el
+    };
+    let term = view == PaneViewMode::Terminal;
+    let mut first = seg(term, "seg Terminal", "terminal", words::word("web.view.terminal"));
+    let second =
+        seg(!term, "seg Conversation", "conversation", words::word("web.view.conversation"));
+    first = first.border_right(if term { palette::BLUE_BORDER } else { palette::LINE });
+    let switch =
+        div().layer("view switch").flex_row().border(palette::LINE).child(first).child(second);
     let layout_btn = div()
         .layer("layout button")
         .role("button")
         .aria_label(words::word("act.layout"))
         .on_click(format!("toggle_layout_menu:{g_idx}"))
         .flex_row()
-        .gap(5)
-        .pad(6, 10)
+        .gap(6)
+        .pad(4, 8)
         .items_center()
-        .rounded(8)
         .bg(palette::SURFACE)
         .border(palette::LINE)
-        .font_size(13)
-        .font_weight(600)
         .child(span("⊞").font_size(14).color(palette::TEXT))
-        .child(span("▾").font_size(11).color(palette::MUTED));
+        .child(span("▾").font_size(10).color(palette::MUTED));
+    vec![switch, layout_btn]
+}
 
-    let tab_strip = div()
+/// Split, one bar above the panes carries the view switch and the layout
+/// button once, for the focused pane.
+fn render_split_toolbar(props: &PanesProps, g_idx: usize, group: &SavedTabGroup) -> Element {
+    let active_idx = group.active_tab.min(group.tabs.len().saturating_sub(1));
+    let tab = group.tabs.get(active_idx);
+    let view = tab.map(|t| t.view).unwrap_or(PaneViewMode::Terminal);
+    let focused = tab
+        .map(|t| tab_label(props, t))
+        .map(|(label, _, turbo)| if turbo { format!("{label} ⚡") } else { label });
+    let mut info = div()
+        .flex_row()
+        .gap(6)
+        .font_mono()
+        .font_size(11)
+        .color(palette::MUTED)
+        .child(span(format!("{} PANES", props.panes.groups.len())));
+    if let Some(f) = focused {
+        info = info
+            .child(span("· FOCUSED:"))
+            .child(span(f).color(palette::BLUE_BORDER).font_weight(600));
+    }
+    div()
+        .layer("split toolbar")
+        .self_stretch()
+        .h(36)
+        .shrink_0()
+        .flex_row()
+        .pad(0, 12)
+        .items_center()
+        .justify_between()
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(palette::LINE)
+        .child(info)
+        .child(
+            div()
+                .flex_row()
+                .gap(8)
+                .items_center()
+                .children(render_view_controls(g_idx, active_idx, view)),
+        )
+}
+
+fn render_pane_group(
+    props: &PanesProps,
+    g_idx: usize,
+    group: &SavedTabGroup,
+    split: bool,
+) -> Element {
+    let active_idx = group.active_tab.min(group.tabs.len().saturating_sub(1));
+    let active_tab = group.tabs.get(active_idx);
+    let focused = props.panes.focused_group == g_idx;
+
+    let mut tab_strip = div()
         .layer("tab strip")
         .self_stretch()
+        .h(if split { 30 } else { 38 })
+        .shrink_0()
         .flex_row()
-        .gap(8)
-        .pad(8, 14)
-        .items_center()
-        .border_bottom(palette::LINE)
-        .child(tabs_row)
-        .child(view_switch)
-        .child(layout_btn);
+        .style("padding", "0 12px 0 0")
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(palette::LINE);
+
+    for (t_idx, tab) in group.tabs.iter().enumerate() {
+        let is_active = t_idx == active_idx;
+        let (label, shape, turbo) = tab_label(props, tab);
+        let mut el = div()
+            .layer(format!("tab {label}"))
+            .on_click(format!("select_tab:{g_idx}:{t_idx}"))
+            .attr("draggable", "true")
+            .self_stretch()
+            .flex_row()
+            .gap(6)
+            .pad(0, if split { 12 } else { 16 })
+            .items_center()
+            .border_right(palette::LINE)
+            .font_size(if split { 12 } else { 13 });
+        el = if is_active && (focused || !split) {
+            el.style("position", "relative")
+                .bg(palette::SELECTED_BG)
+                .child(edge_bar("top", 2, palette::BLUE_BORDER))
+                .color(palette::BLUE_BORDER)
+                .font_weight(500)
+        } else if is_active {
+            el.bg(palette::SURFACE).color(palette::TEXT).font_weight(500)
+        } else {
+            el.color(palette::MUTED)
+        };
+        // Split, each pane's tab leads with its status; alone, a tab marks
+        // only an agent that needs you.
+        if split && let Some((glyph, colour)) = shape {
+            el = el.child(span(glyph).font_mono().font_size(10).color(colour));
+        }
+        el = el.child(div().style("white-space", "nowrap").text(label));
+        if turbo {
+            el = el.child(span("⚡").font_size(11).color(palette::AMBER));
+        }
+        if !split && let Some(("■", colour)) = shape {
+            el = el.child(span("■").font_mono().font_size(11).color(colour));
+        }
+        if is_active {
+            el = el.child(
+                span("✕")
+                    .layer("close tab")
+                    .on_click(format!("close_tab:{g_idx}:{t_idx}"))
+                    .font_size(11)
+                    .color(palette::DIM),
+            );
+        }
+        tab_strip = tab_strip.child(el);
+    }
+    tab_strip = tab_strip.child(div().flex_1());
+    if !split {
+        let view = active_tab.map(|t| t.view).unwrap_or(PaneViewMode::Terminal);
+        tab_strip = tab_strip.child(
+            div()
+                .self_stretch()
+                .flex_row()
+                .gap(8)
+                .items_center()
+                .children(render_view_controls(g_idx, active_idx, view)),
+        );
+    }
 
     let body = if let Some(tab) = active_tab {
         match tab.view {
-            PaneViewMode::Terminal => render_terminal_viewport(props, g_idx, tab),
+            PaneViewMode::Terminal => render_terminal_viewport(props, g_idx, tab, split),
             PaneViewMode::Conversation => {
                 render_conversation_viewport(props, g_idx, active_idx, tab)
             }
@@ -521,8 +623,6 @@ fn render_layout_menu(g_idx: usize) -> Element {
         .pad(6, 0)
         .bg(palette::SURFACE)
         .border(palette::LINE)
-        .rounded(10)
-        .style("box-shadow", "0 10px 28px rgba(0,0,0,0.45)")
         .font_size(14)
         .child(
             div()
@@ -555,49 +655,46 @@ fn render_layout_menu(g_idx: usize) -> Element {
         )
 }
 
-fn render_terminal_viewport(props: &PanesProps, g_idx: usize, tab: &SavedPaneTab) -> Element {
+fn render_terminal_viewport(
+    props: &PanesProps,
+    g_idx: usize,
+    tab: &SavedPaneTab,
+    split: bool,
+) -> Element {
     let contents =
         resolve_tab_info(props.clients, tab).map(|(_, _, _, _, _, c)| c).unwrap_or_default();
     let is_focused = props.panes.focused_group == g_idx;
 
-    div()
+    let mut pane = div()
+        .layer(if is_focused { "pane" } else { "pane inactive" })
+        .on_click(format!("focus_pane_group:{g_idx}"))
         .self_stretch()
         .flex_1()
         .flex_col()
-        .style("min-height", "0")
-        .gap(8)
-        .pad(12, 14)
         .items_start()
-        .child(
-            div()
-                .layer(if is_focused { "pane" } else { "pane inactive" })
-                .on_click(format!("focus_pane_group:{g_idx}"))
-                .self_stretch()
-                .flex_1()
-                .flex_col()
-                .pad(12, 12)
-                .items_start()
-                .style("min-height", "0")
-                .style("overflow", "hidden")
-                .bg(palette::TERMINAL_BG)
-                .rounded(10)
-                .border(if is_focused { palette::BLUE_BORDER } else { palette::LINE })
-                .child(
-                    // The window paints the pane's own terminal here; the text
-                    // stays for what reads this tree.
-                    div()
-                        .layer("terminal")
-                        .attr("data-project", tab.project.to_string_lossy())
-                        .attr("data-pane", tab.pane.to_string())
-                        .self_stretch()
-                        .flex_1()
-                        .font_mono()
-                        .font_size(12)
-                        .style("line-height", "18px")
-                        .style("white-space", "pre-wrap")
-                        .text(contents),
-                ),
-        )
+        .style("min-height", "0")
+        .style("overflow", "hidden")
+        .bg(palette::TERMINAL_BG);
+    pane = if split { pane.pad(12, 14) } else { pane.pad(16, 20) };
+    // Split, the focused pane is framed; alone, it needs no frame.
+    if split && is_focused {
+        pane = pane.style("border", format!("2px solid {}", palette::BLUE_BORDER));
+    }
+    pane.child(
+        // The window paints the pane's own terminal here; the text stays for
+        // what reads this tree.
+        div()
+            .layer("terminal")
+            .attr("data-project", tab.project.to_string_lossy())
+            .attr("data-pane", tab.pane.to_string())
+            .self_stretch()
+            .flex_1()
+            .font_mono()
+            .font_size(12)
+            .style("line-height", "18px")
+            .style("white-space", "pre-wrap")
+            .text(contents),
+    )
 }
 
 fn render_conversation_viewport(
@@ -706,7 +803,6 @@ fn append_conversation_items(
                         .items_start()
                         .pad(10, 14)
                         .bg(palette::SELECTED_BG)
-                        .rounded(12)
                         .border(palette::BLUE_BORDER)
                         .child(
                             div()
@@ -816,7 +912,6 @@ fn render_step_block(
         .gap(3)
         .style("padding", "7px 12px 9px 12px")
         .bg(palette::SURFACE_ALT)
-        .rounded(8)
         .border(palette::LINE)
         .font_mono()
         .font_size(12)
@@ -864,45 +959,6 @@ fn render_step_block(
     box_el
 }
 
-fn render_needs_you_strip(group_idx: usize) -> Element {
-    let key_btn = |label: &str, code: &str| {
-        div()
-            .layer(format!("needs key {label}"))
-            .on_click(format!("send_choice_key:{group_idx}:{code}"))
-            .flex_row()
-            .pad(7, 12)
-            .items_center()
-            .justify_center()
-            .bg(palette::SURFACE)
-            .rounded(7)
-            .border(palette::LINE)
-            .child(div().font_mono().font_size(12).style("line-height", "18px").text(label))
-    };
-
-    div()
-        .layer("NEEDS YOU strip")
-        .self_stretch()
-        .flex_row()
-        .gap(8)
-        .pad(8, 14)
-        .items_center()
-        .bg(palette::SURFACE_ALT)
-        .border_top(palette::LINE)
-        .child(
-            div()
-                .font_weight(600)
-                .font_size(11)
-                .style("letter-spacing", "0.08em")
-                .color(palette::AMBER)
-                .text("NEEDS YOU"),
-        )
-        .child(div().flex_1().flex_row().items_center())
-        .child(key_btn("↑", "up"))
-        .child(key_btn("↓", "down"))
-        .child(key_btn("⏎", "enter"))
-        .child(key_btn("Esc", "esc"))
-}
-
 fn render_message_row(project: &str, harness: &str, draft: &str) -> Element {
     let placeholder = format!("Message {project} · {harness}…");
     div()
@@ -910,16 +966,15 @@ fn render_message_row(project: &str, harness: &str, draft: &str) -> Element {
         .self_stretch()
         .flex_row()
         .gap(8)
-        .pad(10, 14)
+        .pad(10, 16)
         .items_center()
         .bg(palette::SURFACE_ALT)
         .border_top(palette::LINE)
         .child(
             input_el()
                 .flex_1()
-                .pad(9, 14)
+                .pad(9, 12)
                 .bg(palette::SURFACE)
-                .rounded(20)
                 .border(palette::LINE)
                 .placeholder(placeholder)
                 .font_size(13)
@@ -932,11 +987,11 @@ fn render_message_row(project: &str, harness: &str, draft: &str) -> Element {
                 .layer("send message button")
                 .on_click("send_message_row")
                 .flex_row()
-                .pad(8, 13)
+                .pad(9, 14)
                 .items_center()
                 .bg(palette::BLUE)
-                .rounded(20)
-                .child(div().font_size(13).color("#ffffff").text("▶")),
+                .border(palette::BLUE_BORDER)
+                .child(div().font_size(13).font_weight(700).color(palette::CANVAS).text("▶")),
         )
 }
 

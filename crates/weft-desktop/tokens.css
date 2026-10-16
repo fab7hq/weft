@@ -1,0 +1,70 @@
+/* Weft Design System — 8-Bit Blueprint Minimalism
+   Color scheme: getfab7.com (Deep Blueprint Darkroom & RingFrame Semantic Accents)
+   Structural style: bytebitlabs.com (0px sharp geometry, 1px hairline grids, ■/□ 8-bit status pixels)
+   Typography: Sora (human intent & prose) + JetBrains Mono (terminal, timestamps, telemetry)
+*/
+@import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Sora:wght@300;400;500;600;700&display=block");
+
+:root {
+  color-scheme: dark;
+
+  /* Canvas & Surface Hierarchy (getfab7.com) */
+  --weft-board: #0e1524;
+  --fab7-void: #05080f;          /* Terminal & Conversation deep well */
+  --fab7-canvas: #090d16;        /* Primary app & window canvas */
+  --fab7-panel: #0b111d;         /* Chrome bars, headers, docked sheets */
+  --fab7-surface: #101726;       /* Interactive controls, cards, inputs */
+  --fab7-selected: #16233a;      /* Selected row, active tab fill */
+  --fab7-titlebar: #151b28;      /* Native macOS / browser window bar */
+
+  /* Structural Hairlines (bytebitlabs.com 1px grid) */
+  --fab7-line: #253550;          /* 1px structural divider */
+  --fab7-line-hover: #3a4a66;    /* Hovered control border */
+  --fab7-grid-hairline: rgba(37, 53, 80, 0.22); /* 32px 8-bit blueprint grid */
+
+  /* Typography Ink (getfab7.com) */
+  --fab7-text: #f1f3f7;          /* High-contrast primary ink */
+  --fab7-muted: #a2adbd;         /* Secondary copy & metadata */
+  --fab7-faint: #6e7b8f;         /* Timestamps, section headers, placeholders */
+
+  /* RingFrame & State Semantic Accents (getfab7.com) */
+  --fab7-accent: #58a6ff;        /* Warp Blue — Ask / Intent / Active Focus */
+  --fab7-button: #388bfd;        /* Primary button fill */
+  --fab7-teal: #39c5bb;          /* Weave Teal — Eval / Aligned / Running ■ */
+  --fab7-teal-bg: #0c2628;       /* Subtle teal badge fill */
+  --fab7-amber: #d29922;         /* Decision Amber — Seal / Attention border */
+  --fab7-amber-text: #edbb5b;    /* High-legibility amber text & NEEDS YOU ■ */
+  --fab7-amber-bg: #2a2011;      /* Amber tag / waiting strip fill */
+  --fab7-danger: #f85149;        /* Failed tool step ✗ / Error */
+  --fab7-danger-bg: #2d1216;
+
+  /* Typography */
+  --font-sans: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* 8-Bit Structural Geometry (bytebitlabs.com) */
+  --weft-radius: 0px;            /* Zero border radius across all UI primitives */
+  --weft-bevel: inset 0 -2px 0 rgba(37, 53, 80, 0.75);
+  --weft-bevel-primary: inset 0 -2px 0 rgba(9, 13, 22, 0.45);
+  --weft-step-ease: 100ms steps(2, end);
+}
+
+* {
+  box-sizing: border-box;
+  border-radius: 0 !important;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  background: var(--weft-board);
+  color: var(--fab7-text);
+  font-family: var(--font-sans);
+}
+
+.hairline-grid {
+  background-size: 32px 32px;
+  background-image:
+    linear-gradient(to right, var(--fab7-grid-hairline) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--fab7-grid-hairline) 1px, transparent 1px);
+}

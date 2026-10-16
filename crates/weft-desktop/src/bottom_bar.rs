@@ -1,4 +1,4 @@
-//! Bottom `TreeBar` (`Ask`, `Eval`, `Seal`, `Keys` `D3.11`, why-not sentences
+//! Bottom `TreeBar` (`Ask`, `Eval`, `Seal`, why-not sentences
 //! `D10.1`/`D10.2`) and `PendingBar` (`D4.5`–`D4.14` including `D4.11`
 //! `Cancel / Send anyway`, `D5.x` Seal dispositions, `D8.3` `Allow a device bar`,
 //! and `D9.9` `Quit Weft bar`).
@@ -109,7 +109,6 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
                             .on_click(format!("resolve_staged:{}:{}:no", client.name, staged.id))
                             .pad(9, 18)
                             .bg(palette::SURFACE)
-                            .rounded(10)
                             .border(palette::LINE)
                             .font_weight(600)
                             .font_size(14)
@@ -121,10 +120,10 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
                             .on_click(format!("resolve_staged:{}:{}:force", client.name, staged.id))
                             .pad(9, 18)
                             .bg(palette::BLUE)
-                            .rounded(10)
+                            .border(palette::BLUE_BORDER)
                             .font_weight(600)
                             .font_size(14)
-                            .color("#ffffff")
+                            .color(palette::CANVAS)
                             .text(words::word("act.send_anyway")),
                     ),
             );
@@ -164,7 +163,6 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
                         .on_click(format!("resolve_staged:{}:{}:no", client.name, staged.id))
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -176,10 +174,10 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
                         .on_click(format!("resolve_staged:{}:{}:yes", client.name, staged.id))
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text(words::word("act.send")),
                 ),
         )
@@ -193,7 +191,6 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
             .on_click(format!("select_seal_disposition:{project}:{eval}:{disp}"))
             .pad(7, 14)
             .bg(if is_sel { palette::SELECTED_BG } else { palette::SURFACE })
-            .rounded(8)
             .border(if is_sel { palette::BLUE_BORDER } else { palette::LINE })
             .font_weight(600)
             .font_size(13)
@@ -242,7 +239,6 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
                         .on_click("cancel_bottom_bar")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -254,10 +250,10 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
                         .on_click(format!("confirm_seal_disposition:{project}:{eval}:{selected}"))
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text(words::word("act.seal")),
                 ),
         )
@@ -302,7 +298,6 @@ fn render_quit_bar() -> Element {
                         .on_click("cancel_bottom_bar")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -314,7 +309,6 @@ fn render_quit_bar() -> Element {
                         .on_click("quit_stop_agents")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -326,11 +320,10 @@ fn render_quit_bar() -> Element {
                         .layer("btn Leave running and quit")
                         .on_click("quit_leave_running")
                         .pad(9, 18)
-                        .bg(palette::BLUE)
-                        .rounded(10)
+                        .bg(palette::BLUE).border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text("Leave running and quit"),
                 ),
         )
@@ -380,7 +373,6 @@ fn render_allow_device_bar(machine: &str, device_id: &str, device_name: &str) ->
                         .on_click(format!("remote_allow_device:{device_id}:no"))
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -392,10 +384,10 @@ fn render_allow_device_bar(machine: &str, device_id: &str, device_name: &str) ->
                         .on_click(format!("remote_allow_device:{device_id}:yes"))
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text("Allow"),
                 ),
         )
@@ -442,7 +434,6 @@ fn render_remove_device_bar(device_id: &str, device_name: &str) -> Element {
                         .on_click("cancel_bottom_bar")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -454,7 +445,6 @@ fn render_remove_device_bar(device_id: &str, device_name: &str) -> Element {
                         .on_click(format!("remote_remove_device:{device_id}"))
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::AMBER)
                         .font_weight(600)
                         .font_size(14)
@@ -471,13 +461,13 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
             .on_click(action)
             .flex_row()
             .gap(6)
-            .pad(9, 18)
+            .pad(7, 18)
             .items_center()
             .justify_center()
             .bg(palette::SURFACE)
-            .rounded(10)
             .border(palette::LINE)
-            .child(div().font_weight(600).font_size(14).text(label))
+            .bevel()
+            .child(div().font_weight(600).font_size(13).text(label))
     };
 
     let selected_label = match props.selection {
@@ -500,9 +490,11 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
     let mut row = div()
         .layer("tree bar")
         .self_stretch()
+        .h(48)
+        .shrink_0()
         .flex_row()
         .gap(10)
-        .pad(10, 20)
+        .pad(0, 16)
         .items_center()
         .bg(palette::SURFACE_ALT)
         .border_top(palette::LINE)

@@ -120,7 +120,6 @@ pub struct WeftDesktopApp {
     pub plus_popover_project: Option<String>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
-    pub keys_open: bool,
     pub folded_open: HashSet<String>,
     pub folded_evals: HashSet<(String, String)>,
     pub unfolded_sealed: HashSet<String>,
@@ -151,7 +150,6 @@ impl WeftDesktopApp {
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
-            keys_open: false,
             folded_open: HashSet::new(),
             folded_evals: HashSet::new(),
             unfolded_sealed: HashSet::new(),
@@ -258,7 +256,6 @@ impl WeftDesktopApp {
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
-            keys_open: false,
             folded_open: HashSet::new(),
             folded_evals: HashSet::new(),
             unfolded_sealed: HashSet::new(),
@@ -536,10 +533,6 @@ impl WeftDesktopApp {
             self.menu_open = !self.menu_open;
             self.plus_popover_project = None;
             self.layout_menu_pane = None;
-            return;
-        }
-        if action == "toggle_keys" {
-            self.keys_open = !self.keys_open;
             return;
         }
         if action == "toggle_turbo" {
@@ -1603,8 +1596,6 @@ impl WeftDesktopApp {
         let header = render_header(&HeaderProps {
             machine: self.machine.clone(),
             sidebar_open: self.state.settings.sidebar_open,
-            turbo: self.state.settings.turbo,
-            updates_available,
             needs_you,
             menu_open: self.menu_open,
         });
@@ -1696,7 +1687,6 @@ impl WeftDesktopApp {
             .flex_col()
             .items_start()
             .bg(palette::CANVAS)
-            .rounded(10)
             .child(render_titlebar(&self.machine))
             .child(header)
             .child(body)
@@ -1908,10 +1898,11 @@ mod tests {
         let root = app.render();
         // Top bar checks (D2.6, D2.9, D9.9)
         assert!(root.find_layer("the list's toggle").is_some());
-        assert!(root.find_layer("turbo pill").is_some());
-        assert!(root.find_layer("updates pill").is_some());
-        let needs_pill = root.find_layer("needs you pill").expect("needs you pill");
-        assert_eq!(needs_pill.all_text(), "NEEDS YOU 1");
+        // Turbo is on the agents' titles and Updates in ☰, never in the bar.
+        assert!(root.find_layer("turbo pill").is_none());
+        assert!(root.find_layer("updates pill").is_none());
+        let needs_tag = root.find_layer("needs you tag").expect("needs you tag");
+        assert_eq!(needs_tag.all_text(), "■ NEEDS YOU 1");
 
         // Tree checks (D11.1)
         let tree = root.find_layer("tree").expect("tree open");
@@ -1919,15 +1910,12 @@ mod tests {
         assert!(tree.find_layer("row weft").is_some());
         assert!(tree.find_layer("section AGENTS").is_some());
         assert!(tree.find_layer("row agent antigravity fix login").is_some());
-        assert!(tree.find_layer("btn Ask (row)").is_some());
         assert!(tree.find_layer("row earlier sessions").is_some());
         assert!(tree.find_layer("section WORK").is_some());
         assert!(tree.find_layer("row group Open").is_some());
-        assert!(tree.find_layer("btn Eval (row)").is_some());
         assert!(tree.find_layer("row ask fix login").is_some());
         assert!(tree.find_layer("row ask telemetry").is_some());
         assert!(tree.find_layer("row group Eval 3").is_some());
-        assert!(tree.find_layer("btn Seal (row)").is_some());
         assert!(tree.find_layer("row group Sealed").is_some());
 
         // Search filtering (D11.8)
@@ -2153,15 +2141,12 @@ mod tests {
         assert!(open_steps_dom.find_layer("step Edit").is_some());
         assert!(open_steps_dom.find_layer("step Command").is_some());
 
-        // Clicking `waiting line` action switches to Terminal with D3.4 NEEDS YOU strip
+        // The waiting line's action switches to Terminal, where the keyboard
+        // answers the agent: no key strip above the message row.
         app.dispatch("set_tab_view:0:3:terminal");
         let term_dom = app.render();
         assert!(term_dom.find_layer("seg Terminal selected").is_some());
-        assert!(term_dom.find_layer("NEEDS YOU strip").is_some());
-        assert!(term_dom.find_layer("needs key ↑").is_some());
-        assert!(term_dom.find_layer("needs key ↓").is_some());
-        assert!(term_dom.find_layer("needs key ⏎").is_some());
-        assert!(term_dom.find_layer("needs key Esc").is_some());
+        assert!(term_dom.find_layer("NEEDS YOU strip").is_none());
 
         // Clicking `⏎` sends `\r` to pane 3 via Call::Input
         app.dispatch("send_choice_key:0:enter");
@@ -2350,8 +2335,7 @@ mod tests {
         );
         assert!(expanded_tree.find_layer("btn Keys").is_none());
         let search_box = expanded_tree.find_layer("search").expect("search box");
-        assert!(search_box.styles.contains(&("width".into(), "348px".into())));
-        assert!(search_box.styles.contains(&("height".into(), "36px".into())));
+        assert!(search_box.styles.contains(&("height".into(), "38px".into())));
     }
 
     #[test]
@@ -2537,6 +2521,138 @@ mod tests {
         assert!(app.quit_requested);
     }
 
+    /// Every element of a tree, depth first.
+    fn every(el: &crate::gpui::Element) -> Vec<&crate::gpui::Element> {
+        let mut out = vec![el];
+        for c in &el.children {
+            out.extend(every(c));
+        }
+        out
+    }
+
+    fn sample_app(turbo: bool) -> (tempfile::TempDir, WeftDesktopApp) {
+        let tmp = tempfile::tempdir().unwrap();
+        let initial = WeftState {
+            open_projects: vec![PathBuf::from("/work/weft")],
+            settings: weft_core::state::WeftSettings { turbo, ..Default::default() },
+            ..Default::default()
+        };
+        save_state_to_home(tmp.path(), &initial).unwrap();
+        let mut app = WeftDesktopApp::from_state_disconnected(tmp.path().to_path_buf(), "studio");
+        app.clients[0].turbo = turbo;
+        populate_sample_project(&mut app.clients[0]);
+        (tmp, app)
+    }
+
+    fn style<'a>(el: &'a crate::gpui::Element, k: &str) -> Option<&'a str> {
+        el.styles.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn the_tree_rows_are_one_line_with_the_status_shape() {
+        let (_tmp, app) = sample_app(true);
+        let dom = app.render();
+        let tree = dom.find_layer("tree").expect("tree");
+        assert_eq!(style(tree, "width"), Some("340px"));
+        // Running is a circle, needs you a square, ended a hollow square.
+        for (layer, shape) in [
+            ("row agent antigravity fix login", "■"),
+            ("row agent codex", "●"),
+            ("row agent claude health endpoint", "●"),
+            ("row agent claude readme fix", "□"),
+        ] {
+            let row = tree.find_layer(layer).unwrap_or_else(|| panic!("{layer}"));
+            assert_eq!(style(row, "height"), Some("36px"), "{layer}");
+            assert_eq!(row.children[0].all_text(), shape, "{layer}");
+            let text = row.all_text();
+            for word in ["working", "needs you", "ended", "No Ask yet"] {
+                assert!(!text.contains(word), "{layer} says {word:?}: {text}");
+            }
+        }
+        // Turbo shows on the running agent's title, never on an ended one.
+        assert!(tree.find_layer("row agent codex").unwrap().all_text().contains('⚡'));
+        assert!(!tree.find_layer("row agent claude readme fix").unwrap().all_text().contains('⚡'));
+        // The sections carry their names only, and no row repeats the bar's acts.
+        assert_eq!(tree.find_layer("section AGENTS").unwrap().all_text(), "AGENTS");
+        assert_eq!(tree.find_layer("section WORK").unwrap().all_text(), "WORK");
+        for act in ["btn Ask (row)", "btn Eval (row)", "btn Seal (row)"] {
+            assert!(dom.find_layer(act).is_none(), "{act}");
+        }
+    }
+
+    #[test]
+    fn the_workspace_is_edge_to_edge_panes_or_the_blueprint_grid() {
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        let empty = app.render();
+        let grid = empty.find_layer("empty panes").expect("the empty workspace");
+        assert_eq!(style(grid, "background"), Some(palette::TERMINAL_BG));
+        assert!(grid.find_layer("hairline grid").is_some());
+        assert!(grid.find_layer("woven mark").is_some());
+
+        app.dispatch("start_agent:weft:claude");
+        app.dispatch("start_agent:weft:codex");
+        let one = app.render();
+        let strip = one.find_layer("tab strip").expect("tab strip");
+        assert_eq!(style(strip, "height"), Some("38px"));
+        assert!(strip.find_layer("view switch").is_some(), "alone, the pane's own strip");
+        assert!(one.find_layer("split toolbar").is_none());
+        let pane = one.find_layer("pane").expect("the pane");
+        assert_eq!(style(pane, "border"), None, "alone, no frame");
+        assert_eq!(style(pane, "background"), Some(palette::TERMINAL_BG));
+
+        app.dispatch("split_right:0");
+        let two = app.render();
+        let bar = two.find_layer("split toolbar").expect("one bar for the split");
+        assert!(bar.all_text().contains("2 PANES"));
+        assert!(bar.find_layer("view switch").is_some());
+        let switches = every(&two)
+            .into_iter()
+            .filter(|e| e.layer_name.as_deref() == Some("view switch"))
+            .count();
+        assert_eq!(switches, 1, "the view switch once, not per pane");
+        for g in 0..2 {
+            let group = two.find_layer(&format!("pane group {g}")).unwrap();
+            assert_eq!(style(group.find_layer("tab strip").unwrap(), "height"), Some("30px"));
+        }
+        let focused = two.find_layer("pane").expect("the focused pane");
+        assert_eq!(style(focused, "border"), Some("2px solid #58a6ff"));
+    }
+
+    #[test]
+    fn no_screen_draws_a_rounded_corner_or_a_shadow() {
+        let (_tmp, mut app) = sample_app(false);
+        let mut screens = vec![app.render()];
+        for action in [
+            "toggle_menu",
+            "close_popovers",
+            "open_start_sheet",
+            "close_sheet",
+            "bar_act_ask",
+            "close_sheet",
+            "open_updates",
+            "close_sheet",
+            "open_remote",
+            "close_sheet",
+            "request_quit",
+        ] {
+            app.dispatch(action);
+            screens.push(app.render());
+        }
+        for screen in &screens {
+            for el in every(screen) {
+                for (k, v) in &el.styles {
+                    assert!(k != "border-radius", "{:?} rounds its corners ({v})", el.layer_name);
+                    assert!(
+                        k != "box-shadow" || v.starts_with("inset"),
+                        "{:?} casts a shadow",
+                        el.layer_name
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn w_atlas_desktop_screens_match_toile_atlas_cards_with_zero_unapproved_differences() {
         use crate::gpui::palette;
@@ -2595,14 +2711,14 @@ mod tests {
             ],
         );
 
-        // D12.4: Conversation view with Antigravity waiting for you + top bar 52px + tree 380px
+        // D12.4: Conversation view with Antigravity waiting for you + top bar 48px + tree 340px
         app.dispatch("set_tab_view:0:0:conversation");
         let d12_4 = app.render();
         assert!(d12_4.styles.contains(&("background".into(), palette::CANVAS.into())));
-        let top_bar = d12_4.find_layer("header").expect("52px top bar");
-        assert!(top_bar.styles.contains(&("height".into(), "52px".into())));
-        let tree = d12_4.find_layer("tree").expect("380px tree");
-        assert!(tree.styles.contains(&("width".into(), "380px".into())));
+        let top_bar = d12_4.find_layer("header").expect("48px top bar");
+        assert!(top_bar.styles.contains(&("height".into(), "48px".into())));
+        let tree = d12_4.find_layer("tree").expect("340px tree");
+        assert!(tree.styles.contains(&("width".into(), "340px".into())));
         assert!(d12_4.find_layer("seg Conversation selected").is_some());
         assert!(d12_4.find_layer("waiting line").is_some());
         assert!(d12_4.find_layer("the message row").is_some());

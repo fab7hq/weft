@@ -1,7 +1,7 @@
 //! Right-pane sheets and popovers (`D4.1`–`D4.4` Ask/Follow up, `D11.2` Work
 //! Details, `D11.3` Eval Details, `D11.4` Seal Details, `D11.5`/`D11.9` Session
 //! Details, `D11.6` Earlier sessions, `D6.1`–`D6.7` Eval view, `D7.2` Updates,
-//! `D8.3` Remote, `D9.2` Keyboard shortcuts, and `D9.9` `☰` Mac menu popover).
+//! `D8.3` Remote, and `D9.9` `☰` Mac menu popover).
 
 use weft_core::harness::Harnesses;
 use weft_core::ledger::Unit;
@@ -64,8 +64,7 @@ pub fn render_menu_popover(
         div()
             .layer("turbo toggle badge")
             .pad(3, 10)
-            .bg("#3a2c0c")
-            .rounded(12)
+            .bg(palette::AMBER_BG)
             .border(palette::AMBER)
             .font_size(11)
             .font_weight(600)
@@ -77,7 +76,6 @@ pub fn render_menu_popover(
             .layer("turbo toggle badge")
             .pad(3, 10)
             .bg(palette::SURFACE_ALT)
-            .rounded(12)
             .border(palette::LINE)
             .font_size(11)
             .font_weight(600)
@@ -91,7 +89,6 @@ pub fn render_menu_popover(
             .layer("login toggle badge")
             .pad(3, 10)
             .bg(palette::SELECTED_BG)
-            .rounded(12)
             .border(palette::BLUE_BORDER)
             .font_size(11)
             .font_weight(600)
@@ -103,7 +100,6 @@ pub fn render_menu_popover(
             .layer("login toggle badge")
             .pad(3, 10)
             .bg(palette::SURFACE_ALT)
-            .rounded(12)
             .border(palette::LINE)
             .font_size(11)
             .font_weight(600)
@@ -141,9 +137,7 @@ pub fn render_menu_popover(
         .flex_col()
         .pad(6, 0)
         .bg(palette::SURFACE)
-        .rounded(12)
         .border(palette::LINE)
-        .style("box-shadow", "0 12px 32px rgba(0,0,0,0.65)")
         .child(
             div()
                 .layer("menu Open project")
@@ -285,7 +279,6 @@ fn render_ask_sheet(
                     .gap(8)
                     .pad(8, 12)
                     .items_center()
-                    .rounded(8)
                     .bg(if is_sel { palette::SELECTED_BG } else { palette::SURFACE })
                     .border(if is_sel { palette::BLUE_BORDER } else { palette::LINE })
                     .child(div().font_size(14).font_weight(600).text(a.harness.clone()))
@@ -326,7 +319,6 @@ fn render_ask_sheet(
                         .h(140)
                         .pad(12, 14)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::BLUE_BORDER)
                         .font_size(14)
                         .color(palette::TEXT)
@@ -359,7 +351,6 @@ fn render_ask_sheet(
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -372,10 +363,10 @@ fn render_ask_sheet(
                         .on_click("submit_ask_sheet")
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text(if follow_up_unit.is_some() {
                             words::word("act.follow_up")
                         } else {
@@ -449,10 +440,10 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
                 .on_click(format!("act_proceed:{project}:{unit_id}"))
                 .pad(9, 18)
                 .bg(palette::BLUE)
-                .rounded(10)
+                .border(palette::BLUE_BORDER)
                 .font_weight(600)
                 .font_size(14)
-                .color("#ffffff")
+                .color(palette::CANVAS)
                 .text(words::word("act.proceed")),
         );
     }
@@ -464,7 +455,6 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
                 .on_click(format!("open_follow_up:{project}:{unit_id}"))
                 .pad(9, 18)
                 .bg(palette::SURFACE)
-                .rounded(10)
                 .border(palette::LINE)
                 .font_weight(600)
                 .font_size(14)
@@ -477,7 +467,6 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
                 .on_click("close_sheet")
                 .pad(9, 18)
                 .bg(palette::SURFACE)
-                .rounded(10)
                 .border(palette::LINE)
                 .font_weight(600)
                 .font_size(14)
@@ -503,7 +492,6 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
             .items_center()
             .pad(8, 12)
             .bg(palette::SURFACE_ALT)
-            .rounded(8)
             .border(palette::LINE);
         crumb_row =
             crumb_row.child(div().font_size(12).color(palette::DIM).text(unit_id.to_string()));
@@ -590,7 +578,6 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
                 .self_stretch()
                 .pad(12, 14)
                 .bg(palette::SURFACE)
-                .rounded(10)
                 .border(palette::LINE)
                 .font_size(14)
                 .text(as_typed.to_string()),
@@ -610,7 +597,6 @@ fn render_work_detail(props: &SheetProps, project: &str, unit_id: &str) -> Eleme
                     .self_stretch()
                     .pad(12, 14)
                     .bg(palette::SURFACE)
-                    .rounded(10)
                     .border(palette::LINE)
                     .font_size(13)
                     .color(palette::MUTED)
@@ -745,12 +731,8 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                     .color(palette::DIM)
                     .text(words::word("web.eval.findings").to_uppercase()),
             );
-            let mut fbox = div()
-                .self_stretch()
-                .flex_col()
-                .bg(palette::SURFACE)
-                .rounded(10)
-                .border(palette::LINE);
+            let mut fbox =
+                div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
             let total_f = d.findings.len();
             for (idx, f) in d.findings.iter().enumerate() {
                 let mut r = div().self_stretch().flex_row().gap(10).pad(10, 14).items_start();
@@ -779,12 +761,8 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                     .color(palette::DIM)
                     .text(words::word("eval_view.checks").to_uppercase()),
             );
-            let mut cbox = div()
-                .self_stretch()
-                .flex_col()
-                .bg(palette::SURFACE)
-                .rounded(10)
-                .border(palette::LINE);
+            let mut cbox =
+                div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
             let total_c = d.checks.len();
             for (idx, c) in d.checks.iter().enumerate() {
                 let mut r = div().self_stretch().flex_row().gap(10).pad(10, 14).items_center();
@@ -816,12 +794,8 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                     .color(palette::DIM)
                     .text("ASKS IN THIS ROUND"),
             );
-            let mut abox = div()
-                .self_stretch()
-                .flex_col()
-                .bg(palette::SURFACE)
-                .rounded(10)
-                .border(palette::LINE);
+            let mut abox =
+                div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
             let total_a = d.asks.len();
             for (idx, a) in d.asks.iter().enumerate() {
                 let mut r = div()
@@ -895,10 +869,10 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                         .on_click(format!("open_seal:{project}:{eval_id}"))
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text(words::word("act.seal")),
                 )
                 .child(
@@ -907,7 +881,6 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                         .on_click(format!("open_eval_view:{project}:{eval_id}"))
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -920,7 +893,6 @@ fn render_eval_detail(props: &SheetProps, project: &str, eval_id: &str) -> Eleme
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1052,7 +1024,6 @@ fn render_eval_view(
                         .on_click(format!("toggle_eval_view_mode:{project}:{eval_id}"))
                         .pad(4, 10)
                         .bg(palette::SURFACE)
-                        .rounded(8)
                         .border(palette::LINE)
                         .font_size(12)
                         .text(if by_file {
@@ -1083,7 +1054,6 @@ fn render_eval_view(
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1166,12 +1136,8 @@ fn render_seal_detail(props: &SheetProps, project: &str, seal_id: &str) -> Eleme
                     .color(palette::DIM)
                     .text("SEALED ASKS"),
             );
-            let mut abox = div()
-                .self_stretch()
-                .flex_col()
-                .bg(palette::SURFACE)
-                .rounded(10)
-                .border(palette::LINE);
+            let mut abox =
+                div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
             let total_a = d.asks.len();
             for (idx, a) in d.asks.iter().enumerate() {
                 let mut r = div()
@@ -1238,7 +1204,6 @@ fn render_seal_detail(props: &SheetProps, project: &str, seal_id: &str) -> Eleme
                         .on_click(format!("open_eval_view:{project}:{eval_id}"))
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1251,7 +1216,6 @@ fn render_seal_detail(props: &SheetProps, project: &str, seal_id: &str) -> Eleme
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1305,12 +1269,8 @@ fn render_session_detail(props: &SheetProps, project: &str, session_id: &str) ->
 
     if let Some(d) = &detail {
         if !d.asks.is_empty() {
-            let mut asks_box = div()
-                .self_stretch()
-                .flex_col()
-                .bg(palette::SURFACE)
-                .rounded(10)
-                .border(palette::LINE);
+            let mut asks_box =
+                div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
             let total = d.asks.len();
             for (idx, a) in d.asks.iter().enumerate() {
                 let mut r = div()
@@ -1343,7 +1303,6 @@ fn render_session_detail(props: &SheetProps, project: &str, session_id: &str) ->
                         .self_stretch()
                         .pad(12, 14)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_size(14)
                         .text(last.clone()),
@@ -1386,10 +1345,10 @@ fn render_session_detail(props: &SheetProps, project: &str, session_id: &str) ->
                 .on_click(format!("resume_session:{project}:{harness}:{session_id}"))
                 .pad(9, 18)
                 .bg(palette::BLUE)
-                .rounded(10)
+                .border(palette::BLUE_BORDER)
                 .font_weight(600)
                 .font_size(14)
-                .color("#ffffff")
+                .color(palette::CANVAS)
                 .text(words::word("act.resume")),
         );
     }
@@ -1400,7 +1359,6 @@ fn render_session_detail(props: &SheetProps, project: &str, session_id: &str) ->
             .on_click("close_sheet")
             .pad(9, 18)
             .bg(palette::SURFACE)
-            .rounded(10)
             .border(palette::LINE)
             .font_weight(600)
             .font_size(14)
@@ -1515,7 +1473,6 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                     .on_click(act)
                     .pad(5, 12)
                     .bg(palette::SURFACE_ALT)
-                    .rounded(8)
                     .border(palette::LINE)
                     .font_weight(600)
                     .font_size(12)
@@ -1531,7 +1488,6 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
         .pad(2, 0)
         .items_start()
         .bg(palette::SURFACE)
-        .rounded(10)
         .border(palette::LINE)
         .child(core_row("Weft", weft_behind, &weft_status, "setup_run:weft", false))
         .child(core_row("RingFrame", rf_behind, &rf_status, "setup_run:ringframe", false))
@@ -1543,7 +1499,6 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
         .pad(2, 0)
         .items_start()
         .bg(palette::SURFACE)
-        .rounded(10)
         .border(palette::LINE);
 
     let rows_source: Vec<(String, String, SetupState)> = if !view.rows.is_empty() {
@@ -1623,7 +1578,6 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                     .on_click(btn_act)
                     .pad(5, 12)
                     .bg(palette::SURFACE_ALT)
-                    .rounded(8)
                     .border(palette::LINE)
                     .font_weight(600)
                     .font_size(12)
@@ -1708,7 +1662,6 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1719,11 +1672,10 @@ fn render_updates_sheet(props: &SheetProps) -> Element {
                         .layer("btn Update all")
                         .on_click("setup_update_all")
                         .pad(9, 18)
-                        .bg(palette::BLUE)
-                        .rounded(10)
+                        .bg(palette::BLUE).border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text("Update all"),
                 ),
         )
@@ -1780,7 +1732,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                 .gap(10)
                 .pad(14, 16)
                 .bg(palette::SURFACE_ALT)
-                .rounded(10)
                 .border(palette::AMBER)
                 .child(
                     div()
@@ -1808,7 +1759,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                                 .on_click("cancel_bottom_bar")
                                 .pad(7, 14)
                                 .bg(palette::SURFACE)
-                                .rounded(8)
                                 .border(palette::LINE)
                                 .font_weight(600)
                                 .font_size(13)
@@ -1820,7 +1770,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                                 .on_click(format!("remote_remove_device:{device_id}"))
                                 .pad(7, 14)
                                 .bg(palette::SURFACE)
-                                .rounded(8)
                                 .border(palette::AMBER)
                                 .font_weight(600)
                                 .font_size(13)
@@ -1837,7 +1786,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                 .self_stretch()
                 .pad(16, 18)
                 .bg(palette::SURFACE)
-                .rounded(10)
                 .border(palette::LINE)
                 .font_size(13)
                 .color(palette::MUTED)
@@ -1845,7 +1793,7 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
         );
     } else {
         let mut devices_box =
-            div().self_stretch().flex_col().bg(palette::SURFACE).rounded(10).border(palette::LINE);
+            div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
 
         let total = devices.len();
         for (idx, (dev_id, dev_name, online, status)) in devices.into_iter().enumerate() {
@@ -1874,7 +1822,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                         .on_click(format!("request_remove_device:{dev_id}:{dev_name}"))
                         .pad(5, 12)
                         .bg(palette::SURFACE_ALT)
-                        .rounded(8)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(12)
@@ -1923,7 +1870,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                         .on_click("remote_turn_off")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1937,7 +1883,6 @@ fn render_remote_sheet(props: &SheetProps) -> Element {
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -1966,7 +1911,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
 
     if props.projects.len() > 1 {
         let mut proj_box =
-            div().self_stretch().flex_col().bg(palette::SURFACE).rounded(10).border(palette::LINE);
+            div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
         let total_p = props.projects.len();
         for (idx, p) in props.projects.iter().enumerate() {
             let is_sel = p.name == active_proj;
@@ -2012,8 +1957,7 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
             .child(proj_box);
     }
 
-    let mut h_box =
-        div().self_stretch().flex_col().bg(palette::SURFACE).rounded(10).border(palette::LINE);
+    let mut h_box = div().self_stretch().flex_col().bg(palette::SURFACE).border(palette::LINE);
     let total_h = props.harnesses.0.len();
     for (idx, h) in props.harnesses.0.iter().enumerate() {
         let is_sel = idx == selected_harness.min(total_h.saturating_sub(1));
@@ -2092,7 +2036,6 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
                         .on_click("close_sheet")
                         .pad(9, 18)
                         .bg(palette::SURFACE)
-                        .rounded(10)
                         .border(palette::LINE)
                         .font_weight(600)
                         .font_size(14)
@@ -2105,10 +2048,10 @@ fn render_start_agent_sheet(props: &SheetProps, project: &str, selected_harness:
                         .on_click("submit_start_sheet")
                         .pad(9, 18)
                         .bg(palette::BLUE)
-                        .rounded(10)
+                        .border(palette::BLUE_BORDER)
                         .font_weight(600)
                         .font_size(14)
-                        .color("#ffffff")
+                        .color(palette::CANVAS)
                         .text(words::word("act.start")),
                 ),
         )
