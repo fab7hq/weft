@@ -131,11 +131,11 @@ impl Layer {
         entries: impl Iterator<Item = &'a Entry>,
         key: impl Fn(&Entry) -> String,
     ) -> Self {
-        let mut items: Vec<(String, Item)> = Vec::new();
+        let mut items: Vec<Item> = Vec::new();
+        let mut at: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for e in entries {
-            let k = key(e);
-            match items.iter_mut().find(|(have, _)| *have == k) {
-                Some((_, i)) => {
+            match at.get(&key(e)).map(|&n| &mut items[n]) {
+                Some(i) => {
                     i.count += 1;
                     if e.at > i.at {
                         i.text = e.text.clone();
@@ -150,9 +150,9 @@ impl Layer {
                         i.projects.push(e.project.clone());
                     }
                 }
-                None => items.push((
-                    k,
-                    Item {
+                None => {
+                    at.insert(key(e), items.len());
+                    items.push(Item {
                         text: e.text.clone(),
                         reply: e.reply.clone(),
                         near: e.near.clone(),
@@ -160,11 +160,11 @@ impl Layer {
                         count: 1,
                         harnesses: vec![e.harness.clone()],
                         projects: vec![e.project.clone()],
-                    },
-                )),
+                    });
+                }
             }
         }
-        Layer::new(items.into_iter().map(|(_, i)| i).collect())
+        Layer::new(items)
     }
 
     fn complete(&self, draft: &str, harness: &str, now: u64) -> Option<Suggestion> {
@@ -234,6 +234,8 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 struct Bm25 {
     docs: Vec<Vec<String>>,
     avg: f64,
+    /// How many documents hold each word.
+    df: std::collections::HashMap<String, usize>,
 }
 
 impl Bm25 {
@@ -243,7 +245,17 @@ impl Bm25 {
     fn new(docs: Vec<Vec<String>>) -> Self {
         let total: usize = docs.iter().map(Vec::len).sum();
         let avg = if docs.is_empty() { 0.0 } else { total as f64 / docs.len() as f64 };
-        Bm25 { docs, avg }
+        let mut df = std::collections::HashMap::new();
+        for d in &docs {
+            let mut seen: Vec<&String> = Vec::new();
+            for w in d {
+                if !seen.contains(&w) {
+                    seen.push(w);
+                    *df.entry(w.clone()).or_insert(0) += 1;
+                }
+            }
+        }
+        Bm25 { docs, avg, df }
     }
 
     fn score(&self, doc: usize, query: &[String]) -> f64 {
@@ -263,7 +275,7 @@ impl Bm25 {
             if tf == 0.0 {
                 continue;
             }
-            let df = self.docs.iter().filter(|d| d.contains(q)).count() as f64;
+            let df = self.df.get(q).copied().unwrap_or(0) as f64;
             let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
             let norm = 1.0 - Self::B + Self::B * d.len() as f64 / self.avg;
             sum += idf * tf * (Self::K1 + 1.0) / (tf + Self::K1 * norm);
@@ -434,6 +446,84 @@ pub fn last_reply(items: &[crate::conversation::Item]) -> String {
         .filter_map(|i| i.text.as_deref().map(str::trim).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// How a replay of the person's own messages scored, at one confidence floor.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Score {
+    /// Messages a suggestion could have been shown for.
+    pub eligible: usize,
+    /// Suggestions shown, at or above the floor.
+    pub shown: usize,
+    /// Shown, and what the person sent.
+    pub hits: usize,
+}
+
+impl Score {
+    pub fn hit_rate(&self) -> f64 {
+        ratio(self.hits, self.shown)
+    }
+    pub fn wrong_rate(&self) -> f64 {
+        ratio(self.shown - self.hits, self.shown)
+    }
+    pub fn coverage(&self) -> f64 {
+        ratio(self.shown, self.eligible)
+    }
+}
+
+fn ratio(a: usize, b: usize) -> f64 {
+    if b == 0 { 0.0 } else { a as f64 / b as f64 }
+}
+
+/// Replay the person's messages in the order they were sent, each suggested
+/// from those before it only: the next prompt when the field is empty, and the
+/// rest of the message from its first third. One score per floor in `floors`.
+pub fn replay(entries: &[Entry], floors: &[f64]) -> (Vec<Score>, Vec<Score>) {
+    let mut order: Vec<&Entry> = entries.iter().collect();
+    order.sort_by_key(|e| e.at);
+    let (mut next, mut rest) =
+        (vec![Score::default(); floors.len()], vec![Score::default(); floors.len()]);
+    for (k, e) in order.iter().enumerate() {
+        let before: Vec<Entry> = order[..k].iter().map(|x| (*x).clone()).collect();
+        let index = Index::new(&before, &e.project);
+        if !e.reply.trim().is_empty() {
+            let near = (!e.near.is_empty()).then_some(e.near.as_slice());
+            let got = index.next(&e.reply, near, &e.harness, e.at);
+            tally(&mut next, floors, got.map(|s| (fold(&s.text) == fold(&e.text), s.score)));
+        }
+        if let Some(draft) = first_third(&e.text) {
+            let got = index.complete(draft, &e.harness, e.at);
+            tally(
+                &mut rest,
+                floors,
+                got.map(|s| (fold(&format!("{draft}{}", s.text)) == fold(&e.text), s.score)),
+            );
+        }
+    }
+    (next, rest)
+}
+
+/// Count one message: shown at each floor its score reaches, and whether it was right.
+fn tally(scores: &mut [Score], floors: &[f64], got: Option<(bool, f64)>) {
+    for (score, floor) in scores.iter_mut().zip(floors) {
+        score.eligible += 1;
+        if let Some((hit, s)) = got
+            && s >= *floor
+        {
+            score.shown += 1;
+            score.hits += usize::from(hit);
+        }
+    }
+}
+
+/// A message's first third, to the end of the word it reaches: what a
+/// replay types before asking for the rest. None when that is all of it.
+fn first_third(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let third = text.char_indices().nth(text.chars().count() / 3).map_or(text.len(), |(i, _)| i);
+    let end = text[third..].find(char::is_whitespace).map_or(text.len(), |n| third + n);
+    let draft = text[..end].trim_end();
+    (!draft.is_empty() && draft.len() < text.len()).then_some(draft)
 }
 
 /// The index as it is kept on the person's machine: one project's entries.
@@ -741,5 +831,30 @@ mod tests {
             plain.next("Every check is green.", Some(&green), "claude", NOW).unwrap().text,
             "commit these changes"
         );
+    }
+
+    #[test]
+    fn a_replay_suggests_each_message_from_those_before_it_and_scores_each_floor() {
+        let e =
+            |text: &str, reply: &str, days_ago: u64| sent(text, reply, "claude", "weft", days_ago);
+        let entries = [
+            e("run the login tests", "", 5),
+            e("commit these changes", "Done. All tests pass.", 4),
+            e("run the login tests", "", 3),
+            e("commit these changes", "Done. All tests pass.", 2),
+            e("open a pull request", "Done. All tests pass.", 1),
+        ];
+        let (next, rest) = replay(&entries, &[0.0, 0.99]);
+        // Next prompt: three had a reply before them; the 4th is foretold by the 2nd, the 5th wrongly by them.
+        assert_eq!(next[0], Score { eligible: 3, shown: 2, hits: 1 });
+        assert_eq!((next[0].hit_rate(), next[0].wrong_rate()), (0.5, 0.5));
+        assert!((next[0].coverage() - 2.0 / 3.0).abs() < 1e-9);
+        // The rest from the first third: the 3rd and the 4th are what was sent before.
+        assert_eq!(rest[0].eligible, 5);
+        assert_eq!(rest[0].hits, 2);
+        assert!(rest[0].shown >= 2);
+        // A floor no score reaches shows nothing.
+        assert_eq!((next[1].shown, rest[1].shown), (0, 0));
+        assert_eq!(replay(&[], &[0.0]), (vec![Score::default()], vec![Score::default()]));
     }
 }
