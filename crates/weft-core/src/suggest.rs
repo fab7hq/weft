@@ -14,6 +14,9 @@ pub struct Entry {
     pub project: String,
     /// When it was sent, in seconds since the epoch.
     pub at: u64,
+    /// Where it was read from, `ask:<id>` or `session:<id>`, so one source is read again on its own.
+    #[serde(default)]
+    pub source: String,
 }
 
 /// What goes after the caret, and how sure it is (0 to 1).
@@ -346,6 +349,42 @@ fn after_word<'a>(text: &'a str, word: &str, partial: bool) -> Option<&'a str> {
     None
 }
 
+/// The entries a session's transcript gives: each message the person sent,
+/// with the agent's whole reply before it. `at` is when the session began, for
+/// items with no time of their own.
+pub fn from_conversation(
+    items: &[crate::conversation::Item],
+    harness: &str,
+    project: &str,
+    session: &str,
+    at: u64,
+) -> Vec<Entry> {
+    use crate::conversation::Kind;
+    let mut out = Vec::new();
+    let mut reply: Vec<&str> = Vec::new();
+    for item in items {
+        let text = item.text.as_deref().unwrap_or("").trim();
+        match item.kind {
+            Kind::Agent if !text.is_empty() => reply.push(text),
+            Kind::Person => {
+                if !text.is_empty() {
+                    out.push(Entry {
+                        text: text.to_string(),
+                        reply: reply.join("\n"),
+                        harness: harness.into(),
+                        project: project.into(),
+                        at: item.at.map_or(at, |ms| (ms / 1000).max(0) as u64),
+                        source: format!("session:{session}"),
+                    });
+                }
+                reply.clear();
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// The index as it is kept on the person's machine: one project's entries.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Stored {
@@ -387,6 +426,7 @@ mod tests {
             harness: harness.into(),
             project: project.into(),
             at: NOW - days_ago * DAY,
+            source: String::new(),
         }
     }
 
@@ -577,5 +617,42 @@ mod tests {
         assert_ne!(old, text);
         assert_eq!(Stored::from_json(&old, "weft"), None, "an old version is rebuilt");
         assert_eq!(Stored::from_json("not json", "weft"), None);
+    }
+
+    #[test]
+    fn a_transcript_gives_each_message_with_the_whole_reply_before_it() {
+        use crate::conversation::{Item, Kind};
+        let item = |kind, text: &str, at: Option<i64>| Item {
+            id: String::new(),
+            kind,
+            at,
+            text: Some(text.into()),
+            tool: None,
+            arg: None,
+            call: None,
+            failed: None,
+        };
+        let items = [
+            item(Kind::Person, "fix the login", Some(1_000_000)),
+            item(Kind::Agent, "Reading it.", None),
+            item(Kind::Step, "Read src/login.rs", None),
+            item(Kind::Agent, "Done. Both tests pass.", None),
+            item(Kind::Person, "commit these changes", Some(2_000_000)),
+            item(Kind::Person, "", None),
+        ];
+        let got = from_conversation(&items, "claude", "/work/weft", "8b2e", 7);
+        assert_eq!(got.len(), 2, "an empty message is no entry");
+        assert_eq!(
+            (got[0].text.as_str(), got[0].reply.as_str(), got[0].at),
+            ("fix the login", "", 1000)
+        );
+        assert_eq!(got[1].reply, "Reading it.\nDone. Both tests pass.");
+        assert_eq!(
+            (got[1].at, got[1].source.as_str(), got[1].harness.as_str()),
+            (2000, "session:8b2e", "claude")
+        );
+        let untimed =
+            from_conversation(&[item(Kind::Person, "hi", None)], "claude", "/work/weft", "8b2e", 7);
+        assert_eq!(untimed[0].at, 7);
     }
 }
