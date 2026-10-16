@@ -139,6 +139,7 @@ pub fn render_menu_popover(
         .flex_col()
         .bg(palette::SURFACE_ALT)
         .border(palette::LINE)
+        .panel_corners()
         .child(
             div()
                 .layer("menu Open project")

@@ -627,6 +627,7 @@ fn render_layout_menu(g_idx: usize) -> Element {
         .pad(6, 0)
         .bg(palette::SURFACE)
         .border(palette::LINE)
+        .panel_corners()
         .font_size(14)
         .child(
             div()

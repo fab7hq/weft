@@ -827,6 +827,11 @@ impl GpuiDesktopView {
                         d = d.bg(parse_color(v));
                     }
                 }
+                "border-radius" => {
+                    if let Some(n) = parse_px(v) {
+                        d = d.rounded(px(n));
+                    }
+                }
                 "border" => {
                     if let Some(c) = parse_border_color(v) {
                         d = if v.starts_with("2px") { d.border_2() } else { d.border_1() };

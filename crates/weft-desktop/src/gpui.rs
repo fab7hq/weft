@@ -25,6 +25,9 @@ pub mod palette {
     pub const BLUE_BORDER: &str = "#58a6ff";
     pub const RED: &str = "#f85149";
     pub const RED_BG: &str = "#2d1216";
+    /// Corners: a boxed control's, and a menu's, popover's or sheet's.
+    pub const RADIUS_CONTROL: u32 = 4;
+    pub const RADIUS_PANEL: u32 = 6;
 }
 
 /// Declarative GPUI element node.
@@ -223,8 +226,15 @@ impl Element {
         self.style("box-shadow", "inset 0 -2px 0")
     }
 
+    /// A box around the element: a control, so with the control's corners.
     pub fn border(self, color: &str) -> Self {
         self.style("border", format!("1px solid {color}"))
+            .style("border-radius", format!("{}px", palette::RADIUS_CONTROL))
+    }
+
+    /// A panel's corners: a menu, a popover or a sheet over the page.
+    pub fn panel_corners(self) -> Self {
+        self.style("border-radius", format!("{}px", palette::RADIUS_PANEL))
     }
 
     pub fn border_bottom(self, color: &str) -> Self {
@@ -404,6 +414,7 @@ mod tests {
         ] {
             assert_eq!(ours, token(name), "{name}");
         }
-        assert_eq!(token("--weft-radius"), "0px");
+        assert_eq!(format!("{RADIUS_CONTROL}px"), token("--weft-radius-control"));
+        assert_eq!(format!("{RADIUS_PANEL}px"), token("--weft-radius-panel"));
     }
 }

@@ -263,6 +263,7 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
         .flex_col()
         .bg(palette::SURFACE_ALT)
         .border(palette::BLUE_BORDER)
+        .panel_corners()
         .child(
             div()
                 .pad(6, 12)

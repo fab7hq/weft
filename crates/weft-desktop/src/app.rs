@@ -2637,7 +2637,7 @@ mod tests {
     }
 
     #[test]
-    fn no_screen_draws_a_rounded_corner_or_a_shadow() {
+    fn corners_are_the_guidelines_two_radii_and_no_screen_casts_a_shadow() {
         let (_tmp, mut app) = sample_app(false);
         let mut screens = vec![app.render()];
         for action in [
@@ -2656,10 +2656,27 @@ mod tests {
             app.dispatch(action);
             screens.push(app.render());
         }
+        let radii =
+            [format!("{}px", palette::RADIUS_CONTROL), format!("{}px", palette::RADIUS_PANEL)];
+        // A menu floats over the page as a panel.
+        let menu = screens[1].find_layer("menu popover").expect("the menu");
+        assert_eq!(style(menu, "border-radius"), Some(radii[1].as_str()));
         for screen in &screens {
             for el in every(screen) {
+                // A boxed control takes the small radius.
+                if el.styles.iter().any(|(k, v)| k == "border" && v.starts_with("1px")) {
+                    assert!(
+                        style(el, "border-radius").is_some(),
+                        "{:?} is boxed but square",
+                        el.layer_name
+                    );
+                }
                 for (k, v) in &el.styles {
-                    assert!(k != "border-radius", "{:?} rounds its corners ({v})", el.layer_name);
+                    assert!(
+                        k != "border-radius" || radii.contains(v),
+                        "{:?} rounds by {v}",
+                        el.layer_name
+                    );
                     assert!(
                         k != "box-shadow" || v.starts_with("inset"),
                         "{:?} casts a shadow",

@@ -1,6 +1,6 @@
 /* Weft Design System — 8-Bit Blueprint Minimalism
    Color scheme: getfab7.com (Deep Blueprint Darkroom & RingFrame Semantic Accents)
-   Structural style: bytebitlabs.com (0px sharp geometry, 1px hairline grids, ■/□ 8-bit status pixels)
+   Structural style: bytebitlabs.com (small 4/6 px corners, 1px hairline grids, ●/■/□ status shapes)
    Typography: Sora (human intent & prose) + JetBrains Mono (terminal, timestamps, telemetry)
 */
 @import url("https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Sora:wght@300;400;500;600;700&display=block");
@@ -43,7 +43,8 @@
   --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
   /* 8-Bit Structural Geometry (bytebitlabs.com) */
-  --weft-radius: 0px;            /* Zero border radius across all UI primitives */
+  --weft-radius-control: 4px;    /* Buttons, inputs, tags, keycaps, segments */
+  --weft-radius-panel: 6px;      /* Menus, popovers, sheets */
   --weft-bevel: inset 0 -2px 0 rgba(37, 53, 80, 0.75);
   --weft-bevel-primary: inset 0 -2px 0 rgba(9, 13, 22, 0.45);
   --weft-step-ease: 100ms steps(2, end);
@@ -51,9 +52,13 @@
 
 * {
   box-sizing: border-box;
-  border-radius: 0 !important;
   -webkit-font-smoothing: antialiased;
 }
+
+/* A boxed element is a control and takes the small radius; a menu or a
+   popover takes the panel's. Lines between panes and rows stay square. */
+[style*="border:1px solid"] { border-radius: var(--weft-radius-control); }
+[layer-name*="popover"], [layer-name*="menu pop"] { border-radius: var(--weft-radius-panel); }
 
 body {
   margin: 0;
