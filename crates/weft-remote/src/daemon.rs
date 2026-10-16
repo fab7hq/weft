@@ -138,6 +138,8 @@ pub fn allowed(call: &Call) -> bool {
         Call::Open { raw, .. } => !raw,
         Call::Attach { form, .. } => form == "screen" || form == "none",
         Call::Input { .. } | Call::Resize { .. } => true,
+        // What to suggest in a watched agent's message field.
+        Call::Suggest { .. } => true,
         Call::Available => true,
         // A fresh agent, or a work's session resumed, with the command line
         // the daemon's harness file gives: never one a device sent.

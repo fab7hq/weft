@@ -393,3 +393,54 @@ fn suggestions_are_off_unless_turned_on() {
     let got = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "run the".into() });
     assert_eq!(got, json!({}));
 }
+
+#[test]
+fn a_device_gets_suggestions_only_for_the_agent_it_watches() {
+    let mut h = Harness::with("devicesuggest", |dir| {
+        grok_beside(dir);
+        let config = dir.join("config.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("suggest = true\n{text}")).unwrap();
+    });
+    let (shell, token, transcript) = grok_pane_in(&h, "watched", "g1");
+    hook_of(&h, &shell, &token, &transcript, "g1");
+    std::fs::write(&transcript, line("user_message_chunk", "run the login tests") + "\n").unwrap();
+    let ended = Sent {
+        harness: "grok".into(),
+        hook: "Stop".into(),
+        session: "g1".into(),
+        workspace: Some(shell.project.to_string_lossy().into_owned()),
+        state: Some("turn_ended".into()),
+        pane: Some(0),
+        token: Some(token.clone()),
+        transcript: Some(transcript.to_string_lossy().into_owned()),
+        ..Sent::default()
+    };
+    let mut s = std::os::unix::net::UnixStream::connect(&h.socket).unwrap();
+    s.write_all(&Line::Event(Event::Signal(Box::new(ended))).encode()).unwrap();
+    let (mut d, _) = h.allowed("d_1");
+    let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
+    let ask = |d: &mut common::Device, req: i64| {
+        d.send(json!({"type": "suggest", "agent": agent, "draft": "run the", "req": req}));
+        d.answer(req)
+    };
+    let refused = ask(&mut d, 1);
+    assert_eq!(
+        (refused["type"].as_str(), refused["code"].as_str()),
+        (Some("error"), Some("not_watching"))
+    );
+    d.send(json!({"type": "watch", "agent": agent}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut req = 2;
+    let got = loop {
+        let got = ask(&mut d, req);
+        if got.get("text").is_some() {
+            break got;
+        }
+        assert!(Instant::now() < deadline, "nothing suggested: {got}");
+        req += 1;
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(got["type"], "ok");
+    assert_eq!(got["text"], " login tests");
+}

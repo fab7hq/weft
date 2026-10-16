@@ -160,6 +160,8 @@ enum Carries {
     Conversation(String),
     /// What a followed agent's file grew by, for this device and agent.
     Follow(u64, usize, u32),
+    /// What to suggest in the agent's message field, or nothing.
+    Suggestion,
 }
 
 /// The daemon's reads one device read is gathered from.
