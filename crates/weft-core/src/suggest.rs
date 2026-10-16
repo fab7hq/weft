@@ -419,7 +419,7 @@ pub fn from_conversation(
                 if !text.is_empty() {
                     out.push(Entry {
                         text: text.to_string(),
-                        reply: reply.join("\n"),
+                        reply: kept_end(&reply.join("\n")),
                         harness: harness.into(),
                         project: project.into(),
                         at: item.at.map_or(at, |ms| (ms / 1000).max(0) as u64),
@@ -435,17 +435,35 @@ pub fn from_conversation(
     out
 }
 
+/// How much of a reply is kept, from its end: enough to tell replies apart,
+/// little enough that the index stays small.
+pub const REPLY_KEPT: usize = 300;
+
+/// The end of a reply, from the start of a word, at most `REPLY_KEPT` characters.
+fn kept_end(reply: &str) -> String {
+    let reply = reply.trim();
+    let count = reply.chars().count();
+    if count <= REPLY_KEPT {
+        return reply.to_string();
+    }
+    let cut = reply.char_indices().nth(count - REPLY_KEPT).map_or(0, |(i, _)| i);
+    let tail = &reply[cut..];
+    // From the next word, so none is kept in part.
+    tail.find(char::is_whitespace).map_or(tail, |n| tail[n..].trim_start()).to_string()
+}
+
 /// The agent's whole reply after the person's last message: what the next
 /// prompt follows. Empty while nothing has been said since.
 pub fn last_reply(items: &[crate::conversation::Item]) -> String {
     use crate::conversation::Kind;
     let from = items.iter().rposition(|i| i.kind == Kind::Person).map_or(0, |n| n + 1);
-    items[from..]
+    let reply = items[from..]
         .iter()
         .filter(|i| i.kind == Kind::Agent)
         .filter_map(|i| i.text.as_deref().map(str::trim).filter(|t| !t.is_empty()))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    kept_end(&reply)
 }
 
 /// How a replay of the person's own messages scored, at one confidence floor.
@@ -536,7 +554,7 @@ pub struct Stored {
 
 impl Stored {
     /// The version written now. A file of another version is rebuilt from its sources.
-    pub const VERSION: u32 = 1;
+    pub const VERSION: u32 = 2;
 
     pub fn new(project: &str, entries: Vec<Entry>) -> Self {
         Stored { version: Self::VERSION, project: project.into(), entries }
@@ -755,7 +773,8 @@ mod tests {
         let text = kept.to_json();
         assert_eq!(Stored::from_json(&text, "weft"), Some(kept.clone()));
         assert_eq!(Stored::from_json(&text, "docs"), None, "another project's");
-        let old = text.replace("\"version\":1", "\"version\":0");
+        let now = format!("\"version\":{}", Stored::VERSION);
+        let old = text.replace(&now, "\"version\":1");
         assert_ne!(old, text);
         assert_eq!(Stored::from_json(&old, "weft"), None, "an old version is rebuilt");
         assert_eq!(Stored::from_json("not json", "weft"), None);
@@ -798,6 +817,13 @@ mod tests {
         assert_eq!(untimed[0].at, 7);
         assert_eq!(last_reply(&items[..4]), "Reading it.\nDone. Both tests pass.");
         assert_eq!(last_reply(&items), "", "nothing said since the last message");
+        // A long reply is kept by its end, the part the next message answers.
+        let long = format!("{} Shall I commit?", "word ".repeat(400));
+        let said = [item(Kind::Agent, &long, None), item(Kind::Person, "yes", None)];
+        let got = from_conversation(&said, "claude", "/w", "s", 7);
+        assert!(got[0].reply.chars().count() <= REPLY_KEPT, "{}", got[0].reply.len());
+        assert!(got[0].reply.ends_with("Shall I commit?") && got[0].reply.starts_with("word"));
+        assert_eq!(last_reply(&said[..1]), got[0].reply, "the same end the entries keep");
     }
 
     #[test]

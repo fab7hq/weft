@@ -144,6 +144,8 @@ struct Project {
     embedding: bool,
     /// `suggest = true`: the message field gets suggestions here.
     suggest_on: bool,
+    /// The index its suggestions come from, and the change it was built at.
+    index: Option<(u64, weft_core::suggest::Index)>,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -433,6 +435,9 @@ pub struct Session {
     /// The short messages every kept index holds, read in the background at
     /// start: the habits every project's suggestions share.
     habits: Vec<weft_core::suggest::Entry>,
+    /// Counts each change to any project's entries or the habits: an index
+    /// built at an older count is built again.
+    suggest_changes: u64,
     /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
     #[allow(dead_code)]
     sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
@@ -718,6 +723,7 @@ impl Session {
             dismissed: None,
             update: None,
             habits: Vec::new(),
+            suggest_changes: 0,
             sense,
             _held: crate::versions::hold_own(),
         };
@@ -796,7 +802,10 @@ impl Session {
                     self.suggested(&root, source, entries, built)
                 }
                 Wake::Embedded { root, vectors } => self.embedded(&root, vectors),
-                Wake::Habits(entries) => self.habits = entries,
+                Wake::Habits(entries) => {
+                    self.habits = entries;
+                    self.suggest_changes += 1;
+                }
                 Wake::Replied { root, pane, reply, near } => {
                     if let Some(slot) = self
                         .projects
@@ -1398,6 +1407,7 @@ impl Session {
         entries: Vec<weft_core::suggest::Entry>,
         built: bool,
     ) {
+        self.suggest_changes += 1;
         let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
             return;
         };
@@ -1423,13 +1433,19 @@ impl Session {
 
     /// `pane.suggest`: what the pane's message field could show, or nothing:
     /// suggestions off here, no such pane, or nothing near enough.
-    fn suggestion(&self, client: u64, pane: u32, draft: &str) -> Answer {
+    fn suggestion(&mut self, client: u64, pane: u32, draft: &str) -> Answer {
         let Some(at) = self.project_of(client) else { return Answer::no_project() };
         let p = &self.projects[at];
         let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else {
             return Answer::No("no_pane", "there is no such pane here".into());
         };
-        let found = p.suggest_on.then(|| {
+        if !p.suggest_on {
+            return Answer::Ok(serde_json::json!({}));
+        }
+        let (harness, reply) = (slot.map.harness.clone(), slot.reply.clone());
+        // Built again only after a project's entries or the habits changed.
+        let changes = self.suggest_changes;
+        if p.index.as_ref().is_none_or(|(at_change, _)| *at_change != changes) {
             // Every other open project's short messages count as habits too.
             let open: Vec<weft_core::suggest::Entry> = self
                 .projects
@@ -1438,20 +1454,15 @@ impl Session {
                 .flat_map(|o| o.suggest.iter().flatten().cloned())
                 .collect();
             let others: Vec<_> = self.habits.iter().cloned().chain(open).collect();
-            let now = (crate::turns::now_millis() / 1000).max(0) as u64;
-            let (reply, near) = (&slot.reply.0, &slot.reply.1);
             let own = p.suggest.as_deref().unwrap_or_default();
-            crate::suggest::answer(
-                own,
-                &others,
-                &p.root,
-                &slot.map.harness,
-                draft,
-                (reply, near),
-                now,
-            )
-        });
-        match found.flatten() {
+            let index = crate::suggest::index_of(own, &others, &p.root);
+            self.projects[at].index = Some((changes, index));
+        }
+        let Some((_, index)) = self.projects[at].index.as_ref() else {
+            return Answer::Ok(serde_json::json!({}));
+        };
+        let now = (crate::turns::now_millis() / 1000).max(0) as u64;
+        match crate::suggest::ask(index, &harness, draft, (&reply.0, &reply.1), now) {
             Some(s) => Answer::Ok(serde_json::json!({"text": s.text, "score": s.score})),
             None => Answer::Ok(serde_json::json!({})),
         }
@@ -1490,6 +1501,7 @@ impl Session {
             && crate::suggest::embedded(all, vectors)
         {
             let _ = crate::suggest::save(&self.config, root, all);
+            self.suggest_changes += 1;
         }
         // What changed meanwhile is embedded next; with no Sense, nothing is.
         if got {
@@ -1752,6 +1764,7 @@ impl Session {
                     suggest: None,
                     embedding: false,
                     suggest_on: config.suggest(),
+                    index: None,
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.

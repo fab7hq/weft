@@ -19,7 +19,8 @@ const FLOORS: [f64; 5] = [0.0, 0.3, 0.5, 0.7, 0.9];
 fn main() {
     let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
     let mut args = std::env::args().skip(1);
-    let harnesses_dir = args.next().map_or_else(|| home.join(".fab7/weft/harnesses"), PathBuf::from);
+    let harnesses_dir =
+        args.next().map_or_else(|| home.join(".fab7/weft/harnesses"), PathBuf::from);
     let bundle = args.next().map(PathBuf::from);
     let (harnesses, _) = weftd::harness::installed(&harnesses_dir);
 
@@ -34,15 +35,23 @@ fn main() {
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let Ok(read) = mapping.read(&bytes, 0) else { continue };
             files += 1;
-            let session = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let session =
+                path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             // A transcript's folder stands for its project: Claude Code keeps one per project.
-            let project = path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+            let project =
+                path.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
             let at = std::fs::metadata(&path)
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map_or(0, |d| d.as_secs());
-            entries.extend(suggest::from_conversation(&read.items, &h.name, &project, &session, at));
+            entries.extend(suggest::from_conversation(
+                &read.items,
+                &h.name,
+                &project,
+                &session,
+                at,
+            ));
         }
     }
     let read_secs = read_started.elapsed().as_secs_f64();
@@ -62,34 +71,53 @@ fn main() {
     let (next, rest) = suggest::replay(&entries, &FLOORS);
     let replay_secs = replay_started.elapsed().as_secs_f64();
 
-    // How fast a completion is with everything indexed: the index built and
-    // asked, as the daemon does for each pane.suggest.
+    // How fast a completion is, as the daemon answers one: its project's
+    // index kept, built again only after the entries change.
+    let mut built: std::collections::HashMap<&str, Index> = std::collections::HashMap::new();
+    let mut builds: Vec<f64> = Vec::new();
     let mut times: Vec<f64> = Vec::new();
     for e in entries.iter().step_by((entries.len() / 200).max(1)) {
         let draft: String = e.text.chars().take(e.text.chars().count() / 3).collect();
         if draft.trim().is_empty() {
             continue;
         }
+        let index = built.entry(e.project.as_str()).or_insert_with(|| {
+            let t = Instant::now();
+            let index = Index::new(&entries, &e.project);
+            builds.push(t.elapsed().as_secs_f64() * 1000.0);
+            index
+        });
         let t = Instant::now();
-        let index = Index::new(&entries, &e.project);
         let _ = index.complete(&draft, &e.harness, e.at);
         times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
-    times.sort_by(f64::total_cmp);
-    let p95 = times.get(times.len() * 95 / 100).copied().unwrap_or_default();
+    let p95 = |v: &mut Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() * 95 / 100).copied().unwrap_or_default()
+    };
+    let (ask_p95, build_p95) = (p95(&mut times), p95(&mut builds));
 
     let kept = suggest::Stored::new("replay", entries.clone()).to_json().len();
-    let projects: std::collections::BTreeSet<&str> = entries.iter().map(|e| e.project.as_str()).collect();
+    let projects: std::collections::BTreeSet<&str> =
+        entries.iter().map(|e| e.project.as_str()).collect();
     println!("Transcripts read: {files}, in {read_secs:.1} s");
     println!("Messages kept: {} in {} projects", entries.len(), projects.len());
     println!(
         "Embedded: {}",
-        if model.is_some() { format!("yes, in {embed_secs:.1} s") } else { "no (BM25 only)".into() }
+        if model.is_some() {
+            format!("yes, in {embed_secs:.1} s")
+        } else {
+            "no (BM25 only)".into()
+        }
     );
     println!("Replay: {replay_secs:.1} s");
-    println!("Completion speed: p95 {p95:.1} ms over {} asks, the whole index each time", times.len());
+    println!("Completion speed: p95 {ask_p95:.1} ms over {} asks of a kept index", times.len());
+    println!("Index rebuilt after a change: p95 {build_p95:.1} ms over {} builds", builds.len());
     println!("Index memory: {:.1} MB as kept on disk", kept as f64 / 1e6);
-    for (name, scores) in [("Next prompt (empty field)", &next), ("Rest of the message (from its first third)", &rest)] {
+    for (name, scores) in [
+        ("Next prompt (empty field)", &next),
+        ("Rest of the message (from its first third)", &rest),
+    ] {
         println!("\n{name}: {} messages", scores[0].eligible);
         println!("| floor | shown | coverage | hit rate | wrong rate |");
         println!("| --- | --- | --- | --- | --- |");

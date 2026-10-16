@@ -125,9 +125,33 @@ pub fn habits(config: &Path) -> Vec<Entry> {
 /// A habit is this short at most: longer messages stay in their own project.
 const SHORT: usize = 80;
 
-/// What `pane.suggest` answers: the rest of `draft`, or with none typed the
-/// next prompt after `reply` (and Sense's embedding of it, `near`). `own` is
-/// the project's entries; `others` every other project's short ones.
+/// The index a project's suggestions come from: its own entries, and every
+/// other project's short ones (`others`) for the habits.
+pub fn index_of(own: &[Entry], others: &[Entry], root: &Path) -> weft_core::suggest::Index {
+    let project = root.to_string_lossy();
+    let all: Vec<Entry> =
+        own.iter().chain(others.iter().filter(|e| e.project != project)).cloned().collect();
+    weft_core::suggest::Index::new(&all, &project)
+}
+
+/// What `pane.suggest` answers from a project's index: the rest of `draft`,
+/// or with none typed the next prompt after `reply` (and Sense's embedding of it).
+pub fn ask(
+    index: &weft_core::suggest::Index,
+    harness: &str,
+    draft: &str,
+    reply: (&str, &[f32]),
+    now: u64,
+) -> Option<weft_core::suggest::Suggestion> {
+    if draft.is_empty() {
+        let near = (!reply.1.is_empty()).then_some(reply.1);
+        index.next(reply.0, near, harness, now)
+    } else {
+        index.complete(draft, harness, now)
+    }
+}
+
+/// [`ask`] of a fresh [`index_of`].
 pub fn answer(
     own: &[Entry],
     others: &[Entry],
@@ -137,16 +161,7 @@ pub fn answer(
     reply: (&str, &[f32]),
     now: u64,
 ) -> Option<weft_core::suggest::Suggestion> {
-    let project = root.to_string_lossy();
-    let all: Vec<Entry> =
-        own.iter().chain(others.iter().filter(|e| e.project != project)).cloned().collect();
-    let index = weft_core::suggest::Index::new(&all, &project);
-    if draft.is_empty() {
-        let near = (!reply.1.is_empty()).then_some(reply.1);
-        index.next(reply.0, near, harness, now)
-    } else {
-        index.complete(draft, harness, now)
-    }
+    ask(&index_of(own, others, root), harness, draft, reply, now)
 }
 
 /// The whole index of a project, built again from its sources: every Ask in
@@ -254,7 +269,8 @@ mod tests {
         let root = Path::new("/work/weft");
         save(&config, root, &[entry("run the tests", "session:s1")]).unwrap();
         let path = file(&config, root);
-        let old = std::fs::read_to_string(&path).unwrap().replace("\"version\":1", "\"version\":0");
+        let now = format!("\"version\":{}", Stored::VERSION);
+        let old = std::fs::read_to_string(&path).unwrap().replace(&now, "\"version\":1");
         std::fs::write(&path, old).unwrap();
         assert_eq!(load(&config, root), None);
     }
