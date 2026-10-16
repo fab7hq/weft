@@ -221,11 +221,6 @@ impl Element {
         self.style("font-family", "'JetBrains Mono'")
     }
 
-    /// The guideline's keycap bevel, `inset 0 -2px 0`.
-    pub fn bevel(self) -> Self {
-        self.style("box-shadow", "inset 0 -2px 0")
-    }
-
     /// A box around the element: a control, so with the control's corners.
     pub fn border(self, color: &str) -> Self {
         self.style("border", format!("1px solid {color}"))

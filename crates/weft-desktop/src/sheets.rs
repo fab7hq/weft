@@ -359,7 +359,6 @@ fn render_ask_sheet(
                         .pad(8, 18)
                         .bg(palette::BLUE)
                         .border(palette::BLUE_BORDER)
-                        .bevel()
                         .font_weight(600)
                         .font_size(14)
                         .color(palette::CANVAS)

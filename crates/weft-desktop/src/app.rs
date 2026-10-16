@@ -2637,7 +2637,7 @@ mod tests {
     }
 
     #[test]
-    fn corners_are_the_guidelines_two_radii_and_no_screen_casts_a_shadow() {
+    fn corners_are_the_guidelines_two_radii_and_every_button_is_flat() {
         let (_tmp, mut app) = sample_app(false);
         let mut screens = vec![app.render()];
         for action in [
@@ -2677,11 +2677,8 @@ mod tests {
                         "{:?} rounds by {v}",
                         el.layer_name
                     );
-                    assert!(
-                        k != "box-shadow" || v.starts_with("inset"),
-                        "{:?} casts a shadow",
-                        el.layer_name
-                    );
+                    // Buttons are flat: no shadow and no bevel.
+                    assert!(k != "box-shadow", "{:?} casts a shadow ({v})", el.layer_name);
                 }
             }
         }

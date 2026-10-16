@@ -318,7 +318,6 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
                                 .pad(7, 18)
                                 .bg(palette::SURFACE)
                                 .border(palette::LINE)
-                                .style("box-shadow", "inset 0 -2px 0")
                                 .font_weight(600)
                                 .font_size(13)
                                 .text(words::word("start.title")),

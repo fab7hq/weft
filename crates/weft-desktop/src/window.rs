@@ -838,9 +838,6 @@ impl GpuiDesktopView {
                         d = d.border_color(c);
                     }
                 }
-                // The guideline's bevel, `inset 0 -2px 0`: the nearest a GPUI
-                // div draws is a 2 px bottom border in the border's colour.
-                "box-shadow" if v.starts_with("inset 0 -2px") => d = d.border_b_2(),
                 "border-top" => {
                     if let Some(c) = parse_border_color(v) {
                         d = if v.starts_with("2px") { d.border_t_2() } else { d.border_t_1() };

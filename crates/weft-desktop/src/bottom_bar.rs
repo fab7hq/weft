@@ -234,7 +234,6 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
                 .pad(7, 16)
                 .bg(palette::BLUE)
                 .border(palette::BLUE_BORDER)
-                .bevel()
                 .font_weight(600)
                 .font_size(13)
                 .color(palette::CANVAS)
@@ -286,7 +285,6 @@ fn render_quit_bar() -> Element {
             btn("btn Leave running and quit", "quit_leave_running", "Leave running and quit")
                 .bg(palette::BLUE)
                 .border(palette::BLUE_BORDER)
-                .bevel()
                 .color(palette::CANVAS),
         )
 }
@@ -428,7 +426,6 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
             .justify_center()
             .bg(palette::SURFACE)
             .border(palette::LINE)
-            .bevel()
             .child(div().font_weight(600).font_size(13).text(label))
     };
 
