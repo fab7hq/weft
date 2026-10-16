@@ -2222,6 +2222,13 @@ mod tests {
         assert!(work_dom.find_layer("sheet WorkDetail").is_some());
         assert!(work_dom.find_layer("btn Proceed").is_some());
         assert!(work_dom.find_layer("btn Follow up").is_some());
+        // Follow up covers the detail's acts: nothing is left to press twice.
+        app.dispatch("open_follow_up:weft:ask_2");
+        let following = app.render();
+        assert!(following.find_layer("btn Follow up").is_none());
+        assert!(following.find_layer("btn Close").is_none());
+        app.dispatch("close_sheet");
+        app.dispatch("select_ask:weft:ask_2");
         app.dispatch("act_proceed:weft:ask_2");
         assert!(app.clients[0].sent_calls.contains(&Call::ConfirmAsk { unit: "ask_2".into() }));
 
