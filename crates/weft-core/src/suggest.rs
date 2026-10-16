@@ -5,7 +5,7 @@
 //! Nothing here reads them from anywhere or keeps them; the daemon does.
 
 /// One message the person sent.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
     pub text: String,
     /// The agent's reply just before it; empty for a session's first message.
@@ -346,6 +346,33 @@ fn after_word<'a>(text: &'a str, word: &str, partial: bool) -> Option<&'a str> {
     None
 }
 
+/// The index as it is kept on the person's machine: one project's entries.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Stored {
+    pub version: u32,
+    pub project: String,
+    pub entries: Vec<Entry>,
+}
+
+impl Stored {
+    /// The version written now. A file of another version is rebuilt from its sources.
+    pub const VERSION: u32 = 1;
+
+    pub fn new(project: &str, entries: Vec<Entry>) -> Self {
+        Stored { version: Self::VERSION, project: project.into(), entries }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// The file's index, unless it is of another version, another project, or not one at all.
+    pub fn from_json(text: &str, project: &str) -> Option<Self> {
+        let s: Stored = serde_json::from_str(text).ok()?;
+        (s.version == Self::VERSION && s.project == project).then_some(s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -538,5 +565,17 @@ mod tests {
         // The same habit: the latest one is offered.
         assert_eq!(ix.complete("look at", "claude", NOW).unwrap().text, " issue 41");
         assert_eq!(ix.complete("open", "claude", NOW).unwrap().text, " src/main.rs");
+    }
+
+    #[test]
+    fn the_kept_index_reads_back_and_an_old_or_foreign_one_does_not() {
+        let kept = Stored::new("weft", vec![sent("run the tests", "Done.", "claude", "weft", 1)]);
+        let text = kept.to_json();
+        assert_eq!(Stored::from_json(&text, "weft"), Some(kept.clone()));
+        assert_eq!(Stored::from_json(&text, "docs"), None, "another project's");
+        let old = text.replace("\"version\":1", "\"version\":0");
+        assert_ne!(old, text);
+        assert_eq!(Stored::from_json(&old, "weft"), None, "an old version is rebuilt");
+        assert_eq!(Stored::from_json("not json", "weft"), None);
     }
 }
