@@ -72,8 +72,16 @@ impl WeftDesktopApp {
                 let next = !self.state.settings.start_at_login;
                 self.state.settings.start_at_login = next;
                 let path = std::env::var("PATH").unwrap_or_default();
+                // The service runs the installed link, so an update that moves
+                // it is the one it starts; else the `weft` beside this app.
+                let link = std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/bin/weft"))
+                    .filter(|l| l.exists());
+                let program = link
+                    .or_else(|| crate::daemon::find_weft_exe().ok())
+                    .map_or_else(|| "weft".to_string(), |p| p.to_string_lossy().into_owned());
                 for c in &mut self.clients {
-                    let _ = c.set_start_at_login(next, "weft", &path);
+                    let _ = c.set_start_at_login(next, &program, &path);
                 }
                 let _ = self.save_state();
             }

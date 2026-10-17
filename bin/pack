@@ -1,0 +1,45 @@
+#!/bin/sh
+# The release archive of one target, as install.sh reads it, in the current
+# folder with its checksum:
+#
+#   bin/pack <tag> <target> <built-dir> <desktop-built-dir>
+#
+#   macOS  Weft.app (bin/bundle), holding weft-desktop, weft and ringframe
+#   Linux  weft and ringframe from <built-dir>, weft-desktop from
+#          <desktop-built-dir>, the desktop entry and the icon, flat
+#
+# On Linux the desktop app is built for the system's own C library, which its
+# graphics come from; weft and ringframe stay static.
+set -eu
+
+tag=${1:?usage: bin/pack <tag> <target> <built-dir> <desktop-built-dir>}
+target=${2:?target}
+built=${3:?built dir}
+desktop=${4:?desktop built dir}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+archive="fab7-$tag-$target.tar.gz"
+staged=$(mktemp -d)
+trap 'rm -rf "$staged"' EXIT INT TERM
+
+case "$target" in
+    *-apple-darwin)
+        mkdir -p "$staged/programs"
+        cp "$built/weft" "$built/ringframe" "$staged/programs/"
+        cp "$desktop/weft-desktop" "$staged/programs/"
+        "$root/bin/bundle" "$staged/programs" "$staged" >/dev/null
+        tar -czf "$archive" -C "$staged" Weft.app
+        ;;
+    *-linux-*)
+        cp "$built/weft" "$built/ringframe" "$desktop/weft-desktop" "$staged/"
+        cp "$root/assets/linux/weft.desktop" "$staged/weft.desktop"
+        cp "$root/assets/weft-mark.svg" "$staged/weft.svg"
+        tar -czf "$archive" -C "$staged" weft ringframe weft-desktop weft.desktop weft.svg
+        ;;
+    *) echo "bin/pack: no layout for $target" >&2; exit 1 ;;
+esac
+if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$archive" > "$archive.sha256"
+else
+    shasum -a 256 "$archive" > "$archive.sha256"
+fi
+printf 'Packed %s\n' "$archive"

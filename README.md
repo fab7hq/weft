@@ -12,14 +12,15 @@
 <a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
-Weft is the terminal workspace for the coding agents you already run: your
+Weft is the desktop workspace for the coding agents you already run: your
 sessions side by side, and every Ask in one list beside them. It has no model
 of its own. RingFrame is the warp, the fixed record; Weft is the thread carried
 across it.
 
 ## What is here
 
-- `weft`, `weftd`: the terminal UI and the daemon that keeps your agents running
+- `weft-desktop`: the app, on macOS and Linux
+- `weft`, `weftd`: the command line and the daemon that keeps your agents running
 - `crates/ringframe`: Ask, Eval and Seal over the record in `.fab7/rf/`
 - [weft.getfab7.com](https://weft.getfab7.com): the same agents from a phone
   or browser ([fab7hq/weft-app](https://github.com/fab7hq/weft-app))
@@ -32,7 +33,9 @@ Works with Claude Code, Codex, Antigravity and Grok Build.
 curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | sh
 ```
 
-Run `weft` in a repository. `weft update` installs the next release.
+It installs the Weft app — in Applications on macOS, in your desktop's apps
+on Linux — and `weft` and `ringframe`. Open Weft, or run `weft`. `weft update`
+installs the next release.
 
 ## Docs
 

@@ -4,9 +4,10 @@
 # released. `install.sh` fetches a published build; this installs what you
 # just wrote:
 #
-#   weft               built here, into ~/.fab7/weft/versions/<version>,
-#                      linked from ~/.local/bin/weft
-#   ringframe          built here, into ~/.local/bin
+#   the app            built here, into ~/.fab7/weft/versions/<version>, laid
+#                      out as install.sh lays out a release: Weft.app linked
+#                      from Applications on macOS, the desktop entry on Linux;
+#                      weft and ringframe on PATH link into it
 #   the configuration  from the fab7 checkout, into ~/.fab7/rf/config
 #   the harness files  from the fab7 checkout, into ~/.fab7/weft/harnesses
 #   the tool files     from the fab7 checkout, into ~/.fab7/weft/tools
@@ -29,25 +30,57 @@ printf 'Building from %s\n' "$root"
 ( cd "$root" && cargo build --release --locked --bin weft --bin ringframe --bin weft-desktop )
 
 mkdir -p "$bin_dir"
-# Weft in its version's folder and `weft` a link to it, as `install.sh` lays
-# it out; RingFrame and weft-desktop replaced in place. Each replaced rather than
-# written through, so a running binary is undisturbed.
+# Laid out as `install.sh` lays out a release: this version in its own folder,
+# so a running Weft keeps its own; on macOS Weft.app there, linked from
+# Applications, with `weft` and `ringframe` linking into it; on Linux the three
+# programs there, linked from the bin folder, with the desktop entry and icon.
 version=$("$root/target/release/weft" --version | sed 's/^weft //')
-versions="$HOME/.fab7/weft/versions"
-mkdir -p "$versions/$version"
-cp "$root/target/release/weft" "$versions/$version/weft.new"
-chmod 755 "$versions/$version/weft.new"
-mv "$versions/$version/weft.new" "$versions/$version/weft"
-rm -f "$bin_dir/weft.new"
-ln -s "$versions/$version/weft" "$bin_dir/weft.new"
-mv -f "$bin_dir/weft.new" "$bin_dir/weft"
-cp "$root/target/release/ringframe" "$bin_dir/ringframe.new"
-chmod 755 "$bin_dir/ringframe.new"
-mv "$bin_dir/ringframe.new" "$bin_dir/ringframe"
-cp "$root/target/release/weft-desktop" "$bin_dir/weft-desktop.new"
-chmod 755 "$bin_dir/weft-desktop.new"
-mv "$bin_dir/weft-desktop.new" "$bin_dir/weft-desktop"
-for name in weft ringframe weft-desktop; do
+folder="$HOME/.fab7/weft/versions/$version"
+rm -rf "$folder.new"
+mkdir -p "$folder.new"
+if [ "$(uname -s)" = Darwin ]; then
+    programs="Weft.app/Contents/MacOS"
+    "$root/bin/bundle" "$root/target/release" "$folder.new" >/dev/null
+    ln -s "$programs/weft" "$folder.new/weft"
+else
+    programs=.
+    for name in weft-desktop weft ringframe; do
+        cp "$root/target/release/$name" "$folder.new/$name"
+        chmod 755 "$folder.new/$name"
+    done
+fi
+# The same version again: moved aside first, so a running Weft keeps its files.
+if [ -e "$folder" ]; then rm -rf "$folder.old"; mv "$folder" "$folder.old"; fi
+mv "$folder.new" "$folder"
+rm -rf "$folder.old"
+link() {
+    rm -f "$2.new"
+    ln -s "$1" "$2.new"
+    mv -f "$2.new" "$2"
+}
+link "$folder/weft" "$bin_dir/weft"
+link "$folder/$programs/ringframe" "$bin_dir/ringframe"
+if [ "$(uname -s)" = Darwin ]; then
+    apps=${WEFT_APPS_DIR:-}
+    if [ -z "$apps" ]; then
+        if [ -w /Applications ]; then apps=/Applications; else apps="$HOME/Applications"; fi
+    fi
+    mkdir -p "$apps"
+    if [ -e "$apps/Weft.app" ] && [ ! -L "$apps/Weft.app" ]; then
+        printf '  app     %s is not one Weft installed; left alone\n' "$apps/Weft.app"
+    else
+        ln -sfh "$folder/Weft.app" "$apps/Weft.app"
+        printf '  app     %s -> %s\n' "$apps/Weft.app" "$folder/Weft.app"
+    fi
+else
+    link "$folder/weft-desktop" "$bin_dir/weft-desktop"
+    share="$HOME/.local/share"
+    mkdir -p "$share/applications" "$share/icons/hicolor/scalable/apps"
+    sed "s|^Exec=weft-desktop|Exec=$bin_dir/weft-desktop|" "$root/assets/linux/weft.desktop" >"$share/applications/weft.desktop"
+    cp "$root/assets/weft-mark.svg" "$share/icons/hicolor/scalable/apps/weft.svg"
+    printf '  app     %s\n' "$share/applications/weft.desktop"
+fi
+for name in weft ringframe; do
     printf '  binary  %-12s %s\n' "$name" "$("$bin_dir/$name" --version 2>/dev/null || echo installed)"
 done
 

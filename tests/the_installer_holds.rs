@@ -3,6 +3,10 @@
 //! This stubs `curl`, the only thing the script reaches the network with, and
 //! serves a release made on the spot. Everything else — the platform
 //! detection, the checksum, the unpacking, the install — is the real script.
+//!
+//! What a release holds, per system: on macOS Weft.app, with `weft` and
+//! `ringframe` inside it; on Linux the three programs, the desktop entry and
+//! the icon.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,9 +26,14 @@ impl Release {
         let target = format!("{}-{}", arch(), platform());
         let archive = format!("fab7-{tag}-{target}.tar.gz");
         let staged = dir.path().join("staged");
-        std::fs::create_dir_all(&staged).unwrap();
-        for name in ["weft", "ringframe"] {
-            let p = staged.join(name);
+        let programs = if cfg!(target_os = "macos") {
+            staged.join("Weft.app/Contents/MacOS")
+        } else {
+            staged.clone()
+        };
+        std::fs::create_dir_all(&programs).unwrap();
+        for name in ["weft", "ringframe", "weft-desktop"] {
+            let p = programs.join(name);
             // `ringframe init --global` records the fab7 tag it installed, as
             // the real one does.
             let init = format!(
@@ -34,15 +43,20 @@ impl Release {
             std::fs::write(&p, format!("#!/bin/sh\n{init}echo \"{name} {tag}\"\n")).unwrap();
             make_executable(&p);
         }
-        run(&[
-            "tar",
-            "-czf",
-            &serve.join(&archive).to_string_lossy(),
-            "-C",
-            &staged.to_string_lossy(),
-            "weft",
-            "ringframe",
-        ]);
+        let packed: &[&str] = if cfg!(target_os = "macos") {
+            &["Weft.app"]
+        } else {
+            let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
+            std::fs::copy(assets.join("linux/weft.desktop"), staged.join("weft.desktop")).unwrap();
+            std::fs::copy(assets.join("weft-mark.svg"), staged.join("weft.svg")).unwrap();
+            &["weft", "ringframe", "weft-desktop", "weft.desktop", "weft.svg"]
+        };
+        let mut tar = vec!["tar".to_string(), "-czf".into()];
+        tar.push(serve.join(&archive).to_string_lossy().into_owned());
+        tar.push("-C".into());
+        tar.push(staged.to_string_lossy().into_owned());
+        tar.extend(packed.iter().map(|p| p.to_string()));
+        run(&tar.iter().map(String::as_str).collect::<Vec<_>>());
 
         let digest = sha256_of(&serve.join(&archive));
         let written = if corrupt_checksum { "0".repeat(64) } else { digest };
@@ -119,6 +133,7 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
             )
             .env("WEFT_VERSION", tag)
             .env("WEFT_BIN_DIR", bin_dir)
+            .env("WEFT_APPS_DIR", home.join("Applications"))
             .env("HOME", home)
             .output()
             .expect("sh")
@@ -168,6 +183,7 @@ fn it_downloads_verifies_and_installs_both_binaries() {
     for name in ["weft", "ringframe"] {
         let p = release.installed(name);
         assert!(p.exists(), "{name} was not installed\n{text}");
+        assert!(p.is_symlink(), "{name} links into this version");
         let shown = Command::new(&p).output().expect("the installed binary runs");
         assert_eq!(
             String::from_utf8_lossy(&shown.stdout).trim(),
@@ -177,10 +193,31 @@ fn it_downloads_verifies_and_installs_both_binaries() {
     }
     assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
     // Weft is in its version's folder, and `weft` is a link to it.
-    let kept = release.dir.path().join("home/.fab7/weft/versions/0.1.0/weft");
-    assert!(kept.is_file(), "{text}");
-    assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), kept);
-    assert!(!release.installed("ringframe").is_symlink(), "RingFrame is replaced in place");
+    let home = release.dir.path().join("home");
+    let version = home.join(".fab7/weft/versions/0.1.0");
+    assert!(version.join("weft").is_file(), "{text}");
+    assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), version.join("weft"));
+    if cfg!(target_os = "macos") {
+        // The app is the version's; Applications holds a link to it, and the
+        // tools on PATH are the app's own.
+        let app = version.join("Weft.app");
+        assert!(app.join("Contents/MacOS/weft-desktop").is_file(), "{text}");
+        assert_eq!(std::fs::read_link(home.join("Applications/Weft.app")).unwrap(), app);
+        assert_eq!(
+            std::fs::read_link(release.installed("ringframe")).unwrap(),
+            app.join("Contents/MacOS/ringframe")
+        );
+    } else {
+        assert_eq!(
+            std::fs::read_link(release.installed("weft-desktop")).unwrap(),
+            version.join("weft-desktop")
+        );
+        let entry =
+            std::fs::read_to_string(home.join(".local/share/applications/weft.desktop")).unwrap();
+        let exec = format!("Exec={} %f", release.installed("weft-desktop").display());
+        assert!(entry.lines().any(|l| l == exec), "{exec}\n{entry}");
+        assert!(home.join(".local/share/icons/hicolor/scalable/apps/weft.svg").is_file());
+    }
 }
 
 /// A newer version goes beside the older, whose file a running Weft still
@@ -199,6 +236,21 @@ fn a_newer_version_is_installed_beside_the_older() {
     assert_eq!(std::fs::read_link(bin.join("weft")).unwrap(), versions.join("0.2.0/weft"));
     let shown = Command::new(bin.join("weft")).output().unwrap();
     assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "weft v0.2.0");
+    // One app: the newer one.
+    if cfg!(target_os = "macos") {
+        let apps: Vec<_> =
+            std::fs::read_dir(home.join("Applications")).unwrap().flatten().collect();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(
+            std::fs::read_link(home.join("Applications/Weft.app")).unwrap(),
+            versions.join("0.2.0/Weft.app")
+        );
+    } else {
+        assert_eq!(
+            std::fs::read_link(bin.join("weft-desktop")).unwrap(),
+            versions.join("0.2.0/weft-desktop")
+        );
+    }
 }
 
 /// Weft's harness files come with fab7 at the tag RingFrame's configuration
@@ -265,4 +317,19 @@ fn the_installer_never_builds() {
     }
     assert!(code.contains("curl"), "it has to download something");
     assert!(code.contains("sha256") || code.contains("shasum"), "and verify it");
+}
+
+/// An app in Applications that Weft did not install is left alone, and
+/// nothing is switched: the install stops before it starts.
+#[test]
+#[cfg(target_os = "macos")]
+fn a_weft_app_weft_did_not_install_stops_the_install_first() {
+    let release = Release::make("v0.1.0", false);
+    let home = release.dir.path().join("home");
+    std::fs::create_dir_all(home.join("Applications/Weft.app")).unwrap();
+    let out = release.install("v0.1.0");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not one Weft installed"));
+    assert!(!release.installed("weft").exists(), "nothing linked");
+    assert!(!home.join(".fab7/weft/versions/0.1.0").exists(), "nothing installed");
 }

@@ -12,6 +12,8 @@ fn main() {
         return;
     }
 
+    // This version stays while it runs, whatever version the daemon moves to.
+    let _held = weft_desktop::version::hold_own();
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let mut app = WeftDesktopApp::new(home, machine_name());
     for arg in args.iter().filter(|a| !a.starts_with('-')) {

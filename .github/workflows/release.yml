@@ -27,14 +27,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `desktop`: the target the desktop app is built for. On Linux it is
+        # the system's own C library, which its graphics come from.
         include:
           - target: aarch64-apple-darwin
+            desktop: aarch64-apple-darwin
             os: macos-14
           - target: x86_64-apple-darwin
+            desktop: x86_64-apple-darwin
             os: macos-14
           - target: x86_64-unknown-linux-musl
+            desktop: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
           - target: aarch64-unknown-linux-musl
+            desktop: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
     steps:
@@ -44,46 +50,54 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          targets: ${{ matrix.target }}
-      - name: Install the musl toolchain
-        # Statically linked, so one Linux build runs on every distribution
-        # rather than tracking a glibc version.
+          targets: ${{ matrix.target }},${{ matrix.desktop }}
+      - name: Install the musl toolchain and the desktop app's libraries
+        # weft and ringframe statically linked, so one Linux build runs on
+        # every distribution rather than tracking a glibc version; the app
+        # links the system's Wayland, X11 and Vulkan.
         if: endsWith(matrix.target, '-musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools libxkbcommon-dev libxkbcommon-x11-dev \
+              libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+              libzstd-dev libvulkan1
 
       - run: cargo build --release --locked --target "$TARGET" --bin weft --bin ringframe
         env:
           TARGET: ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$DESKTOP" --bin weft-desktop
+        env:
+          DESKTOP: ${{ matrix.desktop }}
 
       - name: Pack and checksum
         id: pack
         env:
           TARGET: ${{ matrix.target }}
+          DESKTOP: ${{ matrix.desktop }}
         run: |
           set -eu
           case "$TAG" in
               v[0-9]*) ;;
               *) echo "not a release tag: $TAG"; exit 1 ;;
           esac
-          archive="fab7-$TAG-$TARGET.tar.gz"
-          out="target/$TARGET/release"
-          # Flat, because install.sh extracts the names directly.
-          tar -czf "$archive" -C "$out" weft ringframe
-          if command -v sha256sum >/dev/null 2>&1; then
-              sha256sum "$archive" > "$archive.sha256"
-          else
-              shasum -a 256 "$archive" > "$archive.sha256"
-          fi
-          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          # As install.sh reads it: Weft.app on macOS, signed ad hoc here (the
+          # owner's identity signs only on the owner's Mac); the programs, the
+          # desktop entry and the icon on Linux.
+          bin/pack "$TAG" "$TARGET" "target/$TARGET/release" "target/$DESKTOP/release"
+          echo "archive=fab7-$TAG-$TARGET.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Check what was built actually runs
         # A cross-built binary that cannot start is worse than no binary.
         if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-musl'
         env:
           TARGET: ${{ matrix.target }}
+          DESKTOP: ${{ matrix.desktop }}
         run: |
           "./target/$TARGET/release/ringframe" --version
           "./target/$TARGET/release/weft" --help > /dev/null
+          "./target/$DESKTOP/release/weft-desktop" --version
+          mkdir unpacked && tar -xzf "fab7-$TAG-$TARGET.tar.gz" -C unpacked
+          if [ -d unpacked/Weft.app ]; then codesign --verify --deep --strict unpacked/Weft.app; fi
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

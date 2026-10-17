@@ -1,6 +1,13 @@
 #!/bin/sh
-# Install or upgrade Weft and RingFrame, then initialize the global
-# configuration.
+# Install or upgrade Weft — its desktop app, `weft` and `ringframe` — then
+# initialize the global configuration.
+#
+# Each version goes in its own folder, ~/.fab7/weft/versions/<version>, so an
+# update never replaces a program a running Weft uses:
+#   macOS  Weft.app there, linked from /Applications (~/Applications without
+#          the rights); `weft` and `ringframe` on PATH link into the app.
+#   Linux  weft-desktop, weft and ringframe there, linked from ~/.local/bin;
+#          the desktop entry and icon in ~/.local/share.
 #
 # There is no toolchain here. CI builds a binary per platform and publishes it
 # with a checksum; this detects the platform, downloads, verifies and installs.
@@ -68,30 +75,73 @@ main() {
         fail "Checksum mismatch for $archive. Expected $expected, got $actual."
 
     tar -xzf "$work/$archive" -C "$work"
-    for name in weft ringframe; do
-        [ -f "$work/$name" ] || fail "$archive does not contain $name."
-    done
     mkdir -p "$BIN_DIR"
 
-    # Weft beside its other versions, each in its own folder, and `weft` a
-    # link to the newest: a running Weft keeps its own file, and starts again
-    # on this one once no agent runs.
+    # Where the app is linked from, checked before anything is switched.
+    if [ "$platform" = apple-darwin ]; then
+        apps=${WEFT_APPS_DIR:-}
+        if [ -z "$apps" ]; then
+            if [ -w /Applications ]; then apps=/Applications; else apps="$HOME/Applications"; fi
+        fi
+        if [ -e "$apps/Weft.app" ] && [ ! -L "$apps/Weft.app" ]; then
+            fail "$apps/Weft.app is not one Weft installed; move it away and install again."
+        fi
+    fi
+
+    # This version in its own folder, beside the others: a running Weft
+    # keeps its own, and its daemon starts again on this one once no agent runs.
     version=${tag#v}
     versions="$HOME/.fab7/weft/versions"
-    mkdir -p "$versions/$version"
-    mv "$work/weft" "$versions/$version/weft.new"
-    chmod 755 "$versions/$version/weft.new"
-    mv "$versions/$version/weft.new" "$versions/$version/weft"
-    rm -f "$BIN_DIR/weft.new"
-    ln -s "$versions/$version/weft" "$BIN_DIR/weft.new"
-    mv -f "$BIN_DIR/weft.new" "$BIN_DIR/weft"
+    folder="$versions/$version"
+    rm -rf "$folder.new"
+    mkdir -p "$folder.new"
+    if [ "$platform" = apple-darwin ]; then
+        programs="Weft.app/Contents/MacOS"
+        [ -f "$work/$programs/weft-desktop" ] || fail "$archive does not contain Weft.app."
+        mv "$work/Weft.app" "$folder.new/Weft.app"
+        ln -s "$programs/weft" "$folder.new/weft"
+    else
+        programs=.
+        for name in weft-desktop weft ringframe weft.desktop weft.svg; do
+            [ -f "$work/$name" ] || fail "$archive does not contain $name."
+        done
+        for name in weft-desktop weft ringframe; do
+            mv "$work/$name" "$folder.new/$name"
+            chmod 755 "$folder.new/$name"
+        done
+    fi
+    # The same version again: the one there is moved aside first, so a Weft
+    # running from it keeps its files until it ends.
+    if [ -e "$folder" ]; then
+        rm -rf "$folder.old"
+        mv "$folder" "$folder.old"
+    fi
+    mv "$folder.new" "$folder"
+    rm -rf "$folder.old"
 
-    # Replaced rather than written through, so a running binary is undisturbed.
-    mv "$work/ringframe" "$BIN_DIR/ringframe.new"
-    chmod 755 "$BIN_DIR/ringframe.new"
-    mv "$BIN_DIR/ringframe.new" "$BIN_DIR/ringframe"
+    # Each link replaced, never written through.
+    link() {
+        rm -f "$2.new"
+        ln -s "$1" "$2.new"
+        mv -f "$2.new" "$2"
+    }
+    link "$folder/weft" "$BIN_DIR/weft"
+    link "$folder/$programs/ringframe" "$BIN_DIR/ringframe"
 
-    printf 'Installed weft %s to %s, and ringframe to %s\n' "$tag" "$versions/$version" "$BIN_DIR"
+    if [ "$platform" = apple-darwin ]; then
+        mkdir -p "$apps"
+        # -h: the link itself is replaced, not the app it points at.
+        ln -sfh "$folder/Weft.app" "$apps/Weft.app"
+        printf 'Installed Weft %s to %s, linked from %s\n' "$tag" "$folder" "$apps/Weft.app"
+    else
+        link "$folder/weft-desktop" "$BIN_DIR/weft-desktop"
+        share="$HOME/.local/share"
+        mkdir -p "$share/applications" "$share/icons/hicolor/scalable/apps"
+        # Started by a desktop that may not have BIN_DIR on its PATH.
+        sed "s|^Exec=weft-desktop|Exec=$BIN_DIR/weft-desktop|" "$work/weft.desktop" >"$share/applications/weft.desktop"
+        cp "$work/weft.svg" "$share/icons/hicolor/scalable/apps/weft.svg"
+        printf 'Installed Weft %s to %s, linked from %s\n' "$tag" "$folder" "$BIN_DIR"
+    fi
 
     # The binaries are in place whatever happens next, so a configuration that
     # cannot be read is worth saying plainly rather than aborting on.

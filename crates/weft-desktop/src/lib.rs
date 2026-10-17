@@ -16,4 +16,5 @@ pub mod text_field;
 pub mod text_input;
 pub mod tree_view;
 pub mod ui;
+pub mod version;
 pub mod window;

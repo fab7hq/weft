@@ -21,12 +21,12 @@ pub fn here() -> Option<PathBuf> {
 }
 
 /// The version's folder this program is in, when it is one: the program's
-/// real path, links followed, inside `versions`.
+/// real path, links followed, inside `versions`, beside it or deeper, as in
+/// the app a version holds.
 pub fn own(versions: &Path, exe: &Path) -> Option<PathBuf> {
     let real = exe.canonicalize().ok()?;
     let versions = versions.canonicalize().ok()?;
-    let folder = real.parent()?;
-    (folder.parent()? == versions).then(|| folder.to_path_buf())
+    real.ancestors().skip(1).find(|f| f.parent() == Some(versions.as_path())).map(Path::to_path_buf)
 }
 
 /// A version's folder, held while this lives.
@@ -75,10 +75,25 @@ pub fn prune(versions: &Path, keep: &[PathBuf]) -> Vec<PathBuf> {
     removed
 }
 
-/// The version `weft` on `PATH` points at: the newest installed.
+/// The version the installed `weft` points at: the newest installed. The
+/// link the installer made is read first, where it puts it: an app opened
+/// from the desktop starts the daemon with a `PATH` that may not hold it.
 pub fn newest(versions: &Path) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    let link = std::env::split_paths(&paths).map(|d| d.join("weft")).find(|p| p.exists())?;
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let installed = std::env::var_os("WEFT_BIN_DIR")
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(home.map(|h| h.join(".local/bin")))
+        .map(|d| d.join("weft"));
+    let on_path = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("weft")).collect::<Vec<_>>())
+        .unwrap_or_default();
+    newest_of(versions, installed.chain(on_path))
+}
+
+/// The version the first of `links` that exists points at.
+pub fn newest_of(versions: &Path, links: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    let link = links.into_iter().find(|p| p.exists())?;
     own(versions, &link)
 }
 
@@ -242,6 +257,36 @@ mod tests {
         std::os::unix::fs::symlink(old.join("weft"), &link).unwrap();
         assert_eq!(own(&versions, &link), Some(old.canonicalize().unwrap()));
         assert_eq!(own(&versions, Path::new("/bin/sh")), None, "not one of Weft's");
+        let _ = std::fs::remove_dir_all(versions.parent().unwrap());
+    }
+
+    #[test]
+    fn a_program_inside_a_versions_app_knows_its_version() {
+        let (versions, _, new) = layout("app");
+        let inside = new.join("Weft.app/Contents/MacOS");
+        std::fs::create_dir_all(&inside).unwrap();
+        std::fs::write(inside.join("weft"), "#!/bin/sh\n").unwrap();
+        // `versions/<v>/weft` and `~/.local/bin/weft` link into the app.
+        let _ = std::fs::remove_file(new.join("weft"));
+        std::os::unix::fs::symlink(inside.join("weft"), new.join("weft")).unwrap();
+        let link = versions.parent().unwrap().join("weft");
+        std::os::unix::fs::symlink(new.join("weft"), &link).unwrap();
+        assert_eq!(own(&versions, &inside.join("weft")), Some(new.canonicalize().unwrap()));
+        assert_eq!(own(&versions, &link), Some(new.canonicalize().unwrap()));
+        let _ = std::fs::remove_dir_all(versions.parent().unwrap());
+    }
+
+    #[test]
+    fn the_newest_is_the_installed_link_even_off_path() {
+        let (versions, _, new) = layout("newest");
+        let bin = versions.parent().unwrap().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(new.join("weft"), bin.join("weft")).unwrap();
+        let none = versions.parent().unwrap().join("nowhere/weft");
+        assert_eq!(
+            newest_of(&versions, [none, bin.join("weft")]),
+            Some(new.canonicalize().unwrap())
+        );
         let _ = std::fs::remove_dir_all(versions.parent().unwrap());
     }
 

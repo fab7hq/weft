@@ -345,13 +345,22 @@ fn app_to_open(exe: &std::path::Path) -> Option<Opens> {
 fn open_app() -> Result<()> {
     use std::os::unix::process::CommandExt as _;
     let exe = std::env::current_exe()?.canonicalize()?;
-    let mut run = match app_to_open(&exe) {
+    match app_to_open(&exe) {
         Some(Opens::Bundle(app)) => {
-            let mut open = std::process::Command::new("/usr/bin/open");
-            open.arg(app);
-            open
+            let opened = std::process::Command::new("/usr/bin/open").arg(&app).status()?;
+            if !opened.success() {
+                anyhow::bail!("macOS would not open {}", app.display());
+            }
         }
         Some(Opens::Program(desktop)) => {
+            if std::env::var_os("DISPLAY").is_none()
+                && std::env::var_os("WAYLAND_DISPLAY").is_none()
+            {
+                anyhow::bail!(
+                    "weft opens the app on a desktop, and there is no display here; \
+                     `weft --help` lists what runs without one"
+                );
+            }
             let mut program = std::process::Command::new(desktop);
             // Its own session, so closing this terminal leaves it open.
             unsafe {
@@ -364,16 +373,16 @@ fn open_app() -> Result<()> {
                 });
             }
             program
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
         }
         None => anyhow::bail!(
             "the desktop app is not installed beside {}; install Weft again",
             exe.display()
         ),
-    };
-    run.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+    }
     Ok(())
 }
 

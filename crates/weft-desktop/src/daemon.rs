@@ -931,7 +931,8 @@ fn start_server() -> Result<()> {
     }
 }
 
-fn find_weft_exe() -> Result<PathBuf> {
+/// The `weft` this app came with: beside it, else where Weft installs it.
+pub fn find_weft_exe() -> Result<PathBuf> {
     if let Ok(cur) = std::env::current_exe() {
         let sibling = cur.with_file_name("weft");
         if sibling.is_file() {
