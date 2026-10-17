@@ -12,7 +12,7 @@ use weft_core::turns::Turn;
 use weft_core::words;
 
 use crate::daemon::ProjectClient;
-use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
+use crate::gpui::{Element, div, edge_bar, img_el, input_el, palette, span};
 
 /// Where a dragged tab is dropped (`D15.4`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,23 +271,6 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
         div().layer("workspace").flex_1().self_stretch().flex_col().style("min-height", "0");
 
     if props.panes.groups.is_empty() {
-        let mark = || {
-            div()
-                .flex_row()
-                .font_mono()
-                .font_weight(700)
-                .font_size(12)
-                .child(span("╸").color(palette::TEAL))
-                .child(span("┃").color(palette::BLUE_BORDER))
-                .child(span("╺").color(palette::TEAL))
-        };
-        let weave = |indent: u32| {
-            let mut r = div().flex_row().gap(6).style("padding-left", format!("{indent}px"));
-            for _ in 0..4 {
-                r = r.child(mark());
-            }
-            r
-        };
         return container.child(
             div()
                 .layer("empty panes")
@@ -304,15 +287,8 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
                         .gap(16)
                         .items_center()
                         .justify_center()
-                        .child(
-                            div()
-                                .layer("woven mark")
-                                .flex_col()
-                                .gap(6)
-                                .child(weave(0))
-                                .child(weave(7))
-                                .child(weave(0)),
-                        )
+                        // Weft's banner, as the web draws it.
+                        .child(img_el("weft-banner").layer("woven mark").w(189).h(60))
                         .child(
                             div()
                                 .layer("woven said")

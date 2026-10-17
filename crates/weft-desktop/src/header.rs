@@ -2,7 +2,7 @@
 
 use weft_core::words;
 
-use crate::gpui::{Element, div, palette, span};
+use crate::gpui::{Element, div, img_el, palette, span};
 
 #[derive(Debug, Clone)]
 pub struct HeaderProps {
@@ -74,29 +74,8 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .border(if props.sidebar_open { palette::BLUE_BORDER } else { palette::LINE })
         .child(toggle_icon);
 
-    let brand = div()
-        .flex_row()
-        .gap(8)
-        .items_center()
-        .child(
-            div()
-                .flex_row()
-                .font_mono()
-                .font_weight(700)
-                .font_size(12)
-                .style("line-height", "18px")
-                .child(span("╸").color(palette::TEAL))
-                .child(span("┃").color(palette::BLUE_BORDER))
-                .child(span("╺").color(palette::TEAL)),
-        )
-        .child(
-            div()
-                .font_weight(700)
-                .font_size(15)
-                .style("letter-spacing", "0.04em")
-                .color(palette::TEAL)
-                .text("WEFT"),
-        );
+    // Weft's banner, as the web draws it.
+    let brand = img_el("weft-banner").layer("brand").aria_label("Weft").w(76).h(24);
 
     let mut bar = div()
         .layer("header")

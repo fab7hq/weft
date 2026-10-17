@@ -578,6 +578,9 @@ impl GpuiDesktopView {
         path: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        if el.tag == "img" {
+            return picture(el);
+        }
         let mut text_style = parent_text;
         let mut has_explicit_width = false;
         let mut has_explicit_height = false;
@@ -1235,6 +1238,23 @@ impl Render for GpuiDesktopView {
             .font_family(crate::fonts::SANS)
             .child(self.build_gpui_element(&root_el, root_text, false, "0", cx))
     }
+}
+
+/// One of Weft's own pictures, drawn from its SVG at the size its styles give.
+fn picture(el: &Element) -> AnyElement {
+    let named = |k: &str| el.attrs.iter().chain(&el.styles).find(|(n, _)| n == k).map(|(_, v)| v);
+    let Some(bytes) = named("src").and_then(|n| crate::gpui::asset(n)) else {
+        return gpui_div().into_any_element();
+    };
+    let image = Arc::new(::gpui::Image::from_bytes(::gpui::ImageFormat::Svg, bytes.to_vec()));
+    let mut picture = ::gpui::img(image).flex_none();
+    if let Some(w) = named("width").and_then(|v| parse_px(v)) {
+        picture = picture.w(px(w));
+    }
+    if let Some(h) = named("height").and_then(|v| parse_px(v)) {
+        picture = picture.h(px(h));
+    }
+    picture.into_any_element()
 }
 
 fn parse_px(s: &str) -> Option<f32> {

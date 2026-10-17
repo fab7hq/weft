@@ -82,6 +82,23 @@ pub fn span(t: impl Into<String>) -> Element {
     el
 }
 
+/// One of Weft's own pictures (`asset`), at the width and height its styles give.
+pub fn img_el(name: &str) -> Element {
+    let mut el = div();
+    el.tag = "img";
+    el.attrs.push(("src".into(), name.into()));
+    el
+}
+
+/// The bytes of one of Weft's own pictures, an SVG: its banner, the woven mark
+/// and its name, drawn for a dark background.
+pub fn asset(name: &str) -> Option<&'static [u8]> {
+    match name {
+        "weft-banner" => Some(include_bytes!("../../../assets/weft-banner-dark.svg")),
+        _ => None,
+    }
+}
+
 pub fn input_el() -> Element {
     let mut el = div();
     el.tag = "input";
