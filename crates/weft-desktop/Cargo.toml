@@ -20,6 +20,10 @@ weft-core = { path = "../weft-core" }
 weft-proto = { path = "../weft-proto" }
 weft-term = { path = "../weft-term" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# On Linux, GPUI's own Wayland and X11 windows.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.9", features = ["wayland", "x11"] }
+
 [dev-dependencies]
 # A window without a screen, for typing into the text fields in tests.
 gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
