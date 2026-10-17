@@ -210,6 +210,9 @@ where
     ) -> (LayoutId, ()) {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
+        // Beside what sits in the field with it, it takes the room that is left.
+        style.min_size.width = px(0.).into();
+        style.flex_shrink = 1.;
         let line_height = px(self.look.line_height);
         let (rows_of, max) = (self.shape, self.look.max_lines.max(1));
         // A copy for the measure, which may run after this element is gone.

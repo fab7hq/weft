@@ -1015,20 +1015,21 @@ fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&
                 .font_size(13)
                 .color(palette::TEXT)
                 .style("outline", "none")
-                .text(draft.to_string()),
+                .text(draft.to_string())
+                .children(ghost.map(|_| {
+                    // The key that takes the suggestion, at the field's right.
+                    div()
+                        .layer("take suggestion")
+                        .on_click("take_suggestion")
+                        .shrink_0()
+                        .pad(0, 5)
+                        .font_mono()
+                        .font_size(10)
+                        .color(palette::DIM)
+                        .border(palette::LINE)
+                        .text(words::word("suggest.take"))
+                })),
         )
-        .children(ghost.map(|_| {
-            // The key that takes the suggestion, beside the field.
-            div()
-                .layer("take suggestion")
-                .on_click("take_suggestion")
-                .pad(0, 5)
-                .font_mono()
-                .font_size(10)
-                .color(palette::DIM)
-                .border(palette::LINE)
-                .text(words::word("suggest.take"))
-        }))
         .child(
             div()
                 .layer("send message button")

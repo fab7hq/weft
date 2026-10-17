@@ -954,7 +954,11 @@ impl GpuiDesktopView {
                 look,
                 painted,
             };
-            return d
+            let mut field_box = d
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
                 .cursor_text()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -988,8 +992,19 @@ impl GpuiDesktopView {
                     }
                     cx.notify();
                 }))
-                .child(element)
-                .into_any_element();
+                .child(element);
+            // What sits inside the field beside its words, such as the key that takes a suggestion.
+            for (idx, child) in el.children.iter().enumerate() {
+                let child_path = format!("{path}/{idx}");
+                field_box = field_box.child(self.build_gpui_element(
+                    child,
+                    text_style,
+                    true,
+                    &child_path,
+                    cx,
+                ));
+            }
+            return field_box.into_any_element();
         }
 
         // Clicking anywhere on the search pill focuses Search
