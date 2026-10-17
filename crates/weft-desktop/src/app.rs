@@ -370,13 +370,7 @@ impl WeftDesktopApp {
         let client = self.clients.iter().find(|c| c.root == t.project)?;
         let row = client.sessions.iter().find(|r| r.pane == Some(t.pane))?;
         let turn = client.view(t.pane).and_then(|v| v.turn).or(row.turn);
-        let of_session = |u: &&weft_core::ledger::Unit| {
-            u.session_ref.as_deref() == Some(row.id.as_str())
-                || u.arrived.as_ref().is_some_and(|a| a.session == row.id)
-        };
-        let unit =
-            client.units.iter().filter(of_session).max_by(|a, b| a.asked_at.cmp(&b.asked_at))?;
-        weft_core::board::suggested(unit, turn)
+        weft_core::board::suggested_for(&client.units, &row.id, turn)
     }
 
     /// What the agent in front's field shows after its caret, when its draft

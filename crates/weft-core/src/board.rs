@@ -102,6 +102,21 @@ pub fn suggested(unit: &Unit, turn: Option<crate::turns::Turn>) -> Option<Act> {
     }
 }
 
+/// The act the bar puts forward for an agent: for the latest work asked in
+/// its session (`session`), or that arrived in it.
+pub fn suggested_for(
+    units: &[Unit],
+    session: &str,
+    turn: Option<crate::turns::Turn>,
+) -> Option<Act> {
+    let of_session = |u: &&Unit| {
+        u.session_ref.as_deref() == Some(session)
+            || u.arrived.as_ref().is_some_and(|a| a.session == session)
+    };
+    let latest = units.iter().filter(of_session).max_by(|a, b| a.asked_at.cmp(&b.asked_at))?;
+    suggested(latest, turn)
+}
+
 /// A pane, as everything outside the daemon sees one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneInfo {
@@ -381,6 +396,29 @@ mod tests {
         assert_eq!(suggested(&aligned, Some(Turn::TurnEnded)), None);
         // Not yet sent: nothing to judge.
         assert_eq!(suggested(&unit("codex", Sent::ReadyToSend), Some(Turn::TurnEnded)), None);
+    }
+
+    #[test]
+    fn an_agent_is_put_forward_the_act_for_the_latest_work_of_its_session() {
+        use crate::turns::Turn;
+        let mut old = unit("claude", Sent::TakenByAgent);
+        old.ask_id = "ask_1".into();
+        old.asked_at = "2026-10-17T01:00:00Z".into();
+        old.session_ref = Some("s1".into());
+        old.sealed = Some("accepted".into());
+        let mut new = unit("claude", Sent::TakenByAgent);
+        new.ask_id = "ask_2".into();
+        new.asked_at = "2026-10-17T02:00:00Z".into();
+        new.arrived = Some(crate::ledger::Arrival { host: "claude".into(), session: "s1".into() });
+        let other = Unit { session_ref: Some("s2".into()), ..unit("codex", Sent::TakenByAgent) };
+        let units = [old, new, other];
+        assert_eq!(
+            suggested_for(&units, "s1", Some(Turn::TurnEnded)),
+            Some(Act::Eval),
+            "the latest, by when it was asked"
+        );
+        assert_eq!(suggested_for(&units, "s9", Some(Turn::TurnEnded)), None, "no work of its own");
+        assert_eq!(suggested_for(&units, "s1", Some(Turn::Working)), None);
     }
 
     /// Everything a second client would have to assemble. That it is this

@@ -179,6 +179,20 @@ impl Project {
         }
     }
 
+    /// The act put forward for the pane at `i` once its turn has ended, for
+    /// its session's latest work: `eval`, `seal`, or none.
+    fn next_act(&self, i: usize) -> Option<&'static str> {
+        use weft_core::board::Act;
+        let p = &self.panes[i];
+        let session = self.sessions.iter().find(|r| r.pane == Some(p.pane))?;
+        let turn = self.turns.get(i).copied().flatten();
+        match weft_core::board::suggested_for(&self.units, &session.id, turn)? {
+            Act::Eval => Some("eval"),
+            Act::Seal => Some("seal"),
+            _ => None,
+        }
+    }
+
     /// Note when each pane's turn changed.
     fn stamp(&mut self, at: i64) {
         let turns: Vec<_> =
@@ -208,6 +222,7 @@ impl Project {
                     "turn": self.turn(i),
                     "running": p.running,
                     "since": self.since.get(&p.pane).map_or(0, |(_, at)| *at),
+                    "next": self.next_act(i),
                 })
             })
             .collect()
@@ -687,6 +702,27 @@ mod tests {
                 (w["title"].as_str().unwrap().to_string(), w["word"].as_str().unwrap().to_string())
             })
             .collect()
+    }
+
+    /// Once an agent's turn has ended, its row puts forward the next act for
+    /// its session's latest work, as the desktop's bar does.
+    #[test]
+    fn an_agents_row_puts_forward_the_next_act_once_its_turn_has_ended() {
+        let p = opened();
+        assert_eq!(p.rows()[0]["next"], Value::Null, "waiting on its person");
+        let answer = json!({
+            "panes": [{"pane": 4, "harness": "claude", "spec": "claude", "running": true}],
+            "agents": {"panes": ["turn_ended"], "sessions": [
+                {"harness": "claude", "id": "s_1", "state": "running", "turn": "turn_ended",
+                 "started": 0, "last": 0, "title": "fix login", "asks": 1, "pane": 4,
+                 "resumable": true}]},
+            "harnesses": [{"name": "claude", "title": "Claude Code"}],
+            "units": [unit("ask_1", "fix login")],
+            "rounds": {"open": ["ask_1"]},
+            "readiness": {"claude": "ready"},
+        });
+        let ended = Project::opened(Path::new("/work/weft"), &answer);
+        assert_eq!(ended.rows()[0]["next"], "eval");
     }
 
     /// remote.md §6: AGENTS with each session's agent, and the Open round.
