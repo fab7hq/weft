@@ -71,7 +71,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("workspace.empty", "Open a project to get started."),
     // The key that takes a suggestion shown in the message field.
     ("suggest.take", "Tab"),
-    ("start.fresh", "{harness} · start fresh"),
     ("start.none", "No harness is set up for RingFrame yet. Updates… in ☰ sets one up."),
     // The acts, as a bar or a button names them.
     ("act.ask", "Ask"),

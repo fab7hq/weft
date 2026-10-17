@@ -862,9 +862,11 @@ fn the_shared_words_are_spelled_only_in_words() {
         }
         let text = std::fs::read_to_string(&path).unwrap();
         for literal in text.split('"').skip(1).step_by(2) {
-            // `web.*` is the web app's own wording, not the TUI's.
-            for (key, word) in
-                weft_core::words::WORDS.iter().filter(|(k, _)| !k.starts_with("web."))
+            // `web.*` is the web app's own wording, not the TUI's; the TUI
+            // shows no suggestions, and its own key caps name Tab.
+            for (key, word) in weft_core::words::WORDS
+                .iter()
+                .filter(|(k, _)| !k.starts_with("web.") && !k.starts_with("suggest."))
             {
                 // A sentence is found inside a longer string, a word or two
                 // only as a string of its own.

@@ -493,7 +493,7 @@ fn starts(
     for h in harnesses.iter().filter(|h| out_there.on_path(&h.program)).filter(ready) {
         out.push(serde_json::json!({
             "harness": h.name,
-            "label": weft_core::words::say("start.fresh", &h.name),
+            "label": h.name,
             "spec": h.spec(),
             "session": serde_json::Value::Null,
         }));
