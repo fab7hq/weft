@@ -57,8 +57,47 @@ impl From<std::io::Error> for LedgerError {
 /// `corpus/canonical/samples.jsonl` holds a reference set of values with their
 /// expected bytes, and `cargo test --test the_corpus_holds` compares this
 /// against it byte for byte. Do not make this clever.
+///
+/// Keys are sorted here, not by `serde_json`'s map: a build that turns on its
+/// `preserve_order` (another crate in the same build can) keeps them in the
+/// order they were inserted.
 pub fn canonical(value: &Value) -> Vec<u8> {
-    serde_json::to_vec(value).expect("a JSON value always serialises")
+    let mut out = Vec::new();
+    write_sorted(value, &mut out);
+    out
+}
+
+/// `value` as `serde_json` writes it compactly, with each object's keys in
+/// sorted order.
+fn write_sorted(value: &Value, out: &mut Vec<u8>) {
+    let written = "a JSON value always serialises";
+    match value {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push(b'{');
+            for (n, key) in keys.into_iter().enumerate() {
+                if n > 0 {
+                    out.push(b',');
+                }
+                serde_json::to_writer(&mut *out, key).expect(written);
+                out.push(b':');
+                write_sorted(&map[key], out);
+            }
+            out.push(b'}');
+        }
+        Value::Array(items) => {
+            out.push(b'[');
+            for (n, item) in items.iter().enumerate() {
+                if n > 0 {
+                    out.push(b',');
+                }
+                write_sorted(item, out);
+            }
+            out.push(b']');
+        }
+        other => serde_json::to_writer(&mut *out, other).expect(written),
+    }
 }
 
 fn fsync_dir(path: &Path) -> std::io::Result<()> {
