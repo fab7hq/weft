@@ -991,13 +991,8 @@ impl WeftDesktopApp {
         if let Some(rest) = action.strip_prefix("remote_allow_device:")
             && let Some((dev_id, ans)) = rest.split_once(':')
         {
-            let allow = ans == "yes";
             for c in &mut self.clients {
-                let _ = c.remote_act(serde_json::json!({
-                    "act": "allow",
-                    "device": dev_id,
-                    "allow": allow,
-                }));
+                let _ = c.remote_act(allow_act(dev_id, ans == "yes"));
             }
             self.bottom_bar = BottomBarState::None;
             return;
@@ -1776,6 +1771,11 @@ impl WeftDesktopApp {
                 suggested: self.suggested_act(),
             }))
     }
+}
+
+/// The answer to a device asking to connect, as `weft remote` reads it.
+fn allow_act(device: &str, yes: bool) -> serde_json::Value {
+    serde_json::json!({"act": "allow", "device": device, "yes": yes})
 }
 
 #[cfg(test)]
@@ -2594,6 +2594,12 @@ pub(crate) mod tests {
         assert!(allow_bar.find_layer("btn Allow").is_some());
         app.dispatch("remote_allow_device:dev_ipad:yes");
         assert_eq!(app.bottom_bar, BottomBarState::None);
+        // The answer as weft remote reads it.
+        assert_eq!(
+            allow_act("dev_ipad", true),
+            serde_json::json!({"act": "allow", "device": "dev_ipad", "yes": true})
+        );
+        assert_eq!(allow_act("dev_ipad", false)["yes"], false);
 
         // 4. D9.9 `Quit Weft?` bar when agents are running
         app.dispatch("request_quit");
