@@ -219,14 +219,15 @@ fn item(row: &Row, key: Option<&str>) -> Element {
             .text(row.text.split_whitespace().collect::<Vec<_>>().join(" ")),
     );
     if !row.aside.is_empty() {
-        let needs = row.aside.contains(word("eval.not_met")) || row.aside.contains("unexplained");
-        el = el.child(
-            div()
-                .font_mono()
-                .font_size(11)
-                .color(if needs { palette::AMBER } else { palette::MUTED })
-                .text(row.aside.clone()),
-        );
+        // Each part, amber where it is what needs reading.
+        let mut aside = div().flex_row().font_mono().font_size(11).color(palette::MUTED);
+        for (i, part) in row.aside.split(" · ").enumerate() {
+            let needs = part.ends_with(word("eval.not_met")) || part.contains("unexplained");
+            let said = if i == 0 { part.to_string() } else { format!(" · {part}") };
+            aside =
+                aside.child(span(said).color(if needs { palette::AMBER } else { palette::MUTED }));
+        }
+        el = el.child(aside);
     }
     match key {
         Some(k) => el

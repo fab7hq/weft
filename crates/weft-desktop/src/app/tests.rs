@@ -1432,6 +1432,7 @@ fn an_ended_agents_pane_says_so_and_its_work_stays_listed() {
     let said = dom.find_layer("agent ended").expect("the pane says it ended").all_text();
     assert_eq!(said, words::say("agent.ended", "claude"));
     assert!(dom.find_layer("terminal").is_none());
+    assert!(dom.find_layer("the message row").is_none(), "nothing to send to");
 }
 
 #[test]

@@ -377,13 +377,13 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
 
     container = container.child(grid);
 
-    // The docked Ask, or the focused pane's message row.
+    // The docked Ask, or the focused pane's message row while its agent runs.
     if let Some(dock) = &props.dock {
         container = container.child(dock.clone());
     } else if let Some(group) = props.panes.groups.get(focused_idx)
         && let Some(active_tab) =
             group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
-        && let Some(info) = resolve_tab_info(props.clients, active_tab)
+        && let Some(info) = resolve_tab_info(props.clients, active_tab).filter(|i| i.running)
     {
         container = container.child(render_message_row(
             &info.project,
