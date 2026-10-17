@@ -125,7 +125,10 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
                     .color(palette::TEAL)
                     .text(format!("{} ›", fill("web.eval.sealed_in", &[("n", &sl.n.to_string())]))),
                 None => note(
-                    fill("web.eval.seal_what", &[("n", &d.asks.len().to_string())]),
+                    match d.asks.len() {
+                        1 => word("web.eval.seal_what_one").to_string(),
+                        n => fill("web.eval.seal_what", &[("n", &n.to_string())]),
+                    },
                     palette::MUTED,
                 ),
             });
@@ -365,7 +368,9 @@ pub(super) fn render_view(
                     })
                 })
                 .and_then(|t| t["text"].as_str().map(str::to_string));
-            let title = change.map_or(window.to_string(), |c| format!("{} {window}", c.path));
+            let title = change.map_or(window.to_string(), |c| {
+                format!("{} {}", c.path, c.lines.as_deref().unwrap_or(window))
+            });
             body = body.child(div().pad(18, 20).font_weight(600).font_size(16).text(title));
             match text {
                 None => {
@@ -422,6 +427,11 @@ pub(super) fn render_view(
         }
         (Some(v), Some(k)) if k.starts_with("s:") => {
             let step = eval_view::step_rows(v, &k[2..]);
+            // Its head says what its row in the list said: its state and changes.
+            let said = eval_view::rows(v, Mode::Steps, &Default::default())
+                .into_iter()
+                .find(|r| r.key == *k)
+                .map(|r| r.aside);
             if let Some((first, rest)) = step.split_first() {
                 body = body.child(
                     div()
@@ -439,7 +449,7 @@ pub(super) fn render_view(
                                     first.text.split_whitespace().collect::<Vec<_>>().join(" "),
                                 )),
                         )
-                        .child(note(first.aside.clone(), palette::MUTED)),
+                        .child(note(said.unwrap_or_else(|| first.aside.clone()), palette::MUTED)),
                 );
                 let mut lines =
                     div().self_stretch().flex_col().gap(6).style("padding", "0 20px 10px 20px");

@@ -1357,6 +1357,7 @@ fn an_eval_view() -> weft_core::eval_view::EvalView {
             serves: vec!["7".into()],
             why: String::new(),
             quotes: vec!["log::debug!".into()],
+            lines: Some("L88–L97".into()),
         }],
         checks: vec!["cargo test passed".into()],
         ..Default::default()
@@ -1390,6 +1391,9 @@ fn the_eval_view_is_read_through_the_daemon_and_opened_level_by_level() {
     app.dispatch(SheetAct::EvalOpen("s:7".into()));
     let step = app.render().all_text();
     assert!(step.contains("A failed send is told.") && step.contains("Done when"), "{step}");
+    // Its head says what its row said; a change is named by its lines.
+    assert!(step.contains("1 change"), "{step}");
+    assert!(step.contains("src/send.rs L88–L97") && !step.contains("w1"), "{step}");
     app.dispatch(SheetAct::EvalOpen("c:w1".into()));
     let (id, call) = wire
         .calls()
@@ -1403,6 +1407,7 @@ fn the_eval_view_is_read_through_the_daemon_and_opened_level_by_level() {
     );
     pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::Window { .. })));
     let lines = app.render().find_layer("sheet EvalView").unwrap().clone();
+    assert!(lines.all_text().contains("src/send.rs L88–L97"), "{}", lines.all_text());
     let lit = lines.find_layer("line lit").expect("the quoted line is lit");
     assert!(lit.all_text().contains("log::debug!"));
     // The crumb goes back one level at a time, then to Details.

@@ -130,6 +130,9 @@ pub struct Change {
     pub why: String,
     /// Every quote a judge cited from it.
     pub quotes: Vec<String>,
+    /// The lines it holds, `L88–L97`, when its text is on disk.
+    #[serde(default)]
+    pub lines: Option<String>,
 }
 
 /// RingFrame's files for one Eval, as they are on disk now.
@@ -142,6 +145,8 @@ pub struct Sources<'a> {
     pub evidence: &'a Value,
     /// `brief.json`: the Asks' titles.
     pub brief: &'a Value,
+    /// `windows.json`: each change's text, by its window's id.
+    pub windows: &'a Value,
     /// `record.json`, once the Eval has closed.
     pub record: Option<&'a Value>,
     /// Every accepted task output so far.
@@ -276,6 +281,9 @@ impl EvalView {
                 serves: Vec::new(),
                 why: String::new(),
                 quotes: Vec::new(),
+                lines: src.windows["windows"][s(w, "id")]
+                    .as_str()
+                    .and_then(|text| range(&numbered(text, &[]))),
             })
             .collect();
         changes.sort_by(|a, b| a.path.cmp(&b.path).then(a.window.cmp(&b.window)));
@@ -537,7 +545,10 @@ fn change_row(c: &Change, depth: u8, with_path: bool) -> Row {
         key: format!("c:{}", c.window),
         depth,
         mark: "·".into(),
-        text: if with_path { format!("{}  {}", c.path, c.window) } else { c.window.clone() },
+        text: match (with_path, c.lines.as_deref().unwrap_or(&c.window)) {
+            (true, at) => format!("{}  {at}", c.path),
+            (false, at) => at.to_string(),
+        },
         aside: if c.why.is_empty() { result } else { format!("{result}: {}", c.why) },
         state: None,
     }
@@ -728,27 +739,17 @@ pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
         .iter()
         .filter_map(|c| Some((c.window.clone(), numbered(hunks.get(&c.window)?, &c.quotes))))
         .collect();
-    // A change is named by the lines it holds, where they were read.
-    let named = |mut rows: Vec<Row>| {
-        for r in &mut rows {
-            let Some(w) = r.key.strip_prefix("c:") else { continue };
-            if let Some(at) = changes.get(w).and_then(|l| range(l)) {
-                r.text = r.text.replace(w, &at);
-            }
-        }
-        rows
-    };
     Payload {
         eval_id: view.eval_id.clone(),
         closed: view.closed,
         header: view.header(),
-        by_step: named(rows(view, Mode::Steps, &open)),
-        by_file: named(rows(view, Mode::Files, &open)),
+        by_step: rows(view, Mode::Steps, &open),
+        by_file: rows(view, Mode::Files, &open),
         steps: view
             .groups
             .iter()
             .flat_map(|g| &g.steps)
-            .map(|s| (s.id.clone(), named(step_rows(view, &s.id))))
+            .map(|s| (s.id.clone(), step_rows(view, &s.id)))
             .collect(),
         changes,
     }
@@ -849,6 +850,7 @@ mod tests {
         done: &[&str],
     ) -> EvalView {
         let (c, e, b) = (changes(), evidence(), brief());
+        let w = json!({"windows": {"w_t": "@@ -1 +1 @@\n+post(collect.example.com)\n"}});
         let planned: Vec<String> = planned.iter().map(|s| s.to_string()).collect();
         let done: Vec<String> = done.iter().map(|s| s.to_string()).collect();
         EvalView::build(Sources {
@@ -856,6 +858,7 @@ mod tests {
             changes: &c,
             evidence: &e,
             brief: &b,
+            windows: &w,
             record,
             outputs,
             planned: &planned,
@@ -926,7 +929,7 @@ mod tests {
                 " FINDINGS",
                 "   unclaimed rewrite: commit 94d7989 rewrites lines of 758156f (7)",
                 " UNEXPLAINED CHANGES",
-                "  · src/telemetry.rs  w_t",
+                "  · src/telemetry.rs  L1",
                 "▾ Phase 1 · plans/app/plan.md",
                 "  ✗ 7  A failed send is told.",
                 "  ✓ 8  Keep the log short.",
@@ -943,7 +946,7 @@ mod tests {
             rows(&v, Mode::Files, &BTreeSet::new()).iter().map(|r| r.text.clone()).collect();
         assert_eq!(
             by_file,
-            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "w_t"]
+            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "L1"]
         );
         let step: Vec<String> = step_rows(&v, S7).iter().map(|r| r.text.clone()).collect();
         assert!(step.contains(&"confirm: not met  reverted".to_string()), "{step:?}");
@@ -980,6 +983,23 @@ mod tests {
         assert!(p.by_step.iter().any(|r| r.text == "src/telemetry.rs  L1"), "{:?}", p.by_step);
         let wire = serde_json::to_value(&p).unwrap();
         assert_eq!(wire["by_step"][0]["kind"], "heading");
+    }
+
+    #[test]
+    fn a_change_is_named_by_the_lines_it_holds_wherever_it_is_listed() {
+        let v = built(None, &[map_output()], &["evl_1~m1"], &[]);
+        let by_file: Vec<String> =
+            rows(&v, Mode::Files, &BTreeSet::new()).into_iter().map(|r| r.text).collect();
+        assert_eq!(
+            by_file,
+            ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "L1"]
+        );
+        assert_eq!(v.change("w_t").and_then(|c| c.lines.as_deref()), Some("L1"));
+        assert_eq!(
+            v.change("w_a").and_then(|c| c.lines.as_deref()),
+            None,
+            "its text is not on disk"
+        );
     }
 
     #[test]

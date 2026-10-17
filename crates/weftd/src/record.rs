@@ -36,6 +36,7 @@ pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_v
     let changes = json_at(&dir.join("changes.json"))?;
     let evidence = json_at(&dir.join("evidence.json")).unwrap_or(Value::Null);
     let brief = json_at(&dir.join("brief.json")).unwrap_or(Value::Null);
+    let windows = json_at(&dir.join("windows.json")).unwrap_or(Value::Null);
     let record = json_at(&dir.join("record.json"));
     // What is in, from the ledger: each accepted output, and every task that
     // is done with (accepted or failed).
@@ -74,6 +75,7 @@ pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_v
         changes: &changes,
         evidence: &evidence,
         brief: &brief,
+        windows: &windows,
         record: record.as_ref(),
         outputs: &outputs,
         planned: &planned,

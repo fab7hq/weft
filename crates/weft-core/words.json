@@ -206,6 +206,7 @@
   "web.eval.live": "updates as the judges record",
   "web.eval.quoted": "Lines a judge quoted are amber bold.",
   "web.eval.seal_what": "Seal records your decision on this Eval and the {n} Asks it covers. It does not make the work right.",
+  "web.eval.seal_what_one": "Seal records your decision on this Eval and the Ask it covers. It does not make the work right.",
   "web.eval.sealed_in": "Sealed in Seal {n}",
   "web.eval.verdict": "Verdict",
   "web.layout.join": "Join all panes",

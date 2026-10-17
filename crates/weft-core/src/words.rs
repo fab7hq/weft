@@ -349,6 +349,10 @@ pub const WORDS: &[(&str, &str)] = &[
         "web.eval.seal_what",
         "Seal records your decision on this Eval and the {n} Asks it covers. It does not make the work right.",
     ),
+    (
+        "web.eval.seal_what_one",
+        "Seal records your decision on this Eval and the Ask it covers. It does not make the work right.",
+    ),
     ("web.seal.sealed", "sealed {time}"),
     ("web.seal.decision", "Decision"),
     ("web.seal.when", "When"),
