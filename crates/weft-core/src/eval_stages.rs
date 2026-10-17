@@ -90,7 +90,7 @@ pub fn agents(stage: &Stage) -> Option<Value> {
     (!out.is_empty()).then_some(Value::Object(out))
 }
 
-/// Where `[E]VAL` types, and what follows `/rf:eval `, for a gathered Eval.
+/// Where Eval types, and what follows `/rf:eval `, for a gathered Eval.
 pub fn debate_send(stage: &Stage, eval_id: &str) -> (String, String) {
     let args = [vec!["debate".to_string(), eval_id.to_string()], words(stage)].concat();
     (stage.harness.clone(), args.join(" "))

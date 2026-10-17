@@ -122,7 +122,7 @@ pub enum Call {
         before: Option<String>,
         after: Option<String>,
     },
-    /// The RingFrame view (`[U]`): `look` at RingFrame's configuration and
+    /// The Updates view: `look` at RingFrame's configuration and
     /// every harness file, `locate` one whose program is at `path`, `run` one's
     /// setup or update, or `all` that is behind. Answered by `Event::Setup`,
     /// again at every step.

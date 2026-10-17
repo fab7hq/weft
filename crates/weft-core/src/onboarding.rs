@@ -1,4 +1,4 @@
-//! The RINGFRAME view (`[U]`): RingFrame's configuration and every harness
+//! The Updates view: RingFrame's configuration and every harness
 //! Weft has a file for, whether each can be started, whether RingFrame's
 //! plugin is in it and current, and the harness's own commands that set it up
 //! or catch it up. One place for both.
@@ -166,7 +166,7 @@ impl View {
             && self.rows.iter().any(|r| r.state.next().is_some())
     }
 
-    /// Something is behind, or found and not set up: what lights `↑ [U]PDATE`.
+    /// Something is behind, or found and not set up: what marks Updates.
     /// A harness that is not on this machine lights nothing.
     pub fn needs_anything(&self) -> bool {
         self.weft_behind
@@ -221,7 +221,7 @@ impl View {
             && !self.rows.iter().any(|r| matches!(r.state, State::Behind { .. }))
     }
 
-    /// Whether `[P]ROCEED` has anything to run: the configuration, Sense, and
+    /// Whether Proceed has anything to run: the configuration, Sense, and
     /// every harness to set up or update. Finding a program is the person's to say.
     pub fn proceeds(&self) -> bool {
         self.weft_behind
@@ -340,7 +340,7 @@ mod tests {
     }
 
     /// A row still being asked says so, offers nothing, and neither lights
-    /// `↑ [U]PDATE` nor opens the view by itself.
+    /// Updates nor opens the view by itself.
     #[test]
     fn a_row_being_asked_waits_quietly() {
         let r = checking(&harness("antigravity"));

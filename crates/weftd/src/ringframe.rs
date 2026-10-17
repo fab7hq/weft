@@ -119,7 +119,7 @@ pub fn installed(out: &dyn Outside) -> bool {
 /// Whether this workspace could finish an Ask at all, asked of RingFrame.
 ///
 /// `ask compile` has always refused a workspace with no Git repository or no
-/// commit, but it runs at the end. Weft asks first, so `[A]SK` is dim with a
+/// commit, but it runs at the end. Weft asks first, so Ask is dim with a
 /// reason rather than typing an invocation that costs a turn and then fails.
 pub fn ask_preflight(out: &dyn Outside, project: &Path) -> Result<(), Error> {
     match run(out, project, &["ask", "preflight"]) {

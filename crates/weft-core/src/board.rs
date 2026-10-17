@@ -66,7 +66,7 @@ pub fn follow_up_of(unit: &Unit) -> &str {
 }
 
 /// `None` when the unit is closed, cancelled, or waiting on someone else:
-/// then `[P]ROCEED` has nothing to do.
+/// then Proceed has nothing to do.
 pub fn next_step(unit: &Unit) -> Option<Next> {
     if unit.cancelled || unit.sealed.is_some() {
         return None;
@@ -288,7 +288,7 @@ impl Board<'_> {
                 Some(_) if self.panes.is_empty() => why("why.start_an_agent"),
                 Some(_) => None,
             },
-            // [P] sends an Ask's prompt that is waiting to be sent, and does
+            // Proceed sends an Ask's prompt that is waiting to be sent, and does
             // nothing else. Once it went, what happens next is the person's
             // workflow: the one thing offered is a follow-up.
             Act::Proceed => match self.selected_unit() {
@@ -462,8 +462,8 @@ mod tests {
         assert_eq!(b.needs_you(), 2, "each agent asking for input");
     }
 
-    /// [P] sends a prompt that is waiting to be sent, and does nothing else:
-    /// an Ask that was sent, judged or sealed has only [F] FOLLOW UP.
+    /// Proceed sends a prompt that is waiting to be sent, and does nothing
+    /// else: an Ask that was sent, judged or sealed has only Follow up.
     #[test]
     fn proceed_is_only_for_a_prompt_waiting_to_be_sent() {
         let routing = Routing::default();
@@ -487,7 +487,7 @@ mod tests {
         });
         let units = [judged];
         let b = board(&units, &panes, READY, &routing);
-        let said = b.unavailable(Act::Proceed).expect("no [P] once judged");
+        let said = b.unavailable(Act::Proceed).expect("no Proceed once judged");
         assert!(said.contains("Follow up"), "{said}");
     }
 
@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn one_verb_carries_a_unit_the_whole_way() {
-        // The ladder the detail view walks, and the only thing `[P]ROCEED`
+        // The ladder the detail view walks, and the only thing Proceed
         // has to know. Each step is where the previous one leaves the unit.
         let mut u = unit("codex", Sent::NotSent);
         u.confirmed = false;

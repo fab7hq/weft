@@ -350,7 +350,7 @@ enum Wake {
         state: weft_core::readiness::Readiness,
     },
     /// The latest release was asked again: each open project's view is
-    /// looked at again, so `↑ [U]PDATE` says what is behind now.
+    /// looked at again, so Updates says what is behind now.
     Checked,
     /// The RingFrame view moved.
     Setup {
@@ -1098,7 +1098,7 @@ impl Session {
                 None if root.join(".fab7/rf/evals").join(unit).join("record.json").exists() => {
                     Answer::No(
                         "no_view",
-                        "this Eval was judged before the Eval view; [Enter] shows its record"
+                        "this Eval was judged before the Eval view; its Details show its record"
                             .into(),
                     )
                 }

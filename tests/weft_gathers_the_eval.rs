@@ -1,4 +1,4 @@
-//! `[E]VAL` gathers the Eval in Weft, through `ringframe eval open`, then
+//! Eval gathers the Eval in Weft, through `ringframe eval open`, then
 //! offers only the debate to a harness; an Eval already gathered is debated
 //! without opening again.
 //!

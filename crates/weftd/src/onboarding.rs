@@ -17,7 +17,7 @@ const STARTS_WITHIN: Duration = Duration::from_secs(15);
 
 /// How long an answer about the latest release is kept. The daemon asks when
 /// it starts and again this often (version checking
-/// should not be frequent); the view's looks, `[U]`, `Enter` and `P` read the
+/// should not be frequent); the view's looks, opening it, a row and Proceed read the
 /// kept answer, and only a configuration sync asks again at once.
 pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 
@@ -271,7 +271,7 @@ pub fn proceed(out: &dyn Outside, steps: Vec<Step>, mut show: impl FnMut(State))
         .map(|s| State::Failed { step: s.line(), said: s.said.clone() })
 }
 
-/// Whether `[P]ROCEED` runs this row: set up or updated, never located.
+/// Whether Proceed runs this row: set up or updated, never located.
 pub fn runs(r: &Row) -> bool {
     matches!(r.state.next(), Some(Next::SetUp | Next::Update))
 }

@@ -161,7 +161,7 @@ pub struct Unit {
     pub arrived_at: Option<String>,
     pub check: Option<Check>,
     /// An open Eval over this work whose change is gathered and whose
-    /// debate has not run: the next `[E]VAL` sends the debate.
+    /// debate has not run: the next Eval sends the debate.
     #[serde(default)]
     pub gathered: Option<Gathered>,
     pub sealed: Option<String>,

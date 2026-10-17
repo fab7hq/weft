@@ -17,21 +17,21 @@ use crate::routing::{ACTS, Routing};
 pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval is split, and RingFrame
 # overrides. Read when a project opens; restart Weft after editing.
 
-# notify = false               # no terminal notification when an agent needs you
+# notify = false               # no notification when an agent needs you
 # suggest = false              # no dim suggestions from your own words in the message field
 # turbo = true                 # agents run with every permission granted and no
 #                              # question asked: each harness's `turbo` flag, from
 #                              # its Weft harness file, which says what else it drops.
 
-# [harnesses.<harness>]        # this machine: set from Weft's [U] view
+# [harnesses.<harness>]        # this machine: set from Weft's Updates
 # program = "/path/to/it"      # where its program is, when it is not on PATH
 
-# [remote]                     # Weft from your phone at weft.getfab7.com: R
+# [remote]                     # Weft from your phone at weft.getfab7.com: Remote
 # enabled = true               # set when you turn it on or off there
 # tunnel = "cloudflared"       # the tunnel you picked there, by its tool file
 # program = "/path/to/it"      # where its program is, when it is not on PATH
 
-# [service]                    # Weft's own service on this machine: W → L
+# [service]                    # Weft's own service on this machine: Start at login
 # start_at_login = true        # start Weft when you log in, and again if it stops
 
 [routing]                      # every project; each act optional
