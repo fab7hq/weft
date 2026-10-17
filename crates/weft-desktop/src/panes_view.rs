@@ -464,12 +464,16 @@ fn render_split_toolbar(props: &PanesProps, g_idx: usize, group: &SavedTabGroup)
     let focused = tab
         .map(|t| tab_label(props, t))
         .map(|(label, _, turbo)| if turbo { format!("{label} ⚡") } else { label });
-    let mut info = div().flex_row().gap(6).font_mono().font_size(11).color(palette::MUTED).child(
-        span(words::fill("desktop.panes.n", &[("n", &props.panes.groups.len().to_string())])),
-    );
+    let mut info = div()
+        .flex_row()
+        .gap(6)
+        .font_mono()
+        .font_size(11)
+        .color(palette::MUTED)
+        .child(span(words::fill("panes.n", &[("n", &props.panes.groups.len().to_string())])));
     if let Some(f) = focused {
         info = info
-            .child(span(words::word("desktop.panes.focused")))
+            .child(span(words::word("panes.focused")))
             .child(span(f).color(palette::BLUE_BORDER).font_weight(600));
     }
     div()

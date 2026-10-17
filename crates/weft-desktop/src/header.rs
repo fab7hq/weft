@@ -94,7 +94,7 @@ pub fn render_header(props: &HeaderProps) -> Element {
         div()
             .layer("menu button")
             .role("button")
-            .aria_label(words::word("desktop.menu"))
+            .aria_label(words::word("menu"))
             .on_click(WindowAct::ToggleMenu)
             .pad(4, 8)
             .font_weight(600)
