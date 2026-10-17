@@ -67,12 +67,15 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
     let payload: serde_json::Value = serde_json::from_slice(payload).ok()?;
     let mut sent = signal.sent(harness, hook, &payload)?;
     // Where the harness recorded the prompt it received: the payload, or a
-    // file it names (and a file a line names), read only here.
+    // file it names (and a file a line names), read only here; every place,
+    // the first being the prompt received.
     let end = |file: &str| tail(std::path::Path::new(file));
     let whole = |file: &str| whole(std::path::Path::new(file));
-    if let Some(got) = signal.prompt_in(hook, &payload, &end, &whole) {
-        sent.prompt = Some(got.text);
-        sent.prompt_key = got.key;
+    let mut got = signal.received_in(hook, &payload, &end, &whole).into_iter();
+    if let Some(first) = got.next() {
+        sent.prompt = Some(first.text);
+        sent.prompt_key = first.key;
+        sent.also = got.collect();
     }
     // A question asked without stopping the turn, read on every hook.
     sent.asking = signal.asking(&payload, &end);
@@ -382,6 +385,16 @@ mod tests {
         std::fs::write(&log, format!("{named}\n{{\"kind\":\"step\"}}\n")).unwrap();
         let (_, sent) = heard(&b.at, &["made-up", "Done"], &payload);
         assert_eq!(sent.expect("heard").prompt.as_deref(), Some("a long prompt\nof two lines"));
+        // The payload's text is the prompt received; the goal line is the
+        // same submission as the harness also recorded it.
+        std::fs::write(&log, &lines).unwrap();
+        let said =
+            format!(r#"{{"id":"s1","dir":"/w","said":"Set: ship it","log":"{}"}}"#, log.display());
+        let (_, sent) = heard(&b.at, &["made-up", "Done"], &said);
+        let sent = sent.expect("heard");
+        assert_eq!((sent.prompt.as_deref(), sent.prompt_key), (Some("Set: ship it"), None));
+        let also: Vec<_> = sent.also.iter().map(|r| (r.text.as_str(), r.key.clone())).collect();
+        assert_eq!(also, [("ship it", Some(format!("{}:{offset}", log.display())))]);
     }
 
     #[test]

@@ -326,14 +326,7 @@ impl Session {
         if self.streamed.contains(&(sent.harness.clone(), sent.session.clone())) {
             sent.state = None;
         }
-        // A line of a file is forwarded once per session: a later hook that
-        // finds the same newest line has received nothing new.
-        if let Some(key) = sent.prompt_key.take() {
-            let seen = format!("{}\0{}\0{key}", sent.harness, sent.session);
-            if !self.forwarded.insert(seen) {
-                sent.prompt = None;
-            }
-        }
+        once(&mut self.forwarded, &mut sent);
         let (at, root) = match sent.pane {
             Some(pane) => {
                 let token = sent.token.as_deref().unwrap_or_default();
@@ -651,5 +644,60 @@ impl Session {
             None => c::page_with_sense(mapping, &slot.map.harness, path.as_deref(), before, sense),
         };
         Answer::Ok(read.json())
+    }
+}
+
+/// A line of a file is forwarded once per session: a later hook that finds
+/// the same newest line has received nothing new, and a record of the
+/// submission already forwarded is not one again.
+fn once(forwarded: &mut std::collections::HashSet<String>, sent: &mut weft_core::signal::Sent) {
+    let mut first = |key: Option<String>| {
+        key.is_none_or(|key| forwarded.insert(format!("{}\0{}\0{key}", sent.harness, sent.session)))
+    };
+    if !first(sent.prompt_key.take()) {
+        sent.prompt = None;
+        sent.also.clear();
+    }
+    sent.also.retain_mut(|r| first(r.key.take()));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use weft_core::signal::{Received, Sent};
+
+    #[test]
+    fn a_line_is_forwarded_once_as_the_prompt_or_as_another_record() {
+        let mut forwarded = std::collections::HashSet::new();
+        let line = |key: &str| Received { text: "ship it".into(), key: Some(key.into()) };
+        let hook = |also: Vec<Received>| Sent {
+            harness: "claude-code".into(),
+            session: "s1".into(),
+            prompt: Some("Set: ship it".into()),
+            also,
+            ..Sent::default()
+        };
+        let mut sent = hook(vec![line("/r:9")]);
+        once(&mut forwarded, &mut sent);
+        assert_eq!(sent.also.len(), 1, "first seen");
+        let mut sent = hook(vec![line("/r:9"), line("/r:20")]);
+        once(&mut forwarded, &mut sent);
+        assert_eq!(sent.prompt.as_deref(), Some("Set: ship it"), "the hook's own text is no line");
+        assert_eq!(
+            sent.also,
+            [Received { text: "ship it".into(), key: None }],
+            "only the new line"
+        );
+        let mut sent =
+            Sent { prompt_key: Some("/r:20".into()), also: vec![line("/r:31")], ..hook(vec![]) };
+        once(&mut forwarded, &mut sent);
+        assert_eq!(
+            (sent.prompt, sent.also.len()),
+            (None, 0),
+            "a line forwarded already, and nothing after it"
+        );
+        let mut sent = hook(vec![line("/r:31")]);
+        once(&mut forwarded, &mut sent);
+        assert_eq!(sent.also.len(), 1, "a line not forwarded with nothing is still new");
     }
 }

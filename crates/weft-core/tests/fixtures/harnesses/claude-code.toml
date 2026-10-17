@@ -49,10 +49,17 @@ on = ["enabled"]
 # these hooks, every one running `weft-signal <id> <hook>`; fab7's check keeps the
 # two in step. Payload paths are dotted; `forward` passes a prompt or a tool to
 # `ringframe observe` (D9).
+# A long `/goal` reaches the prompt hook as Claude Code's own `Goal set:
+# <objective>`; the transcript keeps the objective as sent in its newest
+# goal_status line, written again on every turn the goal is set
+# (claude-code 2.1.296).
 [signal]
 session = "session_id"
 workspace = "cwd"
-prompt = "prompt"
+prompt = [
+  "prompt",
+  { file = "transcript_path", newest = true, last = { type = "attachment", "attachment.type" = "goal_status" }, field = "attachment.condition" },
+]
 tool = "tool_name"
 command = "tool_input.command"
 on = [

@@ -158,7 +158,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ),
         ("observe", Some("prompt")) => s(
             &["--by", "--host", "--session", "--host-version"],
-            NONE,
+            &["--layers"],
             &["--by", "--host", "--session"],
             false,
             NONE,
@@ -277,7 +277,8 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("deltas", Some("render")) => "the directives that apply to one classification",
         ("observe", Some("prompt")) => {
             "a prompt --by someone saw submitted in --session; reads its bytes on stdin and \
-             keeps them only for a RingFrame invocation"
+             keeps them only for a RingFrame invocation; with --layers, a JSON list on stdin: \
+             the prompt received, then the host's other records of it"
         }
         ("observe", Some("tool")) => {
             "a tool --by someone saw run in --session, --outcome succeeded|failed; the \
@@ -960,7 +961,15 @@ fn dispatch(
             }
             let one = |flag| ns.one(flag).unwrap_or_default();
             let (by, host, session) = (one("--by"), one("--host"), one("--session"));
-            let out = if what == "prompt" {
+            let out = if what == "prompt" && ns.has("--layers") {
+                let Ok(layers) = serde_json::from_str::<Vec<String>>(&read_stdin()) else {
+                    return (
+                        ws,
+                        Outcome::UsageDetail("--layers reads a JSON list of texts".into()),
+                    );
+                };
+                crate::observe::layered(&ws, by, host, session, &layers, ns.one("--host-version"))
+            } else if what == "prompt" {
                 crate::observe::prompt(
                     &ws,
                     by,
@@ -1311,6 +1320,30 @@ mod tests {
         assert_eq!(out["recorded"], false);
         assert!(out["reason"].is_string(), "{out}");
         assert!(!repo.path().join(".fab7").exists());
+    }
+
+    /// `--layers`: stdin is a JSON list, the prompt received first; anything
+    /// else is refused and records nothing.
+    #[test]
+    fn observe_prompt_takes_the_hosts_other_records_as_layers() {
+        cli(|c| {
+            let mut args = vec!["observe", "prompt", "--by", "weft", "--host", "claude-code"];
+            args.extend(["--session", "s1", "--layers"]);
+            let (code, out, _) = c.piped(&args, r#"["/rf:ask fix login", "fix login"]"#);
+            assert_eq!((code, &out["recorded"]), (0, &json!(true)), "{out}");
+            let kept = c.root.join(".fab7/rf/sessions/claude-code/s1/prompts.jsonl");
+            let kept: Vec<Value> = std::fs::read_to_string(kept)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            assert_eq!(kept.len(), 1, "one prompt received");
+            assert_eq!(kept[0]["prompt"], "/rf:ask fix login", "the first");
+            let (code, _, _) = c.piped(&args, "/rf:ask fix login");
+            assert_ne!(code, 0, "not a list");
+            let (code, _, _) = c.piped(&args, r#"["a", 1]"#);
+            assert_ne!(code, 0, "a list of texts only");
+        });
     }
 
     #[test]

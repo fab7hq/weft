@@ -418,7 +418,9 @@ impl Call {
                 ("pane.resize", json!({"pane": pane, "rows": rows, "cols": cols}))
             }
             Call::Attach { pane, form } => ("pane.attach", json!({"pane": pane, "form": form})),
-            Call::Suggest { pane, draft } => ("pane.suggest", json!({"pane": pane, "draft": draft})),
+            Call::Suggest { pane, draft } => {
+                ("pane.suggest", json!({"pane": pane, "draft": draft}))
+            }
             Call::Stage { pane, bytes, how, what, why } => (
                 "stage",
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),

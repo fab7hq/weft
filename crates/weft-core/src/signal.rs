@@ -136,9 +136,10 @@ pub struct InFile {
 
 /// A prompt found where the harness recorded it, and, for a line of a file,
 /// where it was read (`<file>:<offset>`), so the same line is forwarded once.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Received {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
 }
 
@@ -228,6 +229,9 @@ pub struct Sent {
     /// Where a prompt read from a file was read, so weftd forwards it once.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_key: Option<String>,
+    /// The same submission as the harness also recorded it, after `prompt`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<Received>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -306,9 +310,7 @@ impl Signal {
     }
 
     /// The prompt this hook reports the harness received, when its row
-    /// forwards one: from each place in turn, the first that has it. `tail`
-    /// reads a file's end (where it starts, and the text); `whole` reads a
-    /// file a text names. `weft signal` gives them; they read nothing else.
+    /// forwards one: the first place that has it.
     pub fn prompt_in(
         &self,
         hook: &str,
@@ -316,25 +318,44 @@ impl Signal {
         tail: &dyn Fn(&str) -> Option<(u64, String)>,
         whole: &dyn Fn(&str) -> Option<String>,
     ) -> Option<Received> {
-        if self.row(hook, payload)?.forward.as_deref() != Some("prompt") {
-            return None;
-        }
-        self.prompt.as_ref()?.places().iter().find_map(|place| match place {
-            Place::At(path) => text_at(payload, path).map(|text| Received { text, key: None }),
-            Place::InFile(f) => {
-                let file = text_at(payload, &f.file)?;
-                let (start, end) = tail(&file)?;
-                let (at, line) = f.line(&end)?;
-                let mut text = f.text(&line)?;
-                if let Some([open, close]) = &f.names_file
-                    && let Some(from) = text.find(open.as_str()).map(|i| i + open.len())
-                {
-                    let to = from + text[from..].find(close.as_str())?;
-                    text = whole(&text[from..to])?;
+        self.received_in(hook, payload, tail, whole).into_iter().next()
+    }
+
+    /// Every place that records the prompt this hook forwards, in order:
+    /// the first is the prompt received, the others the same submission as
+    /// the harness also recorded it. `tail` reads a file's end (where it
+    /// starts, and the text); `whole` reads a file a text names. `weft
+    /// signal` gives them; they read nothing else.
+    pub fn received_in(
+        &self,
+        hook: &str,
+        payload: &Value,
+        tail: &dyn Fn(&str) -> Option<(u64, String)>,
+        whole: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<Received> {
+        let forwards =
+            self.row(hook, payload).is_some_and(|r| r.forward.as_deref() == Some("prompt"));
+        let Some(prompt) = self.prompt.as_ref().filter(|_| forwards) else { return Vec::new() };
+        prompt
+            .places()
+            .iter()
+            .filter_map(|place| match place {
+                Place::At(path) => text_at(payload, path).map(|text| Received { text, key: None }),
+                Place::InFile(f) => {
+                    let file = text_at(payload, &f.file)?;
+                    let (start, end) = tail(&file)?;
+                    let (at, line) = f.line(&end)?;
+                    let mut text = f.text(&line)?;
+                    if let Some([open, close]) = &f.names_file
+                        && let Some(from) = text.find(open.as_str()).map(|i| i + open.len())
+                    {
+                        let to = from + text[from..].find(close.as_str())?;
+                        text = whole(&text[from..to])?;
+                    }
+                    Some(Received { text, key: Some(format!("{file}:{}", start + at as u64)) })
                 }
-                Some(Received { text, key: Some(format!("{file}:{}", start + at as u64)) })
-            }
-        })
+            })
+            .collect()
     }
 
     /// Whether a question is pending, when the table names questions and
@@ -365,7 +386,8 @@ pub struct Forward {
 }
 
 /// What weftd passes RingFrame for this signal, if anything: a forwarded
-/// prompt, byte for byte; a forwarded tool only when the harness's profile's
+/// prompt, byte for byte, or with the harness's other records of it, a JSON
+/// list after `--layers`; a forwarded tool only when the harness's profile's
 /// `[observe]` (as `ringframe profile show` gives it) names it as its
 /// `delivery_tool` or `shell_tool`. Turn states are never forwarded.
 pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
@@ -375,7 +397,16 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
             .to_vec()
     };
     match sent.forward.as_deref()? {
-        "prompt" => Some(Forward { args: head("prompt"), input: Some(sent.prompt.clone()?) }),
+        "prompt" if sent.also.is_empty() => {
+            Some(Forward { args: head("prompt"), input: Some(sent.prompt.clone()?) })
+        }
+        "prompt" => {
+            let mut layers = vec![sent.prompt.clone()?];
+            layers.extend(sent.also.iter().map(|r| r.text.clone()));
+            let mut args = head("prompt");
+            args.push("--layers".into());
+            Some(Forward { args, input: Some(serde_json::to_string(&layers).ok()?) })
+        }
         "tool" => {
             let tool = sent.tool.as_deref()?;
             let named = |key: &str| observe.get(key).and_then(Value::as_str) == Some(tool);
@@ -811,6 +842,73 @@ mod tests {
         let typed = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl", "prompt": "fix it"});
         let got = s.prompt_in("UserPromptSubmit", &typed, &end, &whole).expect("typed");
         assert_eq!((got.text.as_str(), got.key), ("fix it", None), "the payload first");
+    }
+
+    /// The Claude Code fixture's transcript, as claude-code 2.1.296 writes a
+    /// long `/goal` (HostLab, ringframe-ask-ledger-q42): its prompt hook says
+    /// `Goal set: <objective>`, and the transcript keeps the objective whole
+    /// in a goal_status line, written again on every turn the goal is set.
+    /// Every place is read: the hook's text first, then the transcript's.
+    #[test]
+    fn every_place_a_claude_goal_is_recorded_is_read_in_order() {
+        let s = signal("claude-code");
+        let status = |condition: &str| {
+            json!({"type": "attachment", "attachment": {"type": "goal_status", "met": false,
+                   "sentinel": true, "condition": condition}})
+        };
+        let snapshot = json!({"type": "file-history-snapshot"});
+        let objective = "[command-3500] Reply with the single word ok.\nEnd of the prompt.";
+        let tail = [status("an older goal"), status(objective), snapshot]
+            .map(|v| format!("{v}\n"))
+            .concat();
+        let end = |_: &str| Some((0, tail.clone()));
+        let said = |prompt: &str| {
+            json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl",
+                   "hook_event_name": "UserPromptSubmit", "prompt": prompt})
+        };
+        let host = format!("Goal set: {objective}");
+        let got = s.received_in("UserPromptSubmit", &said(&host), &end, &|_| None);
+        let texts: Vec<&str> = got.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            [host.as_str(), objective],
+            "the hook's words, then the newest goal line"
+        );
+        assert_eq!(got[0].key, None);
+        assert!(got[1].key.is_some(), "a line is forwarded once");
+        let got = s.prompt_in("UserPromptSubmit", &said("fix it"), &end, &|_| None).expect("typed");
+        assert_eq!(
+            (got.text.as_str(), got.key),
+            ("fix it", None),
+            "the received prompt is the first"
+        );
+        let none = |_: &str| None;
+        let got = s.received_in("UserPromptSubmit", &said("fix it"), &none, &|_| None);
+        assert_eq!(got.len(), 1, "an unreadable transcript is no place");
+    }
+
+    #[test]
+    fn the_other_records_go_to_ringframe_as_layers_after_the_received_prompt() {
+        let sent = |also: Vec<Received>| Sent {
+            harness: "claude-code".into(),
+            hook: "UserPromptSubmit".into(),
+            session: "c1".into(),
+            forward: Some("prompt".into()),
+            prompt: Some("Goal set: ship it".into()),
+            also,
+            ..Sent::default()
+        };
+        let one = forward(&sent(vec![]), &Value::Null).expect("a prompt");
+        assert!(!one.args.contains(&"--layers".to_string()));
+        assert_eq!(one.input.as_deref(), Some("Goal set: ship it"), "its bytes, as before");
+        let two = forward(
+            &sent(vec![Received { text: "ship it".into(), key: Some("/r:9".into()) }]),
+            &Value::Null,
+        )
+        .expect("a prompt");
+        assert_eq!(two.args.last().map(String::as_str), Some("--layers"));
+        let layers: Vec<String> = serde_json::from_str(two.input.as_deref().unwrap()).unwrap();
+        assert_eq!(layers, ["Goal set: ship it", "ship it"]);
     }
 
     #[test]

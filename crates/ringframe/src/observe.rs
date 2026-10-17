@@ -47,6 +47,35 @@ pub fn prompt(
     Ok(out)
 }
 
+/// `observe prompt --layers`: the prompt received, then the host's other
+/// records of the same submission, in order. The first is recorded as
+/// `prompt` records it; when it is no Ask's, the first other record that is
+/// an Ask's prompt is that Ask's submission. No other record is kept.
+pub fn layered(
+    ws: &Workspace,
+    by: &str,
+    host: &str,
+    session: &str,
+    layers: &[String],
+    host_version: Option<&str>,
+) -> Result<Value, AskError> {
+    let Some((received, others)) = layers.split_first() else {
+        return Ok(json!({"recorded": false}));
+    };
+    let mut out = prompt(ws, by, host, session, received, host_version)?;
+    if out["recorded"] != true || !out["submission"].is_null() || out.get("prompt").is_some() {
+        return Ok(out);
+    }
+    for other in others {
+        let sha = crate::digest::sha256_bytes(other.as_bytes());
+        if let Some(s) = ask::submission_from_capture(ws, host, session, &sha, by)? {
+            out["submission"] = s;
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// The prompt inside the host's paste wrapper, when the whole prompt is one:
 /// its profile's `paste_open`, then the paste, then `paste_close`, both
 /// naming the same `{id}`. None for a host that names no wrapper.
@@ -232,6 +261,35 @@ mod tests {
             .unwrap();
             assert!(as_came["submission"].is_null(), "{as_came}");
             let _ = other;
+        });
+    }
+
+    /// A host that reports a prompt in words of its own also records it
+    /// elsewhere: the received prompt is recorded as it came, and the other
+    /// records, in order, only say which Ask it was.
+    #[test]
+    fn another_record_of_the_prompt_received_says_which_ask_it_was() {
+        bench(|ws| {
+            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            let host = "Goal set: Fix login.";
+            let out = layered(ws, "weft", "claude-code", "s1", &[host.into()], None).unwrap();
+            assert!(out["submission"].is_null(), "the host's words alone are no Ask");
+            let others = [host.into(), "not it".into(), "Fix login.\n".into()];
+            let out = layered(ws, "weft", "claude-code", "s1", &others, None).unwrap();
+            assert_eq!(out["submission"]["ask_id"], ask["ask_id"]);
+            assert_eq!(
+                out["sha256"],
+                crate::digest::sha256_bytes(host.as_bytes()),
+                "the received prompt's"
+            );
+            let sub = events(ws).into_iter().find(|e| e["type"] == "ask.submission").unwrap();
+            assert_eq!(sub["data"]["state"], "observed");
+            assert_eq!(sub["data"]["match"], "exact");
+            let kept = prompts(ws, "claude-code", "s1");
+            assert_eq!(kept.len(), 2, "one line per received prompt, none for another record");
+            assert!(kept.iter().all(|p| p["sha256"] == out["sha256"]));
+            let none = layered(ws, "weft", "claude-code", "s1", &[], None).unwrap();
+            assert_eq!(none["recorded"], false, "no prompt");
         });
     }
 
