@@ -1548,3 +1548,22 @@ fn a_tab_dragged_onto_a_pane_moves_or_splits_there() {
     assert_eq!(app.state.panes.groups.len(), 1, "its pane emptied and went");
     assert_eq!(app.state.panes.groups[0].tabs.len(), 3);
 }
+
+#[test]
+fn ask_on_a_project_row_opens_on_its_agents() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(TreeAct::SelectProject(weft()));
+    app.dispatch(BarAct::Ask);
+    assert!(app.active_sheet.is_none(), "no agent to ask yet");
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot { sentence: words::word("why.start_an_agent").to_string() }
+    );
+    start(&mut app, &mut wire, "claude");
+    app.dispatch(TreeAct::SelectProject(weft()));
+    app.dispatch(BarAct::Ask);
+    assert!(
+        matches!(&app.active_sheet, Some(ActiveSheet::Ask { project, target_session: None, .. }) if *project == weft()),
+        "SEND TO chooses among its agents"
+    );
+}

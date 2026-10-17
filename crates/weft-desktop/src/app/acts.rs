@@ -220,6 +220,14 @@ impl WeftDesktopApp {
                         None => self.open_ask(project, Some(session), None),
                     }
                 }
+                // A project's: SEND TO chooses among its running agents.
+                Some(TreeSelection::Project { project }) => {
+                    if self.client(&project).is_some_and(|c| c.panes.iter().any(|p| p.running)) {
+                        self.open_ask(project, None, None);
+                    } else {
+                        self.why_not(words::word("why.start_an_agent"));
+                    }
+                }
                 _ => self.why_not_for(Act::Ask),
             },
             BarAct::Eval => match self.selection.clone() {
