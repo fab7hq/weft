@@ -1282,11 +1282,24 @@ mod tests {
     fn opened(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Arc<Mutex<SharedState>>, &mut VisualTestContext) {
+        let (tmp, shared, _view, cx) = opened_view(cx);
+        (tmp, shared, cx)
+    }
+
+    /// The same, with the view, for what the window's text input hands it.
+    fn opened_view(
+        cx: &mut TestAppContext,
+    ) -> (
+        tempfile::TempDir,
+        Arc<Mutex<SharedState>>,
+        ::gpui::Entity<GpuiDesktopView>,
+        &mut VisualTestContext,
+    ) {
         let (tmp, mut app) = crate::app::tests::sample_app(false);
         app.dispatch("start_agent:weft:claude");
         let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
         let view_shared = Arc::clone(&shared);
-        let (_view, cx) = cx.add_window_view(|window, cx| {
+        let (view, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();
             focus_handle.focus(window, cx);
             GpuiDesktopView {
@@ -1299,7 +1312,7 @@ mod tests {
             }
         });
         cx.run_until_parked();
-        (tmp, shared, cx)
+        (tmp, shared, view, cx)
     }
 
     /// Run `test` with a window context, on a thread with a main thread's stack:
@@ -1383,6 +1396,45 @@ mod tests {
             assert_eq!(shared.lock().unwrap().app.ghost(), None);
             cx.simulate_input("!");
             assert_eq!(message(&shared), "run the login tests now!", "still in the field");
+        });
+    }
+
+    /// What an input method does, as macOS hands it over: a composing draft,
+    /// marked and replaced as it changes, then the committed characters.
+    #[test]
+    fn an_input_method_composes_in_the_message_field_and_enter_meanwhile_is_its_own() {
+        windowed(|cx| {
+            let (_tmp, shared, view, cx) = opened_view(cx);
+            cx.simulate_input("say ");
+            view.update_in(cx, |v, window, cx| {
+                v.replace_and_mark_text_in_range(None, "n", None, window, cx);
+                v.replace_and_mark_text_in_range(None, "ni", None, window, cx);
+                v.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+            });
+            assert_eq!(message(&shared), "say nihao");
+            let marked = view.update_in(cx, |v, window, cx| v.marked_text_range(window, cx));
+            assert_eq!(marked, Some(4..9), "the draft is marked, in UTF-16 units");
+            // The commit takes the draft's place, unmarked.
+            view.update_in(cx, |v, window, cx| v.replace_text_in_range(None, "你好", window, cx));
+            assert_eq!(message(&shared), "say 你好");
+            assert_eq!(view.update_in(cx, |v, window, cx| v.marked_text_range(window, cx)), None);
+            cx.simulate_input("!");
+            assert_eq!(message(&shared), "say 你好!");
+            // Enter while composing is the input method's: Weft sends nothing.
+            let sends = || {
+                let g = shared.lock().unwrap();
+                g.app.clients[0]
+                    .sent_calls
+                    .iter()
+                    .filter(|c| matches!(c, weft_proto::Call::Input { .. }))
+                    .count()
+            };
+            let before = sends();
+            view.update_in(cx, |v, window, cx| {
+                v.replace_and_mark_text_in_range(None, "a", None, window, cx)
+            });
+            cx.simulate_keystrokes("enter");
+            assert_eq!(sends(), before, "not sent while composing");
         });
     }
 }
