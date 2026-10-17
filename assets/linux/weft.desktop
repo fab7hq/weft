@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Weft
+Comment=Your coding agents in panes, and one list of what was asked, checked and decided
+Exec=weft-desktop %f
+Icon=weft
+Terminal=false
+Categories=Development;
+StartupWMClass=weft-desktop

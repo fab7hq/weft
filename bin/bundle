@@ -1,0 +1,35 @@
+#!/bin/sh
+# Make Weft.app from built binaries: the desktop app as the bundle's program,
+# `weft` and `ringframe` beside it, the mark as its icon, then sign it.
+#
+#   bin/bundle <built-dir> <out-dir>
+#
+# <built-dir> holds weft-desktop, weft and ringframe, as cargo leaves them.
+# WEFT_SIGN_IDENTITY names the identity to sign with; without it the bundle
+# is signed ad hoc, which runs on the Mac that made it.
+set -eu
+
+built=${1:?usage: bin/bundle <built-dir> <out-dir>}
+out=${2:?usage: bin/bundle <built-dir> <out-dir>}
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
+
+app="$out/Weft.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+for name in weft-desktop weft ringframe; do
+    [ -f "$built/$name" ] || { echo "bin/bundle: $built has no $name" >&2; exit 1; }
+    cp "$built/$name" "$app/Contents/MacOS/$name"
+    chmod 755 "$app/Contents/MacOS/$name"
+done
+sed "s/VERSION/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
+cp "$root/assets/weft.icns" "$app/Contents/Resources/weft.icns"
+
+# Its tools first, then the bundle, as codesign wants.
+identity=${WEFT_SIGN_IDENTITY:--}
+for name in weft ringframe weft-desktop; do
+    codesign --force --options runtime --timestamp=none -s "$identity" "$app/Contents/MacOS/$name"
+done
+codesign --force --options runtime --timestamp=none -s "$identity" "$app"
+codesign --verify --deep --strict "$app"
+printf 'Made %s (weft %s), signed %s\n' "$app" "$version" "$([ "$identity" = - ] && echo 'ad hoc' || echo "as $identity")"

@@ -201,6 +201,11 @@ fn main() -> Result<()> {
         return update();
     }
 
+    // No arguments: the desktop app, which starts or joins the daemon itself.
+    if first.is_none() {
+        return open_app();
+    }
+
     if matches!(first.as_deref(), Some("--help" | "-h")) {
         println!("weft {}\n", env!("CARGO_PKG_VERSION"));
         println!("weft [project-dir] [agent ...]\n");
@@ -311,6 +316,67 @@ fn main() -> Result<()> {
     }
 }
 
+/// What `weft` with no arguments opens.
+#[derive(Debug, PartialEq, Eq)]
+enum Opens {
+    /// Weft.app, which this `weft` is inside: opened as an app.
+    Bundle(std::path::PathBuf),
+    /// The desktop program beside this `weft`.
+    Program(std::path::PathBuf),
+}
+
+/// The app that came with the `weft` at `exe`, if there is one.
+fn app_to_open(exe: &std::path::Path) -> Option<Opens> {
+    let dir = exe.parent()?;
+    let desktop = dir.join("weft-desktop");
+    if !desktop.is_file() {
+        return None;
+    }
+    let bundle = dir.parent().and_then(std::path::Path::parent);
+    match bundle {
+        Some(b) if dir.ends_with("Contents/MacOS") && b.extension().is_some_and(|e| e == "app") => {
+            Some(Opens::Bundle(b.to_path_buf()))
+        }
+        _ => Some(Opens::Program(desktop)),
+    }
+}
+
+/// Open the desktop app beside this `weft`, and leave it running.
+fn open_app() -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let mut run = match app_to_open(&exe) {
+        Some(Opens::Bundle(app)) => {
+            let mut open = std::process::Command::new("/usr/bin/open");
+            open.arg(app);
+            open
+        }
+        Some(Opens::Program(desktop)) => {
+            let mut program = std::process::Command::new(desktop);
+            // Its own session, so closing this terminal leaves it open.
+            unsafe {
+                program.pre_exec(|| {
+                    unsafe extern "C" {
+                        fn setsid() -> i32;
+                    }
+                    setsid();
+                    Ok(())
+                });
+            }
+            program
+        }
+        None => anyhow::bail!(
+            "the desktop app is not installed beside {}; install Weft again",
+            exe.display()
+        ),
+    };
+    run.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    Ok(())
+}
+
 const REPO: &str = "fab7hq/weft";
 
 /// The latest published release's tag, or nothing when it cannot be reached.
@@ -410,6 +476,23 @@ mod tests {
         for tag in ["0.2.0", "v", "v0.2.0;rm -rf ~", "v0.2.0-rc1", "main", "v0.2.0 "] {
             assert!(!is_release_tag(tag), "{tag:?}");
         }
+    }
+
+    #[test]
+    fn with_no_arguments_weft_opens_the_app_it_came_with() {
+        let dir = std::env::temp_dir().join(format!("weft-opens-{}", std::process::id()));
+        // Inside Weft.app, the bundle, so the system shows it as the app.
+        let macos = dir.join("Weft.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        std::fs::write(macos.join("weft-desktop"), "").unwrap();
+        assert_eq!(app_to_open(&macos.join("weft")), Some(Opens::Bundle(dir.join("Weft.app"))));
+        // Elsewhere, the desktop program beside it.
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(app_to_open(&bin.join("weft")), None, "no app beside it");
+        std::fs::write(bin.join("weft-desktop"), "").unwrap();
+        assert_eq!(app_to_open(&bin.join("weft")), Some(Opens::Program(bin.join("weft-desktop"))));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
