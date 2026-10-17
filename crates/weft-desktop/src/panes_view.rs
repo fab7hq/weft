@@ -415,9 +415,11 @@ fn tab_label(
             let shape = crate::tree_view::status_shape(state, turn);
             (format!("{proj_name} · {harness}"), Some(shape), turbo && running)
         }
+        // An agent no longer known here has ended, as far as Weft can tell.
         None => {
             let proj = tab.project.file_name().and_then(|n| n.to_str()).unwrap_or("project");
-            (format!("{proj} · agent"), None, false)
+            let shape = crate::tree_view::status_shape(State::Ended, None);
+            (format!("{proj} · agent"), Some(shape), false)
         }
     }
 }

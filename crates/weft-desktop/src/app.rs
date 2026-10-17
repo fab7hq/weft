@@ -2530,6 +2530,16 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_tab_whose_agent_is_gone_leads_with_the_ended_shape() {
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        let gone = SavedPaneTab { project: PathBuf::from("/work/weft"), pane: 99, view: Default::default() };
+        app.ensure_tab_in_active_pane(gone);
+        let strip = app.render().find_layer("tab strip").expect("tab strip").clone();
+        assert!(strip.all_text().starts_with('□'), "{}", strip.all_text());
+    }
+
+    #[test]
     fn each_agent_keeps_its_own_draft_and_switching_never_carries_one_across() {
         let (_tmp, mut app) = sample_app(false);
         app.state.panes.groups.clear();
