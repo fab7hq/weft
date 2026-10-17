@@ -24,9 +24,7 @@ pub(super) fn render(
     if let Some(listed) = props.listed(project) {
         let rows = &listed.project.agents.rows;
         for a in rows.iter().filter(|a| a.state == SessionState::Running) {
-            let picked = target_session == Some(a.session.as_str())
-                || (target_session.is_none()
-                    && rows.first().map(|f| f.session.as_str()) == Some(&a.session));
+            let picked = target_session == Some(a.session.as_str());
             targets =
                 targets.child(
                     div()

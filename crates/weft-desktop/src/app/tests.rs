@@ -1566,10 +1566,20 @@ fn ask_on_a_project_row_opens_on_its_agents() {
         BottomBarState::WhyNot { sentence: words::word("why.start_an_agent").to_string() }
     );
     start(&mut app, &mut wire, "claude");
+    let codex = start(&mut app, &mut wire, "codex");
     app.dispatch(TreeAct::SelectProject(weft()));
     app.dispatch(BarAct::Ask);
-    assert!(
-        matches!(&app.active_sheet, Some(ActiveSheet::Ask { project, target_session: None, .. }) if *project == weft()),
-        "SEND TO chooses among its agents"
-    );
+    // It starts on the agent in front, named, and goes where it shows.
+    let Some(ActiveSheet::Ask { project, target_session: Some(session), .. }) = &app.active_sheet
+    else {
+        panic!("{:?}", app.active_sheet)
+    };
+    assert_eq!(*project, weft());
+    let listed = app.tree_projects();
+    let row = listed[0].project.agents.rows.iter().find(|r| &r.session == session).unwrap();
+    assert_eq!(row.pane, Some(codex), "the agent in front");
+    app.ask.set_text("add a health endpoint");
+    app.dispatch(SheetAct::SubmitAsk);
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Act { pane: Some(p), .. } if p == codex), "{call:?}");
 }

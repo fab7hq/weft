@@ -307,6 +307,21 @@ impl WeftDesktopApp {
     }
 
     fn open_ask(&mut self, project: PathBuf, session: Option<String>, unit: Option<String>) {
+        // No agent named: the one in front when it is this project's, else its
+        // first running one. Named here, so the sheet shows where it goes.
+        let session = session.or_else(|| {
+            let front = self.active_tab().filter(|t| t.project == project).map(|t| t.pane);
+            let listed = self.tree_projects().into_iter().find(|l| l.root == project)?;
+            let running: Vec<_> = listed
+                .project
+                .agents
+                .rows
+                .into_iter()
+                .filter(|a| a.state == weft_core::sessions::State::Running)
+                .collect();
+            let row = running.iter().find(|a| a.pane.is_some() && a.pane == front);
+            row.or(running.first()).map(|a| a.session.clone())
+        });
         self.ask = TextField::new(Shape::Area);
         self.active_sheet =
             Some(ActiveSheet::Ask { project, target_session: session, follow_up_unit: unit });
@@ -547,12 +562,20 @@ impl WeftDesktopApp {
         follow_up_unit: Option<&str>,
         draft: &str,
     ) -> bool {
+        // The agent the sheet showed, by its pane.
+        let pane = self
+            .tree_projects()
+            .into_iter()
+            .find(|l| l.root == project)
+            .and_then(|l| {
+                l.project
+                    .agents
+                    .rows
+                    .into_iter()
+                    .find(|a| Some(a.session.as_str()) == target_session)
+            })
+            .and_then(|a| a.pane);
         let Some(client) = self.client_mut(project) else { return false };
-        let pane = target_session
-            .and_then(|sid| client.sessions.iter().find(|r| r.id == sid))
-            .and_then(|r| r.pane)
-            .filter(|&pid| client.view(pid).is_some())
-            .or_else(|| client.panes.iter().find(|p| p.running).map(|p| p.id));
         let act = if follow_up_unit.is_some() { "follow_up" } else { "ask" };
         match client.act(act, follow_up_unit, pane, Some(draft), None, None) {
             Ok(_) => true,
