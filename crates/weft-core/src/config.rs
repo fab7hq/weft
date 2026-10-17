@@ -18,7 +18,7 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # overrides. Read when a project opens; restart Weft after editing.
 
 # notify = false               # no terminal notification when an agent needs you
-# suggest = true               # dim suggestions from your own words in the message field
+# suggest = false              # no dim suggestions from your own words in the message field
 # turbo = true                 # agents run with every permission granted and no
 #                              # question asked: each harness's `turbo` flag, from
 #                              # its Weft harness file, which says what else it drops.
@@ -97,8 +97,8 @@ pub struct Config {
     pub leftover: Vec<String>,
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
-    /// `suggest = true`: suggestions from the person's own words.
-    suggest: bool,
+    /// `suggest = false`: no suggestions from the person's own words.
+    unsuggested: bool,
     remote: Remote,
     /// `[service] start_at_login`: Weft starts when the person logs in. Off
     /// unless turned on; Remote never turns it on.
@@ -250,9 +250,9 @@ impl Config {
     }
 
     /// Whether the message field shows suggestions from the person's own
-    /// words. Off unless one line turns it on.
+    /// words. On unless one line turns it off.
     pub fn suggest(&self) -> bool {
-        self.suggest
+        !self.unsuggested
     }
 
     /// Whether agents Weft starts in the project at `root` run in turbo mode:
@@ -296,7 +296,7 @@ impl Config {
                 }
                 ("ringframe", Value::Object(r)) => out.ringframe = r.clone(),
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
-                ("suggest", Value::Bool(on)) if at.is_empty() => self.suggest = *on,
+                ("suggest", Value::Bool(on)) if at.is_empty() => self.unsuggested = !on,
                 ("turbo", Value::Bool(on)) => out.turbo = Some(*on),
                 ("projects", _) if at.is_empty() => {}
                 ("remote", Value::Object(r)) if at.is_empty() => {
@@ -566,16 +566,16 @@ mod tests {
         assert_eq!(c.ignored, ["notify"]);
     }
 
-    /// Suggestions in the message field: off unless one line turns them on.
+    /// Suggestions in the message field: on unless one line turns them off.
     #[test]
-    fn one_line_turns_suggestions_on() {
-        assert!(!read_(STARTING).suggest(), "off unless turned on");
-        assert!(read_("suggest = true\n").suggest());
-        let uncommented = STARTING.replace("# suggest = true", "suggest = true");
-        assert!(read_(&uncommented).suggest());
+    fn one_line_turns_suggestions_off() {
+        assert!(read_(STARTING).suggest(), "on unless turned off");
         assert!(!read_("suggest = false\n").suggest());
-        let c = read_("suggest = \"yes\"\n");
-        assert!(!c.suggest());
+        let uncommented = STARTING.replace("# suggest = false", "suggest = false");
+        assert!(!read_(&uncommented).suggest());
+        assert!(read_("suggest = true\n").suggest());
+        let c = read_("suggest = \"no\"\n");
+        assert!(c.suggest());
         assert_eq!(c.ignored, ["suggest"]);
     }
 

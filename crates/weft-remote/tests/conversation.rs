@@ -320,7 +320,12 @@ fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
     });
     let (mut shell, token, transcript) = grok_pane_in(&h, "suggesting", "g1");
     hook_of(&h, &shell, &token, &transcript, "g1");
+    // Sent three times, three days before: often enough to clear the ship bar's floor.
     let said = [
+        line("user_message_chunk", "run the login tests"),
+        line("agent_message_chunk", "Both pass."),
+        line("user_message_chunk", "run the login tests"),
+        line("agent_message_chunk", "Both pass."),
         line("user_message_chunk", "run the login tests"),
         line("agent_message_chunk", "Both pass."),
         line("user_message_chunk", "commit these changes"),
@@ -352,8 +357,12 @@ fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
         }
     };
     assert_eq!(suggest("run the")["text"], " login tests");
-    assert_eq!(suggest("")["text"], "commit these changes", "what followed a reply like the last");
-    assert!(suggest("run the")["score"].as_f64().is_some_and(|s| s > 0.0 && s <= 1.0));
+    assert!(suggest("run the")["score"].as_f64().is_some_and(|s| (0.7..=1.0).contains(&s)));
+    // Sent once, below the floor; and no next prompt: the replay put it below the bar.
+    let once = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "commit".into() });
+    assert_eq!(once, json!({}));
+    let next = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: String::new() });
+    assert_eq!(next, json!({}));
     let none = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "zebra crossing".into() });
     assert_eq!(none, json!({}));
     let missing = shell.tui.ask(weft_proto::Call::Suggest { pane: 7, draft: String::new() });
@@ -361,8 +370,13 @@ fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
 }
 
 #[test]
-fn suggestions_are_off_unless_turned_on() {
-    let h = Harness::with("unsuggested", grok_beside);
+fn one_line_turns_suggestions_off() {
+    let h = Harness::with("unsuggested", |dir| {
+        grok_beside(dir);
+        let config = dir.join("config.toml");
+        let text = std::fs::read_to_string(&config).unwrap();
+        std::fs::write(&config, format!("suggest = false\n{text}")).unwrap();
+    });
     let (mut shell, token, transcript) = grok_pane_in(&h, "quiet", "g1");
     hook_of(&h, &shell, &token, &transcript, "g1");
     std::fs::write(&transcript, line("user_message_chunk", "run the login tests") + "\n").unwrap();
@@ -404,7 +418,10 @@ fn a_device_gets_suggestions_only_for_the_agent_it_watches() {
     });
     let (shell, token, transcript) = grok_pane_in(&h, "watched", "g1");
     hook_of(&h, &shell, &token, &transcript, "g1");
-    std::fs::write(&transcript, line("user_message_chunk", "run the login tests") + "\n").unwrap();
+    // Sent three times, three days before: often enough to clear the ship bar's floor.
+    let sent = line("user_message_chunk", "run the login tests");
+    let reply = line("agent_message_chunk", "Both pass.");
+    std::fs::write(&transcript, format!("{sent}\n{reply}\n{sent}\n{reply}\n{sent}\n")).unwrap();
     let ended = Sent {
         harness: "grok".into(),
         hook: "Stop".into(),

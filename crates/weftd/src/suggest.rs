@@ -134,21 +134,24 @@ pub fn index_of(own: &[Entry], others: &[Entry], root: &Path) -> weft_core::sugg
     weft_core::suggest::Index::new(&all, &project)
 }
 
+/// The lowest score a suggestion is shown at: the owner's ship bar, from the
+/// replay of their own messages (right 69.7 % of the time it showed).
+pub const SHOWN_FROM: f64 = 0.7;
+
 /// What `pane.suggest` answers from a project's index: the rest of `draft`,
-/// or with none typed the next prompt after `reply` (and Sense's embedding of it).
+/// from the ship bar's floor up. With none typed, nothing: the next prompt
+/// was below the bar, so `reply` is not asked about.
 pub fn ask(
     index: &weft_core::suggest::Index,
     harness: &str,
     draft: &str,
-    reply: (&str, &[f32]),
+    _reply: (&str, &[f32]),
     now: u64,
 ) -> Option<weft_core::suggest::Suggestion> {
     if draft.is_empty() {
-        let near = (!reply.1.is_empty()).then_some(reply.1);
-        index.next(reply.0, near, harness, now)
-    } else {
-        index.complete(draft, harness, now)
+        return None;
     }
+    index.complete(draft, harness, now).filter(|s| s.score >= SHOWN_FROM)
 }
 
 /// [`ask`] of a fresh [`index_of`].
@@ -360,12 +363,16 @@ mod tests {
         let mut done = entry("commit these changes", "session:s1");
         done.reply = "Done. All the tests pass.".into();
         let own = [done, entry("run the login tests", "session:s1")];
-        let got = answer(&own, &[], root, "claude", "run the", ("", &[]), 10).unwrap();
+        // Shown only from the bar's floor: a message sent once scores below it, twice above.
+        assert_eq!(answer(&own, &[], root, "claude", "run the", ("", &[]), 10), None, "sent once");
+        let twice = [own[0].clone(), own[1].clone(), own[1].clone()];
+        let got = answer(&twice, &[], root, "claude", "run the", ("", &[]), 10).unwrap();
         assert_eq!(got.text, " login tests");
-        let next =
-            answer(&own, &[], root, "claude", "", ("Done. The tests pass.", &[]), 10).unwrap();
-        assert_eq!(next.text, "commit these changes");
-        assert_eq!(answer(&own, &[], root, "claude", "", ("", &[]), 10), None, "no reply yet");
+        assert!(got.score >= SHOWN_FROM);
+        // The next prompt is not shown: the replay put it below the bar.
+        let done = [own[0].clone(), own[0].clone(), own[0].clone()];
+        let reply = ("Done. The tests pass.", &[][..]);
+        assert_eq!(answer(&done, &[], root, "claude", "", reply, 10), None);
 
         // Another project's habit: sent in two projects.
         let other =
