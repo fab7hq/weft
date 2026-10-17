@@ -225,6 +225,8 @@ pub struct PanesProps<'a> {
     pub conversations: &'a HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: &'a HashSet<(PathBuf, u32, usize)>,
     pub message_draft: &'a str,
+    /// What the agent in front's field shows after its caret.
+    pub ghost: Option<&'a str>,
     /// What sits under the panes: the docked Ask in place of the message row.
     pub dock: Option<Element>,
 }
@@ -397,7 +399,12 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
             group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
         && let Some((proj_name, harness, ..)) = resolve_tab_info(props.clients, active_tab)
     {
-        container = container.child(render_message_row(&proj_name, &harness, props.message_draft));
+        container = container.child(render_message_row(
+            &proj_name,
+            &harness,
+            props.message_draft,
+            props.ghost,
+        ));
     }
 
     container
@@ -987,7 +994,7 @@ fn render_step_block(
     box_el
 }
 
-fn render_message_row(project: &str, harness: &str, draft: &str) -> Element {
+fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&str>) -> Element {
     let placeholder = format!("Message {project} · {harness}…");
     div()
         .layer("the message row")
@@ -1010,6 +1017,18 @@ fn render_message_row(project: &str, harness: &str, draft: &str) -> Element {
                 .style("outline", "none")
                 .text(draft.to_string()),
         )
+        .children(ghost.map(|_| {
+            // The key that takes the suggestion, beside the field.
+            div()
+                .layer("take suggestion")
+                .on_click("take_suggestion")
+                .pad(0, 5)
+                .font_mono()
+                .font_size(10)
+                .color(palette::DIM)
+                .border(palette::LINE)
+                .text(words::word("suggest.take"))
+        }))
         .child(
             div()
                 .layer("send message button")

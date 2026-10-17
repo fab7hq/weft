@@ -77,6 +77,7 @@
   "state.ended": "ended",
   "state.last_active": "last active {time}",
   "state.running": "running",
+  "suggest.take": "Tab",
   "title.needs_you": "needs you",
   "title.open": "open",
   "tree.agents": "AGENTS",

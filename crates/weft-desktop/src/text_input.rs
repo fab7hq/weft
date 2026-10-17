@@ -100,6 +100,8 @@ pub struct FieldElement<V: 'static> {
     pub cursor: usize,
     pub marked: Option<Range<usize>>,
     pub placeholder: String,
+    /// A suggestion drawn dim after the words, the caret staying before it.
+    pub ghost: Option<String>,
     pub shape: Shape,
     pub look: Look,
     pub painted: Rc<RefCell<Painted>>,
@@ -128,13 +130,14 @@ fn runs<V>(field: &FieldElement<V>, window: &Window) -> (SharedString, Vec<TextR
         underline: None,
         strikethrough: None,
     };
-    if field.text.is_empty() {
+    let ghost = field.ghost.as_deref().filter(|g| !g.is_empty());
+    if field.text.is_empty() && ghost.is_none() {
         let shown =
             if field.placeholder.is_empty() { " ".to_string() } else { field.placeholder.clone() };
         let len = shown.len();
         return (shown.into(), vec![run(len, field.look.placeholder)]);
     }
-    let text = field.text.clone();
+    let mut text = field.text.clone();
     let mut runs = Vec::new();
     match field.marked.clone().filter(|m| m.end <= text.len()) {
         Some(m) => {
@@ -149,6 +152,10 @@ fn runs<V>(field: &FieldElement<V>, window: &Window) -> (SharedString, Vec<TextR
             runs.push(run(text.len() - m.end, field.look.color));
         }
         None => runs.push(run(text.len(), field.look.color)),
+    }
+    if let Some(g) = ghost {
+        text.push_str(g);
+        runs.push(run(g.len(), field.look.placeholder));
     }
     runs.retain(|r| r.len > 0);
     (text.into(), runs)
@@ -215,6 +222,7 @@ where
             cursor: self.cursor,
             marked: self.marked.clone(),
             placeholder: self.placeholder.clone(),
+            ghost: self.ghost.clone(),
             shape: self.shape,
             look: self.look,
             painted: Rc::clone(&self.painted),

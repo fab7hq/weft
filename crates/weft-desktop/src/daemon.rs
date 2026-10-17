@@ -437,6 +437,17 @@ impl ProjectClient {
         }
     }
 
+    /// The answer to call `id`, once it has come; nothing is waited for.
+    pub fn take_answer(&mut self, id: u64) -> Option<std::result::Result<Value, String>> {
+        self.answers.remove(&id)
+    }
+
+    /// An answer as if the daemon had sent it, for tests.
+    #[cfg(test)]
+    pub fn give_answer(&mut self, id: u64, answer: Value) {
+        self.answers.insert(id, Ok(answer));
+    }
+
     pub fn answers(&mut self) -> Vec<(u64, std::result::Result<Value, String>)> {
         self.answers.drain().collect()
     }

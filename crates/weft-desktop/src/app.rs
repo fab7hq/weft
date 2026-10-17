@@ -60,6 +60,17 @@ pub fn save_state_to_home(home: &Path, state: &WeftState) -> Result<()> {
     Ok(())
 }
 
+/// A suggestion asked for one agent's draft.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Suggesting {
+    pub id: u64,
+    key: (PathBuf, u32),
+    draft: String,
+}
+
+/// How long a draft stays the same before it is asked about.
+const SETTLED: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveSheet {
@@ -106,6 +117,15 @@ pub struct WeftDesktopApp {
     /// agents brings each one's draft back. The open Ask's field.
     pub messages: HashMap<(PathBuf, u32), TextField>,
     pub ask: TextField,
+    /// A suggestion asked of the daemon and not answered yet: one at a time.
+    pub suggesting: Option<Suggesting>,
+    /// What each agent's field could show after its caret, and the draft it is for.
+    suggestions: HashMap<(PathBuf, u32), (String, String)>,
+    /// The agent in front's draft as last seen, and since when: it is asked
+    /// about once it has settled.
+    settling: Option<((PathBuf, u32), String, std::time::Instant)>,
+    /// The last draft asked about, so each is asked once.
+    asked: Option<((PathBuf, u32), String)>,
     pub clipboard: String,
     pub active_sheet: Option<ActiveSheet>,
     pub bottom_bar: BottomBarState,
@@ -137,6 +157,10 @@ impl WeftDesktopApp {
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
+            suggesting: None,
+            suggestions: HashMap::new(),
+            settling: None,
+            asked: None,
             clipboard: String::new(),
             active_sheet: None,
             bottom_bar: BottomBarState::None,
@@ -244,6 +268,10 @@ impl WeftDesktopApp {
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
+            suggesting: None,
+            suggestions: HashMap::new(),
+            settling: None,
+            asked: None,
             clipboard: String::new(),
             active_sheet: None,
             bottom_bar: BottomBarState::None,
@@ -270,7 +298,100 @@ impl WeftDesktopApp {
         if changed {
             self.refresh_active_conversations();
         }
+        self.suggest_tick(std::time::Instant::now()) || changed
+    }
+
+    /// Take a suggestion's answer, and ask about the agent in front's draft
+    /// once it has settled. Whether what its field shows changed.
+    pub fn suggest_tick(&mut self, now: std::time::Instant) -> bool {
+        let front = self.active_tab().map(|t| (t.project, t.pane));
+        let draft = self.message_text().to_string();
+        let mut changed = false;
+        if let Some(s) = self.suggesting.clone()
+            && let Some(client) = self.clients.iter_mut().find(|c| c.root == s.key.0)
+            && let Some(answer) = client.take_answer(s.id)
+        {
+            self.suggesting = None;
+            // An answer for a draft no longer there, or a malformed one, shows nothing.
+            let text = answer.ok().and_then(|v| v.get("text")?.as_str().map(str::to_string));
+            let current = front.as_ref() == Some(&s.key) && draft == s.draft;
+            match text.filter(|t| current && !t.is_empty()) {
+                Some(t) => {
+                    self.suggestions.insert(s.key, (s.draft, t));
+                }
+                None => {
+                    self.suggestions.remove(&s.key);
+                }
+            }
+            changed = true;
+        }
+        let Some(key) = front else { return changed };
+        match &self.settling {
+            Some((k, d, _)) if *k == key && *d == draft => {}
+            _ => {
+                self.settling = Some((key, draft, now));
+                return changed;
+            }
+        }
+        let settled = self.settling.as_ref().is_some_and(|(_, _, since)| now - *since >= SETTLED);
+        // An empty field follows the agent's last reply: once its turn has
+        // ended, again after each turn.
+        let turn = self
+            .clients
+            .iter()
+            .find(|c| c.root == key.0)
+            .and_then(|c| c.view(key.1))
+            .and_then(|v| v.turn);
+        if draft.is_empty() && turn != Some(weft_core::turns::Turn::TurnEnded) {
+            // Asked again once this turn ends.
+            if self.asked.as_ref().is_some_and(|(k, d)| *k == key && d.is_empty()) {
+                self.asked = None;
+            }
+            return changed;
+        }
+        let fresh = self.asked.as_ref() != Some(&(key.clone(), draft.clone()));
+        if !settled || !fresh || self.suggesting.is_some() {
+            return changed;
+        }
+        if let Some(client) = self.clients.iter_mut().find(|c| c.root == key.0)
+            && let Ok(id) =
+                client.tell(weft_proto::Call::Suggest { pane: key.1, draft: draft.clone() })
+        {
+            self.suggesting = Some(Suggesting { id, key: key.clone(), draft: draft.clone() });
+            self.asked = Some((key, draft));
+        }
         changed
+    }
+
+    /// What the agent in front's field shows after its caret, when its draft
+    /// is the one it was asked for and the caret is at its end.
+    pub fn ghost(&self) -> Option<&str> {
+        let t = self.active_tab()?;
+        let (draft, text) = self.suggestions.get(&(t.project.clone(), t.pane))?;
+        let field = self.messages.get(&(t.project, t.pane));
+        let at_end = field.is_none_or(|f| f.selection().is_empty() && f.cursor() == f.text().len());
+        (draft == self.message_text() && at_end).then_some(text.as_str())
+    }
+
+    /// Tab: the suggestion typed into the field.
+    pub fn take_suggestion(&mut self) -> bool {
+        let Some(text) = self.ghost().map(str::to_string) else { return false };
+        self.message_field().type_text(&text);
+        if let Some(t) = self.active_tab() {
+            self.suggestions.remove(&(t.project, t.pane));
+        }
+        true
+    }
+
+    /// Esc: the suggestion dropped, not asked for again until the draft changes.
+    pub fn drop_suggestion(&mut self) -> bool {
+        if self.ghost().is_none() {
+            return false;
+        }
+        if let Some(t) = self.active_tab() {
+            self.suggestions.remove(&(t.project, t.pane));
+        }
+        true
     }
 
     pub fn refresh_active_conversations(&mut self) {
@@ -1063,6 +1184,10 @@ impl WeftDesktopApp {
             }
             return;
         }
+        if action == "take_suggestion" {
+            self.take_suggestion();
+            return;
+        }
         if action == "send_message_row" {
             let text = self.message_field().text().to_string();
             self.message_field().set_text("");
@@ -1579,6 +1704,7 @@ impl WeftDesktopApp {
                     conversations: &self.conversations,
                     unfolded_steps: &self.unfolded_steps,
                     message_draft: self.message_text(),
+                    ghost: self.ghost(),
                     dock,
                 }))
             }
@@ -2530,10 +2656,123 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_agent_in_front_is_suggested_the_rest_of_a_settled_draft_and_a_late_answer_is_dropped() {
+        use std::time::{Duration, Instant};
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        app.dispatch("start_agent:weft:claude");
+        app.dispatch("start_agent:weft:codex");
+        let t0 = Instant::now();
+        let asked = |app: &WeftDesktopApp| {
+            app.clients[0].sent_calls.iter().filter(|c| matches!(c, Call::Suggest { .. })).count()
+        };
+        app.message_field().type_text("run the");
+        app.suggest_tick(t0);
+        app.suggest_tick(t0 + Duration::from_millis(50));
+        assert_eq!(asked(&app), 0, "not before the draft settles");
+        app.suggest_tick(t0 + Duration::from_millis(120));
+        assert_eq!(asked(&app), 1);
+        app.suggest_tick(t0 + Duration::from_millis(300));
+        assert_eq!(asked(&app), 1, "once per draft");
+        let Some(Call::Suggest { draft, .. }) = app.clients[0].sent_calls.last().cloned() else {
+            panic!()
+        };
+        assert_eq!(draft, "run the");
+        let id = app.suggesting.as_ref().unwrap().id;
+        app.clients[0].give_answer(id, serde_json::json!({"text": " login tests", "score": 0.8}));
+        app.suggest_tick(t0 + Duration::from_millis(320));
+        assert_eq!(app.ghost(), Some(" login tests"));
+        let dom = app.render();
+        assert!(dom.find_layer("the message row").unwrap().find_layer("take suggestion").is_some());
+        // Only the agent in front shows one: another agent's field shows none.
+        app.dispatch("select_tab:0:0");
+        assert_eq!(app.ghost(), None);
+        app.dispatch("select_tab:0:1");
+        assert_eq!(app.ghost(), Some(" login tests"));
+        // Tab takes it; typing on asks again, and an answer for the old draft is dropped.
+        app.take_suggestion();
+        assert_eq!(app.message_field().text(), "run the login tests");
+        assert_eq!(app.ghost(), None);
+        app.message_field().type_text(" now");
+        app.suggest_tick(t0 + Duration::from_millis(400));
+        app.suggest_tick(t0 + Duration::from_millis(520));
+        let id = app.suggesting.as_ref().unwrap().id;
+        app.message_field().type_text("!");
+        app.clients[0].give_answer(id, serde_json::json!({"text": " please", "score": 0.9}));
+        app.suggest_tick(t0 + Duration::from_millis(540));
+        assert_eq!(app.ghost(), None, "an answer to a draft no longer there");
+        // Esc drops one, and it is not asked for again until the draft changes.
+        app.message_field().set_text("fix");
+        app.suggest_tick(t0 + Duration::from_millis(600));
+        app.suggest_tick(t0 + Duration::from_millis(720));
+        let id = app.suggesting.as_ref().unwrap().id;
+        app.clients[0].give_answer(id, serde_json::json!({"text": " the lint", "score": 0.9}));
+        app.suggest_tick(t0 + Duration::from_millis(740));
+        assert!(app.drop_suggestion());
+        assert_eq!(app.ghost(), None);
+        let before = asked(&app);
+        app.suggest_tick(t0 + Duration::from_millis(900));
+        assert_eq!(asked(&app), before);
+        assert!(!app.drop_suggestion(), "none left to drop");
+        // A malformed answer shows nothing.
+        app.message_field().set_text("ok");
+        app.suggest_tick(t0 + Duration::from_millis(1000));
+        app.suggest_tick(t0 + Duration::from_millis(1120));
+        let id = app.suggesting.as_ref().unwrap().id;
+        app.clients[0].give_answer(id, serde_json::json!({"text": 7}));
+        app.suggest_tick(t0 + Duration::from_millis(1140));
+        assert_eq!(app.ghost(), None);
+    }
+
+    #[test]
+    fn an_empty_field_asks_for_the_next_prompt_once_each_turn_has_ended() {
+        use std::time::{Duration, Instant};
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        app.dispatch("start_agent:weft:claude");
+        let pane = app.active_tab().unwrap().pane;
+        let asks = |app: &WeftDesktopApp| {
+            app.clients[0]
+                .sent_calls
+                .iter()
+                .filter(|c| matches!(c, Call::Suggest { draft, .. } if draft.is_empty()))
+                .count()
+        };
+        let t0 = Instant::now();
+        let settle = |app: &mut WeftDesktopApp, ms: u64| {
+            app.suggest_tick(t0 + Duration::from_millis(ms));
+            app.suggest_tick(t0 + Duration::from_millis(ms + 150));
+        };
+        app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Working);
+        settle(&mut app, 0);
+        assert_eq!(asks(&app), 0, "nothing to follow while it works");
+        app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::TurnEnded);
+        settle(&mut app, 300);
+        assert_eq!(asks(&app), 1);
+        settle(&mut app, 600);
+        assert_eq!(asks(&app), 1, "once for this turn");
+        let id = app.suggesting.as_ref().unwrap().id;
+        app.clients[0]
+            .give_answer(id, serde_json::json!({"text": "commit these changes", "score": 0.7}));
+        app.suggest_tick(t0 + Duration::from_millis(900));
+        assert_eq!(app.ghost(), Some("commit these changes"));
+        // The next turn ends: asked again.
+        app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Working);
+        settle(&mut app, 1000);
+        app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::TurnEnded);
+        settle(&mut app, 1400);
+        assert_eq!(asks(&app), 2);
+    }
+
+    #[test]
     fn a_tab_whose_agent_is_gone_leads_with_the_ended_shape() {
         let (_tmp, mut app) = sample_app(false);
         app.state.panes.groups.clear();
-        let gone = SavedPaneTab { project: PathBuf::from("/work/weft"), pane: 99, view: Default::default() };
+        let gone = SavedPaneTab {
+            project: PathBuf::from("/work/weft"),
+            pane: 99,
+            view: Default::default(),
+        };
         app.ensure_tab_in_active_pane(gone);
         let strip = app.render().find_layer("tab strip").expect("tab strip").clone();
         assert!(strip.all_text().starts_with('□'), "{}", strip.all_text());

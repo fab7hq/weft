@@ -449,9 +449,19 @@ impl GpuiDesktopView {
                 }
                 _ => {}
             },
-            // With no suggestion shown, Escape leaves the field.
-            Outcome::Drop => self.active_input = ActiveInput::Terminal,
-            Outcome::Take | Outcome::Changed | Outcome::Nothing => {}
+            // Tab takes the suggestion shown in the message field; Escape drops
+            // it, and with none shown leaves the field.
+            Outcome::Take => {
+                if which == ActiveInput::MessageRow {
+                    guard.app.take_suggestion();
+                }
+            }
+            Outcome::Drop => {
+                if which != ActiveInput::MessageRow || !guard.app.drop_suggestion() {
+                    self.active_input = ActiveInput::Terminal;
+                }
+            }
+            Outcome::Changed | Outcome::Nothing => {}
         }
         cx.notify();
         true
@@ -911,11 +921,21 @@ impl GpuiDesktopView {
                 max_lines: if target_input == ActiveInput::Search { 1 } else { 6 },
             };
             let snapshot = self.shared.lock().ok().and_then(|mut g| {
+                let ghost = (target_input == ActiveInput::MessageRow)
+                    .then(|| g.app.ghost().map(str::to_string))
+                    .flatten();
                 field(&mut g.app, target_input).map(|f| {
-                    (f.text().to_string(), f.selection(), f.cursor(), f.marked.clone(), f.shape())
+                    (
+                        f.text().to_string(),
+                        f.selection(),
+                        f.cursor(),
+                        f.marked.clone(),
+                        f.shape(),
+                        ghost,
+                    )
                 })
             });
-            let Some((text, selection, cursor, marked, shape)) = snapshot else {
+            let Some((text, selection, cursor, marked, shape, ghost)) = snapshot else {
                 return d.into_any_element();
             };
             // Only the focused field's paint is kept for the pointer and the input method.
@@ -929,6 +949,7 @@ impl GpuiDesktopView {
                 cursor,
                 marked,
                 placeholder: el.placeholder.clone().unwrap_or_default(),
+                ghost,
                 shape,
                 look,
                 painted,
@@ -1333,6 +1354,35 @@ mod tests {
             assert_eq!(message(&shared), "one\ntwo");
             shared.lock().unwrap().app.search.paste("one\ntwo");
             assert_eq!(shared.lock().unwrap().app.search.text(), "one two");
+        });
+    }
+
+    /// A suggestion shown for the draft the field holds now.
+    fn suggested(shared: &Arc<Mutex<SharedState>>, text: &str) {
+        let mut g = shared.lock().unwrap();
+        let t0 = std::time::Instant::now();
+        g.app.suggest_tick(t0);
+        g.app.suggest_tick(t0 + std::time::Duration::from_millis(150));
+        let id = g.app.suggesting.as_ref().expect("asked").id;
+        g.app.clients[0].give_answer(id, serde_json::json!({"text": text, "score": 0.8}));
+        g.app.suggest_tick(t0 + std::time::Duration::from_millis(160));
+        assert_eq!(g.app.ghost(), Some(text));
+    }
+
+    #[test]
+    fn tab_takes_the_suggestion_and_escape_drops_it_keeping_the_field() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            cx.simulate_input("run the");
+            suggested(&shared, " login tests");
+            cx.simulate_keystrokes("tab");
+            assert_eq!(message(&shared), "run the login tests");
+            cx.simulate_input(" now");
+            suggested(&shared, " please");
+            cx.simulate_keystrokes("escape");
+            assert_eq!(shared.lock().unwrap().app.ghost(), None);
+            cx.simulate_input("!");
+            assert_eq!(message(&shared), "run the login tests now!", "still in the field");
         });
     }
 }
