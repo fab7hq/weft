@@ -1,35 +1,47 @@
 //! The tree: one-line rows of projects, agents and their work, each agent
 //! led by its status shape, built over `weft_core::tree` and `weft_core::words`.
 
+use std::path::{Path, PathBuf};
+
 use weft_core::harness::Harnesses;
 use weft_core::sessions::State;
 use weft_core::tree::{self, Agent, Ask, Group, Project};
 use weft_core::turns::Turn;
 use weft_core::words;
 
+use crate::action::{Focus, TreeAct, WindowAct};
 use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
+
+/// A project as the tree lists it, and the folder it is.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub root: PathBuf,
+    pub project: Project,
+}
 
 /// Which row in the `Tree` is currently selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeSelection {
-    Project { project: String },
-    Agent { project: String, session: String },
-    EarlierSessions { project: String },
-    OpenGroup { project: String },
-    Ask { project: String, unit: String },
-    EvalGroup { project: String, eval: String },
-    SealedGroup { project: String },
-    Seal { project: String, seal: String },
+    Project { project: PathBuf },
+    Agent { project: PathBuf, session: String },
+    EarlierSessions { project: PathBuf },
+    OpenGroup { project: PathBuf },
+    Ask { project: PathBuf, unit: String },
+    EvalGroup { project: PathBuf, eval: String },
+    SealedGroup { project: PathBuf },
+    Seal { project: PathBuf, seal: String },
 }
 
 pub struct TreeProps<'a> {
-    pub projects: &'a [Project],
+    pub projects: &'a [Listed],
     pub selection: Option<&'a TreeSelection>,
     pub search_query: &'a str,
-    pub plus_popover_project: Option<&'a str>,
+    /// The search field has the keyboard.
+    pub searching: bool,
+    pub plus_popover_project: Option<&'a Path>,
     pub harnesses: &'a Harnesses,
     pub turbo: bool,
-    pub unfolded_earlier: &'a std::collections::HashSet<String>,
+    pub unfolded_earlier: &'a std::collections::HashSet<PathBuf>,
     pub clients: &'a [crate::daemon::ProjectClient],
 }
 
@@ -46,14 +58,14 @@ pub fn render_tree(props: &TreeProps) -> Element {
         .style("overflow-y", "auto")
         .style("overflow-x", "hidden")
         .border_right(palette::LINE)
-        .child(render_search_box(props.search_query));
+        .child(render_search_box(props.search_query, props.searching));
 
     let q = props.search_query.trim();
     if !q.is_empty() {
         let mut any_match = false;
-        for proj in props.projects {
+        for Listed { root, project: proj } in props.projects {
             let mut all_agents: Vec<Agent> = proj.agents.rows.clone();
-            if let Some(client) = props.clients.iter().find(|c| c.name == proj.name) {
+            if let Some(client) = props.clients.iter().find(|c| c.root == *root) {
                 let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
                 for r in earlier_rows {
                     all_agents.push(Agent {
@@ -84,8 +96,9 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 continue;
             }
             any_match = true;
-            let turbo =
-                props.clients.iter().find(|c| c.name == proj.name).map_or(props.turbo, |c| c.turbo);
+            let client = props.clients.iter().find(|c| c.root == *root);
+            let turbo = client.map_or(props.turbo, |c| c.turbo);
+            let zone = client.map_or(0, |c| c.zone);
             tree_el = tree_el.child(render_search_project_row(proj, total));
             if !matching_agents.is_empty() {
                 tree_el = tree_el
@@ -93,10 +106,10 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 for a in matching_agents {
                     let selected = props.selection
                         == Some(&TreeSelection::Agent {
-                            project: proj.name.clone(),
+                            project: root.clone(),
                             session: a.session.clone(),
                         });
-                    tree_el = tree_el.child(render_agent_row(&proj.name, a, selected, turbo));
+                    tree_el = tree_el.child(render_agent_row(root, a, selected, turbo, zone));
                 }
             }
             if !matching_asks.is_empty() {
@@ -105,10 +118,10 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 for ask in matching_asks {
                     let selected = props.selection
                         == Some(&TreeSelection::Ask {
-                            project: proj.name.clone(),
+                            project: root.clone(),
                             unit: ask.unit.clone(),
                         });
-                    tree_el = tree_el.child(render_ask_row(&proj.name, ask, selected));
+                    tree_el = tree_el.child(render_ask_row(root, ask, selected));
                 }
             }
         }
@@ -126,10 +139,10 @@ pub fn render_tree(props: &TreeProps) -> Element {
         return tree_el;
     }
 
-    for proj in props.projects {
+    for Listed { root, project: proj } in props.projects {
         let proj_selected =
-            props.selection == Some(&TreeSelection::Project { project: proj.name.clone() });
-        tree_el = tree_el.child(render_project_row(proj, proj_selected));
+            props.selection == Some(&TreeSelection::Project { project: root.clone() });
+        tree_el = tree_el.child(render_project_row(root, proj, proj_selected));
         if proj.folded {
             continue;
         }
@@ -137,20 +150,21 @@ pub fn render_tree(props: &TreeProps) -> Element {
             tree_el = tree_el.child(render_setup_checklist(needs));
         }
 
-        let turbo =
-            props.clients.iter().find(|c| c.name == proj.name).map_or(props.turbo, |c| c.turbo);
+        let client = props.clients.iter().find(|c| c.root == *root);
+        let turbo = client.map_or(props.turbo, |c| c.turbo);
+        let zone = client.map_or(0, |c| c.zone);
         tree_el =
             tree_el.child(render_section_header("section AGENTS", words::word("tree.agents")));
         for a in &proj.agents.rows {
             let selected = props.selection
                 == Some(&TreeSelection::Agent {
-                    project: proj.name.clone(),
+                    project: root.clone(),
                     session: a.session.clone(),
                 });
-            tree_el = tree_el.child(render_agent_row(&proj.name, a, selected, turbo));
+            tree_el = tree_el.child(render_agent_row(root, a, selected, turbo, zone));
         }
         if proj.agents.earlier > 0 {
-            let earlier_unfolded = props.unfolded_earlier.contains(&proj.name);
+            let earlier_unfolded = props.unfolded_earlier.contains(root);
             if !earlier_unfolded {
                 let earlier_label = if proj.agents.earlier == 1 {
                     format!("{} ›", words::word("tree.earlier_one"))
@@ -163,7 +177,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 tree_el = tree_el.child(
                     div()
                         .layer("row earlier sessions")
-                        .on_click(format!("open_earlier:{}", proj.name))
+                        .on_click(TreeAct::OpenEarlier(root.clone()))
                         .self_stretch()
                         .shrink_0()
                         .h(30)
@@ -173,7 +187,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                         .border_bottom(palette::LINE)
                         .child(div().font_size(12).color(palette::BLUE_BORDER).text(earlier_label)),
                 );
-            } else if let Some(client) = props.clients.iter().find(|c| c.name == proj.name) {
+            } else if let Some(client) = props.clients.iter().find(|c| c.root == *root) {
                 let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
                 for r in earlier_rows {
                     let a = Agent {
@@ -189,10 +203,10 @@ pub fn render_tree(props: &TreeProps) -> Element {
                     };
                     let selected = props.selection
                         == Some(&TreeSelection::Agent {
-                            project: proj.name.clone(),
+                            project: root.clone(),
                             session: a.session.clone(),
                         });
-                    tree_el = tree_el.child(render_agent_row(&proj.name, &a, selected, turbo));
+                    tree_el = tree_el.child(render_agent_row(root, &a, selected, turbo, zone));
                 }
             }
         }
@@ -200,50 +214,47 @@ pub fn render_tree(props: &TreeProps) -> Element {
         tree_el = tree_el.child(render_section_header("section WORK", words::word("tree.work")));
 
         let open_selected =
-            props.selection == Some(&TreeSelection::OpenGroup { project: proj.name.clone() });
-        tree_el = tree_el.child(render_open_group_row(proj, open_selected));
+            props.selection == Some(&TreeSelection::OpenGroup { project: root.clone() });
+        tree_el = tree_el.child(render_open_group_row(root, proj, open_selected));
         if !proj.work.open.folded {
             for ask in &proj.work.open.asks {
                 let selected = props.selection
-                    == Some(&TreeSelection::Ask {
-                        project: proj.name.clone(),
-                        unit: ask.unit.clone(),
-                    });
-                tree_el = tree_el.child(render_ask_row(&proj.name, ask, selected));
+                    == Some(&TreeSelection::Ask { project: root.clone(), unit: ask.unit.clone() });
+                tree_el = tree_el.child(render_ask_row(root, ask, selected));
             }
         }
 
         for group in &proj.work.evals {
             let eval_selected = props.selection
                 == Some(&TreeSelection::EvalGroup {
-                    project: proj.name.clone(),
+                    project: root.clone(),
                     eval: group.eval.clone(),
                 });
-            tree_el = tree_el.child(render_eval_group_row(&proj.name, group, eval_selected));
+            tree_el = tree_el.child(render_eval_group_row(root, group, eval_selected));
             if !group.folded {
                 for ask in &group.asks {
                     let selected = props.selection
                         == Some(&TreeSelection::Ask {
-                            project: proj.name.clone(),
+                            project: root.clone(),
                             unit: ask.unit.clone(),
                         });
-                    tree_el = tree_el.child(render_ask_row(&proj.name, ask, selected));
+                    tree_el = tree_el.child(render_ask_row(root, ask, selected));
                 }
             }
         }
 
         if proj.work.sealed.seals > 0 {
             let sealed_selected =
-                props.selection == Some(&TreeSelection::SealedGroup { project: proj.name.clone() });
-            tree_el = tree_el.child(render_sealed_group_row(proj, sealed_selected));
+                props.selection == Some(&TreeSelection::SealedGroup { project: root.clone() });
+            tree_el = tree_el.child(render_sealed_group_row(root, proj, sealed_selected));
             if !proj.work.sealed.folded {
                 for srow in &proj.work.sealed.rows {
                     let selected = props.selection
                         == Some(&TreeSelection::Seal {
-                            project: proj.name.clone(),
+                            project: root.clone(),
                             seal: srow.seal.clone(),
                         });
-                    tree_el = tree_el.child(render_seal_row(&proj.name, srow, selected));
+                    tree_el = tree_el.child(render_seal_row(root, srow, selected));
                 }
             }
         }
@@ -252,8 +263,9 @@ pub fn render_tree(props: &TreeProps) -> Element {
     tree_el
 }
 
-/// Render the `D9.9` 1-click `+` new-agent popover for `project_name`.
-pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: bool) -> Element {
+/// The `+` popover: a new agent of each harness in this project, in one click.
+pub fn render_plus_popover(root: &Path, harnesses: &Harnesses, turbo: bool) -> Element {
+    let project_name = crate::daemon::ProjectClient::name_of(root);
     let mut pop = div()
         .layer("plus popover")
         .style("position", "absolute")
@@ -271,15 +283,16 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
                 .font_mono()
                 .font_size(10)
                 .font_weight(600)
-                .style("letter-spacing", "0.08em")
                 .color(palette::DIM)
-                .text(format!("NEW AGENT IN {}", project_name.to_uppercase())),
+                .text(
+                    words::fill("desktop.plus.title", &[("project", &project_name)]).to_uppercase(),
+                ),
         );
 
     for (idx, h) in harnesses.0.iter().enumerate() {
         let mut row = div()
             .layer(format!("plus harness {}", h.name))
-            .on_click(format!("start_agent:{}:{}", project_name, h.name))
+            .on_click(TreeAct::StartAgent { project: root.to_path_buf(), harness: h.name.clone() })
             .flex_row()
             .pad(8, 12)
             .items_center()
@@ -308,8 +321,8 @@ pub fn render_plus_popover(project_name: &str, harnesses: &Harnesses, turbo: boo
     pop
 }
 
-fn render_search_box(query: &str) -> Element {
-    let active = !query.trim().is_empty();
+fn render_search_box(query: &str, searching: bool) -> Element {
+    let active = !query.trim().is_empty() || searching;
     let mut box_el = div()
         .layer("search")
         .self_stretch()
@@ -321,30 +334,26 @@ fn render_search_box(query: &str) -> Element {
         .pad(0, 16)
         .bg(palette::SURFACE_ALT)
         .border_bottom(if active { palette::BLUE_BORDER } else { palette::LINE })
+        .on_click(WindowAct::Focus(Focus::Search))
         .font_size(13)
         .color(if active { palette::TEXT } else { palette::DIM })
         .child(span("⌕").shrink_0().font_mono().color(palette::MUTED))
         .child(
-            input_el()
-                .id("tree-search")
+            input_el(Focus::Search)
                 .flex_1()
-                .style("min-width", "0")
                 .style("white-space", "nowrap")
                 .style("overflow", "hidden")
                 .placeholder(words::word("tree.search_placeholder"))
                 .text(query.to_string())
-                .style("background", "transparent")
-                .style("border", "none")
-                .style("outline", "none")
                 .font_size(13)
                 .color(palette::TEXT),
         );
 
-    if active {
+    if !query.trim().is_empty() {
         box_el = box_el.child(
             span("✕")
                 .layer("clear search")
-                .on_click("clear_search")
+                .on_click(TreeAct::ClearSearch)
                 .shrink_0()
                 .color(palette::MUTED),
         );
@@ -417,12 +426,12 @@ fn render_search_project_row(proj: &Project, matches: usize) -> Element {
         )
 }
 
-fn render_project_row(proj: &Project, selected: bool) -> Element {
+fn render_project_row(root: &Path, proj: &Project, selected: bool) -> Element {
     let mut el = row(format!("row {}", proj.name), 40, 16, selected)
-        .on_click(format!("select_project:{}", proj.name))
+        .on_click(TreeAct::SelectProject(root.to_path_buf()))
         .child(
             div()
-                .on_click(format!("toggle_project:{}", proj.name))
+                .on_click(TreeAct::ToggleProject(root.to_path_buf()))
                 .font_size(12)
                 .color(palette::MUTED)
                 .text(caret(proj.folded)),
@@ -439,7 +448,7 @@ fn render_project_row(proj: &Project, selected: bool) -> Element {
             .layer(format!("plus {}", proj.name))
             .role("button")
             .aria_label(words::fill("web.start.in", &[("project", &proj.name)]))
-            .on_click(format!("toggle_plus:{}", proj.name))
+            .on_click(TreeAct::TogglePlus(root.to_path_buf()))
             .flex_row()
             .pad(2, 7)
             .bg(palette::SURFACE)
@@ -455,7 +464,7 @@ fn render_project_row(proj: &Project, selected: bool) -> Element {
                 .layer(format!("close {}", proj.name))
                 .role("button")
                 .aria_label(words::word("act.close"))
-                .on_click(format!("close_project:{}", proj.name))
+                .on_click(TreeAct::CloseProject(root.to_path_buf()))
                 .font_size(13)
                 .color(palette::DIM)
                 .text("⌫"),
@@ -495,15 +504,7 @@ fn render_section_header(layer: &str, title: &str) -> Element {
         .style("padding", "0 16px 0 32px")
         .bg(palette::SURFACE_ALT)
         .border_bottom(palette::LINE)
-        .child(
-            div()
-                .font_mono()
-                .font_weight(600)
-                .font_size(10)
-                .style("letter-spacing", "0.08em")
-                .color(palette::DIM)
-                .text(title),
-        )
+        .child(div().font_mono().font_weight(600).font_size(10).color(palette::DIM).text(title))
 }
 
 /// The status an agent's row leads with: a circle while it runs, a square
@@ -516,30 +517,16 @@ pub fn status_shape(state: State, turn: Option<Turn>) -> (&'static str, &'static
     }
 }
 
-fn render_agent_row(project: &str, a: &Agent, selected: bool, turbo: bool) -> Element {
+fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone: i64) -> Element {
     let layer_name = match &a.title {
         Some(t) => format!("row agent {} {t}", a.harness),
         None => format!("row agent {}", a.harness),
     };
     let (shape, shape_color) = status_shape(a.state, a.turn);
     let running = a.state == State::Running;
-    let sess_key = if a.session.is_empty() {
-        match a.pane {
-            Some(pid) => format!("pane:{pid}"),
-            None => String::new(),
-        }
-    } else {
-        a.session.clone()
-    };
 
-    let mut title = div()
-        .flex_1()
-        .style("min-width", "0")
-        .style("overflow", "hidden")
-        .flex_row()
-        .gap(6)
-        .items_baseline()
-        .child(
+    let mut title =
+        div().flex_1().style("overflow", "hidden").flex_row().gap(6).items_baseline().child(
             div()
                 .shrink_0()
                 .font_size(13)
@@ -562,7 +549,11 @@ fn render_agent_row(project: &str, a: &Agent, selected: bool, turbo: bool) -> El
     }
 
     let mut el = row(layer_name, 36, 32, selected)
-        .on_click(format!("select_agent:{}:{}", project, sess_key))
+        .on_click(TreeAct::SelectAgent {
+            project: project.to_path_buf(),
+            session: a.session.clone(),
+            pane: a.pane,
+        })
         .child(div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape))
         .child(title);
 
@@ -570,7 +561,11 @@ fn render_agent_row(project: &str, a: &Agent, selected: bool, turbo: bool) -> El
         el = el.child(
             div()
                 .layer("btn Resume (row)")
-                .on_click(format!("resume_session:{}:{}:{}", project, a.harness, a.session))
+                .on_click(crate::action::SheetAct::Resume {
+                    project: project.to_path_buf(),
+                    harness: a.harness.clone(),
+                    session: a.session.clone(),
+                })
                 .shrink_0()
                 .pad(2, 8)
                 .bg(palette::SURFACE)
@@ -587,17 +582,17 @@ fn render_agent_row(project: &str, a: &Agent, selected: bool, turbo: bool) -> El
             .font_mono()
             .font_size(11)
             .color(if selected { palette::MUTED } else { palette::DIM })
-            .text(format_clock(a.at)),
+            .text(clock(a.at, zone)),
     )
 }
 
-fn render_open_group_row(proj: &Project, selected: bool) -> Element {
+fn render_open_group_row(root: &Path, proj: &Project, selected: bool) -> Element {
     row("row group Open", 36, 32, selected)
         .gap(8)
-        .on_click(format!("select_open:{}", proj.name))
+        .on_click(TreeAct::SelectOpen(root.to_path_buf()))
         .child(
             div()
-                .on_click(format!("toggle_open:{}", proj.name))
+                .on_click(TreeAct::ToggleOpen(root.to_path_buf()))
                 .shrink_0()
                 .font_size(12)
                 .color(palette::MUTED)
@@ -607,23 +602,22 @@ fn render_open_group_row(proj: &Project, selected: bool) -> Element {
         .child(count(proj.work.open.count))
 }
 
-fn render_ask_row(project: &str, ask: &Ask, selected: bool) -> Element {
+fn render_ask_row(project: &Path, ask: &Ask, selected: bool) -> Element {
     let meta = match ask.word {
         Some(w) => format!("{} · {}", w.say(), ask.harness),
         None => ask.harness.clone(),
     };
     row(format!("row ask {}", ask.title), 34, 48, selected)
-        .on_click(format!("select_ask:{}:{}", project, ask.unit))
+        .on_click(TreeAct::SelectAsk { project: project.to_path_buf(), unit: ask.unit.clone() })
         .child(line(ask.title.clone()).flex_1().font_size(13).color(palette::TEXT))
         .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
         .child(chevron())
 }
 
-fn render_eval_group_row(project: &str, g: &Group, selected: bool) -> Element {
+fn render_eval_group_row(project: &Path, g: &Group, selected: bool) -> Element {
     let title = words::fill("tree.eval", &[("n", &g.n.to_string())]);
     let mut label = div()
         .flex_1()
-        .style("min-width", "0")
         .style("overflow", "hidden")
         .flex_row()
         .gap(6)
@@ -651,10 +645,13 @@ fn render_eval_group_row(project: &str, g: &Group, selected: bool) -> Element {
     }
     row(format!("row group {title}"), 36, 32, selected)
         .gap(8)
-        .on_click(format!("select_eval:{}:{}", project, g.eval))
+        .on_click(TreeAct::SelectEval { project: project.to_path_buf(), eval: g.eval.clone() })
         .child(
             div()
-                .on_click(format!("toggle_eval:{}:{}", project, g.eval))
+                .on_click(TreeAct::ToggleEval {
+                    project: project.to_path_buf(),
+                    eval: g.eval.clone(),
+                })
                 .shrink_0()
                 .font_size(12)
                 .color(palette::MUTED)
@@ -664,10 +661,10 @@ fn render_eval_group_row(project: &str, g: &Group, selected: bool) -> Element {
         .child(count(g.count))
 }
 
-fn render_sealed_group_row(proj: &Project, selected: bool) -> Element {
+fn render_sealed_group_row(root: &Path, proj: &Project, selected: bool) -> Element {
     row("row group Sealed", 36, 32, selected)
         .gap(8)
-        .on_click(format!("toggle_sealed:{}", proj.name))
+        .on_click(TreeAct::ToggleSealed(root.to_path_buf()))
         .child(
             div()
                 .shrink_0()
@@ -679,31 +676,28 @@ fn render_sealed_group_row(proj: &Project, selected: bool) -> Element {
         .child(count(proj.work.sealed.asks))
 }
 
-fn render_seal_row(project: &str, srow: &tree::SealRow, selected: bool) -> Element {
+fn render_seal_row(project: &Path, srow: &tree::SealRow, selected: bool) -> Element {
     let title = words::fill("tree.seal", &[("n", &srow.n.to_string())]);
     let meta = match srow.eval {
-        Some(en) => format!("{} · Eval {en}", srow.decision),
+        Some(en) => {
+            format!("{} · {}", srow.decision, words::fill("tree.eval", &[("n", &en.to_string())]))
+        }
         None => srow.decision.clone(),
     };
     row(format!("row seal {title}"), 34, 48, selected)
-        .on_click(format!("select_seal:{}:{}", project, srow.seal))
+        .on_click(TreeAct::SelectSeal { project: project.to_path_buf(), seal: srow.seal.clone() })
         .child(line(title).flex_1().font_size(13).color(palette::TEXT))
         .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
         .child(count(srow.asks))
         .child(chevron())
 }
 
-fn format_clock(ms: i64) -> String {
+/// A time of day, `HH:MM`, at the Mac's distance from UTC; nothing when no
+/// time was given.
+pub fn clock(ms: i64, zone: i64) -> String {
     if ms <= 0 {
-        return "00:00".to_string();
+        return String::new();
     }
-    if ms < 2400 {
-        let h = (ms / 100).rem_euclid(24);
-        let m = ms.rem_euclid(100).min(59);
-        return format!("{h:02}:{m:02}");
-    }
-    let total_mins = (ms / 60_000).rem_euclid(24 * 60);
-    let h = total_mins / 60;
-    let m = total_mins % 60;
-    format!("{h:02}:{m:02}")
+    let total_mins = ((ms + zone) / 60_000).rem_euclid(24 * 60);
+    format!("{:02}:{:02}", total_mins / 60, total_mins % 60)
 }

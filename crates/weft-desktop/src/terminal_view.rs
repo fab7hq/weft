@@ -25,19 +25,16 @@ pub fn grid_size(width: f32, height: f32, cell_width: f32, line_height: f32) -> 
     (rows.min(u16::MAX as f32) as u16, cols.min(u16::MAX as f32) as u16)
 }
 
-/// What one frame paints.
-struct Screen {
-    cells: Vec<Vec<weft_term::Cell>>,
-    cursor: Option<(u16, u16)>,
-    cell_width: f32,
-}
-
-/// The terminal of `pane` in `project`, filling its parent.
+/// The terminal of `pane` in `project`, filling its parent. It sizes the
+/// pane from its rectangle, then paints the rows the pane keeps up to date,
+/// reading them where they are.
 pub(crate) fn terminal(
     shared: Arc<Mutex<SharedState>>,
     project: PathBuf,
     pane: u32,
 ) -> impl IntoElement {
+    let painting = Arc::clone(&shared);
+    let at = project.clone();
     canvas(
         move |bounds, window, _cx| {
             let cell_width = cell_width(window);
@@ -47,21 +44,19 @@ pub(crate) fn terminal(
                 cell_width,
                 LINE_HEIGHT,
             );
-            let Ok(mut guard) = shared.lock() else {
-                return Screen { cells: Vec::new(), cursor: None, cell_width };
-            };
-            guard.grids.insert((project.clone(), pane), (bounds.origin, cell_width));
-            guard.app.resize_pane(&project, pane, rows, cols);
-            match guard.app.pane_view(&project, pane) {
-                Some(view) => Screen {
-                    cells: view.cells(),
-                    cursor: view.cursor_visible().then(|| view.cursor()),
-                    cell_width,
-                },
-                None => Screen { cells: Vec::new(), cursor: None, cell_width },
+            if let Ok(mut guard) = shared.lock() {
+                guard.grids.insert((project.clone(), pane), (bounds.origin, cell_width));
+                guard.app.resize_pane(&project, pane, rows, cols);
+            }
+            cell_width
+        },
+        move |bounds, cell_width, window, cx| {
+            let Ok(guard) = painting.lock() else { return };
+            if let Some(view) = guard.app.pane_view(&at, pane) {
+                let cursor = view.cursor_visible().then(|| view.cursor());
+                paint(bounds, view.screen(), cursor, cell_width, window, cx);
             }
         },
-        paint,
     )
     .size_full()
 }
@@ -78,13 +73,19 @@ fn cell_width(window: &Window) -> f32 {
     text.advance(id, px(FONT_SIZE), 'm').map(|s| f32::from(s.width)).unwrap_or(FONT_SIZE * 0.6)
 }
 
-fn paint(bounds: Bounds<Pixels>, screen: Screen, window: &mut Window, cx: &mut App) {
-    let cw = screen.cell_width;
+fn paint(
+    bounds: Bounds<Pixels>,
+    cells: &[Vec<weft_term::Cell>],
+    cursor: Option<(u16, u16)>,
+    cw: f32,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let at = |row: usize, col: usize| {
         point(bounds.origin.x + px(col as f32 * cw), bounds.origin.y + px(row as f32 * LINE_HEIGHT))
     };
-    for (r, row) in screen.cells.iter().enumerate() {
-        let cursor_col = screen.cursor.filter(|c| c.0 as usize == r).map(|c| c.1 as usize);
+    for (r, row) in cells.iter().enumerate() {
+        let cursor_col = cursor.filter(|c| c.0 as usize == r).map(|c| c.1 as usize);
         // Backgrounds: one rectangle per run of the same colour.
         let mut c = 0;
         while c < row.len() {

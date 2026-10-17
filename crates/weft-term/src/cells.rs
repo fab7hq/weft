@@ -31,50 +31,47 @@ pub struct Cell {
 
 /// Every cell on view, row by row, a cell per column.
 pub(crate) fn cells<T>(term: &Term<T>) -> Vec<Vec<Cell>> {
+    (0..term.grid().screen_lines() as u16).map(|r| row(term, r)).collect()
+}
+
+/// One row on view, a cell per column.
+pub(crate) fn row<T>(term: &Term<T>, row: u16) -> Vec<Cell> {
     let grid = term.grid();
     let offset = grid.display_offset() as i32;
     let selection = term.selection.as_ref().and_then(|s| s.to_range(term));
-    (0..grid.screen_lines() as i32)
-        .map(|i| {
-            let line = Line(i - offset);
-            grid[line][..]
-                .iter()
-                .enumerate()
-                .map(|(col, cell)| {
-                    let mut text = String::new();
-                    if !cell
-                        .flags
-                        .intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER)
-                    {
-                        text.push(cell.c);
-                        if let Some(marks) = cell.zerowidth() {
-                            text.extend(marks);
-                        }
-                    }
-                    let mut fg = rgb(term, cell.fg).unwrap_or(palette::FOREGROUND);
-                    let mut bg = rgb(term, cell.bg);
-                    if cell.flags.contains(Flags::INVERSE) {
-                        let was = fg;
-                        fg = bg.unwrap_or(palette::BACKGROUND);
-                        bg = Some(was);
-                    }
-                    if cell.flags.contains(Flags::HIDDEN) {
-                        fg = bg.unwrap_or(palette::BACKGROUND);
-                    }
-                    Cell {
-                        text,
-                        fg,
-                        bg,
-                        bold: cell.flags.contains(Flags::BOLD),
-                        italic: cell.flags.contains(Flags::ITALIC),
-                        underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
-                        strike: cell.flags.contains(Flags::STRIKEOUT),
-                        wide: cell.flags.contains(Flags::WIDE_CHAR),
-                        selected: selection
-                            .is_some_and(|s| s.contains(Point::new(line, Column(col)))),
-                    }
-                })
-                .collect()
+    let line = Line(row as i32 - offset);
+    grid[line][..]
+        .iter()
+        .enumerate()
+        .map(|(col, cell)| {
+            let mut text = String::new();
+            if !cell.flags.intersects(Flags::WIDE_CHAR_SPACER | Flags::LEADING_WIDE_CHAR_SPACER) {
+                text.push(cell.c);
+                if let Some(marks) = cell.zerowidth() {
+                    text.extend(marks);
+                }
+            }
+            let mut fg = rgb(term, cell.fg).unwrap_or(palette::FOREGROUND);
+            let mut bg = rgb(term, cell.bg);
+            if cell.flags.contains(Flags::INVERSE) {
+                let was = fg;
+                fg = bg.unwrap_or(palette::BACKGROUND);
+                bg = Some(was);
+            }
+            if cell.flags.contains(Flags::HIDDEN) {
+                fg = bg.unwrap_or(palette::BACKGROUND);
+            }
+            Cell {
+                text,
+                fg,
+                bg,
+                bold: cell.flags.contains(Flags::BOLD),
+                italic: cell.flags.contains(Flags::ITALIC),
+                underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+                strike: cell.flags.contains(Flags::STRIKEOUT),
+                wide: cell.flags.contains(Flags::WIDE_CHAR),
+                selected: selection.is_some_and(|s| s.contains(Point::new(line, Column(col)))),
+            }
         })
         .collect()
 }

@@ -1,7 +1,8 @@
-//! The 48 px top bar and the macOS window titlebar.
+//! The 48 px top bar.
 
 use weft_core::words;
 
+use crate::action::WindowAct;
 use crate::gpui::{Element, div, img_el, palette, span};
 
 #[derive(Debug, Clone)]
@@ -10,31 +11,6 @@ pub struct HeaderProps {
     pub sidebar_open: bool,
     pub needs_you: usize,
     pub menu_open: bool,
-}
-
-/// Render the native macOS window titlebar (`Weft — <machine>`).
-pub fn render_titlebar(machine: &str) -> Element {
-    div()
-        .layer("titlebar")
-        .self_stretch()
-        .flex_row()
-        .gap(8)
-        .pad(9, 14)
-        .items_center()
-        .bg(palette::TITLEBAR_BG)
-        .border_bottom(palette::LINE)
-        .child(div().w(12).h(12).shrink_0().bg("#ff5f57"))
-        .child(div().w(12).h(12).shrink_0().bg("#febc2e"))
-        .child(div().w(12).h(12).shrink_0().bg("#28c840"))
-        .child(
-            div()
-                .flex_1()
-                .flex_row()
-                .justify_center()
-                .items_center()
-                .child(div().font_size(12).color(palette::DIM).text(format!("Weft — {machine}"))),
-        )
-        .child(div().w(52).h(4).shrink_0())
 }
 
 /// Render the top bar: the list's toggle, the woven mark, the machine, what
@@ -66,7 +42,7 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .layer("the list's toggle")
         .role("button")
         .aria_label(toggle_label)
-        .on_click("toggle_sidebar")
+        .on_click(WindowAct::ToggleSidebar)
         .flex_row()
         .pad(6, 8)
         .items_center()
@@ -106,7 +82,11 @@ pub fn render_header(props: &HeaderProps) -> Element {
                 .font_size(12)
                 .color(palette::AMBER)
                 .child(span("■"))
-                .child(span(format!("NEEDS YOU {}", props.needs_you))),
+                .child(span(format!(
+                    "{} {}",
+                    words::word("title.needs_you").to_uppercase(),
+                    props.needs_you
+                ))),
         );
     }
 
@@ -114,8 +94,8 @@ pub fn render_header(props: &HeaderProps) -> Element {
         div()
             .layer("menu button")
             .role("button")
-            .aria_label("Menu")
-            .on_click("toggle_menu")
+            .aria_label(words::word("desktop.menu"))
+            .on_click(WindowAct::ToggleMenu)
             .pad(4, 8)
             .font_weight(600)
             .font_size(18)

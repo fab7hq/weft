@@ -1,5 +1,5 @@
-//! Native macOS GPU-accelerated desktop window (`gpui` Metal renderer) for
-//! `WeftDesktopApp`.
+//! The desktop's window: its event loop, the threads that connect to the
+//! daemon and take what it sends, and the element tree drawn with GPUI.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -12,36 +12,36 @@ use std::time::Duration;
 use ::gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, EntityInputHandler,
     FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, Rgba, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, UTF16Selection, Window,
+    MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, UTF16Selection, Window,
     WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div, point, prelude::*, px, rgba,
     size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
 
+use crate::action::{Action, Focus, SheetAct, WindowAct};
 use crate::app::WeftDesktopApp;
-use crate::gpui::{Element, FileDialog, MacFileDialog, palette};
+use crate::daemon::ProjectClient;
+use crate::gpui::{Element, palette};
 use crate::terminal_input::{self, Act, Button, Held};
 use crate::text_field::{Outcome, TextField};
 use crate::text_input::{self as field_view, FieldElement, Look, Painted};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveInput {
-    Terminal,
-    Search,
-    MessageRow,
-    AskSheet,
+/// The text field `which` names, when it is one and is there.
+fn field(app: &mut WeftDesktopApp, which: Focus) -> Option<&mut TextField> {
+    match which {
+        Focus::Search => Some(&mut app.search),
+        Focus::Message => Some(app.message_field()),
+        Focus::Ask => app.ask_draft_mut(),
+        Focus::Terminal => None,
+    }
 }
 
-/// The text field `which` names, when it is one and is there.
-fn field(app: &mut WeftDesktopApp, which: ActiveInput) -> Option<&mut TextField> {
-    match which {
-        ActiveInput::Search => Some(&mut app.search),
-        ActiveInput::MessageRow => Some(app.message_field()),
-        ActiveInput::AskSheet => app.ask_draft_mut(),
-        ActiveInput::Terminal => None,
-    }
+/// The field that has the keyboard, if one has.
+fn focused(app: &mut WeftDesktopApp) -> Option<&mut TextField> {
+    let which = app.focus;
+    field(app, which)
 }
 
 /// A key as the text key table names it: `ctrl-alt-shift-cmd-key`.
@@ -82,7 +82,6 @@ struct InheritedText {
 struct GpuiDesktopView {
     shared: Arc<Mutex<SharedState>>,
     focus_handle: FocusHandle,
-    active_input: ActiveInput,
     wheel_accum: f32,
     /// The pane a drag is selecting in.
     selecting: Option<(PathBuf, u32)>,
@@ -96,20 +95,56 @@ impl Focusable for GpuiDesktopView {
     }
 }
 
-/// Run the native GPUI Metal desktop window and event loop until the user quits.
+/// Connect every project that is not connected, off the shared lock, until
+/// the window quits. One that would not connect waits longer each time, up
+/// to half a minute, before it is tried again.
+fn keep_connected(shared: Arc<Mutex<SharedState>>) {
+    let mut waits: HashMap<PathBuf, (std::time::Instant, Duration)> = HashMap::new();
+    loop {
+        let targets = match shared.lock() {
+            Ok(guard) if !guard.app.quit_requested => guard.app.disconnected(),
+            _ => return,
+        };
+        let now = std::time::Instant::now();
+        for root in targets {
+            if waits.get(&root).is_some_and(|(next, _)| now < *next) {
+                continue;
+            }
+            match ProjectClient::open(&root, 28, 100) {
+                Ok(client) => {
+                    waits.remove(&root);
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.app.integrate_connected_client(client);
+                        guard.dirty = true;
+                    }
+                }
+                Err(_) => {
+                    let wait = waits.get(&root).map_or(Duration::from_secs(1), |(_, w)| {
+                        (*w * 2).min(Duration::from_secs(30))
+                    });
+                    waits.insert(root, (std::time::Instant::now() + wait, wait));
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Write the desktop's state when it changed, outside the shared lock.
+fn write_state(shared: &Mutex<SharedState>) {
+    let unsaved = shared.lock().ok().and_then(|mut g| g.app.unsaved_state());
+    if let Some((home, state)) = unsaved {
+        let _ = crate::app::save_state_to_home(&home, &state);
+    }
+}
+
+/// Run the desktop window and its event loop until the person quits.
 pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
     if app.state.open_projects.is_empty()
         && let Ok(cwd) = std::env::current_dir()
         && (cwd.join(".git").exists() || cwd.join(".fab7").exists())
     {
-        let p = weft_core::state::normalize_project_path(&cwd);
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string();
-        app.state.open_projects.push(p.clone());
-        let mut c = crate::daemon::ProjectClient::disconnected(p, name);
-        c.turbo = app.state.settings.turbo;
-        c.start_at_login = app.state.settings.start_at_login;
-        app.clients.push(c);
-        let _ = app.save_state();
+        app.open_project_path(cwd);
     }
 
     let initial_bounds = app.state.settings.window_bounds.unwrap_or(WindowBounds {
@@ -121,67 +156,24 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
 
     let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
 
-    // Background connection & reconnection thread: connects any disconnected
-    // project to `weftd` outside the UI mutex so startup and GPU rendering
-    // never block.
-    let connect_shared = Arc::clone(&shared);
-    std::thread::spawn(move || {
-        let mut first_pass = true;
-        loop {
-            let targets: Vec<PathBuf> = {
-                let Ok(guard) = connect_shared.lock() else {
-                    break;
-                };
-                if guard.app.quit_requested {
-                    break;
-                }
-                if !guard.app.live {
-                    Vec::new()
-                } else {
-                    guard
-                        .app
-                        .clients
-                        .iter()
-                        .filter(|c| !c.is_connected())
-                        .map(|c| c.root.clone())
-                        .collect()
-                }
-            };
+    let connecting = Arc::clone(&shared);
+    std::thread::spawn(move || keep_connected(connecting));
 
-            let mut any_connected = false;
-            for root in targets {
-                if let Ok(mut client) = crate::daemon::ProjectClient::open(&root, 28, 100) {
-                    if first_pass {
-                        let _ = client.setup("look", "", "");
-                        first_pass = false;
-                    }
-                    if let Ok(mut guard) = connect_shared.lock() {
-                        guard.app.integrate_connected_client(client);
-                        let _ = guard.app.save_state();
-                        guard.dirty = true;
-                        any_connected = true;
-                    }
-                }
-            }
-
-            std::thread::sleep(Duration::from_millis(if any_connected { 250 } else { 1000 }));
-        }
-    });
-
-    // Background daemon pump thread: polls weftd sockets every 35ms.
+    // What the daemon sends, taken every 35 ms: nothing here waits for it.
     let pump_shared = Arc::clone(&shared);
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_millis(35));
-            let Ok(mut guard) = pump_shared.lock() else {
-                break;
-            };
-            if guard.app.quit_requested {
-                break;
+            {
+                let Ok(mut guard) = pump_shared.lock() else { break };
+                if guard.app.quit_requested {
+                    break;
+                }
+                if guard.app.pump() {
+                    guard.dirty = true;
+                }
             }
-            if guard.app.pump() {
-                guard.dirty = true;
-            }
+            write_state(&pump_shared);
         }
     });
 
@@ -200,7 +192,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
         };
 
         let view_shared = Arc::clone(&shared);
-        cx.open_window(
+        let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(GpuiWindowBounds::Windowed(bounds)),
                 ..Default::default()
@@ -212,14 +204,32 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
 
                     cx.observe_window_bounds(window, |this: &mut GpuiDesktopView, window, _cx| {
                         let wb = window.bounds();
-                        let width = f32::from(wb.size.width);
-                        let height = f32::from(wb.size.height);
-                        let x = f32::from(wb.origin.x);
-                        let y = f32::from(wb.origin.y);
                         // Each pane's terminal sizes itself from its own rectangle.
                         if let Ok(mut guard) = this.shared.lock() {
-                            guard.app.set_window_bounds(x, y, width, height);
+                            guard.app.set_window_bounds(
+                                f32::from(wb.origin.x),
+                                f32::from(wb.origin.y),
+                                f32::from(wb.size.width),
+                                f32::from(wb.size.height),
+                            );
                         }
+                    })
+                    .detach();
+
+                    // Leaving: each project's queued calls are written before the window goes.
+                    cx.on_app_quit(|this: &mut GpuiDesktopView, _cx| {
+                        let mut clients = match this.shared.lock() {
+                            Ok(mut guard) => {
+                                guard.app.quit_requested = true;
+                                std::mem::take(&mut guard.app.clients)
+                            }
+                            Err(_) => Vec::new(),
+                        };
+                        write_state(&this.shared);
+                        for c in &mut clients {
+                            c.detach();
+                        }
+                        async {}
                     })
                     .detach();
 
@@ -227,23 +237,18 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                     cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
-                            let (dirty, quit) = {
-                                if let Ok(mut guard) = poll_shared.lock() {
-                                    let d = guard.dirty;
-                                    guard.dirty = false;
-                                    (d, guard.app.quit_requested)
-                                } else {
-                                    (false, true)
+                            let (dirty, quit) = match poll_shared.lock() {
+                                Ok(mut guard) => {
+                                    (std::mem::take(&mut guard.dirty), guard.app.quit_requested)
                                 }
+                                Err(_) => (false, true),
                             };
                             if quit {
-                                let _ = cx.update(|cx| cx.quit());
+                                cx.update(|cx| cx.quit());
                                 break;
                             }
-                            if dirty {
-                                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                                    break;
-                                }
+                            if dirty && this.update(cx, |_, cx| cx.notify()).is_err() {
+                                break;
                             }
                         }
                     })
@@ -252,92 +257,88 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                     GpuiDesktopView {
                         shared: view_shared,
                         focus_handle,
-                        active_input: ActiveInput::Terminal,
                         wheel_accum: 0.0,
                         selecting: None,
                         painted: Rc::default(),
                     }
                 })
             },
-        )
-        .expect("open weft-desktop GPUI window");
-
-        cx.activate(true);
+        );
+        match opened {
+            Ok(_) => cx.activate(true),
+            Err(e) => {
+                eprintln!("weft-desktop: {e}");
+                cx.quit();
+            }
+        }
     });
 
     Ok(())
 }
 
 impl GpuiDesktopView {
-    fn dispatch_action(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.focus_handle.focus(window, cx);
-
-        if action == "open_project_dialog" {
-            let bg_shared = Arc::clone(&self.shared);
-            std::thread::spawn(move || {
-                if let Some(folder) = MacFileDialog.pick_folder()
-                    && let Ok(mut guard) = bg_shared.lock()
-                {
-                    guard.app.open_project_path(folder);
-                    guard.dirty = true;
-                }
-            });
-            return;
-        }
-
-        if action == "attach_file_dialog" {
-            let bg_shared = Arc::clone(&self.shared);
-            std::thread::spawn(move || {
-                if let Some(file) = MacFileDialog.pick_file("Attach file")
-                    && let Ok(mut guard) = bg_shared.lock()
-                {
-                    let token = format!(" @{} ", file.display());
-                    if let Some(draft) = guard.app.ask_draft_mut() {
-                        draft.paste(&token);
-                    }
-                    guard.dirty = true;
-                }
-            });
-            return;
-        }
-
-        if action == "clear_search" {
-            if let Ok(mut guard) = self.shared.lock() {
-                guard.app.dispatch("clear_search");
+    /// Ask the system for a folder or a file, then hand it to `then`.
+    fn pick(
+        &self,
+        directories: bool,
+        prompt: &str,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&mut WeftDesktopApp, PathBuf) + 'static,
+    ) {
+        let picked = cx.prompt_for_paths(PathPromptOptions {
+            files: !directories,
+            directories,
+            multiple: false,
+            prompt: Some(SharedString::from(prompt.to_string())),
+        });
+        let shared = Arc::clone(&self.shared);
+        cx.spawn(async move |_, _| {
+            if let Ok(Ok(Some(paths))) = picked.await
+                && let Some(path) = paths.into_iter().next()
+                && let Ok(mut guard) = shared.lock()
+            {
+                then(&mut guard.app, path);
+                guard.dirty = true;
             }
-            self.active_input = ActiveInput::Terminal;
-            cx.notify();
-            return;
-        }
-
-        if action.starts_with("open_ask:") || action.starts_with("open_follow_up:") {
-            self.active_input = ActiveInput::AskSheet;
-        } else if action == "close_sheet" || action == "submit_ask_sheet" {
-            self.active_input = ActiveInput::Terminal;
-        } else if action.starts_with("focus_pane_group:") || action.starts_with("select_tab:") {
-            self.active_input = ActiveInput::Terminal;
-        }
-
-        let mut should_quit = false;
-        if let Ok(mut guard) = self.shared.lock() {
-            guard.app.dispatch(action);
-            should_quit = guard.app.quit_requested;
-        }
-        if should_quit {
-            cx.quit();
-        } else {
-            cx.notify();
-        }
+        })
+        .detach();
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn dispatch_action(&mut self, action: Action, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        match &action {
+            Action::Window(WindowAct::OpenProject) => {
+                if let Ok(mut guard) = self.shared.lock() {
+                    guard.app.dispatch(action.clone());
+                }
+                let prompt = weft_core::words::word("desktop.pick.project");
+                return self.pick(true, prompt, cx, WeftDesktopApp::open_project_path);
+            }
+            Action::Sheet(SheetAct::Locate(harness)) => {
+                let harness = harness.clone();
+                let prompt =
+                    weft_core::words::fill("desktop.pick.program", &[("harness", &harness)]);
+                return self.pick(false, &prompt, cx, move |app, path| app.locate(&harness, &path));
+            }
+            _ => {}
+        }
+        let mut quit = false;
+        if let Ok(mut guard) = self.shared.lock() {
+            guard.app.dispatch(action);
+            quit = guard.app.quit_requested;
+        }
+        if quit { cx.quit() } else { cx.notify() }
+    }
+
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
         let key = ks.key.as_str();
         let mods = ks.modifiers;
+        let typing = self.shared.lock().map(|g| g.app.focus != Focus::Terminal).unwrap_or(false);
 
         // A text field takes its keys from the table; a character goes on to
         // the window's text input, which an input method composes.
-        if self.active_input != ActiveInput::Terminal {
+        if typing {
             if self.field_key(event, cx) {
                 cx.stop_propagation();
             }
@@ -346,42 +347,12 @@ impl GpuiDesktopView {
             }
         }
 
-        // Global shortcuts: Cmd+Q, Cmd+O, Cmd+B, Cmd+V
         if mods.platform {
-            match key.to_ascii_lowercase().as_str() {
-                "q" => {
-                    let mut should_quit = false;
-                    if let Ok(mut guard) = self.shared.lock() {
-                        guard.app.dispatch("request_quit");
-                        should_quit = guard.app.quit_requested;
-                    }
-                    if should_quit {
-                        cx.quit();
-                    } else {
-                        cx.notify();
-                    }
-                    return;
-                }
-                "o" => {
-                    let bg_shared = Arc::clone(&self.shared);
-                    std::thread::spawn(move || {
-                        if let Some(folder) = MacFileDialog.pick_folder()
-                            && let Ok(mut guard) = bg_shared.lock()
-                        {
-                            guard.app.open_project_path(folder);
-                            guard.dirty = true;
-                        }
-                    });
-                    return;
-                }
-                "b" => {
-                    if let Ok(mut guard) = self.shared.lock() {
-                        guard.app.dispatch("toggle_sidebar");
-                    }
-                    cx.notify();
-                    return;
-                }
-                "c" if self.active_input == ActiveInput::Terminal => {
+            let action = match key.to_ascii_lowercase().as_str() {
+                "q" => Some(Action::from(WindowAct::RequestQuit)),
+                "o" => Some(Action::from(WindowAct::OpenProject)),
+                "b" => Some(Action::from(WindowAct::ToggleSidebar)),
+                "c" => {
                     let text = self.shared.lock().ok().and_then(|mut guard| {
                         guard.app.active_pane_view_mut().and_then(|p| p.selection_text())
                     });
@@ -398,12 +369,13 @@ impl GpuiDesktopView {
                             guard.app.active_pane_view_mut().is_some_and(|p| p.bracketed_paste());
                         let bytes = terminal_input::paste(&text, bracketed);
                         guard.app.send_active_pane_input(&bytes);
-                        let _ = guard.app.pump();
-                        cx.notify();
                     }
                     return;
                 }
-                _ => {}
+                _ => None,
+            };
+            if let Some(action) = action {
+                return self.dispatch_action(action, window, cx);
             }
         }
 
@@ -418,7 +390,6 @@ impl GpuiDesktopView {
             let modes = guard.app.active_pane_view_mut().map(|p| p.modes()).unwrap_or_default();
             if let Some(bytes) = terminal_input::key(key, ks.key_char.as_deref(), held, modes) {
                 guard.app.send_active_pane_input(&bytes);
-                let _ = guard.app.pump();
             }
         }
         cx.notify();
@@ -426,8 +397,8 @@ impl GpuiDesktopView {
 
     /// A key in the focused text field, as the key table says; whether it was one.
     fn field_key(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) -> bool {
-        let which = self.active_input;
         let Ok(mut guard) = self.shared.lock() else { return false };
+        let which = guard.app.focus;
         let Some(f) = field(&mut guard.app, which) else { return false };
         // While an input method composes, its keys are its own.
         if f.marked.is_some() {
@@ -442,23 +413,20 @@ impl GpuiDesktopView {
                 }
             }
             Outcome::Send => match which {
-                ActiveInput::MessageRow => guard.app.dispatch("send_message_row"),
-                ActiveInput::AskSheet => {
-                    guard.app.dispatch("submit_ask_sheet");
-                    self.active_input = ActiveInput::Terminal;
-                }
+                Focus::Message => guard.app.dispatch(crate::action::PaneAct::SendMessage),
+                Focus::Ask => guard.app.dispatch(SheetAct::SubmitAsk),
                 _ => {}
             },
             // Tab takes the suggestion shown in the message field; Escape drops
             // it, and with none shown leaves the field.
             Outcome::Take => {
-                if which == ActiveInput::MessageRow {
+                if which == Focus::Message {
                     guard.app.take_suggestion();
                 }
             }
             Outcome::Drop => {
-                if which != ActiveInput::MessageRow || !guard.app.drop_suggestion() {
-                    self.active_input = ActiveInput::Terminal;
+                if which != Focus::Message || !guard.app.drop_suggestion() {
+                    guard.app.focus = Focus::Terminal;
                 }
             }
             Outcome::Changed | Outcome::Nothing => {}
@@ -510,7 +478,9 @@ impl GpuiDesktopView {
             MouseButton::Left,
             cx.listener(move |this, e: &MouseDownEvent, _window, cx| {
                 let Some(cell) = this.cell_at(&p1, pane, e.position) else { return };
-                this.active_input = ActiveInput::Terminal;
+                if let Ok(mut guard) = this.shared.lock() {
+                    guard.app.focus = Focus::Terminal;
+                }
                 if !this.report(&p1, pane, Button::Left, Act::Press, cell) {
                     if let Ok(mut guard) = this.shared.lock()
                         && let Some(view) = guard.app.pane_view_mut(&p1, pane)
@@ -570,6 +540,108 @@ impl GpuiDesktopView {
         }))
     }
 
+    /// A text field: its words drawn by the field element, the pointer
+    /// placing the caret and dragging a selection.
+    fn text_field(
+        &self,
+        el: &Element,
+        which: Focus,
+        d: Div,
+        text_style: InheritedText,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let lh = text_style.line_height.unwrap_or(text_style.font_size * 1.4);
+        let look = Look {
+            line_height: lh,
+            color: parse_color(palette::TEXT),
+            placeholder: parse_color(palette::DIM),
+            caret: parse_color(palette::TEXT),
+            selection: parse_color("#388bfd55"),
+            max_lines: if el.tag == "input" && which == Focus::Search { 1 } else { 6 },
+        };
+        let snapshot = self.shared.lock().ok().and_then(|mut g| {
+            let is_focused = g.app.focus == which;
+            let ghost =
+                (which == Focus::Message).then(|| g.app.ghost().map(str::to_string)).flatten();
+            field(&mut g.app, which).map(|f| {
+                (
+                    is_focused,
+                    f.text().to_string(),
+                    f.selection(),
+                    f.cursor(),
+                    f.marked.clone(),
+                    f.shape(),
+                    ghost,
+                )
+            })
+        });
+        let Some((is_focused, text, selection, cursor, marked, shape, ghost)) = snapshot else {
+            return d.into_any_element();
+        };
+        // Only the focused field's paint is kept for the pointer and the input method.
+        let painted = if is_focused { Rc::clone(&self.painted) } else { Rc::default() };
+        let element = FieldElement {
+            view: cx.entity(),
+            focus: self.focus_handle.clone(),
+            focused: is_focused,
+            text,
+            selection,
+            cursor,
+            marked,
+            placeholder: el.placeholder.clone().unwrap_or_default(),
+            ghost,
+            shape,
+            look,
+            painted,
+        };
+        let mut field_box = d
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.focus_handle.focus(window, cx);
+                    let Ok(mut guard) = this.shared.lock() else { return };
+                    let was = guard.app.focus == which;
+                    guard.app.focus = which;
+                    let at = if was { this.painted.borrow().index_for(e.position) } else { None };
+                    if let Some(f) = field(&mut guard.app, which)
+                        && let Some(at) = at
+                    {
+                        if e.modifiers.shift { f.select_to(at) } else { f.select(at..at) }
+                    }
+                    cx.notify();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
+                if e.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                let Ok(mut guard) = this.shared.lock() else { return };
+                if guard.app.focus != which {
+                    return;
+                }
+                let Some(at) = this.painted.borrow().index_for(e.position) else { return };
+                if let Some(f) = field(&mut guard.app, which) {
+                    f.select_to(at);
+                }
+                cx.notify();
+            }))
+            .child(element);
+        // What sits inside the field beside its words, such as the key that takes a suggestion.
+        for (idx, child) in el.children.iter().enumerate() {
+            let child_path = format!("{path}/{idx}");
+            field_box =
+                field_box.child(self.build_gpui_element(child, text_style, true, &child_path, cx));
+        }
+        field_box.into_any_element()
+    }
+
     fn build_gpui_element(
         &self,
         el: &Element,
@@ -584,8 +656,6 @@ impl GpuiDesktopView {
         let mut text_style = parent_text;
         let mut has_explicit_width = false;
         let mut has_explicit_height = false;
-        let mut has_horiz_margin = false;
-        let mut has_vert_margin = false;
         let mut is_self_stretch = false;
         let mut is_scroll_y = false;
 
@@ -602,69 +672,30 @@ impl GpuiDesktopView {
                         text_style.font_weight = FontWeight(w);
                     }
                 }
-                "font-family" => {
-                    if v.contains("Mono") {
-                        text_style.font_mono = true;
-                    }
-                }
+                "font-family" => text_style.font_mono = v.contains("Mono"),
                 "line-height" => {
                     if let Some(n) = parse_px(v) {
                         text_style.line_height = Some(n);
                     }
                 }
-                "white-space" => match v.as_str() {
-                    "nowrap" => {
-                        text_style.nowrap = true;
-                        text_style.pre = false;
-                    }
-                    "pre" | "pre-wrap" => {
-                        text_style.pre = true;
-                        text_style.nowrap = false;
-                    }
-                    _ => {
-                        text_style.nowrap = false;
-                        text_style.pre = false;
-                    }
-                },
-                "text-overflow" => {
-                    if v == "ellipsis" {
-                        text_style.ellipsis = true;
-                    }
+                "white-space" => {
+                    text_style.nowrap = v == "nowrap";
+                    text_style.pre = v == "pre" || v == "pre-wrap";
                 }
+                "text-overflow" => text_style.ellipsis = v == "ellipsis",
                 "width" => has_explicit_width = true,
                 "height" => has_explicit_height = true,
-                "margin" => {
-                    let (t, r, b, l) = parse_box_edges(v);
-                    if l != 0.0 || r != 0.0 {
-                        has_horiz_margin = true;
-                    }
-                    if t != 0.0 || b != 0.0 {
-                        has_vert_margin = true;
-                    }
-                }
-                "margin-left" | "margin-right" => has_horiz_margin = true,
-                "margin-top" | "margin-bottom" => has_vert_margin = true,
-                "align-self" => {
-                    if v == "stretch" {
-                        is_self_stretch = true;
-                    }
-                }
-                "overflow-y" => {
-                    if v == "auto" || v == "scroll" {
-                        is_scroll_y = true;
-                    }
-                }
+                "align-self" => is_self_stretch = v == "stretch",
+                "overflow-y" => is_scroll_y = v == "auto" || v == "scroll",
                 _ => {}
             }
         }
 
-        let mut d: Div = gpui_div();
-        let mut child_is_row = false;
-
-        d = d
+        let mut d: Div = gpui_div()
             .text_color(text_style.color)
             .text_size(px(text_style.font_size))
             .font_weight(text_style.font_weight);
+        let mut child_is_row = false;
 
         if text_style.font_mono {
             d = d.font_family(crate::fonts::MONO);
@@ -689,341 +720,29 @@ impl GpuiDesktopView {
         }
 
         for (k, v) in &el.styles {
-            match k.as_str() {
-                "display" => match v.as_str() {
-                    "flex" => d = d.flex(),
-                    "none" => d = d.hidden(),
-                    _ => {}
-                },
-                "flex-direction" => match v.as_str() {
-                    "row" => {
-                        d = d.flex().flex_row();
-                        child_is_row = true;
-                    }
-                    "column" => {
-                        d = d.flex().flex_col();
-                        child_is_row = false;
-                    }
-                    _ => {}
-                },
-                "align-items" => match v.as_str() {
-                    "center" => d = d.items_center(),
-                    "flex-start" => d = d.items_start(),
-                    "baseline" => d = d.items_baseline(),
-                    _ => {}
-                },
-                "justify-content" => match v.as_str() {
-                    "space-between" => d = d.justify_between(),
-                    "center" => d = d.justify_center(),
-                    "flex-end" => d = d.justify_end(),
-                    _ => {}
-                },
-                "flex" => {
-                    if v.starts_with('1') {
-                        d = d.flex_1().min_w_0().min_h_0();
-                    }
-                }
-                "flex-shrink" => {
-                    if v == "0" {
-                        d = d.flex_shrink_0();
-                    }
-                }
-                "flex-wrap" => {
-                    if v == "wrap" {
-                        d = d.flex_wrap();
-                    }
-                }
-                "gap" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.gap(px(n));
-                    }
-                }
-                "width" => {
-                    if v == "100%" {
-                        d = d.w_full();
-                    } else if let Some(n) = parse_px(v) {
-                        d = d.w(px(n));
-                    }
-                }
-                "height" => {
-                    if v == "100%" {
-                        d = d.h_full();
-                    } else if let Some(n) = parse_px(v) {
-                        d = d.h(px(n));
-                    }
-                }
-                "min-width" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.min_w(px(n));
-                    }
-                }
-                "min-height" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.min_h(px(n));
-                    }
-                }
-                "max-width" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.max_w(px(n));
-                    }
-                }
-                "max-height" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.max_h(px(n));
-                    }
-                }
-                "padding" => {
-                    let (t, r, b, l) = parse_box_edges(v);
-                    d = d.pt(px(t)).pr(px(r)).pb(px(b)).pl(px(l));
-                }
-                "margin" => {
-                    let (t, r, b, l) = parse_box_edges(v);
-                    d = d.mt(px(t)).mr(px(r)).mb(px(b)).ml(px(l));
-                }
-                "margin-left" => {
-                    if v == "auto" {
-                        d = d.ml_auto();
-                    } else if let Some(n) = parse_px(v) {
-                        d = d.ml(px(n));
-                    }
-                }
-                "margin-top" => {
-                    if v == "auto" {
-                        d = d.mt_auto();
-                    } else if let Some(n) = parse_px(v) {
-                        d = d.mt(px(n));
-                    }
-                }
-                "background" => {
-                    if v != "transparent" {
-                        d = d.bg(parse_color(v));
-                    }
-                }
-                "border-radius" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.rounded(px(n));
-                    }
-                }
-                "border" => {
-                    if let Some(c) = parse_border_color(v) {
-                        d = if v.starts_with("2px") { d.border_2() } else { d.border_1() };
-                        d = d.border_color(c);
-                    }
-                }
-                "border-top" => {
-                    if let Some(c) = parse_border_color(v) {
-                        d = if v.starts_with("2px") { d.border_t_2() } else { d.border_t_1() };
-                        d = d.border_color(c);
-                    }
-                }
-                "border-bottom" => {
-                    if let Some(c) = parse_border_color(v) {
-                        d = d.border_b_1().border_color(c);
-                    }
-                }
-                "border-left" => {
-                    if let Some(c) = parse_border_color(v) {
-                        d = d.border_l_1().border_color(c);
-                    }
-                }
-                "border-right" => {
-                    if let Some(c) = parse_border_color(v) {
-                        d = d.border_r_1().border_color(c);
-                    }
-                }
-                "position" => match v.as_str() {
-                    "absolute" => d = d.absolute(),
-                    "relative" => d = d.relative(),
-                    _ => {}
-                },
-                "inset" => {
-                    if v == "0" {
-                        d = d.inset_0();
-                    }
-                }
-                "top" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.top(px(n));
-                    }
-                }
-                "left" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.left(px(n));
-                    }
-                }
-                "right" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.right(px(n));
-                    }
-                }
-                "bottom" => {
-                    if let Some(n) = parse_px(v) {
-                        d = d.bottom(px(n));
-                    }
-                }
-                "overflow" => {
-                    if v == "hidden" {
-                        d = d.overflow_hidden();
-                    }
-                }
-                "overflow-x" => {
-                    if v == "hidden" {
-                        d = d.overflow_x_hidden();
-                    }
-                }
-                "opacity" => {
-                    if let Ok(op) = v.parse::<f32>() {
-                        d = d.opacity(op);
-                    }
-                }
-                _ => {}
+            if k == "flex-direction" {
+                child_is_row = v == "row";
             }
+            // One the window does not draw is left out; a test keeps the views to those it does.
+            d = style(d, k, v).unwrap_or_else(|d| d);
         }
 
         if is_self_stretch {
             if parent_is_row {
-                if !has_explicit_height && !has_vert_margin {
+                if !has_explicit_height {
                     d = d.h_full();
                 }
-            } else if !has_explicit_width && !has_horiz_margin {
+            } else if !has_explicit_width {
                 d = d.w_full();
             }
         }
 
-        // Root window layer fills the entire native GPUI window
-        if el.layer_name.as_deref() == Some("window") {
-            d = d.size_full().flex_1();
-        }
-
-        // Highlight search box border when Search input is active
-        if el.layer_name.as_deref() == Some("search") && self.active_input == ActiveInput::Search {
-            d = d.border_1().border_color(parse_color(palette::BLUE_BORDER));
-        }
-
-        // A text field: its words drawn by the field element, the pointer
-        // placing the caret and dragging a selection.
-        if el.tag == "input" || el.tag == "textarea" {
-            let target_input = if el.id.as_deref() == Some("tree-search") {
-                ActiveInput::Search
-            } else if el.tag == "textarea" && el.layer_name.as_deref() == Some("ask input") {
-                ActiveInput::AskSheet
-            } else {
-                ActiveInput::MessageRow
-            };
-            let is_focused = self.active_input == target_input;
-            if is_focused && target_input != ActiveInput::Search {
-                d = d.border_1().border_color(parse_color(palette::BLUE_BORDER));
-            }
-            let lh = text_style.line_height.unwrap_or(text_style.font_size * 1.4);
-            let look = Look {
-                line_height: lh,
-                color: parse_color(palette::TEXT),
-                placeholder: parse_color(palette::DIM),
-                caret: parse_color(palette::TEXT),
-                selection: parse_color("#388bfd55"),
-                max_lines: if target_input == ActiveInput::Search { 1 } else { 6 },
-            };
-            let snapshot = self.shared.lock().ok().and_then(|mut g| {
-                let ghost = (target_input == ActiveInput::MessageRow)
-                    .then(|| g.app.ghost().map(str::to_string))
-                    .flatten();
-                field(&mut g.app, target_input).map(|f| {
-                    (
-                        f.text().to_string(),
-                        f.selection(),
-                        f.cursor(),
-                        f.marked.clone(),
-                        f.shape(),
-                        ghost,
-                    )
-                })
-            });
-            let Some((text, selection, cursor, marked, shape, ghost)) = snapshot else {
-                return d.into_any_element();
-            };
-            // Only the focused field's paint is kept for the pointer and the input method.
-            let painted = if is_focused { Rc::clone(&self.painted) } else { Rc::default() };
-            let element = FieldElement {
-                view: cx.entity(),
-                focus: self.focus_handle.clone(),
-                focused: is_focused,
-                text,
-                selection,
-                cursor,
-                marked,
-                placeholder: el.placeholder.clone().unwrap_or_default(),
-                ghost,
-                shape,
-                look,
-                painted,
-            };
-            let mut field_box = d
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .cursor_text()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        this.focus_handle.focus(window, cx);
-                        let was = this.active_input == target_input;
-                        this.active_input = target_input;
-                        let at =
-                            if was { this.painted.borrow().index_for(e.position) } else { None };
-                        if let Ok(mut guard) = this.shared.lock()
-                            && let Some(f) = field(&mut guard.app, target_input)
-                            && let Some(at) = at
-                        {
-                            if e.modifiers.shift { f.select_to(at) } else { f.select(at..at) }
-                        }
-                        cx.notify();
-                    }),
-                )
-                .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
-                    if e.pressed_button != Some(MouseButton::Left)
-                        || this.active_input != target_input
-                    {
-                        return;
-                    }
-                    let Some(at) = this.painted.borrow().index_for(e.position) else { return };
-                    if let Ok(mut guard) = this.shared.lock()
-                        && let Some(f) = field(&mut guard.app, target_input)
-                    {
-                        f.select_to(at);
-                    }
-                    cx.notify();
-                }))
-                .child(element);
-            // What sits inside the field beside its words, such as the key that takes a suggestion.
-            for (idx, child) in el.children.iter().enumerate() {
-                let child_path = format!("{path}/{idx}");
-                field_box = field_box.child(self.build_gpui_element(
-                    child,
-                    text_style,
-                    true,
-                    &child_path,
-                    cx,
-                ));
-            }
-            return field_box.into_any_element();
-        }
-
-        // Clicking anywhere on the search pill focuses Search
-        if el.layer_name.as_deref() == Some("search") {
-            d = d.cursor_text().on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                    this.focus_handle.focus(window, cx);
-                    this.active_input = ActiveInput::Search;
-                    cx.notify();
-                }),
-            );
+        if let Some(which) = el.field {
+            return self.text_field(el, which, d, text_style, path, cx);
         }
 
         // A pane's terminal, painted from its own cells.
-        if el.layer_name.as_deref() == Some("terminal") {
+        if el.tag == "terminal" {
             let attr = |k: &str| el.attrs.iter().find(|(a, _)| a == k).map(|(_, v)| v.clone());
             if let (Some(project), Some(pane)) =
                 (attr("data-project"), attr("data-pane").and_then(|p| p.parse().ok()))
@@ -1038,42 +757,34 @@ impl GpuiDesktopView {
             }
         }
 
-        // Text content (handling multi-line pre / terminal text cleanly)
         if let Some(t) = &el.text
             && !t.is_empty()
         {
-            if text_style.pre || t.contains('\n') {
-                let lh = text_style.line_height.unwrap_or(text_style.font_size * 1.4);
-                let mut lines_col = gpui_div().flex().flex_col().w_full();
-                for line in t.split('\n') {
-                    let display_line =
-                        if line.is_empty() { " ".to_string() } else { line.to_string() };
-                    lines_col = lines_col
-                        .child(gpui_div().min_h(px(lh)).whitespace_nowrap().child(display_line));
+            match text_lines(t, text_style.pre, text_style.nowrap) {
+                Some(lines) => {
+                    let lh = text_style.line_height.unwrap_or(text_style.font_size * 1.4);
+                    let mut lines_col = gpui_div().flex().flex_col().w_full();
+                    for (line, nowrap) in lines {
+                        let row = gpui_div().min_h(px(lh));
+                        let row = if nowrap { row.whitespace_nowrap() } else { row };
+                        lines_col = lines_col.child(row.child(line));
+                    }
+                    d = d.child(lines_col);
                 }
-                d = d.child(lines_col);
-            } else {
-                d = d.child(t.clone());
+                None => d = d.child(t.clone()),
             }
         }
 
-        // Children (skipping synthetic `titlebar` layer since GPUI renders native macOS titlebar)
         for (idx, child) in el.children.iter().enumerate() {
-            if child.layer_name.as_deref() == Some("titlebar") {
-                continue;
-            }
             let child_path = format!("{path}/{idx}");
             d = d.child(self.build_gpui_element(child, text_style, child_is_row, &child_path, cx));
         }
 
         // Stateful elements: scrollable containers or clickable actions
         if is_scroll_y || el.action.is_some() {
-            let id_str = if let Some(ln) = &el.layer_name {
-                format!("layer:{ln}:{path}")
-            } else if let Some(act) = &el.action {
-                format!("act:{act}:{path}")
-            } else {
-                format!("node:{path}")
+            let id_str = match &el.layer_name {
+                Some(ln) => format!("layer:{ln}:{path}"),
+                None => format!("node:{path}"),
             };
             let mut stateful = d.id(ElementId::Name(SharedString::from(id_str)));
             if is_scroll_y {
@@ -1084,7 +795,7 @@ impl GpuiDesktopView {
                     MouseButton::Left,
                     cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
-                        this.dispatch_action(&action, window, cx);
+                        this.dispatch_action(action.clone(), window, cx);
                     }),
                 );
             }
@@ -1093,6 +804,189 @@ impl GpuiDesktopView {
 
         d.into_any_element()
     }
+}
+
+/// Text of more than one line, or kept as written: each line on its own, and
+/// whether it stays on one line rather than wrapping. `None` for text that
+/// flows as it is.
+fn text_lines(t: &str, pre: bool, nowrap: bool) -> Option<Vec<(String, bool)>> {
+    (pre || t.contains('\n')).then(|| {
+        t.split('\n')
+            .map(|line| (if line.is_empty() { " ".to_string() } else { line.to_string() }, nowrap))
+            .collect()
+    })
+}
+
+/// Every style the views may use. Each is drawn by [`style`]; a view that
+/// uses another fails a test.
+#[cfg(test)]
+pub(crate) const STYLES: &[&str] = &[
+    "align-items",
+    "align-self",
+    "background",
+    "border",
+    "border-bottom",
+    "border-radius",
+    "border-right",
+    "border-top",
+    "bottom",
+    "color",
+    "display",
+    "flex",
+    "flex-direction",
+    "flex-shrink",
+    "flex-wrap",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "gap",
+    "height",
+    "inset",
+    "justify-content",
+    "left",
+    "line-height",
+    "max-width",
+    "min-height",
+    "min-width",
+    "overflow",
+    "overflow-x",
+    "overflow-y",
+    "padding",
+    "position",
+    "right",
+    "text-align",
+    "text-overflow",
+    "top",
+    "white-space",
+    "width",
+];
+
+/// One style on a div; the div untouched, as an error, for one the window
+/// does not draw.
+#[allow(clippy::result_large_err)]
+fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
+    let n = parse_px(v);
+    Ok(match k {
+        // The text's own, taken before the box is built.
+        "color" | "font-size" | "font-weight" | "font-family" | "line-height" | "white-space"
+        | "text-overflow" | "align-self" => d,
+        "text-align" => match v {
+            "center" => d.text_center(),
+            "right" => d.text_right(),
+            _ => d,
+        },
+        "display" => match v {
+            "flex" => d.flex(),
+            "none" => d.hidden(),
+            _ => d,
+        },
+        "flex-direction" => match v {
+            "row" => d.flex().flex_row(),
+            "column" => d.flex().flex_col(),
+            _ => d,
+        },
+        "align-items" => match v {
+            "center" => d.items_center(),
+            "flex-start" => d.items_start(),
+            "baseline" => d.items_baseline(),
+            _ => d,
+        },
+        "justify-content" => match v {
+            "space-between" => d.justify_between(),
+            "center" => d.justify_center(),
+            "flex-end" => d.justify_end(),
+            _ => d,
+        },
+        "flex" if v.starts_with('1') => d.flex_1().min_w_0().min_h_0(),
+        "flex" => d,
+        "flex-shrink" if v == "0" => d.flex_shrink_0(),
+        "flex-shrink" => d,
+        "flex-wrap" if v == "wrap" => d.flex_wrap(),
+        "flex-wrap" => d,
+        "gap" => match n {
+            Some(n) => d.gap(px(n)),
+            None => d,
+        },
+        "width" if v == "100%" => d.w_full(),
+        "width" => match n {
+            Some(n) => d.w(px(n)),
+            None => d,
+        },
+        "height" if v == "100%" => d.h_full(),
+        "height" => match n {
+            Some(n) => d.h(px(n)),
+            None => d,
+        },
+        "min-width" => match n {
+            Some(n) => d.min_w(px(n)),
+            None => d,
+        },
+        "min-height" => match n {
+            Some(n) => d.min_h(px(n)),
+            None => d,
+        },
+        "max-width" => match n {
+            Some(n) => d.max_w(px(n)),
+            None => d,
+        },
+        "padding" => {
+            let (t, r, b, l) = parse_box_edges(v);
+            d.pt(px(t)).pr(px(r)).pb(px(b)).pl(px(l))
+        }
+        "background" if v == "transparent" => d,
+        "background" => d.bg(parse_color(v)),
+        "border-radius" => match n {
+            Some(n) => d.rounded(px(n)),
+            None => d,
+        },
+        "border" => match parse_border_color(v) {
+            Some(c) => {
+                if v.starts_with("2px") { d.border_2() } else { d.border_1() }.border_color(c)
+            }
+            None => d,
+        },
+        "border-top" => match parse_border_color(v) {
+            Some(c) => {
+                if v.starts_with("2px") { d.border_t_2() } else { d.border_t_1() }.border_color(c)
+            }
+            None => d,
+        },
+        "border-bottom" => match parse_border_color(v) {
+            Some(c) => d.border_b_1().border_color(c),
+            None => d,
+        },
+        "border-right" => match parse_border_color(v) {
+            Some(c) => d.border_r_1().border_color(c),
+            None => d,
+        },
+        "position" => match v {
+            "absolute" => d.absolute(),
+            "relative" => d.relative(),
+            _ => d,
+        },
+        "inset" if v == "0" => d.inset_0(),
+        "inset" => d,
+        "top" => match n {
+            Some(n) => d.top(px(n)),
+            None => d,
+        },
+        "left" => match n {
+            Some(n) => d.left(px(n)),
+            None => d,
+        },
+        "right" => match n {
+            Some(n) => d.right(px(n)),
+            None => d,
+        },
+        "bottom" => match n {
+            Some(n) => d.bottom(px(n)),
+            None => d,
+        },
+        "overflow" if v == "hidden" => d.overflow_hidden(),
+        "overflow-x" if v == "hidden" => d.overflow_x_hidden(),
+        "overflow" | "overflow-x" | "overflow-y" => d,
+        _ => return Err(d),
+    })
 }
 
 /// The window's text input, for the field that has the keyboard: typing,
@@ -1106,7 +1000,7 @@ impl EntityInputHandler for GpuiDesktopView {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         let mut guard = self.shared.lock().ok()?;
-        let text = field(&mut guard.app, self.active_input)?.text().to_string();
+        let text = focused(&mut guard.app)?.text().to_string();
         let bytes = field_view::range_from_utf16(&text, &range);
         adjusted.replace(field_view::range_to_utf16(&text, &bytes));
         Some(text[bytes].to_string())
@@ -1119,7 +1013,7 @@ impl EntityInputHandler for GpuiDesktopView {
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
         let mut guard = self.shared.lock().ok()?;
-        let f = field(&mut guard.app, self.active_input)?;
+        let f = focused(&mut guard.app)?;
         Some(UTF16Selection {
             range: field_view::range_to_utf16(f.text(), &f.selection()),
             reversed: f.reversed(),
@@ -1132,13 +1026,13 @@ impl EntityInputHandler for GpuiDesktopView {
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
         let mut guard = self.shared.lock().ok()?;
-        let f = field(&mut guard.app, self.active_input)?;
+        let f = focused(&mut guard.app)?;
         f.marked.as_ref().map(|m| field_view::range_to_utf16(f.text(), m))
     }
 
     fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
         if let Ok(mut guard) = self.shared.lock()
-            && let Some(f) = field(&mut guard.app, self.active_input)
+            && let Some(f) = focused(&mut guard.app)
         {
             f.marked = None;
         }
@@ -1152,7 +1046,7 @@ impl EntityInputHandler for GpuiDesktopView {
         cx: &mut Context<Self>,
     ) {
         if let Ok(mut guard) = self.shared.lock()
-            && let Some(f) = field(&mut guard.app, self.active_input)
+            && let Some(f) = focused(&mut guard.app)
         {
             let bytes = range.map(|r| field_view::range_from_utf16(f.text(), &r));
             match bytes {
@@ -1173,7 +1067,7 @@ impl EntityInputHandler for GpuiDesktopView {
         cx: &mut Context<Self>,
     ) {
         if let Ok(mut guard) = self.shared.lock()
-            && let Some(f) = field(&mut guard.app, self.active_input)
+            && let Some(f) = focused(&mut guard.app)
         {
             let bytes = range.map(|r| field_view::range_from_utf16(f.text(), &r));
             let inside = selected.map(|r| field_view::range_from_utf16(text, &r));
@@ -1191,7 +1085,7 @@ impl EntityInputHandler for GpuiDesktopView {
     ) -> Option<Bounds<Pixels>> {
         let text = {
             let mut guard = self.shared.lock().ok()?;
-            field(&mut guard.app, self.active_input)?.text().to_string()
+            focused(&mut guard.app)?.text().to_string()
         };
         self.painted.borrow().bounds_for(field_view::range_from_utf16(&text, &range))
     }
@@ -1204,18 +1098,16 @@ impl EntityInputHandler for GpuiDesktopView {
     ) -> Option<usize> {
         let ix = self.painted.borrow().index_for(at)?;
         let mut guard = self.shared.lock().ok()?;
-        Some(field_view::to_utf16(field(&mut guard.app, self.active_input)?.text(), ix))
+        Some(field_view::to_utf16(focused(&mut guard.app)?.text(), ix))
     }
 }
 
 impl Render for GpuiDesktopView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let root_el = if let Ok(guard) = self.shared.lock() {
-            guard.app.render()
-        } else {
-            crate::gpui::div()
+        let root_el = match self.shared.lock() {
+            Ok(guard) => guard.app.render(),
+            Err(_) => crate::gpui::div(),
         };
-
         let root_text = InheritedText {
             color: parse_color(palette::TEXT),
             font_size: 13.0,
@@ -1226,7 +1118,6 @@ impl Render for GpuiDesktopView {
             ellipsis: false,
             pre: false,
         };
-
         gpui_div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
@@ -1258,8 +1149,7 @@ fn picture(el: &Element) -> AnyElement {
 }
 
 fn parse_px(s: &str) -> Option<f32> {
-    let trimmed = s.trim().trim_end_matches("px");
-    trimmed.parse::<f32>().ok()
+    s.trim().trim_end_matches("px").parse::<f32>().ok()
 }
 
 fn parse_box_edges(s: &str) -> (f32, f32, f32, f32) {
@@ -1295,29 +1185,20 @@ fn parse_color(s: &str) -> Rgba {
             return rgba(val);
         }
     }
-    if let Some(inner) = s.strip_prefix("rgba(").and_then(|r| r.strip_suffix(')')) {
-        let comps: Vec<&str> = inner.split(',').map(str::trim).collect();
-        if comps.len() == 4 {
-            let r = comps[0].parse::<u32>().unwrap_or(0).min(255);
-            let g = comps[1].parse::<u32>().unwrap_or(0).min(255);
-            let b = comps[2].parse::<u32>().unwrap_or(0).min(255);
-            let a = (comps[3].parse::<f32>().unwrap_or(1.0).clamp(0.0, 1.0) * 255.0) as u32;
-            return rgba((r << 24) | (g << 16) | (b << 8) | a);
-        }
-    }
     rgba(0x00000000)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::tests::{Wire, start, wired_app};
     use ::gpui::{TestAppContext, VisualTestContext};
 
     /// The desktop's view in a window without a screen, a pane open and the message row focused.
     fn opened(
         cx: &mut TestAppContext,
     ) -> (tempfile::TempDir, Arc<Mutex<SharedState>>, &mut VisualTestContext) {
-        let (tmp, shared, _view, cx) = opened_view(cx);
+        let (tmp, shared, _view, _wire, cx) = opened_view(cx);
         (tmp, shared, cx)
     }
 
@@ -1328,10 +1209,12 @@ mod tests {
         tempfile::TempDir,
         Arc<Mutex<SharedState>>,
         ::gpui::Entity<GpuiDesktopView>,
+        Wire,
         &mut VisualTestContext,
     ) {
-        let (tmp, mut app) = crate::app::tests::sample_app(false);
-        app.dispatch("start_agent:weft:claude");
+        let (tmp, mut app, mut wire) = wired_app();
+        start(&mut app, &mut wire, "claude");
+        app.focus = Focus::Message;
         let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
         let view_shared = Arc::clone(&shared);
         let (view, cx) = cx.add_window_view(|window, cx| {
@@ -1340,14 +1223,13 @@ mod tests {
             GpuiDesktopView {
                 shared: view_shared,
                 focus_handle,
-                active_input: ActiveInput::MessageRow,
                 wheel_accum: 0.0,
                 selecting: None,
                 painted: Rc::default(),
             }
         });
         cx.run_until_parked();
-        (tmp, shared, view, cx)
+        (tmp, shared, view, wire, cx)
     }
 
     /// Run `test` with a window context, on a thread with a main thread's stack:
@@ -1406,27 +1288,29 @@ mod tests {
     }
 
     /// A suggestion shown for the draft the field holds now.
-    fn suggested(shared: &Arc<Mutex<SharedState>>, text: &str) {
+    fn suggested(shared: &Arc<Mutex<SharedState>>, wire: &mut Wire, text: &str) {
         let mut g = shared.lock().unwrap();
         let t0 = std::time::Instant::now();
         g.app.suggest_tick(t0);
         g.app.suggest_tick(t0 + std::time::Duration::from_millis(150));
-        let id = g.app.suggesting.as_ref().expect("asked").id;
-        g.app.clients[0].give_answer(id, serde_json::json!({"text": text, "score": 0.8}));
-        g.app.suggest_tick(t0 + std::time::Duration::from_millis(160));
+        let (id, call) = wire.call();
+        assert!(matches!(call, weft_proto::Call::Suggest { .. }), "{call:?}");
+        wire.answer(id, serde_json::json!({"text": text, "score": 0.8}));
+        crate::app::tests::pumped(&mut g.app, |a| a.ghost().is_some());
         assert_eq!(g.app.ghost(), Some(text));
     }
 
     #[test]
     fn tab_takes_the_suggestion_and_escape_drops_it_keeping_the_field() {
         windowed(|cx| {
-            let (_tmp, shared, cx) = opened(cx);
+            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
+            wire.calls();
             cx.simulate_input("run the");
-            suggested(&shared, " login tests");
+            suggested(&shared, &mut wire, " login tests");
             cx.simulate_keystrokes("tab");
             assert_eq!(message(&shared), "run the login tests");
             cx.simulate_input(" now");
-            suggested(&shared, " please");
+            suggested(&shared, &mut wire, " please");
             cx.simulate_keystrokes("escape");
             assert_eq!(shared.lock().unwrap().app.ghost(), None);
             cx.simulate_input("!");
@@ -1439,7 +1323,7 @@ mod tests {
     #[test]
     fn an_input_method_composes_in_the_message_field_and_enter_meanwhile_is_its_own() {
         windowed(|cx| {
-            let (_tmp, shared, view, cx) = opened_view(cx);
+            let (_tmp, shared, view, mut wire, cx) = opened_view(cx);
             cx.simulate_input("say ");
             view.update_in(cx, |v, window, cx| {
                 v.replace_and_mark_text_in_range(None, "n", None, window, cx);
@@ -1456,20 +1340,37 @@ mod tests {
             cx.simulate_input("!");
             assert_eq!(message(&shared), "say 你好!");
             // Enter while composing is the input method's: Weft sends nothing.
-            let sends = || {
-                let g = shared.lock().unwrap();
-                g.app.clients[0]
-                    .sent_calls
-                    .iter()
-                    .filter(|c| matches!(c, weft_proto::Call::Input { .. }))
-                    .count()
-            };
-            let before = sends();
+            wire.calls();
             view.update_in(cx, |v, window, cx| {
                 v.replace_and_mark_text_in_range(None, "a", None, window, cx)
             });
             cx.simulate_keystrokes("enter");
-            assert_eq!(sends(), before, "not sent while composing");
+            let sent = wire
+                .calls()
+                .into_iter()
+                .filter(|(_, c)| matches!(c, weft_proto::Call::Input { .. }));
+            assert_eq!(sent.count(), 0, "not sent while composing");
         });
+    }
+
+    #[test]
+    fn every_style_in_the_list_is_drawn() {
+        for k in STYLES {
+            assert!(style(gpui_div(), k, "0").is_ok(), "{k}");
+        }
+        assert!(style(gpui_div(), "letter-spacing", "0").is_err(), "one it cannot draw");
+    }
+
+    #[test]
+    fn prose_of_several_lines_wraps_each_line() {
+        assert_eq!(text_lines("one line", false, false), None);
+        assert_eq!(
+            text_lines("first\n\nthird", false, false),
+            Some(vec![("first".into(), false), (" ".into(), false), ("third".into(), false)])
+        );
+        assert_eq!(
+            text_lines("a\nb", false, true),
+            Some(vec![("a".into(), true), ("b".into(), true)])
+        );
     }
 }

@@ -1,15 +1,16 @@
-//! Bottom `TreeBar` (`Ask`, `Eval`, `Seal`, why-not sentences
-//! `D10.1`/`D10.2`) and `PendingBar` (`D4.5`–`D4.14` including `D4.11`
-//! `Cancel / Send anyway`, `D5.x` Seal dispositions, `D8.3` `Allow a device bar`,
-//! and `D9.9` `Quit Weft bar`).
+//! The bar along the window's foot: Ask, Eval and Seal with why one cannot
+//! be done; or what waits on the person: a staged prompt, a Seal's
+//! disposition, a device asking to connect, a device to remove, quitting.
 
 use weft_core::turns::Turn;
-use weft_core::words;
+use weft_core::words::{fill, word};
 
+use crate::action::{Answer, BarAct, SheetAct};
 use crate::app::BottomBarState;
 use crate::daemon::{ProjectClient, Staged};
 use crate::gpui::{Element, div, palette, span};
 use crate::tree_view::TreeSelection;
+use crate::ui::{Size, Tone, asking_bar, bar_acts, button, note};
 
 pub struct BottomBarProps<'a> {
     pub machine: &'a str,
@@ -20,19 +21,17 @@ pub struct BottomBarProps<'a> {
     pub suggested: Option<weft_core::board::Act>,
 }
 
-/// Render the bottom bar (`PendingBar` when active, or `TreeBar` otherwise).
+/// The bar: what waits on the person, or the tree's acts.
 pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
-    // Check if any project client has a staged pending item (`D4.5`–`D4.11`)
     if let Some((client, staged)) =
         props.clients.iter().find_map(|c| c.waiting.last().map(|s| (c, s)))
     {
         return render_staged_bar(client, staged);
     }
-
     match props.state {
         BottomBarState::QuitConfirm => render_quit_bar(),
-        BottomBarState::AllowDevice { device_id, device_name } => {
-            render_allow_device_bar(props.machine, device_id, device_name)
+        BottomBarState::AllowDevice { device_id, device_name, login } => {
+            render_allow_device_bar(props.machine, device_id, device_name, login.as_deref())
         }
         BottomBarState::RemoveDeviceConfirm { device_id, device_name } => {
             render_remove_device_bar(device_id, device_name)
@@ -45,161 +44,76 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
     }
 }
 
-fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
-    let pane_view = client.view(staged.pane);
-    let harness = pane_view.map(|p| p.harness.as_str()).unwrap_or("agent");
-    let turn = pane_view.and_then(|p| p.turn);
-
-    // D4.11: When the agent has not said it is ready (Working / Waiting / TurnEnded / refusal),
-    // show `The agent has not said it is ready` and `btn Send anyway`.
-    let not_ready_reason = if let Some(refusal) = &client.last_refusal {
-        Some(refusal.clone())
-    } else {
-        match turn {
-            Some(Turn::Working) => {
-                Some(words::fill("not_typed.why", &[("why", words::word("not_ready.working"))]))
-            }
-            Some(Turn::Waiting) => {
-                Some(words::fill("not_typed.why", &[("why", words::word("not_ready.asking"))]))
-            }
-            None | Some(Turn::Ended) => {
-                Some(words::fill("not_typed.why", &[("why", words::word("not_ready.unknown"))]))
-            }
-            Some(Turn::Ready | Turn::TurnEnded) => None,
-        }
-    };
-
-    if let Some(reason) = not_ready_reason {
-        return div()
-            .layer("Cancel / Send bar")
-            .self_stretch()
-            .flex_col()
-            .gap(8)
-            .pad(14, 20)
-            .items_start()
-            .bg(palette::SURFACE_ALT)
-            .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
-            .child(
-                div()
-                    .self_stretch()
-                    .flex_row()
-                    .gap(8)
-                    .items_center()
-                    .child(
-                        div().font_weight(600).font_size(15).text(words::word("not_ready.title")),
-                    )
-                    .child(div().flex_1()),
-            )
-            .child(div().self_stretch().font_size(13).color(palette::MUTED).text(reason))
-            .child(
-                div()
-                    .self_stretch()
-                    .font_size(13)
-                    .color(palette::MUTED)
-                    .text(words::word("not_ready.why")),
-            )
-            .child(
-                div()
-                    .self_stretch()
-                    .flex_row()
-                    .gap(10)
-                    .items_center()
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .layer("btn Cancel")
-                            .on_click(format!("resolve_staged:{}:{}:no", client.name, staged.id))
-                            .pad(9, 18)
-                            .bg(palette::SURFACE)
-                            .border(palette::LINE)
-                            .font_weight(600)
-                            .font_size(14)
-                            .text(words::word("act.cancel")),
-                    )
-                    .child(
-                        div()
-                            .layer("btn Send anyway")
-                            .on_click(format!("resolve_staged:{}:{}:force", client.name, staged.id))
-                            .pad(9, 18)
-                            .bg(palette::BLUE)
-                            .border(palette::BLUE_BORDER)
-                            .font_weight(600)
-                            .font_size(14)
-                            .color(palette::CANVAS)
-                            .text(words::word("act.send_anyway")),
-                    ),
-            );
-    }
-
-    let summary = words::fill("bar.will_type", &[("command", &staged.what), ("harness", harness)]);
-
-    div()
-        .layer("Cancel / Send bar")
-        .self_stretch()
-        .flex_col()
-        .gap(8)
-        .pad(14, 20)
-        .items_start()
-        .bg(palette::SURFACE_ALT)
-        .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(div().font_weight(600).font_size(15).text(staged.what.clone()))
-                .child(div().flex_1()),
-        )
-        .child(div().self_stretch().font_size(13).color(palette::MUTED).text(summary))
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .items_center()
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .layer("btn Cancel")
-                        .on_click(format!("resolve_staged:{}:{}:no", client.name, staged.id))
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .text(words::word("act.cancel")),
-                )
-                .child(
-                    div()
-                        .layer("btn Send")
-                        .on_click(format!("resolve_staged:{}:{}:yes", client.name, staged.id))
-                        .pad(9, 18)
-                        .bg(palette::BLUE)
-                        .border(palette::BLUE_BORDER)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::CANVAS)
-                        .text(words::word("act.send")),
-                ),
-        )
+fn title(text: impl Into<String>) -> Element {
+    div().font_weight(600).font_size(15).text(text)
 }
 
-fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Element {
-    let chip = |disp: &str, label: &str| {
-        let is_sel = selected == disp;
-        div()
-            .layer(format!("disposition {disp}"))
-            .on_click(format!("select_seal_disposition:{project}:{eval}:{disp}"))
-            .pad(6, 12)
-            .bg(if is_sel { palette::SELECTED_BG } else { palette::SURFACE })
-            .border(if is_sel { palette::BLUE_BORDER } else { palette::LINE })
-            .font_weight(if is_sel { 600 } else { 400 })
-            .font_size(12)
-            .color(if is_sel { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(label)
+fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
+    let pane = client.view(staged.pane);
+    let resolve = |answer| BarAct::Resolve {
+        project: client.root.clone(),
+        pending: staged.id.clone(),
+        answer,
     };
+    let cancel =
+        button("btn Cancel", word("act.cancel"), resolve(Answer::No), Tone::Plain, Size::Sheet);
 
+    // The agent has not said it is ready: Weft did not type it, and why.
+    let why = |key| Some(fill("not_typed.why", &[("why", word(key))]));
+    let not_ready = match (&client.last_refusal, pane.and_then(|p| p.turn)) {
+        (Some(refusal), _) => Some(refusal.clone()),
+        (None, Some(Turn::Working)) => why("not_ready.working"),
+        (None, Some(Turn::Waiting)) => why("not_ready.asking"),
+        (None, None | Some(Turn::Ended)) => why("not_ready.unknown"),
+        (None, Some(Turn::Ready | Turn::TurnEnded)) => None,
+    };
+    if let Some(reason) = not_ready {
+        return asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
+            .child(title(word("not_ready.title")))
+            .child(note(reason, palette::MUTED))
+            .child(note(word("not_ready.why"), palette::MUTED))
+            .child(bar_acts(vec![
+                cancel,
+                button(
+                    "btn Send anyway",
+                    word("act.send_anyway"),
+                    resolve(Answer::Anyway),
+                    Tone::Primary,
+                    Size::Sheet,
+                ),
+            ]));
+    }
+    let summary = match pane {
+        Some(p) => fill("bar.will_type", &[("command", &staged.what), ("harness", &p.harness)]),
+        None => fill("desktop.bar.will_type", &[("command", &staged.what)]),
+    };
+    asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
+        .child(title(staged.what.clone()))
+        .child(note(summary, palette::MUTED))
+        .child(bar_acts(vec![
+            cancel,
+            button("btn Send", word("act.send"), resolve(Answer::Yes), Tone::Primary, Size::Sheet),
+        ]))
+}
+
+fn render_seal_disposition_bar(project: &std::path::Path, eval: &str, selected: &str) -> Element {
+    let chip = |disposition: &str| {
+        let picked = selected == disposition;
+        div()
+            .layer(format!("disposition {disposition}"))
+            .on_click(BarAct::PickDisposition {
+                project: project.to_path_buf(),
+                eval: eval.to_string(),
+                disposition: disposition.to_string(),
+            })
+            .pad(6, 12)
+            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
+            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
+            .font_weight(if picked { 600 } else { 400 })
+            .font_size(12)
+            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
+            .text(weft_core::tree::decision(disposition))
+    };
     div()
         .layer("Seal disposition bar")
         .self_stretch()
@@ -210,51 +124,25 @@ fn render_seal_disposition_bar(project: &str, eval: &str, selected: &str) -> Ele
         .bg(palette::SURFACE_ALT)
         .style("border-top", format!("2px solid {}", palette::AMBER_BORDER))
         .child(span("■").font_mono().color(palette::AMBER))
-        .child(div().font_weight(600).font_size(14).text("Seal this Eval round"))
+        .child(div().font_weight(600).font_size(14).text(word("desktop.bar.seal_round")))
         .child(div().flex_1())
-        .child(chip("accepted", "accepted"))
-        .child(chip("deferred", "parked"))
-        .child(chip("rejected", "rejected"))
-        .child(chip("abandoned", "dropped"))
+        .children(["accepted", "deferred", "rejected", "abandoned"].map(chip))
         .child(div().w(12))
-        .child(
-            div()
-                .layer("btn Cancel")
-                .on_click("cancel_bottom_bar")
-                .pad(7, 16)
-                .bg(palette::SURFACE)
-                .border(palette::LINE)
-                .font_weight(600)
-                .font_size(13)
-                .color(palette::MUTED)
-                .text(words::word("act.cancel")),
-        )
-        .child(
-            div()
-                .layer("btn Seal")
-                .on_click(format!("confirm_seal_disposition:{project}:{eval}:{selected}"))
-                .pad(7, 16)
-                .bg(palette::BLUE)
-                .border(palette::BLUE_BORDER)
-                .font_weight(600)
-                .font_size(13)
-                .color(palette::CANVAS)
-                .text(words::word("act.seal")),
-        )
+        .child(button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar))
+        .child(button(
+            "btn Seal",
+            word("act.seal"),
+            BarAct::ConfirmSeal {
+                project: project.to_path_buf(),
+                eval: eval.to_string(),
+                disposition: selected.to_string(),
+            },
+            Tone::Primary,
+            Size::Bar,
+        ))
 }
 
 fn render_quit_bar() -> Element {
-    let btn = |layer: &str, act: &str, label: &str| {
-        div()
-            .layer(layer)
-            .on_click(act)
-            .pad(8, 16)
-            .bg(palette::SURFACE)
-            .border(palette::LINE)
-            .font_weight(600)
-            .font_size(13)
-            .text(label)
-    };
     div()
         .layer("Quit Weft bar")
         .self_stretch()
@@ -269,163 +157,69 @@ fn render_quit_bar() -> Element {
                 .flex_1()
                 .flex_col()
                 .gap(2)
-                .child(div().font_weight(600).font_size(14).text("Quit Weft?"))
-                .child(
-                    div()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .text("Your agents are still running. You can leave them running in the background, or stop them now."),
-                ),
+                .child(div().font_weight(600).font_size(14).text(word("desktop.quit.title")))
+                .child(div().font_size(12).color(palette::MUTED).text(word("desktop.quit.what"))),
         )
-        .child(btn("btn Cancel", "cancel_bottom_bar", words::word("act.cancel")).color(palette::MUTED))
-        .child(
-            btn("btn Stop agents and quit", "quit_stop_agents", "Stop agents and quit")
-                .border(palette::AMBER_BORDER)
-                .color(palette::AMBER),
-        )
-        .child(
-            btn("btn Leave running and quit", "quit_leave_running", "Leave running and quit")
-                .bg(palette::BLUE)
-                .border(palette::BLUE_BORDER)
-                .color(palette::CANVAS),
-        )
+        .child(button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar))
+        .child(button(
+            "btn Stop agents and quit",
+            word("desktop.quit.stop"),
+            BarAct::StopAgentsAndQuit,
+            Tone::Warn,
+            Size::Bar,
+        ))
+        .child(button(
+            "btn Leave running and quit",
+            word("desktop.quit.leave"),
+            BarAct::LeaveRunningAndQuit,
+            Tone::Primary,
+            Size::Bar,
+        ))
 }
 
-fn render_allow_device_bar(machine: &str, device_id: &str, device_name: &str) -> Element {
-    div()
-        .layer("Allow a device bar")
-        .self_stretch()
-        .flex_col()
-        .gap(8)
-        .pad(14, 20)
-        .items_start()
-        .bg(palette::SURFACE_ALT)
-        .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(
-                    div()
-                        .font_weight(600)
-                        .font_size(15)
-                        .text(format!("Allow \"{device_name}\" to connect to {machine}?")),
-                )
-                .child(div().flex_1()),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .font_size(13)
-                .color(palette::MUTED)
-                .text("Signed in as 0xnairb. Only allow a device you are holding."),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .items_center()
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .layer("btn Refuse")
-                        .on_click(format!("remote_allow_device:{device_id}:no"))
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .text("Refuse"),
-                )
-                .child(
-                    div()
-                        .layer("btn Allow")
-                        .on_click(format!("remote_allow_device:{device_id}:yes"))
-                        .pad(9, 18)
-                        .bg(palette::BLUE)
-                        .border(palette::BLUE_BORDER)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::CANVAS)
-                        .text("Allow"),
-                ),
-        )
+fn render_allow_device_bar(
+    machine: &str,
+    device_id: &str,
+    device_name: &str,
+    login: Option<&str>,
+) -> Element {
+    let answer = |yes| BarAct::AllowDevice { device: device_id.to_string(), yes };
+    let mut bar = asking_bar("Allow a device bar", palette::BLUE_BORDER)
+        .child(title(fill("desktop.allow.ask", &[("device", device_name), ("machine", machine)])));
+    if let Some(login) = login {
+        bar = bar.child(note(fill("web.add.signed_in", &[("login", login)]), palette::MUTED));
+    }
+    bar.child(note(word("desktop.allow.holding"), palette::MUTED)).child(bar_acts(vec![
+        button("btn Refuse", word("desktop.allow.refuse"), answer(false), Tone::Plain, Size::Sheet),
+        button("btn Allow", word("desktop.allow.allow"), answer(true), Tone::Primary, Size::Sheet),
+    ]))
 }
 
 fn render_remove_device_bar(device_id: &str, device_name: &str) -> Element {
-    div()
-        .layer("Remove device bar")
-        .self_stretch()
-        .flex_col()
-        .gap(8)
-        .pad(14, 20)
-        .items_start()
-        .bg(palette::SURFACE_ALT)
-        .style("border-top", format!("2px solid {}", palette::AMBER))
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(8)
-                .items_center()
-                .child(
-                    div().font_weight(600).font_size(15).text(format!("Remove \"{device_name}\"?")),
-                )
-                .child(div().flex_1()),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .font_size(13)
-                .color(palette::MUTED)
-                .text(words::word("web.machines.remove_ask")),
-        )
-        .child(
-            div()
-                .self_stretch()
-                .flex_row()
-                .gap(10)
-                .items_center()
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .layer("btn Cancel")
-                        .on_click("cancel_bottom_bar")
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::LINE)
-                        .font_weight(600)
-                        .font_size(14)
-                        .text(words::word("act.cancel")),
-                )
-                .child(
-                    div()
-                        .layer("btn Confirm Remove")
-                        .on_click(format!("remote_remove_device:{device_id}"))
-                        .pad(9, 18)
-                        .bg(palette::SURFACE)
-                        .border(palette::AMBER)
-                        .font_weight(600)
-                        .font_size(14)
-                        .color(palette::AMBER)
-                        .text(words::word("web.machines.remove")),
-                ),
-        )
+    asking_bar("Remove device bar", palette::AMBER)
+        .child(title(fill("desktop.remote.remove_sure", &[("device", device_name)])))
+        .child(note(word("desktop.remote.remove_what"), palette::MUTED))
+        .child(bar_acts(vec![
+            button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Plain, Size::Sheet),
+            button(
+                "btn Confirm Remove",
+                word("web.machines.remove"),
+                SheetAct::RemoveDevice(device_id.to_string()),
+                Tone::Warn,
+                Size::Sheet,
+            ),
+        ]))
 }
 
 fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
     use weft_core::board::Act;
     // Eval put forward in teal, Seal in amber, as the guideline's outlined buttons.
-    let outline = |act: Act| match act {
-        Act::Eval if props.suggested == Some(Act::Eval) => Some(palette::TEAL),
-        Act::Seal if props.suggested == Some(Act::Seal) => Some(palette::AMBER),
-        _ => None,
-    };
-    let btn = |layer: &str, label: &str, action: &str, act: Act| {
-        let accent = outline(act);
+    let btn = |layer: &str, label: &str, action: BarAct, act: Act| {
+        let accent = match act {
+            Act::Eval if props.suggested == Some(Act::Eval) => Some(palette::TEAL),
+            Act::Seal if props.suggested == Some(Act::Seal) => Some(palette::AMBER),
+            _ => None,
+        };
         div()
             .layer(layer)
             .on_click(action)
@@ -444,24 +238,14 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
                     .text(label),
             )
     };
-
-    let selected_label = match props.selection {
-        Some(TreeSelection::Agent { session, .. }) => {
-            words::fill("web.bar.selected", &[("what", session)])
-        }
-        Some(TreeSelection::OpenGroup { .. }) => {
-            words::fill("web.bar.selected", &[("what", words::word("web.bar.open_round"))])
-        }
-        Some(TreeSelection::Ask { unit, .. }) => words::fill("web.bar.selected", &[("what", unit)]),
-        Some(TreeSelection::EvalGroup { eval, .. }) => {
-            words::fill("web.bar.selected", &[("what", eval)])
-        }
-        Some(TreeSelection::Seal { seal, .. }) => {
-            words::fill("web.bar.selected", &[("what", seal)])
-        }
-        _ => String::new(),
+    let selected = match props.selection {
+        Some(TreeSelection::Agent { session, .. }) => Some(session.as_str()),
+        Some(TreeSelection::OpenGroup { .. }) => Some(word("web.bar.open_round")),
+        Some(TreeSelection::Ask { unit, .. }) => Some(unit.as_str()),
+        Some(TreeSelection::EvalGroup { eval, .. }) => Some(eval.as_str()),
+        Some(TreeSelection::Seal { seal, .. }) => Some(seal.as_str()),
+        _ => None,
     };
-
     let mut row = div()
         .layer("tree bar")
         .self_stretch()
@@ -474,21 +258,22 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
         .items_center()
         .bg(palette::SURFACE_ALT)
         .border_top(palette::LINE)
-        .child(btn("btn Ask", words::word("act.ask"), "bar_act_ask", Act::Ask))
-        .child(btn("btn Eval", words::word("act.eval"), "bar_act_eval", Act::Eval))
-        .child(btn("btn Seal", words::word("act.seal"), "bar_act_seal", Act::Seal));
-
+        .child(btn("btn Ask", word("act.ask"), BarAct::Ask, Act::Ask))
+        .child(btn("btn Eval", word("act.eval"), BarAct::Eval, Act::Eval))
+        .child(btn("btn Seal", word("act.seal"), BarAct::Seal, Act::Seal));
     if let Some(sentence) = why_not {
         row = row.child(
             div().layer("why not sentence").font_size(13).color(palette::AMBER).text(sentence),
         );
     }
-
     row = row.child(div().flex_1());
-
-    if !selected_label.is_empty() {
-        row = row.child(div().font_size(12).color(palette::DIM).text(selected_label));
+    if let Some(what) = selected {
+        row = row.child(
+            div()
+                .font_size(12)
+                .color(palette::DIM)
+                .text(fill("web.bar.selected", &[("what", what)])),
+        );
     }
-
     row
 }

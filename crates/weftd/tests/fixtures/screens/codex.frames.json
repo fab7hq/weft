@@ -1,84 +1,84 @@
 {
-  "rows": 30,
   "cols": 100,
   "frames": [
     {
-      "full": true,
+      "alternate": true,
       "bytes": "G2MbWz8xMDQ5aA0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQoNCg0KDQobWzE7MUgbWz8yNWwbWz8yMDA0aBtbPzEwMDJoG1s/MTAwNmgbWzBt",
       "contents": "",
-      "alternate": true
+      "full": true
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1syOzFIG1ttG1sySyAgG1swOzM4OzU7NzVtPl8gG1swOzFtT3BlbkFJIENvZGV4G1swOzJtICh2MC4xNTguMCkbW20bWzM7MUgbW20bWzJLICAgICAbWzA7Mm1sb2FkaW5nG1ttG1s1OzNIG1s/MTAwMmwbWz8xMDAzaBtbMG0=",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1s1OzFIG1ttG1sySyAgG1swOzM4OzU7NzVtQSBodW5jaCBpcyBhIHBlcmZlY3RseSByZXNwZWN0YWJsZSBzdGFydGluZyBwb2ludC4bW20bWzI3OzFIG1ttG1sySxtbMDsxbeKAuhtbMG0gG1swOzJtQXNrIENvZGV4IHRvIGRvIGFueXRoaW5nG1ttG1syNzsyN0gbWzA7Mm0=",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1szMDsxSBtbbRtbMksgIBtbMDsxbT8bWzBtIGZvciBzaG9ydGN1dHMbWzI3OzNIG1s/MjVoG1swbQ==",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     loading\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1szOzFIG1ttG1sySyAgICAgG1swOzJtL3J1bnMvc2NyZWVucy1xMDEvd3MbW20bWzI3OzNIG1swbQ==",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "",
       "contents": "\n  >_ OpenAI Codex (v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n› Ask Codex to do anything\n\n\n  ? for shortcuts",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1syOzFIG1ttG1sySyAgG1swOzFtVXBkYXRlIGF2YWlsYWJsZRtbMDsybSh2MC4xNTguMCkbW20bWzI3OzFIG1ttG1sySxtbMDsxbeKAuhtbbRtbMzA7MUgbW20bWzJLG1syOzE5SBtbPzI1bBtbMDsybQ==",
       "contents": "\n  Update available(v0.158.0)\n     /runs/screens-q01/ws\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1syOzFIG1ttG1sySyAgG1swOzFtVXBkYXRlIGF2YWlsYWJsZRtbMDsybSDCtyAwLjE1OC4wIOKGkiAwLjE1OS4zG1ttG1szOzFIG1ttG1sySyAgG1swOzJtUmVsZWFzZSBub3RlczogG1swOzI7NG1odHRwczovL2dpdGh1Yi5jb20vb3BlbmFpL2MbW20bWzM7NDVIG1swOzI7NG0=",
       "contents": "\n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/c\n\n  A hunch is a perfectly respectable starting point.\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1szOzFIG1ttG1sySyAgG1swOzJtUmVsZWFzZSBub3RlczogG1swOzI7NG1odHRwczovL2dpdGh1Yi5jb20vb3BlbmFpL2NvZGV4L3JlbGVhc2VzL2xhdGVzdBtbbRtbNTsxSBtbbRtbMksbWzA7MTs3beKAuiAxLiBVcGRhdGUgbm93IChydW5zIGBucG0gaW5zdGFsbCAtZyBAb3BlbmFpL2NvZGV4YCkgICAgICAgICAgICAgICAgICAgICAgIBtbbRtbNTs3N0gbWzA7MTs3bQ==",
       "contents": "\n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1s1OzFIG1ttG1sySxtbMDsxOzdt4oC6IDEuIFVwZGF0ZSBub3cgKHJ1bnMgYG5wbSBpbnN0YWxsIC1nIEBvcGVuYWkvY29kZXhgKSAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgG1ttG1s2OzFIG1ttG1sySyAgMi4gU2tpcBtbNzsxSBtbbRtbMksgIDMuIFNraXAgdW50aWwgbmV4dCB2ZXJzaW9uG1s5OzFIG1ttG1sySyAgG1swOzFtZW50ZXIbW20bWzk7OEgbWzBt",
       "contents": "\n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n›",
-      "alternate": true
+      "full": false
     },
     {
-      "full": false,
+      "alternate": true,
       "bytes": "G1s5OzFIG1ttG1sySyAgG1swOzFtZW50ZXIbWzA7Mm0gY29udGludWUgwrcgG1swOzFtZXNjG1swOzJtIHNraXAbW20bWzI3OzFIG1ttG1sySxtbMjc7MkgbWzBt",
       "contents": "\n  Update available · 0.158.0 → 0.159.3\n  Release notes: https://github.com/openai/codex/releases/latest\n\n› 1. Update now (runs `npm install -g @openai/codex`)\n  2. Skip\n  3. Skip until next version\n\n  enter continue · esc skip",
-      "alternate": true
+      "full": false
     }
-  ]
+  ],
+  "rows": 30
 }

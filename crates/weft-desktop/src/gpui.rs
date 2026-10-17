@@ -1,7 +1,9 @@
-//! Pure-Rust GPUI declarative element tree, Toile `atlas` renderer, and native
-//! macOS `NSOpenPanel` folder/file dialogs (`ADR-0002`).
+//! The declarative element tree the views build and the window draws, and
+//! the guideline's palette.
 
-use std::path::PathBuf;
+use std::path::Path;
+
+use crate::action::{Action, Focus};
 
 /// The design guideline's tokens (`tokens.css`, from Toile's `weft`).
 pub mod palette {
@@ -43,7 +45,9 @@ pub struct Element {
     pub styles: Vec<(String, String)>,
     pub attrs: Vec<(String, String)>,
     pub text: Option<String>,
-    pub action: Option<String>,
+    pub action: Option<Action>,
+    /// A text field: which one.
+    pub field: Option<Focus>,
     pub children: Vec<Element>,
 }
 
@@ -60,6 +64,7 @@ pub fn div() -> Element {
         attrs: Vec::new(),
         text: None,
         action: None,
+        field: None,
         children: Vec::new(),
     }
 }
@@ -99,15 +104,27 @@ pub fn asset(name: &str) -> Option<&'static [u8]> {
     }
 }
 
-pub fn input_el() -> Element {
+/// One of the desktop's text fields: a line, or an area that grows with its lines.
+pub fn input_el(field: Focus) -> Element {
     let mut el = div();
     el.tag = "input";
+    el.field = Some(field);
     el
 }
 
-pub fn textarea_el() -> Element {
+pub fn textarea_el(field: Focus) -> Element {
     let mut el = div();
     el.tag = "textarea";
+    el.field = Some(field);
+    el
+}
+
+/// A pane's terminal, which the window paints from its own cells.
+pub fn terminal_el(project: &Path, pane: u32) -> Element {
+    let mut el = div();
+    el.tag = "terminal";
+    el.attrs.push(("data-project".into(), project.to_string_lossy().into_owned()));
+    el.attrs.push(("data-pane".into(), pane.to_string()));
     el
 }
 
@@ -266,7 +283,7 @@ impl Element {
         self
     }
 
-    pub fn on_click(mut self, action: impl Into<String>) -> Self {
+    pub fn on_click(mut self, action: impl Into<Action>) -> Self {
         self.action = Some(action.into());
         self
     }
@@ -295,8 +312,8 @@ impl Element {
     }
 
     /// Find the first descendant or self with `on_click` action `act`.
-    pub fn find_action(&self, act: &str) -> Option<&Element> {
-        if self.action.as_deref() == Some(act) {
+    pub fn find_action(&self, act: &Action) -> Option<&Element> {
+        if self.action.as_ref() == Some(act) {
             return Some(self);
         }
         for c in &self.children {
@@ -323,66 +340,6 @@ impl Element {
         }
         for c in &self.children {
             c.collect_text(out);
-        }
-    }
-}
-
-/// Native macOS file/folder picker abstraction (`NSOpenPanel` on macOS,
-/// injectable in tests).
-pub trait FileDialog: Send + Sync {
-    fn pick_folder(&self) -> Option<PathBuf>;
-    fn pick_file(&self, title: &str) -> Option<PathBuf>;
-}
-
-/// Default macOS `NSOpenPanel` dialog implementation.
-#[derive(Default)]
-pub struct MacFileDialog;
-
-impl FileDialog for MacFileDialog {
-    fn pick_folder(&self) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
-        {
-            let out = std::process::Command::new("/usr/bin/osascript")
-                .args([
-                    "-e",
-                    "POSIX path of (choose folder with prompt \"Open a project in Weft\")",
-                ])
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (!path.is_empty())
-                .then(|| weft_core::state::normalize_project_path(std::path::Path::new(&path)))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            None
-        }
-    }
-
-    fn pick_file(&self, title: &str) -> Option<PathBuf> {
-        #[cfg(target_os = "macos")]
-        {
-            let script = format!(
-                "POSIX path of (choose file with prompt \"{}\")",
-                title.replace('"', "\\\"")
-            );
-            let out = std::process::Command::new("/usr/bin/osascript")
-                .args(["-e", &script])
-                .output()
-                .ok()?;
-            if !out.status.success() {
-                return None;
-            }
-            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            (!path.is_empty()).then(|| PathBuf::from(path))
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = title;
-            None
         }
     }
 }

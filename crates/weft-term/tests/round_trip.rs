@@ -43,8 +43,10 @@ fn round_trip(name: &str, rows: u16, cols: u16) {
         };
         device.feed(&frame);
         assert_eq!(device.snapshot(), pane.snapshot(), "{name} chunk {n}");
+        // Keys in sorted order: the file is the same whether serde_json keeps
+        // a map's order or sorts it, which depends on the build.
         frames.push(json!({
-            "full": full,
+            "alternate": pane.alt_screen(),
             "bytes": weft_proto::screen_json(&weft_proto::OpenScreen {
                 pane: 0,
                 seq: 0,
@@ -53,12 +55,12 @@ fn round_trip(name: &str, rows: u16, cols: u16) {
                 bytes: frame.clone(),
             })["bytes"],
             "contents": pane.contents(),
-            "alternate": pane.alt_screen(),
+            "full": full,
         }));
         last = Some(pane.snapshot());
     }
     assert!(frames.iter().filter(|f| f["full"] == false).count() > 0, "{name}: differences");
-    let written = json!({"rows": rows, "cols": cols, "frames": frames});
+    let written = json!({"cols": cols, "frames": frames, "rows": rows});
     std::fs::write(
         fixtures().join(format!("{name}.frames.json")),
         serde_json::to_string_pretty(&written).unwrap() + "\n",

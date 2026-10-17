@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::term::{Config, TermMode};
+use alacritty_terminal::term::{Config, TermDamage, TermMode};
 use alacritty_terminal::vte::ansi::{Processor, Timeout};
 
 pub use cells::Cell;
@@ -32,6 +32,9 @@ pub struct Term {
     parser: Processor<NoSync>,
     events: Events,
     answer: Answer,
+    /// Every row is to be painted again: the selection changed, which the
+    /// emulator's own record of changes leaves out.
+    repaint: bool,
 }
 
 /// Where a terminal's answers go.
@@ -76,7 +79,7 @@ impl Term {
         let config = Config { scrolling_history: history, ..Config::default() };
         let events = Events::default();
         let term = alacritty_terminal::Term::new(config, &Size::new(rows, cols), events.clone());
-        Term { term, parser: Processor::new(), events, answer: Box::new(answer) }
+        Term { term, parser: Processor::new(), events, answer: Box::new(answer), repaint: true }
     }
 
     /// Take what the program printed.
@@ -167,6 +170,24 @@ impl Term {
         cells::cells(&self.term)
     }
 
+    /// One row on view, a cell per column, to paint.
+    pub fn row(&self, row: u16) -> Vec<Cell> {
+        cells::row(&self.term, row)
+    }
+
+    /// The rows on view to paint again since this was last asked, from 0, or
+    /// `None` for every row: a new or resized screen, a scroll through
+    /// history, a selection. The cursor's row, and the one it left, are
+    /// always among them.
+    pub fn changed_rows(&mut self) -> Option<Vec<u16>> {
+        let rows = match self.term.damage() {
+            TermDamage::Full => None,
+            TermDamage::Partial(lines) => Some(lines.map(|l| l.line as u16).collect()),
+        };
+        self.term.reset_damage();
+        if std::mem::take(&mut self.repaint) { None } else { rows }
+    }
+
     /// Whether to draw the cursor: shown, and the view on the live screen.
     pub fn cursor_visible(&self) -> bool {
         cells::cursor_visible(&self.term)
@@ -174,15 +195,18 @@ impl Term {
 
     /// Start selecting at a cell on view, `(row, col)`.
     pub fn select_from(&mut self, at: (u16, u16)) {
+        self.repaint = true;
         cells::select_from(&mut self.term, at);
     }
 
     /// Stretch the selection to a cell on view.
     pub fn select_to(&mut self, at: (u16, u16)) {
+        self.repaint = true;
         cells::select_to(&mut self.term, at);
     }
 
     pub fn clear_selection(&mut self) {
+        self.repaint |= self.term.selection.is_some();
         cells::clear_selection(&mut self.term);
     }
 

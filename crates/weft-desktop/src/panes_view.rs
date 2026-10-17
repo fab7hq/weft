@@ -11,10 +11,11 @@ use weft_core::state::{PaneViewMode, SavedPaneTab, SavedPanesLayout, SavedTabGro
 use weft_core::turns::Turn;
 use weft_core::words;
 
+use crate::action::{Focus, PaneAct};
 use crate::daemon::ProjectClient;
-use crate::gpui::{Element, div, edge_bar, img_el, input_el, palette, span};
+use crate::gpui::{Element, div, edge_bar, img_el, input_el, palette, span, terminal_el};
 
-/// Where a dragged tab is dropped (`D15.4`).
+/// Where a dragged tab is dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropTarget {
     TabBar { group: usize, index: usize },
@@ -23,7 +24,7 @@ pub enum DropTarget {
     Center { group: usize },
 }
 
-/// Split `group_idx` to the right, moving its active tab into the new pane (`D15.1`–`D15.3`).
+/// Split `group_idx` to the right, moving its active tab into the new pane.
 pub fn split_pane_right(
     panes: &mut SavedPanesLayout,
     group_idx: usize,
@@ -31,7 +32,7 @@ pub fn split_pane_right(
     split_pane(panes, group_idx, true)
 }
 
-/// Split `group_idx` downward, moving its active tab into the new pane (`D15.1`–`D15.3`).
+/// Split `group_idx` downward, moving its active tab into the new pane.
 pub fn split_pane_down(
     panes: &mut SavedPanesLayout,
     group_idx: usize,
@@ -72,7 +73,7 @@ fn split_pane(
     Ok(())
 }
 
-/// Move the active tab of `group_idx` to the next pane (`D15.2`).
+/// Move the active tab of `group_idx` to the next pane.
 pub fn move_tab_to_next_pane(
     panes: &mut SavedPanesLayout,
     group_idx: usize,
@@ -106,7 +107,7 @@ pub fn move_tab_to_next_pane(
     Ok(())
 }
 
-/// Join all panes into a single pane holding every tab (`D15.2`).
+/// Join all panes into a single pane holding every tab.
 pub fn join_all_panes(panes: &mut SavedPanesLayout) {
     if panes.groups.len() <= 1 {
         panes.layout = SplitLayout::Single;
@@ -127,7 +128,7 @@ pub fn join_all_panes(panes: &mut SavedPanesLayout) {
     panes.focused_group = 0;
 }
 
-/// Drag a tab from `(from_group, from_tab)` and drop it at `target` (`D15.4`).
+/// Drag a tab from `(from_group, from_tab)` and drop it at `target`.
 pub fn drag_tab(
     panes: &mut SavedPanesLayout,
     from_group: usize,
@@ -225,6 +226,8 @@ pub struct PanesProps<'a> {
     pub conversations: &'a HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: &'a HashSet<(PathBuf, u32, usize)>,
     pub message_draft: &'a str,
+    /// The message field has the keyboard.
+    pub typing: bool,
     /// What the agent in front's field shows after its caret.
     pub ghost: Option<&'a str>,
     /// What sits under the panes: the docked Ask in place of the message row.
@@ -373,13 +376,14 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
     } else if let Some(group) = props.panes.groups.get(focused_idx)
         && let Some(active_tab) =
             group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
-        && let Some((proj_name, harness, ..)) = resolve_tab_info(props.clients, active_tab)
+        && let Some(info) = resolve_tab_info(props.clients, active_tab)
     {
         container = container.child(render_message_row(
-            &proj_name,
-            &harness,
+            &info.project,
+            &info.harness,
             props.message_draft,
             props.ghost,
+            props.typing,
         ));
     }
 
@@ -393,26 +397,26 @@ fn tab_label(
     tab: &SavedPaneTab,
 ) -> (String, Option<(&'static str, &'static str)>, bool) {
     match resolve_tab_info(props.clients, tab) {
-        Some((proj_name, harness, turn, turbo, running, _)) => {
-            let state = if running { State::Running } else { State::Ended };
-            let shape = crate::tree_view::status_shape(state, turn);
-            (format!("{proj_name} · {harness}"), Some(shape), turbo && running)
+        Some(i) => {
+            let state = if i.running { State::Running } else { State::Ended };
+            let shape = crate::tree_view::status_shape(state, i.turn);
+            (format!("{} · {}", i.project, i.harness), Some(shape), i.turbo && i.running)
         }
         // An agent no longer known here has ended, as far as Weft can tell.
         None => {
-            let proj = tab.project.file_name().and_then(|n| n.to_str()).unwrap_or("project");
+            let proj = ProjectClient::name_of(&tab.project);
             let shape = crate::tree_view::status_shape(State::Ended, None);
-            (format!("{proj} · agent"), Some(shape), false)
+            (proj, Some(shape), false)
         }
     }
 }
 
 /// The view switch and the layout button, for the focused pane.
 fn render_view_controls(g_idx: usize, active_idx: usize, view: PaneViewMode) -> Vec<Element> {
-    let seg = |selected: bool, layer: &str, mode: &str, word: &str| {
+    let seg = |selected: bool, layer: &str, mode: PaneViewMode, word: &str| {
         let mut el = div()
             .layer(if selected { format!("{layer} selected") } else { layer.to_string() })
-            .on_click(format!("set_tab_view:{g_idx}:{active_idx}:{mode}"))
+            .on_click(PaneAct::SetView { group: g_idx, tab: active_idx, view: mode })
             .pad(4, 12)
             .font_size(12)
             .text(word.to_string());
@@ -424,9 +428,14 @@ fn render_view_controls(g_idx: usize, active_idx: usize, view: PaneViewMode) -> 
         el
     };
     let term = view == PaneViewMode::Terminal;
-    let mut first = seg(term, "seg Terminal", "terminal", words::word("web.view.terminal"));
-    let second =
-        seg(!term, "seg Conversation", "conversation", words::word("web.view.conversation"));
+    let mut first =
+        seg(term, "seg Terminal", PaneViewMode::Terminal, words::word("web.view.terminal"));
+    let second = seg(
+        !term,
+        "seg Conversation",
+        PaneViewMode::Conversation,
+        words::word("web.view.conversation"),
+    );
     first = first.border_right(if term { palette::BLUE_BORDER } else { palette::LINE });
     let switch =
         div().layer("view switch").flex_row().border(palette::LINE).child(first).child(second);
@@ -434,7 +443,7 @@ fn render_view_controls(g_idx: usize, active_idx: usize, view: PaneViewMode) -> 
         .layer("layout button")
         .role("button")
         .aria_label(words::word("act.layout"))
-        .on_click(format!("toggle_layout_menu:{g_idx}"))
+        .on_click(PaneAct::ToggleLayoutMenu(g_idx))
         .flex_row()
         .gap(6)
         .pad(4, 8)
@@ -455,16 +464,12 @@ fn render_split_toolbar(props: &PanesProps, g_idx: usize, group: &SavedTabGroup)
     let focused = tab
         .map(|t| tab_label(props, t))
         .map(|(label, _, turbo)| if turbo { format!("{label} ⚡") } else { label });
-    let mut info = div()
-        .flex_row()
-        .gap(6)
-        .font_mono()
-        .font_size(11)
-        .color(palette::MUTED)
-        .child(span(format!("{} PANES", props.panes.groups.len())));
+    let mut info = div().flex_row().gap(6).font_mono().font_size(11).color(palette::MUTED).child(
+        span(words::fill("desktop.panes.n", &[("n", &props.panes.groups.len().to_string())])),
+    );
     if let Some(f) = focused {
         info = info
-            .child(span("· FOCUSED:"))
+            .child(span(words::word("desktop.panes.focused")))
             .child(span(f).color(palette::BLUE_BORDER).font_weight(600));
     }
     div()
@@ -513,7 +518,7 @@ fn render_pane_group(
         let (label, shape, turbo) = tab_label(props, tab);
         let mut el = div()
             .layer(format!("tab {label}"))
-            .on_click(format!("select_tab:{g_idx}:{t_idx}"))
+            .on_click(PaneAct::SelectTab { group: g_idx, tab: t_idx })
             .attr("draggable", "true")
             .self_stretch()
             .flex_row()
@@ -546,7 +551,7 @@ fn render_pane_group(
             el = el.child(
                 span("✕")
                     .layer("close tab")
-                    .on_click(format!("close_tab:{g_idx}:{t_idx}"))
+                    .on_click(PaneAct::CloseTab { group: g_idx, tab: t_idx })
                     .font_size(11)
                     .color(palette::DIM),
             );
@@ -609,7 +614,7 @@ fn render_layout_menu(g_idx: usize) -> Element {
         .child(
             div()
                 .layer("menu Split right")
-                .on_click(format!("split_right:{g_idx}"))
+                .on_click(PaneAct::SplitRight(g_idx))
                 .pad(8, 14)
                 .bg(palette::SELECTED_BG)
                 .text(words::word("web.layout.split_right")),
@@ -617,21 +622,21 @@ fn render_layout_menu(g_idx: usize) -> Element {
         .child(
             div()
                 .layer("menu Split down")
-                .on_click(format!("split_down:{g_idx}"))
+                .on_click(PaneAct::SplitDown(g_idx))
                 .pad(8, 14)
                 .text(words::word("web.layout.split_down")),
         )
         .child(
             div()
                 .layer("menu Move tab to the next pane")
-                .on_click(format!("move_tab_next:{g_idx}"))
+                .on_click(PaneAct::MoveTabNext(g_idx))
                 .pad(8, 14)
                 .text(words::word("web.layout.next_pane")),
         )
         .child(
             div()
                 .layer("menu Join all panes")
-                .on_click("join_all_panes")
+                .on_click(PaneAct::JoinAll)
                 .pad(8, 14)
                 .text(words::word("web.layout.join")),
         )
@@ -643,13 +648,11 @@ fn render_terminal_viewport(
     tab: &SavedPaneTab,
     split: bool,
 ) -> Element {
-    let contents =
-        resolve_tab_info(props.clients, tab).map(|(_, _, _, _, _, c)| c).unwrap_or_default();
     let is_focused = props.panes.focused_group == g_idx;
 
     let mut pane = div()
         .layer(if is_focused { "pane" } else { "pane inactive" })
-        .on_click(format!("focus_pane_group:{g_idx}"))
+        .on_click(PaneAct::Focus(g_idx))
         .self_stretch()
         .flex_1()
         .flex_col()
@@ -662,21 +665,8 @@ fn render_terminal_viewport(
     if split && is_focused {
         pane = pane.style("border", format!("2px solid {}", palette::BLUE_BORDER));
     }
-    pane.child(
-        // The window paints the pane's own terminal here; the text stays for
-        // what reads this tree.
-        div()
-            .layer("terminal")
-            .attr("data-project", tab.project.to_string_lossy())
-            .attr("data-pane", tab.pane.to_string())
-            .self_stretch()
-            .flex_1()
-            .font_mono()
-            .font_size(12)
-            .style("line-height", "18px")
-            .style("white-space", "pre-wrap")
-            .text(contents),
-    )
+    // The window paints the pane's own terminal here.
+    pane.child(terminal_el(&tab.project, tab.pane).layer("terminal").self_stretch().flex_1())
 }
 
 fn render_conversation_viewport(
@@ -685,8 +675,10 @@ fn render_conversation_viewport(
     t_idx: usize,
     tab: &SavedPaneTab,
 ) -> Element {
-    let (_, harness, turn, _, _, _) = resolve_tab_info(props.clients, tab)
-        .unwrap_or_else(|| ("project".into(), "agent".into(), None, false, false, String::new()));
+    let info = resolve_tab_info(props.clients, tab);
+    let harness = info.as_ref().map(|i| i.harness.clone()).unwrap_or_default();
+    let turn = info.as_ref().and_then(|i| i.turn);
+    let zone = props.clients.iter().find(|c| c.root == tab.project).map_or(0, |c| c.zone);
 
     let has_items = props.conversations.contains_key(&(tab.project.clone(), tab.pane));
     let supports_conversation = has_items
@@ -715,15 +707,15 @@ fn render_conversation_viewport(
                 .text(words::say("web.conversation.unreadable", &harness)),
         );
     } else if let Some(items) = props.conversations.get(&(tab.project.clone(), tab.pane)) {
-        chat_col = append_conversation_items(
-            chat_col,
+        chat_col = chat_col.children(conversation_blocks(
             items,
             &harness,
             &tab.project,
             tab.pane,
             props.unfolded_steps,
             turn == Some(Turn::Waiting),
-        );
+            zone,
+        ));
     }
 
     if turn == Some(Turn::Waiting) {
@@ -732,7 +724,11 @@ fn render_conversation_viewport(
         chat_col = chat_col.child(
             div()
                 .layer("waiting line")
-                .on_click(format!("set_tab_view:{g_idx}:{t_idx}:terminal"))
+                .on_click(PaneAct::SetView {
+                    group: g_idx,
+                    tab: t_idx,
+                    view: PaneViewMode::Terminal,
+                })
                 .self_stretch()
                 .flex_row()
                 .pad(8, 14)
@@ -761,17 +757,19 @@ fn render_conversation_viewport(
         .child(chat_col)
 }
 
-fn append_conversation_items(
-    mut chat_col: Element,
+/// The conversation's blocks, in order.
+fn conversation_blocks(
     items: &[Item],
     harness: &str,
-    project: &PathBuf,
+    project: &std::path::Path,
     pane: u32,
     unfolded_steps: &HashSet<(PathBuf, u32, usize)>,
     waiting: bool,
-) -> Element {
+    zone: i64,
+) -> Vec<Element> {
     // The last thing the agent said leads with its state: the square while it
     // waits for you, the circle otherwise.
+    let mut chat_col = Vec::new();
     let last_agent = items.iter().rposition(|it| it.kind == Kind::Agent);
     // Map call IDs to settled outcomes
     let mut outcomes: HashMap<&str, Option<bool>> = HashMap::new();
@@ -791,8 +789,9 @@ fn append_conversation_items(
         match items[i].kind {
             Kind::Person => {
                 let text = items[i].text.as_deref().unwrap_or("");
-                let clock = format_item_clock(items[i].at);
-                chat_col = chat_col.child(
+                let clock =
+                    items[i].at.map_or_else(String::new, |at| crate::tree_view::clock(at, zone));
+                chat_col.push(
                     div()
                         .layer("msg you")
                         .self_stretch()
@@ -827,13 +826,14 @@ fn append_conversation_items(
                     format!("msg {harness} {agent_msg_count}")
                 };
                 let text = items[i].text.as_deref().unwrap_or("");
-                let clock = format_item_clock(items[i].at);
+                let clock =
+                    items[i].at.map_or_else(String::new, |at| crate::tree_view::clock(at, zone));
                 let (shape, colour) = if waiting && last_agent == Some(i) {
                     ("■", palette::AMBER)
                 } else {
                     ("●", palette::TEAL)
                 };
-                chat_col = chat_col.child(
+                chat_col.push(
                     div()
                         .layer(layer)
                         .self_stretch()
@@ -874,8 +874,8 @@ fn append_conversation_items(
                         break;
                     }
                 }
-                let is_open = unfolded_steps.contains(&(project.clone(), pane, block_idx));
-                chat_col = chat_col.child(render_step_block(
+                let is_open = unfolded_steps.contains(&(project.to_path_buf(), pane, block_idx));
+                chat_col.push(render_step_block(
                     &steps_group,
                     &outcomes,
                     project,
@@ -897,7 +897,7 @@ fn append_conversation_items(
 fn render_step_block(
     steps: &[&Item],
     outcomes: &HashMap<&str, Option<bool>>,
-    project: &PathBuf,
+    project: &std::path::Path,
     pane: u32,
     block_idx: usize,
     is_open: bool,
@@ -909,8 +909,8 @@ fn render_step_block(
         words::fill("web.steps.many", &[("n", &n.to_string())])
     };
     let caret = if is_open { "▾" } else { "▸" };
-    let proj_str = project.to_string_lossy();
-    let toggle_act = format!("toggle_steps:{proj_str}:{pane}:{block_idx}");
+    let toggle_act =
+        PaneAct::ToggleSteps { project: project.to_path_buf(), pane, block: block_idx };
 
     let mut box_el = div()
         .layer(if is_open { "tool steps open" } else { "tool steps folded" })
@@ -931,7 +931,7 @@ fn render_step_block(
         .style("white-space", "nowrap")
         .text(format!("{caret} {count_label}"));
     if is_open {
-        head = head.style("padding-bottom", "4px").border_bottom(palette::LINE);
+        head = head.style("padding", "0 0 4px 0").border_bottom(palette::LINE);
     }
     box_el = box_el.child(head);
 
@@ -970,8 +970,15 @@ fn render_step_block(
     box_el
 }
 
-fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&str>) -> Element {
-    let placeholder = format!("Message {project} · {harness}…");
+fn render_message_row(
+    project: &str,
+    harness: &str,
+    draft: &str,
+    ghost: Option<&str>,
+    typing: bool,
+) -> Element {
+    let placeholder =
+        words::fill("desktop.message.placeholder", &[("project", project), ("harness", harness)]);
     div()
         .layer("the message row")
         .self_stretch()
@@ -982,21 +989,20 @@ fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&
         .bg(palette::SURFACE_ALT)
         .border_top(palette::LINE)
         .child(
-            input_el()
+            input_el(Focus::Message)
                 .flex_1()
                 .pad(9, 12)
                 .bg(palette::SURFACE)
-                .border(palette::LINE)
+                .border(if typing { palette::BLUE_BORDER } else { palette::LINE })
                 .placeholder(placeholder)
                 .font_size(13)
                 .color(palette::TEXT)
-                .style("outline", "none")
                 .text(draft.to_string())
                 .children(ghost.map(|_| {
                     // The key that takes the suggestion, at the field's right.
                     div()
                         .layer("take suggestion")
-                        .on_click("take_suggestion")
+                        .on_click(PaneAct::TakeSuggestion)
                         .shrink_0()
                         .pad(0, 5)
                         .font_mono()
@@ -1009,7 +1015,7 @@ fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&
         .child(
             div()
                 .layer("send message button")
-                .on_click("send_message_row")
+                .on_click(PaneAct::SendMessage)
                 .flex_row()
                 .pad(9, 14)
                 .items_center()
@@ -1019,43 +1025,32 @@ fn render_message_row(project: &str, harness: &str, draft: &str, ghost: Option<&
         )
 }
 
-fn resolve_tab_info(
-    clients: &[ProjectClient],
-    tab: &SavedPaneTab,
-) -> Option<(String, String, Option<Turn>, bool, bool, String)> {
-    let client = clients.iter().find(|c| c.root == tab.project)?;
-    if let Some(p) = client.view(tab.pane) {
-        return Some((
-            client.name.clone(),
-            p.harness.clone(),
-            p.turn,
-            p.turbo,
-            p.running,
-            p.contents(),
-        ));
-    }
-    if let Some(s) = client.sessions.iter().find(|s| s.pane == Some(tab.pane)) {
-        return Some((
-            client.name.clone(),
-            s.harness.clone(),
-            s.turn,
-            client.turbo,
-            s.state == weft_core::sessions::State::Running,
-            String::new(),
-        ));
-    }
-    None
+/// What a tab's agent is, as its project last said.
+struct TabInfo {
+    project: String,
+    harness: String,
+    turn: Option<Turn>,
+    turbo: bool,
+    running: bool,
 }
 
-fn format_item_clock(at: Option<i64>) -> String {
-    let Some(ms) = at else {
-        return "11:20".to_string();
-    };
-    if ms < 2400 && ms > 0 {
-        let h = (ms / 100).rem_euclid(24);
-        let m = ms.rem_euclid(100).min(59);
-        return format!("{h:02}:{m:02}");
+fn resolve_tab_info(clients: &[ProjectClient], tab: &SavedPaneTab) -> Option<TabInfo> {
+    let client = clients.iter().find(|c| c.root == tab.project)?;
+    if let Some(p) = client.view(tab.pane) {
+        return Some(TabInfo {
+            project: client.name.clone(),
+            harness: p.harness.clone(),
+            turn: p.turn,
+            turbo: p.turbo,
+            running: p.running,
+        });
     }
-    let total_mins = (ms / 60_000).rem_euclid(24 * 60);
-    format!("{:02}:{:02}", total_mins / 60, total_mins % 60)
+    let s = client.sessions.iter().find(|s| s.pane == Some(tab.pane))?;
+    Some(TabInfo {
+        project: client.name.clone(),
+        harness: s.harness.clone(),
+        turn: s.turn,
+        turbo: client.turbo,
+        running: s.state == weft_core::sessions::State::Running,
+    })
 }
