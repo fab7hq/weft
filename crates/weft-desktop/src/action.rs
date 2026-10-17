@@ -163,6 +163,7 @@ pub enum PaneAct {
     JoinAll,
     Focus(usize),
     SelectTab { group: usize, tab: usize },
+    DropTab { group: usize, tab: usize, target: crate::panes_view::DropTarget },
     CloseTab { group: usize, tab: usize },
     SetView { group: usize, tab: usize, view: PaneViewMode },
     ToggleSteps { project: PathBuf, pane: u32, block: usize },

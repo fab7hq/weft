@@ -15,17 +15,18 @@ use ::gpui::{
     MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba,
     ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, SystemNotification,
     UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div,
-    point, prelude::*, px, rgba, size,
+    point, prelude::*, px, relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
 use weft_core::text_keys::System;
 
-use crate::action::{Action, Focus, SheetAct, WindowAct};
+use crate::action::{Action, Focus, PaneAct, SheetAct, WindowAct};
 use crate::app::WeftDesktopApp;
 use crate::daemon::{Again, ProjectClient};
 use crate::gpui::{Element, palette};
 use crate::keys::{self, Shortcut};
+use crate::panes_view::TabDrag;
 use crate::terminal_input::{self, Act, Button, Held};
 use crate::text_field::{Outcome, TextField};
 use crate::text_input::{self as field_view, FieldElement, Look, Painted};
@@ -883,8 +884,24 @@ impl GpuiDesktopView {
             d = d.child(self.build_gpui_element(child, text_style, child_is_row, &child_path, cx));
         }
 
-        // Stateful elements: scrollable containers or clickable actions
-        if is_scroll_y || el.action.is_some() {
+        // A tab dragged over: shown where it would go, and taken there.
+        if el.drop_glow {
+            d = d.drag_over::<TabDrag>(|s, _, _, _| {
+                s.bg(parse_color(palette::SELECTED_BG))
+                    .border_2()
+                    .border_dashed()
+                    .border_color(parse_color(palette::BLUE_BORDER))
+            });
+        }
+        if let Some(target) = el.drop {
+            d = d.on_drop(cx.listener(move |this, dragged: &TabDrag, window, cx| {
+                let act = PaneAct::DropTab { group: dragged.group, tab: dragged.tab, target };
+                this.dispatch_action(act.into(), window, cx);
+            }));
+        }
+
+        // Stateful elements: scrollable containers, clickable actions, dragged tabs
+        if is_scroll_y || el.action.is_some() || el.drag.is_some() {
             let id_str = match &el.layer_name {
                 Some(ln) => format!("layer:{ln}:{path}"),
                 None => format!("node:{path}"),
@@ -892,6 +909,9 @@ impl GpuiDesktopView {
             let mut stateful = d.id(ElementId::Name(SharedString::from(id_str)));
             if is_scroll_y {
                 stateful = stateful.overflow_y_scroll();
+            }
+            if let Some(tab) = el.drag.clone() {
+                stateful = stateful.on_drag(tab, |tab, _, _, cx| cx.new(|_| DragChip(tab.clone())));
             }
             if let Some(action) = el.action.clone() {
                 stateful = stateful.cursor_pointer().hover(|s| s.opacity(0.88)).on_mouse_down(
@@ -906,6 +926,37 @@ impl GpuiDesktopView {
         }
 
         d.into_any_element()
+    }
+}
+
+/// A dragged tab, under the pointer: its status and name.
+struct DragChip(TabDrag);
+
+impl Render for DragChip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let mut chip = gpui_div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(10.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
+            .bg(parse_color(palette::SELECTED_BG))
+            .border_1()
+            .border_color(parse_color(palette::BLUE_BORDER))
+            .text_color(parse_color(palette::BLUE_BORDER))
+            .text_size(px(13.0));
+        if let Some((glyph, colour)) = self.0.shape {
+            chip = chip.child(
+                gpui_div()
+                    .font_family(crate::fonts::MONO)
+                    .text_size(px(10.0))
+                    .text_color(parse_color(colour))
+                    .child(glyph),
+            );
+        }
+        chip.child(self.0.label.clone())
     }
 }
 
@@ -1069,21 +1120,25 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
         },
         "inset" if v == "0" => d.inset_0(),
         "inset" => d,
-        "top" => match n {
-            Some(n) => d.top(px(n)),
-            None => d,
+        "top" => match (n, percent(v)) {
+            (Some(n), _) => d.top(px(n)),
+            (None, Some(f)) => d.top(relative(f)),
+            _ => return Err(d),
         },
-        "left" => match n {
-            Some(n) => d.left(px(n)),
-            None => d,
+        "left" => match (n, percent(v)) {
+            (Some(n), _) => d.left(px(n)),
+            (None, Some(f)) => d.left(relative(f)),
+            _ => return Err(d),
         },
-        "right" => match n {
-            Some(n) => d.right(px(n)),
-            None => d,
+        "right" => match (n, percent(v)) {
+            (Some(n), _) => d.right(px(n)),
+            (None, Some(f)) => d.right(relative(f)),
+            _ => return Err(d),
         },
-        "bottom" => match n {
-            Some(n) => d.bottom(px(n)),
-            None => d,
+        "bottom" => match (n, percent(v)) {
+            (Some(n), _) => d.bottom(px(n)),
+            (None, Some(f)) => d.bottom(relative(f)),
+            _ => return Err(d),
         },
         "overflow" if v == "hidden" => d.overflow_hidden(),
         "overflow-x" if v == "hidden" => d.overflow_x_hidden(),
@@ -1249,6 +1304,11 @@ fn picture(el: &Element) -> AnyElement {
         picture = picture.h(px(h));
     }
     picture.into_any_element()
+}
+
+/// `50%` as a fraction.
+fn percent(s: &str) -> Option<f32> {
+    s.trim().strip_suffix('%')?.parse::<f32>().ok().map(|p| p / 100.0)
 }
 
 fn parse_px(s: &str) -> Option<f32> {

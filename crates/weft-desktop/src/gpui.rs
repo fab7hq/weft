@@ -48,6 +48,12 @@ pub struct Element {
     pub action: Option<Action>,
     /// A text field: which one.
     pub field: Option<Focus>,
+    /// A tab that can be dragged.
+    pub drag: Option<crate::panes_view::TabDrag>,
+    /// Where a tab dropped here goes.
+    pub drop: Option<crate::panes_view::DropTarget>,
+    /// Shows that a tab dragged over it would drop here.
+    pub drop_glow: bool,
     pub children: Vec<Element>,
 }
 
@@ -65,6 +71,9 @@ pub fn div() -> Element {
         text: None,
         action: None,
         field: None,
+        drag: None,
+        drop: None,
+        drop_glow: false,
         children: Vec::new(),
     }
 }
@@ -280,6 +289,21 @@ impl Element {
 
     pub fn text(mut self, t: impl Into<String>) -> Self {
         self.text = Some(t.into());
+        self
+    }
+
+    pub fn drag(mut self, tab: crate::panes_view::TabDrag) -> Self {
+        self.drag = Some(tab);
+        self
+    }
+
+    pub fn drop_on(mut self, target: crate::panes_view::DropTarget) -> Self {
+        self.drop = Some(target);
+        self
+    }
+
+    pub fn drop_glow(mut self) -> Self {
+        self.drop_glow = true;
         self
     }
 

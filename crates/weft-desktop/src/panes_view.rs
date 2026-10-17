@@ -18,10 +18,21 @@ use crate::gpui::{Element, div, edge_bar, img_el, input_el, palette, span, termi
 /// Where a dragged tab is dropped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DropTarget {
+    /// Into a pane's tabs, at `index` (past the end: last).
     TabBar { group: usize, index: usize },
+    /// A new pane right of `group`, or into it from another.
     EdgeRight { group: usize },
+    /// A new pane below `group`, or into it from another.
     EdgeDown { group: usize },
-    Center { group: usize },
+}
+
+/// A tab being dragged: where it is, and how it shows under the pointer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TabDrag {
+    pub group: usize,
+    pub tab: usize,
+    pub label: String,
+    pub shape: Option<(&'static str, &'static str)>,
 }
 
 /// Split `group_idx` to the right, moving its active tab into the new pane.
@@ -161,10 +172,6 @@ pub fn drag_tab(
         }
         DropTarget::TabBar { group, index } => {
             move_tab_between_groups(panes, from_group, from_tab, group, index);
-            Ok(())
-        }
-        DropTarget::Center { .. } => {
-            join_all_panes(panes);
             Ok(())
         }
     }
@@ -523,7 +530,8 @@ fn render_pane_group(
         let mut el = div()
             .layer(format!("tab {label}"))
             .on_click(PaneAct::SelectTab { group: g_idx, tab: t_idx })
-            .attr("draggable", "true")
+            .drag(TabDrag { group: g_idx, tab: t_idx, label: label.clone(), shape })
+            .drop_on(DropTarget::TabBar { group: g_idx, index: t_idx })
             .self_stretch()
             .flex_row()
             .gap(6)
@@ -585,6 +593,35 @@ fn render_pane_group(
     } else {
         div().flex_1().self_stretch()
     };
+
+    // A dragged tab drops into this pane, or splits it right or down.
+    let zone = |name: &str, target: DropTarget, [top, left, right, bottom]: [&str; 4]| {
+        div()
+            .layer(name)
+            .drop_on(target)
+            .style("position", "absolute")
+            .style("top", top)
+            .style("left", left)
+            .style("right", right)
+            .style("bottom", bottom)
+            .pad(12, 12)
+            .flex_col()
+            .child(div().layer("drop zone").flex_1().self_stretch().drop_glow())
+    };
+    let body = div()
+        .flex_1()
+        .self_stretch()
+        .flex_col()
+        .style("min-height", "0")
+        .style("position", "relative")
+        .child(body)
+        .child(zone(
+            "drop here",
+            DropTarget::TabBar { group: g_idx, index: usize::MAX },
+            ["0", "0", "50%", "50%"],
+        ))
+        .child(zone("drop right", DropTarget::EdgeRight { group: g_idx }, ["0", "50%", "0", "50%"]))
+        .child(zone("drop down", DropTarget::EdgeDown { group: g_idx }, ["50%", "0", "0", "0"]));
 
     let mut pane_col = div()
         .layer(format!("pane group {g_idx}"))

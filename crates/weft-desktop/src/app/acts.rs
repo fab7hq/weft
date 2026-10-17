@@ -475,6 +475,7 @@ impl WeftDesktopApp {
                 }
                 self.focus = Focus::Terminal;
             }
+            PaneAct::DropTab { group, tab, target } => self.drag_pane_tab(group, tab, target),
             PaneAct::CloseTab { group, tab } => self.close_tab(group, tab),
             PaneAct::SetView { group, tab, view } => {
                 let Some(t) =

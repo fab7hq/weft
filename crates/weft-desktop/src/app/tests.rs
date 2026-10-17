@@ -1510,3 +1510,41 @@ fn a_session_that_ended_is_told_and_the_window_goes() {
     assert_eq!(told[0].title, words::word("desktop.notice.ended"));
     assert!(app.quit_requested, "as `weft stop` asked");
 }
+
+#[test]
+fn a_tab_dragged_onto_a_pane_moves_or_splits_there() {
+    use crate::panes_view::DropTarget;
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    for h in ["claude", "codex", "grok"] {
+        start(&mut app, &mut wire, h);
+    }
+    // Every tab can be dragged, and every pane's body takes a drop three ways.
+    let shown = app.render();
+    let tab = shown.find_layer("tab weft · claude").expect("its tab");
+    assert_eq!(tab.drag.as_ref().map(|d| (d.group, d.tab)), Some((0, 0)));
+    let zones: Vec<_> = ["drop here", "drop right", "drop down"]
+        .iter()
+        .map(|z| shown.find_layer(z).and_then(|e| e.drop))
+        .collect();
+    assert_eq!(
+        zones,
+        [
+            Some(DropTarget::TabBar { group: 0, index: usize::MAX }),
+            Some(DropTarget::EdgeRight { group: 0 }),
+            Some(DropTarget::EdgeDown { group: 0 }),
+        ]
+    );
+
+    app.dispatch(PaneAct::DropTab { group: 0, tab: 0, target: DropTarget::EdgeRight { group: 0 } });
+    assert_eq!(app.state.panes.groups.len(), 2, "split, the tab on the right");
+    assert_eq!(app.state.panes.groups[1].tabs.len(), 1);
+    // Onto the other pane's tab: moved in beside it.
+    app.dispatch(PaneAct::DropTab {
+        group: 1,
+        tab: 0,
+        target: DropTarget::TabBar { group: 0, index: 0 },
+    });
+    assert_eq!(app.state.panes.groups.len(), 1, "its pane emptied and went");
+    assert_eq!(app.state.panes.groups[0].tabs.len(), 3);
+}
