@@ -1316,3 +1316,164 @@ fn the_state_is_written_once_by_whoever_takes_it() {
     assert!(!state.settings.sidebar_open);
     assert!(app.unsaved_state().is_none(), "taken once");
 }
+
+/// An Eval's view as the daemon reads it: one part with a step not met, its
+/// change, a finding and a check.
+fn an_eval_view() -> weft_core::eval_view::EvalView {
+    use weft_core::eval_view::{Change, EvalView, Group, Reading, State, Step};
+    EvalView {
+        eval_id: "evl_3".into(),
+        closed: true,
+        verdict: Some("drifted".into()),
+        confidence: Some(0.75),
+        commission: Some(0.02),
+        omission: Some(0.5),
+        findings: vec!["the error is logged and the person sees nothing".into()],
+        groups: vec![Group {
+            key: "p1".into(),
+            title: "Phase 1".into(),
+            steps: vec![Step {
+                id: "7".into(),
+                label: "7".into(),
+                text: "A failed send is told.".into(),
+                done_when: "a send that fails shows the reason".into(),
+                state: State::NotMet,
+                changes: vec!["w1".into()],
+                readings: vec![Reading {
+                    role: "map".into(),
+                    vote: "no".into(),
+                    reason: "the error is swallowed".into(),
+                    missing: String::new(),
+                    counted: true,
+                    cites: Vec::new(),
+                }],
+                findings: Vec::new(),
+            }],
+        }],
+        changes: vec![Change {
+            window: "w1".into(),
+            path: "src/send.rs".into(),
+            result: "required".into(),
+            serves: vec!["7".into()],
+            why: String::new(),
+            quotes: vec!["log::debug!".into()],
+        }],
+        checks: vec!["cargo test passed".into()],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn the_eval_view_is_read_through_the_daemon_and_opened_level_by_level() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
+    let (id, call) = wire
+        .calls()
+        .into_iter()
+        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
+        .expect("read");
+    assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3"));
+    let before = app.render().find_layer("sheet EvalView").unwrap().all_text();
+    assert!(before.contains(words::word("desktop.eval.no_record")), "{before}");
+    wire.answer(id, serde_json::to_value(an_eval_view()).unwrap());
+    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
+
+    let top = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let text = top.all_text();
+    assert!(text.contains("drifted") && text.contains("confidence 0.75"), "{text}");
+    assert!(top.find_layer("by step").is_some() && top.find_layer("by file").is_some());
+    assert!(text.contains(words::word("eval_view.findings")), "{text}");
+    assert!(top.find_layer("eval row p1").is_some(), "{text}");
+
+    app.dispatch(SheetAct::EvalOpen("g:p1".into()));
+    assert!(app.render().find_layer("eval row 7").is_some());
+    app.dispatch(SheetAct::EvalOpen("s:7".into()));
+    let step = app.render().all_text();
+    assert!(step.contains("A failed send is told.") && step.contains("Done when"), "{step}");
+    app.dispatch(SheetAct::EvalOpen("c:w1".into()));
+    let (id, call) = wire
+        .calls()
+        .into_iter()
+        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "window"))
+        .expect("its lines");
+    assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3/w1"));
+    wire.answer(
+        id,
+        json!({"text": "@@ -88,2 +88,3 @@\n fn send() {\n+    log::debug!(\"send failed\");\n }"}),
+    );
+    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::Window { .. })));
+    let lines = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let lit = lines.find_layer("line lit").expect("the quoted line is lit");
+    assert!(lit.all_text().contains("log::debug!"));
+    // The crumb goes back one level at a time, then to Details.
+    app.dispatch(SheetAct::EvalBack);
+    assert!(app.render().all_text().contains("A failed send is told."));
+    app.dispatch(SheetAct::EvalBack);
+    app.dispatch(SheetAct::EvalBack);
+    app.dispatch(SheetAct::ToggleEvalViewMode);
+    assert!(app.render().find_layer("eval row src/send.rs").is_some(), "by file");
+    app.dispatch(SheetAct::EvalBack);
+    assert!(matches!(app.active_sheet, Some(ActiveSheet::EvalDetail { .. })));
+}
+
+#[test]
+fn an_ended_agents_pane_says_so_and_its_work_stays_listed() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let pane = start(&mut app, &mut wire, "claude");
+    wire.event(Event::Exited { pane });
+    pumped(&mut app, |a| a.clients[0].view(pane).is_some_and(|v| !v.running));
+    let dom = app.render();
+    let said = dom.find_layer("agent ended").expect("the pane says it ended").all_text();
+    assert_eq!(said, words::say("agent.ended", "claude"));
+    assert!(dom.find_layer("terminal").is_none());
+}
+
+#[test]
+fn the_header_says_while_weft_is_connecting_or_reconnecting() {
+    let (_tmp, mut app) = sample_app(false);
+    let tag = |app: &WeftDesktopApp| app.render().find_layer("link tag").map(|t| t.all_text());
+    assert_eq!(tag(&app), Some(words::word("web.link.connecting").to_string()));
+    let wire = Wire::on(&mut app.clients[0]);
+    assert_eq!(tag(&app), None, "connected: nothing to say");
+    wire.hang_up();
+    pumped(&mut app, |a| !a.clients[0].is_connected());
+    assert_eq!(tag(&app), Some(words::word("web.link.reconnecting").to_string()));
+}
+
+#[test]
+fn an_agent_that_starts_waiting_off_screen_is_told_once() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let first = start(&mut app, &mut wire, "claude");
+    let second = start(&mut app, &mut wire, "codex");
+    // codex is in front: its own wait is not told; claude's is, once.
+    let turns = |a: Option<Turn>, b: Option<Turn>| Event::Agents {
+        panes: vec![a, b],
+        sessions: Vec::new(),
+        zone: 0,
+    };
+    wire.event(turns(Some(Turn::Working), Some(Turn::Waiting)));
+    pumped(&mut app, |a| a.clients[0].view(second).is_some_and(|v| v.turn == Some(Turn::Waiting)));
+    assert!(app.take_notices().is_empty(), "the agent in front is seen");
+    wire.event(turns(Some(Turn::Waiting), Some(Turn::Waiting)));
+    pumped(&mut app, |a| a.clients[0].view(first).is_some_and(|v| v.turn == Some(Turn::Waiting)));
+    let told = app.take_notices();
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        told[0].title,
+        words::fill("desktop.notice.waiting", &[("harness", "claude"), ("project", "weft")])
+    );
+    wire.event(turns(Some(Turn::Waiting), Some(Turn::Working)));
+    pumped(&mut app, |a| a.clients[0].view(second).is_some_and(|v| v.turn == Some(Turn::Working)));
+    assert!(app.take_notices().is_empty(), "told once while it waits");
+    // A notice opens its agent.
+    app.open_notice(&told[0].tag);
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(first));
+    // Notifications off for the project: none.
+    app.clients[0].notify = false;
+    wire.event(turns(Some(Turn::Working), Some(Turn::Working)));
+    wire.event(turns(Some(Turn::Working), Some(Turn::Waiting)));
+    pumped(&mut app, |a| a.clients[0].view(second).is_some_and(|v| v.turn == Some(Turn::Waiting)));
+    assert!(app.take_notices().is_empty());
+}

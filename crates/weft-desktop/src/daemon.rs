@@ -211,6 +211,15 @@ pub enum Then {
     Judges {
         eval: String,
     },
+    /// An Eval's view: its parts, steps and changes.
+    EvalView {
+        eval: String,
+    },
+    /// One change of an Eval, as lines.
+    Window {
+        eval: String,
+        window: String,
+    },
     /// A Seal's receipt, checked by RingFrame.
     Seal {
         seal: String,
@@ -328,6 +337,8 @@ pub struct ProjectClient {
     pub reopened_since: Option<i64>,
     pub harnesses: Harnesses,
     pub unread: Vec<String>,
+    /// It was connected and the daemon went.
+    pub lost: bool,
     /// What was read from RingFrame's record through the daemon, by what it
     /// was read for: an Eval's record, a Seal's checked receipt, an Ask's
     /// wording. What was not read, or could not be, is not here.
@@ -367,6 +378,7 @@ impl ProjectClient {
             reopened_since: None,
             harnesses: Default::default(),
             unread: Vec::new(),
+            lost: false,
             read: HashMap::new(),
         }
     }
@@ -614,6 +626,7 @@ impl ProjectClient {
 
     /// The daemon went: nothing it owed will come.
     fn lose(&mut self) {
+        self.lost = true;
         self.link = None;
         self.owed.clear();
         self.told.clear();
@@ -628,6 +641,8 @@ impl ProjectClient {
                 if matches!(
                     then,
                     Then::Judges { .. }
+                        | Then::EvalView { .. }
+                        | Then::Window { .. }
                         | Then::Seal { .. }
                         | Then::Source { .. }
                         | Then::Wording { .. }
@@ -799,6 +814,23 @@ impl ProjectClient {
             what: what.to_string(),
             unit: unit.to_string(),
             pane,
+            lines: None,
+            before: None,
+            after: None,
+        };
+        self.tell(call, then).map(|_| ())
+    }
+
+    /// Read `what` of `unit` again, keeping what was read before until the
+    /// answer comes: for what moves while it is shown.
+    pub fn reread(&mut self, what: &str, unit: &str, then: Then) -> Result<()> {
+        if self.owes(&then) {
+            return Ok(());
+        }
+        let call = Call::Read {
+            what: what.to_string(),
+            unit: unit.to_string(),
+            pane: None,
             lines: None,
             before: None,
             after: None,

@@ -13,9 +13,9 @@ use ::gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, EntityInputHandler,
     FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, UTF16Selection, Window,
-    WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div, point, prelude::*, px, rgba,
-    size,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, SystemNotification,
+    UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div,
+    point, prelude::*, px, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -179,8 +179,17 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
         }
     });
 
+    let answering = Arc::clone(&shared);
     gpui_platform::application().run(move |cx: &mut App| {
         crate::fonts::load(cx);
+        // A notice the person opens brings its agent in front.
+        cx.on_system_notification_response(move |response, cx| {
+            if let Ok(mut guard) = answering.lock() {
+                guard.app.open_notice(&response.tag);
+                guard.dirty = true;
+            }
+            cx.activate(true);
+        });
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -239,12 +248,24 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                     cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
-                            let (dirty, quit) = match poll_shared.lock() {
-                                Ok(mut guard) => {
-                                    (std::mem::take(&mut guard.dirty), guard.app.quit_requested)
-                                }
-                                Err(_) => (false, true),
+                            let (dirty, quit, notices) = match poll_shared.lock() {
+                                Ok(mut guard) => (
+                                    std::mem::take(&mut guard.dirty),
+                                    guard.app.quit_requested,
+                                    guard.app.take_notices(),
+                                ),
+                                Err(_) => (false, true, Vec::new()),
                             };
+                            for n in notices {
+                                cx.update(|cx| {
+                                    cx.show_system_notification(SystemNotification {
+                                        tag: n.tag.into(),
+                                        title: n.title.into(),
+                                        body: SharedString::default(),
+                                        actions: Vec::new(),
+                                    })
+                                });
+                            }
                             if quit {
                                 cx.update(|cx| cx.quit());
                                 break;

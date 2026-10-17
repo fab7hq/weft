@@ -669,6 +669,16 @@ fn render_terminal_viewport(
     if split && is_focused {
         pane = pane.style("border", format!("2px solid {}", palette::BLUE_BORDER));
     }
+    // An agent that ended says so where its terminal was.
+    if let Some(info) = resolve_tab_info(props.clients, tab).filter(|i| !i.running) {
+        return pane.child(
+            div()
+                .layer("agent ended")
+                .font_size(14)
+                .color(palette::MUTED)
+                .text(words::say("agent.ended", &info.harness)),
+        );
+    }
     // The window paints the pane's own terminal here.
     pane.child(terminal_el(&tab.project, tab.pane).layer("terminal").self_stretch().flex_1())
 }

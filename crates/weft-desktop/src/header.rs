@@ -10,6 +10,8 @@ pub struct HeaderProps {
     pub machine: String,
     pub sidebar_open: bool,
     pub needs_you: usize,
+    /// What the link to Weft on this machine is doing, while it is not up.
+    pub link: Option<&'static str>,
     pub menu_open: bool,
 }
 
@@ -68,6 +70,19 @@ pub fn render_header(props: &HeaderProps) -> Element {
         .child(div().font_weight(600).font_size(15).text(props.machine.clone()))
         .child(div().flex_1().flex_row().items_center());
 
+    if let Some(link) = props.link {
+        bar = bar.child(
+            div()
+                .layer("link tag")
+                .pad(4, 10)
+                .bg(palette::SURFACE)
+                .border(palette::LINE)
+                .font_mono()
+                .font_size(11)
+                .color(palette::MUTED)
+                .text(link),
+        );
+    }
     if props.needs_you > 0 {
         bar = bar.child(
             div()

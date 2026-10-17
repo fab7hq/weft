@@ -51,8 +51,8 @@ pub fn render_sheet(props: &SheetProps) -> Element {
         }
         ActiveSheet::WorkDetail { project, unit } => work::render(props, project, unit),
         ActiveSheet::EvalDetail { project, eval } => eval::render_detail(props, project, eval),
-        ActiveSheet::EvalView { project, eval, by_file, .. } => {
-            eval::render_view(props, project, eval, *by_file)
+        ActiveSheet::EvalView { project, eval, by_file, at } => {
+            eval::render_view(props, project, eval, *by_file, at)
         }
         ActiveSheet::SealDetail { project, seal } => seal::render(props, project, seal),
         ActiveSheet::SessionDetail { project, session } => session::render(props, project, session),

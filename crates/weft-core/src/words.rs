@@ -497,11 +497,13 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.work.composed", "The prompt {harness} composed:"),
     ("desktop.eval.gone", "This Eval is not in RingFrame's record."),
     ("desktop.eval.no_record", "Its record has not come from RingFrame yet."),
+    ("desktop.eval.no_lines", "Its lines have not come from RingFrame yet."),
     ("desktop.seal.gone", "This Seal is not in RingFrame's record."),
     ("desktop.seal.seals", "Seals Eval {n}"),
     ("desktop.seal.unchecked", "RingFrame has not said yet whether the receipt still holds."),
     ("desktop.session.gone", "This session is not in Weft's record."),
     ("desktop.pick.project", "Open a project in Weft"),
+    ("desktop.notice.waiting", "{harness} in {project} needs your input"),
     ("desktop.pick.program", "Find {harness}"),
 ];
 

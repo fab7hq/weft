@@ -70,18 +70,48 @@ pub fn machine_name_of(host: &str) -> String {
     }
 }
 
+/// Something to tell the person through the system, while Weft is not where
+/// they look: `tag` names the agent it is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub tag: String,
+    pub title: String,
+}
+
 /// How long a draft stays the same before it is asked about.
 const SETTLED: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveSheet {
-    Ask { project: PathBuf, target_session: Option<String>, follow_up_unit: Option<String> },
-    WorkDetail { project: PathBuf, unit: String },
-    EvalDetail { project: PathBuf, eval: String },
-    EvalView { project: PathBuf, eval: String, by_file: bool, selected_step: usize },
-    SealDetail { project: PathBuf, seal: String },
-    SessionDetail { project: PathBuf, session: String },
+    Ask {
+        project: PathBuf,
+        target_session: Option<String>,
+        follow_up_unit: Option<String>,
+    },
+    WorkDetail {
+        project: PathBuf,
+        unit: String,
+    },
+    EvalDetail {
+        project: PathBuf,
+        eval: String,
+    },
+    /// The Eval view: steps or files, and the levels opened, the last in front.
+    EvalView {
+        project: PathBuf,
+        eval: String,
+        by_file: bool,
+        at: Vec<String>,
+    },
+    SealDetail {
+        project: PathBuf,
+        seal: String,
+    },
+    SessionDetail {
+        project: PathBuf,
+        session: String,
+    },
     Updates,
     Remote,
 }
@@ -134,6 +164,10 @@ pub struct WeftDesktopApp {
     /// The state changed since it was last written: the window writes it
     /// off the shared lock.
     unsaved: bool,
+    /// The agents waiting for the person, as last seen, so each is told once.
+    waiting: HashSet<(PathBuf, u32)>,
+    /// What is to be told and has not been taken yet.
+    notices: Vec<Notice>,
 }
 
 impl WeftDesktopApp {
@@ -167,6 +201,8 @@ impl WeftDesktopApp {
             bottom_bar: BottomBarState::None,
             quit_requested: false,
             unsaved: false,
+            waiting: HashSet::new(),
+            notices: Vec::new(),
         };
         for p in app.state.open_projects.clone() {
             app.add_project(&p);
@@ -247,9 +283,12 @@ impl WeftDesktopApp {
         for (root, a) in answers {
             self.take_answer(&root, a);
         }
-        // An agent's turn or record moved: what it said may have too.
+        // An agent's turn or record moved: what it said may have too, and
+        // an Eval still being judged.
         if moved {
+            self.notice_waiting();
             self.refresh_active_conversations();
+            self.refresh_eval_view();
         }
         self.suggest_tick(std::time::Instant::now()) || changed
     }
@@ -394,6 +433,70 @@ impl WeftDesktopApp {
         for (proj, pane) in targets {
             if let Some(client) = self.client_mut(&proj) {
                 let _ = client.read("conversation", "", Some(pane), Then::Conversation { pane });
+            }
+        }
+    }
+
+    /// Tell, once, of each agent that started waiting for the person and is
+    /// not the one in front, in a project that tells.
+    fn notice_waiting(&mut self) {
+        let front = self.active_tab().map(|t| (t.project, t.pane));
+        let mut now = HashSet::new();
+        for c in &self.clients {
+            for p in c.panes.iter().filter(|p| p.turn == Some(weft_core::turns::Turn::Waiting)) {
+                let key = (c.root.clone(), p.id);
+                if !self.waiting.contains(&key) && front.as_ref() != Some(&key) && c.notify {
+                    self.notices.push(Notice {
+                        tag: format!("{}#{}", c.root.display(), p.id),
+                        title: words::fill(
+                            "desktop.notice.waiting",
+                            &[("harness", &p.harness), ("project", &c.name)],
+                        ),
+                    });
+                }
+                now.insert(key);
+            }
+        }
+        self.waiting = now;
+    }
+
+    /// What is to be told, taken once.
+    pub fn take_notices(&mut self) -> Vec<Notice> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// The person opened a notice: its agent in front.
+    pub fn open_notice(&mut self, tag: &str) {
+        let Some((root, pane)) = tag.rsplit_once('#') else { return };
+        let Ok(pane) = pane.parse::<u32>() else { return };
+        let root = PathBuf::from(root);
+        let shown = self.state.panes.groups.iter().enumerate().find_map(|(g, group)| {
+            group.tabs.iter().position(|t| t.project == root && t.pane == pane).map(|t| (g, t))
+        });
+        match shown {
+            Some((g, t)) => {
+                self.state.panes.groups[g].active_tab = t;
+                self.state.panes.focused_group = g;
+            }
+            None => self.ensure_tab_in_active_pane(SavedPaneTab {
+                project: root,
+                pane,
+                view: self.state.settings.default_view,
+            }),
+        }
+        let _ = self.save_state();
+    }
+
+    /// Read the open Eval view again while it is being judged.
+    fn refresh_eval_view(&mut self) {
+        let Some(ActiveSheet::EvalView { project, eval, .. }) = self.active_sheet.clone() else {
+            return;
+        };
+        let then = Then::EvalView { eval: eval.clone() };
+        if let Some(c) = self.client_mut(&project) {
+            let closed = c.read.get(&then).and_then(|v| v["closed"].as_bool()).unwrap_or(false);
+            if !closed {
+                let _ = c.reread("eval", &eval, then);
             }
         }
     }
@@ -559,6 +662,9 @@ impl WeftDesktopApp {
             machine: self.machine.clone(),
             sidebar_open: self.state.settings.sidebar_open,
             needs_you,
+            link: self.clients.iter().find(|c| !c.is_connected()).map(|c| {
+                words::word(if c.lost { "web.link.reconnecting" } else { "web.link.connecting" })
+            }),
             menu_open: self.menu_open,
         });
 

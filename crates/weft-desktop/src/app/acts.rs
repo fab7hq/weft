@@ -336,18 +336,43 @@ impl WeftDesktopApp {
             }
             SheetAct::Seal { project, eval } => self.offer_seal(project, eval),
             SheetAct::EvalView { project, eval } => {
-                self.read_judges(&project, &eval);
+                if let Some(c) = self.client_mut(&project) {
+                    let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
+                }
                 self.active_sheet =
-                    Some(ActiveSheet::EvalView { project, eval, by_file: false, selected_step: 0 });
+                    Some(ActiveSheet::EvalView { project, eval, by_file: false, at: Vec::new() });
             }
             SheetAct::ToggleEvalViewMode => {
-                if let Some(ActiveSheet::EvalView { by_file, selected_step, .. }) =
-                    &mut self.active_sheet
+                if let Some(ActiveSheet::EvalView { by_file, at, .. }) = &mut self.active_sheet
+                    && at.is_empty()
                 {
                     *by_file = !*by_file;
-                    *selected_step = 0;
                 }
             }
+            SheetAct::EvalOpen(key) => {
+                let Some(ActiveSheet::EvalView { project, eval, at, .. }) = &mut self.active_sheet
+                else {
+                    return;
+                };
+                at.push(key.clone());
+                let (project, eval) = (project.clone(), eval.clone());
+                if let Some(window) = key.strip_prefix("c:")
+                    && let Some(c) = self.client_mut(&project)
+                {
+                    let then = Then::Window { eval: eval.clone(), window: window.to_string() };
+                    let _ = c.read("window", &format!("{eval}/{window}"), None, then);
+                }
+            }
+            SheetAct::EvalBack => match &mut self.active_sheet {
+                Some(ActiveSheet::EvalView { at, .. }) if !at.is_empty() => {
+                    at.pop();
+                }
+                Some(ActiveSheet::EvalView { project, eval, .. }) => {
+                    let (project, eval) = (project.clone(), eval.clone());
+                    self.tree_act(TreeAct::SelectEval { project, eval });
+                }
+                _ => {}
+            },
             SheetAct::Resume { project, harness, session } => {
                 if self.start_agent_in_project(&project, &harness, Some(&session)) {
                     self.active_sheet = None;

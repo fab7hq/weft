@@ -133,6 +133,10 @@ pub enum SheetAct {
         eval: String,
     },
     ToggleEvalViewMode,
+    /// Open a part, a file, a step or a change of the Eval view, by its key.
+    EvalOpen(String),
+    /// Back one level of the Eval view; from its top, to the Eval's Details.
+    EvalBack,
     Resume {
         project: PathBuf,
         harness: String,
