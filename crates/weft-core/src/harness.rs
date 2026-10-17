@@ -335,7 +335,7 @@ mod tests {
             )),
             None
         );
-        // A new session, as the TUI starts: ready, in its working directory.
+        // A new session, as the harness's own TUI starts: ready, in its working directory.
         // The server's own short sessions (a title) are not one.
         let started = |ephemeral: bool, source: &str| {
             format!(

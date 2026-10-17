@@ -2,7 +2,7 @@
 //! be done; or what waits on the person: a staged prompt, a Seal's
 //! disposition, a device asking to connect, a device to remove, quitting.
 
-use weft_core::turns::Turn;
+use weft_core::turns;
 use weft_core::words::{fill, word};
 
 use crate::action::{Answer, BarAct, SheetAct};
@@ -59,14 +59,11 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
         button("btn Cancel", word("act.cancel"), resolve(Answer::No), Tone::Plain, Size::Sheet);
 
     // The agent has not said it is ready: Weft did not type it, and why.
-    let why = |key| Some(fill("not_typed.why", &[("why", word(key))]));
-    let not_ready = match (&client.last_refusal, pane.and_then(|p| p.turn)) {
-        (Some(refusal), _) => Some(refusal.clone()),
-        (None, Some(Turn::Working)) => why("not_ready.working"),
-        (None, Some(Turn::Waiting)) => why("not_ready.asking"),
-        (None, None | Some(Turn::Ended)) => why("not_ready.unknown"),
-        (None, Some(Turn::Ready | Turn::TurnEnded)) => None,
-    };
+    let not_ready = client.last_refusal.clone().or_else(|| {
+        turns::may_type(pane.and_then(|p| p.turn))
+            .err()
+            .map(|why| fill("not_typed.why", &[("why", why)]))
+    });
     if let Some(reason) = not_ready {
         return asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
             .child(title(word("not_ready.title")))

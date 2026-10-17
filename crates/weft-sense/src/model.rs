@@ -234,7 +234,7 @@ impl SenseTokenizer {
             added_lookup.insert(tok.content.clone(), tok.id);
             added_longest_first.push((tok.content, tok.id));
         }
-        added_longest_first.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        added_longest_first.sort_by_key(|t| std::cmp::Reverse(t.0.len()));
 
         for &req in ADDED_TOKENS {
             if !added_lookup.contains_key(req) && !parsed.model.vocab.contains_key(req) {
@@ -1422,17 +1422,16 @@ impl SenseModel {
     pub fn load_default_home(home: &Path) -> anyhow::Result<Option<Self>> {
         let sense_root = home.join(".fab7").join("weft").join("sense");
         let current_path = sense_root.join("current.json");
-        if current_path.exists() {
-            if let Ok(bytes) = fs::read(&current_path) {
-                if let Ok(ptr) = serde_json::from_slice::<SenseCurrentPointer>(&bytes) {
-                    let bundle_dir = {
-                        let p = PathBuf::from(&ptr.path);
-                        if p.is_absolute() { p } else { sense_root.join(p) }
-                    };
-                    if bundle_dir.join("manifest.json").exists() {
-                        return Self::load(&bundle_dir).map(Some);
-                    }
-                }
+        if current_path.exists()
+            && let Ok(bytes) = fs::read(&current_path)
+            && let Ok(ptr) = serde_json::from_slice::<SenseCurrentPointer>(&bytes)
+        {
+            let bundle_dir = {
+                let p = PathBuf::from(&ptr.path);
+                if p.is_absolute() { p } else { sense_root.join(p) }
+            };
+            if bundle_dir.join("manifest.json").exists() {
+                return Self::load(&bundle_dir).map(Some);
             }
         }
 
@@ -1904,7 +1903,7 @@ fn softmax_row_in_place(row: &mut [f32]) {
 
 #[cfg(target_arch = "aarch64")]
 #[target_feature(enable = "neon")]
-#[allow(unsafe_op_in_unsafe_fn)]
+#[allow(unsafe_op_in_unsafe_fn, clippy::excessive_precision)]
 #[inline]
 unsafe fn gelu_bias_minmax_neon(slice: &mut [f32], bias: &[f32]) -> (f32, f32) {
     use std::arch::aarch64::{
@@ -2015,6 +2014,7 @@ fn gelu_in_place(slice: &mut [f32]) {
     }
 }
 
+#[allow(clippy::excessive_precision)]
 #[inline(always)]
 fn erf_f32(x: f32) -> f32 {
     let a = x.abs().min(4.0_f32);

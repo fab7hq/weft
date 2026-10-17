@@ -814,7 +814,7 @@ fn opening_a_project_lists_it_at_once_for_the_window_to_connect() {
     let (_tmp, mut app) = sample_app(false);
     app.open_project_path(PathBuf::from("/work/new-repo"));
     assert!(app.state.open_projects.contains(&PathBuf::from("/work/new-repo")));
-    assert!(app.disconnected().contains(&PathBuf::from("/work/new-repo")));
+    assert!(app.disconnected().contains(&(PathBuf::from("/work/new-repo"), false)));
     assert!(saved(&mut app).open_projects.contains(&PathBuf::from("/work/new-repo")));
 }
 
@@ -838,7 +838,7 @@ fn a_lost_daemon_is_noticed_and_the_project_is_connected_again() {
     assert!(app.disconnected().is_empty());
     wire.hang_up();
     pumped(&mut app, |a| !a.clients[0].is_connected());
-    assert_eq!(app.disconnected(), vec![weft()], "the window's thread connects it again");
+    assert_eq!(app.disconnected(), vec![(weft(), true)], "the window's thread connects it again");
 }
 
 #[test]
@@ -1476,4 +1476,37 @@ fn an_agent_that_starts_waiting_off_screen_is_told_once() {
     wire.event(turns(Some(Turn::Working), Some(Turn::Waiting)));
     pumped(&mut app, |a| a.clients[0].view(second).is_some_and(|v| v.turn == Some(Turn::Waiting)));
     assert!(app.take_notices().is_empty());
+}
+
+#[test]
+fn a_project_that_will_not_open_is_told_once_with_why() {
+    let (_tmp, mut app, wire) = wired_app();
+    wire.hang_up();
+    pumped(&mut app, |a| !a.clients[0].is_connected());
+    let why = "Another version of Weft is running. `weft stop` ends it and its agents.";
+    app.not_opened(&weft(), why);
+    app.not_opened(&weft(), why);
+    let told = app.take_notices();
+    assert_eq!(told.len(), 1, "told once while the reason stays the same");
+    assert_eq!(
+        told[0].title,
+        words::fill("desktop.notice.not_opened", &[("project", "weft"), ("why", why)])
+    );
+    app.not_opened(&weft(), "no session");
+    assert_eq!(app.take_notices().len(), 1, "a new reason is told");
+    // Closed and opened again: the same reason is told again.
+    app.close_project(&weft());
+    app.open_project_path(weft());
+    app.not_opened(&weft(), "no session");
+    assert_eq!(app.take_notices().len(), 1, "told again after a close");
+}
+
+#[test]
+fn a_session_that_ended_is_told_and_the_window_goes() {
+    let (_tmp, mut app, _wire) = wired_app();
+    app.session_ended();
+    let told = app.take_notices();
+    assert_eq!(told.len(), 1);
+    assert_eq!(told[0].title, words::word("desktop.notice.ended"));
+    assert!(app.quit_requested, "as `weft stop` asked");
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use weft_core::harness::{Harness, Harnesses};
-use weft_desktop::daemon::{Answered, ProjectClient, Then};
+use weft_desktop::daemon::{Again, Answered, ProjectClient, Then};
 
 /// A harness of this name that runs `command`, from a fixture profile.
 fn harness(name: &str, command: &str) -> Harness {
@@ -97,5 +97,60 @@ fn a_read_is_answered_into_the_project_and_a_refusal_is_handed_back() {
     let answered = until(&mut c, |_, a| !a.is_empty());
     assert_eq!(answered[0].then, Then::Refusal);
     assert!(answered[0].answer.is_err(), "no agent, no Eval: {answered:?}");
+    shutdown(&socket, &root);
+}
+
+/// A daemon of another protocol at a socket of its own: it refuses every hello.
+fn other_version(name: &str) -> PathBuf {
+    use std::io::{BufRead, BufReader, Write};
+    let socket = weft_proto::private_socket(name);
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut writer = stream.try_clone().unwrap();
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let m: serde_json::Value = serde_json::from_str(&line).unwrap();
+                let no = serde_json::json!({"id": m["id"], "error": {"code": "protocol",
+                    "message": "this daemon speaks protocol 2, not 3"}});
+                writeln!(writer, "{no}").unwrap();
+            }
+        }
+    });
+    socket
+}
+
+/// A window that finds another version of Weft running says so, and how to
+/// end it, rather than a bare protocol number.
+#[test]
+fn a_window_refused_by_another_version_says_how_to_end_it() {
+    let socket = other_version("weft-desktop-other-version");
+    let refused =
+        ProjectClient::connect(&socket, Path::new("."), 24, 80).err().expect("refused").to_string();
+    assert_eq!(
+        refused,
+        "Another version of Weft is running (this daemon speaks protocol 2, not 3). \
+         `weft stop` ends it and its agents."
+    );
+}
+
+/// A project whose daemon went is opened again only on one that listens: a
+/// window never starts the daemon the person stopped. One of another
+/// protocol is a newer Weft, which the window starts again as.
+#[test]
+fn a_lost_project_comes_back_only_to_a_daemon_that_listens() {
+    let gone = weft_proto::private_socket("weft-desktop-gone");
+    assert!(matches!(ProjectClient::again(&gone, Path::new("."), 24, 80), Again::Waiting));
+    assert!(!gone.exists(), "no daemon was started");
+
+    let newer = other_version("weft-desktop-newer");
+    assert!(matches!(ProjectClient::again(&newer, Path::new("."), 24, 80), Again::Newer(_)));
+
+    let (socket, root) = daemon("again");
+    match ProjectClient::again(&socket, &root, 24, 80) {
+        Again::Back(c) => assert!(c.is_connected()),
+        _ => panic!("the daemon listens"),
+    }
     shutdown(&socket, &root);
 }

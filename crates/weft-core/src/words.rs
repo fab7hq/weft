@@ -1,7 +1,7 @@
 //! Every word both clients show, by a key that does not change.
 //!
-//! The TUI takes its words from here, and `words.json` — the web app's
-//! language pack — is written from this table, so a word changes in one
+//! The desktop app takes its words from here, and `words.json` — the web
+//! app's language pack — is written from this table, so a word changes in one
 //! place. A sentence that names a harness or a work says `{harness}` or
 //! `{title}`, filled where it is shown.
 
@@ -19,13 +19,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("turn.waiting", "needs you"),
     ("turn.turn_ended", "turn ended"),
     // The title bar and the tree.
-    ("title.open", "open"),
     ("title.needs_you", "needs you"),
     ("tree.nothing_asked", "Nothing asked for yet."),
     // AGENTS and WORK (T11.1).
     ("tree.agents", "AGENTS"),
     ("tree.work", "WORK"),
-    ("tree.counts", "{n} running · {m} ended"),
     ("tree.no_ask", "no Ask yet"),
     ("tree.earlier", "{n} earlier sessions"),
     ("tree.earlier_one", "1 earlier session"),
@@ -34,15 +32,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("tree.search_none", "Nothing matches {q}."),
     ("web.search.clear", "Clear the search"),
     ("tree.open", "Open"),
-    ("tree.since", "since Eval {n}"),
     ("tree.eval", "Eval {n}"),
     ("tree.judging", "judging…"),
     ("tree.not_sealed", "not sealed"),
     ("tree.sealed", "Sealed"),
-    ("tree.seals", "{n} seals"),
-    ("tree.seals_one", "1 seal"),
     ("tree.seal", "Seal {n}"),
-    ("tree.by_round", "by Eval round"),
     ("state.running", "running"),
     ("state.ended", "ended"),
     ("state.last_active", "last active {time}"),
@@ -66,12 +60,10 @@ pub const WORDS: &[(&str, &str)] = &[
         "tree.runs_either_way",
         "Your agent runs here either way. Nothing is written down until it is set up.",
     ),
-    ("tree.written_down", "Nothing is written down until it is set up."),
     ("start.title", "Start an agent"),
     ("workspace.empty", "Open a project to get started."),
     // The key that takes a suggestion shown in the message field.
     ("suggest.take", "Tab"),
-    ("start.none", "No harness is set up for RingFrame yet. Updates… in ☰ sets one up."),
     // The acts, as a bar or a button names them.
     ("act.ask", "Ask"),
     ("act.eval", "Eval"),
@@ -133,11 +125,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("resume.quiet", "Weft can't tell whether it still runs: it was last active {time}."),
     ("resume.either_way", "Your work is in the record either way."),
     ("resume.nothing", "Nothing to resume: this session never held a conversation."),
-    ("earlier.title", "Earlier sessions"),
-    ("earlier.today", "TODAY"),
-    ("earlier.yesterday", "YESTERDAY"),
-    ("earlier.week", "THIS WEEK"),
-    ("earlier.earlier", "EARLIER"),
     ("agent.ended", "{harness} has ended. Its work is still on the list."),
     // The Eval view.
     ("eval.met", "met"),
@@ -182,15 +169,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.why.four_panes", "Four panes at most. Move a tab into another pane, or Join all panes."),
     ("why.no_room", "No room for another pane here."),
     ("act.layout", "Layout"),
-    ("layout.right", "Right"),
-    ("layout.down", "Down"),
-    ("layout.move_tab", "Move tab"),
-    ("layout.next_pane", "Next pane"),
-    ("layout.join", "Join"),
-    (
-        "hint.drag",
-        "Drop on a tab bar to move it there, on a pane's edge to split that way, in its middle to join it.",
-    ),
     ("web.layout.split_right", "Split right"),
     ("web.layout.split_down", "Split down"),
     ("web.layout.next_pane", "Move tab to the next pane"),
@@ -207,25 +185,9 @@ pub const WORDS: &[(&str, &str)] = &[
         "web.conversation.unreadable",
         "{harness}'s conversation cannot be shown here — Terminal shows everything.",
     ),
-    ("hint.layout", "→ and ↓ split {tab}'s pane; M moves {tab} into the next pane."),
-    (
-        "hint.layout_alone",
-        "{tab} is alone in its pane: M moves it into the next pane, and this pane closes.",
-    ),
-    ("hint.tabs", "Tab, 1–9: every open project's agents."),
-    (
-        "hint.split",
-        "Tab, 1–9 select an agent; Ctrl+] goes into the one with the keys. [B] shows the list.",
-    ),
-    (
-        "hint.selected",
-        "Tab, 1–9 select an agent, Enter enters it, ← goes back to the list. [B] shows the list.",
-    ),
     ("why.nothing_needs_you", "Nothing needs your input."),
     // The web app's own wording of the same things: a screen, not keys, the
     // same on a phone and a desktop.
-    ("web.turn.waiting", "waiting"),
-    ("web.tree.needs_you", "● needs you"),
     ("web.tree.ask_for_something", "Ask for something and Weft writes it down."),
     ("web.why.start_an_agent", "Start an agent first — on {machine}."),
     ("web.why.set_up_on", "Set it up on {machine} from ☰ › Updates…"),
@@ -238,7 +200,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.bar.into", "into {harness}"),
     ("web.bar.answered", "Answered on the machine"),
     ("web.detail.as_typed", "the prompt as typed"),
-    ("web.detail.debate_in", "Eval on the tree runs the debate in {harness}."),
     ("web.detail.title", "Details"),
     ("web.eval.findings", "what RingFrame noticed beside the steps"),
     ("web.eval.live", "updates as the judges record"),
@@ -362,7 +323,6 @@ pub const WORDS: &[(&str, &str)] = &[
         "{harness} keeps its own history: press {key} in the agent to read it.",
     ),
     // The header's pill while a project starts agents in turbo mode (M2.9).
-    ("web.turbo", "turbo"),
     ("web.push.home_screen", "Add Weft to your Home Screen first"),
     (
         "web.push.home_screen_how",
@@ -415,10 +375,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.session.resume", "Resume"),
     ("web.session.go", "Go to its agent"),
     ("web.resume.ask", "Resume {harness} {session}?"),
-    ("web.earlier.search", "Search"),
-    ("web.earlier.count", "{n} sessions"),
-    ("web.earlier.wide", "{n} earlier"),
-    ("web.earlier.foot", "newest first · scroll for more"),
     ("web.start.runs_on", "It runs on {machine}, with your own settings."),
     ("web.start.pick_one", "PICK ONE"),
     ("web.start.in", "Start an agent in {project}"),
@@ -504,6 +460,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.session.gone", "This session is not in Weft's record."),
     ("desktop.pick.project", "Open a project in Weft"),
     ("desktop.notice.waiting", "{harness} in {project} needs your input"),
+    ("desktop.notice.not_opened", "Weft could not open {project}: {why}"),
+    ("desktop.notice.ended", "Weft's session ended. Open Weft to start it again."),
     ("desktop.pick.program", "Find {harness}"),
 ];
 

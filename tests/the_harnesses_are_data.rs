@@ -171,7 +171,7 @@ const WEFT: &[&str] = &[
     "src",
     "crates/weft-core/src",
     "crates/weft-proto/src",
-    "crates/weft-tui/src",
+    "crates/weft-desktop/src",
     "crates/weftd/src",
 ];
 

@@ -362,7 +362,7 @@ fn a_window_that_stops_its_agents_stops_only_its_own() {
     b.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
     std::thread::sleep(Duration::from_millis(300));
 
-    // Quit and stop the agents, as the TUI does: its own panes, then leave.
+    // Quit and stop the agents, as the desktop app does: its own panes, then leave.
     a.send(Call::CloseAgent { pane: 0 });
     a.send(Call::Detach);
     drop(a);

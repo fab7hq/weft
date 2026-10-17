@@ -23,9 +23,9 @@ fn quiet(rows: u16, cols: u16) -> Term {
 }
 
 /// Feed `bytes` chunk by chunk; after each, bring a device up to date with
-/// frames alone and check it shows what the pane shows. The frames are
-/// written to `<name>.frames.json` with the text after each, for the web
-/// app's test to draw the same frames in xterm.js and compare.
+/// frames alone and check it shows what the pane shows. The frames, with the
+/// text after each, are `<name>.frames.json`, for the web app's test to draw
+/// the same frames in xterm.js and compare; `WEFT_WRITE_FRAMES=1` writes them.
 fn round_trip(name: &str, rows: u16, cols: u16) {
     let bytes = std::fs::read(fixtures().join(format!("{name}.bin"))).unwrap();
     let mut pane = quiet(rows, cols);
@@ -61,11 +61,16 @@ fn round_trip(name: &str, rows: u16, cols: u16) {
     }
     assert!(frames.iter().filter(|f| f["full"] == false).count() > 0, "{name}: differences");
     let written = json!({"cols": cols, "frames": frames, "rows": rows});
-    std::fs::write(
-        fixtures().join(format!("{name}.frames.json")),
-        serde_json::to_string_pretty(&written).unwrap() + "\n",
-    )
-    .unwrap();
+    let text = serde_json::to_string_pretty(&written).unwrap() + "\n";
+    let path = fixtures().join(format!("{name}.frames.json"));
+    if std::env::var_os("WEFT_WRITE_FRAMES").is_some() {
+        std::fs::write(&path, text).unwrap();
+    } else {
+        assert!(
+            std::fs::read_to_string(&path).ok() == Some(text),
+            "{name}.frames.json is stale: WEFT_WRITE_FRAMES=1 cargo test -p weft-term --test round_trip"
+        );
+    }
 }
 
 /// The text after every chunk equals what vt100 showed.

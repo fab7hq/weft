@@ -6,8 +6,8 @@ description = "The interface for RingFrame: your coding agents in panes, and one
 license = "Apache-2.0"
 repository = "https://github.com/fab7hq/weft"
 
-# The binary. It starts the daemon or the terminal client; the work is in the
-# crates below.
+# The binary: the command line, which opens the app and starts the daemon;
+# the work is in the crates below.
 [workspace]
 members = ["crates/*"]
 # Without this, a bare `cargo test` here runs the binary's own tests and none of
@@ -16,17 +16,13 @@ default-members = [".", "crates/*"]
 
 [dependencies]
 anyhow = "1.0.104"
-crossterm = "0.29"
-ratatui = "0.30.2"
 serde_json = "1.0.151"
 weft-core = { path = "crates/weft-core" }
 weft-proto = { path = "crates/weft-proto" }
 weft-remote = { path = "crates/weft-remote" }
-weft-tui = { path = "crates/weft-tui" }
 weftd = { path = "crates/weftd" }
 
 [dev-dependencies]
-insta = "1"
 weft-core = { path = "crates/weft-core", features = ["fixtures"] }
 sha2 = "0.10"
 tempfile = "3"

@@ -261,7 +261,7 @@ impl Client {
         };
         let lines = Lines::new(stream.try_clone().unwrap());
         let mut c = Client { next: 1, stream, lines, heard: Vec::new() };
-        c.answer(Call::Hello { client: "weft-tui".into(), protocol: PROTOCOL }).expect("hello");
+        c.answer(Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL }).expect("hello");
         let path = project.to_string_lossy().into_owned();
         let opened = c.answer(Call::Open { path, rows: 24, cols: 80, raw: false }).expect("open");
         (c, opened)
@@ -325,7 +325,7 @@ fn the_option_is_kept_in_config_and_changes_the_service() {
     let w = World::new("option");
     let s = w.service(System::Systemd);
     let (socket, config) = daemon(&w, s.clone());
-    let (mut tui, opened) = Client::open(&socket, &w.root);
+    let (mut app, opened) = Client::open(&socket, &w.root);
     assert_eq!(opened["start_at_login"], false, "off until turned on");
 
     let on = Call::StartAtLogin {
@@ -333,8 +333,8 @@ fn the_option_is_kept_in_config_and_changes_the_service() {
         program: "/home/me/.local/bin/weft".into(),
         path: "/usr/local/bin:/usr/bin".into(),
     };
-    assert_eq!(tui.answer(on).unwrap()["start_at_login"], true);
-    assert_eq!(tui.told(), Some(true));
+    assert_eq!(app.answer(on).unwrap()["start_at_login"], true);
+    assert_eq!(app.told(), Some(true));
     assert!(s.installed());
     let unit = std::fs::read_to_string(s.file()).unwrap();
     assert!(unit.contains("Environment=\"PATH=/usr/local/bin:/usr/bin\""), "{unit}");
@@ -342,11 +342,11 @@ fn the_option_is_kept_in_config_and_changes_the_service() {
     assert!(text.contains("[service]\nstart_at_login = true"), "{text}");
 
     let off = Call::StartAtLogin { on: false, program: String::new(), path: String::new() };
-    assert_eq!(tui.answer(off).unwrap()["start_at_login"], false);
-    assert_eq!(tui.told(), Some(false));
+    assert_eq!(app.answer(off).unwrap()["start_at_login"], false);
+    assert_eq!(app.told(), Some(false));
     assert!(!s.installed());
     assert!(std::fs::read_to_string(&config).unwrap().contains("start_at_login = false"));
-    tui.answer(Call::Shutdown).ok();
+    app.answer(Call::Shutdown).ok();
 }
 
 /// Turning Remote on or off writes no service and runs no `launchctl` or
@@ -356,14 +356,14 @@ fn turning_remote_on_or_off_never_touches_the_service() {
     let w = World::new("remote");
     let s = w.service(System::Launchd);
     let (socket, config) = daemon(&w, s.clone());
-    let (mut tui, _) = Client::open(&socket, &w.root);
+    let (mut app, _) = Client::open(&socket, &w.root);
     for act in ["on", "off", "on", "off"] {
-        tui.answer(Call::Remote { act: serde_json::json!({"act": act}) }).unwrap();
+        app.answer(Call::Remote { act: serde_json::json!({"act": act}) }).unwrap();
     }
     assert!(!s.installed());
     assert!(w.calls().is_empty(), "{:?}", w.calls());
     assert!(!std::fs::read_to_string(&config).unwrap().contains("start_at_login"));
-    tui.answer(Call::Shutdown).ok();
+    app.answer(Call::Shutdown).ok();
 }
 
 /// A world with no service (a test's, or a system Weft has none for) says so
@@ -379,9 +379,9 @@ fn with_no_service_here_the_option_stays_off() {
         let world = weft::outside::Fixed::new().shared();
         let _ = weft::server::Session::serve_in(&listening, &read, None, world);
     });
-    let (mut tui, _) = Client::open(&socket, &w.root);
+    let (mut app, _) = Client::open(&socket, &w.root);
     let on = Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() };
-    assert_eq!(tui.answer(on), Err("no_service".into()));
+    assert_eq!(app.answer(on), Err("no_service".into()));
     assert!(!std::fs::read_to_string(&file).unwrap().contains("start_at_login"));
-    tui.answer(Call::Shutdown).ok();
+    app.answer(Call::Shutdown).ok();
 }

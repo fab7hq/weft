@@ -23,7 +23,7 @@ use weft_core::text_keys::System;
 
 use crate::action::{Action, Focus, SheetAct, WindowAct};
 use crate::app::WeftDesktopApp;
-use crate::daemon::ProjectClient;
+use crate::daemon::{Again, ProjectClient};
 use crate::gpui::{Element, palette};
 use crate::keys::{self, Shortcut};
 use crate::terminal_input::{self, Act, Button, Held};
@@ -67,6 +67,10 @@ pub(crate) struct SharedState {
     /// Where each pane's terminal was last painted, and its cell width, to
     /// find the cell under the pointer.
     pub(crate) grids: HashMap<(PathBuf, u32), (Point<Pixels>, f32)>,
+    /// Where an app started after this one hands over its project.
+    instance: Option<crate::instance::Listening>,
+    /// The window is to come in front: another start asked for it.
+    raise: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -97,22 +101,50 @@ impl Focusable for GpuiDesktopView {
     }
 }
 
+/// How long a window waits for a daemon to listen again before it ends:
+/// long enough for a login service to start a crashed one again.
+const LOST_FOR: Duration = Duration::from_secs(30);
+
 /// Connect every project that is not connected, off the shared lock, until
 /// the window quits. One that would not connect waits longer each time, up
-/// to half a minute, before it is tried again.
+/// to half a minute, before it is tried again. One whose daemon went is
+/// opened again only on a daemon that listens: never one this window starts,
+/// since the person may have stopped it.
 fn keep_connected(shared: Arc<Mutex<SharedState>>) {
     let mut waits: HashMap<PathBuf, (std::time::Instant, Duration)> = HashMap::new();
+    let mut lost_since: Option<std::time::Instant> = None;
     loop {
         let targets = match shared.lock() {
             Ok(guard) if !guard.app.quit_requested => guard.app.disconnected(),
             _ => return,
         };
+        if !targets.iter().any(|(_, lost)| *lost) {
+            lost_since = None;
+        }
         let now = std::time::Instant::now();
-        for root in targets {
+        for (root, lost) in targets {
             if waits.get(&root).is_some_and(|(next, _)| now < *next) {
                 continue;
             }
-            match ProjectClient::open(&root, 28, 100) {
+            let opened = if lost {
+                match ProjectClient::again(&weft_proto::socket_path(), &root, 28, 100) {
+                    Again::Back(client) => Ok(*client),
+                    Again::Waiting => {
+                        if lost_since.get_or_insert(now).elapsed() >= LOST_FOR {
+                            if let Ok(mut guard) = shared.lock() {
+                                guard.app.session_ended();
+                            }
+                            return;
+                        }
+                        continue;
+                    }
+                    Again::Newer(_) if start_newer(&shared) => return,
+                    Again::Newer(why) | Again::Refused(why) => Err(why),
+                }
+            } else {
+                ProjectClient::open(&root, 28, 100).map_err(|e| e.to_string())
+            };
+            match opened {
                 Ok(client) => {
                     waits.remove(&root);
                     if let Ok(mut guard) = shared.lock() {
@@ -120,7 +152,10 @@ fn keep_connected(shared: Arc<Mutex<SharedState>>) {
                         guard.dirty = true;
                     }
                 }
-                Err(_) => {
+                Err(why) => {
+                    if let Ok(mut guard) = shared.lock() {
+                        guard.app.not_opened(&root, &why);
+                    }
                     let wait = waits.get(&root).map_or(Duration::from_secs(1), |(_, w)| {
                         (*w * 2).min(Duration::from_secs(30))
                     });
@@ -130,6 +165,21 @@ fn keep_connected(shared: Arc<Mutex<SharedState>>) {
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+}
+
+/// A newer Weft took the daemon over: open its app in place of this one,
+/// which goes. Whether there was one to open.
+fn start_newer(shared: &Mutex<SharedState>) -> bool {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return false };
+    let Some(weft) = crate::daemon::newer_weft(&home) else { return false };
+    let Ok(mut guard) = shared.lock() else { return false };
+    // The newer app listens where this one did.
+    guard.instance = None;
+    if crate::daemon::open_app_of(&weft).is_err() {
+        return false;
+    }
+    guard.app.quit_requested = true;
+    true
 }
 
 /// Write the desktop's state when it changed, outside the shared lock.
@@ -156,7 +206,28 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
         height: 820.0,
     });
 
-    let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
+    let shared = Arc::new(Mutex::new(SharedState {
+        app,
+        dirty: true,
+        grids: HashMap::new(),
+        instance: None,
+        raise: false,
+    }));
+
+    // An app started after this one hands its project over and ends.
+    let handing = Arc::clone(&shared);
+    let instance = crate::instance::listen(&crate::instance::socket_path(), move |project| {
+        if let Ok(mut guard) = handing.lock() {
+            if let Some(dir) = project {
+                guard.app.open_project_path(dir);
+            }
+            guard.raise = true;
+            guard.dirty = true;
+        }
+    });
+    if let Ok(mut guard) = shared.lock() {
+        guard.instance = instance.ok();
+    }
 
     let connecting = Arc::clone(&shared);
     std::thread::spawn(move || keep_connected(connecting));
@@ -232,6 +303,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                         let mut clients = match this.shared.lock() {
                             Ok(mut guard) => {
                                 guard.app.quit_requested = true;
+                                guard.instance = None;
                                 std::mem::take(&mut guard.app.clients)
                             }
                             Err(_) => Vec::new(),
@@ -248,14 +320,18 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                     cx.spawn(async move |this, cx| {
                         loop {
                             cx.background_executor().timer(Duration::from_millis(30)).await;
-                            let (dirty, quit, notices) = match poll_shared.lock() {
+                            let (dirty, quit, notices, raise) = match poll_shared.lock() {
                                 Ok(mut guard) => (
                                     std::mem::take(&mut guard.dirty),
                                     guard.app.quit_requested,
                                     guard.app.take_notices(),
+                                    std::mem::take(&mut guard.raise),
                                 ),
-                                Err(_) => (false, true, Vec::new()),
+                                Err(_) => (false, true, Vec::new(), false),
                             };
+                            if raise {
+                                cx.update(|cx| cx.activate(true));
+                            }
                             for n in notices {
                                 cx.update(|cx| {
                                     cx.show_system_notification(SystemNotification {
@@ -1243,7 +1319,13 @@ mod tests {
         let (tmp, mut app, mut wire) = wired_app();
         start(&mut app, &mut wire, "claude");
         app.focus = Focus::Message;
-        let shared = Arc::new(Mutex::new(SharedState { app, dirty: true, grids: HashMap::new() }));
+        let shared = Arc::new(Mutex::new(SharedState {
+            app,
+            dirty: true,
+            grids: HashMap::new(),
+            instance: None,
+            raise: false,
+        }));
         let view_shared = Arc::clone(&shared);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let focus_handle = cx.focus_handle();

@@ -1,145 +1,7 @@
 use anyhow::Result;
-use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste};
-use crossterm::execute;
 
-use weft::app::App;
-use weft::client::Session;
-use weft::keys;
 use weft::protocol;
 use weft::server;
-
-/// The first screen when no directory was named. It opens nothing: the
-/// daemon is not asked for anything until there is a project to ask about.
-/// It offers the projects a daemon has open, from Weft's own
-/// `projects.json`, which is read and never written here.
-fn choose_project(terminal: &mut ratatui::DefaultTerminal) -> Result<Option<std::path::PathBuf>> {
-    use crossterm::event::{self, Event, KeyCode};
-
-    let offered = offered_projects(
-        &std::fs::read_to_string(weft::routing::file().with_file_name("projects.json"))
-            .unwrap_or_default(),
-    );
-    let mut typed = String::new();
-    let mut picked = 0usize;
-    let mut said: Option<String> = None;
-    loop {
-        let (lines, keys) = picker_lines(&typed, said.as_deref(), &offered, picked);
-        terminal.draw(|frame| draw_picker(frame, &lines, &keys))?;
-        let Event::Key(key) = event::read()? else { continue };
-        if !key.is_press() {
-            continue;
-        }
-        match key.code {
-            KeyCode::Up => picked = picked.saturating_sub(1),
-            KeyCode::Down => picked = (picked + 1).min(offered.len().saturating_sub(1)),
-            KeyCode::Enter if typed.trim().is_empty() => {
-                if let Some(root) = offered.get(picked) {
-                    return Ok(Some(root.clone()));
-                }
-            }
-            KeyCode::Enter => {
-                let want = typed.trim();
-                let want = match want.strip_prefix('~') {
-                    Some(rest) => match std::env::var_os("HOME") {
-                        Some(home) => format!("{}{rest}", home.to_string_lossy()),
-                        None => want.to_string(),
-                    },
-                    None => want.to_string(),
-                };
-                match std::path::PathBuf::from(&want).canonicalize() {
-                    Ok(root) if root.is_dir() => return Ok(Some(root)),
-                    _ => said = Some("There is no directory there.".into()),
-                }
-            }
-            KeyCode::Backspace => {
-                typed.pop();
-            }
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Char('x' | 'X') if typed.is_empty() => return Ok(None),
-            KeyCode::Char(c) => typed.push(c),
-            _ => {}
-        }
-    }
-}
-
-/// The projects `projects.json` lists that are still directories here.
-fn offered_projects(text: &str) -> Vec<std::path::PathBuf> {
-    weft::projects::read(text).into_iter().map(|p| p.path).filter(|p| p.is_dir()).collect()
-}
-
-/// What the first screen says, under the window's mark: the path being
-/// typed, and the projects open in Weft to pick from instead; and its keys.
-fn picker_lines(
-    typed: &str,
-    said: Option<&str>,
-    offered: &[std::path::PathBuf],
-    picked: usize,
-) -> (Vec<String>, String) {
-    let mut lines = vec![
-        String::new(),
-        "   Open a project".into(),
-        format!("   {typed}█"),
-        "   The path of a repository to work in.".into(),
-    ];
-    if let Some(why) = said {
-        lines.push(format!("   {why}"));
-    }
-    if !offered.is_empty() {
-        lines.push(String::new());
-        lines.push("   Or one open in Weft:".into());
-        for (i, p) in offered.iter().enumerate() {
-            let mark = if i == picked && typed.trim().is_empty() { "▸" } else { " " };
-            lines.push(format!("   {mark} {}", p.display()));
-        }
-    }
-    let keys = if offered.is_empty() {
-        "  [Enter] OPEN   [X] QUIT"
-    } else {
-        "  [↑↓] PICK   [Enter] OPEN   [X] QUIT"
-    };
-    (lines, keys.into())
-}
-
-/// The picker: the mark and WEFT as the window draws them, its lines, and
-/// its keys on the bar at the bottom, over the hint line.
-fn draw_picker(frame: &mut ratatui::Frame, lines: &[String], keys: &str) {
-    use ratatui::layout::{Constraint, Layout};
-    use ratatui::style::{Modifier, Style};
-    use ratatui::text::{Line, Span};
-    use ratatui::widgets::Paragraph;
-    let th = weft::theme::Theme::default();
-    let [body, rule, bar, _hint] = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(frame.area());
-    let lit = Style::default().fg(th.accent());
-    let mut text = vec![Line::from(vec![
-        Span::raw(" "),
-        Span::styled("╸", lit),
-        Span::styled("┃", Style::default().fg(th.warp())),
-        Span::styled("╺ ", lit),
-        Span::styled("WEFT", lit.add_modifier(Modifier::BOLD)),
-    ])];
-    text.extend(lines.iter().enumerate().map(|(i, l)| match i {
-        1 => Line::styled(l.clone(), th.title()),
-        3 => Line::styled(l.clone(), th.label()),
-        _ => Line::raw(l.clone()),
-    }));
-    frame.render_widget(Paragraph::new(text), body);
-    frame.render_widget(
-        Paragraph::new(Line::styled("─".repeat(rule.width as usize), th.rule())),
-        rule,
-    );
-    frame.render_widget(Paragraph::new(Line::styled(keys.to_string(), th.label())), bar);
-}
-
-/// Stop capturing the mouse and pastes, which `ratatui::restore` leaves on.
-fn release(out: &mut impl std::io::Write) {
-    let _ = execute!(out, DisableBracketedPaste, DisableMouseCapture);
-}
 
 /// Put the starting `config.toml` where the person can see and change it,
 /// once. The daemon only reads it; this runs before it starts.
@@ -156,10 +18,6 @@ fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
 
-    // Started by a client to own the panes. One per machine, headless, and it
-    // outlives whatever asked for it.
-    // Weft from another device: started by the daemon while remote access is
-    // on (remote.md §5).
     // Every hook of every harness: answers the hook, tells the
     // daemon, and exits 0 whatever happens, so no hook fails a harness's turn.
     if first.as_deref() == Some("signal") {
@@ -171,14 +29,32 @@ fn main() -> Result<()> {
         });
         std::process::exit(0);
     }
+    // Weft from another device: started by the daemon while remote access is
+    // on (remote.md §5).
     if first.as_deref() == Some("remote") {
         // Its version is kept while it runs.
         let _held = weftd::versions::hold_own();
         return weft_remote::run();
     }
+    // Started by the app to own the panes. One per machine, headless, and it
+    // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&protocol::socket_path(), &weft::routing::file());
+    }
+    // The app's way to a daemon: through Weft's service when "Start at login"
+    // installed it, so one owner keeps it running; else this process serves.
+    if first.as_deref() == Some("--daemon") {
+        let socket = protocol::socket_path();
+        let service = weftd::service::Service::here();
+        if protocol::is_live(&socket)
+            || matches!(weftd::service::start_daemon(service.as_ref(), &socket), Ok(true))
+        {
+            println!("weft: listening on {}", socket.display());
+            return Ok(());
+        }
+        write_config_if_absent(&weft::routing::file());
+        return server::Session::serve(&socket, &weft::routing::file());
     }
 
     if first.as_deref() == Some("stop") {
@@ -201,120 +77,31 @@ fn main() -> Result<()> {
         return update();
     }
 
-    // No arguments: the desktop app, which starts or joins the daemon itself.
-    if first.is_none() {
-        return open_app();
-    }
-
     if matches!(first.as_deref(), Some("--help" | "-h")) {
-        println!("weft {}\n", env!("CARGO_PKG_VERSION"));
-        println!("weft [project-dir] [agent ...]\n");
-        println!("  project-dir   the repository to work in (default: .)");
-        println!("  agent         a harness's program, as its harness file names it;");
-        println!("                optional, for scripts and probes\n");
-        println!("An agent may carry its own arguments, quoted as one word:\n");
-        println!("  weft . \"<program> --its --own --arguments\"\n");
-        println!("Weft passes them through untouched. It never chooses a model,");
-        println!("and starts no agent unless you name one or press N.\n");
-        println!("Agents run in a background session that outlives this window.");
-        println!("Closing Weft leaves them working; `weft stop` ends them.\n");
-        println!("`weft update` installs the latest Weft and RingFrame.");
-        println!("`weft signal <harness> <hook>` is what a harness's hooks run.");
+        println!("{}", HELP.replace("VERSION", env!("CARGO_PKG_VERSION")));
         return Ok(());
     }
 
-    // This window's version is kept while it runs.
-    let _held = weftd::versions::hold_own();
-    let named = first.clone();
-    // Weft starts no agent on its own. Named agents are a convenience for
-    // scripts and probes; the ordinary way in is to press N.
-    let agents: Vec<String> = args.collect();
-
-    let toggle = keys::Toggle;
-
-    let mut terminal = ratatui::init();
-    // A panic lets go of the mouse and pastes too, then restores as ratatui's
-    // own hook does.
-    let restore = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        release(&mut std::io::stdout());
-        restore(info);
-    }));
-    let mut out = std::io::stdout();
-    // The mouse is captured while Weft runs; see `App::run`.
-    let _ = execute!(out, EnableBracketedPaste);
-
-    // Named a directory, or asked for one. Nothing is opened and no daemon
-    // work is done until there is one.
-    let root = match named {
-        Some(path) => Some(
-            std::path::PathBuf::from(path)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::PathBuf::from(".")),
-        ),
-        None => choose_project(&mut terminal)?,
-    };
-    let Some(root) = root else {
-        release(&mut out);
-        ratatui::restore();
-        return Ok(());
-    };
-
-    // With "Start at login" on, the daemon is started through Weft's service,
-    // so one owner keeps it running; else, or if that fails,
-    // the window starts it itself.
-    let socket = protocol::socket_path();
-    if !protocol::is_live(&socket) {
-        let service = weftd::service::Service::here();
-        let _ = weftd::service::start_daemon(service.as_ref(), &socket);
-    }
-    let size = terminal.size().unwrap_or_default();
-    // Refused or unreachable, the terminal is given back before saying so.
-    let session = match Session::open(&root, size.height.max(24), size.width.max(80)) {
-        Ok(session) => session,
-        Err(e) => {
-            release(&mut out);
-            ratatui::restore();
-            return Err(e);
-        }
-    };
-    let mut weft = App::with_session(root, toggle, session);
-    if let Some(home) = std::env::var_os("HOME") {
-        weft.keep_layout_in(std::path::PathBuf::from(home).join(".fab7/weft/layout.toml"));
-    }
-    weft.look_for_updates();
-    let mut started = Ok(());
-    for agent in &agents {
-        let program = agent.split_whitespace().next().unwrap_or(agent);
-        // The harness this program starts, as RingFrame's profiles say.
-        let harness = weft.harness_for_program(program).unwrap_or_else(|| program.to_string());
-        if let Err(e) = weft.add(&harness, agent) {
-            started = Err(e);
-            break;
-        }
-    }
-
-    let result = started.and_then(|()| weft.run(&mut terminal));
-
-    release(&mut out);
-    ratatui::restore();
-
-    match result {
-        // Weft's service is a newer Weft now: this window starts again as it,
-        // in the same terminal, on the same project.
-        Ok(Some(root)) => {
-            use std::os::unix::process::CommandExt as _;
-            let failed = std::process::Command::new("weft").arg(&root).exec();
-            eprintln!("weft: Weft was updated; run weft again ({failed})");
-            Ok(())
-        }
-        Ok(None) => Ok(()),
-        Err(e) => {
-            eprintln!("weft: {e}");
-            Err(e)
-        }
+    // The app, on the project named, or as it was left.
+    match first {
+        None => open_app(None),
+        Some(dir) => match std::path::PathBuf::from(&dir).canonicalize() {
+            Ok(root) if root.is_dir() => open_app(Some(&root)),
+            _ => anyhow::bail!("{dir} is not a directory; `weft --help` says what weft takes"),
+        },
     }
 }
+
+const HELP: &str = "weft VERSION
+
+weft [project-dir]     open the Weft app, on that project if one is named
+weft update            install the latest Weft and RingFrame
+weft stop              end the session and its agents
+weft remote            Weft from another device (the session starts it)
+weft signal <harness> <hook>   what a harness's hooks run
+
+Agents run in a background session that outlives the app.
+Closing Weft leaves them working; `weft stop` ends them.";
 
 /// What `weft` with no arguments opens.
 #[derive(Debug, PartialEq, Eq)]
@@ -341,13 +128,19 @@ fn app_to_open(exe: &std::path::Path) -> Option<Opens> {
     }
 }
 
-/// Open the desktop app beside this `weft`, and leave it running.
-fn open_app() -> Result<()> {
-    use std::os::unix::process::CommandExt as _;
+/// Open the desktop app beside this `weft`, on `project` when one is named,
+/// and leave it running. Always a new start: one already running is handed
+/// the project by it, and comes in front.
+fn open_app(project: Option<&std::path::Path>) -> Result<()> {
     let exe = std::env::current_exe()?.canonicalize()?;
     match app_to_open(&exe) {
         Some(Opens::Bundle(app)) => {
-            let opened = std::process::Command::new("/usr/bin/open").arg(&app).status()?;
+            let mut open = std::process::Command::new("/usr/bin/open");
+            open.arg("-n").arg(&app);
+            if let Some(p) = project {
+                open.arg("--args").arg(p);
+            }
+            let opened = open.status()?;
             if !opened.success() {
                 anyhow::bail!("macOS would not open {}", app.display());
             }
@@ -361,27 +154,50 @@ fn open_app() -> Result<()> {
                      `weft --help` lists what runs without one"
                 );
             }
-            let mut program = std::process::Command::new(desktop);
-            // Its own session, so closing this terminal leaves it open.
-            unsafe {
-                program.pre_exec(|| {
-                    unsafe extern "C" {
-                        fn setsid() -> i32;
-                    }
-                    setsid();
-                    Ok(())
-                });
-            }
-            program
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()?;
+            start_program(&desktop, project)?;
         }
         None => anyhow::bail!(
             "the desktop app is not installed beside {}; install Weft again",
             exe.display()
         ),
+    }
+    Ok(())
+}
+
+/// Start the desktop program, in its own session so closing this terminal
+/// leaves it open.
+fn start_program(desktop: &std::path::Path, project: Option<&std::path::Path>) -> Result<()> {
+    use std::os::unix::process::CommandExt as _;
+    let mut program = std::process::Command::new(desktop);
+    program.args(project);
+    unsafe {
+        program.pre_exec(|| {
+            unsafe extern "C" {
+                fn setsid() -> i32;
+            }
+            setsid();
+            Ok(())
+        });
+    }
+    let mut child = program
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    // An app that cannot start ends at once; say why, rather than nothing.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                break;
+            }
+            let mut said = String::new();
+            if let Some(mut err) = child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut err, &mut said);
+            }
+            anyhow::bail!("the app ended as it started ({status}): {}", said.trim());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
     Ok(())
 }
@@ -475,8 +291,6 @@ fn after_update(socket: &std::path::Path, version: &str) -> String {
 mod tests {
     use super::*;
 
-    /// What the panic hook writes before the terminal is restored: mouse
-    /// capture and bracketed paste off, which `ratatui::restore` leaves on.
     #[test]
     fn only_a_release_tag_is_updated_to() {
         for tag in ["v0.2.0", "v1.10.3"] {
@@ -505,45 +319,23 @@ mod tests {
     }
 
     #[test]
-    fn letting_go_of_the_terminal_turns_off_the_mouse_and_pastes() {
-        let mut out = Vec::new();
-        release(&mut out);
-        let said = String::from_utf8(out).expect("escapes");
-        assert!(said.contains("\x1b[?1000l"), "mouse capture: {said:?}");
-        assert!(said.contains("\x1b[?2004l"), "bracketed paste: {said:?}");
-    }
-
-    #[test]
-    fn the_picker_offers_the_projects_open_in_weft() {
-        let here = std::env::temp_dir().canonicalize().expect("a directory");
-        let open = [weft::projects::Opened { path: here.clone(), opened: 1 }];
-        let gone = weft::projects::Opened { path: "/no/such/place".into(), opened: 2 };
-        let text = weft::projects::write(&[open[0].clone(), gone]);
-        let offered = offered_projects(&text);
-        assert_eq!(offered, std::slice::from_ref(&here), "one that is gone is not offered");
-        let (drawn, keys) = picker_lines("", None, &offered, 0);
-        assert!(drawn.join("\n").contains(&format!("▸ {}", here.display())), "{drawn:?}");
-        assert!(keys.contains("[↑↓] PICK"), "{keys}");
-        let (typing, _) = picker_lines("/else", None, &offered, 0);
-        assert!(!typing.join("\n").contains('▸'), "a typed path is what Enter opens: {typing:?}");
-        assert!(!picker_lines("", None, &[], 0).1.contains("PICK"));
-    }
-
-    /// T1.2: the picker as the Atlas draws it, the window's mark over it.
-    #[test]
-    fn atlas_t1_2_the_project_picker() {
-        let (lines, keys) = picker_lines("", None, &[], 0);
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 32)).expect("terminal");
-        terminal.draw(|frame| draw_picker(frame, &lines, &keys)).expect("draw");
-        let buffer = terminal.backend().buffer().clone();
-        let drawn: Vec<String> = (0..32)
-            .map(|y| {
-                let row: String = (0..120).map(|x| buffer[(x, y)].symbol().to_string()).collect();
-                row.trim_end().to_string()
-            })
-            .collect();
-        insta::assert_snapshot!("atlas_t1_2", drawn.join("\n"));
+    fn an_app_that_ends_as_it_starts_says_why() {
+        let dir = std::env::temp_dir().join(format!("weft-starts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
+            path
+        };
+        let failed = start_program(&program("fails", "echo no display >&2; exit 3"), None);
+        let said = failed.expect_err("it ended").to_string();
+        assert!(said.contains("no display"), "{said}");
+        // Handed to the app already running, or still running: started.
+        start_program(&program("hands", "exit 0"), None).expect("handed over");
+        start_program(&program("runs", "sleep 5"), None).expect("running");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -556,5 +348,13 @@ mod tests {
         write_config_if_absent(&path);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[routing]\nask = \"codex\"\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_help_says_what_weft_takes_and_names_no_key() {
+        assert!(HELP.contains("open the Weft app"));
+        for key in ["press", "[N]", "[X]", "Enter"] {
+            assert!(!HELP.contains(key), "{key}");
+        }
     }
 }

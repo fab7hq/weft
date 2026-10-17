@@ -155,23 +155,23 @@ pub struct Harness {
     pub dir: PathBuf,
     pub socket: PathBuf,
     pub port: u16,
-    /// A TUI on the daemon, hearing the remote view.
-    pub tui: Tui,
+    /// A client (on) the daemon, hearing the remote view.
+    pub app: App,
 }
 
-pub struct Tui {
+pub struct App {
     out: UnixStream,
     lines: Lines<UnixStream>,
     next: u64,
     pub view: Value,
 }
 
-impl Tui {
+impl App {
     fn connect(socket: &Path) -> Self {
         let out = UnixStream::connect(socket).unwrap();
         let lines = Lines::new(out.try_clone().unwrap());
-        let mut t = Tui { out, lines, next: 1, view: Value::Null };
-        t.call(Call::Hello { client: "weft-tui/test".into(), protocol: PROTOCOL });
+        let mut t = App { out, lines, next: 1, view: Value::Null };
+        t.call(Call::Hello { client: "weft-desktop/test".into(), protocol: PROTOCOL });
         t
     }
 
@@ -201,7 +201,7 @@ impl Tui {
         panic!("no answer to call {id}");
     }
 
-    /// An act for weft remote, as the TUI sends it.
+    /// An act for weft remote, as the app sends it.
     pub fn act(&mut self, act: Value) {
         self.call(Call::Remote { act });
     }
@@ -316,7 +316,7 @@ impl Harness {
             assert!(Instant::now() < deadline, "no daemon");
             std::thread::sleep(Duration::from_millis(20));
         }
-        let mut tui = Tui::connect(&socket);
+        let mut app = App::connect(&socket);
         let settings = weft_remote::run::Settings {
             weft: dir.clone(),
             socket: socket.clone(),
@@ -325,9 +325,9 @@ impl Harness {
             github: github.to_string(),
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
-        tui.wait_view(|v| v["state"] == state);
+        app.wait_view(|v| v["state"] == state);
         if state != "on" {
-            return Harness { dir, socket, port: 0, tui };
+            return Harness { dir, socket, port: 0, app };
         }
         // Read until the file holds the port: it can be seen before it is written whole.
         let port = loop {
@@ -338,7 +338,7 @@ impl Harness {
             assert!(Instant::now() < deadline, "cloudflared never started");
             std::thread::sleep(Duration::from_millis(20));
         };
-        Harness { dir, socket, port, tui }
+        Harness { dir, socket, port, app }
     }
 
     pub fn device(&self) -> Device {
@@ -352,8 +352,8 @@ impl Harness {
             json!({"type": "pair", "v": 2, "device": id, "name": "iPhone", "assertion": good(id)}),
         );
         assert_eq!(d.next()["type"], "asking");
-        self.tui.wait_view(|v| v["asking"]["device"] == id);
-        self.tui.act(json!({"act": "allow", "device": id, "yes": true}));
+        self.app.wait_view(|v| v["asking"]["device"] == id);
+        self.app.act(json!({"act": "allow", "device": id, "yes": true}));
         let paired = d.next();
         assert_eq!(paired["type"], "paired", "{paired}");
         let token = paired["token"].as_str().unwrap().to_string();
@@ -367,7 +367,7 @@ impl Harness {
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        let mut stop = Tui::connect(&self.socket);
+        let mut stop = App::connect(&self.socket);
         stop.call(Call::Shutdown);
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -428,15 +428,15 @@ impl Device {
     }
 }
 
-/// A TUI that opened a project and started a shell in it: its client, and
+/// A client (that) opened a project and started a shell in it: its client, and
 /// the project's folder.
 pub struct Shell {
-    pub tui: Tui,
+    pub app: App,
     pub project: PathBuf,
 }
 
 impl Harness {
-    /// A project with a shell running in it, as the TUI starts one.
+    /// A project with a shell running in it, as the app starts one.
     pub fn shell(&self, name: &str) -> Shell {
         self.shell_of(name, "sh")
     }
@@ -445,11 +445,11 @@ impl Harness {
     pub fn shell_of(&self, name: &str, harness: &str) -> Shell {
         let project = self.dir.join(name);
         std::fs::create_dir_all(&project).unwrap();
-        let mut tui = Tui::connect(&self.socket);
+        let mut app = App::connect(&self.socket);
         let path = project.to_string_lossy().into_owned();
         // It never reads a pane's bytes: a client that does not read them
         // would stall the daemon's broadcast.
-        tui.call(Call::Open { path, rows: 24, cols: 80, raw: false });
+        app.call(Call::Open { path, rows: 24, cols: 80, raw: false });
         // A shell that first writes where it runs, as weftd told it, beside
         // the project: `<project>.pane` holds its token and the socket.
         let agent = project.with_extension("sh");
@@ -464,8 +464,8 @@ impl Harness {
         // Through `/bin/sh`: a script just written may still be open in a
         // process another thread is forking, and executing it then fails.
         let spec = format!("/bin/sh {}", agent.display());
-        tui.call(Call::StartAgent { harness: harness.into(), spec, session: None });
-        Shell { tui, project }
+        app.call(Call::StartAgent { harness: harness.into(), spec, session: None });
+        Shell { app, project }
     }
 }
 

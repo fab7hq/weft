@@ -254,10 +254,10 @@ impl Clients {
     }
 
     /// The person typed into Weft here: say so, at most once in ten seconds.
-    /// Only the TUI's typing counts; a remote device's is not the person at
+    /// Only the app's typing counts; a remote device's is not the person at
     /// the machine (remote.md D6).
     fn typed(&mut self, client: u64) {
-        if !self.named(client, "weft-tui")
+        if !self.named(client, "weft-desktop")
             || self.presence.is_some_and(|at| at.elapsed() < PRESENCE_EVERY)
         {
             return;

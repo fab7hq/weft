@@ -23,13 +23,13 @@ fn daemon(dir: &Path) -> PathBuf {
     socket
 }
 
-/// A TUI that opens `project` and starts a shell in it.
+/// A client (that) opens `project` and starts a shell in it.
 fn start_agent(socket: &Path, project: &Path) -> std::os::unix::net::UnixStream {
     use std::io::Write;
     let mut s = std::os::unix::net::UnixStream::connect(socket).unwrap();
     let mut lines = Lines::new(s.try_clone().unwrap());
     let calls = [
-        Call::Hello { client: "weft-tui/test".into(), protocol: PROTOCOL },
+        Call::Hello { client: "weft-desktop/test".into(), protocol: PROTOCOL },
         Call::Open { path: project.to_string_lossy().into_owned(), rows: 24, cols: 80, raw: true },
         Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None },
     ];

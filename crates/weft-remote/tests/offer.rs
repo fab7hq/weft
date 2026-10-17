@@ -67,9 +67,9 @@ fn with_no_tunnel_chosen_the_adapters_are_listed_and_a_choice_is_kept() {
         },
         "choose",
     );
-    assert_eq!(h.tui.view["tunnels"], json!([{"id": "cloudflared", "title": "Cloudflare Tunnel"}]));
-    h.tui.act(json!({"act": "choose", "tunnel": "cloudflared"}));
-    let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
+    assert_eq!(h.app.view["tunnels"], json!([{"id": "cloudflared", "title": "Cloudflare Tunnel"}]));
+    h.app.act(json!({"act": "choose", "tunnel": "cloudflared"}));
+    let on = h.app.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
     assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
     assert_eq!(on["note"], "traffic is decrypted at Cloudflare's edge", "the adapter's note");
     let config = std::fs::read_to_string(h.dir.join("config.toml")).unwrap();
@@ -91,24 +91,24 @@ fn install_uses_brew_when_it_is_there_and_runs_only_when_asked() {
     );
     let brew = brew.unwrap();
     assert_eq!(
-        h.tui.view["tunnel"],
+        h.app.view["tunnel"],
         json!({"id": "cloudflared", "title": "Cloudflare Tunnel", "program": "cloudflared"})
     );
     assert_eq!(
-        h.tui.view["offer"],
+        h.app.view["offer"],
         json!({"how": "brew", "argv": format!("{} install cloudflared", brew.display())})
     );
     // Nothing runs until asked.
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(h.dir.join("cloudflared.later").exists());
 
-    h.tui.act(json!({"act": "install"}));
-    let installing = h.tui.wait_view(|v| v["state"] == "installing");
+    h.app.act(json!({"act": "install"}));
+    let installing = h.app.wait_view(|v| v["state"] == "installing");
     assert!(
         installing["line"].as_str().unwrap_or_default().contains("cloudflared"),
         "{installing}"
     );
-    let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
+    let on = h.app.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
     assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
 }
 
@@ -139,11 +139,11 @@ fn without_brew_install_downloads_the_release_for_this_machine() {
         &github.url,
     );
     assert_eq!(
-        h.tui.view["offer"],
+        h.app.view["offer"],
         json!({"how": "download", "from": "github.com/cloudflare/cloudflared"})
     );
-    h.tui.act(json!({"act": "install"}));
-    let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
+    h.app.act(json!({"act": "install"}));
+    let on = h.app.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
     assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
     let config = std::fs::read_to_string(h.dir.join("config.toml")).unwrap();
     assert!(
@@ -176,8 +176,8 @@ fn a_download_that_fails_its_check_says_why_and_stays_off() {
         "not_installed",
         &github.url,
     );
-    h.tui.act(json!({"act": "install"}));
-    let refused = h.tui.wait_view(|v| v["failed"].is_string());
+    h.app.act(json!({"act": "install"}));
+    let refused = h.app.wait_view(|v| v["failed"].is_string());
     assert_eq!(refused["state"], "not_installed");
     assert!(refused["failed"].as_str().unwrap().contains("GitHub's checksum"), "{refused}");
     assert!(!h.dir.join("bin/cloudflared").exists());
@@ -186,10 +186,10 @@ fn a_download_that_fails_its_check_says_why_and_stays_off() {
 #[test]
 fn an_adapter_with_no_install_says_why() {
     let h = Harness::until("install-none", |dir| drop(hide(dir)), "not_installed");
-    assert!(h.tui.view["offer"].is_null());
+    assert!(h.app.view["offer"].is_null());
     assert!(
-        h.tui.view["why"].as_str().unwrap_or_default().contains("[remote] program"),
+        h.app.view["why"].as_str().unwrap_or_default().contains("[remote] program"),
         "{}",
-        h.tui.view
+        h.app.view
     );
 }

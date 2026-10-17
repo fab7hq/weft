@@ -35,17 +35,17 @@ fn a_stranger_or_a_flood_is_refused_without_asking_the_person() {
             json!({"type": "pair", "v": 2, "device": id, "name": "Phone", "assertion": good(&id)}),
         );
         assert_eq!(d.next()["type"], "asking");
-        h.tui.wait_view(|v| v["asking"]["device"] == id.as_str());
-        h.tui.act(json!({"act": "allow", "device": id, "yes": false}));
+        h.app.wait_view(|v| v["asking"]["device"] == id.as_str());
+        h.app.act(json!({"act": "allow", "device": id, "yes": false}));
         assert_eq!(d.next(), json!({"type": "refused", "code": "denied"}));
     }
-    let views = h.tui.views(Duration::from_millis(500));
+    let views = h.app.views(Duration::from_millis(500));
     let mut d = h.device();
     d.send(
         json!({"type": "pair", "v": 2, "device": "d_3", "name": "Phone", "assertion": good("d_3")}),
     );
     assert_eq!(d.next(), json!({"type": "refused", "code": "busy"}), "a fourth in ten minutes");
-    let views: Vec<_> = views.into_iter().chain(h.tui.views(Duration::from_millis(800))).collect();
+    let views: Vec<_> = views.into_iter().chain(h.app.views(Duration::from_millis(800))).collect();
     let asked: Vec<_> = views.iter().filter_map(|v| v["asking"]["device"].as_str()).collect();
     assert!(!asked.iter().any(|d| *d == "d_x" || *d == "d_3"), "{asked:?}");
 }
@@ -56,13 +56,13 @@ fn a_removed_device_is_closed_at_once() {
     let mut h = Harness::start("removed");
     let (mut phone, welcome) = h.allowed("d_phone");
     assert_eq!(welcome["machine"], json!({"id": "m_1", "name": "studio"}));
-    let view = h.tui.wait_view(|v| v["devices"].as_array().is_some_and(|d| d.len() == 1));
+    let view = h.app.wait_view(|v| v["devices"].as_array().is_some_and(|d| d.len() == 1));
     assert_eq!(view["devices"][0]["name"], "iPhone");
     assert_eq!(view["devices"][0]["login"], "octo");
 
-    h.tui.act(json!({"act": "remove", "device": "d_phone"}));
+    h.app.act(json!({"act": "remove", "device": "d_phone"}));
     assert!(phone.closed_within(Duration::from_secs(1)), "closed within a second");
-    h.tui.wait_view(|v| v["devices"] == json!([]));
+    h.app.wait_view(|v| v["devices"] == json!([]));
 
     // And it cannot come back with the token it had.
     let devices = std::fs::read_to_string(h.dir.join("remote/devices.toml")).unwrap();
@@ -90,13 +90,13 @@ fn another_version_is_refused_as_such() {
     let mut d = h.device();
     d.send(json!({"type": "hello", "v": 1, "device": "d_old", "token": "t"}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "machine"}));
-    let views = h.tui.views(Duration::from_millis(300));
+    let views = h.app.views(Duration::from_millis(300));
     let mut d = h.device();
     d.send(json!({"type": "pair", "v": 1, "device": "d_old", "name": "Phone", "assertion": good("d_old")}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "machine"}));
     let mut d = h.device();
     d.send(json!({"type": "hello", "v": 3, "device": "d_new", "token": "t"}));
     assert_eq!(d.next(), json!({"type": "refused", "code": "version", "newer": "page"}));
-    let views: Vec<_> = views.into_iter().chain(h.tui.views(Duration::from_millis(500))).collect();
+    let views: Vec<_> = views.into_iter().chain(h.app.views(Duration::from_millis(500))).collect();
     assert!(views.iter().all(|v| v["asking"].is_null()), "{views:?}");
 }

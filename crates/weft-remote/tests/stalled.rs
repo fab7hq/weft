@@ -20,7 +20,7 @@ fn a_stalled_device_delays_no_one_and_starts_again_from_a_whole_screen() {
         assert_eq!(d.next_of("screen")["full"], true);
     }
     // A big screen that changes all the time: the Mac's size, which Weft owns.
-    shell.tui.call(weft_proto::Call::Resize { pane: 0, rows: 100, cols: 300 });
+    shell.app.call(weft_proto::Call::Resize { pane: 0, rows: 100, cols: 300 });
     // The resize is a whole screen for both; b takes it before it stalls, so
     // any whole screen it gets later is the one a stall earns.
     while b.next_of("screen")["rows"] != 100 {}

@@ -345,6 +345,34 @@ pub struct ProjectClient {
     pub read: HashMap<Then, Value>,
 }
 
+/// A daemon that speaks another protocol: another version of Weft.
+#[derive(Debug)]
+pub struct OtherVersion(String);
+
+impl std::fmt::Display for OtherVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Another version of Weft is running ({}). `weft stop` ends it and its agents.",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for OtherVersion {}
+
+/// What became of a project whose daemon went, looked at again.
+pub enum Again {
+    /// Nothing listens.
+    Waiting,
+    /// A daemon listens, and the project is open on it again.
+    Back(Box<ProjectClient>),
+    /// A daemon of another protocol listens: a newer Weft. What it said.
+    Newer(String),
+    /// A daemon listens and would not open the project: why.
+    Refused(String),
+}
+
 impl ProjectClient {
     /// A project not connected to the daemon (yet, or any more): it shows what
     /// it last knew, and every call is refused until it is connected.
@@ -388,8 +416,8 @@ impl ProjectClient {
         root.file_name().and_then(|n| n.to_str()).unwrap_or("project").to_string()
     }
 
-    /// Connect to `weftd` at the default socket, auto-starting `weft --serve`
-    /// if no daemon is listening. It waits for the daemon: never call it on
+    /// Connect to `weftd` at the default socket, starting or joining it with
+    /// `weft --daemon` if none is listening. It waits for the daemon: never call it on
     /// the window's thread or under the shared lock.
     pub fn open(root: &Path, rows: u16, cols: u16) -> Result<Self> {
         let socket = socket_path();
@@ -398,6 +426,20 @@ impl ProjectClient {
             start_server()?;
         }
         Self::connect(&socket, root, rows, cols)
+    }
+
+    /// Open `root` again on whatever daemon listens at `socket` now, starting
+    /// none: the one this project was on went, and the person may have
+    /// stopped it.
+    pub fn again(socket: &Path, root: &Path, rows: u16, cols: u16) -> Again {
+        if !is_live(socket) {
+            return Again::Waiting;
+        }
+        match Self::connect(socket, root, rows, cols) {
+            Ok(client) => Again::Back(Box::new(client)),
+            Err(e) if e.is::<OtherVersion>() => Again::Newer(e.to_string()),
+            Err(e) => Again::Refused(e.to_string()),
+        }
     }
 
     /// Connect to a daemon listening at `socket` and open `root`. It waits for
@@ -429,9 +471,7 @@ impl ProjectClient {
             protocol: PROTOCOL,
         })?;
         if let Err(no) = client.wait(hello)? {
-            return Err(anyhow!(
-                "Another version of Weft is running ({no}). `weft stop` ends it and its agents."
-            ));
+            return Err(OtherVersion(no).into());
         }
         let open = client.send(Call::Open {
             rows,
@@ -901,23 +941,11 @@ fn not_connected() -> &'static str {
     weft_core::words::word("desktop.not_connected")
 }
 
-/// Start `weft --serve` detached when no daemon is listening.
+/// Start or join the daemon when none is listening: `weft --daemon`, which
+/// goes through Weft's service when "Start at login" installed it.
 fn start_server() -> Result<()> {
-    use std::os::unix::process::CommandExt;
-
-    let exe = find_weft_exe()?;
-    let mut cmd = std::process::Command::new(exe);
-    cmd.arg("--serve")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    unsafe {
-        cmd.pre_exec(|| {
-            libc_setsid();
-            Ok(())
-        });
-    }
-    let mut child = cmd.spawn()?;
+    let mut cmd = detached(&find_weft_exe()?, &["--daemon"]);
+    let mut child = cmd.stdout(std::process::Stdio::piped()).spawn()?;
     let out = child.stdout.take().ok_or_else(|| anyhow!("the session server said nothing"))?;
     let (said, heard) = channel();
     std::thread::spawn(move || {
@@ -929,6 +957,40 @@ fn start_server() -> Result<()> {
         Ok(line) if line.contains("listening") => Ok(()),
         _ => Err(anyhow!("the session server did not come up")),
     }
+}
+
+/// `weft` run with `args` in a session of its own, so it outlives this app,
+/// saying nothing.
+fn detached(weft: &Path, args: &[&str]) -> std::process::Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = std::process::Command::new(weft);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    unsafe {
+        cmd.pre_exec(|| {
+            libc_setsid();
+            Ok(())
+        });
+    }
+    cmd
+}
+
+/// The installed `weft` under `home` when it is another version than this
+/// app: `~/.local/bin/weft` links into `~/.fab7/weft/versions/<version>`.
+pub fn newer_weft(home: &Path) -> Option<PathBuf> {
+    let link = home.join(".local/bin/weft");
+    let real = link.canonicalize().ok()?;
+    let versions = home.join(".fab7/weft/versions").canonicalize().ok()?;
+    let version = real.strip_prefix(&versions).ok()?.components().next()?;
+    (version.as_os_str() != env!("CARGO_PKG_VERSION")).then_some(link)
+}
+
+/// Open the app `weft` came with, in place of this one.
+pub fn open_app_of(weft: &Path) -> Result<()> {
+    detached(weft, &[]).spawn()?;
+    Ok(())
 }
 
 /// The `weft` this app came with: beside it, else where Weft installs it.
@@ -957,5 +1019,29 @@ fn libc_setsid() {
     }
     unsafe {
         setsid();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_newer_weft_is_the_installed_one_of_another_version() {
+        let home = std::env::temp_dir().join(format!("weft-newer-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let bin = home.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(newer_weft(&home), None, "nothing installed");
+        let link = bin.join("weft");
+        for (version, newer) in [(env!("CARGO_PKG_VERSION"), false), ("99.0.0", true)] {
+            let folder = home.join(".fab7/weft/versions").join(version);
+            std::fs::create_dir_all(&folder).unwrap();
+            std::fs::write(folder.join("weft"), "").unwrap();
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(folder.join("weft"), &link).unwrap();
+            assert_eq!(newer_weft(&home), newer.then(|| link.clone()), "{version}");
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

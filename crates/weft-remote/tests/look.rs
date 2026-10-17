@@ -19,10 +19,10 @@ fn looking_again_finds_cloudflared_once_it_is_installed() {
         },
         "not_installed",
     );
-    assert_eq!(h.tui.view["tunnel"]["title"], "Cloudflare Tunnel");
+    assert_eq!(h.app.view["tunnel"]["title"], "Cloudflare Tunnel");
     let (moved, program) = aside.unwrap();
     std::fs::rename(moved, program).unwrap();
-    h.tui.act(json!({"act": "look"}));
-    let on = h.tui.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
+    h.app.act(json!({"act": "look"}));
+    let on = h.app.wait_view(|v| v["state"] == "on" && v["tunnel"] == "up");
     assert_eq!(on["address"], "https://test-tunnel.trycloudflare.com");
 }

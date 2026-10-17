@@ -7,6 +7,3 @@ model call. Each file's header says what it runs and what it claims.
 They are not the docs. The screens users see, drawn from a fixture with no
 agent running, are in [fab7hq/docs](https://github.com/fab7hq/docs) under
 `scenarios/`, and played back at [docs.getfab7.com](https://docs.getfab7.com).
-
-`atlas_screens` is not a probe: it writes each TUI screen the Atlas changed
-as text, one file per screen ID, from the TUI's snapshot tests.

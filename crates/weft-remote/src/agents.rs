@@ -974,7 +974,7 @@ mod tests {
     }
 
     /// The header's ⚡ turbo (M2.9): the project's switch, as opened and as
-    /// switched since, from the TUI or another window.
+    /// switched since, from the desktop app or another window.
     #[test]
     fn the_tree_says_whether_the_project_starts_agents_in_turbo() {
         let p = Project::opened(Path::new("/work/weft"), &json!({"turbo": true}));

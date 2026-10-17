@@ -168,6 +168,8 @@ pub struct WeftDesktopApp {
     waiting: HashSet<(PathBuf, u32)>,
     /// What is to be told and has not been taken yet.
     notices: Vec<Notice>,
+    /// Why each project last failed to open, as told.
+    not_opened: HashMap<PathBuf, String>,
 }
 
 impl WeftDesktopApp {
@@ -203,6 +205,7 @@ impl WeftDesktopApp {
             unsaved: false,
             waiting: HashSet::new(),
             notices: Vec::new(),
+            not_opened: HashMap::new(),
         };
         for p in app.state.open_projects.clone() {
             app.add_project(&p);
@@ -220,8 +223,22 @@ impl WeftDesktopApp {
 
     /// The projects not connected to the daemon: the window's own thread
     /// connects each, never under the shared lock.
-    pub fn disconnected(&self) -> Vec<PathBuf> {
-        self.clients.iter().filter(|c| !c.is_connected()).map(|c| c.root.clone()).collect()
+    pub fn disconnected(&self) -> Vec<(PathBuf, bool)> {
+        self.clients
+            .iter()
+            .filter(|c| !c.is_connected())
+            .map(|c| (c.root.clone(), c.lost))
+            .collect()
+    }
+
+    /// The daemon went and none came back: the person stopped it, or it
+    /// ended. Say so, and go, as its agents went.
+    pub fn session_ended(&mut self) {
+        self.notices.push(Notice {
+            tag: String::new(),
+            title: words::word("desktop.notice.ended").to_string(),
+        });
+        self.quit_requested = true;
     }
 
     /// Put a connected project in place of the one it connects, and open a
@@ -237,6 +254,7 @@ impl WeftDesktopApp {
         if self.state.settings.turbo && !client.turbo {
             let _ = client.set_turbo(true);
         }
+        self.not_opened.remove(&p);
         let running: Vec<u32> = client.panes.iter().filter(|v| v.running).map(|v| v.id).collect();
         self.clients[pos] = client;
         // An agent already in some pane stays where it is: one agent in two
@@ -443,7 +461,7 @@ impl WeftDesktopApp {
         let front = self.active_tab().map(|t| (t.project, t.pane));
         let mut now = HashSet::new();
         for c in &self.clients {
-            for p in c.panes.iter().filter(|p| p.turn == Some(weft_core::turns::Turn::Waiting)) {
+            for p in c.panes.iter().filter(|p| weft_core::turns::is_asking(p.turn)) {
                 let key = (c.root.clone(), p.id);
                 if !self.waiting.contains(&key) && front.as_ref() != Some(&key) && c.notify {
                     self.notices.push(Notice {
@@ -458,6 +476,20 @@ impl WeftDesktopApp {
             }
         }
         self.waiting = now;
+    }
+
+    /// A project would not open: tell why, once while the reason stays the
+    /// same.
+    pub fn not_opened(&mut self, root: &Path, why: &str) {
+        if self.not_opened.get(root).is_some_and(|told| told == why) {
+            return;
+        }
+        self.not_opened.insert(root.to_path_buf(), why.to_string());
+        let project = ProjectClient::name_of(root);
+        self.notices.push(Notice {
+            tag: root.display().to_string(),
+            title: words::fill("desktop.notice.not_opened", &[("project", &project), ("why", why)]),
+        });
     }
 
     /// What is to be told, taken once.

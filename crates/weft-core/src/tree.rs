@@ -2,7 +2,7 @@
 //!
 //! AGENTS is the session index weftd keeps (`sessions.md`); WORK is the record
 //! by Eval round (`board.md` "Rounds"). Built from those and nothing else, so
-//! the TUI's list and a device's tree are one set of rows. Folding Open or an
+//! the desktop's list and a device's tree are one set of rows. Folding Open or an
 //! Eval is the client's own, asked here and never kept; Sealed and the
 //! earlier sessions are counts (remote.md §6).
 
@@ -133,7 +133,7 @@ pub struct Group {
     pub count: usize,
 }
 
-/// Sealed, folded: counts on the wire; the TUI lists its Seals once opened.
+/// Sealed, folded: counts on the wire; the desktop lists its Seals once opened.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sealed {
     pub seals: usize,

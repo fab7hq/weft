@@ -1,6 +1,6 @@
 //! What the daemon gives `weft remote` (remote.md §3, D4 to D8): a client
 //! that never takes raw output, the pendings already open, presence, history,
-//! and the remote view relayed between `weft remote` and the TUI.
+//! and the remote view relayed between `weft remote` and the desktop app.
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -108,10 +108,10 @@ fn sh(c: &mut Client) -> u32 {
 #[test]
 fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     let (root, socket) = daemon("quiet");
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
-    let pane = sh(&mut tui);
-    tui.send(Call::Input { pane, bytes: b"printf 'printed-before\\n'\n".to_vec() });
-    tui.wait_for(|e| {
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
+    let pane = sh(&mut app);
+    app.send(Call::Input { pane, bytes: b"printf 'printed-before\\n'\n".to_vec() });
+    app.wait_for(|e| {
         matches!(e, Event::Output { bytes, .. }
         if String::from_utf8_lossy(bytes).contains("printed-before"))
         .then_some(())
@@ -120,8 +120,8 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     assert_eq!(remote.opened["screens"], serde_json::json!([]), "no screens either");
 
-    tui.send(Call::Input { pane, bytes: b"printf 'printed-after\\n'\n".to_vec() });
-    let staged = tui.answer(Call::Stage {
+    app.send(Call::Input { pane, bytes: b"printf 'printed-after\\n'\n".to_vec() });
+    let staged = app.answer(Call::Stage {
         pane,
         bytes: b"echo hi".to_vec(),
         how: weft::inject::Handoff::Whole,
@@ -129,14 +129,14 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
         why: "to see it arrive".into(),
     });
     let id = staged.unwrap()["pending"].as_str().unwrap().to_string();
-    let second = sh(&mut tui);
+    let second = sh(&mut app);
 
     let heard = remote.events(Duration::from_millis(1500));
     assert!(!heard.iter().any(|e| matches!(e, Event::Output { .. })), "no output: {heard:?}");
     assert!(heard.iter().any(|e| matches!(e, Event::Pending { id: got, .. } if *got == id)));
     assert!(heard.iter().any(|e| matches!(e, Event::Added { pane, .. } if *pane == second)));
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -145,9 +145,9 @@ fn a_client_that_asked_for_no_output_gets_none_and_every_other_event() {
 #[test]
 fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
     let (root, socket) = daemon("pendings");
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
-    let pane = sh(&mut tui);
-    let staged = tui.answer(Call::Stage {
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
+    let pane = sh(&mut app);
+    let staged = app.answer(Call::Stage {
         pane,
         bytes: b"echo staged-earlier".to_vec(),
         how: weft::inject::Handoff::Whole,
@@ -180,23 +180,23 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
             start: None,
         })
         .unwrap();
-    tui.wait_for(|e| {
+    app.wait_for(|e| {
         matches!(e, Event::Resolved { id: got, yes: false } if *got == id).then_some(())
     });
     let again = Client::open(&socket, &root, "weft-remote", false);
     assert_eq!(again.opened["pendings"], serde_json::json!([]), "answered, so gone");
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// remote.md D6: the TUI's typing is told as `presence`, at most once in ten seconds;
+/// remote.md D6: the desktop app's typing is told as `presence`, at most once in ten seconds;
 /// `weft-remote`'s own typing never is.
 #[test]
-fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
+fn the_apps_typing_is_presence_at_most_once_in_ten_seconds() {
     let (root, socket) = daemon("presence");
-    let mut tui = Client::open(&socket, &root, "weft-tui/0.1.3", true);
-    let pane = sh(&mut tui);
+    let mut app = Client::open(&socket, &root, "weft-desktop/0.1.3", true);
+    let pane = sh(&mut app);
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     let presences = |events: Vec<Event>| {
         events.into_iter().filter(|e| matches!(e, Event::Presence { .. })).count()
@@ -209,17 +209,17 @@ fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
         "a device is not the person"
     );
 
-    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
-    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    app.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    app.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
     let at = remote.wait_for(|e| match e {
         Event::Presence { at } => Some(*at),
         _ => None,
     });
     assert!(at > 1_700_000_000_000, "milliseconds: {at}");
-    tui.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
+    app.answer(Call::Input { pane, bytes: b"true\n".to_vec() }).unwrap();
     assert_eq!(presences(remote.events(Duration::from_millis(600))), 0, "once in ten seconds");
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -228,13 +228,13 @@ fn the_tuis_typing_is_presence_at_most_once_in_ten_seconds() {
 #[test]
 fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
     let (root, socket) = daemon("history");
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
-    let pane = sh(&mut tui);
-    tui.send(Call::Input {
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
+    let pane = sh(&mut app);
+    app.send(Call::Input {
         pane,
         bytes: b"clear; for i in $(seq 1 3000); do echo history-line-$i; done\n".to_vec(),
     });
-    tui.wait_for(|e| {
+    app.wait_for(|e| {
         matches!(e, Event::Output { bytes, .. }
         if String::from_utf8_lossy(bytes).contains("history-line-3000"))
         .then_some(())
@@ -266,7 +266,7 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
     assert_eq!(all[0], "history-line-1002", "scrollback and screen, in order, none twice");
     assert!(all.windows(2).take(1998).all(|w| w[0] != w[1]));
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -276,33 +276,33 @@ fn history_is_the_last_lines_of_scrollback_and_screen_as_text() {
 fn the_remote_view_and_its_acts_are_relayed() {
     let world = weft::outside::Fixed::new();
     let (root, socket, _) = daemon_in("relay", "[remote]\nenabled = true\n", world);
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     let view = serde_json::json!({"state": "on", "address": "https://a-b.trycloudflare.com"});
 
     assert_eq!(
-        tui.answer(Call::RemoteView { view: view.clone() }),
+        app.answer(Call::RemoteView { view: view.clone() }),
         Err("not_remote".into()),
         "only weft-remote publishes it"
     );
     remote.answer(Call::RemoteView { view: view.clone() }).unwrap();
-    let heard = tui.wait_for(|e| match e {
+    let heard = app.wait_for(|e| match e {
         Event::Remote { view } => Some(view.clone()),
         _ => None,
     });
     assert_eq!(heard, view);
-    let late = Client::open(&socket, &root, "weft-tui", true);
+    let late = Client::open(&socket, &root, "weft-desktop", true);
     assert_eq!(late.opened["remote"], view, "kept for a client that opens later");
 
     let act = serde_json::json!({"act": "allow", "device": "d_1", "yes": true});
-    tui.answer(Call::Remote { act: act.clone() }).unwrap();
+    app.answer(Call::Remote { act: act.clone() }).unwrap();
     let got = remote.wait_for(|e| match e {
         Event::RemoteAct { act } => Some(act.clone()),
         _ => None,
     });
     assert_eq!(got, act, "unchanged");
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -329,8 +329,8 @@ fn the_daemon_keeps_weft_remote_running_while_it_is_turned_on() {
     let runs = world.remote_runs();
     let (root, socket, file) =
         daemon_in("supervised", "[remote]\nenabled = true\nrelay = \"x\"\n", world);
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
-    let ignored = tui.opened["routing"]["ignored"].clone();
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
+    let ignored = app.opened["routing"]["ignored"].clone();
     assert_eq!(ignored, serde_json::json!(["remote.relay"]));
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     remote.answer(Call::RemoteView { view: serde_json::json!({"state": "on"}) }).unwrap();
@@ -343,7 +343,7 @@ fn the_daemon_keeps_weft_remote_running_while_it_is_turned_on() {
     assert!(gaps[0] >= Duration::from_secs(2) && gaps[0] < Duration::from_secs(3), "{gaps:?}");
     assert!(gaps[1] >= Duration::from_secs(4) && gaps[1] < Duration::from_secs(5), "{gaps:?}");
 
-    tui.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
+    app.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
     let told = remote.wait_for(|e| match e {
         Event::RemoteAct { act } => Some(act.clone()),
         _ => None,
@@ -354,7 +354,7 @@ fn the_daemon_keeps_weft_remote_running_while_it_is_turned_on() {
     std::thread::sleep(Duration::from_millis(9_500));
     assert_eq!(runs.lock().unwrap().len(), 3, "turned off, so not started again");
 
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -364,17 +364,17 @@ fn weft_remote_starts_when_turned_on_and_not_before() {
     let world = weft::outside::Fixed::new();
     let runs = world.remote_runs();
     let (root, socket, file) = daemon_in("off", "", world);
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
     std::thread::sleep(Duration::from_millis(1_500));
     assert!(runs.lock().unwrap().is_empty(), "off unless turned on");
 
-    tui.answer(Call::Remote { act: serde_json::json!({"act": "on"}) }).unwrap();
+    app.answer(Call::Remote { act: serde_json::json!({"act": "on"}) }).unwrap();
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(runs.lock().unwrap().len(), 1);
     assert!(std::fs::read_to_string(&file).unwrap().contains("[remote]\nenabled = true"));
 
-    tui.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
-    tui.send(Call::Shutdown);
+    app.answer(Call::Remote { act: serde_json::json!({"act": "off"}) }).unwrap();
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
 
@@ -385,7 +385,7 @@ fn weft_remote_starts_when_turned_on_and_not_before() {
 fn a_weft_remote_that_speaks_while_remote_is_off_is_told_to_stop() {
     let world = weft::outside::Fixed::new();
     let (root, socket, _) = daemon_in("late-view", "", world);
-    let mut tui = Client::open(&socket, &root, "weft-tui", true);
+    let mut app = Client::open(&socket, &root, "weft-desktop", true);
     let mut remote = Client::open(&socket, &root, "weft-remote", false);
     remote.send(Call::RemoteView { view: serde_json::json!({"state": "on"}) });
     let told = remote.wait_for(|e| match e {
@@ -393,6 +393,6 @@ fn a_weft_remote_that_speaks_while_remote_is_off_is_told_to_stop() {
         _ => None,
     });
     assert_eq!(told, serde_json::json!({"act": "stop"}));
-    tui.send(Call::Shutdown);
+    app.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }

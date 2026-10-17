@@ -1,7 +1,7 @@
 //! The socket API.
 //!
-//! One NDJSON line per message. The TUI is a client of this and so is
-//! everything else; if the TUI needs something this cannot express, that is a
+//! One NDJSON line per message. The desktop app is a client of this and so is
+//! everything else; if the app needs something this cannot express, that is a
 //! gap here rather than a reason for a private path.
 //!
 //! **It speaks in decisions, never in keystrokes.** `pane.input` is the one
@@ -953,7 +953,7 @@ mod tests {
     #[test]
     fn every_call_survives_the_wire() {
         for call in [
-            Call::Hello { client: "weft-tui/0.1".into(), protocol: PROTOCOL },
+            Call::Hello { client: "weft-desktop/0.1".into(), protocol: PROTOCOL },
             Call::Open { path: "/home/me/work/a thing".into(), rows: 40, cols: 120, raw: true },
             Call::Open { path: "/home/me/work".into(), rows: 40, cols: 120, raw: false },
             Call::StartAgent {

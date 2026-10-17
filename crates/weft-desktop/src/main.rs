@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use weft_desktop::app::WeftDesktopApp;
+use weft_desktop::instance;
 use weft_desktop::window::run_interactive;
 
 fn main() {
@@ -12,16 +13,22 @@ fn main() {
         return;
     }
 
+    let project = args
+        .iter()
+        .filter(|a| !a.starts_with('-'))
+        .filter_map(|a| PathBuf::from(a).canonicalize().ok())
+        .find(|dir| dir.is_dir());
+    // One app: one already running opens the project and comes in front.
+    if instance::hand_over(&instance::socket_path(), project.as_deref()) {
+        return;
+    }
+
     // This version stays while it runs, whatever version the daemon moves to.
     let _held = weft_desktop::version::hold_own();
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
     let mut app = WeftDesktopApp::new(home, machine_name());
-    for arg in args.iter().filter(|a| !a.starts_with('-')) {
-        if let Ok(dir) = PathBuf::from(arg).canonicalize()
-            && dir.is_dir()
-        {
-            app.open_project_path(dir);
-        }
+    if let Some(dir) = project {
+        app.open_project_path(dir);
     }
 
     if let Err(err) = run_interactive(app) {

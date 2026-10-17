@@ -78,8 +78,8 @@ fn typing_on_the_mac_takes_the_keys_back() {
     d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 1}));
     assert_eq!(d.next_of("control"), json!({"type": "control", "agent": agent, "by": "you"}));
 
-    // The TUI's typing, as presence.
-    shell.tui.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
+    // The app's typing, as presence.
+    shell.app.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
     assert_eq!(d.next_of("control"), json!({"type": "control", "agent": agent, "by": "mac"}));
     // Typing from the device again takes them again.
     d.send(json!({"type": "keys", "agent": agent, "bytes": keys("true\r"), "req": 2}));
@@ -138,8 +138,8 @@ fn opening_an_agent_while_the_mac_is_in_use_keeps_its_size() {
     let mut shell = h.shell("work");
     let (mut d, _) = h.allowed("d_1");
     let agent = d.agents(1)[0]["agent"].as_str().unwrap().to_string();
-    // The TUI's typing, as presence.
-    shell.tui.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
+    // The app's typing, as presence.
+    shell.app.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
     std::thread::sleep(Duration::from_millis(300));
     d.send(json!({"type": "watch", "agent": agent, "rows": 30, "cols": 40}));
     let (seen, screen) = up_to_a_screen(&mut d, &agent);

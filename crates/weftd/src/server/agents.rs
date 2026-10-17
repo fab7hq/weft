@@ -125,8 +125,13 @@ impl Session {
         let Some(idx) = p.panes.iter().position(|s| s.map.pane == pane) else { return };
         let hook_turn = raw_states.get(idx).copied().flatten();
         let slot = &mut p.panes[idx];
-        let (alt_screen, (rows, cols), (cursor_row, cursor_col), bottom_lines, seq) =
-            slot.pane.surface_snapshot();
+        let crate::pane::Surface {
+            alt: alt_screen,
+            size: (rows, cols),
+            cursor: (cursor_row, cursor_col),
+            bottom: bottom_lines,
+            seq,
+        } = slot.pane.surface_snapshot();
         if bottom_lines.is_empty() {
             slot.sensed_surface = None;
             return;

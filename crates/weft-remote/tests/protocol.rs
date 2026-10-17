@@ -44,7 +44,7 @@ fn nothing_the_never_sent_list_names_reaches_the_daemon() {
     // The daemon is as it was: one agent, still running, and nothing added.
     d.send(json!({"type": "ping", "t": 7}));
     assert_eq!(d.next_of("pong")["t"], 7);
-    let _ = shell.tui.views(Duration::from_millis(300));
+    let _ = shell.app.views(Duration::from_millis(300));
     let (mut fresh, welcome) = h.allowed("d_2");
     let _ = &mut fresh;
     assert_eq!(welcome["agents"].as_array().map(Vec::len), Some(1), "no agent started or closed");
@@ -102,7 +102,7 @@ fn the_tree_comes_in_welcome_and_again_when_an_agent_ends() {
     );
 
     let pane = agent.as_str().unwrap().rsplit_once('-').unwrap().1.parse().unwrap();
-    shell.tui.call(weft_proto::Call::Input { pane, bytes: b"exit\r".to_vec() });
+    shell.app.call(weft_proto::Call::Input { pane, bytes: b"exit\r".to_vec() });
     let ended = loop {
         let m = d.next_of("tree");
         if m["tree"][0]["agents"]["rows"][0]["state"] == "ended" {

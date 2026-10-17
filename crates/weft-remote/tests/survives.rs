@@ -49,7 +49,7 @@ fn an_update_waiting_is_told_to_devices() {
     assert_eq!(welcome["update"], serde_json::Value::Null, "nothing waits");
     // An agent runs, so the update waits for it.
     let _shell = h.shell("busy");
-    h.tui.call(Call::Update { version: "99.0.0".into() });
+    h.app.call(Call::Update { version: "99.0.0".into() });
     assert_eq!(d.next_of("update"), json!({"type": "update", "update": {"version": "99.0.0"}}));
     let (_, later) = h.allowed("d_2");
     assert_eq!(later["update"], json!({"version": "99.0.0"}));

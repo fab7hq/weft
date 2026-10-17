@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod fonts;
 pub mod gpui;
 pub mod header;
+pub mod instance;
 pub mod keys;
 pub mod panes_view;
 pub mod sheets;

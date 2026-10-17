@@ -1,4 +1,4 @@
-//! What `weft remote` shows in the TUI's Remote view (remote.md §12),
+//! What `weft remote` shows in the desktop app's Remote view (remote.md §12),
 //! published to the daemon, which relays it to every client.
 
 use serde_json::{Value, json};

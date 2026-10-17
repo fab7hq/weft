@@ -17,6 +17,17 @@ use weft_term::{Snapshot, Term};
 /// Where a pane's output goes, numbered, once someone asks for the stream.
 type Tap = Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>;
 
+/// The live screen as `weft-sense` reads it: the alternate screen or not,
+/// `(rows, cols)`, the cursor's `(row, col)`, the last non-blank lines, and
+/// the output sequence it was taken at.
+pub struct Surface {
+    pub alt: bool,
+    pub size: (u16, u16),
+    pub cursor: (u16, u16),
+    pub bottom: Vec<String>,
+    pub seq: u64,
+}
+
 pub struct Pane {
     pub title: String,
     term: Arc<Mutex<Term>>,
@@ -177,9 +188,8 @@ impl Pane {
         self.seq.load(Ordering::SeqCst)
     }
 
-    /// Snapshot of the live screen for `weft-sense` Head 1:
-    /// `(alt_screen, (rows, cols), (cursor_row, cursor_col), bottom_lines, seq)`.
-    pub fn surface_snapshot(&self) -> (bool, (u16, u16), (u16, u16), Vec<String>, u64) {
+    /// Snapshot of the live screen for `weft-sense` Head 1.
+    pub fn surface_snapshot(&self) -> Surface {
         let term = self.term.lock().expect("pane terminal");
         let (rows, cols) = term.size();
         let cursor = term.cursor();
@@ -190,7 +200,7 @@ impl Pane {
             lines.drain(..lines.len() - 15);
         }
         let seq = self.seq.load(Ordering::SeqCst);
-        (alt, (rows, cols), cursor, lines, seq)
+        Surface { alt, size: (rows, cols), cursor, bottom: lines, seq }
     }
 
     /// The last `lines` of what the pane printed, scrollback then screen, as
@@ -268,7 +278,7 @@ impl Pane {
         }
         if let Handoff::EnterMode { command, active, .. } = how {
             // The mode first, on its own, and only believed when the host says
-            // so. A mode switch is handled by the TUI and submits no prompt, so
+            // so. A mode switch is handled by the harness's TUI and submits no prompt, so
             // this adds nothing to the record.
             self.send(command.as_bytes()).map_err(|_| Refusal::NoProcess)?;
             // Enter goes in its own write, after the composer has been left
@@ -478,7 +488,7 @@ mod tests {
                 Pane::spawn_args("test", "sh", &["-c", &script], "/tmp", &[], rows, cols)
                     .expect("spawn");
             std::thread::sleep(std::time::Duration::from_millis(1000));
-            let (alt, _, cursor, bottom, _) = pane.surface_snapshot();
+            let Surface { alt, cursor, bottom, .. } = pane.surface_snapshot();
             let want_bottom: Vec<&str> = want["bottom"]
                 .as_array()
                 .unwrap()

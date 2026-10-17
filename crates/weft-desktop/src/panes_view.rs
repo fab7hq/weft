@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use weft_core::conversation::{Item, Kind};
 use weft_core::sessions::State;
 use weft_core::state::{PaneViewMode, SavedPaneTab, SavedPanesLayout, SavedTabGroup, SplitLayout};
-use weft_core::turns::Turn;
+use weft_core::turns::{self, Turn};
 use weft_core::words;
 
 use crate::action::{Focus, PaneAct};
@@ -727,12 +727,12 @@ fn render_conversation_viewport(
             &tab.project,
             tab.pane,
             props.unfolded_steps,
-            turn == Some(Turn::Waiting),
+            turns::is_asking(turn),
             zone,
         ));
     }
 
-    if turn == Some(Turn::Waiting) {
+    if turns::is_asking(turn) {
         let waiting_prefix = words::say("web.waiting.for_you", &harness);
         let waiting_cta = words::word("web.waiting.answer");
         chat_col = chat_col.child(

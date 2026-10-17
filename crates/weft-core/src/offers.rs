@@ -122,7 +122,7 @@ fn sent(unit: &crate::ledger::Unit) -> bool {
 // --- Details, one level each --------------------------------------------
 //
 // A work shows only its Ask; an Eval, a Seal and a session each show once,
-// as themselves. weftd's facts in, a payload out: the TUI draws these and a
+// as themselves. weftd's facts in, a payload out: the desktop app draws these and a
 // device is sent them (remote.md §6), so the two cannot say different
 // things.
 

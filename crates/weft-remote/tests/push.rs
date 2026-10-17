@@ -109,7 +109,7 @@ fn a_push_goes_when_an_agent_waits_for_a_person_who_is_away() {
 
     // Held while the person is at the Mac.
     d.send(json!({"type": "seen", "foreground": false, "agent": null}));
-    shell.tui.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
+    shell.app.call(Call::Input { pane: 0, bytes: b"true\r".to_vec() });
     std::thread::sleep(Duration::from_millis(300));
     agent_says(&shell.project, "working");
     turn_is(&mut d, "working");

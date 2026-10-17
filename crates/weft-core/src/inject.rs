@@ -30,7 +30,7 @@ pub const COMPOSER_SETTLE: Duration = Duration::from_millis(400);
 pub const SUBMIT_SETTLE: Duration = Duration::from_millis(300);
 
 /// How long to wait for a host to show that a mode is on. Entering one is
-/// local to the TUI and has no model call behind it, so this is generous
+/// local to the host's TUI and has no model call behind it, so this is generous
 /// rather than long.
 pub const MODE_TIMEOUT: Duration = Duration::from_millis(4000);
 

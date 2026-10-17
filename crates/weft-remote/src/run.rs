@@ -185,7 +185,7 @@ enum Gather {
 
 /// A device's read (remote.md §6), answered once every part the daemon was
 /// asked for is in. A part that did not come back is said where it would
-/// be, as the TUI says it.
+/// be, as the desktop app says it.
 struct Gathering {
     conn: u64,
     req: Value,
@@ -654,7 +654,7 @@ impl Remote {
         self.last_presence.is_none_or(|t| t.elapsed() >= crate::push::AWAY)
     }
 
-    /// Publish the view to the TUI when it changed.
+    /// Publish the view to the desktop app when it changed.
     fn publish(&mut self) {
         self.view.devices = self.devices.shown();
         self.view.asking = self
@@ -668,7 +668,7 @@ impl Remote {
         }
     }
 
-    /// An act from the TUI, through the daemon. Whether to go on.
+    /// An act from the desktop app, through the daemon. Whether to go on.
     fn act(&mut self, act: &Value) -> bool {
         let device = act["device"].as_str().unwrap_or_default().to_string();
         match act["act"].as_str() {

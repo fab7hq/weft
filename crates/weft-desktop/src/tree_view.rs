@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use weft_core::harness::Harnesses;
 use weft_core::sessions::State;
 use weft_core::tree::{self, Agent, Ask, Group, Project};
-use weft_core::turns::Turn;
+use weft_core::turns::{self, Turn};
 use weft_core::words;
 
 use crate::action::{Focus, TreeAct, WindowAct};
@@ -511,7 +511,7 @@ fn render_section_header(layer: &str, title: &str) -> Element {
 /// while it waits for you, a hollow square once it has ended.
 pub fn status_shape(state: State, turn: Option<Turn>) -> (&'static str, &'static str) {
     match (state, turn) {
-        (State::Running, Some(Turn::Waiting)) => ("■", palette::AMBER),
+        (State::Running, turn) if turns::is_asking(turn) => ("■", palette::AMBER),
         (State::Running, _) => ("●", palette::TEAL),
         _ => ("□", palette::DIM),
     }

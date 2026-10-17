@@ -348,7 +348,7 @@ fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
     let mut suggest = |draft: &str| {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            let got = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: draft.into() });
+            let got = shell.app.ask(weft_proto::Call::Suggest { pane: 0, draft: draft.into() });
             if got.get("text").is_some() {
                 break got;
             }
@@ -359,13 +359,13 @@ fn the_message_field_is_suggested_the_rest_of_a_draft_and_the_next_prompt() {
     assert_eq!(suggest("run the")["text"], " login tests");
     assert!(suggest("run the")["score"].as_f64().is_some_and(|s| (0.7..=1.0).contains(&s)));
     // Sent once, below the floor; and no next prompt: the replay put it below the bar.
-    let once = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "commit".into() });
+    let once = shell.app.ask(weft_proto::Call::Suggest { pane: 0, draft: "commit".into() });
     assert_eq!(once, json!({}));
-    let next = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: String::new() });
+    let next = shell.app.ask(weft_proto::Call::Suggest { pane: 0, draft: String::new() });
     assert_eq!(next, json!({}));
-    let none = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "zebra crossing".into() });
+    let none = shell.app.ask(weft_proto::Call::Suggest { pane: 0, draft: "zebra crossing".into() });
     assert_eq!(none, json!({}));
-    let missing = shell.tui.ask(weft_proto::Call::Suggest { pane: 7, draft: String::new() });
+    let missing = shell.app.ask(weft_proto::Call::Suggest { pane: 7, draft: String::new() });
     assert_eq!(missing, json!({"error": "no_pane"}));
 }
 
@@ -404,7 +404,7 @@ fn one_line_turns_suggestions_off() {
         assert!(Instant::now() < deadline, "the message never reached the index");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let got = shell.tui.ask(weft_proto::Call::Suggest { pane: 0, draft: "run the".into() });
+    let got = shell.app.ask(weft_proto::Call::Suggest { pane: 0, draft: "run the".into() });
     assert_eq!(got, json!({}));
 }
 

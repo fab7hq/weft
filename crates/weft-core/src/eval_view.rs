@@ -543,7 +543,7 @@ fn change_row(c: &Change, depth: u8, with_path: bool) -> Row {
     }
 }
 
-/// A section's heading, as the TUI draws it.
+/// A section's heading, as the desktop app draws it.
 fn heading(key: &str) -> String {
     word(key).to_uppercase()
 }
