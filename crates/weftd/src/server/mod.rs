@@ -2351,13 +2351,14 @@ mod tests {
                 if let Line::Result { id: 7, result } = line {
                     let hist = result["text"].as_str().unwrap_or_default();
                     for l in hist.lines() {
-                        if let Some(rest) = l.strip_prefix("PID_BEFORE=")
+                        // After a prompt, when it was typed before the shell drew one.
+                        if let Some((_, rest)) = l.split_once("PID_BEFORE=")
                             && rest.chars().all(|c| c.is_ascii_digit())
                             && !rest.is_empty()
                         {
                             pid_before = Some(rest.to_string());
                         }
-                        if let Some(rest) = l.strip_prefix("PID_AFTER=")
+                        if let Some((_, rest)) = l.split_once("PID_AFTER=")
                             && rest.chars().all(|c| c.is_ascii_digit())
                             && !rest.is_empty()
                         {

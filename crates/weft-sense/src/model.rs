@@ -653,12 +653,28 @@ impl QuantizedActivation {
     }
 }
 
+/// Rows the product without Accelerate takes at once.
+#[cfg(not(target_os = "macos"))]
+const BLOCK: usize = 8;
+
+/// Room for a block of rows' sums, kept between blocks.
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+struct Sums {
+    int: Vec<i32>,
+    wide: Vec<f64>,
+}
+
 #[derive(Clone)]
 struct QuantLinear {
     in_dim: usize,
     out_dim: usize,
     /// `(w_q - w_zp)` stored row-major as `[in_dim, out_dim]` in `f32`.
     w_f32: Vec<f32>,
+    /// The same as integers, where they are (not the fused, pre-scaled
+    /// attention weights), for the product without Accelerate.
+    #[cfg(not(target_os = "macos"))]
+    w_int: Vec<i16>,
     w_scale: f32,
     bias: Vec<f32>,
 }
@@ -696,13 +712,13 @@ impl QuantLinear {
 
         #[cfg(not(target_os = "macos"))]
         {
-            for (x_row, out_row) in xq_data.chunks_exact(k).zip(out.chunks_exact_mut(n)) {
-                out_row.fill(0.0);
-                for (&xv, w_row) in x_row.iter().zip(self.w_f32.chunks_exact(n)) {
-                    let s = xv * combined_scale;
-                    for (dst, &wv) in out_row.iter_mut().zip(w_row.iter()) {
-                        *dst += s * wv;
-                    }
+            let mut sums = Sums::default();
+            for (x_rows, out_rows) in
+                xq_data.chunks(k * BLOCK).zip(out[..m * n].chunks_mut(n * BLOCK))
+            {
+                self.unscaled_rows(x_rows, &mut sums, out_rows);
+                for dst in out_rows.iter_mut() {
+                    *dst *= combined_scale;
                 }
             }
         }
@@ -757,13 +773,62 @@ impl QuantLinear {
 
         #[cfg(not(target_os = "macos"))]
         {
-            for (x_row, out_row) in xq_data.chunks_exact(k).zip(accum.chunks_exact_mut(n)) {
-                for (&xv, w_row) in x_row.iter().zip(self.w_f32.chunks_exact(n)) {
-                    let s = xv * combined_scale;
-                    for (dst, &wv) in out_row.iter_mut().zip(w_row.iter()) {
-                        *dst += s * wv;
+            let mut sums = Sums::default();
+            let mut rows = vec![0.0_f32; n * BLOCK];
+            for (x_rows, out_rows) in
+                xq_data.chunks(k * BLOCK).zip(accum[..m * n].chunks_mut(n * BLOCK))
+            {
+                let rows = &mut rows[..out_rows.len()];
+                self.unscaled_rows(x_rows, &mut sums, rows);
+                for (dst, &s) in out_rows.iter_mut().zip(rows.iter()) {
+                    *dst += combined_scale * s;
+                }
+            }
+        }
+    }
+
+    /// Rows of the product, summed exactly and scaled by nothing, as the
+    /// reference's integer matrix product is: scaling each term first, or
+    /// summing in `f32`, rounds differently and the difference grows through
+    /// the layers. Integers where the weights are, else `f64`. Up to
+    /// [`BLOCK`] rows at once, so each weight row is read once for them all.
+    #[cfg(not(target_os = "macos"))]
+    fn unscaled_rows(&self, x_rows: &[f32], sums: &mut Sums, out: &mut [f32]) {
+        let (k, n) = (self.in_dim, self.out_dim);
+        let rows = x_rows.len() / k;
+        if self.w_int.is_empty() {
+            sums.wide.clear();
+            sums.wide.resize(rows * n, 0.0);
+            for (i, w_row) in self.w_f32.chunks_exact(n).enumerate() {
+                for (r, acc) in sums.wide.chunks_exact_mut(n).enumerate() {
+                    let xv = x_rows[r * k + i];
+                    if xv != 0.0 {
+                        let xv = f64::from(xv);
+                        for (a, &wv) in acc.iter_mut().zip(w_row) {
+                            *a += xv * f64::from(wv);
+                        }
                     }
                 }
+            }
+            for (o, &a) in out.iter_mut().zip(&sums.wide) {
+                *o = a as f32;
+            }
+        } else {
+            sums.int.clear();
+            sums.int.resize(rows * n, 0);
+            for (i, w_row) in self.w_int.chunks_exact(n).enumerate() {
+                for (r, acc) in sums.int.chunks_exact_mut(n).enumerate() {
+                    // An activation is an integer of at most 255 either way.
+                    let xv = x_rows[r * k + i] as i32;
+                    if xv != 0 {
+                        for (a, &wv) in acc.iter_mut().zip(w_row) {
+                            *a += xv * i32::from(wv);
+                        }
+                    }
+                }
+            }
+            for (o, &a) in out.iter_mut().zip(&sums.int) {
+                *o = a as f32;
             }
         }
     }
@@ -1160,11 +1225,15 @@ unsafe fn run_layers_worker(tid: usize, job: &ParallelLayerJob) {
                     let s_row = &mut scores_buf[i * seq_len..(i + 1) * seq_len];
                     for (j, s_val) in s_row.iter_mut().enumerate() {
                         let k_r = &qkv_all[j * D3 + D + h_col..j * D3 + D + h_col + HEAD_DIM];
-                        let mut dot = 0.0_f32;
-                        for d in 0..HEAD_DIM {
-                            dot += q_r[d] * k_r[d];
+                        // Eight sums side by side: one would be a chain of
+                        // dependent adds, which the compiler may not reorder.
+                        let mut sums = [0.0_f32; 8];
+                        for (qc, kc) in q_r.chunks_exact(8).zip(k_r.chunks_exact(8)) {
+                            for t in 0..8 {
+                                sums[t] += qc[t] * kc[t];
+                            }
                         }
-                        *s_val = dot;
+                        *s_val = sums.iter().sum();
                     }
                 }
             }
@@ -1410,9 +1479,11 @@ impl SenseModel {
             tokenizer,
             weights,
         };
-        let warmup_ids = [101u32; 256];
+        // Accelerate is slow on its first products; the fallback is not, and
+        // warming it would only hold up whoever loads the model.
+        #[cfg(target_os = "macos")]
         for _ in 0..2 {
-            let _ = model.forward_ids(&warmup_ids);
+            let _ = model.forward_ids(&[101u32; 256]);
         }
         Ok(model)
     }
@@ -2339,8 +2410,18 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         let bias =
             inits.get(bias_name).with_context(|| format!("missing {bias_name}"))?.to_f32_vec();
 
+        #[cfg(not(target_os = "macos"))]
+        let w_int: Vec<i16> = w_raw.iter().map(|&v| i16::from(v) - w_zp as i16).collect();
         let w_f32: Vec<f32> = w_raw.into_iter().map(|v| (v as f32) - w_zp).collect();
-        Ok(QuantLinear { in_dim, out_dim, w_f32, w_scale, bias })
+        Ok(QuantLinear {
+            in_dim,
+            out_dim,
+            w_f32,
+            #[cfg(not(target_os = "macos"))]
+            w_int,
+            w_scale,
+            bias,
+        })
     };
 
     let word_embeddings = dequant_emb("backbone.embeddings.word_embeddings.weight")?;
@@ -2387,7 +2468,15 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         qkv_bias.extend(k.bias.iter().map(|&b| b * ATTN_SCALE));
         qkv_bias.extend(v.bias.iter().copied());
 
-        let qkv = QuantLinear { in_dim, out_dim, w_f32: qkv_w, w_scale: 1.0_f32, bias: qkv_bias };
+        let qkv = QuantLinear {
+            in_dim,
+            out_dim,
+            w_f32: qkv_w,
+            #[cfg(not(target_os = "macos"))]
+            w_int: Vec::new(),
+            w_scale: 1.0_f32,
+            bias: qkv_bias,
+        };
 
         Ok(EncoderLayer {
             qkv,
