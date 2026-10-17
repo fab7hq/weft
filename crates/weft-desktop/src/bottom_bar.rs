@@ -16,6 +16,8 @@ pub struct BottomBarProps<'a> {
     pub state: &'a BottomBarState,
     pub clients: &'a [ProjectClient],
     pub selection: Option<&'a TreeSelection>,
+    /// The act put forward once the agent in front's turn has ended: outlined, never pressed.
+    pub suggested: Option<weft_core::board::Act>,
 }
 
 /// Render the bottom bar (`PendingBar` when active, or `TreeBar` otherwise).
@@ -415,7 +417,15 @@ fn render_remove_device_bar(device_id: &str, device_name: &str) -> Element {
 }
 
 fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
-    let btn = |layer: &str, label: &str, action: &str| {
+    use weft_core::board::Act;
+    // Eval put forward in teal, Seal in amber, as the guideline's outlined buttons.
+    let outline = |act: Act| match act {
+        Act::Eval if props.suggested == Some(Act::Eval) => Some(palette::TEAL),
+        Act::Seal if props.suggested == Some(Act::Seal) => Some(palette::AMBER),
+        _ => None,
+    };
+    let btn = |layer: &str, label: &str, action: &str, act: Act| {
+        let accent = outline(act);
         div()
             .layer(layer)
             .on_click(action)
@@ -425,8 +435,14 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
             .items_center()
             .justify_center()
             .bg(palette::SURFACE)
-            .border(palette::LINE)
-            .child(div().font_weight(600).font_size(13).text(label))
+            .border(accent.unwrap_or(palette::LINE))
+            .child(
+                div()
+                    .font_weight(600)
+                    .font_size(13)
+                    .color(accent.unwrap_or(palette::TEXT))
+                    .text(label),
+            )
     };
 
     let selected_label = match props.selection {
@@ -458,9 +474,9 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
         .items_center()
         .bg(palette::SURFACE_ALT)
         .border_top(palette::LINE)
-        .child(btn("btn Ask", words::word("act.ask"), "bar_act_ask"))
-        .child(btn("btn Eval", words::word("act.eval"), "bar_act_eval"))
-        .child(btn("btn Seal", words::word("act.seal"), "bar_act_seal"));
+        .child(btn("btn Ask", words::word("act.ask"), "bar_act_ask", Act::Ask))
+        .child(btn("btn Eval", words::word("act.eval"), "bar_act_eval", Act::Eval))
+        .child(btn("btn Seal", words::word("act.seal"), "bar_act_seal", Act::Seal));
 
     if let Some(sentence) = why_not {
         row = row.child(

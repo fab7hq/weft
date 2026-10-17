@@ -363,6 +363,22 @@ impl WeftDesktopApp {
         changed
     }
 
+    /// The act the bar puts forward for the agent in front's latest work,
+    /// once its turn has really ended.
+    pub fn suggested_act(&self) -> Option<Act> {
+        let t = self.active_tab()?;
+        let client = self.clients.iter().find(|c| c.root == t.project)?;
+        let row = client.sessions.iter().find(|r| r.pane == Some(t.pane))?;
+        let turn = client.view(t.pane).and_then(|v| v.turn).or(row.turn);
+        let of_session = |u: &&weft_core::ledger::Unit| {
+            u.session_ref.as_deref() == Some(row.id.as_str())
+                || u.arrived.as_ref().is_some_and(|a| a.session == row.id)
+        };
+        let unit =
+            client.units.iter().filter(of_session).max_by(|a, b| a.asked_at.cmp(&b.asked_at))?;
+        weft_core::board::suggested(unit, turn)
+    }
+
     /// What the agent in front's field shows after its caret, when its draft
     /// is the one it was asked for and the caret is at its end.
     pub fn ghost(&self) -> Option<&str> {
@@ -1763,6 +1779,7 @@ impl WeftDesktopApp {
                 state: &self.bottom_bar,
                 clients: &self.clients,
                 selection: self.selection.as_ref(),
+                suggested: self.suggested_act(),
             }))
     }
 }
@@ -2762,6 +2779,46 @@ pub(crate) mod tests {
         app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::TurnEnded);
         settle(&mut app, 1400);
         assert_eq!(asks(&app), 2);
+    }
+
+    #[test]
+    fn once_the_turn_has_ended_the_bar_outlines_the_next_act_for_the_agent_in_fronts_work() {
+        let (_tmp, mut app) = sample_app(false);
+        app.state.panes.groups.clear();
+        app.ensure_tab_in_active_pane(SavedPaneTab {
+            project: PathBuf::from("/work/weft"),
+            pane: 2,
+            view: Default::default(),
+        });
+        let outlined = |app: &WeftDesktopApp| {
+            let dom = app.render();
+            let bar = dom.find_layer("tree bar").expect("the bar").clone();
+            ["btn Ask", "btn Eval", "btn Seal"]
+                .into_iter()
+                .filter(|b| {
+                    bar.find_layer(b)
+                        .and_then(|e| style(e, "border"))
+                        .is_some_and(|v| v.contains(palette::TEAL) || v.contains(palette::AMBER))
+                })
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        // Its session's work went and nothing has judged it.
+        app.clients[0].units[0].session_ref = Some("s3".into());
+        app.clients[0].sessions[2].turn = Some(Turn::TurnEnded);
+        assert_eq!(app.suggested_act(), Some(Act::Eval));
+        assert_eq!(outlined(&app), ["btn Eval"]);
+        app.clients[0].units[0].check = Some(Check {
+            eval_id: "evl_9".into(),
+            verdict: Verdict::Matches,
+            agreement: 1.0,
+            judged_by: None,
+        });
+        assert_eq!(app.suggested_act(), Some(Act::Seal));
+        assert_eq!(outlined(&app), ["btn Seal"]);
+        app.clients[0].sessions[2].turn = Some(Turn::Working);
+        assert_eq!(app.suggested_act(), None, "still working");
+        assert!(outlined(&app).is_empty());
     }
 
     #[test]
