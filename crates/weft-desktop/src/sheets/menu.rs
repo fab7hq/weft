@@ -6,6 +6,7 @@ use weft_core::words::{self, fill, word};
 
 use crate::action::WindowAct;
 use crate::gpui::{Element, div, palette};
+use crate::keys::Shortcut;
 
 pub struct MenuProps<'a> {
     pub turbo: bool,
@@ -108,7 +109,7 @@ pub fn render_menu_popover(props: &MenuProps) -> Element {
         .panel_corners()
         .child(
             item("menu Open project", WindowAct::OpenProject, word("desktop.menu.open"))
-                .child(aside(crate::keys::hint("o"), palette::DIM)),
+                .child(aside(crate::keys::hint_here(Shortcut::OpenProject), palette::DIM)),
         )
         .child(switch(
             "menu Turbo",
@@ -152,6 +153,6 @@ pub fn render_menu_popover(props: &MenuProps) -> Element {
                 .child(
                     div().font_size(13).color(palette::BLUE_BORDER).text(word("desktop.menu.quit")),
                 )
-                .child(aside(crate::keys::hint("q"), palette::BLUE_BORDER)),
+                .child(aside(crate::keys::hint_here(Shortcut::Quit), palette::BLUE_BORDER)),
         )
 }

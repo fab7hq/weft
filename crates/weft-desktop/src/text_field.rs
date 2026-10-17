@@ -99,9 +99,14 @@ impl TextField {
         if self.reversed { self.selection.start } else { self.selection.end }
     }
 
-    /// Do what `chord` does, when it is a text key.
+    /// Do what `chord` does on this system, when it is a text key.
     pub fn key(&mut self, chord: &str) -> Option<Outcome> {
-        text_keys::edit(chord).map(|e| self.apply(e))
+        self.key_on(text_keys::System::this(), chord)
+    }
+
+    /// Do what `chord` does on `system`, when it is a text key.
+    pub fn key_on(&mut self, system: text_keys::System, chord: &str) -> Option<Outcome> {
+        text_keys::edit(system, chord).map(|e| self.apply(e))
     }
 
     pub fn apply(&mut self, edit: Edit) -> Outcome {
@@ -432,23 +437,23 @@ mod tests {
     }
 
     fn keys(f: &mut TextField, chords: &[&str]) -> Vec<Option<Outcome>> {
-        chords.iter().map(|c| f.key(c)).collect()
+        chords.iter().map(|c| f.key_on(text_keys::System::Mac, c)).collect()
     }
 
     #[test]
     fn in_a_message_enter_sends_and_shift_enter_adds_a_line() {
         let mut f = at(Shape::Area, "fix the bug|");
-        assert_eq!(f.key("shift-enter"), Some(Outcome::Changed));
+        assert_eq!(f.key_on(text_keys::System::Mac, "shift-enter"), Some(Outcome::Changed));
         f.type_text("then test");
         assert_eq!(shown(&f), "fix the bug\nthen test|");
-        assert_eq!(f.key("enter"), Some(Outcome::Send));
+        assert_eq!(f.key_on(text_keys::System::Mac, "enter"), Some(Outcome::Send));
         assert_eq!(f.text(), "fix the bug\nthen test", "sending is the holder's");
     }
 
     #[test]
     fn a_one_line_field_has_no_new_line_and_pastes_lines_as_spaces() {
         let mut f = at(Shape::Line, "find|");
-        assert_eq!(f.key("shift-enter"), Some(Outcome::Nothing));
+        assert_eq!(f.key_on(text_keys::System::Mac, "shift-enter"), Some(Outcome::Nothing));
         f.paste(" login\ntests\r\nnow");
         assert_eq!(shown(&f), "find login tests now|");
         let mut m = at(Shape::Area, "|");
@@ -459,57 +464,57 @@ mod tests {
     #[test]
     fn the_caret_moves_by_character_word_line_and_field() {
         let mut f = at(Shape::Area, "run the lo|gin tests\nand paste");
-        f.key("alt-left");
+        f.key_on(text_keys::System::Mac, "alt-left");
         assert_eq!(shown(&f), "run the |login tests\nand paste");
-        f.key("alt-left");
+        f.key_on(text_keys::System::Mac, "alt-left");
         assert_eq!(shown(&f), "run |the login tests\nand paste");
-        f.key("alt-right");
+        f.key_on(text_keys::System::Mac, "alt-right");
         assert_eq!(shown(&f), "run the| login tests\nand paste");
-        f.key("cmd-right");
+        f.key_on(text_keys::System::Mac, "cmd-right");
         assert_eq!(shown(&f), "run the login tests|\nand paste");
-        f.key("right");
+        f.key_on(text_keys::System::Mac, "right");
         assert_eq!(shown(&f), "run the login tests\n|and paste");
-        f.key("cmd-left");
+        f.key_on(text_keys::System::Mac, "cmd-left");
         assert_eq!(shown(&f), "run the login tests\n|and paste");
-        f.key("cmd-up");
+        f.key_on(text_keys::System::Mac, "cmd-up");
         assert_eq!(shown(&f), "|run the login tests\nand paste");
-        assert_eq!(f.key("left"), Some(Outcome::Nothing));
-        f.key("cmd-down");
+        assert_eq!(f.key_on(text_keys::System::Mac, "left"), Some(Outcome::Nothing));
+        f.key_on(text_keys::System::Mac, "cmd-down");
         assert_eq!(shown(&f), "run the login tests\nand paste|");
     }
 
     #[test]
     fn up_and_down_keep_the_column_and_stop_at_the_ends() {
         let mut f = at(Shape::Area, "run the login tests\nand pas|te\nok");
-        f.key("up");
+        f.key_on(text_keys::System::Mac, "up");
         assert_eq!(shown(&f), "run the| login tests\nand paste\nok");
-        f.key("down");
-        f.key("down");
+        f.key_on(text_keys::System::Mac, "down");
+        f.key_on(text_keys::System::Mac, "down");
         assert_eq!(
             shown(&f),
             "run the login tests\nand paste\nok|",
             "a short line takes the caret to its end"
         );
-        f.key("up");
+        f.key_on(text_keys::System::Mac, "up");
         assert_eq!(shown(&f), "run the login tests\nand pas|te\nok", "and the column comes back");
-        f.key("up");
-        f.key("up");
+        f.key_on(text_keys::System::Mac, "up");
+        f.key_on(text_keys::System::Mac, "up");
         assert_eq!(
             shown(&f),
             "|run the login tests\nand paste\nok",
             "up from the first line goes to its start"
         );
-        f.key("shift-down");
+        f.key_on(text_keys::System::Mac, "shift-down");
         assert_eq!(shown(&f), "[run the login tests\n]and paste\nok");
     }
 
     #[test]
     fn a_character_is_a_whole_grapheme() {
         let mut f = at(Shape::Area, "日本語|");
-        f.key("backspace");
+        f.key_on(text_keys::System::Mac, "backspace");
         assert_eq!(shown(&f), "日本|");
         let mut e = at(Shape::Area, "ok 👍🏽|");
-        e.key("left");
+        e.key_on(text_keys::System::Mac, "left");
         assert_eq!(shown(&e), "ok |👍🏽");
     }
 
@@ -520,43 +525,47 @@ mod tests {
         assert_eq!(shown(&f), "run the [login ]tests");
         f.type_text("unit ");
         assert_eq!(shown(&f), "run the unit |tests");
-        f.key("cmd-a");
+        f.key_on(text_keys::System::Mac, "cmd-a");
         assert_eq!(shown(&f), "[run the unit tests]");
-        f.key("left");
+        f.key_on(text_keys::System::Mac, "left");
         assert_eq!(shown(&f), "|run the unit tests", "left from a selection goes to its start");
-        f.key("shift-cmd-right");
-        f.key("shift-left");
+        f.key_on(text_keys::System::Mac, "shift-cmd-right");
+        f.key_on(text_keys::System::Mac, "shift-left");
         assert_eq!(shown(&f), "[run the unit test]s");
     }
 
     #[test]
     fn deleting_by_character_word_and_line() {
         let mut f = at(Shape::Area, "one\nrun the login| tests");
-        f.key("alt-backspace");
+        f.key_on(text_keys::System::Mac, "alt-backspace");
         assert_eq!(shown(&f), "one\nrun the | tests");
-        f.key("delete");
+        f.key_on(text_keys::System::Mac, "delete");
         assert_eq!(shown(&f), "one\nrun the |tests");
-        f.key("alt-delete");
+        f.key_on(text_keys::System::Mac, "alt-delete");
         assert_eq!(shown(&f), "one\nrun the |");
-        f.key("cmd-backspace");
+        f.key_on(text_keys::System::Mac, "cmd-backspace");
         assert_eq!(shown(&f), "one\n|");
-        f.key("backspace");
+        f.key_on(text_keys::System::Mac, "backspace");
         assert_eq!(shown(&f), "one|");
         let mut s = at(Shape::Area, "|run the login tests");
         s.select(4..13);
-        s.key("backspace");
+        s.key_on(text_keys::System::Mac, "backspace");
         assert_eq!(shown(&s), "run | tests");
     }
 
     #[test]
     fn copy_cut_and_paste_go_through_the_holder() {
         let mut f = at(Shape::Area, "run the |login tests");
-        assert_eq!(f.key("cmd-c"), Some(Outcome::Nothing), "nothing selected");
-        f.key("alt-shift-right");
-        assert_eq!(f.key("cmd-c"), Some(Outcome::Copy("login".into())));
-        assert_eq!(f.key("cmd-x"), Some(Outcome::Copy("login".into())));
+        assert_eq!(
+            f.key_on(text_keys::System::Mac, "cmd-c"),
+            Some(Outcome::Nothing),
+            "nothing selected"
+        );
+        f.key_on(text_keys::System::Mac, "alt-shift-right");
+        assert_eq!(f.key_on(text_keys::System::Mac, "cmd-c"), Some(Outcome::Copy("login".into())));
+        assert_eq!(f.key_on(text_keys::System::Mac, "cmd-x"), Some(Outcome::Copy("login".into())));
         assert_eq!(shown(&f), "run the | tests");
-        assert_eq!(f.key("cmd-v"), Some(Outcome::Paste));
+        assert_eq!(f.key_on(text_keys::System::Mac, "cmd-v"), Some(Outcome::Paste));
         f.paste("unit");
         assert_eq!(shown(&f), "run the unit| tests");
     }
@@ -567,26 +576,26 @@ mod tests {
         for c in ["r", "u", "n", " ", "i", "t"] {
             f.type_text(c);
         }
-        assert_eq!(f.key("cmd-z"), Some(Outcome::Changed));
+        assert_eq!(f.key_on(text_keys::System::Mac, "cmd-z"), Some(Outcome::Changed));
         assert_eq!(shown(&f), "run |");
-        f.key("cmd-z");
+        f.key_on(text_keys::System::Mac, "cmd-z");
         assert_eq!(shown(&f), "|");
-        assert_eq!(f.key("cmd-z"), Some(Outcome::Nothing));
-        f.key("shift-cmd-z");
+        assert_eq!(f.key_on(text_keys::System::Mac, "cmd-z"), Some(Outcome::Nothing));
+        f.key_on(text_keys::System::Mac, "shift-cmd-z");
         assert_eq!(shown(&f), "run |");
-        f.key("shift-cmd-z");
+        f.key_on(text_keys::System::Mac, "shift-cmd-z");
         assert_eq!(shown(&f), "run it|");
         // A new change ends what redo could bring back.
-        f.key("cmd-z");
+        f.key_on(text_keys::System::Mac, "cmd-z");
         f.type_text("x");
-        assert_eq!(f.key("shift-cmd-z"), Some(Outcome::Nothing));
+        assert_eq!(f.key_on(text_keys::System::Mac, "shift-cmd-z"), Some(Outcome::Nothing));
     }
 
     #[test]
     fn tab_and_escape_are_for_the_suggestion() {
         let mut f = at(Shape::Area, "run|");
-        assert_eq!(f.key("tab"), Some(Outcome::Take));
-        assert_eq!(f.key("escape"), Some(Outcome::Drop));
-        assert_eq!(f.key("ctrl-q"), None, "not a text key");
+        assert_eq!(f.key_on(text_keys::System::Mac, "tab"), Some(Outcome::Take));
+        assert_eq!(f.key_on(text_keys::System::Mac, "escape"), Some(Outcome::Drop));
+        assert_eq!(f.key_on(text_keys::System::Mac, "ctrl-q"), None, "not a text key");
     }
 }

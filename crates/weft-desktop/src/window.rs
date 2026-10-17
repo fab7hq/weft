@@ -19,11 +19,13 @@ use ::gpui::{
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
+use weft_core::text_keys::System;
 
 use crate::action::{Action, Focus, SheetAct, WindowAct};
 use crate::app::WeftDesktopApp;
 use crate::daemon::ProjectClient;
 use crate::gpui::{Element, palette};
+use crate::keys::{self, Shortcut};
 use crate::terminal_input::{self, Act, Button, Held};
 use crate::text_field::{Outcome, TextField};
 use crate::text_input::{self as field_view, FieldElement, Look, Painted};
@@ -332,67 +334,71 @@ impl GpuiDesktopView {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &event.keystroke;
-        let key = ks.key.as_str();
         let mods = ks.modifiers;
         let typing = self.shared.lock().map(|g| g.app.focus != Focus::Terminal).unwrap_or(false);
+        let shortcut = keys::shortcut(System::this(), &chord(ks));
 
         // A text field takes its keys from the table; a character goes on to
-        // the window's text input, which an input method composes.
+        // the window's text input, which an input method composes. The
+        // window's own shortcuts still work there.
         if typing {
             if self.field_key(event, cx) {
                 cx.stop_propagation();
             }
-            if !(mods.platform && matches!(key, "q" | "o" | "b")) {
+            if !matches!(
+                shortcut,
+                Some(Shortcut::Quit | Shortcut::OpenProject | Shortcut::ToggleList)
+            ) {
                 return;
             }
         }
 
-        if mods.platform {
-            let action = match key.to_ascii_lowercase().as_str() {
-                "q" => Some(Action::from(WindowAct::RequestQuit)),
-                "o" => Some(Action::from(WindowAct::OpenProject)),
-                "b" => Some(Action::from(WindowAct::ToggleSidebar)),
-                "c" => {
-                    let text = self.shared.lock().ok().and_then(|mut guard| {
-                        guard.app.active_pane_view_mut().and_then(|p| p.selection_text())
-                    });
-                    if let Some(text) = text {
-                        cx.write_to_clipboard(ClipboardItem::new_string(text));
-                    }
-                    return;
+        let action = match shortcut {
+            Some(Shortcut::Quit) => Action::from(WindowAct::RequestQuit),
+            Some(Shortcut::OpenProject) => Action::from(WindowAct::OpenProject),
+            Some(Shortcut::ToggleList) => Action::from(WindowAct::ToggleSidebar),
+            Some(Shortcut::Copy) => {
+                let text = self.shared.lock().ok().and_then(|mut guard| {
+                    guard.app.active_pane_view_mut().and_then(|p| p.selection_text())
+                });
+                if let Some(text) = text {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
-                "v" => {
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
-                        && let Ok(mut guard) = self.shared.lock()
+                return;
+            }
+            Some(Shortcut::Paste) => {
+                if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text())
+                    && let Ok(mut guard) = self.shared.lock()
+                {
+                    let bracketed =
+                        guard.app.active_pane_view_mut().is_some_and(|p| p.bracketed_paste());
+                    let bytes = terminal_input::paste(&text, bracketed);
+                    guard.app.send_active_pane_input(&bytes);
+                }
+                return;
+            }
+            None => {
+                // Terminal input, as the program's modes say keys are sent.
+                let held = Held {
+                    shift: mods.shift,
+                    alt: mods.alt,
+                    control: mods.control,
+                    platform: mods.platform,
+                };
+                if let Ok(mut guard) = self.shared.lock() {
+                    let modes =
+                        guard.app.active_pane_view_mut().map(|p| p.modes()).unwrap_or_default();
+                    if let Some(bytes) =
+                        terminal_input::key(&ks.key, ks.key_char.as_deref(), held, modes)
                     {
-                        let bracketed =
-                            guard.app.active_pane_view_mut().is_some_and(|p| p.bracketed_paste());
-                        let bytes = terminal_input::paste(&text, bracketed);
                         guard.app.send_active_pane_input(&bytes);
                     }
-                    return;
                 }
-                _ => None,
-            };
-            if let Some(action) = action {
-                return self.dispatch_action(action, window, cx);
+                cx.notify();
+                return;
             }
-        }
-
-        // Terminal input, as the program's modes say keys are sent.
-        let held = Held {
-            shift: mods.shift,
-            alt: mods.alt,
-            control: mods.control,
-            platform: mods.platform,
         };
-        if let Ok(mut guard) = self.shared.lock() {
-            let modes = guard.app.active_pane_view_mut().map(|p| p.modes()).unwrap_or_default();
-            if let Some(bytes) = terminal_input::key(key, ks.key_char.as_deref(), held, modes) {
-                guard.app.send_active_pane_input(&bytes);
-            }
-        }
-        cx.notify();
+        self.dispatch_action(action, window, cx);
     }
 
     /// A key in the focused text field, as the key table says; whether it was one.
@@ -1193,6 +1199,7 @@ mod tests {
     use super::*;
     use crate::app::tests::{Wire, start, wired_app};
     use ::gpui::{TestAppContext, VisualTestContext};
+    use weft_core::text_keys::Edit;
 
     /// The desktop's view in a window without a screen, a pane open and the message row focused.
     fn opened(
@@ -1243,6 +1250,11 @@ mod tests {
             .unwrap();
     }
 
+    /// This system's key for `edit`, as a test types it.
+    fn key(edit: Edit) -> &'static str {
+        weft_core::text_keys::keys(System::this()).find(|(_, e)| *e == edit).expect("a key").0
+    }
+
     fn message(shared: &Arc<Mutex<SharedState>>) -> String {
         shared.lock().unwrap().app.message_field().text().to_string()
     }
@@ -1255,9 +1267,13 @@ mod tests {
             cx.simulate_keystrokes("shift-enter");
             cx.simulate_input("then test it");
             assert_eq!(message(&shared), "fix 日本\nthen test it");
-            cx.simulate_keystrokes("alt-left alt-backspace");
+            cx.simulate_keystrokes(&format!(
+                "{} {}",
+                key(Edit::WordLeft),
+                key(Edit::DeleteWordBack)
+            ));
             assert_eq!(message(&shared), "fix 日本\nthen it");
-            cx.simulate_keystrokes("cmd-z");
+            cx.simulate_keystrokes(key(Edit::Undo));
             assert_eq!(message(&shared), "fix 日本\nthen test it");
             cx.simulate_keystrokes("enter");
             assert_eq!(message(&shared), "", "sent");
@@ -1280,7 +1296,7 @@ mod tests {
         windowed(|cx| {
             let (_tmp, shared, cx) = opened(cx);
             cx.write_to_clipboard(ClipboardItem::new_string("one\ntwo".into()));
-            cx.simulate_keystrokes("cmd-v");
+            cx.simulate_keystrokes(key(Edit::Paste));
             assert_eq!(message(&shared), "one\ntwo");
             shared.lock().unwrap().app.search.paste("one\ntwo");
             assert_eq!(shared.lock().unwrap().app.search.text(), "one two");
