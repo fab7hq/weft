@@ -297,11 +297,48 @@ fn is_release_tag(tag: &str) -> bool {
         .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
 }
 
+/// What updates the Weft at `exe`.
+#[derive(Debug, PartialEq, Eq)]
+enum Updater {
+    /// Weft's own installer, which keeps each version in `~/.fab7/weft/versions`.
+    Installer,
+    /// Homebrew, whose cask put Weft.app where it is.
+    Homebrew,
+}
+
+impl Updater {
+    /// What to tell the person instead of updating, when it is not Weft's.
+    fn says(&self) -> Option<&'static str> {
+        match self {
+            Updater::Installer => None,
+            Updater::Homebrew => Some("Run: brew upgrade --cask weft"),
+        }
+    }
+}
+
+/// A Weft.app outside `~/.fab7/weft/versions` came from Homebrew; anything
+/// else is updated as Weft's installer put it there.
+fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
+    let in_app = exe.parent().is_some_and(|d| d.ends_with("Contents/MacOS"));
+    if in_app && !exe.starts_with(home.join(".fab7/weft/versions")) {
+        Updater::Homebrew
+    } else {
+        Updater::Installer
+    }
+}
+
 /// Replace this Weft with the latest release, with that release's own
 /// installer, pinned to it: never `main`'s, which no release has vouched for.
-/// Restarting is the person's.
+/// Restarting is the person's. One Homebrew installed is Homebrew's to update.
 fn update() -> Result<()> {
     let now = env!("CARGO_PKG_VERSION");
+    if let (Some(home), Ok(exe)) =
+        (std::env::var_os("HOME"), std::env::current_exe().and_then(|e| e.canonicalize()))
+        && let Some(say) = updated_by(&exe, std::path::Path::new(&home)).says()
+    {
+        println!("{say}");
+        return Ok(());
+    }
     let Some(tag) = latest_release() else {
         anyhow::bail!("could not reach the latest release");
     };
@@ -361,6 +398,19 @@ fn after_update(socket: &std::path::Path, version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_weft_homebrew_installed_is_updated_by_homebrew() {
+        let home = std::path::Path::new("/Users/p");
+        let installed = home.join(".fab7/weft/versions/0.5.0/Weft.app/Contents/MacOS/weft");
+        assert_eq!(updated_by(&installed, home), Updater::Installer);
+        let linux = home.join(".fab7/weft/versions/0.5.0/weft");
+        assert_eq!(updated_by(&linux, home), Updater::Installer);
+        let cask = std::path::Path::new("/Applications/Weft.app/Contents/MacOS/weft");
+        assert_eq!(updated_by(cask, home), Updater::Homebrew);
+        assert_eq!(Updater::Homebrew.says(), Some("Run: brew upgrade --cask weft"));
+        assert_eq!(Updater::Installer.says(), None);
+    }
 
     #[test]
     fn only_a_release_tag_is_updated_to() {
