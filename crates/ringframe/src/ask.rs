@@ -473,6 +473,21 @@ fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
     Ok(())
 }
 
+/// The id a request names as the one it follows: `[follow-up <id>]` in front
+/// of the person's words, after any `--override '<json>'`.
+fn follow_up_marker(source: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(source);
+    let mut rest = text.trim_start();
+    if let Some(after) = rest.strip_prefix("--override '")
+        && let Some(end) = after.find('\'')
+    {
+        rest = after[end + 1..].trim_start();
+    }
+    let inner = rest.strip_prefix("[follow-up ")?;
+    let id = inner[..inner.find(']')?].trim();
+    (!id.is_empty()).then(|| id.to_string())
+}
+
 /// What a request is titled until its compile names it: the first line the
 /// person wrote, without the `--override '<json>'` or `[follow-up <id>]` a
 /// tool that runs RingFrame may put in front of it, cut to 72 characters.
@@ -574,11 +589,17 @@ pub fn request_staged(ws: &Workspace, staged: &Path, host: &Value) -> Result<Val
 /// The only Ask operation that writes artifacts. Appends `ask.compiled`.
 pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
-    check_links(ws, &args.links)?;
     // Staging is read and then deleted, so it has to be inside the directory
     // RingFrame was opened in. The skill already stages under `.fab7/rf/tmp/`.
     let staged = workspace::within(ws, args.staged)?;
     let (source, form, mut prompt) = read_staged(&staged)?;
+    // A request marked as a follow-up is linked to what it follows, whether
+    // or not the agent that composed it passed the link.
+    let links = match follow_up_marker(&source) {
+        Some(id) if args.links.is_empty() => vec![json!({"rel": "follows", "id": id})],
+        _ => args.links.clone(),
+    };
+    check_links(ws, &links)?;
     let from_source = source_override(&source)?;
     let overrides = from_source.as_ref().unwrap_or(args.overrides);
     let classification = normalize_classification(&args.classification);
@@ -674,7 +695,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
     // A remedy starts from what was found, whichever harness runs it. The line
     // is the CLI's, so it does not depend on a model remembering the path, and
     // it goes after the command so a `/goal` still reads as one.
-    if let Some(l) = args.links.iter().find(|l| str_of(l, "rel") == "remediates") {
+    if let Some(l) = links.iter().find(|l| str_of(l, "rel") == "remediates") {
         let line = format!(
             "Read .fab7/rf/evals/{}/eval.md first: it lists what the last Eval found.\n",
             str_of(l, "id")
@@ -769,7 +790,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
         "delivery": delivery_block(&profile, &cap, &prompt),
         "compiler": compiler, "base_commit": head(ws), "baselines": baselines,
     });
-    let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &args.links);
+    let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &links);
     schema::validate_event(&ev)?;
     if requested.is_none() {
         let wrote = store::publish(ws, &str_of(&source_ref, "path"), &source, "source_intent")?;
@@ -1620,6 +1641,28 @@ mod tests {
 
     fn link(rel: &str, id: &str) -> Vec<Value> {
         vec![json!({"rel": rel, "id": id})]
+    }
+
+    /// What the person asked as a follow-up says so: `[follow-up <id>]` in
+    /// front of their words links the Ask to what it follows, whether or not
+    /// the agent that composed it passed the link.
+    #[test]
+    fn a_request_marked_as_a_follow_up_is_linked_to_what_it_follows() {
+        bench(|ws| {
+            let first = str_of(&compile_with(ws, Args::default()).unwrap(), "ask_id");
+            let marked = format!("[follow-up {first}] also cover the expired token\n");
+            let staged = stage_named(ws, "prompt.txt", marked.as_bytes(), b"Cover it.\n");
+            let next =
+                compile_with(ws, Args { staged: Some(staged), ..Default::default() }).unwrap();
+            let compiled =
+                events(ws).into_iter().rev().find(|e| e["type"] == "ask.compiled").unwrap();
+            assert_eq!(compiled["links"], json!([{"rel": "follows", "id": first}]));
+            assert_eq!(crate::ask::unit_of(ws, &str_of(&next, "ask_id")).unwrap().len(), 2);
+            // A marker naming nothing here is refused, as a link would be.
+            let bad = stage_named(ws, "prompt.txt", b"[follow-up ask_gone] more\n", b"More.\n");
+            let e = compile_with(ws, Args { staged: Some(bad), ..Default::default() }).unwrap_err();
+            assert!(e.to_string().contains("ask.link_unknown"), "{e}");
+        });
     }
 
     /// An Eval over the bench's two open Asks, opened and closed.
