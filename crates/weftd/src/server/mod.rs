@@ -48,6 +48,22 @@ use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 /// The most lines of a pane's history one `read` answers.
 const HISTORY_MAX: usize = 2_000;
 
+/// The longest a write to a client may wait on it. One that stops reading is
+/// let go after this: the daemon is one loop, and everything waits with it.
+const CLIENT_WRITE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Send a line to a client: false when it has gone or stopped reading. Then
+/// nothing more is written to it, and it reads the end of what it was sent,
+/// so it knows it was let go. What it wrote is still read: a signal's
+/// connection closes as soon as it has written.
+fn deliver(s: &mut UnixStream, wire: &[u8]) -> bool {
+    let sent = weft_proto::send(s, wire).is_ok();
+    if !sent {
+        let _ = s.shutdown(std::net::Shutdown::Write);
+    }
+    sent
+}
+
 /// At most one `presence` in this long.
 const PRESENCE_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -241,15 +257,13 @@ impl Clients {
     fn broadcast(&mut self, project: usize, event: &Out) {
         let wire = Line::Event(event.clone()).encode();
         let watching = &self.watching;
-        self.sinks.retain(|id, s| {
-            watching.get(id) != Some(&project) || weft_proto::send(s, &wire).is_ok()
-        });
+        self.sinks.retain(|id, s| watching.get(id) != Some(&project) || deliver(s, &wire));
     }
 
     /// Send to every client, whatever project it watches, or none.
     fn broadcast_all(&mut self, event: &Out) {
         let wire = Line::Event(event.clone()).encode();
-        self.sinks.retain(|_, s| weft_proto::send(s, &wire).is_ok());
+        self.sinks.retain(|_, s| deliver(s, &wire));
     }
 
     fn named(&self, client: u64, name: &str) -> bool {
@@ -274,16 +288,14 @@ impl Clients {
         let wire = Line::Event(Out::Output { pane, seq, bytes }).encode();
         let (watching, quiet) = (&self.watching, &self.quiet);
         self.sinks.retain(|id, s| {
-            watching.get(id) != Some(&project)
-                || quiet.contains(id)
-                || weft_proto::send(s, &wire).is_ok()
+            watching.get(id) != Some(&project) || quiet.contains(id) || deliver(s, &wire)
         });
     }
 
     fn send_to(&mut self, id: u64, line: &Line) {
         let wire = line.encode();
         if let Some(s) = self.sinks.get_mut(&id)
-            && weft_proto::send(s, &wire).is_err()
+            && !deliver(s, &wire)
         {
             self.sinks.remove(&id);
         }
@@ -873,6 +885,9 @@ impl Session {
     }
 
     fn accept(&mut self, stream: UnixStream) {
+        // Refused on some systems once the other end has closed, as a
+        // signal's connection does once it has written: it is read all the same.
+        let _ = stream.set_write_timeout(Some(CLIENT_WRITE));
         let Ok(reading) = stream.try_clone() else { return };
         let id = self.clients.add(stream);
         let tx = self.tx.clone();

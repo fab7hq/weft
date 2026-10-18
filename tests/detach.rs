@@ -403,6 +403,28 @@ fn two_clients_see_the_same_session_at_once() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// A window that stops reading is let go, not waited on: the daemon is one
+/// loop, and every other window would wait with it.
+#[test]
+fn a_client_that_stops_reading_is_dropped_and_the_rest_still_hear() {
+    let (root, socket) = session("stalled");
+    let mut stuck = Client::attach(&socket, &root);
+    let mut live = Client::attach(&socket, &root);
+    live.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    live.wait_for_added();
+    // Far more than a socket holds for a reader that never reads.
+    let flood = b"head -c 400000 /dev/zero | tr '\\0' x; printf '\\nflood%s\\n' ed\n";
+    live.send(Call::Input { pane: 0, bytes: flood.to_vec() });
+    assert!(live.wait_for("flooded", 20).contains("flooded"), "the reading window heard it all");
+    live.answer(Call::Hello { client: "test".into(), protocol: PROTOCOL }).expect("answered");
+    // A connection the daemon has shut refuses a timeout on some systems.
+    let _ = stuck.stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut rest = Vec::new();
+    use std::io::Read as _;
+    let _ = stuck.stream.read_to_end(&mut rest);
+    assert!(rest.len() < 400_000, "the stuck window was let go, its connection ended");
+}
+
 #[test]
 fn a_socket_left_behind_by_a_dead_server_does_not_block_a_new_one() {
     let root = std::env::temp_dir().join(format!("weft-stale-{}", std::process::id()));
