@@ -261,7 +261,7 @@ pub(super) fn render_view(
     let rows =
         view.as_ref().map(|v| eval_view::rows(v, mode, &Default::default())).unwrap_or_default();
     let crumb = match (at.len(), &view) {
-        (0, _) | (_, None) => word("web.detail.title").to_string(),
+        (0, _) | (_, None) => props.back.unwrap_or(word("web.detail.title")).to_string(),
         (n, Some(v)) => title_of(v, &rows, at.get(n.wrapping_sub(2)).filter(|_| n >= 2)),
     };
     let head = div()
@@ -284,9 +284,12 @@ pub(super) fn render_view(
     let mut body = div().self_stretch().flex_1().flex_col().style("overflow-y", "auto");
     match (&view, at.last()) {
         (None, _) => {
-            body = body.child(
-                div().pad(18, 20).child(note(word("desktop.eval.no_record"), palette::MUTED)),
-            )
+            // Not judged, it has no record to show; else it is still to come.
+            let judged = client.is_some_and(|c| {
+                c.work.record.evals.iter().any(|e| e.id == eval_id && e.completed())
+            });
+            let said = if judged { "desktop.eval.no_record" } else { "desktop.eval.not_judged" };
+            body = body.child(div().pad(18, 20).child(note(word(said), palette::MUTED)))
         }
         (Some(v), None) => {
             let header = v.header();

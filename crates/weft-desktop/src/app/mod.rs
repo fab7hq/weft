@@ -151,6 +151,9 @@ pub struct WeftDesktopApp {
     pub layout_menu_pane: Option<usize>,
     pub unfolded_sealed: HashSet<PathBuf>,
     pub unfolded_earlier: HashSet<PathBuf>,
+    /// The Details a stage was opened from, the nearest last, each with its
+    /// name: what `‹` goes back to.
+    pub sheet_back: Vec<(ActiveSheet, String)>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: HashSet<(PathBuf, u32, usize)>,
     /// Each agent's message field, by its project and pane: switching
@@ -211,6 +214,7 @@ impl WeftDesktopApp {
             layout_menu_pane: None,
             unfolded_sealed: HashSet::new(),
             unfolded_earlier: HashSet::new(),
+            sheet_back: Vec::new(),
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
@@ -337,8 +341,30 @@ impl WeftDesktopApp {
         if changed {
             self.offer_allow();
             self.offer_updates();
+            self.drop_gone_tabs();
         }
         self.suggest_tick(std::time::Instant::now()) || changed
+    }
+
+    /// A tab of a pane its project's daemon does not have, once it has said
+    /// which it has, goes: a tab is an agent of its project.
+    pub(crate) fn drop_gone_tabs(&mut self) {
+        let gone = |t: &SavedPaneTab| {
+            self.clients.iter().any(|c| c.root == t.project && c.opened && c.view(t.pane).is_none())
+        };
+        let panes = &mut self.state.panes;
+        let before: usize = panes.groups.iter().map(|g| g.tabs.len()).sum();
+        for g in &mut panes.groups {
+            g.tabs.retain(|t| !gone(t));
+            g.active_tab = g.active_tab.min(g.tabs.len().saturating_sub(1));
+        }
+        if panes.groups.len() > 1 {
+            panes.groups.retain(|g| !g.tabs.is_empty());
+        }
+        panes.focused_group = panes.focused_group.min(panes.groups.len().saturating_sub(1));
+        if panes.groups.iter().map(|g| g.tabs.len()).sum::<usize>() != before {
+            let _ = self.save_state();
+        }
     }
 
     /// Nothing is set up and something could be: Updates opens by itself,
@@ -904,6 +930,7 @@ impl WeftDesktopApp {
                 ask_draft: self.ask.text(),
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
+                back: self.sheet_back.last().map(|(_, name)| name.as_str()),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

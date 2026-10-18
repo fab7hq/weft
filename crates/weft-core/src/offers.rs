@@ -403,7 +403,7 @@ pub fn unit_detail(
     for id in &u.evals {
         let Some(e) = record.evals.iter().find(|e| &e.id == id) else { continue };
         let aside = match &e.completed_at {
-            None => word("tree.judging").to_string(),
+            None => fill("unit.opened", &[("time", &clock(&e.opened_at))]),
             Some(t) => {
                 let mut line = fill("unit.judged", &[("time", &clock(t))]);
                 if let Some(r) = judges(&e.id) {

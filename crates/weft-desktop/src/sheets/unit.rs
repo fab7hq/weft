@@ -57,7 +57,6 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
         )
         .child(div().font_size(12).color(palette::MUTED).text(d.aside.clone()));
 
-    let to = |t: TreeAct| t;
     let at = project.to_path_buf();
     let mut n = 0;
     let steps: Vec<Element> = d
@@ -65,73 +64,70 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
         .iter()
         .map(|s| {
             n += 1;
-            let (label, text, aside, open): (String, Element, Option<String>, Option<Element>) =
-                match s {
-                    Step::Ask { unit, title, follow_up, aside } => (
-                        word(if *follow_up { "act.follow_up" } else { "act.ask" }).into(),
-                        div().font_size(14).text(title.clone()),
-                        Some(aside.clone()),
-                        Some(chevron(to(TreeAct::SelectAsk {
-                            project: at.clone(),
-                            unit: unit.clone(),
-                        }))),
-                    ),
-                    Step::Eval { eval, n, verdict, agreement, aside } => {
-                        let said = match verdict {
-                            Some(v) => div()
-                                .flex_row()
-                                .gap(4)
-                                .child(
-                                    div()
-                                        .font_size(14)
-                                        .color(verdict_colour(v))
-                                        .text(word(&format!("verdict.{v}")).to_string()),
-                                )
-                                .child(div().font_size(14).text(match agreement {
-                                    Some(a) => format!(
-                                        "· {}",
-                                        fill("unit.confidence", &[("agreement", a)])
-                                    ),
-                                    None => String::new(),
-                                })),
-                            None => div()
-                                .font_size(14)
-                                .color(palette::BLUE_BORDER)
-                                .text(word("tree.judging")),
-                        };
-                        (
-                            fill("tree.eval", &[("n", &n.to_string())]),
-                            said,
-                            Some(aside.clone()),
-                            Some(
+            // The whole row opens its stage; the right side says so, or is the Eval view's link.
+            type Row = (String, Element, Option<String>, Option<TreeAct>, Option<Element>);
+            let (label, text, aside, opens, right): Row = match s {
+                Step::Ask { unit, title, follow_up, aside } => (
+                    word(if *follow_up { "act.follow_up" } else { "act.ask" }).into(),
+                    div().font_size(14).text(title.clone()),
+                    Some(aside.clone()),
+                    Some(TreeAct::SelectAsk { project: at.clone(), unit: unit.clone() }),
+                    Some(chevron()),
+                ),
+                Step::Eval { eval, n, verdict, agreement, aside } => {
+                    let said = match verdict {
+                        Some(v) => div()
+                            .flex_row()
+                            .gap(4)
+                            .child(
                                 div()
-                                    .on_click(SheetAct::EvalView {
-                                        project: at.clone(),
-                                        eval: eval.clone(),
-                                    })
-                                    .shrink_0()
-                                    .font_size(13)
-                                    .color(palette::BLUE_BORDER)
-                                    .text(format!("{} ›", word("act.eval_view"))),
-                            ),
-                        )
-                    }
-                    Step::Seal { seal, decision, aside, .. } => (
-                        word("act.seal").into(),
-                        div().font_size(14).text(decision.clone()),
+                                    .font_size(14)
+                                    .color(verdict_colour(v))
+                                    .text(word(&format!("verdict.{v}")).to_string()),
+                            )
+                            .child(div().font_size(14).text(match agreement {
+                                Some(a) => {
+                                    format!("· {}", fill("unit.confidence", &[("agreement", a)]))
+                                }
+                                None => String::new(),
+                            })),
+                        None => {
+                            div().font_size(14).color(palette::AMBER).text(word("tree.judging"))
+                        }
+                    };
+                    (
+                        fill("tree.eval", &[("n", &n.to_string())]),
+                        said,
                         Some(aside.clone()),
-                        Some(chevron(to(TreeAct::SelectSeal {
-                            project: at.clone(),
-                            seal: seal.clone(),
-                        }))),
-                    ),
-                    Step::NotSealed => (
-                        word("act.seal").into(),
-                        div().font_size(14).color(palette::DIM).text(word("unit.not_sealed")),
-                        None,
-                        None,
-                    ),
-                };
+                        Some(TreeAct::SelectEval { project: at.clone(), eval: eval.clone() }),
+                        Some(
+                            div()
+                                .on_click(SheetAct::EvalView {
+                                    project: at.clone(),
+                                    eval: eval.clone(),
+                                })
+                                .shrink_0()
+                                .font_size(13)
+                                .color(palette::BLUE_BORDER)
+                                .text(format!("{} ›", word("act.eval_view"))),
+                        ),
+                    )
+                }
+                Step::Seal { seal, decision, aside, .. } => (
+                    word("act.seal").into(),
+                    div().font_size(14).text(decision.clone()),
+                    Some(aside.clone()),
+                    Some(TreeAct::SelectSeal { project: at.clone(), seal: seal.clone() }),
+                    Some(chevron()),
+                ),
+                Step::NotSealed => (
+                    word("act.seal").into(),
+                    div().font_size(14).color(palette::DIM).text(word("unit.not_sealed")),
+                    None,
+                    None,
+                    None,
+                ),
+            };
             let mut col = div()
                 .flex_1()
                 .style("min-width", "0")
@@ -159,8 +155,11 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
                         .text(n.to_string()),
                 )
                 .child(col);
-            if let Some(open) = open {
-                step = step.child(open);
+            if let Some(act) = opens {
+                step = step.on_click(act);
+            }
+            if let Some(right) = right {
+                step = step.child(right);
             }
             step
         })
@@ -205,8 +204,8 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
     sheet("sheet Unit", head, body, sheet_foot(left, vec![close_button()]))
 }
 
-fn chevron(action: TreeAct) -> Element {
-    div().on_click(action).shrink_0().font_size(12).color(palette::DIM).text("›")
+fn chevron() -> Element {
+    div().shrink_0().font_size(12).color(palette::DIM).text("›")
 }
 
 fn verdict_colour(v: &str) -> &'static str {

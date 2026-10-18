@@ -1016,7 +1016,13 @@ impl Session {
                     );
                     // Weft gathers: RingFrame reads the change, and only the
                     // debate goes to a harness.
-                    let eval_id = match &unit.gathered {
+                    // It goes on with the unit's own open Eval; one opened over
+                    // other work too is left, and RingFrame opens the unit's.
+                    let own = unit
+                        .gathered
+                        .as_ref()
+                        .filter(|g| mine.is_some_and(|u| work.goes_on_with(u, &g.eval_id)));
+                    let eval_id = match own {
                         Some(g) => g.eval_id.clone(),
                         None => {
                             let agents = weft_core::eval_stages::agents(&debate);

@@ -323,6 +323,9 @@ pub struct ProjectClient {
     pub remote: Option<Value>,
     pub records: Value,
     pub work: Work,
+    /// The daemon has said which panes the project has: a tab of any other is
+    /// gone.
+    pub opened: bool,
     pub boards: u64,
     pub routing: Routing,
     pub gap: Option<String>,
@@ -392,6 +395,7 @@ impl ProjectClient {
             remote: None,
             records: serde_json::json!({}),
             work: Default::default(),
+            opened: false,
             boards: 0,
             routing: Routing::default(),
             gap: None,
@@ -510,6 +514,7 @@ impl ProjectClient {
     fn take_opened(&mut self, opened: &Value) {
         if let Some(panes) = opened.get("panes").and_then(weft_proto::panes_of) {
             self.panes = panes.into_iter().map(PaneView::of).collect();
+            self.opened = true;
         }
         if let Some(units) = opened.get("units").cloned() {
             self.units = serde_json::from_value(units).unwrap_or_default();

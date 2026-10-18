@@ -642,6 +642,56 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     );
 }
 
+/// A step row opens its stage, and the stage leads back to its unit; so
+/// does the Eval view opened from it.
+#[test]
+fn a_units_stage_opens_from_its_row_and_leads_back_to_it() {
+    let (_tmp, mut app) = sample_app(false);
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_3".into() });
+    let dom = app.render();
+    let step = dom.find_layer("step 1").expect("the Ask's step");
+    assert!(step.action.is_some(), "the whole row opens it");
+    assert!(dom.find_layer("step 2").and_then(|s| s.action.clone()).is_some(), "the Eval's too");
+    app.dispatch(TreeAct::SelectAsk { project: weft(), unit: "ask_3".into() });
+    let back = app.render().find_layer("sheet back").expect("a way back").all_text();
+    assert_eq!(back, "‹ health endpoint");
+    app.dispatch(SheetAct::Back);
+    assert!(matches!(&app.active_sheet, Some(ActiveSheet::Unit { unit, .. }) if unit == "ask_3"));
+    assert!(app.render().find_layer("sheet back").is_none(), "the unit is where it began");
+
+    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
+    assert!(app.render().all_text().contains("‹ health endpoint"));
+    app.dispatch(SheetAct::EvalBack);
+    assert!(matches!(&app.active_sheet, Some(ActiveSheet::Unit { .. })));
+    // Chosen from the tree, a unit starts again: nothing to go back to.
+    app.dispatch(TreeAct::SelectSeal { project: weft(), seal: "sel_4".into() });
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+    assert!(app.sheet_back.is_empty());
+}
+
+/// A tab is an agent of its project: once the daemon has said which panes a
+/// project has, a tab of a pane it does not have (one from before the daemon
+/// started again) goes, and the project's own agents stay.
+#[test]
+fn a_tab_of_a_pane_the_daemon_does_not_have_goes() {
+    let (_tmp, mut app) = sample_app(false);
+    app.state.panes.groups.clear();
+    app.clients[0].panes = vec![PaneView::new(1, "claude".into(), "claude".into())];
+    for pane in [1, 7] {
+        app.ensure_tab_in_active_pane(SavedPaneTab {
+            project: weft(),
+            pane,
+            view: PaneViewMode::Terminal,
+        });
+    }
+    app.drop_gone_tabs();
+    assert_eq!(app.state.panes.groups[0].tabs.len(), 2, "kept until the daemon has said");
+    app.clients[0].opened = true;
+    app.drop_gone_tabs();
+    let panes: Vec<u32> = app.state.panes.groups[0].tabs.iter().map(|t| t.pane).collect();
+    assert_eq!(panes, [1]);
+}
+
 #[test]
 fn proceed_shows_only_where_ringframe_says_a_prompt_waits() {
     let (_tmp, mut app) = sample_app(false);

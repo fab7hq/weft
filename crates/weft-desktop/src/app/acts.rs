@@ -177,6 +177,7 @@ impl WeftDesktopApp {
                 }
                 self.selection =
                     Some(TreeSelection::Work { project: project.clone(), unit: unit.clone() });
+                self.sheet_back.clear();
                 self.active_sheet = Some(ActiveSheet::Unit { project, unit });
             }
             TreeAct::SelectAsk { project, unit } => {
@@ -185,12 +186,12 @@ impl WeftDesktopApp {
                     let _ = c.read("wording", &unit, None, Then::Wording { unit: unit.clone() });
                 }
                 self.select_work_of(&project, |w| w.of_ask(&unit));
-                self.active_sheet = Some(ActiveSheet::WorkDetail { project, unit });
+                self.open_from_sheet(ActiveSheet::WorkDetail { project, unit });
             }
             TreeAct::SelectEval { project, eval } => {
                 self.read_judges(&project, &eval);
                 self.select_work_of(&project, |w| w.of_eval(&eval));
-                self.active_sheet = Some(ActiveSheet::EvalDetail { project, eval });
+                self.open_from_sheet(ActiveSheet::EvalDetail { project, eval });
             }
             TreeAct::ToggleSealed(p) => {
                 if !self.unfolded_sealed.remove(&p) {
@@ -204,13 +205,56 @@ impl WeftDesktopApp {
                     let _ = c.read("seal", &seal, None, Then::Seal { seal: seal.clone() });
                 }
                 self.select_work_of(&project, |w| w.units.iter().find(|u| u.seals.contains(&seal)));
-                self.active_sheet = Some(ActiveSheet::SealDetail { project, seal });
+                self.open_from_sheet(ActiveSheet::SealDetail { project, seal });
             }
             TreeAct::ClearSearch => {
                 self.search.set_text("");
                 self.focus = Focus::Terminal;
             }
         }
+    }
+
+    /// Open `next` over the Details shown, which `‹` then goes back to.
+    fn open_from_sheet(&mut self, next: ActiveSheet) {
+        if let Some(shown) = self.active_sheet.take() {
+            let details = matches!(
+                shown,
+                ActiveSheet::Unit { .. }
+                    | ActiveSheet::WorkDetail { .. }
+                    | ActiveSheet::EvalDetail { .. }
+                    | ActiveSheet::SealDetail { .. }
+                    | ActiveSheet::SessionDetail { .. }
+            );
+            if details && shown != next {
+                let name = self.sheet_name(&shown);
+                self.sheet_back.push((shown, name));
+            }
+        }
+        self.active_sheet = Some(next);
+    }
+
+    /// What a Details sheet is called, as `‹` names it.
+    fn sheet_name(&self, sheet: &ActiveSheet) -> String {
+        let title = |project: &Path, unit: &str| {
+            self.client(project)
+                .and_then(|c| c.units.iter().find(|u| u.ask_id == unit))
+                .map(|u| u.title.clone())
+        };
+        let record = |project: &Path| self.client(project).map(|c| &c.work.record);
+        let named = match sheet {
+            ActiveSheet::Unit { project, unit } | ActiveSheet::WorkDetail { project, unit } => {
+                title(project, unit)
+            }
+            ActiveSheet::EvalDetail { project, eval } => record(project)
+                .and_then(|r| r.evals.iter().find(|e| &e.id == eval))
+                .map(|e| words::fill("tree.eval", &[("n", &e.n.to_string())])),
+            ActiveSheet::SealDetail { project, seal } => record(project)
+                .and_then(|r| r.seals.iter().find(|s| &s.id == seal))
+                .map(|s| words::fill("tree.seal", &[("n", &s.n.to_string())])),
+            ActiveSheet::SessionDetail { session, .. } => Some(session.clone()),
+            _ => None,
+        };
+        named.unwrap_or_else(|| words::word("web.detail.title").to_string())
     }
 
     /// Select the unit of work `find` names in this project, when there is one.
@@ -420,8 +464,14 @@ impl WeftDesktopApp {
 
     fn sheet_act(&mut self, a: SheetAct) {
         match a {
+            SheetAct::Back => {
+                if let Some((sheet, _)) = self.sheet_back.pop() {
+                    self.active_sheet = Some(sheet);
+                }
+            }
             SheetAct::Close => {
                 self.send_to_open = false;
+                self.sheet_back.clear();
                 self.active_sheet = None;
                 self.focus = Focus::Terminal;
             }
@@ -465,8 +515,12 @@ impl WeftDesktopApp {
                 if let Some(c) = self.client_mut(&project) {
                     let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
                 }
-                self.active_sheet =
-                    Some(ActiveSheet::EvalView { project, eval, by_file: false, at: Vec::new() });
+                self.open_from_sheet(ActiveSheet::EvalView {
+                    project,
+                    eval,
+                    by_file: false,
+                    at: Vec::new(),
+                });
             }
             SheetAct::ToggleEvalViewMode => {
                 if let Some(ActiveSheet::EvalView { by_file, at, .. }) = &mut self.active_sheet
@@ -492,6 +546,10 @@ impl WeftDesktopApp {
             SheetAct::EvalBack => match &mut self.active_sheet {
                 Some(ActiveSheet::EvalView { at, .. }) if !at.is_empty() => {
                     at.pop();
+                }
+                // Opened from other Details: back to them.
+                Some(ActiveSheet::EvalView { .. }) if !self.sheet_back.is_empty() => {
+                    self.sheet_act(SheetAct::Back);
                 }
                 Some(ActiveSheet::EvalView { project, eval, .. }) => {
                     let (project, eval) = (project.clone(), eval.clone());

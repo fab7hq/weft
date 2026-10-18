@@ -186,7 +186,7 @@ pub enum Status {
     Asking,
     /// Asked, and no Eval has judged its newest Asks.
     Asked,
-    /// An Eval of it is being gathered or judged.
+    /// Its newest Eval is open: not judged yet.
     Judging,
     /// Its newest Eval's verdict, and not sealed.
     Judged {
@@ -264,6 +264,18 @@ impl Work {
         self.units.iter().find(|u| u.evals.iter().any(|e| e == eval))
     }
 
+    /// Whether Eval on this unit goes on with the open Eval `id`: only its
+    /// own, its newest, over none but its Asks.
+    pub fn goes_on_with(&self, unit: &UnitOfWork, id: &str) -> bool {
+        unit.evals.last().is_some_and(|e| e == id)
+            && self
+                .record
+                .evals
+                .iter()
+                .find(|e| e.id == id)
+                .is_some_and(|e| e.asks.iter().all(|a| unit.asks.contains(a)))
+    }
+
     /// The Eval a Seal on this unit seals: its newest, once judged, while
     /// it judged every Ask still open.
     pub fn to_seal(&self, unit: &UnitOfWork) -> Option<&Eval> {
@@ -326,9 +338,8 @@ pub fn work(units: &[Unit], record: &Record) -> Work {
                 Status::Sealed {
                     decision: seals.last().map(|s| s.disposition.clone()).unwrap_or_default(),
                 }
-            } else if evals
-                .iter()
-                .any(|e| !e.completed() && e.asks.iter().any(|a| open.contains(a)))
+            } else if last
+                .is_some_and(|e| !e.completed() && e.asks.iter().any(|a| open.contains(a)))
             {
                 Status::Judging
             } else if let Some((e, verdict)) = last
@@ -598,6 +609,41 @@ mod tests {
             following(asked("ask_2", 4), "ask_1"),
         ]);
         assert_eq!(w.units[0].status, Status::Asked);
+    }
+
+    /// A unit stands where its newest Eval does: an older Eval left open,
+    /// one opened over more work before units, says nothing of it now.
+    #[test]
+    fn a_unit_stands_where_its_newest_eval_does() {
+        let w = grouped(&[
+            asked("ask_1", 1),
+            asked("ask_2", 2),
+            opened("evl_1", &["ask_1", "ask_2"], 3),
+            opened("evl_2", &["ask_1"], 4),
+            completed("evl_2", &["ask_1"], "aligned", 5),
+        ]);
+        let one = w.of_ask("ask_1").unwrap();
+        assert!(matches!(one.status, Status::Judged { .. }), "{:?}", one.status);
+        assert_eq!(w.to_seal(one).map(|e| e.id.as_str()), Some("evl_2"));
+        assert_eq!(w.of_ask("ask_2").unwrap().status, Status::Judging, "evl_1 is still its newest");
+    }
+
+    /// Eval goes on with an open Eval only when it is the unit's own: its
+    /// newest, over none but its Asks.
+    #[test]
+    fn eval_goes_on_only_with_the_units_own_eval() {
+        let w = grouped(&[
+            asked("ask_1", 1),
+            asked("ask_2", 2),
+            opened("evl_1", &["ask_1", "ask_2"], 3),
+            asked("ask_3", 4),
+            opened("evl_2", &["ask_3"], 5),
+        ]);
+        let one = w.of_ask("ask_1").unwrap();
+        assert!(!w.goes_on_with(one, "evl_1"), "evl_1 judges ask_2's unit too");
+        let three = w.of_ask("ask_3").unwrap();
+        assert!(w.goes_on_with(three, "evl_2"));
+        assert!(!w.goes_on_with(three, "evl_1"));
     }
 
     /// Eval and a follow-up go by an Ask that is composed: one still being

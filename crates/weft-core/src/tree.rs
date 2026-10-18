@@ -118,14 +118,14 @@ pub struct WorkRow {
     pub seal: Option<Why>,
 }
 
-/// A unit's status as its row says it: asking, judging…, drifted · 0.75,
+/// A unit's status as its row says it: asking, eval open, drifted · 0.75,
 /// sealed · accepted.
 pub fn status_word(s: &Status) -> String {
     use crate::words::{fill, word};
     match s {
         Status::Asking => word("work.asking").into(),
         Status::Asked => word("work.asked").into(),
-        Status::Judging => word("tree.judging").into(),
+        Status::Judging => word("work.eval_open").into(),
         Status::Judged { verdict, agreement } => fill(
             "work.judged",
             &[
@@ -604,7 +604,7 @@ mod tests {
             [
                 ("fix login", "claude", "asked".to_string()),
                 ("health endpoint", "codex", "drifted · 0.75".to_string()),
-                ("telemetry", "claude", "judging…".to_string()),
+                ("telemetry", "claude", "eval open".to_string()),
                 ("build number", "codex", "sealed · accepted".to_string()),
                 ("readme fix", "codex", "sealed · parked".to_string()),
                 ("old", "codex", "sealed · accepted".to_string()),
@@ -643,7 +643,7 @@ mod tests {
             [
                 (Some(no.clone()), Some("No Eval of this work yet: Eval starts one.".into())),
                 (None, None),
-                (Some(no), Some("telemetry is still being judged.".into())),
+                (Some(no), Some("telemetry is not judged yet: Eval goes on with it.".into())),
                 (
                     Some("build number is closed. Follow up asks again.".into()),
                     Some("build number is closed. Follow up asks again.".into())

@@ -177,6 +177,8 @@ pub enum SheetAct {
     EvalOpen(String),
     /// Back one level of the Eval view; from its top, to the Eval's Details.
     EvalBack,
+    /// Back to the Details this one was opened from.
+    Back,
     Resume {
         project: PathBuf,
         harness: String,

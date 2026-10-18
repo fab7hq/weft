@@ -37,6 +37,8 @@ pub struct SheetProps<'a> {
     pub remote_pick: Option<&'a str>,
     /// The open Ask's SEND TO.
     pub send_to: Option<&'a send_to::SendTo>,
+    /// The Details this one was opened from, by name.
+    pub back: Option<&'a str>,
 }
 
 impl SheetProps<'_> {
@@ -49,8 +51,38 @@ impl SheetProps<'_> {
     }
 }
 
-/// The open sheet.
+/// The open sheet; a stage opened from other Details leads back to them.
 pub fn render_sheet(props: &SheetProps) -> Element {
+    let sheet = sheet_of(props);
+    let leads_back = matches!(
+        props.sheet,
+        ActiveSheet::WorkDetail { .. }
+            | ActiveSheet::EvalDetail { .. }
+            | ActiveSheet::SealDetail { .. }
+            | ActiveSheet::SessionDetail { .. }
+    );
+    match props.back.filter(|_| leads_back) {
+        Some(name) => crate::gpui::div()
+            .flex_1()
+            .self_stretch()
+            .flex_col()
+            .child(
+                crate::gpui::div()
+                    .layer("sheet back")
+                    .on_click(crate::action::SheetAct::Back)
+                    .self_stretch()
+                    .pad(10, 20)
+                    .border_bottom(crate::gpui::palette::LINE)
+                    .font_size(13)
+                    .color(crate::gpui::palette::BLUE_BORDER)
+                    .text(format!("‹ {name}")),
+            )
+            .child(sheet),
+        None => sheet,
+    }
+}
+
+fn sheet_of(props: &SheetProps) -> Element {
     match props.sheet {
         ActiveSheet::Ask { follow_up_unit, .. } => ask::render(props, follow_up_unit.as_deref()),
         ActiveSheet::Unit { project, unit } => unit::render(props, project, unit),
