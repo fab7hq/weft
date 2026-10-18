@@ -323,12 +323,6 @@ enum Wake {
         seq: u64,
         bytes: Vec<u8>,
     },
-    /// A pane's PTY output settled for 150 ms at `seq`: run `weft-sense` Head 1.
-    SenseSettle {
-        project: usize,
-        pane: u32,
-        seq: u64,
-    },
     Exited {
         project: usize,
         pane: u32,
@@ -846,25 +840,16 @@ impl Session {
                     }
                 }
                 Wake::Output { project, pane, seq: chunk, bytes } => {
-                    let mut seq = None;
                     if let Some(slot) = self.projects.get_mut(project).and_then(|p| p.slot(pane)) {
                         slot.record();
-                        seq = Some(slot.pane.current_seq());
                     }
                     self.printed(project, pane);
                     self.clients.broadcast_output(project, pane, chunk, bytes);
-                    if let Some(seq) = seq {
-                        let tx = self.tx.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(150));
-                            let _ = tx.send(Wake::SenseSettle { project, pane, seq });
-                        });
-                    }
                 }
-                Wake::SenseSettle { project, pane, seq } => {
-                    self.sense_pane_if_settled(project, pane, seq);
+                Wake::Frames => {
+                    self.frames();
+                    self.sense_what_settled();
                 }
-                Wake::Frames => self.frames(),
                 Wake::Exited { project, pane } => {
                     self.clients.broadcast(project, &Out::Exited { pane })
                 }

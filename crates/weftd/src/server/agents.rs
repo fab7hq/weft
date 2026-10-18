@@ -3,6 +3,15 @@
 
 use super::*;
 
+/// How long a pane's output must be still before Sense reads it.
+const SENSE_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
+
+/// Whether a pane printed since Sense last read it (`read`, the output's
+/// number then) and has since been still for [`SENSE_SETTLE`].
+fn settled(seq: u64, read: u64, quiet: std::time::Duration) -> bool {
+    seq != read && quiet >= SENSE_SETTLE
+}
+
 impl Session {
     /// The first of this harness's agents that is free for new work: one
     /// whose latest event is `ready` or `turn_ended` (turn-state.md §4).
@@ -101,20 +110,34 @@ impl Session {
         (states, index)
     }
 
-    /// Evaluate `weft-sense` Head 1 when a pane's PTY output has settled for
-    /// 150 ms at `seq`.
-    pub(super) fn sense_pane_if_settled(&mut self, at: usize, pane: u32, seq: u64) {
-        let Some(p) = self.projects.get(at) else { return };
-        let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else { return };
-        if slot.pane.current_seq() != seq || slot.sense_settled_seq == seq {
-            return;
+    /// Evaluate `weft-sense` Head 1 on each pane whose PTY output has been
+    /// still for [`SENSE_SETTLE`] since Sense last read it. Looked at on the
+    /// frames tick, never waited for.
+    pub(super) fn sense_what_settled(&mut self) {
+        for at in 0..self.projects.len() {
+            let p = &self.projects[at];
+            if p.closed {
+                continue;
+            }
+            let quiet: Vec<u32> = p
+                .panes
+                .iter()
+                .filter(|s| {
+                    settled(s.pane.current_seq(), s.sense_settled_seq, s.last_output_at.elapsed())
+                })
+                .map(|s| s.map.pane)
+                .collect();
+            for pane in &quiet {
+                self.sense_pane_now(at, *pane);
+            }
+            if !quiet.is_empty() {
+                self.tell_agents(at);
+            }
         }
-        self.sense_pane_now(at, pane);
-        self.tell_agents(at);
     }
 
-    /// Evaluate `weft-sense` Head 1 on `pane` now (after a 150 ms settle or
-    /// when a hook signal arrives).
+    /// Evaluate `weft-sense` Head 1 on `pane` now (once its output settled,
+    /// or when a hook signal arrives).
     pub(super) fn sense_pane_now(&mut self, at: usize, pane: u32) {
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
@@ -132,6 +155,7 @@ impl Session {
             bottom: bottom_lines,
             seq,
         } = slot.pane.surface_snapshot();
+        slot.sense_settled_seq = seq;
         if bottom_lines.is_empty() {
             slot.sensed_surface = None;
             return;
@@ -153,7 +177,6 @@ impl Session {
                 seq,
             })
         });
-        slot.sense_settled_seq = seq;
         slot.sensed_surface = reading;
     }
 
@@ -671,6 +694,16 @@ fn once(forwarded: &mut std::collections::HashSet<String>, sent: &mut weft_core:
 mod tests {
     use super::*;
     use weft_core::signal::{Received, Sent};
+
+    /// Sense reads a pane's output once, when it has been still for the
+    /// settle time, and not again until it prints more.
+    #[test]
+    fn output_is_read_once_it_has_been_still_and_not_again() {
+        let still = SENSE_SETTLE;
+        assert!(settled(5, 4, still), "printed since the last reading, and still");
+        assert!(!settled(5, 4, still / 2), "still printing");
+        assert!(!settled(5, 5, still * 10), "already read");
+    }
 
     #[test]
     fn a_line_is_forwarded_once_as_the_prompt_or_as_another_record() {
