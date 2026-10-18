@@ -80,7 +80,7 @@ fn the_rules_depend_only_on_things_that_parse() {
         .collect();
     assert_eq!(
         deps,
-        vec!["serde", "serde_json", "sha2", "toml"],
+        vec!["serde", "serde_json", "sha2", "toml", "pulldown-cmark"],
         "a new dependency has to earn its place here, and each of these only parses or hashes"
     );
 }
