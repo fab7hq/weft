@@ -564,7 +564,13 @@ pub fn request(
         "host": {"name": host, "session_ref": session},
         "captured_by": captured_by,
     });
-    let ev = event("ask.requested", &ask_id, &default_actor(None), data, &[]);
+    // Marked as a follow-up of something this workspace has: linked from the
+    // start, so it is in its unit of work before it is composed.
+    let links: Vec<Value> = follow_up_marker(source)
+        .map(|id| vec![json!({"rel": "follows", "id": id})])
+        .filter(|l| check_links(ws, l).is_ok())
+        .unwrap_or_default();
+    let ev = event("ask.requested", &ask_id, &default_actor(None), data, &links);
     schema::validate_event(&ev)?;
     let wrote = store::publish(ws, &path, source, "source_intent")?;
     assert_eq!(wrote, source_ref, "the published source is not what was recorded");
@@ -1658,6 +1664,12 @@ mod tests {
                 events(ws).into_iter().rev().find(|e| e["type"] == "ask.compiled").unwrap();
             assert_eq!(compiled["links"], json!([{"rel": "follows", "id": first}]));
             assert_eq!(crate::ask::unit_of(ws, &str_of(&next, "ask_id")).unwrap().len(), 2);
+            // Asked and not composed yet, it is linked already.
+            let asked = request(ws, "claude-code", Some("s1"), marked.as_bytes(), "hook").unwrap();
+            let requested =
+                events(ws).into_iter().rev().find(|e| e["type"] == "ask.requested").unwrap();
+            assert_eq!(str_of(&requested, "id"), str_of(&asked, "ask_id"));
+            assert_eq!(requested["links"], json!([{"rel": "follows", "id": first}]));
             // A marker naming nothing here is refused, as a link would be.
             let bad = stage_named(ws, "prompt.txt", b"[follow-up ask_gone] more\n", b"More.\n");
             let e = compile_with(ws, Args { staged: Some(bad), ..Default::default() }).unwrap_err();
