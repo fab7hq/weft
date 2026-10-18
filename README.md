@@ -37,6 +37,14 @@ It installs the Weft app — in Applications on macOS, in your desktop's apps
 on Linux — and `weft` and `ringframe`. Open Weft, or run `weft`. `weft update`
 installs the next release.
 
+On macOS, Homebrew installs the same app:
+
+```sh
+brew install --cask fab7hq/tap/weft
+```
+
+`brew upgrade --cask weft` installs the next release.
+
 ## Docs
 
 Setting up your harness, the loop from Ask to Seal, and Weft on your phone:
