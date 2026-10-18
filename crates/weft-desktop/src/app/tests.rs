@@ -875,6 +875,41 @@ fn remote_lists_only_what_weft_remote_said_and_changes_nothing_itself() {
     assert_eq!(call, Call::Remote { act: json!({"act": "allow", "device": "d_3", "yes": true}) });
 }
 
+/// Every popover is drawn over the backdrop that closes them, so a click on
+/// one is its own: a layout menu in a pane as much as ☰.
+#[test]
+fn a_popover_is_drawn_over_the_backdrop_that_closes_it() {
+    let (_tmp, mut app) = sample_app(false);
+    app.clients[0].panes.push(PaneView::new(0, "claude".into(), "claude".into()));
+    app.ensure_tab_in_active_pane(SavedPaneTab {
+        project: weft(),
+        pane: 0,
+        view: PaneViewMode::Terminal,
+    });
+    fn order(e: &crate::gpui::Element, out: &mut Vec<String>) {
+        if let Some(l) = &e.layer_name {
+            out.push(l.clone());
+        }
+        for c in &e.children {
+            order(c, out);
+        }
+    }
+    for (open, popover) in [
+        (Action::from(PaneAct::ToggleLayoutMenu(0)), "layout menu"),
+        (WindowAct::ToggleMenu.into(), "menu popover"),
+        (TreeAct::TogglePlus(weft()).into(), "plus popover"),
+    ] {
+        app.dispatch(open.clone());
+        let mut drawn = Vec::new();
+        order(&app.render(), &mut drawn);
+        let at = |l: &str| drawn.iter().position(|d| d == l);
+        let (backdrop, menu) = (at("popover backdrop"), at(popover));
+        assert!(backdrop.is_some() && menu.is_some(), "{popover}: {drawn:?}");
+        assert!(backdrop < menu, "{popover} is under the backdrop");
+        app.dispatch(WindowAct::ClosePopovers);
+    }
+}
+
 #[test]
 fn the_menu_and_quit() {
     let (_tmp, mut app) = sample_app(true);

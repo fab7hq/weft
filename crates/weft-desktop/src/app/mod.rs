@@ -899,6 +899,18 @@ impl WeftDesktopApp {
             .flex_row()
             .items_center()
             .style("position", "relative");
+        // Under everything: a click nothing else takes closes the popovers, and
+        // each popover, a pane's layout menu among them, is drawn over it.
+        if self.menu_open || self.plus_popover_project.is_some() || self.layout_menu_pane.is_some()
+        {
+            body = body.child(
+                div()
+                    .layer("popover backdrop")
+                    .on_click(crate::action::WindowAct::ClosePopovers)
+                    .style("position", "absolute")
+                    .style("inset", "0"),
+            );
+        }
 
         if self.state.settings.sidebar_open {
             body = body.child(render_tree(&TreeProps {
@@ -953,16 +965,6 @@ impl WeftDesktopApp {
             }
         }
 
-        if self.menu_open || self.plus_popover_project.is_some() || self.layout_menu_pane.is_some()
-        {
-            body = body.child(
-                div()
-                    .layer("popover backdrop")
-                    .on_click(crate::action::WindowAct::ClosePopovers)
-                    .style("position", "absolute")
-                    .style("inset", "0"),
-            );
-        }
         if let Some(root) = &self.plus_popover_project {
             body = body.child(render_plus_popover(root, &harnesses, self.state.settings.turbo));
         }
