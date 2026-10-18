@@ -796,8 +796,11 @@ fn the_menu_and_quit() {
         assert!(menu.find_layer(layer).is_some(), "{layer}");
     }
     assert!(
-        menu.find_layer("menu Remote").unwrap().all_text().contains("Off"),
-        "nothing said it is on"
+        menu.find_layer("menu Remote")
+            .unwrap()
+            .all_text()
+            .contains(words::word("web.link.connecting")),
+        "no daemon has said anything yet"
     );
     app.dispatch(WindowAct::ClosePopovers);
     assert!(!app.menu_open);
@@ -1832,4 +1835,88 @@ fn a_selected_project_says_in_plain_words_where_its_acts_go() {
     app.dispatch(TreeAct::SelectProject(weft()));
     let line = app.render().find_layer("routing line").expect("said").all_text();
     assert_eq!(line, "Asks go to claude; Evals go to codex.");
+}
+
+#[test]
+fn updates_does_not_open_on_a_view_still_being_asked() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let row = |name: &str, state| SetupRow {
+        name: name.into(),
+        title: name.into(),
+        program: name.into(),
+        state,
+    };
+    // The first look: one harness still answering, one not on this machine.
+    let asking = SetupView {
+        rows: vec![row("claude", SetupState::Checking), row("grok", SetupState::NotFound)],
+        ..Default::default()
+    };
+    wire.event(Event::Setup { view: serde_json::to_value(asking).unwrap() });
+    pumped(&mut app, |a| a.clients[0].setup.is_some());
+    assert!(app.active_sheet.is_none(), "not until each has answered");
+    let answered = SetupView {
+        rows: vec![
+            row("claude", SetupState::Ready { version: None }),
+            row("grok", SetupState::NotFound),
+        ],
+        ..Default::default()
+    };
+    wire.event(Event::Setup { view: serde_json::to_value(answered).unwrap() });
+    pumped(&mut app, |a| {
+        a.clients[0].setup.as_ref().is_some_and(|v| v.rows[0].state != SetupState::Checking)
+    });
+    assert!(app.active_sheet.is_none(), "claude is ready");
+}
+
+#[test]
+fn needs_you_says_so_when_the_one_waiting_runs_elsewhere() {
+    let (_tmp, mut app, _wire) = wired_app();
+    // The only one waiting runs in a program Weft does not show.
+    app.clients[0].sessions = vec![Row::of("codex", "s-x", State::Running, Some(Turn::Waiting), 1)];
+    assert_eq!(app.tree_projects()[0].project.needs, 1, "counted");
+    app.dispatch(WindowAct::NextNeedsYou);
+    let said = words::fill("why.elsewhere", &[("harness", "codex")]);
+    assert_eq!(app.bottom_bar, BottomBarState::WhyNot { sentence: said });
+}
+
+#[test]
+fn remotes_start_at_login_button_turns_it_on_as_the_daemon_has_it() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.settings.start_at_login = true;
+    app.clients[0].start_at_login = false;
+    let _ = remote_sheet(&mut app, Some(json!({"state": "on", "login": "octo", "devices": []})));
+    app.dispatch(WindowAct::ToggleStartAtLogin);
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::StartAtLogin { on: true, .. }), "{call:?}");
+}
+
+#[test]
+fn a_device_asking_shows_over_a_staged_send() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    wire.event(Event::Pending {
+        id: "p1".into(),
+        pane,
+        what: "/rf:ask".into(),
+        why: String::new(),
+        payload: b"x".to_vec(),
+        sends: None,
+    });
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    app.bottom_bar = BottomBarState::AllowDevice {
+        device_id: "d_9".into(),
+        device_name: "iPad".into(),
+        login: None,
+    };
+    assert!(app.render().find_layer("Allow a device bar").is_some());
+}
+
+#[test]
+fn remote_says_nothing_of_its_own_before_the_daemon_has_spoken() {
+    let (_tmp, mut app) = sample_app(false);
+    app.dispatch(WindowAct::OpenRemote);
+    let sheet = app.render().find_layer("sheet Remote").unwrap().all_text();
+    assert!(sheet.contains(words::word("web.link.connecting")), "{sheet}");
+    assert!(!sheet.contains(words::word("desktop.remote.off")), "{sheet}");
+    assert!(!sheet.contains(words::word("desktop.remote.turn_on")), "{sheet}");
 }

@@ -69,7 +69,8 @@ impl WeftDesktopApp {
                 let _ = self.save_state();
             }
             WindowAct::ToggleStartAtLogin => {
-                let next = !self.state.settings.start_at_login;
+                // The daemon's own setting is what is turned, whatever was saved here.
+                let next = !self.clients.iter().any(|c| c.start_at_login);
                 self.state.settings.start_at_login = next;
                 let path = std::env::var("PATH").unwrap_or_default();
                 // The service runs the installed link, so an update that moves

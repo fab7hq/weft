@@ -23,6 +23,10 @@ pub struct BottomBarProps<'a> {
 
 /// The bar: what waits on the person, or the tree's acts.
 pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
+    // A device asking to be allowed is answered first, over anything.
+    if let BottomBarState::AllowDevice { device_id, device_name, login } = props.state {
+        return render_allow_device_bar(props.machine, device_id, device_name, login.as_deref());
+    }
     if let Some((client, staged)) =
         props.clients.iter().find_map(|c| c.waiting.last().map(|s| (c, s)))
     {

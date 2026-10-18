@@ -13,8 +13,10 @@ use anyhow::Result;
 use weft_core::board::Act;
 use weft_core::conversation::Item;
 use weft_core::harness::Harnesses;
+use weft_core::sessions::State as SessionState;
 use weft_core::state::{PaneViewMode, SavedPaneTab, SavedTabGroup, WeftState, WindowBounds};
-use weft_core::tree::{self, Facts, Fold};
+use weft_core::tree::{self, Agent, Facts, Fold};
+use weft_core::turns;
 use weft_core::words;
 
 use crate::action::Focus;
@@ -586,26 +588,27 @@ impl WeftDesktopApp {
     pub fn next_needs_you(&mut self) {
         let front = self.active_tab().map(|t| (t.project, t.pane));
         let here = front.as_ref().map(|(p, _)| p.clone());
-        let mut waiting: Vec<(PathBuf, u32)> = self
-            .clients
-            .iter()
-            .flat_map(|c| {
-                c.panes
-                    .iter()
-                    .filter(|p| weft_core::turns::is_asking(p.turn))
-                    .map(|p| (c.root.clone(), p.id))
+        let mut projects = self.tree_projects();
+        // This project's agents first, each project's in the tree's order.
+        projects.sort_by_key(|l| Some(&l.root) != here.as_ref());
+        let asking: Vec<(PathBuf, Agent)> = projects
+            .into_iter()
+            .flat_map(|l| {
+                let root = l.root;
+                l.project.agents.rows.into_iter().map(move |a| (root.clone(), a))
             })
+            .filter(|(_, a)| a.state == SessionState::Running && turns::is_asking(a.turn))
             .collect();
-        // Stable: this project's agents first, each project's in pane order.
-        waiting.sort_by_key(|(root, _)| Some(root) != here.as_ref());
-        let after = front.and_then(|f| waiting.iter().position(|w| *w == f)).map_or(0, |i| i + 1);
-        match waiting.get(after % waiting.len().max(1)).cloned() {
-            Some((root, pane)) => self.bring_to_front(root, pane),
-            None => {
-                let sentence = words::word("why.nothing_needs_you").to_string();
-                self.bottom_bar = BottomBarState::WhyNot { sentence }
-            }
-        }
+        let shown: Vec<(PathBuf, u32)> =
+            asking.iter().filter_map(|(root, a)| Some((root.clone(), a.pane?))).collect();
+        let after = front.and_then(|f| shown.iter().position(|w| *w == f)).map_or(0, |i| i + 1);
+        let sentence = match (shown.get(after % shown.len().max(1)).cloned(), asking.first()) {
+            (Some((root, pane)), _) => return self.bring_to_front(root, pane),
+            // It waits in a program Weft does not show.
+            (None, Some((_, a))) => words::fill("why.elsewhere", &[("harness", &a.harness)]),
+            (None, None) => words::word("why.nothing_needs_you").to_string(),
+        };
+        self.bottom_bar = BottomBarState::WhyNot { sentence };
     }
 
     /// `pane` of `root` in front: its tab where it is, else a new one.
@@ -879,8 +882,9 @@ impl WeftDesktopApp {
         if self.menu_open {
             body = body.child(render_menu_popover(&MenuProps {
                 turbo: self.state.settings.turbo,
-                start_at_login: self.state.settings.start_at_login,
+                start_at_login: self.clients.iter().any(|c| c.start_at_login),
                 remote: self.clients.iter().find_map(|c| c.remote.as_ref()),
+                heard: self.clients.iter().any(|c| c.is_connected()),
                 updates: updates_available,
             }));
         }

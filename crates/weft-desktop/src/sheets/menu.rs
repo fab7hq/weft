@@ -13,6 +13,8 @@ pub struct MenuProps<'a> {
     pub start_at_login: bool,
     /// `weft remote`'s view, when it has published one.
     pub remote: Option<&'a Value>,
+    /// A daemon has answered: until one has, Remote's state is not known.
+    pub heard: bool,
     pub updates: usize,
 }
 
@@ -75,7 +77,10 @@ fn aside(text: impl Into<String>, colour: &str) -> Element {
 
 /// What Remote says it is: on, with its devices, or off. Only `weft remote`
 /// says it is on.
-fn remote_status(remote: Option<&Value>) -> (String, &'static str) {
+fn remote_status(remote: Option<&Value>, heard: bool) -> (String, &'static str) {
+    if !heard {
+        return (word("web.link.connecting").to_string(), palette::MUTED);
+    }
     let on = remote.is_some_and(|v| v["state"] == "on");
     if !on {
         return (word("desktop.remote.off").to_string(), palette::MUTED);
@@ -91,7 +96,7 @@ fn remote_status(remote: Option<&Value>) -> (String, &'static str) {
 
 /// The `☰` menu.
 pub fn render_menu_popover(props: &MenuProps) -> Element {
-    let (remote, remote_colour) = remote_status(props.remote);
+    let (remote, remote_colour) = remote_status(props.remote, props.heard);
     let updates = if props.updates > 0 {
         aside(fill("desktop.updates.n", &[("n", &props.updates.to_string())]), palette::BLUE_BORDER)
     } else {

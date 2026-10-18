@@ -58,7 +58,10 @@ fn device_row(d: &Value) -> Option<Element> {
 
 pub(super) fn render(props: &SheetProps) -> Element {
     let view = props.clients.iter().find_map(|c| c.remote.as_ref());
-    let state = view.and_then(|v| v["state"].as_str()).unwrap_or("off");
+    // No view from a daemon that answered: Remote is not running. From none
+    // yet, nothing is known.
+    let heard = props.clients.iter().any(|c| c.is_connected());
+    let state = view.and_then(|v| v["state"].as_str()).unwrap_or(if heard { "off" } else { "" });
     let s = |k: &str| view.and_then(|v| v[k].as_str()).unwrap_or_default().to_string();
     let close = close_button();
     let turn_off = || {
@@ -284,6 +287,9 @@ pub(super) fn render(props: &SheetProps) -> Element {
                 (word("desktop.remote.on").to_string(), palette::TEAL),
                 (vec![turn_off()], vec![close]),
             )
+        }
+        "" => {
+            ((word("web.link.connecting").to_string(), palette::MUTED), (Vec::new(), vec![close]))
         }
         // What the daemon says while `weft remote` starts, or anything newer.
         _ => (

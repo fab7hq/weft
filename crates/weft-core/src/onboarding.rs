@@ -156,9 +156,10 @@ pub struct View {
 
 impl View {
     /// Nothing is ready and something could be: what makes the view open by
-    /// itself.
+    /// itself. Not while a harness is still answering: it may be ready.
     pub fn wants_setting_up(&self) -> bool {
         !self.rows.is_empty()
+            && !self.rows.iter().any(|r| r.state == State::Checking)
             && !self
                 .rows
                 .iter()
