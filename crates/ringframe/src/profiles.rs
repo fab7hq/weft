@@ -24,12 +24,12 @@ pub fn load(name: &str) -> Result<Value, ConfigError> {
             found.map_or("None".to_string(), |s| format!("'{s}'"))
         )));
     }
-    // A harness's conversation and signals are Weft's to read, from its own
-    // harness files: never a profile's.
+    // A harness's conversation and signals are read by the tool that runs
+    // it, from that tool's own harness file: never a profile's.
     for table in ["conversation", "signal"] {
         if doc.get(table).is_some() {
             return Err(ConfigError(format!(
-                "harnesses/{name}.toml holds [{table}], which belongs in Weft's harness file"
+                "harnesses/{name}.toml holds [{table}], which belongs in the harness file of the tool that runs it"
             )));
         }
     }
@@ -148,8 +148,9 @@ mod tests {
         });
     }
 
-    /// A conversation and a harness's signals are read by Weft, from its own
-    /// harness files; a profile that holds either is refused.
+    /// A conversation and a harness's signals are read by the tool that runs
+    /// the harness, from its own harness files; a profile that holds either
+    /// is refused.
     #[test]
     fn a_profile_holding_a_table_of_wefts_does_not_load() {
         with_config_home(|_| {
