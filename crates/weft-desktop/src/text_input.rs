@@ -81,9 +81,12 @@ impl Painted {
     }
 
     /// The rectangle `range` takes, from its start: where an input method puts its window.
+    /// An input method asks as soon as it marks a draft, before the field is
+    /// painted again: past what was painted is the end of the last line.
     pub fn bounds_for(&self, range: Range<usize>) -> Option<Bounds<Pixels>> {
-        let a = self.position(range.start)?;
-        let b = self.position(range.end).unwrap_or(a);
+        let end = self.lines.last().map(|(start, line)| start + line.len())?;
+        let a = self.position(range.start.min(end))?;
+        let b = self.position(range.end.min(end)).unwrap_or(a);
         let right = if b.y == a.y { b.x.max(a.x) } else { a.x };
         Some(Bounds::from_corners(a, point(right, a.y + self.line_height)))
     }

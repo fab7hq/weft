@@ -1534,6 +1534,26 @@ mod tests {
         });
     }
 
+    /// An input method asks where its window goes as soon as it marks a
+    /// draft, before the field is painted again: past what was painted, it is
+    /// told the end of the last painted line, never nothing.
+    #[test]
+    fn an_input_method_is_told_a_place_past_what_was_painted() {
+        windowed(|cx| {
+            let (_tmp, _shared, view, _wire, cx) = opened_view(cx);
+            cx.simulate_input("say ");
+            cx.run_until_parked();
+            let (end, past) = view.update_in(cx, |v, window, cx| {
+                let any = Bounds::default();
+                let end = v.bounds_for_range(4..4, any, window, cx);
+                v.replace_and_mark_text_in_range(None, "nihao", None, window, cx);
+                (end, v.bounds_for_range(9..9, any, window, cx))
+            });
+            assert!(end.is_some(), "the field was painted");
+            assert_eq!(past, end, "the end of what was painted");
+        });
+    }
+
     /// What an input method does, as macOS hands it over: a composing draft,
     /// marked and replaced as it changes, then the committed characters.
     #[test]
