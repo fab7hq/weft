@@ -19,6 +19,8 @@ pub struct BottomBarProps<'a> {
     pub selection: Option<&'a TreeSelection>,
     /// The act put forward once the agent in front's turn has ended: outlined, never pressed.
     pub suggested: Option<weft_core::board::Act>,
+    /// The staged send's SEND TO.
+    pub staged_to: Option<&'a crate::sheets::send_to::SendTo>,
 }
 
 /// The bar: what waits on the person, or the tree's acts.
@@ -30,7 +32,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
     if let Some((client, staged)) =
         props.clients.iter().find_map(|c| c.waiting.last().map(|s| (c, s)))
     {
-        return render_staged_bar(client, staged);
+        return render_staged_bar(client, staged, props.staged_to);
     }
     match props.state {
         BottomBarState::QuitConfirm => render_quit_bar(),
@@ -53,7 +55,11 @@ fn title(text: impl Into<String>) -> Element {
     div().font_weight(600).font_size(15).text(text)
 }
 
-fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
+fn render_staged_bar(
+    client: &ProjectClient,
+    staged: &Staged,
+    send_to: Option<&crate::sheets::send_to::SendTo>,
+) -> Element {
     let pane = client.view(staged.pane);
     let resolve = |answer| BarAct::Resolve {
         project: client.root.clone(),
@@ -63,6 +69,23 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
     let cancel =
         button("btn Cancel", word("act.cancel"), resolve(Answer::No), Tone::Plain, Size::Sheet);
 
+    // It keeps SEND TO: where it was staged, another agent, or a new one.
+    let choice = send_to.map(|v| {
+        let pick = |to: String| BarAct::SendTo { pending: staged.id.clone(), to }.into();
+        div()
+            .flex_row()
+            .gap(10)
+            .items_center()
+            .child(
+                div()
+                    .font_mono()
+                    .font_weight(600)
+                    .font_size(11)
+                    .color(palette::MUTED)
+                    .text(word("ask.send_to")),
+            )
+            .child(crate::sheets::send_to::render(v, pick))
+    });
     // The agent has not said it is ready: Weft did not type it, and why.
     let not_ready = client.last_refusal.clone().or_else(|| {
         turns::may_type(pane.and_then(|p| p.turn))
@@ -74,6 +97,7 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
             .child(title(word("not_ready.title")))
             .child(note(reason, palette::MUTED))
             .child(note(word("not_ready.why"), palette::MUTED))
+            .children(choice)
             .child(bar_acts(vec![
                 cancel,
                 button(
@@ -92,6 +116,7 @@ fn render_staged_bar(client: &ProjectClient, staged: &Staged) -> Element {
     asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
         .child(title(staged.what.clone()))
         .child(note(summary, palette::MUTED))
+        .children(choice)
         .child(bar_acts(vec![
             cancel,
             button("btn Send", word("act.send"), resolve(Answer::Yes), Tone::Primary, Size::Sheet),

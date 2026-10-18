@@ -1574,8 +1574,7 @@ fn ask_on_a_project_row_opens_on_its_agents() {
     app.dispatch(TreeAct::SelectProject(weft()));
     app.dispatch(BarAct::Ask);
     // It starts on the agent in front, named, and goes where it shows.
-    let Some(ActiveSheet::Ask { project, target_session: Some(session), .. }) = &app.active_sheet
-    else {
+    let Some(ActiveSheet::Ask { project, send_to: Some(session), .. }) = &app.active_sheet else {
         panic!("{:?}", app.active_sheet)
     };
     assert_eq!(*project, weft());
@@ -1919,4 +1918,70 @@ fn remote_says_nothing_of_its_own_before_the_daemon_has_spoken() {
     assert!(sheet.contains(words::word("web.link.connecting")), "{sheet}");
     assert!(!sheet.contains(words::word("desktop.remote.off")), "{sheet}");
     assert!(!sheet.contains(words::word("desktop.remote.turn_on")), "{sheet}");
+}
+
+#[test]
+fn send_to_is_a_list_of_its_agents_then_a_new_one_of_each_harness() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let (_, codex) = two_waiting(&mut app, &mut wire);
+    app.dispatch(TreeAct::SelectProject(weft()));
+    app.dispatch(BarAct::Ask);
+    // Closed: the one it goes to, and ▾.
+    let choice = app.render().find_layer("send to choice").expect("closed").all_text();
+    assert_eq!(choice, "weft · codex ▾");
+    app.dispatch(SheetAct::ToggleSendTo);
+    let list = app.render().find_layer("send to list").expect("open").clone();
+    let text = list.all_text();
+    assert!(text.contains("weft · claude") && text.contains("weft · codex ✓"), "{text}");
+    assert!(text.contains(&words::word("start.title").to_uppercase()), "{text}");
+    assert!(list.find_layer("send to start:grok").is_some(), "{text}");
+    // Picking is a choice: it closes the list, and sends nothing.
+    app.dispatch(SheetAct::AskTo("start:grok".into()));
+    assert!(wire.calls().is_empty());
+    assert_eq!(app.render().find_layer("send to choice").unwrap().all_text(), "grok ▾");
+    app.ask.set_text("add a health endpoint");
+    app.dispatch(SheetAct::SubmitAsk);
+    let (_, call) = wire.call();
+    assert!(
+        matches!(&call, Call::Act { pane: None, start: Some(h), .. } if h == "grok"),
+        "{call:?}"
+    );
+    let _ = codex;
+}
+
+#[test]
+fn a_staged_send_goes_where_staged_or_where_sent_to() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let (claude, codex) = two_waiting(&mut app, &mut wire);
+    let stage = |wire: &mut Wire, id: &str| {
+        wire.event(Event::Pending {
+            id: id.into(),
+            pane: codex,
+            what: "/rf:ask".into(),
+            why: String::new(),
+            payload: b"x".to_vec(),
+            sends: None,
+        })
+    };
+    stage(&mut wire, "p1");
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    assert_eq!(app.render().find_layer("send to choice").unwrap().all_text(), "weft · codex ▾");
+    // Into another agent.
+    app.dispatch(BarAct::SendTo { pending: "p1".into(), to: "s-a".into() });
+    app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::Yes });
+    let (_, call) = wire.call();
+    assert!(
+        matches!(call, Call::Resolve { to: Some(p), start: None, .. } if p == claude),
+        "{call:?}"
+    );
+    // Into a new one.
+    stage(&mut wire, "p2");
+    pumped(&mut app, |a| a.clients[0].waiting.iter().any(|s| s.id == "p2"));
+    app.dispatch(BarAct::SendTo { pending: "p2".into(), to: "start:grok".into() });
+    app.dispatch(BarAct::Resolve { project: weft(), pending: "p2".into(), answer: Answer::Yes });
+    let (_, call) = wire.call();
+    assert!(
+        matches!(&call, Call::Resolve { to: None, start: Some(h), .. } if h == "grok"),
+        "{call:?}"
+    );
 }

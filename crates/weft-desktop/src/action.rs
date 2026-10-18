@@ -106,22 +106,43 @@ pub enum BarAct {
     Eval,
     Seal,
     Cancel,
-    Resolve { project: PathBuf, pending: String, answer: Answer },
-    PickDisposition { project: PathBuf, eval: String, disposition: String },
-    ConfirmSeal { project: PathBuf, eval: String, disposition: String },
+    Resolve {
+        project: PathBuf,
+        pending: String,
+        answer: Answer,
+    },
+    PickDisposition {
+        project: PathBuf,
+        eval: String,
+        disposition: String,
+    },
+    ConfirmSeal {
+        project: PathBuf,
+        eval: String,
+        disposition: String,
+    },
     LeaveRunningAndQuit,
     StopAgentsAndQuit,
-    AllowDevice { device: String, yes: bool },
+    AllowDevice {
+        device: String,
+        yes: bool,
+    },
     ConfirmCloseProject(PathBuf),
+    /// Where a staged send goes instead of where it was staged.
+    SendTo {
+        pending: String,
+        to: String,
+    },
 }
 
 /// The sheets that take the workspace's place, and the docked Ask.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SheetAct {
     Close,
-    AskTarget {
-        session: String,
-    },
+    /// SEND TO opened or closed.
+    ToggleSendTo,
+    /// Where the open Ask goes: an agent's session, or a new agent's key.
+    AskTo(String),
     SubmitAsk,
     FollowUp {
         project: PathBuf,

@@ -25,6 +25,7 @@ use crate::daemon::{Answered, PaneView, ProjectClient, Then};
 use crate::gpui::{Element, div, palette};
 use crate::header::{HeaderProps, render_header};
 use crate::panes_view::{DropTarget, PanesProps, drag_tab, render_panes_workspace};
+use crate::sheets::send_to::SendTo;
 use crate::sheets::{MenuProps, SheetProps, render_menu_popover, render_sheet};
 use crate::text_field::{Shape, TextField};
 use crate::tree_view::{Listed, TreeProps, TreeSelection, render_plus_popover, render_tree};
@@ -88,7 +89,7 @@ const SETTLED: std::time::Duration = std::time::Duration::from_millis(100);
 pub enum ActiveSheet {
     Ask {
         project: PathBuf,
-        target_session: Option<String>,
+        send_to: Option<String>,
         follow_up_unit: Option<String>,
     },
     WorkDetail {
@@ -173,6 +174,11 @@ pub struct WeftDesktopApp {
     pub remote_pick: Option<String>,
     /// What the bar showed before a device asked to be allowed.
     before_allow: Option<BottomBarState>,
+    /// SEND TO is open.
+    pub send_to_open: bool,
+    /// Where each staged send goes, when the person picked other than where
+    /// it was staged.
+    staged_to: HashMap<String, String>,
     /// Updates opened by itself once: it does not again.
     updates_offered: bool,
     /// The device last answered: the bar does not ask again while
@@ -218,6 +224,8 @@ impl WeftDesktopApp {
             waiting: HashSet::new(),
             remote_pick: None,
             updates_offered: false,
+            send_to_open: false,
+            staged_to: HashMap::new(),
             before_allow: None,
             allow_answered: None,
             notices: Vec::new(),
@@ -340,6 +348,52 @@ impl WeftDesktopApp {
             self.updates_offered = true;
             self.active_sheet = Some(ActiveSheet::Updates);
         }
+    }
+
+    /// SEND TO for `project`, `picked` ticked: its running agents, then a new
+    /// agent of each harness.
+    pub fn send_to_view(&self, project: &Path, picked: Option<&str>) -> SendTo {
+        let listed = self.tree_projects().into_iter().find(|l| l.root == project);
+        let agents = listed
+            .map(|l| {
+                let name = l.project.name.clone();
+                l.project
+                    .agents
+                    .rows
+                    .into_iter()
+                    .filter(|a| a.state == SessionState::Running && a.pane.is_some())
+                    .map(|a| (a.session, format!("{name} · {}", a.harness)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let starts = self.harnesses().0.iter().map(|h| h.name.clone()).collect();
+        SendTo {
+            agents,
+            starts,
+            picked: picked.unwrap_or_default().to_string(),
+            open: self.send_to_open,
+        }
+    }
+
+    /// Where a staged send goes: what the person picked, else where it was
+    /// staged (that agent's session).
+    pub fn staged_send_to(&self, root: &Path, staged: &crate::daemon::Staged) -> String {
+        self.staged_to
+            .get(&staged.id)
+            .cloned()
+            .unwrap_or_else(|| self.session_in(root, staged.pane).unwrap_or_default())
+    }
+
+    /// The session running in `pane` of `root`, as the tree has it.
+    fn session_in(&self, root: &Path, pane: u32) -> Option<String> {
+        let listed = self.tree_projects().into_iter().find(|l| l.root == root)?;
+        listed.project.agents.rows.into_iter().find(|a| a.pane == Some(pane)).map(|a| a.session)
+    }
+
+    /// The pane of `session` in `root`, as the tree has it.
+    pub(crate) fn pane_of(&self, root: &Path, session: &str) -> Option<u32> {
+        let listed = self.tree_projects().into_iter().find(|l| l.root == root)?;
+        listed.project.agents.rows.into_iter().find(|a| a.session == session).and_then(|a| a.pane)
     }
 
     /// `weft remote`'s view, from whichever project heard it.
@@ -835,6 +889,12 @@ impl WeftDesktopApp {
             }));
         }
 
+        let ask_send_to = match &self.active_sheet {
+            Some(ActiveSheet::Ask { project, send_to, .. }) => {
+                Some(self.send_to_view(project, send_to.as_deref()))
+            }
+            _ => None,
+        };
         let sheet = self.active_sheet.as_ref().map(|sheet| {
             render_sheet(&SheetProps {
                 sheet,
@@ -844,6 +904,7 @@ impl WeftDesktopApp {
                 bottom_bar: &self.bottom_bar,
                 ask_draft: self.ask.text(),
                 remote_pick: self.remote_pick.as_deref(),
+                send_to: ask_send_to.as_ref(),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the
@@ -889,6 +950,11 @@ impl WeftDesktopApp {
             }));
         }
 
+        // A staged send's SEND TO: where it goes now.
+        let staged_to = self.clients.iter().find_map(|c| {
+            let staged = c.waiting.last()?;
+            Some(self.send_to_view(&c.root, Some(&self.staged_send_to(&c.root, staged))))
+        });
         div()
             .layer("window")
             .style("width", "100%")
@@ -903,6 +969,7 @@ impl WeftDesktopApp {
             .child(header)
             .child(body)
             .child(render_bottom_bar(&BottomBarProps {
+                staged_to: staged_to.as_ref(),
                 machine: &self.machine,
                 state: &self.bottom_bar,
                 clients: &self.clients,

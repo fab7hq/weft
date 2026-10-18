@@ -7,6 +7,7 @@ mod eval;
 mod menu;
 mod remote;
 mod seal;
+pub mod send_to;
 mod session;
 mod updates;
 mod work;
@@ -33,6 +34,8 @@ pub struct SheetProps<'a> {
     pub ask_draft: &'a str,
     /// The tunnel picked in Remote, not yet used.
     pub remote_pick: Option<&'a str>,
+    /// The open Ask's SEND TO.
+    pub send_to: Option<&'a send_to::SendTo>,
 }
 
 impl SheetProps<'_> {
@@ -48,9 +51,7 @@ impl SheetProps<'_> {
 /// The open sheet.
 pub fn render_sheet(props: &SheetProps) -> Element {
     match props.sheet {
-        ActiveSheet::Ask { project, target_session, follow_up_unit } => {
-            ask::render(props, project, target_session.as_deref(), follow_up_unit.as_deref())
-        }
+        ActiveSheet::Ask { follow_up_unit, .. } => ask::render(props, follow_up_unit.as_deref()),
         ActiveSheet::WorkDetail { project, unit } => work::render(props, project, unit),
         ActiveSheet::EvalDetail { project, eval } => eval::render_detail(props, project, eval),
         ActiveSheet::EvalView { project, eval, by_file, at } => {

@@ -263,8 +263,23 @@ impl WeftDesktopApp {
             BarAct::Cancel => self.bottom_bar = BottomBarState::None,
             BarAct::Resolve { project, pending, answer } => {
                 let (yes, force) = (answer != Answer::No, answer == Answer::Anyway);
-                let resolved =
-                    self.client_mut(&project).map(|c| c.resolve(&pending, yes, force, None, None));
+                // Where the person sent it, when not where it was staged.
+                let staged = self
+                    .client(&project)
+                    .and_then(|c| c.waiting.iter().find(|s| s.id == pending))
+                    .cloned();
+                let picked = self.staged_to.remove(&pending);
+                let (to, start) = match (picked.as_deref(), staged) {
+                    (Some(key), Some(staged)) => match key.strip_prefix("start:") {
+                        Some(h) => (None, Some(h.to_string())),
+                        None => (self.pane_of(&project, key).filter(|&p| p != staged.pane), None),
+                    },
+                    _ => (None, None),
+                };
+                self.send_to_open = false;
+                let resolved = self
+                    .client_mut(&project)
+                    .map(|c| c.resolve(&pending, yes, force, to, start.as_deref()));
                 if let Some(Err(e)) = resolved {
                     self.why_not(e.to_string());
                 }
@@ -295,6 +310,10 @@ impl WeftDesktopApp {
             BarAct::ConfirmCloseProject(p) => {
                 self.bottom_bar = BottomBarState::None;
                 self.close_project(&p);
+            }
+            BarAct::SendTo { pending, to } => {
+                self.staged_to.insert(pending, to);
+                self.send_to_open = false;
             }
             BarAct::AllowDevice { device, yes } => {
                 self.remote_act(serde_json::json!({"act": "allow", "device": device, "yes": yes}));
@@ -329,6 +348,7 @@ impl WeftDesktopApp {
     }
 
     fn open_ask(&mut self, project: PathBuf, session: Option<String>, unit: Option<String>) {
+        self.send_to_open = false;
         // No agent named: the one in front when it is this project's, else its
         // first running one. Named here, so the sheet shows where it goes.
         let session = session.or_else(|| {
@@ -346,30 +366,33 @@ impl WeftDesktopApp {
         });
         self.ask = TextField::new(Shape::Area);
         self.active_sheet =
-            Some(ActiveSheet::Ask { project, target_session: session, follow_up_unit: unit });
+            Some(ActiveSheet::Ask { project, send_to: session, follow_up_unit: unit });
         self.focus = Focus::Ask;
     }
 
     fn sheet_act(&mut self, a: SheetAct) {
         match a {
             SheetAct::Close => {
+                self.send_to_open = false;
                 self.active_sheet = None;
                 self.focus = Focus::Terminal;
             }
-            SheetAct::AskTarget { session } => {
-                if let Some(ActiveSheet::Ask { target_session, .. }) = &mut self.active_sheet {
-                    *target_session = Some(session);
+            SheetAct::ToggleSendTo => self.send_to_open = !self.send_to_open,
+            SheetAct::AskTo(key) => {
+                if let Some(ActiveSheet::Ask { send_to, .. }) = &mut self.active_sheet {
+                    *send_to = Some(key);
                 }
+                self.send_to_open = false;
             }
             SheetAct::SubmitAsk => {
-                if let Some(ActiveSheet::Ask { project, target_session, follow_up_unit }) =
+                if let Some(ActiveSheet::Ask { project, send_to, follow_up_unit }) =
                     self.active_sheet.clone()
                 {
                     let draft = self.ask.text().to_string();
                     // Not asked, the Ask stays open with what was written.
                     if self.submit_ask(
                         &project,
-                        target_session.as_deref(),
+                        send_to.as_deref(),
                         follow_up_unit.as_deref(),
                         &draft,
                     ) {
@@ -590,26 +613,16 @@ impl WeftDesktopApp {
     fn submit_ask(
         &mut self,
         project: &Path,
-        target_session: Option<&str>,
+        send_to: Option<&str>,
         follow_up_unit: Option<&str>,
         draft: &str,
     ) -> bool {
-        // The agent the sheet showed, by its pane.
-        let pane = self
-            .tree_projects()
-            .into_iter()
-            .find(|l| l.root == project)
-            .and_then(|l| {
-                l.project
-                    .agents
-                    .rows
-                    .into_iter()
-                    .find(|a| Some(a.session.as_str()) == target_session)
-            })
-            .and_then(|a| a.pane);
+        // The agent the sheet showed, by its pane; or a new one of a harness.
+        let start = send_to.and_then(|k| k.strip_prefix("start:")).map(str::to_string);
+        let pane = send_to.filter(|_| start.is_none()).and_then(|s| self.pane_of(project, s));
         let Some(client) = self.client_mut(project) else { return false };
         let act = if follow_up_unit.is_some() { "follow_up" } else { "ask" };
-        match client.act(act, follow_up_unit, pane, Some(draft), None, None) {
+        match client.act(act, follow_up_unit, pane, Some(draft), None, start.as_deref()) {
             Ok(_) => true,
             Err(e) => {
                 self.why_not(e.to_string());
