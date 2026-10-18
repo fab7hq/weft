@@ -240,14 +240,15 @@ impl Session {
     ) -> Option<u32> {
         let p = self.projects.get_mut(project)?;
         let cwd = p.root.to_string_lossy().into_owned();
-        // Turbo mode, when this project's config turns it on: the harness's
-        // own flags, after the person's own.
-        let flags = if p.turbo {
-            p.harnesses.find(harness).map(|h| h.turbo.clone()).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let turbo = !flags.is_empty();
+        // The harness's own flags, after the person's; then turbo mode's, when
+        // this project's config turns it on.
+        let (always, turbo_flags) = p
+            .harnesses
+            .find(harness)
+            .map(|h| (h.flags.clone(), if p.turbo { h.turbo.clone() } else { Vec::new() }))
+            .unwrap_or_default();
+        let turbo = !turbo_flags.is_empty();
+        let flags: Vec<String> = always.into_iter().chain(turbo_flags).collect();
         let words = weft_core::harness::with_turbo(spec, &flags);
         let program = words.first().cloned().unwrap_or_default();
         let argv: Vec<&str> = words.iter().skip(1).map(String::as_str).collect();

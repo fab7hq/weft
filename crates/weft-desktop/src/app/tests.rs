@@ -121,6 +121,7 @@ fn sample_harnesses() -> Harnesses {
         manifest: None,
         resume: vec!["--resume".into()],
         transcript: None,
+        flags: Vec::new(),
         turbo: vec!["--turbo".into()],
         unset_env: Vec::new(),
         signal: None,

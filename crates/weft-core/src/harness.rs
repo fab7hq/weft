@@ -61,6 +61,11 @@ pub struct Harness {
     /// transcript instead of letting the terminal keep it. `None` means it
     /// prints inline and Weft's own scrollback is the whole of it.
     pub transcript: Option<String>,
+    /// Flags added to every agent Weft starts, before turbo mode's: what this
+    /// harness needs to work in a Weft pane at all. Empty when the file names
+    /// none.
+    #[serde(default)]
+    pub flags: Vec<String>,
     /// Turbo mode: the flags that grant this harness every permission and
     /// skip its questions, added to every agent Weft starts when Weft's
     /// `config.toml` turns turbo on. Empty when the file names none.
@@ -142,6 +147,7 @@ impl Harness {
             manifest: text(&plugin["manifest"]),
             resume: argv(&p["resume"])?,
             transcript: text(&p["transcript"]),
+            flags: argv(&p["flags"]).unwrap_or_default(),
             turbo: argv(&p["turbo"]).unwrap_or_default(),
             unset_env: argv(&p["unset_env"]).unwrap_or_default(),
             signal: crate::signal::Signal::of(&p["signal"]),
