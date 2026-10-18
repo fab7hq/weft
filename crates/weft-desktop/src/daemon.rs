@@ -18,9 +18,9 @@ use weft_core::board::PaneInfo;
 use weft_core::harness::Harnesses;
 use weft_core::ledger::Unit;
 use weft_core::readiness::Readiness;
-use weft_core::rounds::Rounds;
 use weft_core::routing::Routing;
 use weft_core::turns::Turn;
+use weft_core::work::Work;
 use weft_proto::{Call, Event, Line, Lines, PROTOCOL, clear_dead, is_live, socket_path};
 
 /// One pane, as `weft-desktop` sees it.
@@ -322,7 +322,7 @@ pub struct ProjectClient {
     pub setup: Option<weft_core::onboarding::View>,
     pub remote: Option<Value>,
     pub records: Value,
-    pub rounds: Rounds,
+    pub work: Work,
     pub boards: u64,
     pub routing: Routing,
     pub gap: Option<String>,
@@ -391,7 +391,7 @@ impl ProjectClient {
             setup: None,
             remote: None,
             records: serde_json::json!({}),
-            rounds: Default::default(),
+            work: Default::default(),
             boards: 0,
             routing: Routing::default(),
             gap: None,
@@ -516,7 +516,7 @@ impl ProjectClient {
         }
         self.readiness = opened.get("readiness").cloned().unwrap_or_else(|| serde_json::json!({}));
         self.records = opened.get("records").cloned().unwrap_or_else(|| serde_json::json!({}));
-        self.rounds = serde_json::from_value(opened.get("rounds").cloned().unwrap_or_default())
+        self.work = serde_json::from_value(opened.get("work").cloned().unwrap_or_default())
             .unwrap_or_default();
         if let Some(agents) = opened.get("agents") {
             self.take_agents(agents);
@@ -741,10 +741,10 @@ impl ProjectClient {
                     p.running = false;
                 }
             }
-            Event::Units { units, records, rounds } => {
+            Event::Units { units, records, work } => {
                 self.units = units;
                 self.records = records;
-                self.rounds = rounds;
+                self.work = work;
                 self.boards += 1;
             }
             Event::Pending { id, pane, what, why, payload, sends } => {

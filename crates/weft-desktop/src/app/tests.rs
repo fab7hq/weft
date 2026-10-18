@@ -8,7 +8,6 @@ use weft_core::conversation::{Item, Kind};
 use weft_core::harness::{Harness, Harnesses};
 use weft_core::ledger::{Check, Sent, Unit, Verdict};
 use weft_core::onboarding::{Row as SetupRow, State as SetupState, View as SetupView};
-use weft_core::rounds::{Named, Round, Rounds, Sealed as SealedRound};
 use weft_core::sessions::{Row, State};
 use weft_core::state::{
     PaneViewMode, SavedPaneTab, SavedTabGroup, SplitLayout, WeftState, WindowBounds,
@@ -178,10 +177,15 @@ fn populate_sample_project(c: &mut ProjectClient) {
         harness: "codex".into(),
         confirmed: true,
         sent: Sent::TakenByAgent,
-        check: Some(check),
+        check: Some(Check { eval_id: "evl_2".into(), ..check }),
+        sealed: Some("accepted".into()),
+        seal_id: Some("sel_4".into()),
         ..Default::default()
     };
     c.units = vec![u1, u2, u3, u4];
+    for (u, minute) in c.units.iter_mut().zip([29, 20, 10, 5]) {
+        u.asked_at = format!("2026-10-08T11:{minute:02}:00Z");
+    }
 
     let mut r1 = Row::of("antigravity", "s1", State::Running, Some(Turn::Waiting), 1124);
     r1.title = Some("fix login".into());
@@ -198,30 +202,21 @@ fn populate_sample_project(c: &mut ProjectClient) {
         c.sessions.push(Row::of("claude", &format!("old_{i}"), State::Ended, None, 800 - i));
     }
 
-    c.rounds = Rounds {
-        judging: Vec::new(),
-        open: vec!["ask_1".into(), "ask_2".into()],
-        since: Some(3),
-        evals: vec![Round {
-            eval: "evl_3".into(),
-            n: 3,
-            judging: false,
-            verdict: Some(Verdict::Matches),
-            agreement: Some(0.67),
-            asks: vec!["ask_3".into(), "ask_4".into()],
-            sealed: None,
-        }],
-        seals: vec![SealedRound {
-            seal: "sel_4".into(),
-            n: 4,
-            decision: "accepted".into(),
-            at: String::new(),
-            by: "you".into(),
-            eval: Some(Named { id: "evl_2".into(), n: 2 }),
-            asks: vec!["old_a".into(), "old_b".into()],
-        }],
-        record: Default::default(),
-    };
+    // health endpoint judged by Eval 3; build number sealed by Seal 4 on Eval 2.
+    let record = weft_core::work::record(&[
+        json!({"type": "eval.opened", "id": "evl_2", "time": "2026-10-08T11:06:00Z",
+               "data": {"basis": {"asks": ["ask_4"]}}}),
+        json!({"type": "eval.completed", "id": "evl_2", "time": "2026-10-08T11:07:00Z",
+               "data": {"basis": {"asks": ["ask_4"]}, "verdict": "aligned", "confidence": 1.0}}),
+        json!({"type": "seal.created", "id": "sel_4", "time": "2026-10-08T11:08:00Z",
+               "actor": {"kind": "human"}, "links": [{"rel": "seals", "id": "evl_2"}],
+               "data": {"disposition": "accepted"}}),
+        json!({"type": "eval.opened", "id": "evl_3", "time": "2026-10-08T11:11:00Z",
+               "data": {"basis": {"asks": ["ask_3"]}}}),
+        json!({"type": "eval.completed", "id": "evl_3", "time": "2026-10-08T11:12:00Z",
+               "data": {"basis": {"asks": ["ask_3"]}, "verdict": "aligned", "confidence": 0.67}}),
+    ]);
+    c.work = weft_core::work::work(&c.units, &record);
 }
 
 fn home_with(state: WeftState) -> tempfile::TempDir {
@@ -249,8 +244,8 @@ pub(crate) fn wired_app() -> (tempfile::TempDir, WeftDesktopApp, Wire) {
     (tmp, app, wire)
 }
 
-fn seal(id: &str, n: usize, eval: Option<&str>) -> weft_core::rounds::Seal {
-    weft_core::rounds::Seal {
+fn seal(id: &str, n: usize, eval: Option<&str>) -> weft_core::work::Seal {
+    weft_core::work::Seal {
         id: id.into(),
         n,
         at: String::new(),
@@ -352,11 +347,10 @@ fn renders_header_and_collapsible_tree() {
         "row agent antigravity fix login",
         "row earlier sessions",
         "section WORK",
-        "row group Open",
-        "row ask fix login",
-        "row ask telemetry",
-        "row group Eval 3",
-        "row group Sealed",
+        "row unit fix login",
+        "row unit telemetry",
+        "row unit health endpoint",
+        "row unit build number",
     ] {
         assert!(tree.find_layer(layer).is_some(), "{layer}");
     }
@@ -365,8 +359,8 @@ fn renders_header_and_collapsible_tree() {
     let searched = app.render();
     let stree = searched.find_layer("tree").unwrap();
     assert!(stree.all_text().contains("2 match"));
-    assert!(stree.find_layer("row ask fix login").is_some());
-    assert!(stree.find_layer("row ask telemetry").is_none());
+    assert!(stree.find_layer("row unit fix login").is_some());
+    assert!(stree.find_layer("row unit telemetry").is_none());
     app.dispatch(TreeAct::ClearSearch);
     assert!(app.search.text().is_empty());
 
@@ -585,7 +579,7 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     pumped(&mut app, |a| a.clients[0].waiting.is_empty());
 
     // A refusal is said in the bar.
-    app.dispatch(TreeAct::SelectOpen(weft()));
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
     app.dispatch(BarAct::Eval);
     let (id, call) = wire.call();
     assert!(matches!(call, Call::Act { ref act, .. } if act == "eval"));
@@ -593,6 +587,59 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     pumped(&mut app, |a| {
         a.bottom_bar == BottomBarState::WhyNot { sentence: "no agent can run it".into() }
     });
+}
+
+/// WORK is a row per unit of work with one status; a unit opens as its
+/// workflow, and its Eval and Seal name it.
+#[test]
+fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let tree = app.render().find_layer("tree").unwrap().all_text();
+    for said in ["asked", "asking", "aligned · 0.67", "sealed · accepted"] {
+        assert!(tree.contains(said), "{said} in {tree}");
+    }
+    assert!(!tree.contains("Open") && !tree.contains("Eval 2"), "no rounds: {tree}");
+
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_3".into() });
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Unit").expect("the unit's Details");
+    let text = sheet.all_text();
+    for said in ["health endpoint", "1 Ask · codex · since", "WORKFLOW", "EVAL 2", "not sealed yet"]
+    {
+        assert!(text.contains(said), "{said} in {text}");
+    }
+    assert!(sheet.find_layer("step 3").is_some(), "Ask, Eval, not sealed");
+    assert!(dom.find_layer("tree bar").unwrap().all_text().contains("selected: health endpoint"));
+
+    // Seal decides on the unit's Eval; Eval names the unit.
+    app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
+    assert!(matches!(
+        &app.bottom_bar,
+        BottomBarState::SealDisposition { eval, .. } if eval == "evl_3"
+    ));
+    app.bottom_bar = BottomBarState::None;
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+    app.dispatch(BarAct::Eval);
+    let (_, call) =
+        wire.calls().into_iter().find(|(_, c)| matches!(c, Call::Act { .. })).expect("an act");
+    assert!(matches!(call, Call::Act { ref act, ref unit, .. }
+        if act == "eval" && unit.as_deref() == Some("ask_1")));
+    // A sealed unit says why it cannot be sealed again.
+    app.dispatch(BarAct::Cancel);
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
+    app.dispatch(BarAct::Seal);
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot { sentence: "build number is closed. Follow up asks again.".into() }
+    );
+    // Folded away, it says so all the same.
+    app.dispatch(TreeAct::ToggleProject(weft()));
+    app.bottom_bar = BottomBarState::None;
+    app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_4".into() });
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot { sentence: "build number is closed. Follow up asks again.".into() }
+    );
 }
 
 #[test]
@@ -637,7 +684,7 @@ fn what_was_asked_is_read_through_the_daemon_and_nothing_is_shown_until_it_is() 
 #[test]
 fn a_seals_receipt_is_checked_through_the_daemon_and_not_claimed_before() {
     let (_tmp, mut app, mut wire) = wired_app();
-    app.clients[0].rounds.record.seals = vec![seal("sel_4", 4, Some("evl_2"))];
+    app.clients[0].work.record.seals = vec![seal("sel_4", 4, Some("evl_2"))];
     app.dispatch(TreeAct::SelectSeal { project: weft(), seal: "sel_4".into() });
     let (id, call) = wire.call();
     assert!(
@@ -656,8 +703,9 @@ fn a_seals_receipt_is_checked_through_the_daemon_and_not_claimed_before() {
 #[test]
 fn an_eval_shows_no_verdict_or_agreement_the_record_does_not_give() {
     let (_tmp, mut app) = sample_app(false);
-    app.clients[0].rounds.evals[0].verdict = None;
-    app.clients[0].rounds.evals[0].agreement = None;
+    let e = app.clients[0].work.record.evals.iter_mut().find(|e| e.id == "evl_3").unwrap();
+    e.verdict = None;
+    e.agreement = None;
     app.dispatch(TreeAct::SelectEval { project: weft(), eval: "evl_3".into() });
     let sheet = app.render().find_layer("sheet EvalDetail").unwrap().all_text();
     assert!(!sheet.contains("aligned"), "{sheet}");
@@ -667,7 +715,7 @@ fn an_eval_shows_no_verdict_or_agreement_the_record_does_not_give() {
     let sheet = app.render().find_layer("sheet EvalDetail").unwrap().all_text();
     assert!(sheet.contains("evl_9") && !sheet.contains("Eval 1"), "{sheet}");
     // The Seal of an Eval the record does not name opens no made-up Eval view.
-    app.clients[0].rounds.record.seals = vec![seal("sel_9", 9, None)];
+    app.clients[0].work.record.seals = vec![seal("sel_9", 9, None)];
     app.dispatch(TreeAct::SelectSeal { project: weft(), seal: "sel_9".into() });
     let dom = app.render();
     assert!(dom.find_layer("btn Eval view").is_none());
@@ -831,7 +879,7 @@ fn nothing_is_asked_of_a_daemon_not_connected_and_the_bar_says_so() {
         BottomBarState::WhyNot { sentence: words::word("desktop.not_connected").into() }
     );
     assert!(app.clients[0].panes.is_empty(), "no pane made up");
-    app.dispatch(TreeAct::SelectOpen(weft()));
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
     app.dispatch(BarAct::Eval);
     assert!(app.clients[0].waiting.is_empty(), "no send staged without the daemon");
 }
@@ -1259,7 +1307,7 @@ fn a_read_refused_leaves_the_bar_and_a_refusal_never_covers_a_question() {
     pumped(&mut app, |a| !a.clients[0].owes(&Then::Source { unit: "ask_2".into() }));
     assert_eq!(app.bottom_bar, BottomBarState::None);
     app.clients[0].panes.push(PaneView::new(0, "claude".into(), "claude".into()));
-    app.dispatch(TreeAct::SelectOpen(weft()));
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
     app.dispatch(BarAct::Eval);
     app.bottom_bar = BottomBarState::QuitConfirm;
     let (id, _) = wire.calls().into_iter().find(|(_, c)| matches!(c, Call::Act { .. })).unwrap();
@@ -1271,7 +1319,7 @@ fn a_read_refused_leaves_the_bar_and_a_refusal_never_covers_a_question() {
 #[test]
 fn a_seal_opened_again_claims_nothing_until_checked_again() {
     let (_tmp, mut app, mut wire) = wired_app();
-    app.clients[0].rounds.record.seals = vec![seal("sel_4", 4, None)];
+    app.clients[0].work.record.seals = vec![seal("sel_4", 4, None)];
     app.dispatch(TreeAct::SelectSeal { project: weft(), seal: "sel_4".into() });
     let (id, _) = wire.call();
     wire.answer(id, json!({"seal_id": "sel_4", "codes": []}));

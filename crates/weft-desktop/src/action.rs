@@ -68,20 +68,21 @@ pub enum TreeAct {
         pane: Option<u32>,
     },
     OpenEarlier(PathBuf),
-    ToggleOpen(PathBuf),
-    SelectOpen(PathBuf),
-    SelectAsk {
+    /// A unit of work, by its root Ask: its Details open.
+    SelectWork {
         project: PathBuf,
         unit: String,
     },
-    ToggleEval {
+    /// An Ask's own Details, from its unit's workflow.
+    SelectAsk {
         project: PathBuf,
-        eval: String,
+        unit: String,
     },
     SelectEval {
         project: PathBuf,
         eval: String,
     },
+    /// The sealed units WORK folds: listed, or folded again.
     ToggleSealed(PathBuf),
     SelectSeal {
         project: PathBuf,
@@ -156,6 +157,16 @@ pub enum SheetAct {
     Seal {
         project: PathBuf,
         eval: String,
+    },
+    /// Eval this unit of work.
+    EvalWork {
+        project: PathBuf,
+        unit: String,
+    },
+    /// Seal this unit of work: the disposition bar opens.
+    SealWork {
+        project: PathBuf,
+        unit: String,
     },
     EvalView {
         project: PathBuf,

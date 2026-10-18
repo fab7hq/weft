@@ -30,7 +30,7 @@ pub(super) fn render(props: &SheetProps, project: &Path, session_id: &str) -> El
         .find(harness)
         .or_else(|| props.harnesses.find(harness))
         .is_some_and(|h| h.resume_joins);
-    let d = weft_core::offers::session_detail(row, &c.units, &c.rounds.record, joins);
+    let d = weft_core::offers::session_detail(row, &c.units, &c.work.record, joins);
     let state =
         word(if d.state == SessionState::Running { "state.running" } else { "state.ended" });
     let with = [("harness", harness), ("session", session_id)];

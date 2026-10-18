@@ -174,6 +174,10 @@ pub struct Unit {
     /// ASKED.
     #[serde(default)]
     pub requested_only: bool,
+    /// What it follows up, revises or remediates, as its links name it: an
+    /// Ask, or an Eval of the work it follows. None starts a work of its own.
+    #[serde(default)]
+    pub follows: Option<String>,
 }
 
 impl Unit {
@@ -262,6 +266,16 @@ pub fn parse_prefix(bytes: &[u8]) -> (Vec<Value>, usize) {
     (events, consumed)
 }
 
+/// The Ask or Eval an event's links say it follows up, revises or remediates.
+fn follows(e: &Value) -> Option<String> {
+    e.get("links")?
+        .as_array()?
+        .iter()
+        .find(|l| matches!(s(l, &["rel"]), Some("follows" | "revises" | "remediates")))
+        .and_then(|l| s(l, &["id"]))
+        .map(str::to_string)
+}
+
 fn s<'a>(v: &'a Value, path: &[&str]) -> Option<&'a str> {
     let mut cur = v;
     for key in path {
@@ -299,6 +313,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     session_ref: s(&data, &["host", "session_ref"]).map(str::to_string),
                     asked_at: s(e, &["time"]).unwrap_or_default().to_string(),
                     requested_only: true,
+                    follows: follows(e),
                     ..Default::default()
                 });
             }
@@ -310,6 +325,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                 // The compile of an Ask already on the list as asked takes its
                 // place there, and keeps when it was asked.
                 let asked = index.get(&id).map(|i| units[*i].asked_at.clone());
+                let requested = index.get(&id).and_then(|i| units[*i].follows.clone());
                 let at = *index.entry(id.clone()).or_insert(units.len());
                 let unit = Unit {
                     ask_id: id,
@@ -327,6 +343,7 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         .unwrap_or_else(|| s(e, &["time"]).unwrap_or_default().to_string()),
                     delivery_mode: mode,
                     sent,
+                    follows: follows(e).or(requested),
                     ..Default::default()
                 };
                 if at == units.len() {
@@ -506,6 +523,30 @@ mod tests {
         assert_eq!(u.title, "Login fix");
         assert_eq!(u.asked_at, "2026-09-19T14:01:00Z", "when it was asked");
         assert_eq!(u.status(), "not sent yet");
+    }
+
+    /// A follow-up names what it follows, from its request on and through
+    /// its compile: an Ask, or an Eval of the work it follows.
+    #[test]
+    fn an_ask_names_what_it_follows() {
+        let linked = |mut e: Value, rel: &str, to: &str| {
+            e["links"] = json!([{"rel": "parent", "id": "x"}, {"rel": rel, "id": to}]);
+            e
+        };
+        let units = project(&[
+            requested("ask_1", "fix login"),
+            linked(requested("ask_2", "and the logout"), "follows", "ask_1"),
+            linked(compiled("ask_3", "retry", "codex", "human_handoff"), "remediates", "evl_1"),
+            compiled("ask_4", "else", "codex", "human_handoff"),
+        ]);
+        let follows: Vec<Option<&str>> = units.iter().map(|u| u.follows.as_deref()).collect();
+        assert_eq!(follows, [None, Some("ask_1"), Some("evl_1"), None]);
+
+        let compiled_after = project(&[
+            linked(requested("ask_2", "and the logout"), "follows", "ask_1"),
+            linked(compiled("ask_2", "Logout", "codex", "human_handoff"), "follows", "ask_1"),
+        ]);
+        assert_eq!(compiled_after[0].follows.as_deref(), Some("ask_1"));
     }
 
     fn compiled(id: &str, title: &str, host: &str, mode: &str) -> Value {

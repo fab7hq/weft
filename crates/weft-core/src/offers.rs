@@ -121,12 +121,12 @@ fn sent(unit: &crate::ledger::Unit) -> bool {
 
 // --- Details, one level each --------------------------------------------
 //
-// A work shows only its Ask; an Eval, a Seal and a session each show once,
-// as themselves. weftd's facts in, a payload out: the desktop app draws these and a
+// A unit of work shows its workflow; an Ask, an Eval, a Seal and a session
+// each show once, as themselves. weftd's facts in, a payload out: the desktop app draws these and a
 // device is sent them (remote.md §6), so the two cannot say different
 // things.
 
-use crate::rounds::Record as Rounds;
+use crate::work::Record as Rounds;
 
 /// A Seal as a work's breadcrumb or an Eval names it: `{seal, n}`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -226,15 +226,18 @@ pub struct WorkDetail {
 pub fn work_detail(
     unit: &crate::ledger::Unit,
     record: &Rounds,
-    rounds: &crate::rounds::Rounds,
     session: Option<crate::tree::Agent>,
     source: Option<&str>,
     prompt: Option<&str>,
     zone: i64,
 ) -> WorkDetail {
-    let judging = rounds.judging.iter().find(|r| r.asks.contains(&unit.ask_id));
+    let judging = record
+        .evals
+        .iter()
+        .rev()
+        .find(|e| !e.completed() && !e.voided && e.asks.contains(&unit.ask_id));
     let eval = match (judging, &unit.check) {
-        (Some(j), _) => Some(CrumbEval { eval: j.eval.clone(), n: j.n, verdict: None }),
+        (Some(j), _) => Some(CrumbEval { eval: j.id.clone(), n: j.n, verdict: None }),
         (None, Some(c)) => record.evals.iter().find(|e| e.id == c.eval_id).map(|e| CrumbEval {
             eval: e.id.clone(),
             n: e.n,
@@ -310,6 +313,163 @@ pub fn work_detail(
     }
 }
 
+/// One step of a unit's workflow, in the order it happened.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[serde(tag = "step", rename_all = "snake_case")]
+pub enum Step {
+    /// Its first Ask, or a follow-up: opens that Ask's Details.
+    Ask {
+        unit: String,
+        title: String,
+        follow_up: bool,
+        /// Its harness, and how far it went: `<harness> · sent 10:52`.
+        aside: String,
+    },
+    /// An Eval of it: opens the Eval view.
+    Eval {
+        eval: String,
+        n: usize,
+        /// As recorded; none while it is being judged.
+        verdict: Option<&'static str>,
+        agreement: Option<String>,
+        /// When it was judged and what it found: `judged 11:20 · 4 met · 1 not met`.
+        aside: String,
+    },
+    /// A Seal of it: opens the Seal's Details.
+    Seal {
+        seal: String,
+        n: usize,
+        /// As a person reads it: accepted, rejected, parked, dropped.
+        decision: String,
+        /// When, and who decided: `11:40 · by you`.
+        aside: String,
+    },
+    /// Open Asks no Seal has closed: the workflow ends unsealed.
+    NotSealed,
+}
+
+/// A unit of work's Details: its workflow and its acts.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct UnitDetail {
+    pub unit: String,
+    pub title: String,
+    pub harness: String,
+    pub status: crate::work::Status,
+    /// `2 Asks · <harness> · since 10:52`.
+    pub aside: String,
+    pub steps: Vec<Step>,
+    /// The id a follow-up on it carries: its newest Eval, else its newest Ask.
+    pub follows: String,
+    /// `None` when Eval can run on it, else why not.
+    pub eval: Option<Why>,
+    /// `None` when Seal can run on it, else why not.
+    pub seal: Option<Why>,
+}
+
+/// A unit's Details. `judges` reads an Eval's record, when there is one;
+/// `eval` and `seal` are its row's why-nots.
+pub fn unit_detail(
+    u: &crate::work::UnitOfWork,
+    units: &[crate::ledger::Unit],
+    record: &Rounds,
+    judges: &dyn Fn(&str) -> Option<crate::record::Record>,
+    why: (Option<Why>, Option<Why>),
+    zone: i64,
+) -> UnitDetail {
+    use crate::words::{fill, word};
+    let clock = |t: &str| at(t).map(|t| stamp(t, zone)[11..].to_string()).unwrap_or_default();
+    let ask = |id: &str| units.iter().find(|a| a.ask_id == id);
+    let root = ask(&u.root);
+    let mut timed: Vec<(String, Step)> = Vec::new();
+    for (i, id) in u.asks.iter().enumerate() {
+        let Some(a) = ask(id) else { continue };
+        let went = if a.requested_only {
+            word("work.asking").to_string()
+        } else if sent(a) {
+            fill("unit.sent", &[("time", &clock(a.arrived_at.as_deref().unwrap_or(&a.asked_at)))])
+        } else {
+            word("unit.not_sent").to_string()
+        };
+        timed.push((
+            a.asked_at.clone(),
+            Step::Ask {
+                unit: a.ask_id.clone(),
+                title: a.title.clone(),
+                follow_up: i > 0,
+                aside: format!("{} · {went}", a.harness),
+            },
+        ));
+    }
+    for id in &u.evals {
+        let Some(e) = record.evals.iter().find(|e| &e.id == id) else { continue };
+        let aside = match &e.completed_at {
+            None => word("tree.judging").to_string(),
+            Some(t) => {
+                let mut line = fill("unit.judged", &[("time", &clock(t))]);
+                if let Some(r) = judges(&e.id) {
+                    let votes: Vec<&str> =
+                        r.items.iter().map(|i| mark_for(i.plain_majority())).collect();
+                    let met = votes.iter().filter(|m| **m == "✓").count();
+                    let not_met = votes.iter().filter(|m| **m == "✗").count();
+                    line.push_str(" · ");
+                    line.push_str(&fill(
+                        "unit.met",
+                        &[("met", &met.to_string()), ("not_met", &not_met.to_string())],
+                    ));
+                }
+                line
+            }
+        };
+        timed.push((
+            e.opened_at.clone(),
+            Step::Eval {
+                eval: e.id.clone(),
+                n: e.n,
+                verdict: e.verdict.map(|v| v.recorded()),
+                agreement: e.agreement.map(crate::ledger::score),
+                aside,
+            },
+        ));
+    }
+    for id in &u.seals {
+        let Some(s) = record.seals.iter().find(|s| &s.id == id) else { continue };
+        timed.push((
+            s.at.clone(),
+            Step::Seal {
+                seal: s.id.clone(),
+                n: s.n,
+                decision: crate::tree::decision(&s.disposition),
+                aside: fill("unit.sealed", &[("time", &clock(&s.at)), ("by", &s.by)]),
+            },
+        ));
+    }
+    // In the order they happened; a tie keeps Asks, Evals, Seals.
+    timed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut steps: Vec<Step> = timed.into_iter().map(|(_, s)| s).collect();
+    if !u.open.is_empty() {
+        steps.push(Step::NotSealed);
+    }
+    let harness = root.map(|r| r.harness.clone()).unwrap_or_default();
+    let n = u.asks.len();
+    let asks = if n == 1 {
+        word("unit.one_ask").to_string()
+    } else {
+        fill("unit.asks", &[("n", &n.to_string())])
+    };
+    let since = root.map(|r| clock(&r.asked_at)).unwrap_or_default();
+    UnitDetail {
+        unit: u.root.clone(),
+        title: root.map(|r| r.title.clone()).unwrap_or_default(),
+        aside: fill("unit.aside", &[("asks", &asks), ("harness", &harness), ("time", &since)]),
+        harness,
+        status: u.status.clone(),
+        steps,
+        follows: u.follows.clone(),
+        eval: why.0,
+        seal: why.1,
+    }
+}
+
 /// A finding or a check, marked ✓, ✗ or ?.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Marked {
@@ -341,7 +501,7 @@ pub struct EvalDetail {
 }
 
 pub fn eval_detail(
-    eval: &crate::rounds::Eval,
+    eval: &crate::work::Eval,
     judges: Option<&crate::record::Record>,
     units: &[crate::ledger::Unit],
     record: &Rounds,
@@ -437,7 +597,7 @@ pub struct SealDetail {
 }
 
 pub fn seal_detail(
-    seal: &crate::rounds::Seal,
+    seal: &crate::work::Seal,
     units: &[crate::ledger::Unit],
     record: &Rounds,
     checked: Option<&serde_json::Value>,
@@ -561,10 +721,11 @@ mod tests {
     // --- Details, one level each -----------------------------------------
 
     use super::{
-        Crumb, CrumbEval, Marked, SealRef, eval_detail, seal_detail, session_detail, work_detail,
+        Crumb, CrumbEval, Marked, SealRef, Step, eval_detail, seal_detail, session_detail,
+        unit_detail, work_detail,
     };
-    use crate::rounds::{record as record_of, rounds as rounds_of};
     use crate::sessions::{Row, State};
+    use crate::work::record as record_of;
 
     fn ev(kind: &str, id: &str, minute: u32, data: serde_json::Value) -> serde_json::Value {
         json!({"type": kind, "id": id, "time": format!("2026-10-08T11:{minute:02}:00Z"),
@@ -620,12 +781,10 @@ mod tests {
     fn a_works_details_hold_its_ask_under_a_breadcrumb_and_nothing_of_its_round() {
         let events = sample();
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
-        let rounds = rounds_of(&units, &record);
         let unit = |id: &str| units.iter().find(|u| u.ask_id == id).unwrap();
         let fix = work_detail(
             unit("ask_f"),
             &record,
-            &rounds,
             None,
             Some("Refresh the token"),
             Some("In src/login.rs"),
@@ -648,13 +807,13 @@ mod tests {
             ],
             "a blank line between its parts (T11.2)"
         );
-        let health = work_detail(unit("ask_h"), &record, &rounds, None, None, None, 0);
+        let health = work_detail(unit("ask_h"), &record, None, None, None, 0);
         assert_eq!(
             health.crumb.eval,
             Some(CrumbEval { eval: "evl_3".into(), n: 3, verdict: Some("aligned") })
         );
         assert_eq!(health.crumb.seal, None, "not sealed");
-        let readme = work_detail(unit("ask_r"), &record, &rounds, None, None, None, 7 * 3_600_000);
+        let readme = work_detail(unit("ask_r"), &record, None, None, None, 7 * 3_600_000);
         assert_eq!((readme.crumb.eval.unwrap().n, readme.crumb.seal.unwrap().n), (2, 1));
         assert_eq!(readme.ask.aside, "asked 2026-10-08 18:01 · sent", "in the Mac's time");
         let v = serde_json::to_value(&fix).unwrap();
@@ -681,8 +840,7 @@ mod tests {
                 ),
             ];
             let (units, record) = (crate::ledger::project(&events), record_of(&events));
-            let rounds = rounds_of(&units, &record);
-            work_detail(&units[0], &record, &rounds, None, None, None, 0).ask.lines.last().cloned()
+            work_detail(&units[0], &record, None, None, None, 0).ask.lines.last().cloned()
         };
         assert_eq!(
             typed(false).as_deref(),
@@ -701,13 +859,81 @@ mod tests {
             "delivery_mode": "human_handoff", "host": {"name": "claude"}}),
         )];
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
-        let rounds = rounds_of(&units, &record);
-        let d = work_detail(&units[0], &record, &rounds, None, None, None, 0);
+        let d = work_detail(&units[0], &record, None, None, None, 0);
         assert_eq!(
             d.ask.lines.last().map(String::as_str),
             Some("not sent yet, waiting for proceeding")
         );
         assert!(d.ask.aside.ends_with(" · not sent yet"), "{}", d.ask.aside);
+    }
+
+    /// A unit's Details: its workflow in the order it happened, each Ask
+    /// and follow-up, each Eval with what it found, and its Seal or none.
+    #[test]
+    fn a_units_details_are_its_workflow_in_order() {
+        let mut events = sample();
+        let mut follow = compiled("ask_g", "return 503 while the database is down", 8);
+        follow["links"] = json!([{"rel": "follows", "id": "evl_3"}]);
+        events.insert(8, follow);
+        let (units, record) = (crate::ledger::project(&events), record_of(&events));
+        let work = crate::work::work(&units, &record);
+        let judges = |id: &str| {
+            (id == "evl_3").then(|| {
+                crate::record::Record::parse(&json!({
+                    "eval_id": "evl_3", "verdict": "aligned", "confidence": 0.67, "judgements": [],
+                    "items": [{"text": "a", "majority": "yes", "agreement": 1.0},
+                              {"text": "b", "majority": "no", "agreement": 1.0}]
+                }))
+                .unwrap()
+            })
+        };
+        let health = work.of_ask("ask_h").unwrap();
+        let d = unit_detail(health, &units, &work.record, &judges, (None, None), 0);
+        assert_eq!(
+            (d.title.as_str(), d.aside.as_str()),
+            ("health endpoint", "2 Asks · claude · since 11:05")
+        );
+        assert_eq!(
+            d.steps,
+            [
+                Step::Ask {
+                    unit: "ask_h".into(),
+                    title: "health endpoint".into(),
+                    follow_up: false,
+                    aside: "claude · sent 11:05".into(),
+                },
+                Step::Eval {
+                    eval: "evl_3".into(),
+                    n: 3,
+                    verdict: Some("aligned"),
+                    agreement: Some("0.67".into()),
+                    aside: "judged 11:07 · 1 met · 1 not met".into(),
+                },
+                Step::Ask {
+                    unit: "ask_g".into(),
+                    title: "return 503 while the database is down".into(),
+                    follow_up: true,
+                    aside: "claude · sent 11:08".into(),
+                },
+                Step::NotSealed,
+            ]
+        );
+        assert_eq!(d.follows, "evl_3");
+        let readme = work.of_ask("ask_r").unwrap();
+        let d = unit_detail(readme, &units, &work.record, &|_| None, (None, None), 0);
+        assert_eq!(d.aside, "1 Ask · claude · since 11:01");
+        assert_eq!(
+            d.steps.last(),
+            Some(&Step::Seal {
+                seal: "sel_4".into(),
+                n: 1,
+                decision: "accepted".into(),
+                aside: "11:40 · by you".into()
+            })
+        );
+        let v = serde_json::to_value(&d).unwrap();
+        assert_eq!(v["steps"][1]["step"], "eval");
+        assert_eq!(v["status"], json!({"state": "sealed", "decision": "accepted"}));
     }
 
     #[test]
@@ -744,7 +970,7 @@ mod tests {
             None,
             &units,
             &record,
-            crate::rounds::sealed_already(&record, "evl_2"),
+            crate::work::sealed_already(&record, "evl_2"),
         );
         assert_eq!(two.sealed, Some(SealRef { seal: "sel_4".into(), n: 1 }));
         assert_eq!(two.seal.map(|w| w.say()).as_deref(), Some("Eval 2 is sealed already."));

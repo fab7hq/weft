@@ -340,7 +340,7 @@ impl Remote {
             // Into a new agent of a harness the project starts (remote.md §6).
             Some("ask" | "follow_up") if m["start"].is_string() => (self.project_named(m)?, None),
             Some("ask" | "follow_up") => self.agent(m).map(|(at, pane)| (at, Some(pane)))?,
-            // Eval and Seal act on a round of a project (remote.md §6).
+            // Eval and Seal act on a unit of work of a project (remote.md §6).
             Some("eval" | "seal") => (self.project_named(m)?, None),
             _ => {
                 let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
@@ -510,12 +510,13 @@ impl Remote {
         // What the device reads of a project it names, answered at once from
         // what this process holds: no read reaches weftd for a page.
         let local = match what {
-            Some("eval" | "session" | "sealed" | "sessions") => {
+            Some("eval" | "work" | "session" | "sealed" | "sessions") => {
                 let at = self.project_named(m)?;
                 let agents = &self.projects[at].as_ref().expect("an open project").agents;
                 let id = |k: &str| m[k].as_str().ok_or(("bad_request", format!("no {k}")));
                 Some(match what {
                     Some("eval") => json!({"eval": agents.eval(id("eval")?)?}),
+                    Some("work") => json!({"work": agents.work(id("unit")?)?}),
                     Some("session") => json!({"session": agents.session(id("session")?)?}),
                     Some("sealed") => json!({"sealed": agents.sealed(after)}),
                     _ => json!({"sessions": agents.sessions(m["q"].as_str(), after, now_millis())}),
@@ -558,8 +559,8 @@ impl Remote {
             _ => {
                 return Err((
                     "not_allowed",
-                    "a device reads history, detail, eval, seal, session, sealed, sessions or \
-                     eval_view"
+                    "a device reads history, detail, work, eval, seal, session, sealed, sessions \
+                     or eval_view"
                         .into(),
                 ));
             }

@@ -1102,12 +1102,12 @@ fn turbo_can_be_switched_and_the_next_agent_follows_it() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// Eval acts on the Open round and Seal on an Eval's: a
-/// Seal names its Eval, `--eval`, so RingFrame closes exactly its Asks; one
-/// on an Eval still judged, already sealed, or unnamed is refused; Eval with
-/// no Ask named goes on with the round being judged.
+/// Eval and Seal act on a unit of work: a Seal names the unit's Eval,
+/// `--eval`, so RingFrame closes exactly its Asks; one on an Eval still
+/// judged, already sealed, or on no unit is refused; Eval on a unit being
+/// judged goes on with its debate.
 #[test]
-fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
+fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
     let root = project("rounds");
     ask_on_record(&root, "sh");
     gathered_on_record(&root);
@@ -1130,17 +1130,17 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
     c.wait_for_state(Some(Turn::Ready));
     let act = |act: &str, eval: Option<&str>| Call::Act {
         act: act.into(),
-        unit: None,
+        unit: (eval.is_none() && act == "check").then(|| "ask_1".to_string()),
         pane: None,
         text: None,
         eval: eval.map(str::to_string),
         start: None,
     };
-    assert_eq!(c.answer(act("decide", None)), Err("no_eval".into()));
+    assert_eq!(c.answer(act("decide", None)), Err("no_unit".into()));
     assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));
-    assert_eq!(c.answer(act("decide", Some("evl_9"))), Err("no_eval".into()));
+    assert_eq!(c.answer(act("decide", Some("evl_9"))), Err("no_unit".into()));
 
-    // Eval on the round being judged sends its debate.
+    // Eval on the unit being judged sends its debate.
     c.send(act("check", None));
     let payload = c.wait_until(|e| match e {
         Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).into_owned()),
@@ -1163,7 +1163,11 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
     writeln!(f, "{}", line("eval.completed", "evl_1", basis, serde_json::json!([]))).unwrap();
     drop(f);
     c.wait_until(|e| match e {
-        Event::Units { rounds, .. } if rounds.evals.iter().any(|r| r.eval == "evl_1") => Some(()),
+        Event::Units { work, .. }
+            if work.of_eval("evl_1").is_some_and(|u| work.to_seal(u).is_some()) =>
+        {
+            Some(())
+        }
         _ => None,
     });
     c.send(act("decide", Some("evl_1")));
@@ -1173,7 +1177,7 @@ fn a_seal_names_its_eval_and_an_eval_acts_on_the_round() {
     });
     assert!(staged.contains("seal") && staged.ends_with("--eval evl_1"), "{staged}");
 
-    // Sealed, the act stays and says so (D12.6).
+    // Sealed, the act stays and says so.
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(root.join(".fab7/rf/ledger.jsonl"))

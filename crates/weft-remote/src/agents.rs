@@ -41,8 +41,8 @@ pub struct Project {
     since: HashMap<u32, (&'static str, i64)>,
     /// The board: the tree, and the works a device acts on.
     units: Vec<Unit>,
-    /// The board grouped by Eval round, as the daemon built it.
-    rounds: weft_core::rounds::Rounds,
+    /// The record as units of work, as the daemon built it.
+    work: weft_core::work::Work,
     /// The Eval record behind each check, as the daemon read it.
     records: Value,
     /// The project's session index, and the Mac's distance from
@@ -89,7 +89,7 @@ impl Project {
             titles,
             since: HashMap::new(),
             units: serde_json::from_value(answer["units"].clone()).unwrap_or_default(),
-            rounds: serde_json::from_value(answer["rounds"].clone()).unwrap_or_default(),
+            work: serde_json::from_value(answer["work"].clone()).unwrap_or_default(),
             records: answer["records"].clone(),
             sessions: serde_json::from_value(answer["agents"]["sessions"].clone())
                 .unwrap_or_default(),
@@ -131,10 +131,10 @@ impl Project {
                 self.turns = panes.clone();
                 self.sessions = sessions.clone();
             }
-            Event::Units { units, records, rounds } => {
+            Event::Units { units, records, work } => {
                 self.units = units.clone();
                 self.records = records.clone();
-                self.rounds = rounds.clone();
+                self.work = work.clone();
             }
             Event::Readiness { states } => self.readiness = states.clone(),
             Event::Workspace { setup, .. } => self.setup = *setup,
@@ -229,23 +229,10 @@ impl Project {
     }
 
     /// This project's row of the `tree` message (remote.md §6):
-    /// weft-core's AGENTS and WORK, Sealed and the earlier sessions as
-    /// counts, each session a Weft pane holds naming its agent.
+    /// weft-core's AGENTS and WORK, the earlier sessions and the earlier
+    /// sealed units as counts, each session a Weft pane holds naming its agent.
     pub fn tree(&self) -> Value {
-        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
-        let facts = weft_core::tree::Facts {
-            name: &self.name,
-            units: &self.units,
-            panes: &self.panes,
-            agents: &self.turns,
-            sessions: &self.sessions,
-            rounds: &self.rounds,
-            readiness: &ready,
-            routing: &self.routing,
-            setup: self.setup,
-        };
-        let folded = |_: usize, f: weft_core::tree::Fold| f == weft_core::tree::Fold::Sealed;
-        let project = weft_core::tree::rows(&[facts], &folded).remove(0);
+        let project = self.rows_of(Some(weft_core::tree::Fold::Sealed));
         let mut row = serde_json::to_value(&project).unwrap_or_default();
         for (a, at) in project
             .agents
@@ -258,6 +245,23 @@ impl Project {
         row["turbo"] = self.turbo.into();
         row["reopened"] = self.reopened.into();
         row
+    }
+
+    /// This project's tree, with `fold` folded, if any.
+    fn rows_of(&self, fold: Option<weft_core::tree::Fold>) -> weft_core::tree::Project {
+        let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
+        let facts = weft_core::tree::Facts {
+            name: &self.name,
+            units: &self.units,
+            panes: &self.panes,
+            agents: &self.turns,
+            sessions: &self.sessions,
+            work: &self.work,
+            readiness: &ready,
+            routing: &self.routing,
+            setup: self.setup,
+        };
+        weft_core::tree::rows(&[facts], &|_, f| Some(f) == fold).remove(0)
     }
 
     /// Take what `agents.available` answered; whether it changed.
@@ -292,8 +296,8 @@ impl Project {
     /// the one its work was asked in, never a harness's latest.
     pub fn missing(&self, m: &Value) -> Option<(String, Value)> {
         let (act, unit) = match m["act"].as_str()? {
-            "eval" => (Act::Eval, self.round_ask(None)),
-            "seal" => (Act::Seal, self.round_ask(m["eval"].as_str())),
+            "eval" => (Act::Eval, self.routed_by(m)),
+            "seal" => (Act::Seal, self.routed_by(m)),
             "proceed" => (Act::Proceed, m["unit"].as_str().map(str::to_string)),
             _ => return None,
         };
@@ -303,14 +307,54 @@ impl Project {
         Some((harness, session.map(|r| self.agent_json(r)).unwrap_or(Value::Null)))
     }
 
-    /// The Ask a round's act is routed by: an Eval's newest, else Open's,
-    /// else the newest of an Eval being judged (Eval goes on with it).
-    fn round_ask(&self, eval: Option<&str>) -> Option<String> {
-        let r = &self.rounds;
-        match eval {
-            Some(id) => r.eval(id).and_then(|g| g.asks.first()).cloned(),
-            None => r.open.first().or(r.judging.first().and_then(|j| j.asks.first())).cloned(),
+    /// The unit of work an Eval or a Seal acts on: named by any of its Asks
+    /// (`unit`), or a Seal by its Eval (`eval`).
+    fn unit_of(&self, m: &Value) -> Option<&weft_core::work::UnitOfWork> {
+        match (m["unit"].as_str(), m["eval"].as_str()) {
+            (Some(id), _) => self.work.of_ask(id),
+            (None, Some(id)) => self.work.of_eval(id),
+            _ => None,
         }
+    }
+
+    /// The Ask an act on a unit is routed by: its newest open composed one.
+    fn routed_by(&self, m: &Value) -> Option<String> {
+        self.unit_of(m).and_then(|u| u.route.clone())
+    }
+
+    /// A unit's root Ask, whose title and harness are the unit's.
+    fn root_of(&self, u: &weft_core::work::UnitOfWork) -> Unit {
+        self.units.iter().find(|a| a.ask_id == u.root).cloned().unwrap_or_default()
+    }
+
+    /// The board's why-not for `act` with that Ask selected.
+    fn ready(&self, act: Act, ask: Option<&str>) -> Option<weft_core::tree::Why> {
+        let at = ask.and_then(|id| self.units.iter().position(|x| x.ask_id == id));
+        self.board(at, None, |b| b.not_ready(act))
+    }
+
+    fn eval_why(&self, u: &weft_core::work::UnitOfWork) -> Option<weft_core::tree::Why> {
+        weft_core::work::eval_why(u, &self.root_of(u), &|a| self.ready(Act::Eval, a))
+    }
+
+    fn unit_seal_why(&self, u: &weft_core::work::UnitOfWork) -> Option<weft_core::tree::Why> {
+        weft_core::work::seal_why(&self.work, u, &self.root_of(u), &|a| self.ready(Act::Seal, a))
+    }
+
+    /// A unit of work's Details: its workflow and its acts.
+    pub fn work(&self, id: &str) -> Result<Value, Refusal> {
+        let u = self.work.of_ask(id).ok_or(("no_unit", format!("{id} is not on the board")))?;
+        let judges =
+            |e: &str| self.records.get(e).and_then(|v| serde_json::from_value(v.clone()).ok());
+        let d = weft_core::offers::unit_detail(
+            u,
+            &self.units,
+            &self.work.record,
+            &judges,
+            (self.eval_why(u), self.unit_seal_why(u)),
+            self.zone,
+        );
+        Ok(serde_json::to_value(d).unwrap_or_default())
     }
 
     /// One session of this project, as the index holds it.
@@ -399,8 +443,7 @@ impl Project {
         });
         let d = weft_core::offers::work_detail(
             unit,
-            &self.rounds.record,
-            &self.rounds,
+            &self.work.record,
             agent,
             source,
             prompt,
@@ -415,7 +458,7 @@ impl Project {
 
     /// An Eval's Details (T11.3), once.
     pub fn eval(&self, id: &str) -> Result<Value, Refusal> {
-        let record = &self.rounds.record;
+        let record = &self.work.record;
         let e = record
             .evals
             .iter()
@@ -433,19 +476,11 @@ impl Project {
         Ok(serde_json::to_value(d).unwrap_or_default())
     }
 
-    /// Why Seal cannot run on this Eval, if it cannot: sealed already, still
-    /// being judged, or as the harness it goes to.
+    /// Why Seal cannot run from this Eval, if it cannot: sealed already, or
+    /// as Seal on its unit of work cannot.
     fn seal_why(&self, eval: &str) -> Option<weft_core::tree::Why> {
-        match self.rounds.eval(eval) {
-            Some(round) => {
-                let board = |u: Option<&str>| {
-                    let at = u.and_then(|id| self.units.iter().position(|x| x.ask_id == id));
-                    self.board(at, None, |b| b.not_ready(Act::Seal))
-                };
-                weft_core::rounds::seal_why(round, &board)
-            }
-            None => weft_core::rounds::sealed_already(&self.rounds.record, eval),
-        }
+        weft_core::work::sealed_already(&self.work.record, eval)
+            .or_else(|| self.work.of_eval(eval).and_then(|u| self.unit_seal_why(u)))
     }
 
     /// A Seal's Details (T11.4), its Asks a page at a time.
@@ -456,17 +491,18 @@ impl Project {
         after: Option<&str>,
     ) -> Result<Value, Refusal> {
         let s = self
-            .rounds
+            .work
             .record
             .seals
             .iter()
             .find(|s| s.id == id)
             .ok_or(("no_seal", format!("{id} is no Seal here")))?;
-        let d = weft_core::offers::seal_detail(s, &self.units, &self.rounds.record, checked);
+        let d = weft_core::offers::seal_detail(s, &self.units, &self.work.record, checked);
         let mut v = serde_json::to_value(&d).unwrap_or_default();
         let (asks, next) = page(&d.asks, after, |a| a.unit.as_str());
         v["asks"] = serde_json::to_value(asks).unwrap_or_default();
         v["next"] = next.into();
+        v["total"] = d.asks.len().into();
         Ok(v)
     }
 
@@ -474,26 +510,22 @@ impl Project {
     pub fn session(&self, id: &str) -> Result<Value, Refusal> {
         let row = self.session_row(id).ok_or(("no_session", format!("{id} is no session here")))?;
         let joins = self.files.find(&row.harness).is_some_and(|h| h.resume_joins);
-        let d = weft_core::offers::session_detail(row, &self.units, &self.rounds.record, joins);
+        let d = weft_core::offers::session_detail(row, &self.units, &self.work.record, joins);
         let mut v = serde_json::to_value(d).unwrap_or_default();
         v["agent"] = row.pane.map(|p| agent_id(&self.key, p)).into();
         Ok(v)
     }
 
-    /// The Seals Sealed folds, a page at a time, newest first.
+    /// The sealed units WORK folds, a page at a time, newest first.
     pub fn sealed(&self, after: Option<&str>) -> Value {
-        let rows: Vec<Value> = self
-            .rounds
-            .seals
+        let all = self.rows_of(None);
+        let shown = self.rows_of(Some(weft_core::tree::Fold::Sealed)).work.units.len();
+        let rows: Vec<Value> = all.work.units[shown.min(all.work.units.len())..]
             .iter()
-            .map(|s| {
-                json!({"seal": s.seal, "n": s.n, "decision": weft_core::tree::decision(&s.decision),
-                       "at": weft_core::turns::millis(&s.at), "eval": s.eval.as_ref().map(|e| e.n),
-                       "asks": s.asks.len()})
-            })
+            .map(|r| serde_json::to_value(r).unwrap_or_default())
             .collect();
-        let (rows, next) = page(&rows, after, |r| r["seal"].as_str().unwrap_or_default());
-        json!({"seals": rows, "next": next})
+        let (rows, next) = page(&rows, after, |r| r["unit"].as_str().unwrap_or_default());
+        json!({"units": rows, "next": next})
     }
 
     /// The earlier sessions, past the tree's, narrowed by `q` and grouped by
@@ -522,8 +554,8 @@ impl Project {
 
     /// What a device's act asks the daemon (remote.md §6): an Ask to the
     /// agent it names (`pane`), Proceed or Follow up on a work (`unit`), Eval
-    /// on the Open round, Seal on an Eval's (`eval`). When the act cannot
-    /// run, the refusal's code is the why-not's `words` key.
+    /// and Seal on a unit of work (`unit`, or Seal's `eval`). When the act
+    /// cannot run, the refusal's code is the why-not's `words` key.
     pub fn act(&self, m: &Value, pane: Option<u32>) -> Result<Call, Refusal> {
         let (act, daemon) = match m["act"].as_str() {
             Some("ask") => (Act::Ask, "ask"),
@@ -542,30 +574,22 @@ impl Project {
         let mut eval = None;
         let unit = match act {
             Act::Ask => None,
-            Act::Eval => {
-                let board = |u: Option<&str>| {
-                    let at = u.and_then(|id| self.units.iter().position(|x| x.ask_id == id));
-                    self.board(at, None, |b| b.not_ready(Act::Eval))
+            Act::Eval | Act::Seal => {
+                let u = self
+                    .unit_of(m)
+                    .ok_or(("no_unit", "Eval and Seal name the work they act on".to_string()))?;
+                let why = match (act, m["eval"].as_str()) {
+                    (Act::Eval, _) => self.eval_why(u),
+                    (_, Some(e)) => self.seal_why(e),
+                    _ => self.unit_seal_why(u),
                 };
-                if let Some(why) = weft_core::rounds::eval_why(&self.rounds, &board) {
+                if let Some(why) = why {
                     return Err(said(why));
                 }
-                None
-            }
-            Act::Seal => {
-                let id = m["eval"]
-                    .as_str()
-                    .ok_or(("bad_request", "a Seal names its Eval".to_string()))?;
-                if self.rounds.eval(id).is_none()
-                    && weft_core::rounds::sealed_already(&self.rounds.record, id).is_none()
-                {
-                    return Err(("no_eval", format!("{id} is no Eval round here")));
+                if act == Act::Seal {
+                    eval = self.work.to_seal(u).map(|e| e.id.clone());
                 }
-                if let Some(why) = self.seal_why(id) {
-                    return Err(said(why));
-                }
-                eval = Some(id.to_string());
-                None
+                u.route.as_ref().and_then(|id| self.units.iter().position(|x| &x.ask_id == id))
             }
             _ => match m["unit"].as_str() {
                 Some(id) => Some(
@@ -687,21 +711,39 @@ mod tests {
                  "resumable": true}]},
             "harnesses": [{"name": "claude", "title": "Claude Code"}],
             "units": [unit("ask_1", "fix login")],
-            "rounds": {"open": ["ask_1"]},
+            "work": work_of(&[unit("ask_1", "fix login")], &[]),
             "readiness": {"claude": "ready"},
         });
         Project::opened(Path::new("/work/weft"), &answer)
     }
 
-    fn open_asks(tree: &Value) -> Vec<(String, String)> {
-        tree["work"]["open"]["asks"]
+    /// The units of work of these Asks and these Eval and Seal events.
+    fn work_of(units: &[Unit], events: &[Value]) -> weft_core::work::Work {
+        weft_core::work::work(units, &weft_core::work::record(events))
+    }
+
+    /// Each unit's title and status.
+    fn work_rows(tree: &Value) -> Vec<(String, String)> {
+        tree["work"]["units"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|w| {
-                (w["title"].as_str().unwrap().to_string(), w["word"].as_str().unwrap().to_string())
+                (
+                    w["title"].as_str().unwrap().to_string(),
+                    w["status"]["state"].as_str().unwrap().to_string(),
+                )
             })
             .collect()
+    }
+
+    fn judged_events(asks: &[&str]) -> Vec<Value> {
+        vec![
+            json!({"type": "eval.opened", "id": "evl_1", "time": "2026-10-08T10:00:00Z",
+                   "data": {"basis": {"asks": asks}}}),
+            json!({"type": "eval.completed", "id": "evl_1", "time": "2026-10-08T10:05:00Z",
+                   "data": {"basis": {"asks": asks}, "verdict": "aligned", "confidence": 1.0}}),
+        ]
     }
 
     /// Once an agent's turn has ended, its row puts forward the next act for
@@ -718,16 +760,16 @@ mod tests {
                  "resumable": true}]},
             "harnesses": [{"name": "claude", "title": "Claude Code"}],
             "units": [unit("ask_1", "fix login")],
-            "rounds": {"open": ["ask_1"]},
+            "work": work_of(&[unit("ask_1", "fix login")], &[]),
             "readiness": {"claude": "ready"},
         });
         let ended = Project::opened(Path::new("/work/weft"), &answer);
         assert_eq!(ended.rows()[0]["next"], "eval");
     }
 
-    /// remote.md §6: AGENTS with each session's agent, and the Open round.
+    /// remote.md §6: AGENTS with each session's agent, and WORK's units.
     #[test]
-    fn the_tree_names_each_sessions_agent_and_the_open_rounds_asks() {
+    fn the_tree_names_each_sessions_agent_and_the_units_of_work() {
         let p = opened();
         let tree = p.tree();
         assert_eq!(
@@ -745,56 +787,39 @@ mod tests {
             (s["session"].clone(), s["turn"].clone(), s["title"].clone()),
             (json!("s_1"), json!("waiting"), json!("fix login"))
         );
-        assert_eq!(open_asks(&tree), [("fix login".into(), "asked".into())]);
-        assert_eq!(tree["work"]["open"]["eval"], Value::Null);
+        assert_eq!(work_rows(&tree), [("fix login".into(), "asked".into())]);
+        assert_eq!(tree["work"]["units"][0]["eval"], Value::Null);
         assert!(tree.get("harnesses").is_none(), "no harness rows");
     }
 
     #[test]
     fn a_unit_added_an_eval_recorded_and_an_agent_ending_change_the_tree() {
         let mut p = opened();
-        let units = vec![unit("ask_1", "fix login"), unit("ask_2", "telemetry")];
-        let rounds = |open: &[&str], judged: &[&str]| weft_core::rounds::Rounds {
-            open: open.iter().map(|s| s.to_string()).collect(),
-            evals: if judged.is_empty() {
-                Vec::new()
-            } else {
-                vec![weft_core::rounds::Round {
-                    eval: "evl_1".into(),
-                    n: 1,
-                    judging: false,
-                    verdict: Some(weft_core::ledger::Verdict::Matches),
-                    agreement: Some(1.0),
-                    asks: judged.iter().map(|s| s.to_string()).collect(),
-                    sealed: None,
-                }]
-            },
-            ..Default::default()
-        };
+        let mut later = unit("ask_2", "telemetry");
+        later.asked_at = "2026-10-08T09:00:00Z".into();
+        let units = vec![unit("ask_1", "fix login"), later];
         assert!(p.heard(&Event::Units {
             units: units.clone(),
             records: json!({}),
-            rounds: rounds(&["ask_2", "ask_1"], &[])
+            work: work_of(&units, &[]),
         }));
         assert_eq!(
-            open_asks(&p.tree()),
+            work_rows(&p.tree()),
             [("telemetry".into(), "asked".into()), ("fix login".into(), "asked".into())]
         );
         assert!(p.heard(&Event::Units {
-            units,
+            units: units.clone(),
             records: json!({}),
-            rounds: rounds(&["ask_2"], &["ask_1"])
+            work: work_of(&units, &judged_events(&["ask_1"])),
         }));
         let tree = p.tree();
-        let g = &tree["work"]["evals"][0];
+        let g = &tree["work"]["units"][0];
         assert_eq!(
-            (g["n"].clone(), g["verdict"].clone(), g["agreement"].clone()),
-            (json!(1), json!("aligned"), json!("1.0"))
-        );
-        assert_eq!(
-            g["asks"],
-            json!([{"unit": "ask_1", "title": "fix login", "harness": "claude"}]),
-            "no word under an Eval"
+            (g["title"].clone(), g["status"].clone()),
+            (
+                json!("fix login"),
+                json!({"state": "judged", "verdict": "aligned", "agreement": 1.0})
+            )
         );
         assert!(p.heard(&Event::Exited { pane: 4 }));
         assert_eq!(
@@ -810,7 +835,7 @@ mod tests {
         assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
         let tree = p.tree();
         let why = json!({"key": "why.not_set_up", "harness": "claude"});
-        assert_eq!(tree["work"]["open"]["eval"], why);
+        assert_eq!(tree["work"]["units"][0]["eval"], why);
         assert_eq!(tree["agents"]["rows"][0]["ask"], why);
     }
 
@@ -829,14 +854,13 @@ mod tests {
         assert_eq!(p.tree()["setup"], Value::Null, "set up as soon as it all held");
     }
 
-    /// Folded on the wire: Sealed is counts; Open and an Eval are the
-    /// device's own to fold, so they arrive whole.
+    /// Folded on the wire: the earlier sealed units are a count.
     #[test]
-    fn sealed_travels_as_counts_and_a_device_folds_the_rest() {
+    fn earlier_sealed_units_travel_as_a_count() {
         let tree = opened().tree();
-        assert!(tree.get("folded").is_none() && tree["work"]["open"].get("folded").is_none());
-        assert_eq!(tree["work"]["sealed"], json!({"seals": 0, "asks": 0}));
-        assert_eq!(open_asks(&tree).len(), 1, "Open is not folded on the wire");
+        assert!(tree.get("folded").is_none());
+        assert_eq!(tree["work"]["earlier"], 0);
+        assert_eq!(work_rows(&tree).len(), 1);
     }
 
     fn act(p: &Project, m: Value) -> Result<Call, Refusal> {
@@ -854,26 +878,20 @@ mod tests {
         }
     }
 
-    /// `opened`, with Eval 1 judged over ask_1 and ask_2 Open.
+    /// `opened`, with Eval 1 judged over ask_1, and ask_2 a work of its own.
     fn judged() -> Project {
         let mut p = opened();
         let mut telemetry = unit("ask_2", "telemetry");
         telemetry.sent = weft_core::ledger::Sent::ReadyToSend;
         p.units.push(telemetry);
-        let events = [
-            json!({"type": "eval.opened", "id": "evl_1", "time": "2026-10-08T10:00:00Z",
-                   "data": {"basis": {"asks": ["ask_1"]}}}),
-            json!({"type": "eval.completed", "id": "evl_1", "time": "2026-10-08T10:05:00Z",
-                   "data": {"basis": {"asks": ["ask_1"]}, "verdict": "aligned", "confidence": 1.0}}),
-        ];
-        let record = weft_core::rounds::record(&events);
+        let events = judged_events(&["ask_1"]);
         p.units[0].check = Some(weft_core::ledger::Check {
             eval_id: "evl_1".into(),
             verdict: weft_core::ledger::Verdict::Matches,
             agreement: 1.0,
             judged_by: None,
         });
-        p.rounds = weft_core::rounds::rounds(&p.units, &record);
+        p.work = work_of(&p.units, &events);
         p
     }
 
@@ -896,20 +914,24 @@ mod tests {
         ] {
             assert_eq!(act(&p, m.clone()), Ok(want), "{m}");
         }
-        // Eval on the Open round, Seal on an Eval's (remote.md §6).
+        // Eval and Seal on a unit of work, Seal also by its Eval (remote.md §6).
         let p = judged();
         assert_eq!(
-            act(&p, json!({"act": "eval", "project": "weft"})),
-            Ok(call("check", None, None, None))
+            act(&p, json!({"act": "eval", "project": "weft", "unit": "ask_2"})),
+            Ok(call("check", Some("ask_2"), None, None))
         );
         let sealed = Call::Act {
             act: "decide".into(),
-            unit: None,
+            unit: Some("ask_1".into()),
             pane: None,
             text: None,
             eval: Some("evl_1".into()),
             start: None,
         };
+        assert_eq!(
+            act(&p, json!({"act": "seal", "project": "weft", "unit": "ask_1"})),
+            Ok(sealed.clone())
+        );
         assert_eq!(act(&p, json!({"act": "seal", "project": "weft", "eval": "evl_1"})), Ok(sealed));
     }
 
@@ -925,29 +947,34 @@ mod tests {
             )
         );
         assert_eq!(refused(&p, json!({"act": "proceed", "unit": "ask_9"})).0, "no_unit");
-        assert_eq!(refused(&p, json!({"act": "seal"})).0, "bad_request");
-        assert_eq!(refused(&p, json!({"act": "seal", "eval": "evl_9"})).0, "no_eval");
+        assert_eq!(refused(&p, json!({"act": "seal"})).0, "no_unit");
+        assert_eq!(refused(&p, json!({"act": "seal", "eval": "evl_9"})).0, "no_unit");
+        assert_eq!(
+            refused(&p, json!({"act": "seal", "unit": "ask_1"})),
+            ("why.no_eval", "No Eval of this work yet: Eval starts one.".into())
+        );
         assert_eq!(refused(&p, json!({"act": "ask", "text": " "})).0, "bad_request");
         assert_eq!(refused(&p, json!({"act": "start"})).0, "not_allowed");
-        // A sealed Eval keeps its act, which says so (D12.6).
+        // A sealed unit keeps its acts, which say so.
         let mut s = judged();
-        s.rounds.record.seals.push(weft_core::rounds::Seal {
-            id: "sel_1".into(),
-            n: 1,
-            at: String::new(),
-            disposition: "accepted".into(),
-            by: "you".into(),
-            eval: Some("evl_1".into()),
-        });
-        s.rounds.evals[0].sealed = Some(weft_core::rounds::Named { id: "sel_1".into(), n: 1 });
+        s.units[0].seal_id = Some("sel_1".into());
+        let mut events = judged_events(&["ask_1"]);
+        events.push(json!({"type": "seal.created", "id": "sel_1", "time": "2026-10-08T10:06:00Z",
+            "actor": {"kind": "human"}, "links": [{"rel": "seals", "id": "evl_1"}],
+            "data": {"disposition": "accepted"}}));
+        s.work = work_of(&s.units, &events);
         assert_eq!(
             refused(&s, json!({"act": "seal", "eval": "evl_1"})),
             ("why.sealed_already", "Eval 1 is sealed already.".into())
         );
+        assert_eq!(
+            refused(&s, json!({"act": "eval", "unit": "ask_1"})),
+            ("why.closed", "fix login is closed. Follow up asks again.".into())
+        );
         let mut p = judged();
         assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
         for m in [
-            json!({"act": "eval"}),
+            json!({"act": "eval", "unit": "ask_2"}),
             json!({"act": "seal", "eval": "evl_1"}),
             json!({"act": "ask", "text": "x"}),
         ] {
@@ -1037,6 +1064,19 @@ mod tests {
         assert!(d.get("sections").is_none(), "no Eval or Seal section");
     }
 
+    /// A unit of work's Details: its workflow and its acts.
+    #[test]
+    fn a_units_details_are_its_workflow() {
+        let p = judged();
+        let d = p.work("ask_1").unwrap();
+        assert_eq!(d["title"], "fix login");
+        let steps: Vec<&str> =
+            d["steps"].as_array().unwrap().iter().map(|s| s["step"].as_str().unwrap()).collect();
+        assert_eq!(steps, ["ask", "eval", "not_sealed"]);
+        assert_eq!((d["eval"].clone(), d["seal"].clone()), (Value::Null, Value::Null));
+        assert_eq!(p.work("ask_9").unwrap_err().0, "no_unit");
+    }
+
     /// T11.3, T11.5: an Eval once, a session with its Asks.
     #[test]
     fn an_eval_and_a_session_are_read_once_each() {
@@ -1122,16 +1162,16 @@ mod tests {
                 "actor": {"kind": "human"}, "links": links, "data": {"basis": {"asks": asks}, "disposition": "accepted"}}));
         }
         p.units = weft_core::ledger::project(&events);
-        p.rounds = weft_core::rounds::rounds(&p.units, &weft_core::rounds::record(&events));
+        p.work = work_of(&p.units, &events);
         let tree = p.tree();
         let size = tree.to_string().len();
         assert!(size < crate::socket::MAX_MESSAGE, "{size} bytes");
-        assert_eq!(tree["work"]["sealed"], json!({"seals": 39, "asks": 390}));
+        assert_eq!(tree["work"]["earlier"], 387, "three sealed listed");
         assert_eq!(
             (tree["agents"]["rows"].as_array().map(Vec::len), tree["agents"]["earlier"].clone()),
             (Some(8), json!(292))
         );
-        assert_eq!(tree["work"]["open"]["asks"].as_array().map(Vec::len), Some(10));
+        assert_eq!(tree["work"]["units"].as_array().map(Vec::len), Some(13));
 
         let mut seen = Vec::new();
         let mut after: Option<String> = None;
@@ -1152,18 +1192,24 @@ mod tests {
         }
         let want: Vec<String> = (8..300).map(|i| format!("s{i:03}")).collect();
         assert_eq!(seen, want, "every earlier session once, in order");
-        let mut seals = Vec::new();
+        let mut sealed = Vec::new();
         let mut after: Option<String> = None;
         loop {
             let page = p.sealed(after.as_deref());
-            seals
-                .extend(page["seals"].as_array().unwrap().iter().map(|s| s["n"].as_u64().unwrap()));
+            sealed.extend(
+                page["units"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|u| u["unit"].as_str().unwrap().to_string()),
+            );
             match page["next"].as_str() {
                 Some(n) => after = Some(n.to_string()),
                 None => break,
             }
         }
-        assert_eq!(seals, (1..=39).rev().collect::<Vec<u64>>(), "every Seal once, newest first");
+        let want: Vec<String> = (0..387).rev().map(|i| format!("ask_{i:03}")).collect();
+        assert_eq!(sealed, want, "every earlier sealed unit once, newest first");
         let found = |q: &str| p.sessions(Some(q), None, 10_000)["total"].clone();
         assert_eq!(found("number 29"), json!(11), "29 and 290–299");
         assert_eq!(found("CODEX"), json!(146));

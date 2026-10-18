@@ -9,6 +9,7 @@ mod remote;
 mod seal;
 pub mod send_to;
 mod session;
+mod unit;
 mod updates;
 mod work;
 
@@ -52,6 +53,7 @@ impl SheetProps<'_> {
 pub fn render_sheet(props: &SheetProps) -> Element {
     match props.sheet {
         ActiveSheet::Ask { follow_up_unit, .. } => ask::render(props, follow_up_unit.as_deref()),
+        ActiveSheet::Unit { project, unit } => unit::render(props, project, unit),
         ActiveSheet::WorkDetail { project, unit } => work::render(props, project, unit),
         ActiveSheet::EvalDetail { project, eval } => eval::render_detail(props, project, eval),
         ActiveSheet::EvalView { project, eval, by_file, at } => {

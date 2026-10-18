@@ -166,54 +166,101 @@ impl WeftDesktopApp {
                 }
                 self.selection = Some(TreeSelection::EarlierSessions { project: p });
             }
-            TreeAct::ToggleOpen(p) => {
-                if !self.folded_open.remove(&p) {
-                    self.folded_open.insert(p);
+            TreeAct::SelectWork { project, unit } => {
+                let evals = self
+                    .client(&project)
+                    .and_then(|c| c.work.of_ask(&unit))
+                    .map(|u| u.evals.clone())
+                    .unwrap_or_default();
+                for e in evals {
+                    self.read_judges(&project, &e);
                 }
-            }
-            TreeAct::SelectOpen(p) => {
-                self.selection = Some(TreeSelection::OpenGroup { project: p })
+                self.selection =
+                    Some(TreeSelection::Work { project: project.clone(), unit: unit.clone() });
+                self.active_sheet = Some(ActiveSheet::Unit { project, unit });
             }
             TreeAct::SelectAsk { project, unit } => {
                 if let Some(c) = self.client_mut(&project) {
                     let _ = c.read("source", &unit, None, Then::Source { unit: unit.clone() });
                     let _ = c.read("wording", &unit, None, Then::Wording { unit: unit.clone() });
                 }
-                self.selection =
-                    Some(TreeSelection::Ask { project: project.clone(), unit: unit.clone() });
+                self.select_work_of(&project, |w| w.of_ask(&unit));
                 self.active_sheet = Some(ActiveSheet::WorkDetail { project, unit });
-            }
-            TreeAct::ToggleEval { project, eval } => {
-                let key = (project, eval);
-                if !self.folded_evals.remove(&key) {
-                    self.folded_evals.insert(key);
-                }
             }
             TreeAct::SelectEval { project, eval } => {
                 self.read_judges(&project, &eval);
-                self.selection =
-                    Some(TreeSelection::EvalGroup { project: project.clone(), eval: eval.clone() });
+                self.select_work_of(&project, |w| w.of_eval(&eval));
                 self.active_sheet = Some(ActiveSheet::EvalDetail { project, eval });
             }
             TreeAct::ToggleSealed(p) => {
                 if !self.unfolded_sealed.remove(&p) {
                     self.unfolded_sealed.insert(p.clone());
                 }
-                self.selection = Some(TreeSelection::SealedGroup { project: p });
+                self.selection = Some(TreeSelection::SealedEarlier { project: p });
             }
             TreeAct::SelectSeal { project, seal } => {
                 // Whether its receipt still holds is RingFrame's to check, each time it is opened.
                 if let Some(c) = self.client_mut(&project) {
                     let _ = c.read("seal", &seal, None, Then::Seal { seal: seal.clone() });
                 }
-                self.selection =
-                    Some(TreeSelection::Seal { project: project.clone(), seal: seal.clone() });
+                self.select_work_of(&project, |w| w.units.iter().find(|u| u.seals.contains(&seal)));
                 self.active_sheet = Some(ActiveSheet::SealDetail { project, seal });
             }
             TreeAct::ClearSearch => {
                 self.search.set_text("");
                 self.focus = Focus::Terminal;
             }
+        }
+    }
+
+    /// Select the unit of work `find` names in this project, when there is one.
+    fn select_work_of(
+        &mut self,
+        project: &Path,
+        find: impl Fn(&weft_core::work::Work) -> Option<&weft_core::work::UnitOfWork>,
+    ) {
+        let unit = self.client(project).and_then(|c| find(&c.work)).map(|u| u.root.clone());
+        if let Some(unit) = unit {
+            self.selection = Some(TreeSelection::Work { project: project.to_path_buf(), unit });
+        }
+    }
+
+    /// A unit of work's row in the tree.
+    fn work_row(&self, project: &Path, unit: &str) -> Option<tree::WorkRow> {
+        let listed = self.tree_projects().into_iter().find(|l| l.root == project)?;
+        listed.work_row(unit).cloned()
+    }
+
+    /// Eval the unit of work, unless its row says why not.
+    fn eval_work(&mut self, project: PathBuf, unit: String) {
+        let why = self.work_row(&project, &unit).and_then(|w| w.eval.map(|w| w.say()));
+        if let Some(why) = why {
+            return self.why_not(why);
+        }
+        if let Some(c) = self.client_mut(&project) {
+            let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
+            if let Err(e) = c.act("eval", Some(&unit), pane, None, None, None) {
+                self.why_not(e.to_string());
+            }
+        }
+    }
+
+    /// The Seal's disposition bar for the unit of work, unless its row says why not.
+    fn seal_work(&mut self, project: PathBuf, unit: String) {
+        let why = self.work_row(&project, &unit).and_then(|w| w.seal.map(|w| w.say()));
+        if let Some(why) = why {
+            return self.why_not(why);
+        }
+        let eval = self.client(&project).and_then(|c| {
+            let u = c.work.of_ask(&unit)?;
+            c.work.to_seal(u).map(|e| e.id.clone())
+        });
+        match eval {
+            Some(eval) => {
+                self.bottom_bar =
+                    BottomBarState::SealDisposition { project, eval, selected: "accepted".into() }
+            }
+            None => self.why_not(words::word("why.no_eval")),
         }
     }
 
@@ -252,13 +299,11 @@ impl WeftDesktopApp {
                 _ => self.why_not_for(Act::Ask),
             },
             BarAct::Eval => match self.selection.clone() {
-                Some(TreeSelection::OpenGroup { project } | TreeSelection::Ask { project, .. }) => {
-                    self.trigger_eval(&project)
-                }
+                Some(TreeSelection::Work { project, unit }) => self.eval_work(project, unit),
                 _ => self.why_not_for(Act::Eval),
             },
             BarAct::Seal => match self.selection.clone() {
-                Some(TreeSelection::EvalGroup { project, eval }) => self.offer_seal(project, eval),
+                Some(TreeSelection::Work { project, unit }) => self.seal_work(project, unit),
                 _ => self.why_not_for(Act::Seal),
             },
             BarAct::Cancel => self.bottom_bar = BottomBarState::None,
@@ -331,20 +376,20 @@ impl WeftDesktopApp {
         }
     }
 
-    /// The Seal's disposition bar for `eval`, unless the tree says why not.
+    /// Seal from an Eval's Details: its unit of work, unless that Eval is
+    /// sealed already.
     fn offer_seal(&mut self, project: PathBuf, eval: String) {
-        let why = self
-            .tree_projects()
-            .into_iter()
-            .find(|l| l.root == project)
-            .and_then(|l| l.project.work.evals.into_iter().find(|g| g.eval == eval))
-            .and_then(|g| g.seal.map(|w| w.say()));
-        match why {
-            Some(why) => self.why_not(why),
-            None => {
-                self.bottom_bar =
-                    BottomBarState::SealDisposition { project, eval, selected: "accepted".into() }
-            }
+        let (why, unit) = match self.client(&project) {
+            Some(c) => (
+                weft_core::work::sealed_already(&c.work.record, &eval).map(|w| w.say()),
+                c.work.of_eval(&eval).map(|u| u.root.clone()),
+            ),
+            None => (None, None),
+        };
+        match (why, unit) {
+            (Some(why), _) => self.why_not(why),
+            (None, Some(unit)) => self.seal_work(project, unit),
+            (None, None) => self.why_not(words::word("why.no_eval")),
         }
     }
 
@@ -414,6 +459,8 @@ impl WeftDesktopApp {
                 self.active_sheet = None;
             }
             SheetAct::Seal { project, eval } => self.offer_seal(project, eval),
+            SheetAct::EvalWork { project, unit } => self.eval_work(project, unit),
+            SheetAct::SealWork { project, unit } => self.seal_work(project, unit),
             SheetAct::EvalView { project, eval } => {
                 if let Some(c) = self.client_mut(&project) {
                     let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
@@ -755,23 +802,6 @@ impl WeftDesktopApp {
                     project: project.to_path_buf(),
                     session: session.to_string(),
                 });
-            }
-        }
-    }
-
-    pub fn trigger_eval(&mut self, project: &Path) {
-        let why = self
-            .tree_projects()
-            .into_iter()
-            .find(|l| l.root == project)
-            .and_then(|l| l.project.work.open.eval.map(|w| w.say()));
-        if let Some(why) = why {
-            return self.why_not(why);
-        }
-        if let Some(c) = self.client_mut(project) {
-            let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
-            if let Err(e) = c.act("eval", None, pane, None, None, None) {
-                self.why_not(e.to_string());
             }
         }
     }

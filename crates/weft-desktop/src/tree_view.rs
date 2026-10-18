@@ -5,9 +5,10 @@ use std::path::{Path, PathBuf};
 
 use weft_core::harness::Harnesses;
 use weft_core::sessions::State;
-use weft_core::tree::{self, Agent, Ask, Group, Project};
+use weft_core::tree::{self, Agent, Project, WorkRow};
 use weft_core::turns::{self, Turn};
 use weft_core::words;
+use weft_core::work::Status;
 
 use crate::action::{Focus, TreeAct, WindowAct};
 use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
@@ -20,19 +21,39 @@ pub struct Listed {
     /// Where the project sends its acts, as `(act, harness)`; none when it
     /// sets none.
     pub routes: Vec<(&'static str, String)>,
+    /// Every unit of work's row, folded away or not: what an act on one
+    /// says when it cannot run.
+    pub work: Vec<tree::WorkRow>,
+}
+
+impl Listed {
+    /// A unit of work's row, by its root Ask, whatever the tree folds.
+    pub fn work_row(&self, unit: &str) -> Option<&tree::WorkRow> {
+        self.work.iter().find(|w| w.unit == unit)
+    }
 }
 
 /// Which row in the `Tree` is currently selected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeSelection {
-    Project { project: PathBuf },
-    Agent { project: PathBuf, session: String },
-    EarlierSessions { project: PathBuf },
-    OpenGroup { project: PathBuf },
-    Ask { project: PathBuf, unit: String },
-    EvalGroup { project: PathBuf, eval: String },
-    SealedGroup { project: PathBuf },
-    Seal { project: PathBuf, seal: String },
+    Project {
+        project: PathBuf,
+    },
+    Agent {
+        project: PathBuf,
+        session: String,
+    },
+    EarlierSessions {
+        project: PathBuf,
+    },
+    /// A unit of work, by its root Ask.
+    Work {
+        project: PathBuf,
+        unit: String,
+    },
+    SealedEarlier {
+        project: PathBuf,
+    },
 }
 
 pub struct TreeProps<'a> {
@@ -86,14 +107,8 @@ pub fn render_tree(props: &TreeProps) -> Element {
             }
             let matching_agents: Vec<&Agent> =
                 all_agents.iter().filter(|a| tree::agent_matches(a, q)).collect();
-            let matching_asks: Vec<&Ask> = proj
-                .work
-                .open
-                .asks
-                .iter()
-                .chain(proj.work.evals.iter().flat_map(|g| g.asks.iter()))
-                .filter(|a| tree::ask_matches(a, q))
-                .collect();
+            let matching_asks: Vec<&WorkRow> =
+                proj.work.units.iter().filter(|w| tree::work_matches(w, q)).collect();
             let total = matching_agents.len() + matching_asks.len();
             if total == 0 {
                 continue;
@@ -120,11 +135,11 @@ pub fn render_tree(props: &TreeProps) -> Element {
                     tree_el.child(render_section_header("section WORK", words::word("tree.work")));
                 for ask in matching_asks {
                     let selected = props.selection
-                        == Some(&TreeSelection::Ask {
+                        == Some(&TreeSelection::Work {
                             project: root.clone(),
                             unit: ask.unit.clone(),
                         });
-                    tree_el = tree_el.child(render_ask_row(root, ask, selected));
+                    tree_el = tree_el.child(render_work_row(root, ask, selected));
                 }
             }
         }
@@ -142,7 +157,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
         return tree_el;
     }
 
-    for Listed { root, project: proj, routes } in props.projects {
+    for Listed { root, project: proj, routes, .. } in props.projects {
         let proj_selected =
             props.selection == Some(&TreeSelection::Project { project: root.clone() });
         tree_el = tree_el.child(render_project_row(root, proj, proj_selected));
@@ -233,50 +248,25 @@ pub fn render_tree(props: &TreeProps) -> Element {
 
         tree_el = tree_el.child(render_section_header("section WORK", words::word("tree.work")));
 
-        let open_selected =
-            props.selection == Some(&TreeSelection::OpenGroup { project: root.clone() });
-        tree_el = tree_el.child(render_open_group_row(root, proj, open_selected));
-        if !proj.work.open.folded {
-            for ask in &proj.work.open.asks {
-                let selected = props.selection
-                    == Some(&TreeSelection::Ask { project: root.clone(), unit: ask.unit.clone() });
-                tree_el = tree_el.child(render_ask_row(root, ask, selected));
-            }
+        for w in &proj.work.units {
+            let selected = props.selection
+                == Some(&TreeSelection::Work { project: root.clone(), unit: w.unit.clone() });
+            tree_el = tree_el.child(render_work_row(root, w, selected));
         }
-
-        for group in &proj.work.evals {
-            let eval_selected = props.selection
-                == Some(&TreeSelection::EvalGroup {
-                    project: root.clone(),
-                    eval: group.eval.clone(),
-                });
-            tree_el = tree_el.child(render_eval_group_row(root, group, eval_selected));
-            if !group.folded {
-                for ask in &group.asks {
-                    let selected = props.selection
-                        == Some(&TreeSelection::Ask {
-                            project: root.clone(),
-                            unit: ask.unit.clone(),
-                        });
-                    tree_el = tree_el.child(render_ask_row(root, ask, selected));
-                }
-            }
-        }
-
-        if proj.work.sealed.seals > 0 {
-            let sealed_selected =
-                props.selection == Some(&TreeSelection::SealedGroup { project: root.clone() });
-            tree_el = tree_el.child(render_sealed_group_row(root, proj, sealed_selected));
-            if !proj.work.sealed.folded {
-                for srow in &proj.work.sealed.rows {
-                    let selected = props.selection
-                        == Some(&TreeSelection::Seal {
-                            project: root.clone(),
-                            seal: srow.seal.clone(),
-                        });
-                    tree_el = tree_el.child(render_seal_row(root, srow, selected));
-                }
-            }
+        if proj.work.earlier > 0 {
+            let selected =
+                props.selection == Some(&TreeSelection::SealedEarlier { project: root.clone() });
+            tree_el = tree_el.child(
+                row("row sealed earlier", 36, 32, selected)
+                    .on_click(TreeAct::ToggleSealed(root.to_path_buf()))
+                    .child(div().font_size(12).color(palette::BLUE_BORDER).text(format!(
+                        "{} ›",
+                        words::fill(
+                            "tree.sealed_earlier",
+                            &[("n", &proj.work.earlier.to_string())]
+                        )
+                    ))),
+            );
         }
     }
 
@@ -416,14 +406,6 @@ fn line(t: impl Into<String>) -> Element {
 
 fn caret(folded: bool) -> &'static str {
     if folded { "▸" } else { "▾" }
-}
-
-fn count(n: usize) -> Element {
-    div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(n.to_string())
-}
-
-fn chevron() -> Element {
-    div().shrink_0().font_weight(600).font_size(14).color(palette::DIM).text("›")
 }
 
 fn render_search_project_row(proj: &Project, matches: usize) -> Element {
@@ -618,110 +600,46 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
     )
 }
 
-fn render_open_group_row(root: &Path, proj: &Project, selected: bool) -> Element {
-    row("row group Open", 36, 32, selected)
-        .gap(8)
-        .on_click(TreeAct::SelectOpen(root.to_path_buf()))
-        .child(
-            div()
-                .on_click(TreeAct::ToggleOpen(root.to_path_buf()))
-                .shrink_0()
-                .font_size(12)
-                .color(palette::MUTED)
-                .text(caret(proj.work.open.folded)),
-        )
-        .child(div().flex_1().font_weight(600).font_size(13).text(words::word("tree.open")))
-        .child(count(proj.work.open.count))
-}
-
-fn render_ask_row(project: &Path, ask: &Ask, selected: bool) -> Element {
-    let meta = match ask.word {
-        Some(w) => format!("{} · {}", w.say(), ask.harness),
-        None => ask.harness.clone(),
-    };
-    row(format!("row ask {}", ask.title), 34, 48, selected)
-        .on_click(TreeAct::SelectAsk { project: project.to_path_buf(), unit: ask.unit.clone() })
-        .child(line(ask.title.clone()).flex_1().font_size(13).color(palette::TEXT))
-        .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
-        .child(chevron())
-}
-
-fn render_eval_group_row(project: &Path, g: &Group, selected: bool) -> Element {
-    let title = words::fill("tree.eval", &[("n", &g.n.to_string())]);
-    let mut label = div()
-        .flex_1()
-        .style("overflow", "hidden")
-        .flex_row()
-        .gap(6)
-        .items_baseline()
-        .child(div().shrink_0().font_weight(600).font_size(13).text(title.clone()));
-    let verdict = if g.judging {
-        Some((words::word("tree.judging").to_string(), palette::AMBER))
-    } else {
-        g.verdict.map(|v| {
-            let (word, colour) = match v {
-                "aligned" => (words::word("verdict.aligned"), palette::TEAL),
-                "drifted" => (words::word("verdict.drifted"), palette::AMBER),
-                _ => (words::word("verdict.incomplete"), palette::AMBER),
-            };
-            match &g.agreement {
-                Some(agr) => (format!("{word} {agr}"), colour),
-                None => (word.to_string(), colour),
-            }
-        })
-    };
-    if let Some((v, colour)) = verdict {
-        label = label
-            .child(div().shrink_0().font_size(12).color(palette::DIM).text("·"))
-            .child(line(v).font_size(12).color(colour));
+/// The colour a unit's status is said in.
+pub fn status_colour(s: &Status) -> &'static str {
+    match s {
+        Status::Asking | Status::Asked => palette::MUTED,
+        Status::Judging => palette::BLUE_BORDER,
+        Status::Judged { verdict: weft_core::ledger::Verdict::Matches, .. } => palette::TEAL,
+        Status::Judged { .. } => palette::AMBER,
+        Status::Sealed { .. } => palette::DIM,
     }
-    row(format!("row group {title}"), 36, 32, selected)
-        .gap(8)
-        .on_click(TreeAct::SelectEval { project: project.to_path_buf(), eval: g.eval.clone() })
-        .child(
-            div()
-                .on_click(TreeAct::ToggleEval {
-                    project: project.to_path_buf(),
-                    eval: g.eval.clone(),
-                })
-                .shrink_0()
-                .font_size(12)
-                .color(palette::MUTED)
-                .text(caret(g.folded)),
-        )
-        .child(label)
-        .child(count(g.count))
 }
 
-fn render_sealed_group_row(root: &Path, proj: &Project, selected: bool) -> Element {
-    row("row group Sealed", 36, 32, selected)
-        .gap(8)
-        .on_click(TreeAct::ToggleSealed(root.to_path_buf()))
+/// A unit of work: its title, its harness, and its one status.
+fn render_work_row(project: &Path, w: &WorkRow, selected: bool) -> Element {
+    let colour = status_colour(&w.status);
+    row(format!("row unit {}", w.title), 36, 32, selected)
+        .on_click(TreeAct::SelectWork { project: project.to_path_buf(), unit: w.unit.clone() })
+        .child(
+            div()
+                .flex_1()
+                .style("min-width", "0")
+                .flex_row()
+                .gap(4)
+                .items_baseline()
+                .child(line(w.title.clone()).font_weight(500).font_size(13).color(palette::TEXT))
+                .child(
+                    div()
+                        .shrink_0()
+                        .font_size(13)
+                        .color(palette::DIM)
+                        .text(format!("· {}", w.harness)),
+                ),
+        )
         .child(
             div()
                 .shrink_0()
-                .font_size(12)
-                .color(palette::MUTED)
-                .text(caret(proj.work.sealed.folded)),
+                .font_mono()
+                .font_size(11)
+                .color(colour)
+                .text(tree::status_word(&w.status)),
         )
-        .child(div().flex_1().font_weight(600).font_size(13).text(words::word("tree.sealed")))
-        .child(count(proj.work.sealed.asks))
-}
-
-fn render_seal_row(project: &Path, srow: &tree::SealRow, selected: bool) -> Element {
-    let title = words::fill("tree.seal", &[("n", &srow.n.to_string())]);
-    let meta = match srow.eval {
-        Some(en) => {
-            format!("{} · {}", srow.decision, words::fill("tree.eval", &[("n", &en.to_string())]))
-        }
-        None => srow.decision.clone(),
-    };
-    row(format!("row seal {title}"), 34, 48, selected)
-        .on_click(TreeAct::SelectSeal { project: project.to_path_buf(), seal: srow.seal.clone() })
-        .child(line(title).flex_1().font_size(13).color(palette::TEXT))
-        .child(div().shrink_0().font_mono().font_size(11).color(palette::MUTED).text(meta))
-        .child(count(srow.asks))
-        .child(chevron())
 }
 
 /// A time of day, `HH:MM`, at the Mac's distance from UTC; nothing when no

@@ -891,36 +891,51 @@ impl Session {
         let On { unit: unit_id, pane, text, eval, start } = on;
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
-        // Eval acts on the Open round and Seal on an Eval's:
-        // the Ask that routes it is the round's newest, as a work's was.
+        // Eval and Seal act on one unit of work, named by any of its Asks,
+        // or Seal by its Eval: the Ask that routes it is its newest open one.
         let record = self.projects[at].ledger.record();
-        let rounds = weft_core::rounds::rounds(&units, &record);
-        let unit_id = match (act, eval) {
-            ("check", _) if unit_id.is_none() => {
-                let judged = rounds.judging.first().and_then(|j| j.asks.first());
-                match rounds.open.first().or(judged) {
-                    Some(id) => Some(id.as_str()),
-                    None => return Answer::No("nothing_open", "no Ask is open".into()),
-                }
-            }
-            ("decide", None) => {
-                return Answer::No("no_eval", "a Seal names the Eval it seals".into());
-            }
-            ("decide", Some(id)) => {
-                let Some(round) = rounds.eval(id) else {
-                    if let Some(why) = weft_core::rounds::sealed_already(&record, id) {
-                        return Answer::No("sealed_already", why.say());
+        let work = weft_core::work::work(&units, &record);
+        let mine = match (act, eval) {
+            ("decide", Some(id)) => work.of_eval(id),
+            _ => unit_id.and_then(|id| work.of_ask(id)),
+        };
+        let root_of = |u: &weft_core::work::UnitOfWork| {
+            units.iter().find(|a| a.ask_id == u.root).cloned().unwrap_or_default()
+        };
+        let no =
+            |why: weft_core::tree::Why| Answer::No(why.key.trim_start_matches("why."), why.say());
+        let mut eval = eval.map(str::to_string);
+        let unit_id = match act {
+            "check" | "decide" => {
+                let Some(u) = mine else {
+                    if let Some(why) =
+                        eval.as_deref().and_then(|e| weft_core::work::sealed_already(&record, e))
+                    {
+                        return no(why);
                     }
-                    return Answer::No("no_eval", format!("{id} is no Eval round here"));
+                    return Answer::No("no_unit", "Eval and Seal name the work they act on".into());
                 };
                 let ready = |_: Option<&str>| None;
-                if let Some(why) = weft_core::rounds::seal_why(round, &ready) {
-                    return Answer::No(why.key.trim_start_matches("why."), why.say());
+                let why = if act == "check" {
+                    weft_core::work::eval_why(u, &root_of(u), &ready)
+                } else {
+                    eval.as_deref()
+                        .and_then(|e| weft_core::work::sealed_already(&record, e))
+                        .or_else(|| weft_core::work::seal_why(&work, u, &root_of(u), &ready))
+                };
+                if let Some(why) = why {
+                    return no(why);
                 }
-                round.asks.first().map(String::as_str)
+                if act == "decide" {
+                    eval = work.to_seal(u).map(|e| e.id.clone());
+                }
+                u.route.as_deref()
             }
             _ => unit_id,
         };
+        // A follow-up carries the unit's newest Eval, else its newest composed
+        // Ask, so RingFrame links it into that unit.
+        let follows = mine.map(|u| u.follows.clone());
         let unit = unit_id.and_then(|id| units.iter().find(|u| u.ask_id == id).cloned());
         let built = match act {
             "ask" | "follow_up" => {
@@ -952,7 +967,8 @@ impl Session {
                     let Some(unit) = &unit else {
                         return Answer::No("no_unit", "that Ask is not on the board".into());
                     };
-                    text = format!("[follow-up {}] {text}", weft_core::board::follow_up_of(unit));
+                    let to = follows.as_deref().unwrap_or(weft_core::board::follow_up_of(unit));
+                    text = format!("[follow-up {to}] {text}");
                 }
                 let project = &mut self.projects[at];
                 let over = project.ringframe.as_deref();
@@ -1007,6 +1023,7 @@ impl Session {
                             match crate::ringframe::eval_open(
                                 self.outside.as_ref(),
                                 &root,
+                                &unit.ask_id,
                                 agents.as_ref(),
                                 project.ringframe.as_deref(),
                             ) {
@@ -1671,8 +1688,8 @@ impl Session {
                     .map(|v| (c.eval_id.clone(), v))
             })
             .collect::<serde_json::Map<_, _>>();
-        let rounds = weft_core::rounds::rounds(&units, &self.projects[at].ledger.record());
-        Out::Units { units, records: serde_json::Value::Object(records), rounds }
+        let work = weft_core::work::work(&units, &self.projects[at].ledger.record());
+        Out::Units { units, records: serde_json::Value::Object(records), work }
     }
 
     /// The project this client is watching, if it has opened one.
@@ -1838,9 +1855,7 @@ impl Session {
                     }
                 }
                 self.projects[at].ledger.refresh();
-                let Out::Units { units, records, rounds } = self.board_of(at) else {
-                    unreachable!()
-                };
+                let Out::Units { units, records, work } = self.board_of(at) else { unreachable!() };
                 let panes = self.pane_infos(at);
                 let (agent_panes, sessions) = self.agents_of(at);
                 // Everything comes back in the answer — the board, the panes,
@@ -1867,7 +1882,7 @@ impl Session {
                     "panes": weft_proto::panes_json(&panes),
                     "units": serde_json::to_value(&units).unwrap_or_default(),
                     "records": records,
-                    "rounds": rounds,
+                    "work": work,
                     "screens": screens,
                     // What is already waiting on a person, so a client that
                     // arrives after it was staged can still answer it.

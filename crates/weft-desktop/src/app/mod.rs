@@ -92,6 +92,12 @@ pub enum ActiveSheet {
         send_to: Option<String>,
         follow_up_unit: Option<String>,
     },
+    /// A unit of work's Details, by its root Ask.
+    Unit {
+        project: PathBuf,
+        unit: String,
+    },
+    /// An Ask's own Details.
     WorkDetail {
         project: PathBuf,
         unit: String,
@@ -143,8 +149,6 @@ pub struct WeftDesktopApp {
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
-    pub folded_open: HashSet<PathBuf>,
-    pub folded_evals: HashSet<(PathBuf, String)>,
     pub unfolded_sealed: HashSet<PathBuf>,
     pub unfolded_earlier: HashSet<PathBuf>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
@@ -205,8 +209,6 @@ impl WeftDesktopApp {
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
-            folded_open: HashSet::new(),
-            folded_evals: HashSet::new(),
             unfolded_sealed: HashSet::new(),
             unfolded_earlier: HashSet::new(),
             conversations: HashMap::new(),
@@ -719,7 +721,7 @@ impl WeftDesktopApp {
                 panes: &pane_infos,
                 agents: &pane_turns,
                 sessions: &client.sessions,
-                rounds: &client.rounds,
+                work: &client.work,
                 readiness: &ready_fn,
                 routing: &client.routing,
                 setup: client.needs,
@@ -727,14 +729,20 @@ impl WeftDesktopApp {
             let root = &client.root;
             let folded = |_: usize, fold: Fold| match fold {
                 Fold::Project => self.state.folded_projects.iter().any(|f| f == root),
-                Fold::Open => self.folded_open.contains(root),
-                Fold::Eval(id) => self.folded_evals.contains(&(root.clone(), id.to_string())),
                 Fold::Sealed => !self.unfolded_sealed.contains(root),
             };
-            if let Some(project) = tree::rows(&[facts], &folded).into_iter().next() {
+            let open = |_: usize, _: Fold| false;
+            let rows = tree::rows(std::slice::from_ref(&facts), &folded).into_iter().next();
+            let work = tree::rows(&[facts], &open).into_iter().next().map(|p| p.work.units);
+            if let Some(project) = rows {
                 let routes =
                     client.routing.each().into_iter().map(|(a, h)| (a, h.to_string())).collect();
-                out.push(Listed { root: root.clone(), project, routes });
+                out.push(Listed {
+                    root: root.clone(),
+                    project,
+                    routes,
+                    work: work.unwrap_or_default(),
+                });
             }
         }
         out

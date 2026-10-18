@@ -1,20 +1,20 @@
 //! The tree both clients draw: a project, then AGENTS and WORK.
 //!
 //! AGENTS is the session index weftd keeps (`sessions.md`); WORK is the record
-//! by Eval round (`board.md` "Rounds"). Built from those and nothing else, so
-//! the desktop's list and a device's tree are one set of rows. Folding Open or an
-//! Eval is the client's own, asked here and never kept; Sealed and the
-//! earlier sessions are counts (remote.md §6).
+//! as units of work. Built from those and nothing else, so the desktop's list
+//! and a device's tree are one set of rows. Folding is the client's own, asked
+//! here and never kept; the earlier sessions and the earlier sealed units are
+//! counts (remote.md §6).
 
 use serde::Serialize;
 
 use crate::board::{Act, Board, PaneInfo};
 use crate::ledger::Unit;
 use crate::readiness::{Gap, Readiness};
-use crate::rounds::Rounds;
 use crate::routing::Routing;
 use crate::sessions::State;
 use crate::turns::Turn;
+use crate::work::{Status, Work as Units};
 use crate::workspace::Needs;
 
 /// What one project's rows are built from. Borrowed: the client owns it.
@@ -26,8 +26,8 @@ pub struct Facts<'a> {
     pub agents: &'a [Option<Turn>],
     /// The project's session index, as weftd built it.
     pub sessions: &'a [crate::sessions::Row],
-    /// The board by Eval round, as weftd built it.
-    pub rounds: &'a Rounds,
+    /// The record as units of work, as weftd built it.
+    pub work: &'a Units,
     pub readiness: &'a dyn Fn(&str) -> Readiness,
     pub routing: &'a Routing,
     /// What the project still needs before RingFrame is set up in it, if
@@ -37,11 +37,9 @@ pub struct Facts<'a> {
 
 /// What a client folds. Asked, never kept here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fold<'a> {
+pub enum Fold {
     Project,
-    Open,
-    Eval(&'a str),
-    /// Sealed is folded unless the client has opened it.
+    /// The earlier sealed units are folded unless the client has opened them.
     Sealed,
 }
 
@@ -49,7 +47,7 @@ pub enum Fold<'a> {
 pub struct Project {
     #[serde(rename = "project")]
     pub name: String,
-    /// The Open round's Asks.
+    /// Its units of work not sealed.
     pub open: usize,
     /// Agents waiting for the person.
     pub needs: usize,
@@ -92,70 +90,56 @@ pub struct Agent {
     pub ask: Option<Why>,
 }
 
+/// WORK: a row per unit of work, and how many sealed ones are not listed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Work {
-    pub open: Open,
-    /// An Eval being judged first, then each one not sealed, newest first.
-    pub evals: Vec<Group>,
-    pub sealed: Sealed,
+    /// Every open unit, then the newest sealed; all of them once unfolded.
+    pub units: Vec<WorkRow>,
+    /// The sealed units past those listed: `n sealed earlier`.
+    pub earlier: usize,
 }
 
+/// The sealed units WORK lists before folding the rest away.
+pub const SEALED_IN_TREE: usize = 3;
+
+/// One unit of work: its root Ask's title and harness, and one status.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Open {
-    /// The newest completed Eval's number: `Open · since Eval n`.
-    pub since: Option<usize>,
-    pub asks: Vec<Ask>,
-    /// `None` when Eval can run on the Open round, else why not.
+pub struct WorkRow {
+    /// Its root Ask.
+    pub unit: String,
+    pub title: String,
+    pub harness: String,
+    pub status: Status,
+    /// How many Asks it holds: the root and each follow-up.
+    pub asks: usize,
+    /// `None` when Eval can run on it, else why not.
     pub eval: Option<Why>,
-    #[serde(skip)]
-    pub folded: bool,
-    /// How many Asks it holds, folded or not.
-    #[serde(skip)]
-    pub count: usize,
-}
-
-/// One Eval's round.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Group {
-    pub eval: String,
-    pub n: usize,
-    pub judging: bool,
-    /// As recorded: `aligned`, `drifted` or `incomplete`.
-    pub verdict: Option<&'static str>,
-    /// As the record writes it: `0.67`, `1.0`.
-    pub agreement: Option<String>,
-    pub asks: Vec<Ask>,
     /// `None` when Seal can run on it, else why not.
     pub seal: Option<Why>,
-    #[serde(skip)]
-    pub folded: bool,
-    #[serde(skip)]
-    pub count: usize,
 }
 
-/// Sealed, folded: counts on the wire; the desktop lists its Seals once opened.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Sealed {
-    pub seals: usize,
-    pub asks: usize,
-    #[serde(skip)]
-    pub folded: bool,
-    #[serde(skip)]
-    pub rows: Vec<SealRow>,
+/// A unit's status as its row says it: asking, judging…, drifted · 0.75,
+/// sealed · accepted.
+pub fn status_word(s: &Status) -> String {
+    use crate::words::{fill, word};
+    match s {
+        Status::Asking => word("work.asking").into(),
+        Status::Asked => word("work.asked").into(),
+        Status::Judging => word("tree.judging").into(),
+        Status::Judged { verdict, agreement } => fill(
+            "work.judged",
+            &[
+                ("verdict", word(&format!("verdict.{}", verdict.recorded()))),
+                ("agreement", &agreement.map(crate::ledger::score).unwrap_or_default()),
+            ],
+        )
+        .trim_end_matches(" · ")
+        .to_string(),
+        Status::Sealed { decision: d } => fill("work.sealed", &[("decision", &decision(d))]),
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SealRow {
-    pub seal: String,
-    pub n: usize,
-    /// The decision as a person reads it: accepted, rejected, parked, dropped.
-    pub decision: String,
-    /// The Eval it seals, by its number.
-    pub eval: Option<usize>,
-    pub asks: usize,
-}
-
-/// An Ask in a round. Only Open's carry a state word.
+/// An Ask as a list names it, with its state word where the list says one.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Ask {
     pub unit: String,
@@ -254,12 +238,12 @@ impl Why {
 }
 
 /// The sentence an act says when the row selected is not one it acts on:
-/// Ask on an agent, Eval on Open, Seal on an Eval.
+/// Ask on an agent, Eval and Seal on a unit of work.
 pub fn select(act: Act) -> Option<&'static str> {
     match act {
         Act::Ask => Some("select.agent"),
-        Act::Eval => Some("select.open"),
-        Act::Seal => Some("select.eval"),
+        Act::Eval => Some("select.work_eval"),
+        Act::Seal => Some("select.work_seal"),
         _ => None,
     }
 }
@@ -284,10 +268,14 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
     };
     let running = |r: &&crate::sessions::Row| r.state == State::Running;
     let (shown, earlier) = crate::sessions::split(f.sessions);
-    let r = f.rounds;
+    let w = f.work;
+    let open = w.units.iter().filter(|u| !u.sealed()).count();
+    let sealed = w.units.len() - open;
+    let listed =
+        if folded(Fold::Sealed) { open + sealed.min(SEALED_IN_TREE) } else { w.units.len() };
     let mut out = Project {
         name: f.name.to_string(),
-        open: r.open.len(),
+        open,
         needs: f
             .sessions
             .iter()
@@ -304,68 +292,31 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
             earlier: earlier.len(),
         },
         work: Work {
-            open: Open {
-                since: r.since,
-                asks: Vec::new(),
-                eval: crate::rounds::eval_why(r, &|u| board(u).not_ready(Act::Eval)),
-                folded: folded(Fold::Open),
-                count: r.open.len(),
-            },
-            evals: Vec::new(),
-            sealed: Sealed {
-                seals: r.seals.len(),
-                asks: r.sealed_asks(),
-                folded: folded(Fold::Sealed),
-                rows: Vec::new(),
-            },
+            units: w
+                .units
+                .iter()
+                .take(listed)
+                .filter_map(|u| {
+                    let root = f.units.iter().find(|a| a.ask_id == u.root)?;
+                    let ready = |a: Option<&str>| board(a).not_ready(Act::Eval);
+                    let seal_ready = |a: Option<&str>| board(a).not_ready(Act::Seal);
+                    Some(WorkRow {
+                        unit: u.root.clone(),
+                        title: root.title.clone(),
+                        harness: root.harness.clone(),
+                        status: u.status.clone(),
+                        asks: u.asks.len(),
+                        eval: crate::work::eval_why(u, root, &ready),
+                        seal: crate::work::seal_why(w, u, root, &seal_ready),
+                    })
+                })
+                .collect(),
+            earlier: w.units.len() - listed,
         },
     };
-    let asks = |ids: &[String], worded: bool| -> Vec<Ask> {
-        ids.iter()
-            .filter_map(|id| f.units.iter().find(|u| &u.ask_id == id))
-            .map(|u| Ask {
-                unit: u.ask_id.clone(),
-                title: u.title.clone(),
-                harness: u.harness.clone(),
-                word: worded.then(|| Word::of(u)),
-            })
-            .collect()
-    };
-    if !out.work.open.folded {
-        out.work.open.asks = asks(&r.open, true);
-    }
-    for round in r.judging.iter().chain(&r.evals) {
-        let folded = folded(Fold::Eval(&round.eval));
-        out.work.evals.push(Group {
-            eval: round.eval.clone(),
-            n: round.n,
-            judging: round.judging,
-            verdict: round.verdict.map(|v| v.recorded()),
-            agreement: round.agreement.map(crate::ledger::score),
-            asks: if folded { Vec::new() } else { asks(&round.asks, false) },
-            seal: crate::rounds::seal_why(round, &|u| board(u).not_ready(Act::Seal)),
-            folded,
-            count: round.asks.len(),
-        });
-    }
-    if !out.work.sealed.folded {
-        out.work.sealed.rows = r
-            .seals
-            .iter()
-            .map(|s| SealRow {
-                seal: s.seal.clone(),
-                n: s.n,
-                decision: decision(&s.decision),
-                eval: s.eval.as_ref().map(|e| e.n),
-                asks: s.asks.len(),
-            })
-            .collect();
-    }
     if out.folded {
         out.agents.rows.clear();
-        out.work.open.asks.clear();
-        out.work.evals.iter_mut().for_each(|g| g.asks.clear());
-        out.work.sealed.rows.clear();
+        out.work.units.clear();
     }
     out
 }
@@ -407,12 +358,12 @@ pub fn agent_matches(a: &Agent, q: &str) -> bool {
     has(&a.harness) || has(&a.session) || a.title.as_deref().is_some_and(has)
 }
 
-/// Whether an Ask row holds `q`, ignoring case: its title, its harness, or the
-/// word for where it stands.
-pub fn ask_matches(a: &Ask, q: &str) -> bool {
+/// Whether a unit of work's row holds `q`, ignoring case: its title, its
+/// harness, or its status.
+pub fn work_matches(w: &WorkRow, q: &str) -> bool {
     let q = q.to_lowercase();
     let has = |text: &str| text.to_lowercase().contains(&q);
-    has(&a.title) || has(&a.harness) || a.word.is_some_and(|w| has(w.say()))
+    has(&w.title) || has(&w.harness) || has(&status_word(&w.status))
 }
 
 /// A Seal's decision in the words a person reads (board.md).
@@ -438,9 +389,9 @@ pub fn state_word(a: &Agent, clock: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::{Check, Sent, Verdict};
-    use crate::rounds::{Named, Round, Sealed as SealedRound};
+    use crate::ledger::{Sent, Verdict};
     use crate::sessions::Row;
+    use crate::work::{Eval, Record, Seal};
 
     fn pane(id: u32, harness: &str) -> PaneInfo {
         PaneInfo {
@@ -469,25 +420,75 @@ mod tests {
         r
     }
 
-    /// T11.1's sample: three running, eighteen ended; Open with two Asks,
-    /// Eval 3 with two, four Seals over thirty-one Asks.
-    /// A world: units, panes, their states, the index and the rounds.
-    type World = (Vec<Unit>, Vec<PaneInfo>, Vec<Option<Turn>>, Vec<Row>, Rounds);
+    /// The cards' sample: three running, fifteen ended; fix login asked,
+    /// health endpoint drifted, telemetry being judged, and fourteen sealed.
+    /// A world: units, panes, their states, the index and the units of work.
+    type World = (Vec<Unit>, Vec<PaneInfo>, Vec<Option<Turn>>, Vec<Row>, Units);
+
+    fn at(h: u32, m: u32) -> String {
+        format!("2026-10-08T{h:02}:{m:02}:00Z")
+    }
+
+    fn eval(id: &str, n: usize, ask: &str, verdict: Option<Verdict>, done: String) -> Eval {
+        Eval {
+            id: id.into(),
+            n,
+            opened_at: done.clone(),
+            asks: vec![ask.into()],
+            verdict,
+            agreement: verdict.map(|_| 0.75),
+            judged_by: None,
+            completed_at: verdict.map(|_| done),
+            voided: false,
+            superseded: false,
+        }
+    }
 
     fn weft() -> World {
-        let mut telemetry = unit("ask_2", "telemetry", "claude");
-        telemetry.requested_only = true;
-        let check = Check {
-            eval_id: "evl_3".into(),
-            verdict: Verdict::Matches,
-            agreement: 0.67,
-            judged_by: None,
+        let asked = |id: &str, title: &str, harness: &str, t: String| Unit {
+            asked_at: t,
+            ..unit(id, title, harness)
         };
-        let mut health = unit("ask_3", "health endpoint", "codex");
-        health.check = Some(check.clone());
-        let mut build = unit("ask_4", "build number", "codex");
-        build.check = Some(check);
-        let units = vec![unit("ask_1", "fix login", "claude"), telemetry, health, build];
+        let mut units = vec![
+            asked("ask_1", "fix login", "claude", at(11, 29)),
+            asked("ask_2", "telemetry", "claude", at(11, 0)),
+            asked("ask_3", "health endpoint", "codex", at(10, 52)),
+        ];
+        let mut record = Record {
+            evals: vec![
+                eval("evl_1", 1, "ask_3", Some(Verdict::DoesntMatch), at(11, 20)),
+                eval("evl_2", 2, "ask_2", None, at(11, 10)),
+            ],
+            seals: Vec::new(),
+        };
+        let sealed = |id: &str,
+                      title: &str,
+                      t: String,
+                      decision: &str,
+                      units: &mut Vec<Unit>,
+                      record: &mut Record| {
+            let n = record.seals.len() + 1;
+            let seal = format!("sel_{n}");
+            units.push(Unit {
+                seal_id: Some(seal.clone()),
+                sealed: Some(decision.into()),
+                ..asked(id, title, "codex", t.clone())
+            });
+            record.seals.push(Seal {
+                id: seal,
+                n,
+                at: t,
+                disposition: decision.into(),
+                by: "you".into(),
+                eval: None,
+            });
+        };
+        for i in 0..12 {
+            sealed(&format!("old_{i}"), "old", at(9, i), "accepted", &mut units, &mut record);
+        }
+        sealed("ask_5", "readme fix", at(10, 40), "deferred", &mut units, &mut record);
+        sealed("ask_4", "build number", at(10, 50), "accepted", &mut units, &mut record);
+        let work = crate::work::work(&units, &record);
         let panes = vec![pane(0, "codex"), pane(1, "claude"), pane(2, "codex")];
         let agents = vec![Some(Turn::Working), Some(Turn::Waiting), Some(Turn::TurnEnded)];
         let mut sessions = vec![
@@ -500,35 +501,7 @@ mod tests {
         for i in 0..15 {
             sessions.push(row(&format!("e{i:02}"), "claude", State::Ended, None, 900 - i));
         }
-        let mut seals = Vec::new();
-        for (n, asks) in [(4, 2), (3, 9), (2, 11), (1, 9)] {
-            seals.push(SealedRound {
-                seal: format!("sel_{n}"),
-                n,
-                decision: if n == 2 { "deferred".into() } else { "accepted".into() },
-                at: String::new(),
-                by: "you".into(),
-                eval: (n > 2).then(|| Named { id: format!("evl_{}", n - 2), n: n - 2 }),
-                asks: (0..asks).map(|i| format!("old_{n}_{i}")).collect(),
-            });
-        }
-        let rounds = Rounds {
-            judging: Vec::new(),
-            open: vec!["ask_1".into(), "ask_2".into()],
-            since: Some(3),
-            evals: vec![Round {
-                eval: "evl_3".into(),
-                n: 3,
-                judging: false,
-                verdict: Some(Verdict::Matches),
-                agreement: Some(0.67),
-                asks: vec!["ask_3".into(), "ask_4".into()],
-                sealed: None,
-            }],
-            seals,
-            record: Default::default(),
-        };
-        (units, panes, agents, sessions, rounds)
+        (units, panes, agents, sessions, work)
     }
 
     const READY: &dyn Fn(&str) -> Readiness = &|_| Readiness::Ready;
@@ -546,7 +519,7 @@ mod tests {
             panes: &w.1,
             agents: &w.2,
             sessions: &w.3,
-            rounds: &w.4,
+            work: &w.4,
             readiness: ready,
             routing: &routing,
             setup: None,
@@ -554,13 +527,13 @@ mod tests {
         rows(&[facts], folded).remove(0)
     }
 
-    /// The project row counts Open Asks and agents waiting (D12.3); AGENTS
+    /// The project row counts open units and agents waiting (D12.3); AGENTS
     /// counts running and ended, shows the running and 3 ended, and counts
     /// the rest.
     #[test]
     fn the_project_and_agents_rows_count_as_t11_1_does() {
         let t = build(&weft(), READY, AS_DRAWN);
-        assert_eq!((t.name.as_str(), t.open, t.needs), ("weft", 2, 1));
+        assert_eq!((t.name.as_str(), t.open, t.needs), ("weft", 3, 1));
         let a = &t.agents;
         assert_eq!((a.running, a.ended, a.earlier), (3, 15, 12));
         let ids: Vec<_> = a.rows.iter().map(|r| r.session.as_str()).collect();
@@ -615,80 +588,66 @@ mod tests {
         );
     }
 
-    /// WORK: Open with its words, each Eval with title and harness only,
-    /// Sealed as counts until opened.
+    /// WORK: a row per unit, open ones first, its title, harness and one
+    /// status; the newest sealed, then a count of the rest until opened.
     #[test]
-    fn work_is_the_rounds_with_words_only_under_open() {
+    fn work_is_a_row_per_unit_with_one_status() {
         let t = build(&weft(), READY, AS_DRAWN);
-        let open: Vec<_> =
-            t.work.open.asks.iter().map(|a| (a.title.as_str(), a.word.map(Word::say))).collect();
-        assert_eq!(open, [("fix login", Some("ASKED")), ("telemetry", Some("ASKING"))]);
-        assert_eq!((t.work.open.since, t.work.open.eval.as_ref()), (Some(3), None));
-        let g = &t.work.evals[0];
+        let rows: Vec<_> = t
+            .work
+            .units
+            .iter()
+            .map(|u| (u.title.as_str(), u.harness.as_str(), status_word(&u.status)))
+            .collect();
         assert_eq!(
-            (g.n, g.verdict, g.agreement.as_deref(), g.seal.as_ref()),
-            (3, Some("aligned"), Some("0.67"), None)
+            rows,
+            [
+                ("fix login", "claude", "asked".to_string()),
+                ("health endpoint", "codex", "drifted · 0.75".to_string()),
+                ("telemetry", "claude", "judging…".to_string()),
+                ("build number", "codex", "sealed · accepted".to_string()),
+                ("readme fix", "codex", "sealed · parked".to_string()),
+                ("old", "codex", "sealed · accepted".to_string()),
+            ]
         );
-        assert!(g.asks.iter().all(|a| a.word.is_none()), "the round says their state");
-        assert_eq!(
-            g.asks.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),
-            ["health endpoint", "build number"]
-        );
-        let s = &t.work.sealed;
-        assert_eq!((s.seals, s.asks, s.rows.len()), (4, 31, 0));
+        assert_eq!((t.open, t.work.earlier), (3, 11));
         let t = build(&weft(), READY, &|_, _| false);
-        let rows: Vec<_> =
-            t.work.sealed.rows.iter().map(|r| (r.n, r.decision.as_str(), r.eval, r.asks)).collect();
-        assert_eq!(
-            rows[..3],
-            [(4, "accepted", Some(2), 2), (3, "accepted", Some(1), 9), (2, "parked", None, 11)]
-        );
+        assert_eq!((t.work.units.len(), t.work.earlier), (17, 0));
     }
 
     #[test]
-    fn a_folded_project_or_group_keeps_its_counts() {
-        let w = weft();
-        let t = build(&w, READY, &|_, f| f == Fold::Project);
-        assert!(t.folded && t.agents.rows.is_empty() && t.work.open.asks.is_empty());
-        assert_eq!((t.open, t.needs, t.agents.running), (2, 1, 3), "a folded project still counts");
-        let t = build(&w, READY, &|_, f| matches!(f, Fold::Open | Fold::Eval("evl_3")));
-        assert!(t.work.open.folded && t.work.open.asks.is_empty());
-        assert_eq!((t.work.open.count, t.work.evals[0].count), (2, 2));
-        assert!(t.work.evals[0].asks.is_empty());
+    fn a_folded_project_keeps_its_counts() {
+        let t = build(&weft(), READY, &|_, f| f == Fold::Project);
+        assert!(t.folded && t.agents.rows.is_empty() && t.work.units.is_empty());
+        assert_eq!((t.open, t.needs, t.agents.running), (3, 1, 3), "a folded project still counts");
     }
 
-    /// Eval and Seal on a group say why not by the harness they go to, and a
-    /// sealed or judging Eval says so (D12.6, D12.1).
+    /// Eval and Seal on a unit say why not: by the harness they go to, or
+    /// because it is being judged, not judged yet, or sealed.
     #[test]
-    fn eval_and_seal_on_a_round_say_why_not() {
+    fn eval_and_seal_on_a_unit_say_why_not() {
         let unset = |h: &str| {
             if h == "claude" { Readiness::Missing(Gap::Plugin) } else { Readiness::Ready }
         };
         let t = build(&weft(), &unset, AS_DRAWN);
-        assert_eq!(
-            t.work.open.eval.as_ref().map(Why::say).as_deref(),
-            Some("claude is not set up for RingFrame.")
-        );
-        assert_eq!(t.work.evals[0].seal, None, "Eval 3's Asks are codex's");
-        let mut w = weft();
-        w.4.judging.push(Round {
-            eval: "evl_4".into(),
-            n: 4,
-            judging: true,
-            verdict: None,
-            agreement: None,
-            asks: vec!["ask_1".into()],
-            sealed: None,
-        });
-        w.4.evals[0].sealed = Some(Named { id: "sel_5".into(), n: 5 });
-        let t = build(&w, READY, AS_DRAWN);
-        let says: Vec<_> =
-            t.work.evals.iter().map(|g| (g.n, g.judging, g.seal.as_ref().map(Why::say))).collect();
+        let says: Vec<_> = t
+            .work
+            .units
+            .iter()
+            .take(4)
+            .map(|u| (u.eval.as_ref().map(Why::say), u.seal.as_ref().map(Why::say)))
+            .collect();
+        let no = "claude is not set up for RingFrame.".to_string();
         assert_eq!(
             says,
             [
-                (4, true, Some("Eval 4 is still being judged.".into())),
-                (3, false, Some("Eval 3 is sealed already.".into()))
+                (Some(no.clone()), Some("No Eval of this work yet: Eval starts one.".into())),
+                (None, None),
+                (Some(no), Some("telemetry is still being judged.".into())),
+                (
+                    Some("build number is closed. Follow up asks again.".into()),
+                    Some("build number is closed. Follow up asks again.".into())
+                ),
             ]
         );
     }
@@ -697,8 +656,8 @@ mod tests {
     fn a_press_on_the_wrong_row_says_what_to_select() {
         let say = |a| select(a).map(crate::words::word);
         assert_eq!(say(Act::Ask), Some("Select an agent to Ask."));
-        assert_eq!(say(Act::Eval), Some("Select Open to Eval its Asks."));
-        assert_eq!(say(Act::Seal), Some("Select an Eval to Seal it."));
+        assert_eq!(say(Act::Eval), Some("Select a work to Eval it."));
+        assert_eq!(say(Act::Seal), Some("Select a work to Seal it."));
         assert_eq!(select(Act::Proceed), None);
     }
 
@@ -717,7 +676,7 @@ mod tests {
         let t = build(&weft(), &|_| Readiness::Missing(Gap::Cli), AS_DRAWN);
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["project"], "weft");
-        assert_eq!((v["open"].clone(), v["needs"].clone()), (2.into(), 1.into()));
+        assert_eq!((v["open"].clone(), v["needs"].clone()), (3.into(), 1.into()));
         assert_eq!(v["agents"]["running"], 3);
         assert_eq!(v["agents"]["earlier"], 12);
         assert_eq!(
@@ -727,14 +686,12 @@ mod tests {
                 "ask": {"key": "why.no_ringframe"}})
         );
         assert_eq!(
-            v["work"]["open"]["asks"][1],
-            serde_json::json!({"unit": "ask_2", "title": "telemetry", "harness": "claude", "word": "asking"})
+            v["work"]["units"][1],
+            serde_json::json!({"unit": "ask_3", "title": "health endpoint", "harness": "codex",
+                "status": {"state": "judged", "verdict": "drifted", "agreement": 0.75},
+                "asks": 1, "eval": {"key": "why.no_ringframe"}, "seal": {"key": "why.no_ringframe"}})
         );
-        assert_eq!(
-            v["work"]["evals"][0]["asks"][0],
-            serde_json::json!({"unit": "ask_3", "title": "health endpoint", "harness": "codex"})
-        );
-        assert_eq!(v["work"]["sealed"], serde_json::json!({"seals": 4, "asks": 31}));
+        assert_eq!(v["work"]["earlier"], 11);
         assert!(v.get("harnesses").is_none());
     }
 }

@@ -220,13 +220,13 @@ pub enum Event {
     Exited {
         pane: u32,
     },
-    /// The board, the Eval record behind each check, and the board grouped
-    /// by Eval round. Sent on opening a project and whenever the
+    /// The board, the Eval record behind each check, and the record as
+    /// units of work. Sent on opening a project and whenever the
     /// ledger moves, so nothing reads a file to draw a frame.
     Units {
         units: Vec<Unit>,
         records: Value,
-        rounds: weft_core::rounds::Rounds,
+        work: weft_core::work::Work,
     },
     /// Something is waiting on a person. Every attached client is told.
     Pending {
@@ -563,8 +563,8 @@ impl Event {
                 json!({"pane": pane, "harness": harness, "spec": spec, "turbo": turbo}),
             ),
             Event::Exited { pane } => ("pane.exited", json!({"pane": pane})),
-            Event::Units { units, records, rounds } => {
-                ("units", json!({"units": units, "records": records, "rounds": rounds}))
+            Event::Units { units, records, work } => {
+                ("units", json!({"units": units, "records": records, "work": work}))
             }
             Event::Pending { id, pane, what, why, payload, sends } => {
                 ("pending.added", pending_json(id, *pane, what, why, payload, sends.as_deref()))
@@ -618,7 +618,7 @@ impl Event {
             "units" => Event::Units {
                 units: serde_json::from_value(p.get("units")?.clone()).ok()?,
                 records: p.get("records").cloned().unwrap_or_else(|| json!({})),
-                rounds: serde_json::from_value(p.get("rounds").cloned().unwrap_or_default())
+                work: serde_json::from_value(p.get("work").cloned().unwrap_or_default())
                     .unwrap_or_default(),
             },
             "pending.added" => Event::Pending {
@@ -1107,13 +1107,22 @@ mod tests {
                 turbo: false,
             },
             Event::Exited { pane: 1 },
-            Event::Units { units: Vec::new(), records: json!({}), rounds: Default::default() },
+            Event::Units { units: Vec::new(), records: json!({}), work: Default::default() },
             Event::Units {
                 units: Vec::new(),
                 records: json!({}),
-                rounds: weft_core::rounds::Rounds {
-                    open: vec!["ask_2".into()],
-                    since: Some(1),
+                work: weft_core::work::Work {
+                    units: vec![weft_core::work::UnitOfWork {
+                        root: "ask_2".into(),
+                        asks: vec!["ask_2".into()],
+                        open: vec!["ask_2".into()],
+                        evals: Vec::new(),
+                        seals: Vec::new(),
+                        status: weft_core::work::Status::Asked,
+                        at: "2026-10-18T10:00:00Z".into(),
+                        route: Some("ask_2".into()),
+                        follows: "ask_2".into(),
+                    }],
                     ..Default::default()
                 },
             },

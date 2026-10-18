@@ -284,10 +284,12 @@ fn render_tree_bar(props: &BottomBarProps, why_not: Option<&str>) -> Element {
     };
     let selected = match props.selection {
         Some(TreeSelection::Agent { session, .. }) => Some(session.as_str()),
-        Some(TreeSelection::OpenGroup { .. }) => Some(word("web.bar.open_round")),
-        Some(TreeSelection::Ask { unit, .. }) => Some(unit.as_str()),
-        Some(TreeSelection::EvalGroup { eval, .. }) => Some(eval.as_str()),
-        Some(TreeSelection::Seal { seal, .. }) => Some(seal.as_str()),
+        Some(TreeSelection::Work { project, unit }) => props
+            .clients
+            .iter()
+            .find(|c| &c.root == project)
+            .and_then(|c| c.units.iter().find(|u| &u.ask_id == unit))
+            .map(|u| u.title.as_str()),
         _ => None,
     };
     let mut row = div()

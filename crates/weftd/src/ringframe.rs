@@ -143,18 +143,20 @@ pub fn ask_confirm(out: &dyn Outside, project: &Path, ask_id: &str) -> Result<()
     run(out, project, &["ask", "confirm", "--ask", ask_id]).map(|_| ())
 }
 
-/// Open and gather the Eval of the open Asks, and say which it is: RingFrame
+/// Open and gather the Eval of the open Asks of the unit of work `ask` is in,
+/// and say which it is: RingFrame
 /// reads the change with Git and records it as gathered, so no harness has to
 /// map it. An Eval already open over the same Asks and the same
 /// work is the one to continue, and RingFrame names it.
 pub fn eval_open(
     outside: &dyn Outside,
     project: &Path,
+    ask: &str,
     agents: Option<&Value>,
     over: Option<&str>,
 ) -> Result<String, Error> {
     let agents = agents.map(Value::to_string);
-    let mut args = vec!["eval", "open", "--host", "weft"];
+    let mut args = vec!["eval", "open", "--host", "weft", "--ask", ask];
     if let Some(a) = agents.as_deref() {
         args.extend(["--agents", a]);
     }

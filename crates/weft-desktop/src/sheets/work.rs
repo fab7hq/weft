@@ -54,8 +54,7 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit_id: &str) -> Eleme
     });
     let d = weft_core::offers::work_detail(
         unit,
-        &c.rounds.record,
-        &c.rounds,
+        &c.work.record,
         agent.cloned(),
         source.as_deref(),
         prompt.as_deref(),

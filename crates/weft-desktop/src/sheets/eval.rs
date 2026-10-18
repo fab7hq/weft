@@ -70,30 +70,23 @@ pub(super) fn ask_rows(project: &Path, asks: &[weft_core::tree::Ask]) -> Element
 
 pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -> Element {
     let client = props.client(project);
-    let group =
-        props.listed(project).and_then(|l| l.project.work.evals.iter().find(|g| g.eval == eval_id));
     let record = judges(props, project, eval_id);
     let detail = client.and_then(|c| {
-        let ev = c.rounds.record.evals.iter().find(|e| e.id == eval_id)?;
-        Some(weft_core::offers::eval_detail(
-            ev,
-            record.as_ref(),
-            &c.units,
-            &c.rounds.record,
-            group.and_then(|g| g.seal.clone()),
-        ))
+        let ev = c.work.record.evals.iter().find(|e| e.id == eval_id)?;
+        // Seal from here seals its unit of work: that unit's row says why not.
+        let seal = weft_core::work::sealed_already(&c.work.record, eval_id).or_else(|| {
+            let unit = c.work.of_eval(eval_id)?;
+            props.listed(project)?.work_row(&unit.root)?.seal.clone()
+        });
+        Some(weft_core::offers::eval_detail(ev, record.as_ref(), &c.units, &c.work.record, seal))
     });
-    let n = detail.as_ref().map(|d| d.n).or_else(|| group.map(|g| g.n));
-    let title = match n {
+    let title = match detail.as_ref().map(|d| d.n) {
         Some(n) => fill("tree.eval", &[("n", &n.to_string())]),
         None => eval_id.to_string(),
     };
-    let judging = detail.as_ref().map(|d| d.judging).or_else(|| group.map(|g| g.judging));
-    let verdict = detail.as_ref().and_then(|d| d.verdict).or_else(|| group.and_then(|g| g.verdict));
-    let agreement = detail
-        .as_ref()
-        .and_then(|d| d.agreement.clone())
-        .or_else(|| group.and_then(|g| g.agreement.clone()));
+    let judging = detail.as_ref().map(|d| d.judging);
+    let verdict = detail.as_ref().and_then(|d| d.verdict);
+    let agreement = detail.as_ref().and_then(|d| d.agreement.clone());
     let aside = match (judging, verdict) {
         (Some(true), _) => Some((word("tree.judging").to_string(), palette::AMBER)),
         (_, Some(v)) => Some((

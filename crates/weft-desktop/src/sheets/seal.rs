@@ -16,9 +16,9 @@ use crate::ui::{
 
 pub(super) fn render(props: &SheetProps, project: &Path, seal_id: &str) -> Element {
     let detail = props.client(project).and_then(|c| {
-        let seal = c.rounds.record.seals.iter().find(|s| s.id == seal_id)?;
+        let seal = c.work.record.seals.iter().find(|s| s.id == seal_id)?;
         let checked = c.read.get(&Then::Seal { seal: seal_id.to_string() });
-        Some(weft_core::offers::seal_detail(seal, &c.units, &c.rounds.record, checked))
+        Some(weft_core::offers::seal_detail(seal, &c.units, &c.work.record, checked))
     });
     let Some(d) = detail else {
         return sheet(

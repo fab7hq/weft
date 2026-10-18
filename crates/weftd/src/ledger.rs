@@ -33,8 +33,8 @@ impl Ledger {
     }
 
     /// Its Evals and Seals, numbered in ledger order.
-    pub fn record(&self) -> weft_core::rounds::Record {
-        weft_core::rounds::record(&self.events)
+    pub fn record(&self) -> weft_core::work::Record {
+        weft_core::work::record(&self.events)
     }
 
     /// Returns true when anything new was folded in.
