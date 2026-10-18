@@ -258,7 +258,13 @@ impl Bench {
         };
         b.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
         let path = b.root.to_string_lossy().into_owned();
-        b.call(Call::Open { rows: 24, cols: 80, path, raw: true });
+        // A window waits for its project's answer, as Weft's own do.
+        let open = b.call(Call::Open { rows: 24, cols: 80, path, raw: true });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !matches!(b.next(Duration::from_millis(100)), Some(Line::Result { id, .. }) if id == open)
+        {
+            assert!(Instant::now() < deadline, "the project was never opened");
+        }
         b.call(Call::StartAgent { harness: harness.into(), spec, session: None });
         b.wait(Duration::from_secs(5), |e| matches!(e, Event::Added { .. }).then_some(()));
         // Ready, by its hook: its turn is not running; or a busy one, running.

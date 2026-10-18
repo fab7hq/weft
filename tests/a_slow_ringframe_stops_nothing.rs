@@ -44,6 +44,8 @@ struct Client {
     stream: UnixStream,
     lines: Lines<UnixStream>,
     id: u64,
+    /// The events read while waiting for an answer.
+    seen: Vec<Event>,
 }
 
 impl Client {
@@ -57,7 +59,7 @@ impl Client {
             std::thread::sleep(Duration::from_millis(20));
         };
         let lines = Lines::new(stream.try_clone().expect("clone"));
-        Client { stream, lines, id: 0 }
+        Client { stream, lines, id: 0, seen: Vec::new() }
     }
 
     fn call(&mut self, call: Call) -> u64 {
@@ -66,7 +68,7 @@ impl Client {
         self.id
     }
 
-    /// The answer to call `id`, and the events before it that `pick` takes.
+    /// The answer to call `id`; the events before it are kept in `seen`.
     fn answer(&mut self, id: u64, within: Duration) -> serde_json::Value {
         let deadline = Instant::now() + within;
         while Instant::now() < deadline {
@@ -76,6 +78,7 @@ impl Client {
                 Ok(Some(Line::Error { id: got, message, .. })) if got == id => {
                     panic!("call {id} refused: {message}")
                 }
+                Ok(Some(Line::Event(e))) => self.seen.push(e),
                 _ => {}
             }
         }
@@ -150,12 +153,34 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let opened = a.answer(opening, Duration::from_secs(10));
     assert_eq!(opened["setup"], serde_json::Value::Null, "set up by its init: {opened}");
 
-    // A set-up project: `ask preflight` only.
+    // A set-up project: `ask preflight` only. A window already in it stages
+    // a send meanwhile: the opening window gets it in its answer, and not as
+    // an event before the answer too.
+    let mut b = Client::connect(&socket);
+    let hello = b.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
+    b.answer(hello, Duration::from_secs(5));
+    let opening = open(&mut b, &root);
+    b.answer(opening, Duration::from_secs(10));
     let opening = open(&mut a, &root);
     std::thread::sleep(Duration::from_millis(300));
     let took = probe(&socket);
     assert!(took < quick, "a hello waited {took:?} on ask preflight");
-    a.answer(opening, Duration::from_secs(10));
+    let staged = b.call(Call::Stage {
+        pane: 0,
+        bytes: b"hello".to_vec(),
+        how: weft_core::inject::Handoff::Whole,
+        what: "a send".into(),
+        why: String::new(),
+    });
+    b.answer(staged, Duration::from_secs(5));
+    a.seen.clear();
+    let opened = a.answer(opening, Duration::from_secs(10));
+    assert_eq!(opened["pendings"].as_array().map(Vec::len), Some(1), "{opened}");
+    assert!(
+        !a.seen.iter().any(|e| matches!(e, Event::Pending { .. })),
+        "the send came before the answer too: {:?}",
+        a.seen
+    );
 
     // Eval: `eval open`, then the debate is staged.
     a.call(Call::StartAgent { harness: "sh".into(), spec: agent, session: None });

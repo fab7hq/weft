@@ -107,6 +107,15 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
         &mut stream,
         Call::Open { rows: 24, cols: 80, path: root.to_string_lossy().into_owned(), raw: true },
     );
+    // A window waits for its project's answer, as Weft's own do: call 2.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        stream.set_read_timeout(Some(Duration::from_millis(100))).expect("timeout");
+        if let Ok(Some(Line::Result { id: 2, .. })) = frames.next() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the project was never opened");
+    }
     call(
         &mut stream,
         Call::StartAgent { harness: "sh".into(), spec: agent.clone(), session: None },

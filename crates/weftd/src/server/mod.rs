@@ -230,6 +230,9 @@ struct Clients {
     /// Which project each client attached to. A client that has not attached
     /// yet is in none, and hears nothing.
     watching: HashMap<u64, usize>,
+    /// Clients whose open is not answered yet: they hear nothing of their
+    /// project until the answer, which holds everything as it is then.
+    opening: std::collections::HashSet<u64>,
     /// The size each window opened its project at, then the size it last
     /// drew an agent at: the size an agent it asks for starts at.
     sizes: HashMap<u64, (u16, u16)>,
@@ -258,8 +261,10 @@ impl Clients {
     /// leaves.
     fn broadcast(&mut self, project: usize, event: &Out) {
         let wire = Line::Event(event.clone()).encode();
-        let watching = &self.watching;
-        self.sinks.retain(|id, s| watching.get(id) != Some(&project) || deliver(s, &wire));
+        let (watching, opening) = (&self.watching, &self.opening);
+        self.sinks.retain(|id, s| {
+            watching.get(id) != Some(&project) || opening.contains(id) || deliver(s, &wire)
+        });
     }
 
     /// Send to every client, whatever project it watches, or none.
@@ -288,9 +293,12 @@ impl Clients {
     /// A pane's bytes, to everyone watching this project who asked for them.
     fn broadcast_output(&mut self, project: usize, pane: u32, seq: u64, bytes: Vec<u8>) {
         let wire = Line::Event(Out::Output { pane, seq, bytes }).encode();
-        let (watching, quiet) = (&self.watching, &self.quiet);
+        let (watching, quiet, opening) = (&self.watching, &self.quiet, &self.opening);
         self.sinks.retain(|id, s| {
-            watching.get(id) != Some(&project) || quiet.contains(id) || deliver(s, &wire)
+            watching.get(id) != Some(&project)
+                || quiet.contains(id)
+                || opening.contains(id)
+                || deliver(s, &wire)
         });
     }
 
@@ -908,12 +916,19 @@ impl Session {
                 }
                 Wake::Opened { client, call_id, project, raw, setup, gap } => {
                     self.set_up(project, setup, gap);
-                    if self.clients.watching.get(&client) == Some(&project) {
-                        let answer = self.opened(project, raw);
-                        self.clients.send_to(client, &answer.line(call_id));
-                    }
+                    let answer = if self.clients.watching.get(&client) == Some(&project) {
+                        self.clients.opening.remove(&client);
+                        self.opened(project, raw)
+                    } else {
+                        Answer::No("superseded", "another project was opened instead".into())
+                    };
+                    self.clients.send_to(client, &answer.line(call_id));
                 }
                 Wake::EvalOpened { client, call_id, project, unit, debate, opened } => {
+                    // Nobody to stage it for: no agent is started for it.
+                    if !self.clients.sinks.contains_key(&client) || self.projects[project].closed {
+                        continue;
+                    }
                     let answer = match opened {
                         Ok(eval_id) => {
                             let (into, args) =
@@ -1829,6 +1844,7 @@ impl Session {
     /// and a project it leaves with no window and no agent running closes.
     fn left(&mut self, client: u64) {
         let had = self.clients.watching.remove(&client);
+        self.clients.opening.remove(&client);
         self.clients.sinks.remove(&client);
         self.clients.sizes.remove(&client);
         self.clients.quiet.remove(&client);
@@ -2054,6 +2070,7 @@ impl Session {
                 // Read now, so a call the window makes before its answer
                 // sees the record.
                 self.projects[at].ledger.refresh();
+                self.clients.opening.insert(client);
                 // RingFrame is asked, off the run loop, whether it is set up
                 // here and whether an Ask could finish here; the window is
                 // answered with the rest once it has said.
