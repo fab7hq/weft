@@ -178,14 +178,16 @@ pub fn create(
                 if !ask_ids.iter().any(|a| basis.contains(a)) {
                     codes.push("seal.eval_unrelated".into());
                     record = None;
-                } else {
-                    // A Seal on an Eval seals that round: the open Asks it
-                    // covers, and none asked since.
-                    asks.retain(|a| basis.contains(&str_of(a, "ask_id")));
-                    ask_ids.retain(|a| basis.contains(a));
                 }
             }
         }
+    }
+    // A Seal on an Eval seals what it judged: the open Asks it covers, one
+    // unit of work, and none asked since.
+    if let Some(r) = &record {
+        let basis: BTreeSet<String> = strings(&r["basis"], "asks").into_iter().collect();
+        asks.retain(|a| basis.contains(&str_of(a, "ask_id")));
+        ask_ids.retain(|a| basis.contains(a));
     }
     let (granted, code) = authority(ws, &actor, disposition, &subject["kind"]);
     if let Some(code) = code {
@@ -399,6 +401,22 @@ mod tests {
             assert_eq!(chk["subject_matches"], true);
             assert_eq!(chk["eval"]["verdict"], "aligned");
             assert_eq!(chk["basis"], json!({"asks": [a, b]}));
+        });
+    }
+
+    /// Without an Eval named, a Seal rests on the newest Eval that judged
+    /// an open Ask, and seals that Eval's Asks: one unit of work, not every
+    /// open Ask.
+    #[test]
+    fn a_seal_without_an_eval_seals_only_the_asks_its_eval_covers() {
+        eval_bench(|ws| {
+            let (a, b, _) = judged(ws, ["yes", "yes", "yes"]);
+            let later = str_of(&confirm_ask(ws, "Another unit", b"other\n", b"Other.\n"), "ask_id");
+            let receipt = create(ws, "accepted", None, None, None).unwrap();
+            assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
+            let open: Vec<String> =
+                ask::open_asks(ws).unwrap().iter().map(|x| str_of(x, "ask_id")).collect();
+            assert_eq!(open, [later], "another unit's Ask stays open");
         });
     }
 

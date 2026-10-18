@@ -145,12 +145,26 @@ pub fn default_subject(ws: &Workspace) -> Result<(String, String), EvalError> {
 
 // ---- facts -----------------------------------------------------------------
 
-fn anchor_of(ws: &Workspace, asks: &[Value], explicit: Option<&str>) -> Result<Value, EvalError> {
+/// Where the change starts: the anchor asked for; else the last Seal (of
+/// this unit, when one is judged alone); else the first Ask's base.
+fn anchor_of(
+    ws: &Workspace,
+    asks: &[Value],
+    unit: Option<&[String]>,
+    explicit: Option<&str>,
+) -> Result<Value, EvalError> {
     if let Some(reference) = explicit.filter(|r| !r.is_empty()) {
         return Ok(json!({"kind": "explicit", "ref": reference, "seal_id": null}));
     }
+    let ours = |e: &Value| {
+        unit.is_none_or(|u| {
+            e["data"]["basis"]["asks"].as_array().is_some_and(|a| {
+                a.iter().any(|x| u.contains(&x.as_str().unwrap_or_default().to_string()))
+            })
+        })
+    };
     let seals: Vec<Value> =
-        store::events(ws)?.into_iter().filter(|e| e["type"] == "seal.created").collect();
+        store::events(ws)?.into_iter().filter(|e| e["type"] == "seal.created" && ours(e)).collect();
     if let Some(last) = seals.last()
         && last["data"]["subject"]["kind"] == "git_commit"
     {
@@ -475,6 +489,10 @@ pub struct Open<'a> {
     /// what RingFrame prepared is the change every later task reads, in this
     /// harness or another, so no agent gathers it again.
     pub host: Option<&'a str>,
+    /// An Ask of the unit of work to judge: only that unit's open Asks are
+    /// judged, and the other open Asks are named as work it does not judge.
+    /// None judges every open Ask.
+    pub ask: Option<&'a str>,
     /// What the judges must not do, and where that came from: an override
     /// layer's name, or `default`. Recorded once, so every task of this Eval,
     /// in any harness, is given the same rules.
@@ -488,6 +506,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let agents = crate::tasks::current_roles(&agents);
     // `ask` does not import `evaluate`.
     let asks = crate::ask::open_asks(ws)?;
+    let unit = args.ask.map(|id| crate::ask::unit_of(ws, id)).transpose()?;
+    let (asks, elsewhere): (Vec<Value>, Vec<Value>) = match &unit {
+        Some(unit) => asks.into_iter().partition(|a| unit.contains(&str_of(a, "ask_id"))),
+        None => (asks, Vec::new()),
+    };
     need(
         !asks.is_empty(),
         "eval.no_open_ask",
@@ -545,7 +568,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         ));
     }
     let superseded: Vec<String> = dangling.iter().map(|r| str_of(r, "eval_id")).collect();
-    let anchor = anchor_of(ws, &asks, args.anchor)?;
+    let anchor = anchor_of(ws, &asks, unit.as_deref(), args.anchor)?;
     let anchor_ref = str_of(&anchor, "ref");
     git(&ws.root, &["rev-parse", "--verify", "--quiet", &format!("{anchor_ref}^{{commit}}")])
         .map_err(|_| {
@@ -675,6 +698,11 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             "unrecorded_prompts_after": counts[i],
         })).collect::<Vec<_>>(),
         "changes": changes(ws, &anchor_ref, &subject)?,
+        // Other units' open Asks: their work may be in this change, and is
+        // not judged here.
+        "elsewhere": elsewhere.iter().map(|a| json!({
+            "ask_id": a["ask_id"], "title": a["title"],
+        })).collect::<Vec<_>>(),
         "unrecorded_prompts_before": before,
         "previous_evals": previous, "facts": facts, "limitations": limitations,
         "agents": agents, "changes_patch": changes_patch, "evidence": evidence,
@@ -1958,6 +1986,52 @@ mod tests {
         });
     }
 
+    /// An Eval on one unit of work covers that unit's open Asks, its
+    /// follow-ups among them, anchors on that unit's own Seal (here none, so
+    /// its root Ask's base), and names every other open Ask as work it does
+    /// not judge.
+    #[test]
+    fn an_eval_on_one_unit_covers_its_asks_and_names_the_others() {
+        eval_bench(|ws| {
+            let base = head(&ws.root);
+            let (a, b, sha) = two_asks_and_work(ws);
+            let follow = |id: &str| vec![json!({"rel": "follows", "id": id})];
+            let c = str_of(
+                &crate::testing::confirm_ask_linked(ws, "Also the docs", follow(&a)),
+                "ask_id",
+            );
+            // Another unit's Seal is not where this unit's change starts.
+            store::append(ws, &json!({
+                "schema": store::SCHEMA, "event_id": ids::new_id("evt"), "type": "seal.created",
+                "time": sessions::now(), "id": "sel_other",
+                "actor": {"kind": "human", "id": "local-user"}, "links": [],
+                "data": {"basis": {"asks": ["ask_older"]}, "eval": null,
+                         "subject": {"kind": "git_commit", "ref": sha}, "disposition": "accepted",
+                         "authority": {"kind": "human", "id": "local-user",
+                                       "authority": "interactive"},
+                         "artifact": {"role": "seal_receipt", "path": "seals/sel_other.json",
+                                      "bytes": 0, "sha256": "0".repeat(64)}}
+            })).unwrap();
+
+            let out = open_eval(ws, Open { ask: Some(&c), ..Default::default() }).unwrap();
+            assert_eq!(out["basis"]["asks"], json!([a, c]), "the unit, from any Ask in it");
+            assert_eq!(out["anchor"], json!({"kind": "ask_base", "ref": base, "seal_id": null}));
+            let brief = brief_of(ws, &out);
+            let others: Vec<String> =
+                array_of(&brief, "elsewhere").iter().map(|x| str_of(x, "ask_id")).collect();
+            assert_eq!(others, std::slice::from_ref(&b), "named, not judged");
+
+            // A follow-up of the unit's Eval is in the unit too.
+            let eval_id = str_of(&out, "eval_id");
+            let d = str_of(
+                &crate::testing::confirm_ask_linked(ws, "And the 503", follow(&eval_id)),
+                "ask_id",
+            );
+            assert_eq!(crate::ask::unit_of(ws, &d).unwrap(), [a.clone(), c, d]);
+            assert_eq!(crate::ask::unit_of(ws, &b).unwrap(), [b]);
+        });
+    }
+
     #[test]
     fn open_anchors_on_the_last_seal_when_one_exists() {
         eval_bench(|ws| {
@@ -2023,7 +2097,7 @@ mod tests {
     #[test]
     fn a_missing_anchor_needs_input() {
         eval_bench(|ws| {
-            let e = anchor_of(ws, &[json!({"ask_id": "ask_old", "base_commit": null})], None)
+            let e = anchor_of(ws, &[json!({"ask_id": "ask_old", "base_commit": null})], None, None)
                 .unwrap_err();
             assert!(
                 matches!(&e, EvalError::Needs(n) if n.reason.contains("eval.anchor_unknown")),

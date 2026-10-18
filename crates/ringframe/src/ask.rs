@@ -1431,6 +1431,50 @@ fn state_of(ask_id: &str, rec: &AskRecord, sealed: &BTreeSet<String>) -> &'stati
     }
 }
 
+/// Every Ask in `ask_id`'s unit of work, oldest first: the root Ask (one
+/// that follows, revises or remediates nothing) and every Ask whose links
+/// reach it. A link to an Eval reaches the Asks that Eval covered.
+pub fn unit_of(ws: &Workspace, ask_id: &str) -> Result<Vec<String>, AskError> {
+    let asks = by_id(ws)?;
+    let events = store::events(ws)?;
+    let parent = |id: &str| -> Option<String> {
+        let (_, rec) = asks.iter().find(|(k, _)| k == id)?;
+        let link = rec.compiled.as_ref()?["links"]
+            .as_array()?
+            .iter()
+            .find(|l| matches!(str_of(l, "rel").as_str(), "follows" | "revises" | "remediates"))?;
+        let target = str_of(link, "id");
+        if target.starts_with("evl_") {
+            let opened =
+                events.iter().find(|e| e["type"] == "eval.opened" && str_of(e, "id") == target)?;
+            list_of(&opened["data"]["basis"], "asks").into_iter().next()
+        } else {
+            Some(target)
+        }
+    };
+    let root = |id: &str| -> String {
+        let mut at = id.to_string();
+        let mut seen = vec![at.clone()];
+        while let Some(up) = parent(&at).filter(|u| !seen.contains(u)) {
+            seen.push(up.clone());
+            at = up;
+        }
+        at
+    };
+    if !asks.iter().any(|(k, rec)| k == ask_id && rec.compiled.is_some()) {
+        return Err(ledger(
+            "ask.unknown",
+            format!("{ask_id} is not a compiled Ask in this workspace"),
+        ));
+    }
+    let mine = root(ask_id);
+    Ok(asks
+        .iter()
+        .filter(|(k, rec)| rec.compiled.is_some() && root(k) == mine)
+        .map(|(k, _)| k.clone())
+        .collect())
+}
+
 /// Every open Ask, oldest first: the basis of an Eval and of a Seal.
 pub fn open_asks(ws: &Workspace) -> Result<Vec<Value>, AskError> {
     let sealed = sealed_asks(ws)?;

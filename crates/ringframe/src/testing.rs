@@ -134,6 +134,11 @@ pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) ->
     confirm_ask_as(ws, title, source, prompt, "native_plan")
 }
 
+/// As `confirm_ask`, linked: `follows`, `revises` or `remediates` another.
+pub fn confirm_ask_linked(ws: &Workspace, title: &str, links: Vec<Value>) -> Value {
+    confirm_ask_with(ws, title, b"more\n", b"More.\n", "native_plan", links)
+}
+
 /// As `confirm_ask`, routed to `capability`: `native_goal` for work an Eval
 /// judges (a planning Ask gives it no requirement).
 pub fn confirm_ask_as(
@@ -142,6 +147,17 @@ pub fn confirm_ask_as(
     source: &[u8],
     prompt: &[u8],
     capability: &str,
+) -> Value {
+    confirm_ask_with(ws, title, source, prompt, capability, Vec::new())
+}
+
+fn confirm_ask_with(
+    ws: &Workspace,
+    title: &str,
+    source: &[u8],
+    prompt: &[u8],
+    capability: &str,
+    links: Vec<Value>,
 ) -> Value {
     let staged = stage_in(ws, "prompt.txt", source, prompt);
     let planning = capability == "native_plan";
@@ -162,7 +178,7 @@ pub fn confirm_ask_as(
                       "effects": "reads", "gaps": []}),
             host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
                      "session_ref": "s1"}),
-            links: Vec::new(),
+            links,
             limitations: Vec::new(),
             actor: None,
             overrides: &crate::config::Overrides::default(),

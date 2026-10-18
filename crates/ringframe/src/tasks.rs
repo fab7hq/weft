@@ -1187,7 +1187,8 @@ Write your output file:
    {\"window\": \"w_…\", \"serves\": [\"<requirement id>\"]},
    {\"window\": \"w_…\", \"follows_from\": \"w_…\"},
    {\"window\": \"w_…\", \"unexplained\": \"<what it does that no requirement asks for>\", \"quote\": \"…\"},
-   {\"window\": \"w_…\", \"undoes\": [\"<requirement id>\"], \"quote\": \"…\"}],
+   {\"window\": \"w_…\", \"undoes\": [\"<requirement id>\"], \"quote\": \"…\"},
+   {\"window\": \"w_…\", \"elsewhere\": \"<ask id>\"}],
  \"breaks\": [{\"requirement\": \"<a cross-cutting requirement id>\", \"window\": \"w_…\",
              \"quote\": \"…\", \"reason\": \"…\"}]}
 ```
@@ -1200,9 +1201,12 @@ check removed, a behaviour a step asks for put back as it was). Where this brief
 lists a window as an unclaimed rewrite (a commit no step claims that wrote over \
 claimed work), ask first whether it undoes a requirement: that is `undoes`, not \
 `unexplained` and not `follows_from`.
+- `elsewhere`: where this task lists `elsewhere` Asks (other work, open, not \
+judged in this Eval), a window that is only one of their work: name that Ask. \
+Not for a window any requirement here asks for.
 - Exactly one of `serves`, `follows_from` (another window of the Eval it follows \
 from: a call site of a function another window adds, an import, a moved piece), \
-`unexplained` or `undoes` per window, and every window of the task.
+`unexplained`, `undoes` or `elsewhere` per window, and every window of the task.
 - `quote`, for `unexplained` and `undoes` only: 8 to 300 characters copied \
 exactly from that window, showing what no requirement asks for, or what it \
 takes back. `serves` and `follows_from` take no quote.
@@ -1427,6 +1431,11 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
     match t.kind {
         "map" => {
             v["requirements"] = json!(t.obligations);
+            // Other units' open Asks: work in this change that is theirs.
+            let elsewhere = array_of(&ctx.brief, "elsewhere");
+            if !elsewhere.is_empty() {
+                v["elsewhere"] = json!(elsewhere);
+            }
         }
         _ => {
             v["requirements"] = json!(t.obligations);
@@ -1925,15 +1934,22 @@ fn check_map(ch: &mut Checker, out: &Value) {
         }
         let serves = array_of(w, "serves");
         let undoes = array_of(w, "undoes");
+        let elsewhere = w.get("elsewhere").and_then(Value::as_str);
         let kinds = [
             !serves.is_empty(),
             w.get("follows_from").is_some_and(|c| !c.is_null()),
             w.get("unexplained").is_some_and(|u| !u.is_null()),
             !undoes.is_empty(),
+            elsewhere.is_some(),
         ];
         if kinds.iter().filter(|k| **k).count() != 1 {
-            ch.error(&at, "exactly one of serves, follows_from, unexplained or undoes");
+            ch.error(&at, "exactly one of serves, follows_from, unexplained, undoes or elsewhere");
             continue;
+        }
+        if let Some(other) = elsewhere
+            && !array_of(&ch.ctx.brief, "elsewhere").iter().any(|a| str_of(a, "ask_id") == other)
+        {
+            ch.error(&at, format!("{other} is not an Ask this Eval lists as elsewhere"));
         }
         for s in serves.iter().chain(undoes) {
             if !known.contains(&str_of_value(s)) {
@@ -2237,7 +2253,9 @@ fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<Stri
 // ---- close ------------------------------------------------------------------------
 
 fn window_class(entry: &Value) -> &'static str {
-    if entry.get("unexplained").is_some_and(|u| !u.is_null()) {
+    if entry.get("elsewhere").is_some_and(|u| !u.is_null()) {
+        "elsewhere"
+    } else if entry.get("unexplained").is_some_and(|u| !u.is_null()) {
         "unexplained"
     } else if entry["undoes"].as_array().is_some_and(|u| !u.is_empty()) {
         "undoes"
@@ -2375,7 +2393,8 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
                 (None, _) => ("not_judged".into(), 0.0),
             }
         };
-        if result != "mechanical" && result != "not_judged" {
+        // Another unit's work is not this unit's change.
+        if !matches!(result.as_str(), "mechanical" | "not_judged" | "elsewhere") {
             let n = w["changed"].as_u64().unwrap_or(0);
             changed_all += n;
             if result == "unexplained" {
@@ -2823,6 +2842,109 @@ mod tests {
 
     fn vote(id: &str, v: &str, w: &str, quote: &str, reason: &str) -> Value {
         json!({"id": id, "vote": v, "reason": reason, "citations": [{"window": w, "quote": quote}]})
+    }
+
+    /// Judged as one unit of work, a change that is another unit's work is
+    /// named as that unit's (`elsewhere`), read no further and not drift.
+    #[test]
+    fn another_units_work_is_named_elsewhere_and_is_not_drift() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
+            let a = confirm_ask_as(
+                ws,
+                "Build it",
+                b"build phase 1\n",
+                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+                "native_goal",
+            );
+            let beacon =
+                crate::testing::confirm_ask(ws, "Telemetry beacon", b"beacon\n", b"Beacon.\n");
+            let beacon = str_of(&beacon, "ask_id");
+            commit(
+                &ws.root,
+                &[
+                    ("src/uptime.js", Some(UPTIME)),
+                    (
+                        "docs/notes.md",
+                        Some("The server reports uptime_seconds since it started.\n"),
+                    ),
+                    (
+                        "src/telemetry.js",
+                        Some("export const beacon = () => fetch('https://example.com/collect');\n"),
+                    ),
+                ],
+                "work",
+            );
+            let opened =
+                open_eval(ws, Open { ask: Some(&str_of(&a, "ask_id")), ..Default::default() })
+                    .unwrap();
+            let e = &str_of(&opened, "eval_id");
+            let (up, notes, tele) = (
+                window_for(ws, e, "src/uptime.js"),
+                window_for(ws, e, "docs/notes.md"),
+                window_for(ws, e, "src/telemetry.js"),
+            );
+            let m1 = ids(&next(ws, e, 8, None, &[]).unwrap())[0].clone();
+            let listed: Vec<String> = array_of(&task_of(ws, &m1), "elsewhere")
+                .iter()
+                .map(|x| str_of(x, "ask_id"))
+                .collect();
+            assert_eq!(listed, std::slice::from_ref(&beacon), "the map is told what else is open");
+            let answer = |other: &str| {
+                let mut doc = head(&m1, "map", "map");
+                doc["windows"] = json!([
+                    {"window": up, "serves": [S1]},
+                    {"window": notes, "serves": [S2]},
+                    {"window": tele, "elsewhere": other},
+                ]);
+                doc
+            };
+            put(ws, &m1, answer("ask_nobody"));
+            assert_ne!(submit(ws, &m1).unwrap().0, 0, "only an Ask the brief names");
+            put(ws, &m1, answer(&beacon));
+            assert_eq!(submit(ws, &m1).unwrap().0, 0);
+
+            let r1 = ids(&next(ws, e, 8, None, &[]).unwrap())[0].clone();
+            let mut doc = head(&r1, "reduce", "reduce");
+            doc["requirements"] = json!([
+                vote(S1, "met", &up, "export const uptime_seconds", "the server exports it"),
+                vote(S2, "met", &notes, "reports uptime_seconds", "the notes say it"),
+            ]);
+            put(ws, &r1, doc);
+            assert_eq!(submit(ws, &r1).unwrap().0, 0);
+            loop {
+                let got = next(ws, e, 8, None, &[]).unwrap();
+                if got["state"] == "done" {
+                    assert_ne!(got["verdict"], "drifted", "another unit's work is not drift");
+                    break;
+                }
+                for t in ids(&got) {
+                    assert!(!t.contains("~cw"), "an elsewhere window is not read again: {t}");
+                    let file = task_of(ws, &t);
+                    let mut doc = head(&t, "reduce", "confirm");
+                    doc["requirements"] = json!(
+                        array_of(&file, "requirements")
+                            .iter()
+                            .map(|r| {
+                                let id = str_of(r, "id");
+                                vote(
+                                    &id,
+                                    "met",
+                                    &up,
+                                    "export const uptime_seconds",
+                                    &format!("{id} read afresh"),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    );
+                    put(ws, &t, doc);
+                    assert_eq!(submit(ws, &t).unwrap().0, 0, "{t}");
+                }
+            }
+            let rec = crate::evaluate::load_record(ws, e).unwrap().unwrap();
+            let w = array_of(&rec, "windows").iter().find(|w| w["id"] == json!(tele)).unwrap();
+            assert_eq!(w["result"], "elsewhere");
+        });
     }
 
     #[test]

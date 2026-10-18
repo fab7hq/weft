@@ -91,6 +91,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => s(
             &[
+                "--ask",
                 "--anchor",
                 "--subject-kind",
                 "--subject-ref",
@@ -242,7 +243,9 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
         ("ask", Some("list")) => "every compiled Ask, oldest first",
         ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
-        ("eval", Some("open")) => "write the facts-only brief over every open Ask",
+        ("eval", Some("open")) => {
+            "write the facts-only brief over every open Ask, or --ask one's unit of work"
+        }
         ("eval", Some("context")) => {
             "publish the change map (--map @file) for an open Eval, so a debate in any harness reads it"
         }
@@ -780,6 +783,7 @@ fn dispatch(
                     agents,
                     repos: ns.all("--repo"),
                     host: ns.one("--host"),
+                    ask: ns.one("--ask"),
                     deny: ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
                 },
             );
