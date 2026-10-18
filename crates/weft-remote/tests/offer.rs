@@ -235,3 +235,27 @@ fn change_tunnel_stops_the_tunnel_and_switching_forgets_its_program() {
     assert!(config.contains("tunnel = \"other\""), "{config}");
     assert!(!config.contains("program = \"/"), "the first's program is forgotten: {config}");
 }
+
+/// While its program installs, the tunnel cannot be changed under it.
+#[test]
+fn the_tunnel_is_not_changed_while_its_program_installs() {
+    let mut brew = None;
+    let mut h = Harness::until(
+        "change-installing",
+        |dir| {
+            let (later, program) = hide(dir);
+            let b = fake_brew(dir, &later, &program);
+            installable(dir, &b.to_string_lossy());
+            let other = "kind = \"tunnel\"\ntitle = \"Other Tunnel\"\nprogram = \"o\"\nrun = [\"{port}\"]\naddress = \".other.example\"\n";
+            std::fs::write(dir.join("tools/other.toml"), other).unwrap();
+            brew = Some(b);
+        },
+        "not_installed",
+    );
+    assert_eq!(h.app.view["can_change_tunnel"], true);
+    h.app.act(json!({"act": "install"}));
+    h.app.wait_view(|v| v["state"] == "installing");
+    h.app.act(json!({"act": "change_tunnel"}));
+    let next = h.app.wait_view(|v| v["state"] != "installing");
+    assert_eq!(next["state"], "on", "installed, not changed: {next}");
+}

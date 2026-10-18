@@ -306,8 +306,9 @@ impl Config {
                             ("tunnel", Value::String(t)) if !t.is_empty() => {
                                 self.remote.tunnel = Some(t.clone())
                             }
-                            ("program", Value::String(p)) if !p.is_empty() => {
-                                self.remote.program = Some(p.clone())
+                            // Emptied when another tunnel is chosen: none.
+                            ("program", Value::String(p)) => {
+                                self.remote.program = Some(p.clone()).filter(|p| !p.is_empty())
                             }
                             _ => self.ignored.push(format!("{here}.{k}")),
                         }
@@ -452,6 +453,13 @@ mod tests {
 
     fn at(text: &str) -> Routing {
         read_(text).routing(Path::new(HERE))
+    }
+
+    #[test]
+    fn an_empty_program_is_none_and_not_a_mistake() {
+        let c = read("[remote]\ntunnel = \"other\"\nprogram = \"\"\n", &Default::default());
+        assert_eq!(c.remote().program, None);
+        assert!(c.ignored.is_empty(), "{:?}", c.ignored);
     }
 
     #[test]

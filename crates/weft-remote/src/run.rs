@@ -712,7 +712,11 @@ impl Remote {
                 }
             }
             // Stop the tunnel and choose again, the current one picked.
-            Some("change_tunnel") if self.view.can_change_tunnel => {
+            Some("change_tunnel")
+                if self.view.can_change_tunnel
+                    && self.view.installing.is_none()
+                    && self.view.signing_in.is_none() =>
+            {
                 self.tunnel = None;
                 self.view.up = false;
                 self.view.address = None;
