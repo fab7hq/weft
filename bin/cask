@@ -1,0 +1,59 @@
+#!/bin/sh
+# The Homebrew cask for a release, `Casks/weft.rb` in the current folder (a
+# checkout of fab7hq/homebrew-tap), from the release's tag and the checksums
+# of its two macOS archives; then checked. It writes the file and nothing
+# else: committing and pushing it are the person's.
+#
+#   bin/cask <tag> <arm64-sha256> <x86_64-sha256>
+#
+# `brew install --cask fab7hq/tap/weft` installs Weft.app from the same
+# archives install.sh does, puts `weft` and `ringframe` on PATH, and takes
+# away the quarantine an ad hoc signed app would be stopped by.
+set -eu
+
+usage='usage: bin/cask <tag> <arm64-sha256> <x86_64-sha256>'
+tag=${1:?$usage}
+arm=${2:?$usage}
+intel=${3:?$usage}
+case "$tag" in
+    v[0-9]*.[0-9]*.[0-9]*) ;;
+    *) echo "bin/cask: not a release tag: $tag" >&2; exit 1 ;;
+esac
+for sum in "$arm" "$intel"; do
+    printf '%s' "$sum" | grep -Eq '^[0-9a-f]{64}$' || { echo "bin/cask: not a sha256: $sum" >&2; exit 1; }
+done
+version=${tag#v}
+
+mkdir -p Casks
+cat > Casks/weft.rb <<CASK
+cask "weft" do
+  arch arm: "aarch64", intel: "x86_64"
+
+  version "$version"
+  sha256 arm:   "$arm",
+         intel: "$intel"
+
+  url "https://github.com/fab7hq/weft/releases/download/v#{version}/fab7-v#{version}-#{arch}-apple-darwin.tar.gz"
+  name "Weft"
+  desc "Coding agents in panes, with what was asked, checked and decided"
+  homepage "https://github.com/fab7hq/weft"
+
+  depends_on macos: :monterey
+
+  app "Weft.app"
+  binary "#{appdir}/Weft.app/Contents/MacOS/weft"
+  binary "#{appdir}/Weft.app/Contents/MacOS/ringframe"
+
+  # Signed ad hoc: without its quarantine it opens from Finder and the Dock.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Weft.app"]
+  end
+
+  zap trash: "~/.fab7/weft"
+end
+CASK
+
+# Homebrew style-checks a cask only in a tap: there, `brew style --cask weft`.
+ruby -c Casks/weft.rb >/dev/null
+printf 'Wrote %s/Casks/weft.rb for Weft %s\n' "$(pwd)" "$version"

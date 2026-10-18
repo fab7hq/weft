@@ -149,3 +149,41 @@ fn a_release_archive_holds_the_app() {
         assert_eq!(held, want);
     }
 }
+
+/// `bin/cask` writes the tap's cask for a release from its two macOS
+/// checksums: Weft.app, `weft` and `ringframe` on PATH, the quarantine taken
+/// away; Ruby reads it. A tag or checksum that is not one writes nothing.
+#[test]
+#[cfg(target_os = "macos")]
+fn the_cask_installs_the_release_archives() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cask = |args: &[&str]| {
+        Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/cask"))
+            .args(args)
+            .current_dir(tmp.path())
+            .output()
+            .unwrap()
+    };
+    let (arm, intel) = ("a".repeat(64), "b".repeat(64));
+    let made = cask(&["v0.9.0", &arm, &intel]);
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+    let rb = std::fs::read_to_string(tmp.path().join("Casks/weft.rb")).unwrap();
+    for held in [
+        "cask \"weft\" do",
+        "version \"0.9.0\"",
+        &format!("sha256 arm:   \"{arm}\","),
+        &format!("intel: \"{intel}\""),
+        "fab7-v#{version}-#{arch}-apple-darwin.tar.gz",
+        "app \"Weft.app\"",
+        "binary \"#{appdir}/Weft.app/Contents/MacOS/weft\"",
+        "binary \"#{appdir}/Weft.app/Contents/MacOS/ringframe\"",
+        "\"-dr\", \"com.apple.quarantine\", \"#{appdir}/Weft.app\"",
+        "zap trash: \"~/.fab7/weft\"",
+    ] {
+        assert!(rb.contains(held), "{held}\n{rb}");
+    }
+    std::fs::remove_file(tmp.path().join("Casks/weft.rb")).unwrap();
+    assert!(!cask(&["0.9.0", &arm, &intel]).status.success(), "not a release tag");
+    assert!(!cask(&["v0.9.0", "abc", &intel]).status.success(), "not a checksum");
+    assert!(!tmp.path().join("Casks/weft.rb").exists());
+}
