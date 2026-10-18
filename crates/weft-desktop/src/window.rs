@@ -871,6 +871,7 @@ impl GpuiDesktopView {
                 .map(|(range, run)| {
                     let style = ::gpui::HighlightStyle {
                         color: run.color.map(|c| parse_color(c).into()),
+                        background_color: run.background.map(|c| parse_color(c).into()),
                         font_weight: run.bold.then_some(FontWeight::SEMIBOLD),
                         font_style: run.italic.then_some(::gpui::FontStyle::Italic),
                         underline: run.underline.then(|| ::gpui::UnderlineStyle {

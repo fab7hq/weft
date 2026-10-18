@@ -119,6 +119,8 @@ fn line(spans: &[Span]) -> Element {
             strike: s.strike,
             underline: s.link.is_some(),
             color: if s.link.is_some() { Some(palette::BLUE_BORDER) } else { None },
+            // Code reads as a chip, as on the conversation's card.
+            background: s.code.then_some(palette::SURFACE),
         };
         if run != Run::default() {
             runs.push((at..text.len(), run));

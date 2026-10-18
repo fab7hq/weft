@@ -68,6 +68,7 @@ pub struct Run {
     pub strike: bool,
     pub underline: bool,
     pub color: Option<&'static str>,
+    pub background: Option<&'static str>,
 }
 
 pub fn div() -> Element {
