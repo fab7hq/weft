@@ -168,6 +168,10 @@ fn keep_connected(shared: Arc<Mutex<SharedState>>) {
     }
 }
 
+/// What a Linux desktop knows the window by: its entry's `StartupWMClass`,
+/// which gives the launcher and the dock Weft's icon.
+pub const APP_ID: &str = "weft-desktop";
+
 /// A newer Weft took the daemon over: open its app in place of this one,
 /// which goes. Whether there was one to open.
 fn start_newer(shared: &Mutex<SharedState>) -> bool {
@@ -278,6 +282,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(GpuiWindowBounds::Windowed(bounds)),
+                app_id: Some(APP_ID.into()),
                 ..Default::default()
             },
             move |window, cx| {
@@ -1394,6 +1399,14 @@ mod tests {
     use crate::app::tests::{Wire, start, wired_app};
     use ::gpui::{TestAppContext, VisualTestContext};
     use weft_core::text_keys::Edit;
+
+    /// A Linux desktop binds the window to Weft's entry, and its icon, by the
+    /// window's app id.
+    #[test]
+    fn the_window_is_known_by_the_desktop_entrys_name() {
+        let entry = include_str!("../../../assets/linux/weft.desktop");
+        assert!(entry.lines().any(|l| l == format!("StartupWMClass={APP_ID}")), "{entry}");
+    }
 
     /// The desktop's view in a window without a screen, a pane open and the message row focused.
     fn opened(

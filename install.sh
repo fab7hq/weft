@@ -134,6 +134,12 @@ main() {
         mkdir -p "$apps"
         # -h: the link itself is replaced, not the app it points at.
         ln -sfh "$folder/Weft.app" "$apps/Weft.app"
+        # Finder, the Dock and Spotlight show its icon at once. One linked
+        # from a folder of the caller's choosing is theirs to register.
+        lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+        if [ -z "${WEFT_APPS_DIR:-}" ] && [ -x "$lsregister" ]; then
+            "$lsregister" -f "$folder/Weft.app" || true
+        fi
         printf 'Installed Weft %s to %s, linked from %s\n' "$tag" "$folder" "$apps/Weft.app"
     else
         link "$folder/weft-desktop" "$BIN_DIR/weft-desktop"
@@ -142,6 +148,10 @@ main() {
         # Started by a desktop that may not have BIN_DIR on its PATH.
         sed "s|^Exec=weft-desktop|Exec=$BIN_DIR/weft-desktop|" "$work/weft.desktop" >"$share/applications/weft.desktop"
         cp "$work/weft.svg" "$share/icons/hicolor/scalable/apps/weft.svg"
+        # The launcher lists the app at once, where the desktop keeps a database.
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database "$share/applications" >/dev/null 2>&1 || true
+        fi
         printf 'Installed Weft %s to %s, linked from %s\n' "$tag" "$folder" "$BIN_DIR"
     fi
 

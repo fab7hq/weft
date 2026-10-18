@@ -87,9 +87,14 @@ fn the_linux_entry_starts_the_app_with_its_icon() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/linux/weft.desktop"),
     )
     .unwrap();
-    for line in
-        ["[Desktop Entry]", "Type=Application", "Name=Weft", "Exec=weft-desktop %f", "Icon=weft"]
-    {
+    for line in [
+        "[Desktop Entry]",
+        "Type=Application",
+        "Name=Weft",
+        "Exec=weft-desktop %f",
+        "Icon=weft",
+        "StartupWMClass=weft-desktop",
+    ] {
         assert!(entry.lines().any(|l| l == line), "{line}\n{entry}");
     }
 }

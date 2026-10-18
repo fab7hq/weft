@@ -394,6 +394,14 @@ impl Element {
 
 #[cfg(test)]
 mod tests {
+    /// The banner is in the program, so the header draws it wherever the
+    /// app was installed and whatever folder it was started from.
+    #[test]
+    fn the_banner_is_in_the_program() {
+        let banner = super::asset("weft-banner").expect("the banner");
+        assert!(banner.starts_with(b"<svg"), "an SVG");
+    }
+
     use super::palette::*;
 
     /// The value `tokens.css` gives a custom property.
