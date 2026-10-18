@@ -1574,13 +1574,11 @@ fn ask_on_a_project_row_opens_on_its_agents() {
     app.dispatch(TreeAct::SelectProject(weft()));
     app.dispatch(BarAct::Ask);
     // It starts on the agent in front, named, and goes where it shows.
-    let Some(ActiveSheet::Ask { project, send_to: Some(session), .. }) = &app.active_sheet else {
+    let Some(ActiveSheet::Ask { project, send_to: Some(to), .. }) = &app.active_sheet else {
         panic!("{:?}", app.active_sheet)
     };
     assert_eq!(*project, weft());
-    let listed = app.tree_projects();
-    let row = listed[0].project.agents.rows.iter().find(|r| &r.session == session).unwrap();
-    assert_eq!(row.pane, Some(codex), "the agent in front");
+    assert_eq!(*to, format!("pane:{codex}"), "the agent in front");
     app.ask.set_text("add a health endpoint");
     app.dispatch(SheetAct::SubmitAsk);
     let (_, call) = wire.call();
@@ -1967,7 +1965,7 @@ fn a_staged_send_goes_where_staged_or_where_sent_to() {
     pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
     assert_eq!(app.render().find_layer("send to choice").unwrap().all_text(), "weft · codex ▾");
     // Into another agent.
-    app.dispatch(BarAct::SendTo { pending: "p1".into(), to: "s-a".into() });
+    app.dispatch(BarAct::SendTo { pending: "p1".into(), to: format!("pane:{claude}") });
     app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::Yes });
     let (_, call) = wire.call();
     assert!(

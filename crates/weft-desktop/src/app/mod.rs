@@ -25,7 +25,7 @@ use crate::daemon::{Answered, PaneView, ProjectClient, Then};
 use crate::gpui::{Element, div, palette};
 use crate::header::{HeaderProps, render_header};
 use crate::panes_view::{DropTarget, PanesProps, drag_tab, render_panes_workspace};
-use crate::sheets::send_to::SendTo;
+use crate::sheets::send_to::{SendTo, pane_key};
 use crate::sheets::{MenuProps, SheetProps, render_menu_popover, render_sheet};
 use crate::text_field::{Shape, TextField};
 use crate::tree_view::{Listed, TreeProps, TreeSelection, render_plus_popover, render_tree};
@@ -361,8 +361,8 @@ impl WeftDesktopApp {
                     .agents
                     .rows
                     .into_iter()
-                    .filter(|a| a.state == SessionState::Running && a.pane.is_some())
-                    .map(|a| (a.session, format!("{name} · {}", a.harness)))
+                    .filter(|a| a.state == SessionState::Running)
+                    .filter_map(|a| Some((pane_key(a.pane?), format!("{name} · {}", a.harness))))
                     .collect()
             })
             .unwrap_or_default();
@@ -376,18 +376,9 @@ impl WeftDesktopApp {
     }
 
     /// Where a staged send goes: what the person picked, else where it was
-    /// staged (that agent's session).
-    pub fn staged_send_to(&self, root: &Path, staged: &crate::daemon::Staged) -> String {
-        self.staged_to
-            .get(&staged.id)
-            .cloned()
-            .unwrap_or_else(|| self.session_in(root, staged.pane).unwrap_or_default())
-    }
-
-    /// The session running in `pane` of `root`, as the tree has it.
-    fn session_in(&self, root: &Path, pane: u32) -> Option<String> {
-        let listed = self.tree_projects().into_iter().find(|l| l.root == root)?;
-        listed.project.agents.rows.into_iter().find(|a| a.pane == Some(pane)).map(|a| a.session)
+    /// staged.
+    pub fn staged_send_to(&self, staged: &crate::daemon::Staged) -> String {
+        self.staged_to.get(&staged.id).cloned().unwrap_or_else(|| pane_key(staged.pane))
     }
 
     /// The pane of `session` in `root`, as the tree has it.
@@ -953,7 +944,7 @@ impl WeftDesktopApp {
         // A staged send's SEND TO: where it goes now.
         let staged_to = self.clients.iter().find_map(|c| {
             let staged = c.waiting.last()?;
-            Some(self.send_to_view(&c.root, Some(&self.staged_send_to(&c.root, staged))))
+            Some(self.send_to_view(&c.root, Some(&self.staged_send_to(staged))))
         });
         div()
             .layer("window")

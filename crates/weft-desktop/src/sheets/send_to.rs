@@ -8,12 +8,22 @@ use weft_core::words::word;
 use crate::action::{Action, SheetAct};
 use crate::gpui::{Element, div, palette, span};
 
+/// What a running agent is picked as: its pane.
+pub fn pane_key(pane: u32) -> String {
+    format!("pane:{pane}")
+}
+
+/// The pane a key picks, if it picks one.
+pub fn pane_in(key: &str) -> Option<u32> {
+    key.strip_prefix("pane:")?.parse().ok()
+}
+
 /// What a new agent of `harness` is picked as.
 pub fn start_key(harness: &str) -> String {
     format!("start:{harness}")
 }
 
-/// The list as drawn: each running agent by its key (its session) and name,
+/// The list as drawn: each running agent by its key (its pane) and name,
 /// then each harness a new agent can be of.
 #[derive(Debug, Clone, Default)]
 pub struct SendTo {

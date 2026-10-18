@@ -12,6 +12,7 @@ use super::{ActiveSheet, BottomBarState, WeftDesktopApp};
 use crate::action::{Action, Answer, BarAct, Focus, PaneAct, SheetAct, TreeAct, WindowAct};
 use crate::daemon::Then;
 use crate::panes_view::{join_all_panes, move_tab_to_next_pane, split_pane_down, split_pane_right};
+use crate::sheets::send_to::{pane_in, pane_key};
 use crate::text_field::{Shape, TextField};
 use crate::tree_view::TreeSelection;
 
@@ -272,7 +273,7 @@ impl WeftDesktopApp {
                 let (to, start) = match (picked.as_deref(), staged) {
                     (Some(key), Some(staged)) => match key.strip_prefix("start:") {
                         Some(h) => (None, Some(h.to_string())),
-                        None => (self.pane_of(&project, key).filter(|&p| p != staged.pane), None),
+                        None => (pane_in(key).filter(|&p| p != staged.pane), None),
                     },
                     _ => (None, None),
                 };
@@ -349,24 +350,26 @@ impl WeftDesktopApp {
 
     fn open_ask(&mut self, project: PathBuf, session: Option<String>, unit: Option<String>) {
         self.send_to_open = false;
-        // No agent named: the one in front when it is this project's, else its
-        // first running one. Named here, so the sheet shows where it goes.
-        let session = session.or_else(|| {
+        // The agent named, else the one in front when it is this project's,
+        // else its first running one: picked here, so the sheet shows where
+        // it goes. An agent is picked by its pane.
+        let named = session.and_then(|s| self.pane_of(&project, &s));
+        let pane = named.or_else(|| {
             let front = self.active_tab().filter(|t| t.project == project).map(|t| t.pane);
             let listed = self.tree_projects().into_iter().find(|l| l.root == project)?;
-            let running: Vec<_> = listed
+            let running: Vec<u32> = listed
                 .project
                 .agents
                 .rows
                 .into_iter()
                 .filter(|a| a.state == weft_core::sessions::State::Running)
+                .filter_map(|a| a.pane)
                 .collect();
-            let row = running.iter().find(|a| a.pane.is_some() && a.pane == front);
-            row.or(running.first()).map(|a| a.session.clone())
+            running.iter().copied().find(|&p| Some(p) == front).or(running.first().copied())
         });
         self.ask = TextField::new(Shape::Area);
         self.active_sheet =
-            Some(ActiveSheet::Ask { project, send_to: session, follow_up_unit: unit });
+            Some(ActiveSheet::Ask { project, send_to: pane.map(pane_key), follow_up_unit: unit });
         self.focus = Focus::Ask;
     }
 
@@ -619,7 +622,7 @@ impl WeftDesktopApp {
     ) -> bool {
         // The agent the sheet showed, by its pane; or a new one of a harness.
         let start = send_to.and_then(|k| k.strip_prefix("start:")).map(str::to_string);
-        let pane = send_to.filter(|_| start.is_none()).and_then(|s| self.pane_of(project, s));
+        let pane = send_to.and_then(pane_in);
         let Some(client) = self.client_mut(project) else { return false };
         let act = if follow_up_unit.is_some() { "follow_up" } else { "ask" };
         match client.act(act, follow_up_unit, pane, Some(draft), None, start.as_deref()) {
