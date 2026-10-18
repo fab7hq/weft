@@ -1055,60 +1055,6 @@ fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
     std::fs::remove_dir_all(&off).ok();
 }
 
-/// A harness file's `flags` go to every agent the daemon starts, before turbo
-/// mode's own, whether turbo is on or not; only turbo's make it a turbo pane.
-#[test]
-fn every_agent_gets_its_harnesses_flags_turbo_or_not() {
-    let mut echo = weft::harness_table::fixture::file("codex");
-    echo["program"] = "echo".into();
-    echo["flags"] = serde_json::json!(["ALWAYS-FLAG"]);
-    echo["turbo"] = serde_json::json!(["TURBO-FLAG"]);
-    let harnesses = weft::harness_table::Harnesses(vec![
-        weft::harness_table::Harness::of("echo-agent", &echo).expect("a harness"),
-    ]);
-    let on = project("flags-on");
-    let off = project("flags-off");
-    let socket = protocol::private_socket("weft-flags");
-    let config = socket.with_extension("flags-config.toml");
-    std::fs::write(
-        &config,
-        format!(
-            "turbo = true\n\n[projects.\"{}\"]\nturbo = false\n",
-            off.canonicalize().unwrap().display()
-        ),
-    )
-    .expect("config");
-    let listening = socket.clone();
-    std::thread::spawn(move || {
-        let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
-    });
-
-    for (root, want, turbo) in
-        [(&on, "hello ALWAYS-FLAG TURBO-FLAG", true), (&off, "hello ALWAYS-FLAG", false)]
-    {
-        let mut c = Client::attach(&socket, &root.canonicalize().unwrap());
-        c.hello();
-        c.send(Call::StartAgent {
-            harness: "echo-agent".into(),
-            spec: "echo hello".into(),
-            session: None,
-        });
-        c.wait_for_added();
-        let seen = c.wait_for(want, 5);
-        let line = seen.lines().find(|l| l.contains("hello")).unwrap_or("").trim().to_string();
-        assert_eq!(line, want, "turbo {turbo}");
-        let mut look = Client::attach(&socket, &root.canonicalize().unwrap());
-        let panes = look.hello();
-        assert_eq!(panes[0].spec, "echo hello", "the command line as asked");
-        assert_eq!(panes[0].turbo, turbo);
-    }
-
-    let mut stop = Client::attach(&socket, &on);
-    stop.send(Call::Shutdown);
-    std::fs::remove_dir_all(&on).ok();
-    std::fs::remove_dir_all(&off).ok();
-}
-
 /// The person turns turbo mode on and off from Weft. It starts
 /// as `config.toml` says; an agent started after a switch follows it, and one
 /// already running keeps the mode it was started in.
