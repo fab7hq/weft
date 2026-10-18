@@ -154,7 +154,7 @@ fn open_app(project: Option<&std::path::Path>) -> Result<()> {
                      `weft --help` lists what runs without one"
                 );
             }
-            start_program(&desktop, project)?;
+            start_program(&desktop, project, std::time::Duration::from_secs(1))?;
         }
         None => anyhow::bail!(
             "the desktop app is not installed beside {}; install Weft again",
@@ -165,8 +165,12 @@ fn open_app(project: Option<&std::path::Path>) -> Result<()> {
 }
 
 /// Start the desktop program, in its own session so closing this terminal
-/// leaves it open.
-fn start_program(desktop: &std::path::Path, project: Option<&std::path::Path>) -> Result<()> {
+/// leaves it open; one that fails within `within` says why.
+fn start_program(
+    desktop: &std::path::Path,
+    project: Option<&std::path::Path>,
+    within: std::time::Duration,
+) -> Result<()> {
     use std::os::unix::process::CommandExt as _;
     let mut program = std::process::Command::new(desktop);
     program.args(project);
@@ -185,7 +189,7 @@ fn start_program(desktop: &std::path::Path, project: Option<&std::path::Path>) -
         .stderr(std::process::Stdio::piped())
         .spawn()?;
     // An app that cannot start ends at once; say why, rather than nothing.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let deadline = std::time::Instant::now() + within;
     while std::time::Instant::now() < deadline {
         if let Some(status) = child.try_wait()? {
             if status.success() {
@@ -329,12 +333,14 @@ mod tests {
                 .unwrap();
             path
         };
-        let failed = start_program(&program("fails", "echo no display >&2; exit 3"), None);
+        let long = std::time::Duration::from_secs(20);
+        let failed = start_program(&program("fails", "echo no display >&2; exit 3"), None, long);
         let said = failed.expect_err("it ended").to_string();
         assert!(said.contains("no display"), "{said}");
         // Handed to the app already running, or still running: started.
-        start_program(&program("hands", "exit 0"), None).expect("handed over");
-        start_program(&program("runs", "sleep 5"), None).expect("running");
+        start_program(&program("hands", "exit 0"), None, long).expect("handed over");
+        let short = std::time::Duration::from_millis(200);
+        start_program(&program("runs", "sleep 5"), None, short).expect("running");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

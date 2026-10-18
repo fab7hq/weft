@@ -133,7 +133,7 @@ impl WeftDesktopApp {
                     self.client(&project).and_then(|c| c.sessions.iter().find(|r| r.id == session));
                 if let Some(r) = row {
                     // The hook's own word, or only what Weft read from its screen.
-                    let key = if r.turn == Some(weft_core::turns::Turn::Waiting) {
+                    let key = if weft_core::turns::is_asking(r.turn) {
                         "desktop.why.asking"
                     } else {
                         "desktop.why.looks_asking"
