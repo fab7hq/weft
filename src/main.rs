@@ -26,24 +26,37 @@ fn bundled(exe: &std::path::Path) -> Option<std::path::PathBuf> {
     fab7.is_dir().then_some(fab7)
 }
 
+/// Whether a home set up from this version's files (`seeded`, the version
+/// that last did) is set up again: one Homebrew updates is, once per
+/// version, since no installer refreshes it; Weft's installer refreshes its own.
+fn refresh(by: &Updater, seeded: Option<&str>, version: &str) -> bool {
+    *by == Updater::Homebrew && seeded != Some(version)
+}
+
 /// A first start with nothing set up, as when the app came from a package
 /// manager and no installer ran: Weft's harness and tool files, and
 /// RingFrame's configuration (by the `ringframe` beside this `weft`), from
-/// what came with it. Whatever is there already is left alone.
+/// what came with it. What is there already is left alone, unless a newer
+/// Homebrew Weft brought newer files.
 fn seed(home: &std::path::Path, exe: &std::path::Path) {
     let Some(fab7) = bundled(exe) else { return };
+    let version = env!("CARGO_PKG_VERSION");
+    let stamp = home.join(".fab7/weft/.seeded");
+    let seeded = std::fs::read_to_string(&stamp).ok();
+    let again = refresh(&updated_by(exe, home), seeded.as_deref().map(str::trim), version);
     for name in ["harnesses", "tools"] {
         let (from, to) = (fab7.join("weft").join(name), home.join(".fab7/weft").join(name));
-        if from.is_dir() && !to.exists() {
+        if from.is_dir() && (again || !to.exists()) {
             let new = to.with_extension("new");
             let _ = std::fs::remove_dir_all(&new);
             if copy_dir(&from, &new).is_ok() {
+                let _ = std::fs::remove_dir_all(&to);
                 let _ = std::fs::rename(&new, &to);
             }
         }
     }
     let ringframe = exe.with_file_name("ringframe");
-    if !home.join(".fab7/rf/config").exists() && ringframe.is_file() {
+    if (again || !home.join(".fab7/rf/config").exists()) && ringframe.is_file() {
         let _ = std::process::Command::new(ringframe)
             .args(["init", "--global", "--from"])
             .arg(fab7.join("ringframe/config"))
@@ -51,6 +64,9 @@ fn seed(home: &std::path::Path, exe: &std::path::Path) {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
+    }
+    if again {
+        let _ = std::fs::write(&stamp, format!("{version}\n"));
     }
 }
 
@@ -320,11 +336,9 @@ impl Updater {
 /// else is updated as Weft's installer put it there.
 fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
     let in_app = exe.parent().is_some_and(|d| d.ends_with("Contents/MacOS"));
-    if in_app && !exe.starts_with(home.join(".fab7/weft/versions")) {
-        Updater::Homebrew
-    } else {
-        Updater::Installer
-    }
+    let versions = home.join(".fab7/weft/versions");
+    let versions = versions.canonicalize().unwrap_or(versions);
+    if in_app && !exe.starts_with(versions) { Updater::Homebrew } else { Updater::Installer }
 }
 
 /// Replace this Weft with the latest release, with that release's own
@@ -398,6 +412,16 @@ fn after_update(socket: &std::path::Path, version: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What Homebrew installed is set up again from each new version: no
+    /// installer refreshes it. Weft's own installer refreshes its own.
+    #[test]
+    fn a_homebrew_weft_sets_its_home_up_again_for_each_version() {
+        assert!(refresh(&Updater::Homebrew, None, "0.6.0"), "never set up by this route");
+        assert!(refresh(&Updater::Homebrew, Some("0.5.0"), "0.6.0"));
+        assert!(!refresh(&Updater::Homebrew, Some("0.6.0"), "0.6.0"));
+        assert!(!refresh(&Updater::Installer, Some("0.5.0"), "0.6.0"));
+    }
 
     #[test]
     fn a_weft_homebrew_installed_is_updated_by_homebrew() {
