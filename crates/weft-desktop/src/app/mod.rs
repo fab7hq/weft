@@ -166,6 +166,13 @@ pub struct WeftDesktopApp {
     unsaved: bool,
     /// The agents waiting for the person, as last seen, so each is told once.
     waiting: HashSet<(PathBuf, u32)>,
+    /// The tunnel picked in Remote, until it is used.
+    pub remote_pick: Option<String>,
+    /// What the bar showed before a device asked to be allowed.
+    before_allow: Option<BottomBarState>,
+    /// The device last answered: the bar does not ask again while
+    /// `weft remote` has not yet heard.
+    allow_answered: Option<String>,
     /// What is to be told and has not been taken yet.
     notices: Vec<Notice>,
     /// Why each project last failed to open, as told.
@@ -204,6 +211,9 @@ impl WeftDesktopApp {
             quit_requested: false,
             unsaved: false,
             waiting: HashSet::new(),
+            remote_pick: None,
+            before_allow: None,
+            allow_answered: None,
             notices: Vec::new(),
             not_opened: HashMap::new(),
         };
@@ -308,7 +318,57 @@ impl WeftDesktopApp {
             self.refresh_active_conversations();
             self.refresh_eval_view();
         }
+        if changed {
+            self.offer_allow();
+        }
         self.suggest_tick(std::time::Instant::now()) || changed
+    }
+
+    /// `weft remote`'s view, from whichever project heard it.
+    pub fn remote_view(&self) -> Option<&serde_json::Value> {
+        self.clients.iter().find_map(|c| c.remote.as_ref())
+    }
+
+    /// A device asking to be allowed opens the bar by itself, over whatever
+    /// it showed; when the request goes (answered here or elsewhere, or
+    /// expired), the bar goes with it and what was there comes back.
+    fn offer_allow(&mut self) {
+        let asking = self.remote_view().map(|v| v["asking"].clone()).filter(|a| a.is_object());
+        let wanted = asking.as_ref().and_then(|a| a["device"].as_str()).map(str::to_string);
+        if wanted.is_none() {
+            self.allow_answered = None;
+        }
+        let wanted = wanted.filter(|d| self.allow_answered.as_ref() != Some(d));
+        let shown = match &self.bottom_bar {
+            BottomBarState::AllowDevice { device_id, .. } => Some(device_id.clone()),
+            _ => None,
+        };
+        if shown == wanted {
+            return;
+        }
+        let before = match shown {
+            Some(_) => self.before_allow.take(),
+            None => Some(std::mem::replace(&mut self.bottom_bar, BottomBarState::None)),
+        };
+        match (asking, wanted) {
+            (Some(a), Some(device)) => {
+                self.before_allow = before;
+                self.bottom_bar = BottomBarState::AllowDevice {
+                    device_id: device,
+                    device_name: a["name"].as_str().unwrap_or_default().to_string(),
+                    login: a["login"].as_str().map(str::to_string),
+                };
+            }
+            _ => self.bottom_bar = before.unwrap_or(BottomBarState::None),
+        }
+    }
+
+    /// An act for `weft remote`, through the daemon: one machine, one daemon,
+    /// so through one project's link.
+    pub fn remote_act(&mut self, act: serde_json::Value) {
+        if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+            let _ = c.remote_act(act);
+        }
     }
 
     /// What an answer was for, done now it has come.
@@ -730,6 +790,7 @@ impl WeftDesktopApp {
                 harnesses: &harnesses,
                 bottom_bar: &self.bottom_bar,
                 ask_draft: self.ask.text(),
+                remote_pick: self.remote_pick.as_deref(),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

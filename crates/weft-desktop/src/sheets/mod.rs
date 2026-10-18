@@ -31,6 +31,8 @@ pub struct SheetProps<'a> {
     pub bottom_bar: &'a BottomBarState,
     /// What the open Ask's field holds.
     pub ask_draft: &'a str,
+    /// The tunnel picked in Remote, not yet used.
+    pub remote_pick: Option<&'a str>,
 }
 
 impl SheetProps<'_> {

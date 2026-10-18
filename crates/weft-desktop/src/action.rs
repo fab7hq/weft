@@ -145,7 +145,14 @@ pub enum SheetAct {
     SetupAll,
     SetupRun(String),
     Locate(String),
+    RemoteOn,
     RemoteOff,
+    /// A tunnel picked, not yet used.
+    RemotePick(String),
+    RemoteUse,
+    RemoteInstall,
+    RemoteSignIn,
+    RemoteCancel,
     AskRemoveDevice {
         device: String,
         name: String,

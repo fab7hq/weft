@@ -1583,3 +1583,113 @@ fn ask_on_a_project_row_opens_on_its_agents() {
     let (_, call) = wire.call();
     assert!(matches!(call, Call::Act { pane: Some(p), .. } if p == codex), "{call:?}");
 }
+
+/// Remote's sheet, in the state `view` says, with what it says.
+fn remote_sheet(app: &mut WeftDesktopApp, view: Option<Value>) -> Element {
+    app.clients[0].remote = view;
+    app.dispatch(WindowAct::OpenRemote);
+    app.render().find_layer("sheet Remote").expect("the Remote sheet").clone()
+}
+
+#[test]
+fn remote_says_every_state_weft_remote_can_be_in_and_acts_on_it() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let said = |e: &Element| e.all_text();
+
+    // Off: what it is, and Turn on.
+    let off = remote_sheet(&mut app, None);
+    assert!(said(&off).contains(words::word("desktop.remote.off_what")), "{}", said(&off));
+    app.dispatch(SheetAct::RemoteOn);
+    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "on"}) });
+    let starting = remote_sheet(&mut app, Some(json!({"state": "starting"})));
+    assert!(said(&starting).contains(words::word("desktop.remote.starting")));
+
+    // Choose a tunnel: picking is a choice, Use it sends it.
+    let tunnels = json!([{"id": "cloudflared", "title": "Cloudflare quick tunnel"},
+                         {"id": "tailscale", "title": "Tailscale"}]);
+    let choose = remote_sheet(&mut app, Some(json!({"state": "choose", "tunnels": tunnels})));
+    assert!(choose.find_layer("tunnel Cloudflare quick tunnel").is_some());
+    app.dispatch(SheetAct::RemotePick("tailscale".into()));
+    assert!(wire.calls().is_empty(), "a pick sends nothing");
+    app.dispatch(SheetAct::RemoteUse);
+    assert_eq!(
+        wire.call().1,
+        Call::Remote { act: json!({"act": "choose", "tunnel": "tailscale"}) }
+    );
+
+    // Its program is missing: the exact command, run only on a yes.
+    let tunnel =
+        json!({"id": "cloudflared", "title": "Cloudflare quick tunnel", "program": "cloudflared"});
+    let missing = remote_sheet(
+        &mut app,
+        Some(json!({"state": "not_installed", "tunnel": tunnel,
+        "offer": {"how": "brew", "argv": "brew install cloudflared"}})),
+    );
+    assert!(said(&missing).contains("brew install cloudflared"), "{}", said(&missing));
+    assert!(said(&missing).contains("cloudflared needed"));
+    app.dispatch(SheetAct::RemoteInstall);
+    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "install"}) });
+    let cannot = remote_sheet(
+        &mut app,
+        Some(json!({"state": "not_installed", "tunnel": tunnel,
+        "offer": null, "why": "Weft has no way to install cloudflared here."})),
+    );
+    assert!(said(&cannot).contains("Weft has no way to install cloudflared here."));
+    assert!(cannot.find_layer("btn Run it").is_none(), "nothing to run");
+    let installing = remote_sheet(
+        &mut app,
+        Some(json!({"state": "installing", "line": "==> Pouring cloudflared"})),
+    );
+    assert!(said(&installing).contains("==> Pouring cloudflared"));
+
+    // Signing in: the code and where; Cancel stops it.
+    let signing = remote_sheet(
+        &mut app,
+        Some(json!({"state": "signing_in", "code": "7F3K-29QD",
+        "url": "github.com/login/device"})),
+    );
+    assert!(
+        said(&signing).contains("7F3K-29QD") && said(&signing).contains("github.com/login/device")
+    );
+    app.dispatch(SheetAct::RemoteCancel);
+    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "cancel"}) });
+    let out =
+        remote_sheet(&mut app, Some(json!({"state": "signed_out", "failed": "the code expired"})));
+    assert!(said(&out).contains("the code expired"));
+    app.dispatch(SheetAct::RemoteSignIn);
+    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "sign_in"}) });
+
+    // On: where, the tunnel, the devices; the Start at login warning only while it is off.
+    let on = json!({"state": "on", "login": "octo", "address": "https://tide.trycloudflare.com",
+        "tunnel": "up", "devices": []});
+    app.clients[0].start_at_login = false;
+    let shown = remote_sheet(&mut app, Some(on.clone()));
+    assert!(
+        said(&shown).contains("octo") && said(&shown).contains("https://tide.trycloudflare.com")
+    );
+    assert!(shown.find_layer("start at login warning").is_some());
+    app.clients[0].start_at_login = true;
+    assert!(remote_sheet(&mut app, Some(on)).find_layer("start at login warning").is_none());
+}
+
+#[test]
+fn a_device_asking_opens_the_allow_bar_and_it_goes_with_the_request() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.bottom_bar = BottomBarState::WhyNot { sentence: "before".into() };
+    let asking = json!({"state": "on", "devices": [],
+        "asking": {"device": "d_9", "name": "iPad", "login": "octo"}});
+    wire.event(Event::Remote { view: asking });
+    pumped(&mut app, |a| matches!(a.bottom_bar, BottomBarState::AllowDevice { .. }));
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::AllowDevice {
+            device_id: "d_9".into(),
+            device_name: "iPad".into(),
+            login: Some("octo".into())
+        }
+    );
+    // Answered elsewhere: the bar goes, and what was there comes back.
+    wire.event(Event::Remote { view: json!({"state": "on", "devices": []}) });
+    pumped(&mut app, |a| !matches!(a.bottom_bar, BottomBarState::AllowDevice { .. }));
+    assert_eq!(app.bottom_bar, BottomBarState::WhyNot { sentence: "before".into() });
+}

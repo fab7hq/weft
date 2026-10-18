@@ -93,7 +93,10 @@ impl WeftDesktopApp {
                 }
                 self.active_sheet = Some(ActiveSheet::Updates);
             }
-            WindowAct::OpenRemote => self.active_sheet = Some(ActiveSheet::Remote),
+            WindowAct::OpenRemote => {
+                self.remote_pick = None;
+                self.active_sheet = Some(ActiveSheet::Remote);
+            }
             WindowAct::RequestQuit => {
                 if self.clients.iter().any(|c| c.panes.iter().any(|p| p.running)) {
                     self.bottom_bar = BottomBarState::QuitConfirm;
@@ -273,11 +276,9 @@ impl WeftDesktopApp {
                 self.quit_requested = true;
             }
             BarAct::AllowDevice { device, yes } => {
-                let act = serde_json::json!({"act": "allow", "device": device, "yes": yes});
-                for c in &mut self.clients {
-                    let _ = c.remote_act(act.clone());
-                }
-                self.bottom_bar = BottomBarState::None;
+                self.remote_act(serde_json::json!({"act": "allow", "device": device, "yes": yes}));
+                self.allow_answered = Some(device);
+                self.bottom_bar = self.before_allow.take().unwrap_or(BottomBarState::None);
             }
         }
     }
@@ -413,20 +414,30 @@ impl WeftDesktopApp {
             SheetAct::SetupRun(target) => self.setup_everywhere("run", &target),
             // The window asks the system for the program, then calls `locate`.
             SheetAct::Locate(_) => {}
+            SheetAct::RemoteOn => self.remote_act(serde_json::json!({"act": "on"})),
             SheetAct::RemoteOff => {
-                for c in &mut self.clients {
-                    let _ = c.remote_act(serde_json::json!({"act": "off"}));
-                }
+                self.remote_act(serde_json::json!({"act": "off"}));
                 self.bottom_bar = BottomBarState::None;
             }
+            SheetAct::RemotePick(tunnel) => self.remote_pick = Some(tunnel),
+            SheetAct::RemoteUse => {
+                let first = self
+                    .remote_view()
+                    .and_then(|v| v["tunnels"][0]["id"].as_str())
+                    .map(str::to_string);
+                if let Some(tunnel) = self.remote_pick.take().or(first) {
+                    self.remote_act(serde_json::json!({"act": "choose", "tunnel": tunnel}));
+                }
+            }
+            SheetAct::RemoteInstall => self.remote_act(serde_json::json!({"act": "install"})),
+            SheetAct::RemoteSignIn => self.remote_act(serde_json::json!({"act": "sign_in"})),
+            SheetAct::RemoteCancel => self.remote_act(serde_json::json!({"act": "cancel"})),
             SheetAct::AskRemoveDevice { device, name } => {
                 self.bottom_bar =
                     BottomBarState::RemoveDeviceConfirm { device_id: device, device_name: name };
             }
             SheetAct::RemoveDevice(device) => {
-                for c in &mut self.clients {
-                    let _ = c.remote_act(serde_json::json!({"act": "remove", "device": device}));
-                }
+                self.remote_act(serde_json::json!({"act": "remove", "device": device}));
                 self.bottom_bar = BottomBarState::None;
             }
         }
