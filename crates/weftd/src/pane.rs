@@ -17,6 +17,32 @@ use weft_term::{Snapshot, Term};
 /// Where a pane's output goes, numbered, once someone asks for the stream.
 type Tap = Arc<Mutex<Option<Sender<(u64, Vec<u8>)>>>>;
 
+/// A terminal's answers to the questions in a chunk, until they are written.
+type Answers = Arc<Mutex<Vec<Vec<u8>>>>;
+
+/// Feed a chunk to the terminal and number it, then write its answers to
+/// any questions in it once the terminal is let go: a harness that is not
+/// reading its input makes the write wait, and the screen must not be held
+/// locked meanwhile. Gives the chunk's number, 0 if the terminal is gone.
+fn take_chunk(
+    term: &Mutex<Term>,
+    answers: &Mutex<Vec<Vec<u8>>>,
+    seq: &AtomicU64,
+    bytes: &[u8],
+    mut answer: impl FnMut(&[u8]),
+) -> u64 {
+    let mut number = 0;
+    if let Ok(mut t) = term.lock() {
+        t.feed(bytes);
+        number = seq.fetch_add(1, Ordering::SeqCst) + 1;
+    }
+    let replies = answers.lock().map(|mut a| std::mem::take(&mut *a)).unwrap_or_default();
+    for reply in replies {
+        answer(&reply);
+    }
+    number
+}
+
 /// The live screen as `weft-sense` reads it: the alternate screen or not,
 /// `(rows, cols)`, the cursor's `(row, col)`, the last non-blank lines, and
 /// the output sequence it was taken at.
@@ -95,15 +121,17 @@ impl Pane {
         drop(pair.slave);
 
         let writer = Arc::new(Mutex::new(pair.master.take_writer()?));
-        let answer = Arc::clone(&writer);
         // A harness that asks about its terminal waits for the answer, and
-        // some give up and quit without it.
+        // some give up and quit without it. The terminal only collects its
+        // answers; the reader writes them (`take_chunk`).
+        let answers: Answers = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::clone(&answers);
         let term = Arc::new(Mutex::new(Term::new(rows, cols, 10_000, move |reply| {
-            if let Ok(mut w) = answer.lock() {
-                let _ = w.write_all(reply);
-                let _ = w.flush();
+            if let Ok(mut a) = asked.lock() {
+                a.push(reply.to_vec());
             }
         })));
+        let answer = Arc::clone(&writer);
         let seq = Arc::new(AtomicU64::new(0));
         let tap: Tap = Arc::new(Mutex::new(None));
         let mut reader = pair.master.try_clone_reader()?;
@@ -117,11 +145,12 @@ impl Pane {
                     break;
                 }
                 let bytes = buf[..n].to_vec();
-                let mut number = 0;
-                if let Ok(mut t) = sink.lock() {
-                    t.feed(&bytes);
-                    number = numbering.fetch_add(1, Ordering::SeqCst) + 1;
-                }
+                let number = take_chunk(&sink, &answers, &numbering, &bytes, |reply| {
+                    if let Ok(mut w) = answer.lock() {
+                        let _ = w.write_all(reply);
+                        let _ = w.flush();
+                    }
+                });
                 // The same bytes go to whoever is streaming this pane, so a
                 // client rebuilds the screen from the harness's own output.
                 if let Ok(mut t) = tap_reader.lock()
@@ -476,6 +505,24 @@ mod tests {
         p.send(format!("{script}\n").as_bytes()).expect("send");
         std::thread::sleep(std::time::Duration::from_millis(400));
         p
+    }
+
+    /// A harness that is not reading its input makes the answer's write
+    /// wait: the screen is not held locked meanwhile.
+    #[test]
+    fn a_question_is_answered_with_the_terminal_let_go() {
+        let answers = Arc::new(Mutex::new(Vec::new()));
+        let asked = Arc::clone(&answers);
+        let term = Mutex::new(Term::new(24, 80, 100, move |reply: &[u8]| {
+            asked.lock().expect("answers").push(reply.to_vec());
+        }));
+        let mut written = Vec::new();
+        let n = take_chunk(&term, &answers, &AtomicU64::new(0), b"\x1b[c", |reply| {
+            assert!(term.try_lock().is_ok(), "the terminal is held while its answer is written");
+            written.extend_from_slice(reply);
+        });
+        assert_eq!(n, 1);
+        assert!(written.starts_with(b"\x1b[?"), "the identity answer: {written:?}");
     }
 
     #[test]
