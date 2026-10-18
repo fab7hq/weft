@@ -71,8 +71,11 @@ fn hook_of(h: &Harness, shell: &Shell, token: &str, transcript: &Path, session: 
     s.write_all(&Line::Event(Event::Signal(Box::new(sent))).encode()).unwrap();
 }
 
+/// A transcript line written three days ago.
 fn line(kind: &str, text: &str) -> String {
-    json!({"timestamp": 1791960102, "params": {"update": {"sessionUpdate": kind,
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
+    let at = now.as_secs() - 3 * 86_400;
+    json!({"timestamp": at, "params": {"update": {"sessionUpdate": kind,
         "content": {"type": "text", "text": text}}}})
     .to_string()
 }
