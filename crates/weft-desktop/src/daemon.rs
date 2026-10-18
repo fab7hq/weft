@@ -953,10 +953,19 @@ fn start_server() -> Result<()> {
         let _ = std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line);
         let _ = said.send(line);
     });
+    reaped(child);
     match heard.recv_timeout(Duration::from_secs(5)) {
         Ok(line) if line.contains("listening") => Ok(()),
         _ => Err(anyhow!("the session server did not come up")),
     }
+}
+
+/// Wait for a `weft` this app started, off every thread that draws, so it
+/// does not linger as a zombie once it ends.
+fn reaped(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }
 
 /// `weft` run with `args` in a session of its own, so it outlives this app,
@@ -989,7 +998,7 @@ pub fn newer_weft(home: &Path) -> Option<PathBuf> {
 
 /// Open the app `weft` came with, in place of this one.
 pub fn open_app_of(weft: &Path) -> Result<()> {
-    detached(weft, &[]).spawn()?;
+    reaped(detached(weft, &[]).spawn()?);
     Ok(())
 }
 
@@ -1025,6 +1034,28 @@ fn libc_setsid() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `weft` this app starts is waited for once it ends, so none lingers
+    /// as a zombie: one that found a daemon already listening ends at once.
+    #[test]
+    fn a_weft_this_app_started_is_reaped_when_it_ends() {
+        let child = std::process::Command::new("/bin/sh").args(["-c", "exit 0"]).spawn().unwrap();
+        let pid = child.id().to_string();
+        reaped(child);
+        let gone = || {
+            !std::process::Command::new("/bin/kill")
+                .args(["-0", &pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success()
+        };
+        let until = std::time::Instant::now() + Duration::from_secs(5);
+        while !gone() {
+            assert!(std::time::Instant::now() < until, "{pid} is still there, unreaped");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 
     #[test]
     fn a_newer_weft_is_the_installed_one_of_another_version() {
