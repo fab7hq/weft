@@ -4,7 +4,7 @@
 //! sandboxes it or alters its permissions.
 
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -43,7 +43,19 @@ pub struct Pane {
     /// it (where the cursor is, what it is, its colours) as a terminal would.
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     child: Box<dyn Child + Send + Sync>,
-    injecting: bool,
+    injecting: Arc<AtomicBool>,
+}
+
+/// What types into a pane, apart from the pane: its terminal, read to see
+/// what the agent shows, and its writer. Typing waits on the agent (a paste
+/// landing, a mode entered), so it runs off the daemon's loop.
+#[derive(Clone)]
+pub struct Typist {
+    term: Arc<Mutex<Term>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    injecting: Arc<AtomicBool>,
+    /// Whether the agent was running when this was taken.
+    running: bool,
 }
 
 impl Pane {
@@ -132,7 +144,7 @@ impl Pane {
             master: pair.master,
             writer,
             child,
-            injecting: false,
+            injecting: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -248,7 +260,17 @@ impl Pane {
     }
 
     pub fn state(&mut self) -> PaneState {
-        PaneState { running: self.running(), injecting: self.injecting }
+        PaneState { running: self.running(), injecting: self.injecting.load(Ordering::SeqCst) }
+    }
+
+    /// What types into this pane, for a thread of its own.
+    pub fn typist(&mut self) -> Typist {
+        Typist {
+            term: Arc::clone(&self.term),
+            writer: Arc::clone(&self.writer),
+            injecting: Arc::clone(&self.injecting),
+            running: self.running(),
+        }
     }
 
     /// Type a prompt on the person's behalf.
@@ -259,12 +281,54 @@ impl Pane {
         self.inject_as(payload, &Handoff::Whole)
     }
 
+    /// Type a prompt the way its command requires: see [`Typist::inject_as`].
+    pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
+        self.typist().inject_as(payload, how)
+    }
+
+    /// Whether the pane has drawn something and then left it alone for
+    /// `still`. One look: `last` is the screen when it last changed, kept by
+    /// the caller between looks, so nothing waits here.
+    pub fn gone_quiet(
+        &self,
+        last: &mut (std::time::Instant, String),
+        still: std::time::Duration,
+    ) -> bool {
+        gone_quiet(&self.term, last, still)
+    }
+}
+
+/// See [`Pane::gone_quiet`].
+fn gone_quiet(
+    term: &Mutex<Term>,
+    last: &mut (std::time::Instant, String),
+    still: std::time::Duration,
+) -> bool {
+    let screen = term.lock().expect("pane terminal").contents();
+    if screen != last.1 {
+        *last = (std::time::Instant::now(), screen);
+        return false;
+    }
+    !screen.trim().is_empty() && last.0.elapsed() >= still
+}
+
+impl Typist {
+    fn send(&self, bytes: &[u8]) -> std::io::Result<()> {
+        let mut writer = self.writer.lock().expect("pane writer");
+        writer.write_all(bytes)?;
+        writer.flush()
+    }
+
+    fn contents(&self) -> String {
+        self.term.lock().expect("pane terminal").contents()
+    }
+
     /// Type a prompt the way its command requires.
     ///
     /// The bytes that reach the host are the same whichever way this goes; what
     /// changes is whether the host reads the command. Typed, it does; inside a
     /// folded paste, it may not, so a command is never pasted.
-    pub fn inject_as(&mut self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
+    pub fn inject_as(&self, payload: &[u8], how: &Handoff) -> Result<Attempt, Refusal> {
         // Only what can be said is typed: a prompt read from a project's files
         // could otherwise end its own paste and press keys (`!`, Enter).
         let command = match how {
@@ -301,37 +365,21 @@ impl Pane {
         self.write_and_submit(how.body(payload))
     }
 
-    /// Whether the pane has drawn something and then left it alone for
-    /// `still`. One look: `last` is the screen when it last changed, kept by
-    /// the caller between looks, so nothing waits here.
-    pub fn gone_quiet(
-        &self,
-        last: &mut (std::time::Instant, String),
-        still: std::time::Duration,
-    ) -> bool {
-        let screen = self.with_term(|t| t.contents());
-        if screen != last.1 {
-            *last = (std::time::Instant::now(), screen);
-            return false;
-        }
-        !screen.trim().is_empty() && last.0.elapsed() >= still
-    }
-
     /// Press Enter and wait for the mode it enters. A host may already name
     /// the mode in a popup for the command typed (`/plan  switch to Plan
     /// mode`), and may keep part of its screen moving (a spinner), so the mode
     /// counts once the lines that name it are not the ones that did before
     /// the Enter, and the body then waits [`inject::SUBMIT_SETTLE`]: input
     /// that arrives while the host is still switching is dropped.
-    fn wait_for(&mut self, active: &str, timeout: std::time::Duration) -> Result<bool, Refusal> {
+    fn wait_for(&self, active: &str, timeout: std::time::Duration) -> Result<bool, Refusal> {
         let naming = |screen: String| -> Vec<String> {
             screen.lines().filter(|l| l.contains(active)).map(|l| l.trim().to_string()).collect()
         };
-        let before = naming(self.with_term(|t| t.contents()));
+        let before = naming(self.contents());
         self.send(b"\r").map_err(|_| Refusal::NoProcess)?;
         let deadline = std::time::Instant::now() + timeout;
         while std::time::Instant::now() < deadline {
-            let now = naming(self.with_term(|t| t.contents()));
+            let now = naming(self.contents());
             if !now.is_empty() && now != before {
                 std::thread::sleep(inject::SUBMIT_SETTLE);
                 return Ok(true);
@@ -341,20 +389,21 @@ impl Pane {
         Ok(false)
     }
 
-    fn write_and_submit(&mut self, payload: &[u8]) -> Result<Attempt, Refusal> {
-        let state = self.state();
+    fn write_and_submit(&self, payload: &[u8]) -> Result<Attempt, Refusal> {
+        let state =
+            PaneState { running: self.running, injecting: self.injecting.load(Ordering::SeqCst) };
         inject::check(&state)?;
-        self.injecting = true;
-        let bracketed = self.bracketed_paste();
+        self.injecting.store(true, Ordering::SeqCst);
+        let bracketed = self.term.lock().expect("pane terminal").bracketed_paste();
         let steps = inject::compose(payload, bracketed);
         // The screen before the paste, to tell whether the paste changed it.
         let mut before = (std::time::Instant::now(), String::new());
-        self.gone_quiet(&mut before, inject::COMPOSER_SETTLE);
+        gone_quiet(&self.term, &mut before, inject::COMPOSER_SETTLE);
         for step in &steps {
             match step {
                 Step::Write(bytes) => {
                     if self.send(bytes).is_err() {
-                        self.injecting = false;
+                        self.injecting.store(false, Ordering::SeqCst);
                         return Err(Refusal::NoProcess);
                     }
                 }
@@ -366,18 +415,14 @@ impl Pane {
                     if !self.paste_landed(&before.1, inject::PASTE_TIMEOUT) {
                         // The screen never changed, so the paste did not land
                         // where Enter would send it. Never a blind retry.
-                        self.injecting = false;
+                        self.injecting.store(false, Ordering::SeqCst);
                         return Ok(Attempt { bytes: payload.len(), bracketed, submitted: false });
                     }
                 }
             }
         }
-        self.injecting = false;
+        self.injecting.store(false, Ordering::SeqCst);
         Ok(Attempt { bytes: payload.len(), bracketed, submitted: true })
-    }
-
-    fn bracketed_paste(&self) -> bool {
-        self.with_term(|t| t.bracketed_paste())
     }
 
     /// Whether the screen changed from `before` and then held still for
@@ -391,7 +436,7 @@ impl Pane {
         let mut last = (std::time::Instant::now(), before.to_string());
         let mut changed = false;
         while std::time::Instant::now() < deadline {
-            let quiet = self.gone_quiet(&mut last, inject::COMPOSER_SETTLE);
+            let quiet = gone_quiet(&self.term, &mut last, inject::COMPOSER_SETTLE);
             changed |= last.1 != before;
             if changed && quiet {
                 return true;

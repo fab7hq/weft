@@ -85,6 +85,9 @@ struct Slot {
     last_output_at: std::time::Instant,
     sense_settled_seq: u64,
     sensed_surface: Option<weft_sense::SurfaceReading>,
+    /// Types this pane's sends one after another, off the run loop: made at
+    /// its first send, ended with the pane.
+    typer: Option<Sender<typing::Job>>,
 }
 
 impl Slot {
@@ -379,6 +382,14 @@ enum Wake {
     /// A harness's stream ended: its server closed it.
     Unheard {
         harness: String,
+    },
+    /// A pane's worker finished typing a send: what it managed, and the Ask
+    /// the send was of.
+    Typed {
+        project: usize,
+        pane: u32,
+        typed: Result<crate::pane::Attempt, weft_core::inject::Refusal>,
+        sends: Option<String>,
     },
     /// What RingFrame made of the prompt a pane received after Weft's send of
     /// `ask`.
@@ -849,6 +860,9 @@ impl Session {
                 Wake::Unheard { harness } => {
                     self.streams.remove(&harness);
                     self.streamed.retain(|(h, _)| *h != harness);
+                }
+                Wake::Typed { project, pane, typed, sends } => {
+                    self.typed(project, pane, typed, sends)
                 }
                 Wake::Received { project, pane, ask, answer, tie } => {
                     self.received(project, pane, &ask, answer, tie)

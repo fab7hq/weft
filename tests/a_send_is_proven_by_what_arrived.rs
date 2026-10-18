@@ -98,7 +98,9 @@ fn stand_in() -> PathBuf {
 /// end of its turn 12 s later, twice; `busy` reports each as typed, but starts
 /// with a turn running that ends 3 s later; `shared` signals nothing of its
 /// own, as an agent whose hooks run in its harness's shared server, and the
-/// test sends them; `quiet` says nothing until its first prompt, as Codex. Every line also goes to `<dir>/took`.
+/// test sends them; `quiet` says nothing until its first prompt, as Codex;
+/// `deaf` never shows what it is given, so a paste never lands. Every line
+/// also goes to `<dir>/took`.
 fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
@@ -111,6 +113,7 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
            sig Busy \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
            (sleep 3; sig Idle \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\") &\n\
          fi\n\
+         [ {mode} = deaf ] && stty -echo\n\
          printf '> '\n\
          while IFS= read -r line; do\n\
            printf '%s\\n' \"$line\" >> '{d}/took'\n\
@@ -447,6 +450,52 @@ fn the_asks_prompt_arriving_is_the_delivery_and_weft_records_none_of_its_own() {
     assert_eq!(b.notice(Duration::from_secs(2)), None, "delivered: nothing to tell the person");
     assert!(!b.calls().contains("ask submitted"), "the receipt is the record:\n{}", b.calls());
     assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
+}
+
+/// Typing waits on the pane (here the 2.5 s for a paste that never shows),
+/// never on the daemon: it answers every call while the typing waits.
+#[test]
+fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
+    let mut b = Bench::new("weft-proven-deaf", "loom", "deaf");
+    b.call(Call::Act {
+        act: "send".into(),
+        unit: Some("ask_1".into()),
+        pane: None,
+        text: None,
+        eval: None,
+        start: None,
+    });
+    let pending = b.wait(Duration::from_secs(5), |e| match e {
+        Event::Pending { id, .. } => Some(id),
+        _ => None,
+    });
+    b.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+    // A call every 100 ms until the typing gives up, each timed to its answer.
+    let mut asked = std::collections::HashMap::new();
+    let mut slowest = Duration::ZERO;
+    let mut said = None;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while (said.is_none() || !asked.is_empty()) && Instant::now() < deadline {
+        if said.is_none() {
+            let id = b.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
+            asked.insert(id, Instant::now());
+        }
+        let next = Instant::now() + Duration::from_millis(100);
+        while Instant::now() < next {
+            match b.next(Duration::from_millis(20)) {
+                Some(Line::Result { id, .. }) => {
+                    if let Some(at) = asked.remove(&id) {
+                        slowest = slowest.max(at.elapsed());
+                    }
+                }
+                Some(Line::Event(Event::Injected { refusal, .. })) => said = Some(refusal),
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(said, Some(Some("PasteNotShown".into())), "Enter withheld");
+    assert!(asked.is_empty(), "every call answered");
+    assert!(slowest < Duration::from_millis(500), "a call waited {slowest:?} on the typing");
 }
 
 /// 37ed5a4: a composer that swallowed the start of the paste submitted a

@@ -296,6 +296,7 @@ impl Session {
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
+                    typer: None,
                 });
                 self.write_map(project);
                 self.listen(project, &harness_name);

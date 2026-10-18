@@ -48,6 +48,33 @@ pub(super) struct Due {
     until: std::time::Instant,
 }
 
+/// One send for a pane's worker to type.
+pub(super) struct Job {
+    typist: crate::pane::Typist,
+    payload: Vec<u8>,
+    how: weft_core::inject::Handoff,
+    project: usize,
+    pane: u32,
+    sends: Option<String>,
+}
+
+/// A pane's worker: it types each send in turn and says how each went.
+/// Typing waits on the agent (a paste landing, a mode entered), seconds at
+/// worst, so it never runs on the run loop. It ends with its pane.
+fn typer(tx: Sender<Wake>) -> Sender<Job> {
+    let (jobs, rx) = channel::<Job>();
+    std::thread::spawn(move || {
+        for j in rx {
+            let typed = j.typist.inject_as(&j.payload, &j.how);
+            let done = Wake::Typed { project: j.project, pane: j.pane, typed, sends: j.sends };
+            if tx.send(done).is_err() {
+                return;
+            }
+        }
+    });
+    jobs
+}
+
 /// The one pane of `waiting` that `fresh` says yes to; none with none or more.
 fn only_one(waiting: &[u32], fresh: &dyn Fn(u32) -> bool) -> Option<u32> {
     let mut found = waiting.iter().copied().filter(|p| fresh(*p));
@@ -164,29 +191,66 @@ impl Session {
         // the decision is theirs.
         let not_ready =
             if force { Ok(()) } else { crate::turns::may_type(self.pane_state(project, w.pane)) };
-        let mut submitted = false;
+        let tx = self.tx.clone();
         let refusal = match self.projects[project].slot(w.pane) {
             Some(slot) => match not_ready {
                 Err(why) if slot.pane.running() => Some(why.to_string()),
-                _ => match slot.pane.inject_as(&w.payload, &w.how) {
-                    Err(r) => Some(format!("{r:?}")),
-                    // The paste never changed the screen: Enter is withheld.
-                    Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
-                    Ok(_) => {
-                        submitted = true;
-                        None
+                _ => {
+                    let job = Job {
+                        typist: slot.pane.typist(),
+                        payload: w.payload,
+                        how: w.how,
+                        project,
+                        pane: w.pane,
+                        sends: w.sends.clone(),
+                    };
+                    match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
+                        Ok(()) => None,
+                        Err(_) => Some("NoProcess".to_string()),
                     }
-                },
+                }
             },
             None => Some("NoProcess".to_string()),
         };
-        // Typed and submitted is not delivered: what the pane reports it
-        // received says whether this was the Ask.
-        if let Some(ask) = w.sends.filter(|_| submitted) {
-            let until = std::time::Instant::now() + RECEIPT_CAP;
-            self.projects[project].due.push(Due { pane: w.pane, ask, until });
+        match (refusal, w.sends) {
+            // Typed and submitted is not delivered: what the pane reports it
+            // received says whether this was the Ask. A report that comes
+            // while the worker is still typing answers it too.
+            (None, Some(ask)) => {
+                let until = std::time::Instant::now() + RECEIPT_CAP;
+                self.projects[project].due.push(Due { pane: w.pane, ask, until });
+            }
+            (None, None) => {}
+            (refusal, _) => self.clients.broadcast(
+                project,
+                &Out::Injected { pane: w.pane, refusal, unrecorded: None },
+            ),
         }
-        self.clients.broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None });
+    }
+
+    /// A pane's worker finished typing a send. One it could not submit waits
+    /// for no report.
+    pub(super) fn typed(
+        &mut self,
+        project: usize,
+        pane: u32,
+        typed: Result<crate::pane::Attempt, weft_core::inject::Refusal>,
+        sends: Option<String>,
+    ) {
+        let refusal = match typed {
+            Err(r) => Some(format!("{r:?}")),
+            // The paste never changed the screen: Enter is withheld.
+            Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
+            Ok(_) => None,
+        };
+        if refusal.is_some()
+            && let Some(ask) = sends
+            && let Some(p) = self.projects.get_mut(project)
+            && let Some(i) = p.due.iter().position(|d| d.pane == pane && d.ask == ask)
+        {
+            p.due.remove(i);
+        }
+        self.clients.broadcast(project, &Out::Injected { pane, refusal, unrecorded: None });
     }
 
     /// When this signal is the next prompt a pane received since Weft sent
