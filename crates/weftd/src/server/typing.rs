@@ -221,10 +221,9 @@ impl Session {
                 self.projects[project].due.push(Due { pane: w.pane, ask, until });
             }
             (None, None) => {}
-            (refusal, _) => self.clients.broadcast(
-                project,
-                &Out::Injected { pane: w.pane, refusal, unrecorded: None },
-            ),
+            (refusal, _) => self
+                .clients
+                .broadcast(project, &Out::Injected { pane: w.pane, refusal, unrecorded: None }),
         }
     }
 
