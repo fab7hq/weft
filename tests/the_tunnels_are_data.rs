@@ -6,7 +6,15 @@
 use std::path::Path;
 
 /// What would mean a provider had been written into the code.
-const PROVIDER: [&str; 4] = ["trycloudflare", "--no-autoupdate", "Cloudflare", "cloudflared"];
+const PROVIDER: [&str; 7] = [
+    "trycloudflare",
+    "--no-autoupdate",
+    "Cloudflare",
+    "cloudflared",
+    "tailscale",
+    "Tailscale",
+    "ts.net",
+];
 
 fn code(dir: &Path, out: &mut Vec<(String, usize, String)>) {
     for entry in std::fs::read_dir(dir).unwrap().flatten() {

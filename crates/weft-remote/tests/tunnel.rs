@@ -85,14 +85,64 @@ fn the_address_is_the_first_match_of_the_quick_tunnel_pattern() {
     assert_eq!(address("http://plain.trycloudflare.com"), None);
 }
 
+/// A host of several labels, as `<machine>.<tailnet>.ts.net`, before the
+/// adapter's suffix; never an empty label, never the provider's `api`.
+#[test]
+fn an_address_may_have_several_labels_before_the_suffix() {
+    let address = |line: &str| weft_remote::tunnel::address(line, ".ts.net");
+    assert_eq!(
+        address("Available on the internet: https://mac.tail1234.ts.net/").as_deref(),
+        Some("https://mac.tail1234.ts.net")
+    );
+    assert_eq!(address("https://ts.net").as_deref(), None);
+    assert_eq!(address("https://.ts.net").as_deref(), None, "an empty label");
+    assert_eq!(address("https://mac..ts.net").as_deref(), None, "an empty label");
+    assert_eq!(address("https://api.ts.net").as_deref(), None);
+    assert_eq!(address("https://mac.ts.net.example.com").as_deref(), None, "the suffix ends it");
+    assert_eq!(
+        address("https://mac.tail-1.ts.net:443/x").as_deref(),
+        Some("https://mac.tail-1.ts.net")
+    );
+}
+
 #[test]
 fn cloudflared_is_where_the_person_said_or_on_path() {
     use weft_remote::tunnel::find;
     assert_eq!(
-        find(Some("/bin/sh"), "cloudflared").as_deref(),
+        find(Some("/bin/sh"), "cloudflared", &[]).as_deref(),
         Some(std::path::Path::new("/bin/sh"))
     );
-    assert_eq!(find(Some("/no/such/cloudflared"), "cloudflared"), None, "said, and not there");
+    assert_eq!(find(Some("/no/such/cloudflared"), "cloudflared", &[]), None, "said, and not there");
+}
+
+/// A program off `PATH` is found where its adapter says it lives.
+#[test]
+fn a_program_off_path_is_found_where_its_adapter_says() {
+    use weft_remote::tunnel::find;
+    let paths = ["/no/such/Tunnel".to_string(), "/bin/sh".to_string()];
+    assert_eq!(
+        find(None, "no-such-tunnel-program", &paths).as_deref(),
+        Some(std::path::Path::new("/bin/sh"))
+    );
+    assert_eq!(find(None, "no-such-tunnel-program", &[]), None);
+}
+
+/// A program that prints its address on stdout is read there.
+#[test]
+fn an_address_printed_on_stdout_is_read() {
+    let dir = std::env::temp_dir().join(format!("weft-tunnel-stdout-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("funnel");
+    let script = "#!/bin/sh\necho 'Available on the internet:'\necho\necho 'https://mac.tail1234.ts.net/'\nexec sleep 30\n";
+    std::fs::write(&program, script).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = ["funnel", "{port}"].map(String::from).to_vec();
+    let tunnel = Tunnel::new(program.clone(), run, ".ts.net".into());
+    let events = tunnel.start(48126);
+    let first = events.recv_timeout(Duration::from_secs(8)).expect("an address");
+    assert_eq!(first, TunnelEvent::Address("https://mac.tail1234.ts.net".into()));
+    drop(tunnel);
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]

@@ -20,6 +20,8 @@ pub struct Tool {
     pub title: String,
     /// The program's name, found on `PATH`.
     pub program: String,
+    /// Where else the program may be, looked at after `PATH`.
+    pub paths: Vec<String>,
     /// What follows the program to start it; `{port}` is the loopback port.
     pub run: Vec<String>,
     /// The end of the host its address has.
@@ -73,6 +75,11 @@ impl Tool {
             .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
             .unwrap_or_default();
         let address = s("address").unwrap_or_default();
+        let paths = t
+            .get("paths")
+            .and_then(toml::Value::as_array)
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .unwrap_or_default();
         if kind == "tunnel" && (run.is_empty() || address.is_empty()) {
             return Err(broken());
         }
@@ -94,6 +101,7 @@ impl Tool {
             title: s("title").unwrap_or_else(|| program.clone()),
             kind,
             program,
+            paths,
             run,
             address,
             note: s("note"),
@@ -251,6 +259,29 @@ mod tests {
         for m in ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"] {
             assert!(tool.assets.contains_key(m), "{m}");
         }
+    }
+
+    #[test]
+    fn the_shipped_tailscale_file_is_a_tunnel_adapter() {
+        let shipped =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../fab7/products/weft/tools");
+        let Ok(text) = std::fs::read_to_string(shipped.join("tailscale.toml")) else {
+            return; // a checkout without fab7 beside it
+        };
+        let tool = Tool::read("tailscale", &text).unwrap();
+        assert_eq!((tool.kind.as_str(), tool.title.as_str()), ("tunnel", "Tailscale Funnel"));
+        assert_eq!(tool.program, "tailscale");
+        assert_eq!(tool.paths, ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]);
+        assert_eq!(tool.run, ["funnel", "{port}"]);
+        assert_eq!(tool.address, ".ts.net");
+        assert!(tool.note.is_some());
+        assert_eq!(
+            tool.brew.as_deref(),
+            Some(
+                &["brew".to_string(), "install".into(), "--cask".into(), "tailscale-app".into()][..]
+            )
+        );
+        assert_eq!(tool.repo, None, "Tailscale runs with its own daemon: nothing to download");
     }
 
     #[test]

@@ -51,8 +51,8 @@ impl Backoff {
 }
 
 /// Where the tunnel's program is: where `[remote] program` says, else on
-/// `PATH` by its name.
-pub fn find(configured: Option<&str>, program: &str) -> Option<PathBuf> {
+/// `PATH` by its name, else at one of the places its adapter names (`paths`).
+pub fn find(configured: Option<&str>, program: &str, paths: &[String]) -> Option<PathBuf> {
     let runnable = |p: &Path| {
         use std::os::unix::fs::PermissionsExt;
         p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -60,23 +60,38 @@ pub fn find(configured: Option<&str>, program: &str) -> Option<PathBuf> {
     if let Some(path) = configured {
         return runnable(Path::new(path)).then(|| PathBuf::from(path));
     }
-    let paths = std::env::var_os("PATH")?;
-    std::env::split_paths(&paths).map(|d| d.join(program)).find(|p| runnable(p))
+    let on_path = std::env::var_os("PATH").and_then(|dirs| {
+        std::env::split_paths(&dirs).map(|d| d.join(program)).find(|p| runnable(p))
+    });
+    on_path.or_else(|| paths.iter().map(PathBuf::from).find(|p| runnable(p)))
 }
 
 /// The first address in a line of the program's output: an `https://` URL
-/// whose host is lower-case letters, digits and dashes before `suffix`, and is
-/// not the provider's own `api` host.
+/// whose host is one or more dot-separated labels of lower-case letters,
+/// digits and dashes before `suffix`, and is not the provider's own `api`
+/// host.
 pub fn address(line: &str, suffix: &str) -> Option<String> {
     let mut rest = line;
     while let Some(at) = rest.find("https://") {
         let after = &rest[at + "https://".len()..];
         let host_len = after
             .bytes()
-            .take_while(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+            .take_while(|b| {
+                b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-' || *b == b'.'
+            })
             .count();
-        let host = &after[..host_len];
-        if host_len > 0 && after[host_len..].starts_with(suffix) && host != "api" {
+        // The host runs into the suffix, which ends it: what comes before it is
+        // the labels.
+        let ends = |end: usize| {
+            after[end..].strip_prefix(suffix).is_some_and(|rest| {
+                !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+            })
+        };
+        let found = (1..=host_len).find(|&end| ends(end)).map(|end| &after[..end]);
+        if let Some(host) = found
+            && host.split('.').all(|label| !label.is_empty())
+            && host != "api"
+        {
             return Some(format!("https://{host}{suffix}"));
         }
         rest = after;
@@ -224,13 +239,15 @@ fn run_once(
     let started = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn();
     let mut child = match started {
         Ok(c) => c,
         Err(e) => return format!("{name} did not start: {e}"),
     };
+    // A program may say its address on either: each is read.
+    let stdout = child.stdout.take().expect("piped");
     let stderr = child.stderr.take().expect("piped");
     if let Some(file) = pid {
         let _ = std::fs::write(file, child.id().to_string());
@@ -242,6 +259,12 @@ fn run_once(
     // Every line is read to the end, so the program never blocks on a full
     // pipe; the first address is the one.
     let (lines_tx, lines) = channel();
+    let out_tx = lines_tx.clone();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let _ = out_tx.send(line);
+        }
+    });
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
             let _ = lines_tx.send(line);

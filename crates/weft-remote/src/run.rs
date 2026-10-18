@@ -277,7 +277,9 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
     let config = weft_core::config::read(&config, &Default::default());
     let chosen = config.remote().tunnel.as_deref().and_then(|id| Tool::tunnel(weft, id));
     let Some(tool) = chosen else { return Ready::Choose(Tool::tunnels(weft)) };
-    let Some(program) = tunnel::find(config.remote().program.as_deref(), &tool.program) else {
+    let Some(program) =
+        tunnel::find(config.remote().program.as_deref(), &tool.program, &tool.paths)
+    else {
         return Ready::Missing(tool);
     };
     // A tunnel a killed weft remote left running is stopped first.
