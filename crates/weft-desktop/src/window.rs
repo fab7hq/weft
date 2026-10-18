@@ -861,7 +861,43 @@ impl GpuiDesktopView {
             }
         }
 
-        if let Some(t) = &el.text
+        // Rich text: one run of words, each range in its own style.
+        if el.tag == "rich"
+            && let Some(t) = &el.text
+        {
+            let highlights: Vec<(Range<usize>, ::gpui::HighlightStyle)> = el
+                .runs
+                .iter()
+                .map(|(range, run)| {
+                    let style = ::gpui::HighlightStyle {
+                        color: run.color.map(|c| parse_color(c).into()),
+                        font_weight: run.bold.then_some(FontWeight::SEMIBOLD),
+                        font_style: run.italic.then_some(::gpui::FontStyle::Italic),
+                        underline: run.underline.then(|| ::gpui::UnderlineStyle {
+                            thickness: px(1.),
+                            ..Default::default()
+                        }),
+                        strikethrough: run.strike.then(|| ::gpui::StrikethroughStyle {
+                            thickness: px(1.),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    };
+                    (range.clone(), style)
+                })
+                .collect();
+            let mono: Vec<(Range<usize>, SharedString)> = el
+                .runs
+                .iter()
+                .filter(|(_, run)| run.mono)
+                .map(|(range, _)| (range.clone(), SharedString::from(crate::fonts::MONO)))
+                .collect();
+            d = d.child(
+                ::gpui::StyledText::new(t.clone())
+                    .with_highlights(highlights)
+                    .with_font_family_overrides(mono),
+            );
+        } else if let Some(t) = &el.text
             && !t.is_empty()
         {
             match text_lines(t, text_style.pre, text_style.nowrap) {

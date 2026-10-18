@@ -907,9 +907,7 @@ fn conversation_blocks(
                                 )
                                 .child(span(clock).color(palette::DIM)),
                         )
-                        .child(
-                            div().font_size(14).style("line-height", "21px").text(text.to_string()),
-                        ),
+                        .child(crate::markdown_view::message(text)),
                 );
                 i += 1;
             }

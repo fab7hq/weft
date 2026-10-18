@@ -54,7 +54,20 @@ pub struct Element {
     pub drop: Option<crate::panes_view::DropTarget>,
     /// Shows that a tab dragged over it would drop here.
     pub drop_glow: bool,
+    /// Rich text: how each range of `text` is styled.
+    pub runs: Vec<(std::ops::Range<usize>, Run)>,
     pub children: Vec<Element>,
+}
+
+/// How a range of rich text is styled.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Run {
+    pub bold: bool,
+    pub italic: bool,
+    pub mono: bool,
+    pub strike: bool,
+    pub underline: bool,
+    pub color: Option<&'static str>,
 }
 
 pub fn div() -> Element {
@@ -74,8 +87,18 @@ pub fn div() -> Element {
         drag: None,
         drop: None,
         drop_glow: false,
+        runs: Vec::new(),
         children: Vec::new(),
     }
+}
+
+/// Text whose ranges are styled apart, wrapping as one line of words.
+pub fn rich(text: impl Into<String>, runs: Vec<(std::ops::Range<usize>, Run)>) -> Element {
+    let mut el = div();
+    el.tag = "rich";
+    el.text = Some(text.into());
+    el.runs = runs;
+    el
 }
 
 /// A bar of `colour` along one side of its parent, over its own lines: a div

@@ -9,6 +9,7 @@ pub mod gpui;
 pub mod header;
 pub mod instance;
 pub mod keys;
+pub mod markdown_view;
 pub mod panes_view;
 pub mod sheets;
 pub mod terminal_input;
