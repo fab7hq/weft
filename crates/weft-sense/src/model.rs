@@ -1228,7 +1228,7 @@ unsafe fn run_layers_worker(tid: usize, job: &ParallelLayerJob) {
                         // Eight sums side by side: one would be a chain of
                         // dependent adds, which the compiler may not reorder.
                         let mut sums = [0.0_f32; 8];
-                        for (qc, kc) in q_r.chunks_exact(8).zip(k_r.chunks_exact(8)) {
+                        for (qc, kc) in q_r.as_chunks::<8>().0.iter().zip(k_r.as_chunks::<8>().0) {
                             for t in 0..8 {
                                 sums[t] += qc[t] * kc[t];
                             }
@@ -2161,8 +2161,8 @@ impl RawTensor {
             return self.float_data.clone();
         }
         let mut out = Vec::with_capacity(self.raw_data.len() / 4);
-        for chunk in self.raw_data.chunks_exact(4) {
-            out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+        for chunk in self.raw_data.as_chunks::<4>().0 {
+            out.push(f32::from_le_bytes(*chunk));
         }
         out
     }
@@ -2289,8 +2289,8 @@ fn parse_tensor_proto(buf: &[u8]) -> anyhow::Result<RawTensor> {
             }
             (4, 2) => {
                 let len = read_varint(buf, &mut pos)? as usize;
-                for chunk in buf[pos..pos + len].chunks_exact(4) {
-                    t.float_data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+                for chunk in buf[pos..pos + len].as_chunks::<4>().0 {
+                    t.float_data.push(f32::from_le_bytes(*chunk));
                 }
                 pos += len;
             }
