@@ -20,6 +20,10 @@ impl WeftDesktopApp {
     /// Do what a click or a key asked.
     pub fn dispatch(&mut self, action: impl Into<Action>) {
         let action = action.into();
+        // Why the last act did not run goes with the next one.
+        if matches!(self.bottom_bar, BottomBarState::WhyNot { .. }) {
+            self.bottom_bar = BottomBarState::None;
+        }
         // A popover closes on anything but its own toggles.
         if !matches!(
             action,

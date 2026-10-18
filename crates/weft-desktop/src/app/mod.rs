@@ -83,6 +83,8 @@ pub struct Notice {
 
 /// How long a draft stays the same before it is asked about.
 const SETTLED: std::time::Duration = std::time::Duration::from_millis(100);
+/// How long a why-not is said before it goes by itself.
+const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,6 +156,8 @@ pub struct WeftDesktopApp {
     /// The Details a stage was opened from, the nearest last, each with its
     /// name: what `‹` goes back to.
     pub sheet_back: Vec<(ActiveSheet, String)>,
+    /// When the bar's why-not was first shown.
+    why_not_since: Option<std::time::Instant>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
     pub unfolded_steps: HashSet<(PathBuf, u32, usize)>,
     /// Each agent's message field, by its project and pane: switching
@@ -215,6 +219,7 @@ impl WeftDesktopApp {
             unfolded_sealed: HashSet::new(),
             unfolded_earlier: HashSet::new(),
             sheet_back: Vec::new(),
+            why_not_since: None,
             conversations: HashMap::new(),
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
@@ -343,7 +348,24 @@ impl WeftDesktopApp {
             self.offer_updates();
             self.drop_gone_tabs();
         }
-        self.suggest_tick(std::time::Instant::now()) || changed
+        let now = std::time::Instant::now();
+        self.expire_why_not(now) | self.suggest_tick(now) || changed
+    }
+
+    /// A why-not is said for a while, then goes: what it was about may have
+    /// changed since. Whether the bar changed.
+    pub fn expire_why_not(&mut self, now: std::time::Instant) -> bool {
+        if !matches!(self.bottom_bar, BottomBarState::WhyNot { .. }) {
+            self.why_not_since = None;
+            return false;
+        }
+        let since = *self.why_not_since.get_or_insert(now);
+        if now - since < WHY_NOT_FOR {
+            return false;
+        }
+        self.bottom_bar = BottomBarState::None;
+        self.why_not_since = None;
+        true
     }
 
     /// A tab of a pane its project's daemon does not have, once it has said

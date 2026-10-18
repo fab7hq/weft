@@ -705,6 +705,28 @@ fn resume_is_in_a_sessions_details_not_on_its_row() {
     assert!(sheet.find_layer("btn Resume").is_some());
 }
 
+/// Why an act did not run is said for a while: the person's next act takes
+/// it away, and so does time, so a line about how things were never stays.
+#[test]
+fn a_why_not_goes_with_the_next_act_or_after_a_while() {
+    let (_tmp, mut app) = sample_app(false);
+    app.state.panes.groups.clear();
+    app.dispatch(PaneAct::SplitRight(0));
+    let said = BottomBarState::WhyNot { sentence: words::word("why.split_needs_two").into() };
+    assert_eq!(app.bottom_bar, said);
+    let shown = std::time::Instant::now();
+    app.expire_why_not(shown);
+    app.expire_why_not(shown + std::time::Duration::from_secs(3));
+    assert_eq!(app.bottom_bar, said, "still there a moment later");
+    app.expire_why_not(shown + std::time::Duration::from_secs(7));
+    assert_eq!(app.bottom_bar, BottomBarState::None, "gone after a while");
+
+    app.dispatch(PaneAct::SplitRight(0));
+    assert_eq!(app.bottom_bar, said);
+    app.dispatch(WindowAct::ToggleSidebar);
+    assert_eq!(app.bottom_bar, BottomBarState::None, "the next act takes it away");
+}
+
 #[test]
 fn proceed_shows_only_where_ringframe_says_a_prompt_waits() {
     let (_tmp, mut app) = sample_app(false);
