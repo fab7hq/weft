@@ -7,6 +7,16 @@ use std::time::{Duration, Instant};
 
 use weft_remote::tunnel::{self, Tunnel, TunnelEvent};
 
+/// The first address the tunnel gives, past the lines its program said before it.
+fn address_of(events: &std::sync::mpsc::Receiver<TunnelEvent>) -> TunnelEvent {
+    loop {
+        match events.recv_timeout(Duration::from_secs(8)).expect("an address") {
+            TunnelEvent::Said(_) => continue,
+            e => return e,
+        }
+    }
+}
+
 /// Cloudflare Tunnel's `run`, as its adapter (the tool file) gives it.
 fn quick() -> Vec<String> {
     ["tunnel", "--no-autoupdate", "--url", "http://127.0.0.1:{port}"].map(String::from).to_vec()
@@ -40,7 +50,9 @@ fn each_new_address_is_reported_and_restarts_back_off() {
     while seen.iter().filter(|(e, _)| matches!(e, TunnelEvent::Address(_))).count() < 2 {
         let left = deadline.saturating_duration_since(Instant::now());
         let event = events.recv_timeout(left).expect("two addresses within 8 s");
-        seen.push((event, Instant::now()));
+        if !matches!(event, TunnelEvent::Said(_)) {
+            seen.push((event, Instant::now()));
+        }
     }
     let addresses: Vec<_> = seen
         .iter()
@@ -139,7 +151,7 @@ fn an_address_printed_on_stdout_is_read() {
     let run = ["funnel", "{port}"].map(String::from).to_vec();
     let tunnel = Tunnel::new(program.clone(), run, ".ts.net".into());
     let events = tunnel.start(48126);
-    let first = events.recv_timeout(Duration::from_secs(8)).expect("an address");
+    let first = address_of(&events);
     assert_eq!(first, TunnelEvent::Address("https://mac.tail1234.ts.net".into()));
     drop(tunnel);
     std::fs::remove_dir_all(&dir).ok();
@@ -155,7 +167,7 @@ fn dropping_the_tunnel_stops_cloudflared() {
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
     let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
     let events = tunnel.start(48124);
-    assert!(matches!(events.recv_timeout(Duration::from_secs(5)), Ok(TunnelEvent::Address(_))));
+    address_of(&events);
     let pid = std::fs::read_to_string(dir.join("cloudflared.pid")).unwrap().trim().to_string();
     drop(tunnel);
     let alive = std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
@@ -179,7 +191,7 @@ fn another_adapter_is_started_and_read_by_its_own_file() {
     let run = ["expose", "{port}", "--quiet"].map(String::from).to_vec();
     let tunnel = Tunnel::new(program.clone(), run, ".tunnels.example.net".into());
     let events = tunnel.start(48124);
-    let first = events.recv_timeout(Duration::from_secs(8)).expect("an address");
+    let first = address_of(&events);
     assert_eq!(first, TunnelEvent::Address("https://calm-fox.tunnels.example.net".into()));
     let args = std::fs::read_to_string(dir.join("othertunnel.args")).unwrap();
     assert_eq!(args.lines().next().unwrap(), "args: expose 48124 --quiet");
@@ -203,7 +215,7 @@ fn a_tunnel_left_by_a_killed_weft_remote_is_stopped_by_the_next() {
     let left = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into())
         .keeping_pid(kept.clone());
     let events = left.start(48125);
-    assert!(matches!(events.recv_timeout(Duration::from_secs(5)), Ok(TunnelEvent::Address(_))));
+    address_of(&events);
     let pid = std::fs::read_to_string(&kept).unwrap().trim().to_string();
     // Killed: no drop, so nothing stops it.
     std::mem::forget(left);

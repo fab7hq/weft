@@ -17,6 +17,8 @@ pub enum TunnelEvent {
     Address(String),
     /// It ended, and why; it is started again after a wait.
     Ended(String),
+    /// A line its program said before it gave an address, as it said it.
+    Said(String),
 }
 
 /// How long the program has to print its address.
@@ -147,9 +149,11 @@ impl Tunnel {
             let mut backoff = Backoff::default();
             while !stopped.load(Ordering::SeqCst) {
                 let reason =
-                    run_once(&program, &args, &suffix, &slot, &stopped, pid.as_deref(), |a| {
-                        backoff.reset();
-                        tx.send(TunnelEvent::Address(a)).is_ok()
+                    run_once(&program, &args, &suffix, &slot, &stopped, pid.as_deref(), |e| {
+                        if matches!(e, TunnelEvent::Address(_)) {
+                            backoff.reset();
+                        }
+                        tx.send(e).is_ok()
                     });
                 if stopped.load(Ordering::SeqCst) || tx.send(TunnelEvent::Ended(reason)).is_err() {
                     break;
@@ -231,7 +235,7 @@ fn run_once(
     slot: &Mutex<Option<Child>>,
     stopped: &AtomicBool,
     pid: Option<&Path>,
-    mut found: impl FnMut(String) -> bool,
+    mut tell: impl FnMut(TunnelEvent) -> bool,
 ) -> String {
     let name = program
         .file_name()
@@ -276,7 +280,11 @@ fn run_once(
         match lines.recv_timeout(left) {
             Ok(line) => {
                 if let Some(a) = address(&line, suffix) {
-                    break if found(a) { None } else { Some("nobody is listening") };
+                    let heard = tell(TunnelEvent::Address(a));
+                    break if heard { None } else { Some("nobody is listening") };
+                }
+                if !line.trim().is_empty() {
+                    tell(TunnelEvent::Said(line.trim().to_string()));
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {

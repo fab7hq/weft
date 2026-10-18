@@ -298,6 +298,11 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
     Ready::Up(tunnel, tool)
 }
 
+/// The tunnel adapters to choose from, as the Remote view lists them.
+fn tunnel_list(tools: &[Tool]) -> Vec<Value> {
+    tools.iter().map(|t| json!({"id": t.id, "title": t.title})).collect()
+}
+
 /// How Install would install the tunnel's program here (remote.md §7a):
 /// Homebrew when it is there, else the release built for this machine; or
 /// why neither.
@@ -686,18 +691,36 @@ impl Remote {
             }
             // `cloudflared` was missing: look again, and start if it is there.
             Some("look") if self.tunnel.is_none() => self.look(),
-            // The tunnel the person picked from the list.
+            // The tunnel the person picked from the list. Another than the
+            // one before forgets where that one's program was.
             Some("choose") if self.tunnel.is_none() => {
                 if let Some(tool) =
                     act["tunnel"].as_str().and_then(|id| Tool::tunnel(&self.settings.weft, id))
                 {
                     let config = self.settings.weft.join("config.toml");
                     let text = std::fs::read_to_string(&config).unwrap_or_default();
-                    if let Ok(text) = weft_core::config::set_tunnel(&text, &tool.id) {
+                    let before =
+                        weft_core::config::read(&text, &Default::default()).remote().tunnel.clone();
+                    let mut set = weft_core::config::set_tunnel(&text, &tool.id);
+                    if before.is_some_and(|b| b != tool.id) {
+                        set = set.and_then(|t| weft_core::config::set_program(&t, ""));
+                    }
+                    if let Ok(text) = set {
                         let _ = std::fs::write(&config, text);
                     }
                     self.look();
                 }
+            }
+            // Stop the tunnel and choose again, the current one picked.
+            Some("change_tunnel") if self.view.can_change_tunnel => {
+                self.tunnel = None;
+                self.view.up = false;
+                self.view.address = None;
+                self.view.tunnel_why = None;
+                self.view.missing = None;
+                self.view.note = None;
+                self.view.chosen = self.adapter.take().map(|t| t.id);
+                self.view.choose = Some(tunnel_list(&Tool::tunnels(&self.settings.weft)));
             }
             // Install it, as the offer says, now the person said yes (§7a).
             Some("install") if self.tunnel.is_none() && self.view.installing.is_none() => {
@@ -750,7 +773,10 @@ impl Remote {
     /// is missing; sign in once it is up and this machine has not joined.
     fn look(&mut self) {
         self.view.choose = None;
+        self.view.chosen = None;
         self.view.missing = None;
+        self.view.tunnel_why = None;
+        self.view.can_change_tunnel = Tool::tunnels(&self.settings.weft).len() > 1;
         match start_tunnel(&self.settings.weft, self.port, &self.tx) {
             Ready::Up(tunnel, tool) => {
                 self.view.note = tool.note.clone();
@@ -760,10 +786,7 @@ impl Remote {
                     self.sign_in();
                 }
             }
-            Ready::Choose(tools) => {
-                self.view.choose =
-                    Some(tools.iter().map(|t| json!({"id": t.id, "title": t.title})).collect());
-            }
+            Ready::Choose(tools) => self.view.choose = Some(tunnel_list(&tools)),
             Ready::Missing(tool) => {
                 self.view.missing =
                     Some(json!({"id": tool.id, "title": tool.title, "program": tool.program}));
@@ -797,13 +820,19 @@ impl Remote {
     fn tunnel(&mut self, event: TunnelEvent) {
         match event {
             TunnelEvent::Address(address) => {
+                self.view.tunnel_why = None;
                 self.view.address = Some(address);
                 self.view.up = true;
                 // A new name is looked at once it is known everywhere.
                 self.recovery.health.new_name(Instant::now());
                 self.report();
             }
-            TunnelEvent::Ended(_) => self.view.up = false,
+            TunnelEvent::Ended(why) => {
+                self.view.up = false;
+                self.view.tunnel_why.get_or_insert(why);
+            }
+            TunnelEvent::Said(line) if !self.view.up => self.view.tunnel_why = Some(line),
+            TunnelEvent::Said(_) => {}
         }
     }
 

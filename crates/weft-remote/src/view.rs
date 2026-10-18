@@ -29,6 +29,13 @@ pub struct View {
     pub offer: Result<Value, String>,
     /// Installing it: the last line it said.
     pub installing: Option<String>,
+    /// The tunnel has no address yet: the last line its program said, or
+    /// why it ended.
+    pub tunnel_why: Option<String>,
+    /// More than one tunnel adapter is installed: the tunnel may be changed.
+    pub can_change_tunnel: bool,
+    /// Choosing again: the adapter chosen until now.
+    pub chosen: Option<String>,
 }
 
 impl Default for View {
@@ -46,6 +53,9 @@ impl Default for View {
             asking: None,
             offer: Err(String::new()),
             installing: None,
+            tunnel_why: None,
+            can_change_tunnel: false,
+            chosen: None,
         }
     }
 }
@@ -78,6 +88,15 @@ impl View {
         }
         if let Some(tunnels) = &self.choose {
             v["tunnels"] = json!(tunnels);
+            if let Some(id) = &self.chosen {
+                v["chosen"] = json!(id);
+            }
+        }
+        if let (Some(why), false) = (&self.tunnel_why, self.up) {
+            v["tunnel_why"] = json!(why);
+        }
+        if self.can_change_tunnel && matches!(state, "on" | "not_installed" | "signed_out") {
+            v["can_change_tunnel"] = json!(true);
         }
         if let (Some(tunnel), "not_installed") = (&self.missing, state) {
             v["tunnel"] = tunnel.clone();
