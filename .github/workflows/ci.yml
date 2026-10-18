@@ -79,6 +79,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+      # What a release carries for a first start: fab7's files.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: fab7hq/fab7
+          path: fab7
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.target }},${{ matrix.desktop }}
@@ -99,7 +105,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           DESKTOP: ${{ matrix.desktop }}
-        run: bin/pack ci "$TARGET" "target/$TARGET/release" "target/$DESKTOP/release"
+        run: bin/pack ci "$TARGET" "target/$TARGET/release" "target/$DESKTOP/release" fab7
       - name: Check what was built runs
         if: matrix.target == 'aarch64-apple-darwin' || endsWith(matrix.target, '-musl')
         env:

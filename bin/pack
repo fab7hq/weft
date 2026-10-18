@@ -2,20 +2,23 @@
 # The release archive of one target, as install.sh reads it, in the current
 # folder with its checksum:
 #
-#   bin/pack <tag> <target> <built-dir> <desktop-built-dir>
+#   bin/pack <tag> <target> <built-dir> <desktop-built-dir> <fab7-dir>
 #
 #   macOS  Weft.app (bin/bundle), holding weft-desktop, weft and ringframe
 #   Linux  weft and ringframe from <built-dir>, weft-desktop from
 #          <desktop-built-dir>, the desktop entry and the icon, flat
+#   both   fab7's files from the checkout <fab7-dir> (bin/fab7-files): in
+#          Weft.app's Resources, or `fab7/` beside the programs
 #
 # On Linux the desktop app is built for the system's own C library, which its
 # graphics come from; weft and ringframe stay static.
 set -eu
 
-tag=${1:?usage: bin/pack <tag> <target> <built-dir> <desktop-built-dir>}
+tag=${1:?usage: bin/pack <tag> <target> <built-dir> <desktop-built-dir> <fab7-dir>}
 target=${2:?target}
 built=${3:?built dir}
 desktop=${4:?desktop built dir}
+fab7=${5:?fab7 dir}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 archive="fab7-$tag-$target.tar.gz"
 staged=$(mktemp -d)
@@ -26,14 +29,15 @@ case "$target" in
         mkdir -p "$staged/programs"
         cp "$built/weft" "$built/ringframe" "$staged/programs/"
         cp "$desktop/weft-desktop" "$staged/programs/"
-        "$root/bin/bundle" "$staged/programs" "$staged" >/dev/null
+        "$root/bin/bundle" "$staged/programs" "$staged" "$fab7" >/dev/null
         tar -czf "$archive" -C "$staged" Weft.app
         ;;
     *-linux-*)
         cp "$built/weft" "$built/ringframe" "$desktop/weft-desktop" "$staged/"
         cp "$root/assets/linux/weft.desktop" "$staged/weft.desktop"
         cp "$root/assets/weft-mark.svg" "$staged/weft.svg"
-        tar -czf "$archive" -C "$staged" weft ringframe weft-desktop weft.desktop weft.svg
+        "$root/bin/fab7-files" "$fab7" "$staged/fab7"
+        tar -czf "$archive" -C "$staged" weft ringframe weft-desktop weft.desktop weft.svg fab7
         ;;
     *) echo "bin/pack: no layout for $target" >&2; exit 1 ;;
 esac

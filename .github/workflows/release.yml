@@ -48,6 +48,22 @@ jobs:
         with:
           ref: refs/tags/${{ env.TAG }}
           persist-credentials: false
+      # fab7's files a first start sets its home up from, at fab7's latest
+      # release: the configuration install.sh installs.
+      - name: fab7's latest release
+        id: fab7
+        run: |
+          set -eu
+          tag=$(curl -fsSL https://api.github.com/repos/fab7hq/fab7/releases/latest |
+              sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+          [ -n "$tag" ] || { echo "fab7 has no release"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: fab7hq/fab7
+          ref: refs/tags/${{ steps.fab7.outputs.tag }}
+          path: fab7
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.target }},${{ matrix.desktop }}
@@ -83,7 +99,7 @@ jobs:
           # As install.sh reads it: Weft.app on macOS, signed ad hoc here (the
           # owner's identity signs only on the owner's Mac); the programs, the
           # desktop entry and the icon on Linux.
-          bin/pack "$TAG" "$TARGET" "target/$TARGET/release" "target/$DESKTOP/release"
+          bin/pack "$TAG" "$TARGET" "target/$TARGET/release" "target/$DESKTOP/release" fab7
           echo "archive=fab7-$TAG-$TARGET.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Check what was built actually runs

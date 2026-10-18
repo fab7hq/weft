@@ -6,6 +6,30 @@
 use std::path::Path;
 use std::process::Command;
 
+/// A fab7 checkout with one file in each part a release carries.
+fn fab7(dir: &Path) -> std::path::PathBuf {
+    let fab7 = dir.join("fab7");
+    for (part, file) in [
+        ("ringframe", "bundle.toml"),
+        ("ringframe/config/harnesses", "codex.toml"),
+        ("weft/harnesses", "codex.toml"),
+        ("weft/tools", "cloudflared.toml"),
+    ] {
+        let at = fab7.join("products").join(part);
+        std::fs::create_dir_all(&at).unwrap();
+        std::fs::write(at.join(file), "").unwrap();
+    }
+    fab7
+}
+
+/// What came with the app, as a first start reads it.
+const CARRIED: [&str; 4] = [
+    "fab7/ringframe/bundle.toml",
+    "fab7/ringframe/config/harnesses/codex.toml",
+    "fab7/weft/harnesses/codex.toml",
+    "fab7/weft/tools/cloudflared.toml",
+];
+
 fn stub(dir: &Path, name: &str) {
     let p = dir.join(name);
     std::fs::write(&p, format!("#!/bin/sh\necho {name}\n")).unwrap();
@@ -26,6 +50,7 @@ fn the_bundle_holds_the_app_its_tools_and_icon_and_is_signed() {
     let made = Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/bundle"))
         .arg(&built)
         .arg(&out)
+        .arg(fab7(tmp.path()))
         .output()
         .expect("bin/bundle runs");
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
@@ -34,6 +59,9 @@ fn the_bundle_holds_the_app_its_tools_and_icon_and_is_signed() {
         assert!(app.join("MacOS").join(name).is_file(), "{name}");
     }
     assert!(app.join("Resources/weft.icns").is_file());
+    for file in CARRIED {
+        assert!(app.join("Resources").join(file).is_file(), "{file}");
+    }
     let plist = std::fs::read_to_string(app.join("Info.plist")).unwrap();
     for held in [
         "<key>CFBundleExecutable</key>\n    <string>weft-desktop</string>",
@@ -85,6 +113,7 @@ fn a_release_archive_holds_the_app() {
         .args(["v0.9.0", target])
         .arg(&built)
         .arg(&built)
+        .arg(fab7(tmp.path()))
         .current_dir(tmp.path())
         .output()
         .unwrap();
@@ -103,9 +132,15 @@ fn a_release_archive_holds_the_app() {
         ] {
             assert!(held.contains(&f), "{f}: {held:?}");
         }
+        for f in CARRIED {
+            assert!(held.contains(&format!("Weft.app/Contents/Resources/{f}").as_str()), "{f}");
+        }
     } else {
         let mut held = held.clone();
         held.sort();
-        assert_eq!(held, ["ringframe", "weft", "weft-desktop", "weft.desktop", "weft.svg"]);
+        let mut want = vec!["ringframe", "weft", "weft-desktop", "weft.desktop", "weft.svg"];
+        want.extend(CARRIED);
+        want.sort();
+        assert_eq!(held, want);
     }
 }

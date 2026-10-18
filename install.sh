@@ -109,6 +109,8 @@ main() {
             mv "$work/$name" "$folder.new/$name"
             chmod 755 "$folder.new/$name"
         done
+        # fab7's files beside the programs, as a first start reads them.
+        if [ -d "$work/fab7" ]; then mv "$work/fab7" "$folder.new/fab7"; fi
     fi
     # The same version again: the one there is moved aside first, so a Weft
     # running from it keeps its files until it ends.

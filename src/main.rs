@@ -14,6 +14,69 @@ fn write_config_if_absent(path: &std::path::Path) {
     }
 }
 
+/// fab7's files that came with the `weft` at `exe`, in its release: in the
+/// bundle's Resources on macOS, beside the programs elsewhere.
+fn bundled(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    let dir = exe.parent()?;
+    let fab7 = if dir.ends_with("Contents/MacOS") {
+        dir.parent()?.join("Resources/fab7")
+    } else {
+        dir.join("fab7")
+    };
+    fab7.is_dir().then_some(fab7)
+}
+
+/// A first start with nothing set up, as when the app came from a package
+/// manager and no installer ran: Weft's harness and tool files, and
+/// RingFrame's configuration (by the `ringframe` beside this `weft`), from
+/// what came with it. Whatever is there already is left alone.
+fn seed(home: &std::path::Path, exe: &std::path::Path) {
+    let Some(fab7) = bundled(exe) else { return };
+    for name in ["harnesses", "tools"] {
+        let (from, to) = (fab7.join("weft").join(name), home.join(".fab7/weft").join(name));
+        if from.is_dir() && !to.exists() {
+            let new = to.with_extension("new");
+            let _ = std::fs::remove_dir_all(&new);
+            if copy_dir(&from, &new).is_ok() {
+                let _ = std::fs::rename(&new, &to);
+            }
+        }
+    }
+    let ringframe = exe.with_file_name("ringframe");
+    if !home.join(".fab7/rf/config").exists() && ringframe.is_file() {
+        let _ = std::process::Command::new(ringframe)
+            .args(["init", "--global", "--from"])
+            .arg(fab7.join("ringframe/config"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+fn copy_dir(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            copy_dir(&path, &to.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Before the daemon starts: the home set up from what came with this Weft.
+fn set_up_home() {
+    if let (Some(home), Ok(exe)) =
+        (std::env::var_os("HOME"), std::env::current_exe().and_then(|e| e.canonicalize()))
+    {
+        seed(std::path::Path::new(&home), &exe);
+    }
+}
+
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next();
@@ -39,6 +102,7 @@ fn main() -> Result<()> {
     // Started by the app to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
+        set_up_home();
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&protocol::socket_path(), &weft::routing::file());
     }
@@ -53,6 +117,7 @@ fn main() -> Result<()> {
             println!("weft: listening on {}", socket.display());
             return Ok(());
         }
+        set_up_home();
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&socket, &weft::routing::file());
     }

@@ -1,16 +1,19 @@
 #!/bin/sh
 # Make Weft.app from built binaries: the desktop app as the bundle's program,
-# `weft` and `ringframe` beside it, the mark as its icon, then sign it.
+# `weft` and `ringframe` beside it, the mark as its icon, fab7's files in its
+# Resources (what a first start sets its home up from), then sign it.
 #
-#   bin/bundle <built-dir> <out-dir>
+#   bin/bundle <built-dir> <out-dir> <fab7-dir>
 #
-# <built-dir> holds weft-desktop, weft and ringframe, as cargo leaves them.
+# <built-dir> holds weft-desktop, weft and ringframe, as cargo leaves them;
+# <fab7-dir> is a fab7 checkout.
 # WEFT_SIGN_IDENTITY names the identity to sign with; without it the bundle
 # is signed ad hoc, which runs on the Mac that made it.
 set -eu
 
-built=${1:?usage: bin/bundle <built-dir> <out-dir>}
-out=${2:?usage: bin/bundle <built-dir> <out-dir>}
+built=${1:?usage: bin/bundle <built-dir> <out-dir> <fab7-dir>}
+out=${2:?usage: bin/bundle <built-dir> <out-dir> <fab7-dir>}
+fab7=${3:?usage: bin/bundle <built-dir> <out-dir> <fab7-dir>}
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
 
@@ -24,6 +27,7 @@ for name in weft-desktop weft ringframe; do
 done
 sed "s/VERSION/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info.plist"
 cp "$root/assets/weft.icns" "$app/Contents/Resources/weft.icns"
+"$root/bin/fab7-files" "$fab7" "$app/Contents/Resources/fab7"
 
 # Its tools first, then the bundle, as codesign wants.
 identity=${WEFT_SIGN_IDENTITY:--}

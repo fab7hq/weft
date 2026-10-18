@@ -1,0 +1,19 @@
+#!/bin/sh
+# The fab7 files a release carries, so a first start sets its home up from
+# them without an installer: RingFrame's configuration and bundle, and Weft's
+# harness and tool files.
+#
+#   bin/fab7-files <fab7-dir> <dest>
+set -eu
+
+fab7=${1:?usage: bin/fab7-files <fab7-dir> <dest>}
+dest=${2:?usage: bin/fab7-files <fab7-dir> <dest>}
+products="$fab7/products"
+for part in ringframe/bundle.toml ringframe/config weft/harnesses weft/tools; do
+    [ -e "$products/$part" ] || { echo "bin/fab7-files: $fab7 has no products/$part" >&2; exit 1; }
+done
+mkdir -p "$dest/ringframe" "$dest/weft"
+cp "$products/ringframe/bundle.toml" "$dest/ringframe/"
+cp -R "$products/ringframe/config" "$dest/ringframe/config"
+cp -R "$products/weft/harnesses" "$dest/weft/harnesses"
+cp -R "$products/weft/tools" "$dest/weft/tools"
