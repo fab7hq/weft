@@ -185,5 +185,9 @@ fn the_cask_installs_the_release_archives() {
     std::fs::remove_file(tmp.path().join("Casks/weft.rb")).unwrap();
     assert!(!cask(&["0.9.0", &arm, &intel]).status.success(), "not a release tag");
     assert!(!cask(&["v0.9.0", "abc", &intel]).status.success(), "not a checksum");
+    let two_lines = format!("{arm}\n\"; system \"true");
+    assert!(!cask(&["v0.9.0", &two_lines, &intel]).status.success(), "checked whole");
+    assert!(!cask(&["v0.9.0\"; system \"true", &arm, &intel]).status.success(), "a tag, whole");
+    assert!(!cask(&["v0.9.0\n1", &arm, &intel]).status.success(), "a tag on one line");
     assert!(!tmp.path().join("Casks/weft.rb").exists());
 }
