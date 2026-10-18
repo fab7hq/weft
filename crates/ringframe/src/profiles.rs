@@ -24,6 +24,15 @@ pub fn load(name: &str) -> Result<Value, ConfigError> {
             found.map_or("None".to_string(), |s| format!("'{s}'"))
         )));
     }
+    // A harness's conversation and signals are Weft's to read, from its own
+    // harness files: never a profile's.
+    for table in ["conversation", "signal"] {
+        if doc.get(table).is_some() {
+            return Err(ConfigError(format!(
+                "harnesses/{name}.toml holds [{table}], which belongs in Weft's harness file"
+            )));
+        }
+    }
     Ok(doc)
 }
 
@@ -135,6 +144,21 @@ mod tests {
                 for key in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
                     assert!(p.get(key).is_none(), "{} carries {key}", p["profile_id"]);
                 }
+            }
+        });
+    }
+
+    /// A conversation and a harness's signals are read by Weft, from its own
+    /// harness files; a profile that holds either is refused.
+    #[test]
+    fn a_profile_holding_a_table_of_wefts_does_not_load() {
+        with_config_home(|_| {
+            let path = config::config_dir().join("harnesses/codex.toml");
+            let text = std::fs::read_to_string(&path).unwrap();
+            for table in ["conversation", "signal"] {
+                std::fs::write(&path, format!("{text}\n[{table}]\npath = \"x\"\n")).unwrap();
+                let e = load("codex").unwrap_err();
+                assert!(e.0.contains(&format!("[{table}]")), "{e}");
             }
         });
     }
