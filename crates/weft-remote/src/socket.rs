@@ -29,6 +29,10 @@ pub const QUEUE: usize = 64;
 /// that rather than its queue, and is never given a whole screen again.
 pub const SEND_BUFFER: usize = 64 * 1024;
 
+/// How long a connection has to finish its upgrade. One reaching the tunnel
+/// that never does is closed, so it holds no thread or socket open.
+pub const HANDSHAKE: Duration = Duration::from_secs(10);
+
 /// What a connection tells the loop.
 pub enum Socket {
     Opened(u64, Outbox),
@@ -96,14 +100,22 @@ fn check(request: &Request, response: Response) -> Result<Response, ErrorRespons
 fn serve<T: From<Socket> + Send + 'static>(id: u64, stream: TcpStream, tx: Sender<T>) {
     bound_send_buffer(&stream, SEND_BUFFER);
     let Ok(mut refusal) = stream.try_clone() else { return };
+    if stream.set_read_timeout(Some(HANDSHAKE)).is_err() {
+        return;
+    }
     let mut reading = match tungstenite::accept_hdr_with_config(stream, check, Some(config())) {
         Ok(ws) => ws,
+        Err(tungstenite::HandshakeError::Failure(tungstenite::Error::Io(_))) => return,
         Err(_) => {
             // Not an upgrade at all (a plain GET): nothing here but /ws.
             let _ = refusal.write_all(b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\n\r\n");
             return;
         }
     };
+    // Upgraded: a device may be quiet as long as it likes.
+    if reading.get_ref().set_read_timeout(None).is_err() {
+        return;
+    }
     let Ok(raw) = reading.get_ref().try_clone() else { return };
     let writing = WebSocket::from_raw_socket(raw, Role::Server, Some(config()));
     let outbox = Outbox::default();

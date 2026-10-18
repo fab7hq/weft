@@ -52,6 +52,28 @@ fn only_get_ws_from_the_apps_origin_upgrades() {
     assert!(connect(port, "/ws", socket::ORIGIN).is_ok());
 }
 
+/// A connection that never finishes its upgrade is closed, so one that
+/// reaches the tunnel holds nothing open; one that upgraded may then stay
+/// quiet as long as it likes.
+#[test]
+fn a_connection_that_never_upgrades_is_closed_and_one_that_did_is_not() {
+    use std::io::Read;
+    let (port, rx) = listening();
+    let mut silent = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let mut ws = connect(port, "/ws", socket::ORIGIN).unwrap();
+    let (id, _) = opened(&rx);
+    silent.set_read_timeout(Some(socket::HANDSHAKE + Duration::from_secs(5))).unwrap();
+    let asked = Instant::now();
+    let mut rest = Vec::new();
+    assert!(silent.read_to_end(&mut rest).is_ok(), "closed, not timed out here");
+    assert!(asked.elapsed() >= socket::HANDSHAKE - Duration::from_secs(1), "{:?}", asked.elapsed());
+    ws.send(Message::text("{}")).unwrap();
+    assert!(
+        matches!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Socket::Message(got, _) if got == id),
+        "the device that upgraded, quiet as long, is still heard"
+    );
+}
+
 #[test]
 fn a_message_over_64_kib_closes_the_socket() {
     let (port, rx) = listening();
