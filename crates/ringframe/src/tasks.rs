@@ -382,6 +382,8 @@ fn carried(ctx: &Ctx) -> Carried {
     let voided = crate::evaluate::voided(ws).unwrap_or_default();
     let asks: BTreeSet<String> =
         array_of(&ctx.brief, "asks").iter().map(|a| str_of(a, "ask_id")).collect();
+    let elsewhere: BTreeSet<String> =
+        array_of(&ctx.brief, "elsewhere").iter().map(|a| str_of(a, "ask_id")).collect();
     let before = events
         .iter()
         .position(|e| e["type"] == "eval.opened" && str_of(e, "id") == ctx.eval_id)
@@ -417,22 +419,29 @@ fn carried(ctx: &Ctx) -> Carried {
         }
         let Some(here) = key_of_prev(&str_of(w, "id")).and_then(|k| now.get(&k)) else { continue };
         let mut kept = BTreeMap::new();
-        for (role, r) in w["readings"].as_object().into_iter().flatten() {
+        'reading: for (role, r) in w["readings"].as_object().into_iter().flatten() {
             let mut r = r.clone();
             if let Some(f) = r["follows_from"].as_str() {
                 let Some(to) = key_of_prev(f).and_then(|k| now.get(&k)) else { continue };
                 r["follows_from"] = json!(to);
             }
-            if let Some(serves) = r["serves"].as_array() {
-                let still: Vec<Value> = serves
-                    .iter()
-                    .filter(|s| ctx.requirement(&str_of_value(s)).is_some())
-                    .cloned()
-                    .collect();
-                if still.is_empty() {
-                    continue;
+            if let Some(other) = r["elsewhere"].as_str()
+                && !elsewhere.contains(other)
+            {
+                continue;
+            }
+            for key in ["serves", "undoes"] {
+                if let Some(ids) = r[key].as_array() {
+                    let still: Vec<Value> = ids
+                        .iter()
+                        .filter(|s| ctx.requirement(&str_of_value(s)).is_some())
+                        .cloned()
+                        .collect();
+                    if still.is_empty() {
+                        continue 'reading;
+                    }
+                    r[key] = json!(still);
                 }
-                r["serves"] = json!(still);
             }
             r["window"] = json!(here);
             r["carried_from"] = json!(from);
@@ -1508,10 +1517,14 @@ pub fn next(
     let mut st = status(&ctx)?;
     let mut state = read_json(&state_file).unwrap_or_else(|| json!({"handed": {}}));
     let now = now_secs();
+    let count_of =
+        |state: &Value, key: &str, id: &str| state[key][id].as_array().map_or(0, Vec::len);
     // A sub-agent that has finished gives its task back, whatever it replied:
     // one with no submission counts as back now, not when its lease ends.
+    // Each hand-out is given back once: a return and the next hand-out can
+    // fall in the same second, so they are counted, not timed.
     for id in returned {
-        if state["handed"][id].is_array()
+        if count_of(&state, "returned", id) < count_of(&state, "handed", id)
             && !st.accepted.contains_key(id)
             && !st.failed.contains(id)
         {
@@ -1526,8 +1539,8 @@ pub fn next(
         state[key][id].as_array().and_then(|h| h.last()).and_then(Value::as_i64)
     };
     let is_back = |id: &str, state: &Value| {
-        let handed = last_of(state, "handed", id);
-        handed.is_some() && last_of(state, "returned", id) >= handed
+        let handed = count_of(state, "handed", id);
+        handed > 0 && count_of(state, "returned", id) >= handed
     };
     let is_out = |id: &str, state: &Value| {
         last_of(state, "handed", id).is_some_and(|l| now - l <= TIMEOUT_SECS) && !is_back(id, state)
@@ -3480,6 +3493,48 @@ mod tests {
         });
     }
 
+    /// A reading is carried only where it still means something: an
+    /// `elsewhere` only for an Ask this Eval names as elsewhere, an `undoes`
+    /// only for its own requirements, as a `serves` is.
+    #[test]
+    fn a_carried_reading_names_only_what_this_eval_has() {
+        eval_bench(|ws| {
+            let first = bench(ws).eval_id;
+            close_all(ws, &first, &[]);
+            let path = ws.rf_dir().join(format!("evals/{first}/record.json"));
+            let mut rec: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let (mut tele, mut notes) = (String::new(), String::new());
+            let texts = read_json(&ws.rf_dir().join(format!("evals/{first}/windows.json")))
+                .unwrap()["windows"]
+                .clone();
+            for w in rec["windows"].as_array_mut().unwrap() {
+                let text = texts[str_of(w, "id")].as_str().unwrap_or_default();
+                if text.contains("telemetry.js") {
+                    tele = window_key(text);
+                    w["readings"]["map"] = json!({"elsewhere": "ask_other"});
+                } else if text.contains("notes.md") {
+                    notes = window_key(text);
+                    w["readings"]["map"] = json!({"undoes": [S2, "s_gone"], "quote": "q"});
+                }
+            }
+            std::fs::write(&path, rec.to_string()).unwrap();
+            commit(&ws.root, &[("src/other.js", Some("export const other = 1;\n"))], "more");
+            let second = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let mut ctx = Ctx::load(ws, &second).unwrap();
+            let id_of = |ctx: &Ctx, key: &str| {
+                ctx.windows.iter().find(|(_, t)| window_key(t) == key).map(|(id, _)| id.clone())
+            };
+            let (tele, notes) = (id_of(&ctx, &tele).unwrap(), id_of(&ctx, &notes).unwrap());
+
+            let kept = carried(&ctx).windows;
+            assert!(!kept.contains_key(&tele), "not an Ask this Eval names: {kept:?}");
+            assert_eq!(kept[&notes]["map"]["undoes"], json!([S2]), "only its own requirements");
+
+            ctx.brief["elsewhere"] = json!([{"ask_id": "ask_other"}]);
+            assert_eq!(carried(&ctx).windows[&tele]["map"]["elsewhere"], "ask_other");
+        });
+    }
+
     /// A judge writes only its answers: RingFrame fills in the task, its kind
     /// and role, and takes who judged from the harness the skill named and
     /// the model the role was asked to run on, never from the judge's word.
@@ -4134,6 +4189,30 @@ mod tests {
                 failed["data"].to_string().contains("finished without an accepted"),
                 "{failed}"
             );
+        });
+    }
+
+    /// Its return and its second hand-out happen in the same second: the
+    /// task is out again, not back, until its second judge returns it.
+    #[test]
+    fn a_task_handed_out_again_is_out_until_it_is_returned_again() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let t = task_id(e, "m1");
+            next(ws, e, 8, None, &[]).unwrap();
+            let back = std::slice::from_ref(&t);
+            assert_eq!(ids(&next(ws, e, 8, None, back).unwrap()), back, "out again");
+            let after = next(ws, e, 8, None, &[]).unwrap();
+            assert!(ids(&after).is_empty(), "still out, so not again: {after}");
+            assert_eq!(after["out"], 1, "{after}");
+            let ctx = Ctx::load(ws, e).unwrap();
+            assert!(!status(&ctx).unwrap().failed.contains(&t), "its second judge is running");
+            let more = next(ws, e, 8, None, &[t.clone(), t.clone()]).unwrap();
+            let returns = read_json(&state_path(ws, e)).unwrap()["returned"][&t].clone();
+            assert_eq!(returns.as_array().map(Vec::len), Some(2), "one return per hand-out");
+            assert!(!ids(&more).contains(&t), "back a second time: failed");
+            assert!(status(&Ctx::load(ws, e).unwrap()).unwrap().failed.contains(&t));
         });
     }
 
