@@ -36,6 +36,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
         BottomBarState::RemoveDeviceConfirm { device_id, device_name } => {
             render_remove_device_bar(device_id, device_name)
         }
+        BottomBarState::CloseProjectConfirm { project } => render_close_project_bar(project),
         BottomBarState::SealDisposition { project, eval, selected } => {
             render_seal_disposition_bar(project, eval, selected)
         }
@@ -190,6 +191,23 @@ fn render_allow_device_bar(
         button("btn Refuse", word("desktop.allow.refuse"), answer(false), Tone::Plain, Size::Sheet),
         button("btn Allow", word("desktop.allow.allow"), answer(true), Tone::Primary, Size::Sheet),
     ]))
+}
+
+fn render_close_project_bar(project: &std::path::Path) -> Element {
+    let name = ProjectClient::name_of(project);
+    asking_bar("Close project bar", palette::BLUE_BORDER)
+        .child(title(fill("desktop.close.ask", &[("project", &name)])))
+        .child(note(word("desktop.close.what"), palette::MUTED))
+        .child(bar_acts(vec![
+            button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Plain, Size::Sheet),
+            button(
+                "btn Close it",
+                word("desktop.close.yes"),
+                BarAct::ConfirmCloseProject(project.to_path_buf()),
+                Tone::Primary,
+                Size::Sheet,
+            ),
+        ]))
 }
 
 fn render_remove_device_bar(device_id: &str, device_name: &str) -> Element {

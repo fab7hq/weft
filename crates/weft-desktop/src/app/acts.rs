@@ -93,6 +93,7 @@ impl WeftDesktopApp {
                 }
                 self.active_sheet = Some(ActiveSheet::Updates);
             }
+            WindowAct::NextNeedsYou => self.next_needs_you(),
             WindowAct::OpenRemote => {
                 self.remote_pick = None;
                 self.active_sheet = Some(ActiveSheet::Remote);
@@ -122,7 +123,22 @@ impl WeftDesktopApp {
                 }
                 let _ = self.save_state();
             }
-            TreeAct::CloseProject(p) => self.close_project(&p),
+            TreeAct::CloseProject(p) => {
+                self.bottom_bar = BottomBarState::CloseProjectConfirm { project: p }
+            }
+            TreeAct::WhyWaiting { project, session } => {
+                let row =
+                    self.client(&project).and_then(|c| c.sessions.iter().find(|r| r.id == session));
+                if let Some(r) = row {
+                    // The hook's own word, or only what Weft read from its screen.
+                    let key = if r.turn == Some(weft_core::turns::Turn::Waiting) {
+                        "desktop.why.asking"
+                    } else {
+                        "desktop.why.looks_asking"
+                    };
+                    self.why_not(words::fill(key, &[("harness", &r.harness)]));
+                }
+            }
             TreeAct::TogglePlus(p) => {
                 if self.plus_popover_project.as_ref() == Some(&p) {
                     self.plus_popover_project = None;
@@ -274,6 +290,10 @@ impl WeftDesktopApp {
                 }
                 self.bottom_bar = BottomBarState::None;
                 self.quit_requested = true;
+            }
+            BarAct::ConfirmCloseProject(p) => {
+                self.bottom_bar = BottomBarState::None;
+                self.close_project(&p);
             }
             BarAct::AllowDevice { device, yes } => {
                 self.remote_act(serde_json::json!({"act": "allow", "device": device, "yes": yes}));

@@ -17,6 +17,9 @@ use crate::gpui::{Element, div, edge_bar, input_el, palette, span};
 pub struct Listed {
     pub root: PathBuf,
     pub project: Project,
+    /// Where the project sends its acts, as `(act, harness)`; none when it
+    /// sets none.
+    pub routes: Vec<(&'static str, String)>,
 }
 
 /// Which row in the `Tree` is currently selected.
@@ -63,7 +66,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
     let q = props.search_query.trim();
     if !q.is_empty() {
         let mut any_match = false;
-        for Listed { root, project: proj } in props.projects {
+        for Listed { root, project: proj, .. } in props.projects {
             let mut all_agents: Vec<Agent> = proj.agents.rows.clone();
             if let Some(client) = props.clients.iter().find(|c| c.root == *root) {
                 let (_, earlier_rows) = weft_core::sessions::split(&client.sessions);
@@ -139,10 +142,27 @@ pub fn render_tree(props: &TreeProps) -> Element {
         return tree_el;
     }
 
-    for Listed { root, project: proj } in props.projects {
+    for Listed { root, project: proj, routes } in props.projects {
         let proj_selected =
             props.selection == Some(&TreeSelection::Project { project: root.clone() });
         tree_el = tree_el.child(render_project_row(root, proj, proj_selected));
+        // Selected, a project says where it sends its acts, in plain words.
+        if proj_selected && !routes.is_empty() {
+            let said: Vec<String> = routes
+                .iter()
+                .map(|(act, h)| words::fill(&format!("desktop.routes.{act}"), &[("harness", h)]))
+                .collect();
+            tree_el = tree_el.child(
+                div()
+                    .layer("routing line")
+                    .self_stretch()
+                    .style("padding", "6px 16px 6px 32px")
+                    .border_bottom(palette::LINE)
+                    .font_size(12)
+                    .color(palette::MUTED)
+                    .text(format!("{}.", said.join("; "))),
+            );
+        }
         if proj.folded {
             continue;
         }
@@ -554,7 +574,19 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
             session: a.session.clone(),
             pane: a.pane,
         })
-        .child(div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape))
+        .child({
+            let mark =
+                div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape);
+            // A waiting agent's ■ says why it waits.
+            if running && turns::is_asking(a.turn) {
+                mark.layer(format!("why waiting {}", a.session)).on_click(TreeAct::WhyWaiting {
+                    project: project.to_path_buf(),
+                    session: a.session.clone(),
+                })
+            } else {
+                mark
+            }
+        })
         .child(title);
 
     if selected && !running && !a.session.is_empty() {

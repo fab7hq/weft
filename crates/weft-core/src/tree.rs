@@ -288,7 +288,12 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
     let mut out = Project {
         name: f.name.to_string(),
         open: r.open.len(),
-        needs: f.sessions.iter().filter(running).filter(|s| s.turn == Some(Turn::Waiting)).count(),
+        needs: f
+            .sessions
+            .iter()
+            .filter(running)
+            .filter(|s| turn_now(f, s) == Some(Turn::Waiting))
+            .count(),
         ask: board(None).why_not(Act::Ask),
         setup: f.setup,
         folded: folded(Fold::Project),
@@ -365,6 +370,14 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
     out
 }
 
+/// A session's turn as the daemon reads it now: in a pane, the pane's (its
+/// hook's word, or what Weft read from its screen when the hook said
+/// nothing); else its hook's last word.
+fn turn_now(f: &Facts, s: &crate::sessions::Row) -> Option<Turn> {
+    let at = s.pane.and_then(|p| f.panes.iter().position(|i| i.pane == p));
+    at.and_then(|i| f.agents.get(i).copied().flatten()).or(s.turn)
+}
+
 /// A session's row, and why an Ask cannot go to it when it cannot.
 pub fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
     let ask = match (s.state, s.pane) {
@@ -377,7 +390,7 @@ pub fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
         session: s.id.clone(),
         harness: s.harness.clone(),
         state: s.state,
-        turn: s.turn,
+        turn: turn_now(f, s),
         title: s.title.clone(),
         at: s.last,
         asks: s.asks,
@@ -553,6 +566,19 @@ mod tests {
         let ids: Vec<_> = a.rows.iter().map(|r| r.session.as_str()).collect();
         assert_eq!(ids, ["c1", "k1", "c2", "e00", "e01", "e02"]);
         assert_eq!(a.rows[1].turn, Some(Turn::Waiting));
+    }
+
+    /// An agent in a pane is shown, and counted, as the daemon reads it now:
+    /// its hook's word, or what Weft read from its screen when the hook said
+    /// nothing.
+    #[test]
+    fn an_agent_in_a_pane_is_what_the_daemon_reads_of_it() {
+        let mut w = weft();
+        // codex's hook said it is working; the daemon read it waiting.
+        w.2[0] = Some(Turn::Waiting);
+        let t = build(&w, READY, AS_DRAWN);
+        assert_eq!(t.agents.rows[0].turn, Some(Turn::Waiting));
+        assert_eq!(t.needs, 2, "k1 and c1");
     }
 
     /// Each agent row says why an Ask cannot go to it: an ended one (D12.4),

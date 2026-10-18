@@ -124,6 +124,7 @@ pub enum BottomBarState {
     QuitConfirm,
     AllowDevice { device_id: String, device_name: String, login: Option<String> },
     RemoveDeviceConfirm { device_id: String, device_name: String },
+    CloseProjectConfirm { project: PathBuf },
     SealDisposition { project: PathBuf, eval: String, selected: String },
 }
 
@@ -576,7 +577,39 @@ impl WeftDesktopApp {
     pub fn open_notice(&mut self, tag: &str) {
         let Some((root, pane)) = tag.rsplit_once('#') else { return };
         let Ok(pane) = pane.parse::<u32>() else { return };
-        let root = PathBuf::from(root);
+        self.bring_to_front(PathBuf::from(root), pane);
+    }
+
+    /// The next agent waiting for the person in front: this project's
+    /// first, then the others', after the one in front now; said when none
+    /// waits.
+    pub fn next_needs_you(&mut self) {
+        let front = self.active_tab().map(|t| (t.project, t.pane));
+        let here = front.as_ref().map(|(p, _)| p.clone());
+        let mut waiting: Vec<(PathBuf, u32)> = self
+            .clients
+            .iter()
+            .flat_map(|c| {
+                c.panes
+                    .iter()
+                    .filter(|p| weft_core::turns::is_asking(p.turn))
+                    .map(|p| (c.root.clone(), p.id))
+            })
+            .collect();
+        // Stable: this project's agents first, each project's in pane order.
+        waiting.sort_by_key(|(root, _)| Some(root) != here.as_ref());
+        let after = front.and_then(|f| waiting.iter().position(|w| *w == f)).map_or(0, |i| i + 1);
+        match waiting.get(after % waiting.len().max(1)).cloned() {
+            Some((root, pane)) => self.bring_to_front(root, pane),
+            None => {
+                let sentence = words::word("why.nothing_needs_you").to_string();
+                self.bottom_bar = BottomBarState::WhyNot { sentence }
+            }
+        }
+    }
+
+    /// `pane` of `root` in front: its tab where it is, else a new one.
+    fn bring_to_front(&mut self, root: PathBuf, pane: u32) {
         let shown = self.state.panes.groups.iter().enumerate().find_map(|(g, group)| {
             group.tabs.iter().position(|t| t.project == root && t.pane == pane).map(|t| (g, t))
         });
@@ -651,7 +684,9 @@ impl WeftDesktopApp {
                 Fold::Sealed => !self.unfolded_sealed.contains(root),
             };
             if let Some(project) = tree::rows(&[facts], &folded).into_iter().next() {
-                out.push(Listed { root: root.clone(), project });
+                let routes =
+                    client.routing.each().into_iter().map(|(a, h)| (a, h.to_string())).collect();
+                out.push(Listed { root: root.clone(), project, routes });
             }
         }
         out

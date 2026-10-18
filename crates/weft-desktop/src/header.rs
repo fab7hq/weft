@@ -87,6 +87,7 @@ pub fn render_header(props: &HeaderProps) -> Element {
         bar = bar.child(
             div()
                 .layer("needs you tag")
+                .on_click(crate::action::WindowAct::NextNeedsYou)
                 .flex_row()
                 .gap(6)
                 .pad(4, 10)
@@ -101,7 +102,8 @@ pub fn render_header(props: &HeaderProps) -> Element {
                     "{} {}",
                     words::word("title.needs_you").to_uppercase(),
                     props.needs_you
-                ))),
+                )))
+                .child(span("›").color(palette::AMBER_BORDER)),
         );
     }
 

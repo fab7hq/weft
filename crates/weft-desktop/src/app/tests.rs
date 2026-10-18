@@ -326,6 +326,7 @@ fn restores_window_bounds_and_open_projects_from_durable_state_json() {
     assert!(projects[1].project.folded, "docs was folded in state.json");
 
     app.dispatch(TreeAct::CloseProject(PathBuf::from("/work/docs")));
+    app.dispatch(BarAct::ConfirmCloseProject(PathBuf::from("/work/docs")));
     assert_eq!(saved(&mut app).open_projects, vec![weft()]);
 }
 
@@ -340,7 +341,7 @@ fn renders_header_and_collapsible_tree() {
     assert!(root.find_layer("updates pill").is_none());
     assert_eq!(
         root.find_layer("needs you tag").expect("needs you tag").all_text(),
-        "■ NEEDS YOU 1"
+        "■ NEEDS YOU 1 ›"
     );
 
     let tree = root.find_layer("tree").expect("tree open");
@@ -1744,4 +1745,91 @@ fn updates_opens_by_itself_once_when_nothing_is_set_up_and_something_could_be() 
     std::thread::sleep(Duration::from_millis(50));
     app.pump();
     assert!(app.active_sheet.is_none(), "once");
+}
+
+#[test]
+fn closing_a_project_asks_first_in_the_bar() {
+    let (_tmp, mut app) = sample_app(false);
+    app.dispatch(TreeAct::CloseProject(weft()));
+    let bar = app.render().find_layer("Close project bar").expect("asked first").all_text();
+    assert!(bar.contains(&words::fill("desktop.close.ask", &[("project", "weft")])), "{bar}");
+    assert!(app.state.open_projects.contains(&weft()), "not closed yet");
+    app.dispatch(BarAct::Cancel);
+    assert!(app.state.open_projects.contains(&weft()));
+    app.dispatch(TreeAct::CloseProject(weft()));
+    app.dispatch(BarAct::ConfirmCloseProject(weft()));
+    assert!(!app.state.open_projects.contains(&weft()));
+}
+
+/// Two agents in panes: the first's hook says it waits; the second's hook
+/// says it works, and the daemon read it waiting from its screen.
+fn two_waiting(app: &mut WeftDesktopApp, wire: &mut Wire) -> (u32, u32) {
+    app.state.panes.groups.clear();
+    let (a, b) = (start(app, wire, "claude"), start(app, wire, "codex"));
+    let mut hooked = Row::of("claude", "s-a", State::Running, Some(Turn::Waiting), 2);
+    hooked.pane = Some(a);
+    let mut read = Row::of("codex", "s-b", State::Running, Some(Turn::Working), 1);
+    read.pane = Some(b);
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Waiting), Some(Turn::Waiting)],
+        sessions: vec![hooked, read],
+        zone: 0,
+    });
+    pumped(app, |a| a.clients[0].sessions.len() == 2);
+    (a, b)
+}
+
+#[test]
+fn the_square_on_a_waiting_agent_says_plainly_why() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    two_waiting(&mut app, &mut wire);
+    app.dispatch(TreeAct::WhyWaiting { project: weft(), session: "s-a".into() });
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot {
+            sentence: words::fill("desktop.why.asking", &[("harness", "claude")])
+        }
+    );
+    app.dispatch(TreeAct::WhyWaiting { project: weft(), session: "s-b".into() });
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot {
+            sentence: words::fill("desktop.why.looks_asking", &[("harness", "codex")])
+        }
+    );
+    let rows = app.render();
+    assert!(rows.find_layer("why waiting s-b").is_some(), "its ■ says why");
+}
+
+#[test]
+fn needs_you_goes_to_each_waiting_agent_in_turn() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let (a, b) = two_waiting(&mut app, &mut wire);
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(b), "codex in front");
+    app.dispatch(WindowAct::NextNeedsYou);
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(a));
+    app.dispatch(WindowAct::NextNeedsYou);
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(b));
+    wire.event(Event::Agents {
+        panes: vec![Some(Turn::Working), Some(Turn::Working)],
+        sessions: Vec::new(),
+        zone: 0,
+    });
+    pumped(&mut app, |a| a.clients[0].view(b).is_some_and(|v| v.turn == Some(Turn::Working)));
+    app.dispatch(WindowAct::NextNeedsYou);
+    assert_eq!(
+        app.bottom_bar,
+        BottomBarState::WhyNot { sentence: words::word("why.nothing_needs_you").to_string() }
+    );
+}
+
+#[test]
+fn a_selected_project_says_in_plain_words_where_its_acts_go() {
+    let (_tmp, mut app) = sample_app(false);
+    app.clients[0].routing =
+        weft_core::routing::Routing::opened(&json!({"acts": {"ask": "claude", "eval": "codex"}}));
+    assert!(app.render().find_layer("routing line").is_none(), "only while selected");
+    app.dispatch(TreeAct::SelectProject(weft()));
+    let line = app.render().find_layer("routing line").expect("said").all_text();
+    assert_eq!(line, "Asks go to claude; Evals go to codex.");
 }

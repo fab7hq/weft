@@ -39,6 +39,8 @@ pub enum WindowAct {
     OpenProject,
     OpenUpdates,
     OpenRemote,
+    /// ■ NEEDS YOU: the next agent waiting.
+    NextNeedsYou,
     RequestQuit,
     Focus(Focus),
 }
@@ -49,6 +51,11 @@ pub enum TreeAct {
     SelectProject(PathBuf),
     ToggleProject(PathBuf),
     CloseProject(PathBuf),
+    /// The ■ on a waiting agent's row: why it waits.
+    WhyWaiting {
+        project: PathBuf,
+        session: String,
+    },
     TogglePlus(PathBuf),
     StartAgent {
         project: PathBuf,
@@ -105,6 +112,7 @@ pub enum BarAct {
     LeaveRunningAndQuit,
     StopAgentsAndQuit,
     AllowDevice { device: String, yes: bool },
+    ConfirmCloseProject(PathBuf),
 }
 
 /// The sheets that take the workspace's place, and the docked Ask.
