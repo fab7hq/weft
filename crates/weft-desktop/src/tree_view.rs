@@ -550,7 +550,7 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
         );
     }
 
-    let mut el = row(layer_name, 36, 32, selected)
+    let el = row(layer_name, 36, 32, selected)
         .on_click(TreeAct::SelectAgent {
             project: project.to_path_buf(),
             session: a.session.clone(),
@@ -570,25 +570,6 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
             }
         })
         .child(title);
-
-    if selected && !running && !a.session.is_empty() {
-        el = el.child(
-            div()
-                .layer("btn Resume (row)")
-                .on_click(crate::action::SheetAct::Resume {
-                    project: project.to_path_buf(),
-                    harness: a.harness.clone(),
-                    session: a.session.clone(),
-                })
-                .shrink_0()
-                .pad(2, 8)
-                .bg(palette::SURFACE)
-                .border(palette::LINE)
-                .font_weight(600)
-                .font_size(12)
-                .text(words::word("act.resume")),
-        );
-    }
 
     el.child(
         div()

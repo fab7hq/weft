@@ -692,6 +692,19 @@ fn a_tab_of_a_pane_the_daemon_does_not_have_goes() {
     assert_eq!(panes, [1]);
 }
 
+/// Resume is in a session's Details only: an ended row selected opens them,
+/// Resume their act, and the row carries none.
+#[test]
+fn resume_is_in_a_sessions_details_not_on_its_row() {
+    let (_tmp, mut app) = sample_app(false);
+    app.dispatch(TreeAct::SelectAgent { project: weft(), session: "s4".into(), pane: None });
+    let dom = app.render();
+    let row = dom.find_layer("row agent claude readme fix").expect("the ended row");
+    assert!(!row.all_text().contains(words::word("act.resume")), "{}", row.all_text());
+    let sheet = dom.find_layer("sheet SessionDetail").expect("its Details");
+    assert!(sheet.find_layer("btn Resume").is_some());
+}
+
 #[test]
 fn proceed_shows_only_where_ringframe_says_a_prompt_waits() {
     let (_tmp, mut app) = sample_app(false);
