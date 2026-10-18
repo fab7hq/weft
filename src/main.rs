@@ -146,7 +146,9 @@ fn open_app(project: Option<&std::path::Path>) -> Result<()> {
             }
         }
         Some(Opens::Program(desktop)) => {
-            if std::env::var_os("DISPLAY").is_none()
+            // Linux's desktops say where they are; macOS always has one.
+            if cfg!(not(target_os = "macos"))
+                && std::env::var_os("DISPLAY").is_none()
                 && std::env::var_os("WAYLAND_DISPLAY").is_none()
             {
                 anyhow::bail!(
