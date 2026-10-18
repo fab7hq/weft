@@ -170,6 +170,8 @@ pub struct WeftDesktopApp {
     pub remote_pick: Option<String>,
     /// What the bar showed before a device asked to be allowed.
     before_allow: Option<BottomBarState>,
+    /// Updates opened by itself once: it does not again.
+    updates_offered: bool,
     /// The device last answered: the bar does not ask again while
     /// `weft remote` has not yet heard.
     allow_answered: Option<String>,
@@ -212,6 +214,7 @@ impl WeftDesktopApp {
             unsaved: false,
             waiting: HashSet::new(),
             remote_pick: None,
+            updates_offered: false,
             before_allow: None,
             allow_answered: None,
             notices: Vec::new(),
@@ -320,8 +323,20 @@ impl WeftDesktopApp {
         }
         if changed {
             self.offer_allow();
+            self.offer_updates();
         }
         self.suggest_tick(std::time::Instant::now()) || changed
+    }
+
+    /// Nothing is set up and something could be: Updates opens by itself,
+    /// once, when nothing else is open.
+    fn offer_updates(&mut self) {
+        let wants =
+            self.clients.iter().any(|c| c.setup.as_ref().is_some_and(|v| v.wants_setting_up()));
+        if wants && !self.updates_offered && self.active_sheet.is_none() {
+            self.updates_offered = true;
+            self.active_sheet = Some(ActiveSheet::Updates);
+        }
     }
 
     /// `weft remote`'s view, from whichever project heard it.

@@ -119,7 +119,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
     let harnesses = v
         .rows
         .iter()
-        .map(|r| {
+        .flat_map(|r| {
             let act = r.state.next().map(|next| {
                 let (label, act) = match next {
                     Next::Locate => ("desktop.updates.locate", SheetAct::Locate(r.name.clone())),
@@ -134,7 +134,32 @@ pub(super) fn render(props: &SheetProps) -> Element {
                     Size::Row,
                 )
             });
-            row(format!("update row {}", r.title), r.state.mark(), &r.title, r.state.words(), act)
+            let row = row(
+                format!("update row {}", r.title),
+                r.state.mark(),
+                &r.title,
+                r.state.words(),
+                act,
+            );
+            // A step that failed shows what it printed last, as it printed it.
+            let said = match &r.state {
+                SetupState::Failed { said, .. } if !said.is_empty() => Some(
+                    list_row().style("padding", "0 16px 12px 44px").child(
+                        div()
+                            .layer("failed step output")
+                            .flex_1()
+                            .pad(10, 14)
+                            .bg(palette::TERMINAL_BG)
+                            .style("border-left", format!("2px solid {}", palette::RED))
+                            .font_mono()
+                            .font_size(12)
+                            .style("white-space", "pre")
+                            .text(said.clone()),
+                    ),
+                ),
+                _ => None,
+            };
+            std::iter::once(row).chain(said)
         })
         .collect::<Vec<_>>();
 

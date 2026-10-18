@@ -1693,3 +1693,55 @@ fn a_device_asking_opens_the_allow_bar_and_it_goes_with_the_request() {
     pumped(&mut app, |a| !matches!(a.bottom_bar, BottomBarState::AllowDevice { .. }));
     assert_eq!(app.bottom_bar, BottomBarState::WhyNot { sentence: "before".into() });
 }
+
+#[test]
+fn a_failed_step_shows_its_own_last_lines_under_its_row() {
+    let (_tmp, mut app) = sample_app(false);
+    let said = "Error: Plugin \"rf\" not found in marketplace \"fab7\"\nRun it again.";
+    app.clients[0].setup = Some(SetupView {
+        rows: vec![SetupRow {
+            name: "claude".into(),
+            title: "Claude Code".into(),
+            program: "claude".into(),
+            state: SetupState::Failed {
+                step: "claude plugin install rf@fab7".into(),
+                said: said.into(),
+            },
+        }],
+        ..Default::default()
+    });
+    app.dispatch(WindowAct::OpenUpdates);
+    let dom = app.render();
+    let out = dom.find_layer("failed step output").expect("its lines").all_text();
+    assert!(out.contains("not found in marketplace") && out.contains("Run it again."), "{out}");
+    assert!(dom.find_layer("btn Set up claude").is_some(), "Set up runs it again");
+}
+
+#[test]
+fn updates_opens_by_itself_once_when_nothing_is_set_up_and_something_could_be() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let row = |state| SetupRow {
+        name: "claude".into(),
+        title: "Claude Code".into(),
+        program: "claude".into(),
+        state,
+    };
+    let view = |state| SetupView { rows: vec![row(state)], ..Default::default() };
+    // Ready: nothing opens.
+    wire.event(Event::Setup {
+        view: serde_json::to_value(view(SetupState::Ready { version: None })).unwrap(),
+    });
+    pumped(&mut app, |a| a.clients[0].setup.is_some());
+    assert!(app.active_sheet.is_none());
+    // Nothing ready and it could be set up: Updates opens.
+    wire.event(Event::Setup { view: serde_json::to_value(view(SetupState::NotSetUp)).unwrap() });
+    pumped(&mut app, |a| a.active_sheet.is_some());
+    assert!(matches!(app.active_sheet, Some(ActiveSheet::Updates)));
+    // Closed: it does not open again by itself.
+    app.dispatch(SheetAct::Close);
+    wire.event(Event::Setup { view: serde_json::to_value(view(SetupState::NotSetUp)).unwrap() });
+    pumped(&mut app, |a| a.clients[0].setup.is_some());
+    std::thread::sleep(Duration::from_millis(50));
+    app.pump();
+    assert!(app.active_sheet.is_none(), "once");
+}
