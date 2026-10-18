@@ -1110,9 +1110,27 @@ impl Session {
                 // which of its stages runs next, and on what.
                 let project = &self.projects[at];
                 if act == "decide" {
+                    // The disposition the person picked goes on to the Seal,
+                    // which asks them to confirm it; none, and the Seal asks.
+                    let picked = match text {
+                        None => None,
+                        Some(d @ ("accepted" | "rejected" | "deferred" | "abandoned")) => Some(d),
+                        Some(other) => {
+                            return Answer::No(
+                                "no_disposition",
+                                format!(
+                                    "a Seal is accepted, rejected, deferred or abandoned, not {other}"
+                                ),
+                            );
+                        }
+                    };
                     let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
                     // `seal create --eval <id>` closes exactly that Eval's Asks.
-                    let args = eval.map(|e| format!("--eval {e}")).unwrap_or_default();
+                    let args = [picked.map(str::to_string), eval.map(|e| format!("--eval {e}"))]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     return self.dispatch(client, at, &unit, "seal", into, args);
                 }
                 let debate = weft_core::eval_stages::resolve(

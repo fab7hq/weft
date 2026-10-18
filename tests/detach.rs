@@ -1198,6 +1198,22 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         _ => None,
     });
     assert!(staged.contains("seal") && staged.ends_with("--eval evl_1"), "{staged}");
+    // The disposition the person picked goes on to the Seal; only a Seal's own.
+    let seal_as = |text: &str| Call::Act {
+        act: "decide".into(),
+        unit: None,
+        pane: None,
+        text: Some(text.into()),
+        eval: Some("evl_1".into()),
+        start: None,
+    };
+    assert_eq!(c.answer(seal_as("maybe")), Err("no_disposition".into()));
+    c.send(seal_as("deferred"));
+    let staged = c.wait_until(|e| match e {
+        Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).into_owned()),
+        _ => None,
+    });
+    assert!(staged.ends_with("seal deferred --eval evl_1"), "{staged}");
 
     // Sealed, the act stays and says so.
     let mut f = std::fs::OpenOptions::new()
