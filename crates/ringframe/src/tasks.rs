@@ -1301,6 +1301,13 @@ fn brief(t: &Task, file: &Value, windows: &str, deny: &[String]) -> String {
             let _ = writeln!(b, "  Its windows: {}", ws.join(", "));
         }
     }
+    let elsewhere = array_of(file, "elsewhere");
+    if !elsewhere.is_empty() {
+        b.push_str("\n## Elsewhere Asks\n\nOther work, open, not judged in this Eval:\n\n");
+        for a in elsewhere {
+            let _ = writeln!(b, "- `{}`: {}", str_of(a, "ask_id"), str_of(a, "title"));
+        }
+    }
     let found = array_of(file, "found");
     if !found.is_empty() {
         b.push_str("\n## What RingFrame found\n\n");
@@ -2890,6 +2897,12 @@ mod tests {
                 .map(|x| str_of(x, "ask_id"))
                 .collect();
             assert_eq!(listed, std::slice::from_ref(&beacon), "the map is told what else is open");
+            let md =
+                std::fs::read_to_string(tmp(ws, e).join(format!("tasks/{m1}.brief.md"))).unwrap();
+            assert!(
+                md.contains(&format!("`{beacon}`: Telemetry beacon")),
+                "the brief the judge reads names it too: {md}"
+            );
             let answer = |other: &str| {
                 let mut doc = head(&m1, "map", "map");
                 doc["windows"] = json!([
