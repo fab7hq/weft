@@ -158,6 +158,7 @@
   "desktop.settings.own_model": "Its own model",
   "desktop.settings.practices": "Practices",
   "desktop.settings.preview": "Preview",
+  "desktop.settings.preview_kept": "{kept} core rules kept · {left_out} left out by the cap",
   "desktop.settings.reduce": "Reduce",
   "desktop.settings.reduce_what": "Weighs what the map found",
   "desktop.settings.refused": "RingFrame did not answer: {why}",

@@ -48,8 +48,9 @@ fn run_program(
     })
 }
 
-/// Every practice and every rule, with the layer that last set each, through
-/// these `--override` layers: `{"domains": […], "catalogs": […]}`.
+/// Every practice and every rule, with the layer that last set each, and what
+/// Eval judges must not do, through these `--override` layers:
+/// `{"domains": […], "catalogs": […], "judges": {"deny": […], "from": …}}`.
 pub fn rules(out: &dyn Outside, project: &Path, layers: Option<&str>) -> Result<Value, Error> {
     let with = |args: &[&str]| {
         let mut args = args.to_vec();
@@ -60,7 +61,8 @@ pub fn rules(out: &dyn Outside, project: &Path, layers: Option<&str>) -> Result<
     };
     let domains = with(&["deltas", "domains", "--json"])?;
     let catalogs = with(&["deltas", "list", "--json"])?;
-    Ok(serde_json::json!({"domains": domains["domains"], "catalogs": catalogs["catalogs"]}))
+    Ok(serde_json::json!({"domains": domains["domains"], "catalogs": catalogs["catalogs"],
+        "judges": catalogs["judges"]}))
 }
 
 /// What RingFrame says of `host`: its routes, how each is delivered, its limits.
@@ -78,13 +80,14 @@ pub fn profile(
 }
 
 /// The Rules block RingFrame would write for `host`'s route `capability` and
-/// a task of `task`, through these layers.
+/// a task of `task`, through these layers: `{"text", "kept", "left_out"}`,
+/// the core rules it keeps and those its cap leaves out.
 pub fn preview(
     out: &dyn Outside,
     project: &Path,
     layers: Option<&str>,
     (host, capability, task): (&str, &str, &str),
-) -> Result<String, Error> {
+) -> Result<Value, Error> {
     let result = if task == "plan" { "plan" } else { "workspace_change" };
     let classification = serde_json::json!({"task": [task], "result": result,
         "interaction": "approval_gated", "horizon": "session", "effects": ["read", "write"]})
@@ -92,11 +95,20 @@ pub fn preview(
     let mut args =
         vec!["deltas", "render", "--host", host, "--capability", capability, "--classification"];
     args.push(&classification);
-    args.push("--minimal");
+    args.push("--json");
     if let Some(layers) = layers {
         args.extend(["--override", layers]);
     }
-    run(out, project, &args).map(|b| String::from_utf8_lossy(&b).into_owned())
+    let said = json(out, project, &args)?;
+    let practice = &said["practice"];
+    let kept = practice["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["tier"] != "situational")
+        .count();
+    let left_out = practice["dropped_by_budget"].as_array().map_or(0, Vec::len);
+    Ok(serde_json::json!({"text": said["text"], "kept": kept, "left_out": left_out}))
 }
 
 /// Whether RingFrame reads these `--override` layers: every catalog listed

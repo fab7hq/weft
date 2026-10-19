@@ -778,7 +778,26 @@ impl GpuiDesktopView {
         field_box.into_any_element()
     }
 
+    /// An element as GPUI draws it; one with a `z-index` is painted after
+    /// everything else, over what follows it, where it is laid out.
     fn build_gpui_element(
+        &self,
+        el: &Element,
+        parent_text: InheritedText,
+        parent_is_row: bool,
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let built = self.build_gpui_box(el, parent_text, parent_is_row, path, cx);
+        match el.styles.iter().find(|(k, _)| k == "z-index") {
+            Some((_, z)) => {
+                ::gpui::deferred(built).with_priority(z.parse().unwrap_or(1)).into_any_element()
+            }
+            None => built,
+        }
+    }
+
+    fn build_gpui_box(
         &self,
         el: &Element,
         parent_text: InheritedText,
@@ -1082,6 +1101,7 @@ pub(crate) const STYLES: &[&str] = &[
     "top",
     "white-space",
     "width",
+    "z-index",
 ];
 
 /// One style on a div; the div untouched, as an error, for one the window
@@ -1092,7 +1112,7 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
     Ok(match k {
         // The text's own, taken before the box is built.
         "color" | "font-size" | "font-weight" | "font-family" | "line-height" | "white-space"
-        | "text-overflow" | "align-self" => d,
+        | "text-overflow" | "align-self" | "z-index" => d,
         "text-align" => match v {
             "center" => d.text_center(),
             "right" => d.text_right(),

@@ -167,6 +167,8 @@ pub struct WeftDesktopApp {
     pub(crate) project_menu: Option<PathBuf>,
     /// The RingFrame preview's host (empty: the first harness), route and task.
     pub(crate) preview: [String; 3],
+    /// The preview's text shown, not only what it keeps.
+    pub(crate) preview_shown: bool,
     /// The harness Settings › Harnesses shows (empty: the first).
     pub(crate) harness_shown: String,
     /// Settings › RingFrame shows every rule, not the first few.
@@ -242,6 +244,7 @@ impl WeftDesktopApp {
             project_menu: None,
             // No host picked yet: the first harness Weft has.
             preview: [String::new(), "native_plan".into(), "implement".into()],
+            preview_shown: false,
             harness_shown: String::new(),
             all_rules: false,
             plus_popover_project: None,
@@ -410,8 +413,16 @@ impl WeftDesktopApp {
             ["ringframe", "eval", "deny", which] => {
                 let list_key: Vec<String> =
                     ["ringframe", "eval", "deny"].map(String::from).to_vec();
+                // Nothing set here yet: the list that applies now, as RingFrame said it.
                 let mut list =
-                    self.setting_now(project, &list_key).as_array().cloned().unwrap_or_default();
+                    self.setting_now(project, &list_key).as_array().cloned().unwrap_or_else(|| {
+                        let then = crate::daemon::Then::Rules { project: project.is_some() };
+                        self.clients
+                            .iter()
+                            .find_map(|c| c.read.get(&then))
+                            .and_then(|r| r["judges"]["deny"].as_array().cloned())
+                            .unwrap_or_default()
+                    });
                 match (which, value) {
                     ("+", Some(v)) => list.push(v),
                     (n, None) => {
@@ -518,6 +529,16 @@ impl WeftDesktopApp {
             let then = crate::daemon::Then::Rules { project: mine };
             if !c.read.contains_key(&then) && !c.refused.contains_key(&then) {
                 let _ = c.read("rules", if mine { "project" } else { "machine" }, None, then);
+            }
+        }
+        // On RingFrame, what the preview keeps, said beside Show.
+        if let Some(ActiveSheet::Settings { tab: SettingsTab::RingFrame }) = &self.active_sheet {
+            let unit = self.preview_unit();
+            if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+                let then = crate::daemon::Then::Preview { unit: unit.clone() };
+                if !c.read.contains_key(&then) && !c.refused.contains_key(&then) {
+                    let _ = c.read("preview", &unit, None, then);
+                }
             }
         }
     }
@@ -1258,6 +1279,7 @@ impl WeftDesktopApp {
                 preview: &preview,
                 harness: &harness,
                 all_rules: self.all_rules,
+                preview_shown: self.preview_shown,
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

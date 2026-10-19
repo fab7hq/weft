@@ -71,9 +71,13 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
     body = body.child(note(fill("desktop.project.foot", &[("key", &key)]), palette::DIM));
     sheet(
         "sheet Project settings",
-        sheet_head(
-            fill("desktop.project.title", &[("project", &name)]),
-            Some((word("desktop.project.differs").to_string(), palette::MUTED)),
+        // What differs, said beside the title.
+        sheet_head(fill("desktop.project.title", &[("project", &name)]), None).child(
+            div()
+                .flex_1()
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(word("desktop.project.differs")),
         ),
         body,
         sheet_foot(Vec::new(), vec![close_button()]),

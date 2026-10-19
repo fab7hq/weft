@@ -78,6 +78,7 @@ pub fn sheet(layer: &str, head: Element, body: Element, foot: Element) -> Elemen
 
 /// A sheet's head: its title, and what it says beside it.
 pub fn sheet_head(title: impl Into<String>, aside: Option<(String, &str)>) -> Element {
+    let title = div().font_weight(600).font_size(16).text(title);
     let mut head = div()
         .self_stretch()
         .flex_row()
@@ -85,7 +86,8 @@ pub fn sheet_head(title: impl Into<String>, aside: Option<(String, &str)>) -> El
         .pad(12, 20)
         .items_baseline()
         .border_bottom(palette::LINE)
-        .child(div().flex_1().font_weight(600).font_size(16).text(title));
+        // An aside sits on the right; with none, what follows sits beside the title.
+        .child(if aside.is_some() { title.flex_1() } else { title });
     if let Some((text, colour)) = aside {
         head = head.child(div().font_size(13).color(colour).text(text));
     }

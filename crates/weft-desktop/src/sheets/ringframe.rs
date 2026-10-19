@@ -273,8 +273,10 @@ pub(super) fn render(props: &SheetProps) -> Element {
 
     // What Eval judges must not do: the machine's list, else RingFrame's own.
     let deny = layer["eval"]["deny"].as_array().cloned();
+    let shipped = deny.is_none();
+    let listed = deny.or_else(|| rules["judges"]["deny"].as_array().cloned());
     let mut judges = Vec::new();
-    for (i, rule) in deny.iter().flatten().enumerate() {
+    for (i, rule) in listed.iter().flatten().enumerate() {
         judges.push(
             div()
                 .layer(format!("deny {i}"))
@@ -289,6 +291,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
                         .font_size(13)
                         .text(rule.as_str().unwrap_or_default().to_string()),
                 )
+                .children(shipped.then(|| tag(word("desktop.settings.shipped"), false)))
                 .child(link(
                     "remove",
                     SheetAct::Choose {
@@ -333,9 +336,6 @@ pub(super) fn render(props: &SheetProps) -> Element {
         rows.push(div().self_stretch().pad(8, 14).child(field(props, k.clone(), String::new())));
     }
     body = body.child(row_list(rows)).child(section_label(word("desktop.settings.judges")));
-    if deny.is_none() {
-        body = body.child(note(word("desktop.settings.judges_own"), palette::MUTED));
-    }
     body.child(row_list(judges)).child(preview(props))
 }
 
@@ -517,9 +517,16 @@ fn preview(props: &SheetProps) -> Element {
                 .child(pick(1, &route, ROUTES.map(String::from).to_vec()))
                 .child(pick(2, &task, TASKS.map(String::from).to_vec()))
                 .child(div().flex_1())
+                .children(shown.map(|v| {
+                    let n = |k: &str| v[k].as_u64().unwrap_or(0).to_string();
+                    div().layer("preview kept").font_size(12).color(palette::MUTED).text(fill(
+                        "desktop.settings.preview_kept",
+                        &[("kept", &n("kept")), ("left_out", &n("left_out"))],
+                    ))
+                }))
                 .child(link("show preview", SheetAct::ShowPreview, word("desktop.settings.show"))),
         );
-    if let Some(text) = shown.and_then(|v| v["text"].as_str()) {
+    if let Some(text) = shown.and_then(|v| v["text"].as_str()).filter(|_| props.preview_shown) {
         el = el.child(
             div()
                 .layer("preview text")

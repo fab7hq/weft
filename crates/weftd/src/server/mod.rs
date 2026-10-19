@@ -1255,9 +1255,7 @@ impl Session {
                                 layers.as_deref(),
                                 (host, capability, task),
                             )
-                            .map_or_else(read_refused, |text| {
-                                Answer::Ok(serde_json::json!({ "text": text }))
-                            }),
+                            .map_or_else(read_refused, Answer::Ok),
                             _ => Answer::No(
                                 "bad_request",
                                 "a preview names a host, a route and a task".into(),

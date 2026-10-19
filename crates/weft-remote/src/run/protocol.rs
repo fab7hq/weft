@@ -378,6 +378,12 @@ impl Remote {
         let at = self.project_named(m)?;
         let call = match m["what"].as_str() {
             None => Call::ConfigGet,
+            // What the remote holds itself: no call to make.
+            Some("harnesses") => {
+                let supported = self.projects[at].as_ref().map(|o| o.agents.supported());
+                self.send(conn, json!({"type": "ok", "req": req, "settings": supported}));
+                return Ok(true);
+            }
             Some(what @ ("rules" | "preview" | "profile")) => Call::Read {
                 what: what.to_string(),
                 unit: m["unit"].as_str().unwrap_or_default().to_string(),
@@ -387,7 +393,10 @@ impl Remote {
                 after: None,
             },
             Some(_) => {
-                return Err(("bad_request", "settings reads rules, a preview or a profile".into()));
+                return Err((
+                    "bad_request",
+                    "settings reads rules, a preview, a profile or the harnesses".into(),
+                ));
             }
         };
         self.ask(at, call, conn, req, Carries::Settings)

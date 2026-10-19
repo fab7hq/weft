@@ -136,7 +136,8 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
                         .map(|e| pick(e, &["id", "label", "tier", "status", "enabled", "source"]))
                         .collect::<Vec<_>>(),
                 }))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "judges": d["judges"],
         }),
         ("deltas", Some("render")) => d["text"].clone(),
         ("ask", Some("list")) => {

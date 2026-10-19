@@ -74,6 +74,7 @@ impl WeftDesktopApp {
                     Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::General });
                 self.clients.iter_mut().for_each(|c| c.refused.clear());
                 self.all_rules = false;
+                self.preview_shown = false;
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.
@@ -504,6 +505,7 @@ impl WeftDesktopApp {
                 if let Some(slot) = self.preview.get_mut(i) {
                     *slot = value;
                 }
+                self.want_rules();
             }
             SheetAct::AllRules => self.all_rules = true,
             SheetAct::ShowHarness(name) => {
@@ -511,17 +513,7 @@ impl WeftDesktopApp {
                 self.choice = None;
                 self.want_rules();
             }
-            SheetAct::ShowPreview => {
-                let unit = self.preview_unit();
-                if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
-                    let _ = c.read(
-                        "preview",
-                        &unit,
-                        None,
-                        crate::daemon::Then::Preview { unit: unit.clone() },
-                    );
-                }
-            }
+            SheetAct::ShowPreview => self.preview_shown = !self.preview_shown,
             SheetAct::OpenChoice(key) => {
                 let key = key.join(".");
                 self.choice = if self.choice.as_deref() == Some(&key) { None } else { Some(key) };

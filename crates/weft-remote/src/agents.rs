@@ -60,6 +60,8 @@ pub struct Project {
     /// What the project still needs before RingFrame is set up in it, if it
     /// is not.
     setup: Option<Needs>,
+    /// How each harness stands, as the machine's setup view last said it.
+    standing: Value,
     /// Whether agents started here from now on run in turbo mode.
     turbo: bool,
     /// Reopened after weftd ended uncleanly, at this time,
@@ -99,6 +101,7 @@ impl Project {
             starts: Vec::new(),
             files: serde_json::from_value(answer["harnesses"].clone()).unwrap_or_default(),
             setup: serde_json::from_value(answer["setup"].clone()).unwrap_or_default(),
+            standing: Value::Null,
             turbo: answer["turbo"].as_bool().unwrap_or(false),
             reopened: answer["reopened"].as_i64(),
         };
@@ -138,6 +141,10 @@ impl Project {
             }
             Event::Readiness { states } => self.readiness = states.clone(),
             Event::Workspace { setup, .. } => self.setup = *setup,
+            Event::Setup { view } => {
+                self.standing = view["rows"].clone();
+                return false;
+            }
             Event::Turbo { on } => self.turbo = *on,
             Event::Reopened { since } => self.reopened = *since,
             _ => return false,
@@ -281,6 +288,29 @@ impl Project {
     }
 
     /// This project's rows of the `harnesses` message: what can be started.
+    /// Every harness this Weft supports, for Settings: its title, the version
+    /// it was verified with, and how it stands, as a mark and in words.
+    pub fn supported(&self) -> Value {
+        use weft_core::onboarding::State;
+        let rows = self.standing.as_array().map(Vec::as_slice).unwrap_or_default();
+        self.files
+            .0
+            .iter()
+            .map(|h| {
+                let state: Option<State> = rows
+                    .iter()
+                    .find(|r| r["name"] == h.name.as_str())
+                    .and_then(|r| serde_json::from_value(r["state"].clone()).ok());
+                json!({
+                    "harness": h.name, "title": h.title,
+                    "verified": h.conversation.as_ref().map(|c| c.verified.clone()),
+                    "mark": state.as_ref().map_or("?", State::mark),
+                    "state": state.as_ref().map(State::words).unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
     pub fn harnesses(&self) -> Vec<Value> {
         self.starts
             .iter()

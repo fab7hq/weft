@@ -489,6 +489,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.settings.asking", "Asking RingFrame…"),
     ("desktop.settings.refused", "RingFrame did not answer: {why}"),
     ("desktop.settings.more_rules", "+ {n} more"),
+    ("desktop.settings.preview_kept", "{kept} core rules kept · {left_out} left out by the cap"),
     ("desktop.settings.tab.harnesses", "Harnesses"),
     (
         "desktop.harness.supported",

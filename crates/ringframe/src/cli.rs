@@ -1122,7 +1122,9 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
         }
         "list" => {
             let listed = config_try!(deltas::list(&ns.overrides));
-            (ws, Outcome::Ok(0, json!({"catalogs": listed})))
+            let deny = ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec()));
+            let judges = crate::tasks::judges(deny.as_ref());
+            (ws, Outcome::Ok(0, json!({"catalogs": listed, "judges": judges})))
         }
         _ => {
             let host = json!({"name": ns.one("--host"),
@@ -2572,6 +2574,11 @@ limitations = []
                     && c["entries"].as_array().is_some_and(|e| !e.is_empty())),
                 "the hosts' route rules too"
             );
+            assert_eq!(out["judges"]["from"], "default", "RingFrame's own list, said");
+            assert!(out["judges"]["deny"].as_array().is_some_and(|d| !d.is_empty()));
+            let over = r#"[{"layer":"weft","ringframe":{"eval":{"deny":["Push."]}}}]"#;
+            let (_, out, _) = c.go(&["deltas", "list", "--json", "--override", over]);
+            assert_eq!(out["judges"], json!({"deny": ["Push."], "from": "weft"}));
         });
     }
 

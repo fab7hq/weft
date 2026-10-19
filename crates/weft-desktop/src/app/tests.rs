@@ -2504,6 +2504,10 @@ fn a_refused_settings_read_says_why_and_is_asked_again_on_opening() {
     wire.refuse(id, "config.absent: no configuration");
     pumped(&mut app, |a| a.clients[0].refused.contains_key(&rules));
     assert!(app.render().all_text().contains("RingFrame did not answer: config.absent"));
+    let (id, call) = wire.call();
+    assert!(matches!(call, Call::Read { what, .. } if what == "preview"));
+    wire.refuse(id, "config.absent: no configuration");
+    pumped(&mut app, |a| a.clients[0].refused.len() == 2);
 
     wire.event(Event::Turbo { on: true });
     pumped(&mut app, |a| a.clients[0].turbo);
@@ -2542,11 +2546,21 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
         "domains": [{"domain": "software-development", "base": true}, {"domain": "autonomous-trading", "base": false, "description": "Trading"}],
         "catalogs": [{"catalog": base, "render": {"core_cap": 5}, "entries": [
             {"id": "practice.kiss", "label": "KISS", "text": "Keep it simple.", "tier": "core", "enabled": false, "source": "weft", "applies_to": ["implement"]},
-            {"id": "practice.yagni", "label": "YAGNI", "text": "Only what is needed.", "tier": "core", "source": "shipped"}]}]}));
-    pumped(&mut app, |a| {
-        a.clients[0].read.contains_key(&crate::daemon::Then::Rules { project: false })
-    });
+            {"id": "practice.yagni", "label": "YAGNI", "text": "Only what is needed.", "tier": "core", "source": "shipped"}]}],
+        "judges": {"deny": ["Push to any remote."], "from": "default"}}));
+    let (id, call) = wire.call();
+    assert!(matches!(call, Call::Read { ref what, ref unit, .. }
+        if what == "preview" && unit == "antigravity|native_plan|implement"));
+    wire.answer(id, json!({"text": "Rules:\n- KISS: Keep it simple.\n", "kept": 5, "left_out": 2}));
+    pumped(&mut app, |a| a.clients[0].read.len() == 2);
     let dom = app.render();
+    assert_eq!(
+        dom.find_layer("preview kept").unwrap().all_text(),
+        "5 core rules kept · 2 left out by the cap"
+    );
+    assert!(dom.find_layer("preview text").is_none(), "the text waits for Show");
+    let own = dom.find_layer("deny 0").expect("RingFrame's own list, listed");
+    assert!(own.all_text().contains(words::word("desktop.settings.shipped")));
     let kiss = dom.find_layer("rule practice.kiss").expect("KISS");
     assert!(
         kiss.all_text().contains(words::word("desktop.settings.changed")),
@@ -2606,23 +2620,16 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
         project: None,
         key: k(&["ringframe", "eval", "deny", "+"]),
     });
-    app.setting_field.paste("Push to any remote.");
+    app.setting_field.paste("Delete files.");
     app.dispatch(SheetAct::CommitSetting);
-    set(&mut wire, k(&["ringframe", "eval", "deny"]), Some(json!(["Push to any remote."])));
+    set(
+        &mut wire,
+        k(&["ringframe", "eval", "deny"]),
+        Some(json!(["Push to any remote.", "Delete files."])),
+    );
 
     app.dispatch(SheetAct::ShowPreview);
-    let (_, call) = wire.call();
-    assert_eq!(
-        call,
-        Call::Read {
-            what: "preview".into(),
-            unit: "antigravity|native_plan|implement".into(),
-            pane: None,
-            lines: None,
-            before: None,
-            after: None
-        }
-    );
+    assert!(app.render().find_layer("preview text").unwrap().all_text().contains("KISS"));
 }
 
 /// Harnesses: inspect and tune, never add. A harness shows how RingFrame

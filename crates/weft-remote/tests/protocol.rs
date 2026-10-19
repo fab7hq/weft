@@ -308,7 +308,11 @@ fn a_device_watches_two_agents_side_by_side() {
 /// ADR-0003 D6): every device is told what changed, Turbo included.
 #[test]
 fn a_device_reads_and_changes_the_machine_s_settings() {
-    let mut h = Harness::start("settings");
+    let mut h = Harness::with("settings", |dir| {
+        std::fs::create_dir_all(dir.join("harnesses")).unwrap();
+        let grok = weft_core::harness::fixture::text("grok");
+        std::fs::write(dir.join("harnesses/grok.toml"), grok).unwrap();
+    });
     let _shell = h.shell("work");
     let (mut d, _) = h.allowed("d_1");
     d.agents(1);
@@ -349,6 +353,19 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
                     .contains(&answer["code"].as_str().unwrap_or_default()),
             "{what}: {answer}"
         );
+    }
+    // Every harness this Weft supports, each with how it stands as the
+    // machine last said it: answered by the remote from what it holds.
+    d.send(json!({"type": "settings", "project": "work", "what": "harnesses", "req": 30}));
+    let listed = d.answer(30);
+    let grok = &listed["settings"][0];
+    assert_eq!(
+        (&grok["harness"], &grok["title"]),
+        (&json!("grok"), &json!("Grok Build")),
+        "{listed}"
+    );
+    for field in ["verified", "mark", "state"] {
+        assert!(grok[field].is_string(), "{field}: {grok}");
     }
     // Which program runs, for a harness or the tunnel, is set on the machine
     // only: a device naming one is refused before the daemon hears it.

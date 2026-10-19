@@ -162,10 +162,16 @@ pub fn render_tree(props: &TreeProps) -> Element {
     for Listed { root, project: proj, routes, .. } in props.projects {
         let proj_selected =
             props.selection == Some(&TreeSelection::Project { project: root.clone() });
-        tree_el = tree_el.child(render_project_row(root, proj, proj_selected));
+        let mut head = render_project_row(root, proj, proj_selected);
         if props.project_menu == Some(root.as_path()) {
-            tree_el = tree_el.child(render_project_menu(root, &proj.name));
+            // Over the rows below, under the row's ⋯.
+            head = div()
+                .self_stretch()
+                .style("position", "relative")
+                .child(head)
+                .child(render_project_menu(root, &proj.name));
         }
+        tree_el = tree_el.child(head);
         // Selected, a project says where it sends its acts, in plain words.
         if proj_selected && !routes.is_empty() {
             let said: Vec<String> = routes
@@ -509,10 +515,15 @@ fn render_project_menu(root: &Path, name: &str) -> Element {
     };
     div()
         .layer("project menu")
-        .self_stretch()
+        .style("position", "absolute")
+        .style("top", "30px")
+        .style("right", "-34px")
+        .style("z-index", "1")
+        .w(200)
         .flex_col()
         .bg(palette::SURFACE_ALT)
-        .border_bottom(palette::LINE)
+        .border(palette::LINE)
+        .panel_corners()
         .child(item(
             "project menu Settings",
             TreeAct::OpenProjectSettings(root.to_path_buf()),

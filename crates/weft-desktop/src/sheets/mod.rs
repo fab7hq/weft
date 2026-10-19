@@ -54,6 +54,8 @@ pub struct SheetProps<'a> {
     pub harness: &'a str,
     /// Settings › RingFrame shows every rule, not the first few.
     pub all_rules: bool,
+    /// The preview's text shown, not only what it keeps.
+    pub preview_shown: bool,
 }
 
 impl SheetProps<'_> {

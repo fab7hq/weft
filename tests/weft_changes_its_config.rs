@@ -246,8 +246,8 @@ fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
 fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
     let world = weft::outside::Fixed::new()
         .answers("ringframe", &["deltas", "domains"], 0, r#"{"domains":[{"domain":"autonomous-trading","base":false}]}"#)
-        .answers("ringframe", &["deltas", "list"], 0, r#"{"catalogs":[{"catalog":"practices/software-development","entries":[{"id":"practice.kiss","source":"weft"}]}]}"#)
-        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, "Rules:\n- KISS: keep it plain\n")
+        .answers("ringframe", &["deltas", "list"], 0, r#"{"catalogs":[{"catalog":"practices/software-development","entries":[{"id":"practice.kiss","source":"weft"}]}],"judges":{"deny":["Push."],"from":"default"}}"#)
+        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, r#"{"text":"Rules:\n- KISS: keep it plain\n","practice":{"entries":[{"id":"practice.kiss","tier":"core"},{"id":"practice.gall","tier":"situational"}],"dropped_by_budget":["practice.dry","practice.solid"]}}"#)
         .answers("ringframe", &["profile", "show", "--host", "codex"], 0, r#"{"host":"codex","paste_fold_chars":1001}"#);
     let w = World::in_world(
         "rules",
@@ -268,8 +268,10 @@ fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
     let rules = read(&mut one, "rules", "machine").unwrap();
     assert_eq!(rules["domains"][0]["domain"], "autonomous-trading");
     assert_eq!(rules["catalogs"][0]["entries"][0]["source"], "weft");
+    assert_eq!(rules["judges"]["deny"][0], "Push.", "what judges must not do, RingFrame's own");
     let preview = read(&mut one, "preview", "claude-code|native_plan|implement").unwrap();
     assert_eq!(preview["text"], "Rules:\n- KISS: keep it plain\n");
+    assert_eq!((preview["kept"].as_u64(), preview["left_out"].as_u64()), (Some(1), Some(2)));
     assert!(
         read(&mut one, "preview", "claude-code").is_err(),
         "a preview names a host, a route and a task"
