@@ -342,6 +342,10 @@ pub const WORDS: &[(&str, &str)] = &[
         "These are {machine}'s own settings: every device that reaches {machine} sees and changes the same ones, at once.",
     ),
     ("web.machine.no_project", "Open a project on {machine} to see its settings."),
+    (
+        "web.project.foot",
+        "Everything not listed is every project's, from {machine}'s Settings. Reset brings a setting back to every project's.",
+    ),
     // The agent's pane (M3.6, M3.7): whose history, and the message box's own name.
     ("web.agent.message_box", "Message"),
     // The desktop's toggle for the list of agents and works.

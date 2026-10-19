@@ -317,6 +317,7 @@
   "web.machines.title": "Your machines",
   "web.machines.tunnel": "reached through its tunnel",
   "web.menu.settings": "Settings…",
+  "web.project.foot": "Everything not listed is every project's, from {machine}'s Settings. Reset brings a setting back to every project's.",
   "web.push.connect_first": "Connect to the machine first.",
   "web.push.denied": "Notifications are turned off for Weft in this browser.",
   "web.push.failed": "The browser could not subscribe to pushes.",
