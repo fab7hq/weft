@@ -48,6 +48,12 @@ fn run_program(
     })
 }
 
+/// Whether RingFrame reads these `--override` layers: every catalog listed
+/// through them, which refuses what any command reading them would.
+pub fn reads_overrides(out: &dyn Outside, project: &Path, layers: &str) -> Result<(), Error> {
+    run(out, project, &["deltas", "list", "--override", layers, "--json"]).map(|_| ())
+}
+
 fn json(out: &dyn Outside, project: &Path, args: &[&str]) -> Result<Value, Error> {
     let bytes = run(out, project, args)?;
     serde_json::from_slice(&bytes).map_err(|e| Error::Refused {

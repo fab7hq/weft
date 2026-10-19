@@ -379,6 +379,15 @@ enum Wake {
         call_id: u64,
         answer: Answer,
     },
+    /// RingFrame reads a `config.set`'s settings: make the change.
+    ConfigChecked {
+        client: u64,
+        call_id: u64,
+        project: usize,
+        scope: String,
+        key: Vec<String>,
+        value: Option<serde_json::Value>,
+    },
     /// RingFrame was asked about a project a client is opening: it is
     /// answered now.
     Opened {
@@ -886,6 +895,10 @@ impl Session {
                 Wake::Workspace { project, setup, gap } => self.set_up(project, setup, gap),
                 Wake::Answer { client, call_id, answer } => {
                     self.clients.send_to(client, &answer.line(call_id))
+                }
+                Wake::ConfigChecked { client, call_id, project, scope, key, value } => {
+                    let answer = self.change_config(project, &scope, &key, value.as_ref());
+                    self.clients.send_to(client, &answer.line(call_id));
                 }
                 Wake::Opened { client, call_id, project, raw, setup, gap } => {
                     self.set_up(project, setup, gap);
@@ -2179,7 +2192,7 @@ impl Session {
             }
             Call::ConfigSet { scope, key, value } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                return Ok(self.change_config(at, &scope, &key, value.as_ref()));
+                return Ok(self.set_config(client, call_id, at, scope, key, value));
             }
             Call::RemoteView { view } => {
                 if !self.clients.named(client, "weft-remote") {

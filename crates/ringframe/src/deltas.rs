@@ -85,11 +85,20 @@ fn catalog(relative: &str, over: &Overrides) -> Result<Value, ConfigError> {
 
 /// Every catalog, the hosts' then the practices', its entries as the layers
 /// leave them: each with `source`, the layer that last set it (`shipped`, or
-/// an override layer's name), and the catalog's `render`.
+/// an override layer's name), and the catalog's `render`. A catalog the layers
+/// leave unreadable is refused, as any command reading it would.
 pub fn list(over: &Overrides) -> Result<Vec<Value>, ConfigError> {
-    let practices = domain_names(over)?.into_iter().map(|d| format!("practices/{d}"));
+    let mut catalogs = Vec::new();
+    for host in host_catalog_names()? {
+        load_host_catalog(&host, over)?;
+        catalogs.push(host);
+    }
+    for domain in domain_names(over)? {
+        load_practice_catalog(&domain, over)?;
+        catalogs.push(format!("practices/{domain}"));
+    }
     let mut out = Vec::new();
-    for relative in host_catalog_names()?.into_iter().chain(practices) {
+    for relative in catalogs {
         let mut merged = Value::Object(Map::new());
         let mut source = std::collections::HashMap::new();
         for layer in layers(over, &relative)? {

@@ -2576,6 +2576,16 @@ limitations = []
     }
 
     #[test]
+    fn a_rule_the_catalogs_cannot_hold_is_refused_by_the_listing() {
+        cli(|c| {
+            let over = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"entries":[{"id":"mine.plain","enabled":true}]}}}}]"#;
+            let (code, out, _) = c.go(&["deltas", "list", "--json", "--override", over]);
+            assert_ne!(code, 0, "{out}");
+            assert!(out.to_string().contains("mine.plain"), "{out}");
+        });
+    }
+
+    #[test]
     fn a_delta_listing_exposes_the_merged_concern_vocabulary() {
         cli(|c| {
             let over = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"concerns":["team_boundary"]}}}}]"#;

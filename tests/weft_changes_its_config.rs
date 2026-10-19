@@ -86,6 +86,10 @@ struct World {
 
 impl World {
     fn new(name: &str, text: &str) -> Self {
+        Self::in_world(name, text, weft::outside::Fixed::new())
+    }
+
+    fn in_world(name: &str, text: &str, world: weft::outside::Fixed) -> Self {
         let root = std::env::temp_dir().join(format!("weft-config-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         for p in ["one", "two"] {
@@ -95,7 +99,7 @@ impl World {
         std::fs::write(&config, text).unwrap();
         let socket = protocol::private_socket("weft-config");
         let harnesses = weft_core::harness::fixture::harnesses();
-        let world = weft::outside::Fixed::new().shared();
+        let world = world.shared();
         let (listening, read) = (socket.clone(), config.clone());
         std::thread::spawn(move || {
             let _ = weft::server::Session::serve_in(&listening, &read, Some(harnesses), world);
@@ -193,5 +197,40 @@ fn what_weft_would_not_read_is_refused_and_nothing_is_written() {
     assert!(one.set("everywhere", &["turbo"], Some(json!(true))).is_err());
     assert!(one.set("machine", &[], Some(json!(true))).is_err());
     assert_eq!(w.text(), start, "nothing written");
+    one.answer(Call::Shutdown).ok();
+}
+
+/// A RingFrame setting is RingFrame's to read: a change it would refuse is
+/// refused with its words, and one it reads is written and reaches the
+/// `--override` every `/rf:` command carries.
+#[test]
+fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
+    let refusing = weft::outside::Fixed::new().answers(
+        "ringframe",
+        &["deltas", "list", "--override"],
+        2,
+        r#"{"error":"config","message":"practice entry mine.plain incomplete"}"#,
+    );
+    let w = World::in_world("rf-no", "", refusing);
+    let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
+    let rule = json!([{"id": "mine.plain", "enabled": true}]);
+    let key = ["ringframe", "deltas", "practices/software-development", "entries"];
+    let why = one.set("project", &key, Some(rule.clone())).unwrap_err();
+    assert!(why.contains("mine.plain incomplete"), "{why}");
+    assert_eq!(w.text(), "", "nothing written");
+    one.answer(Call::Shutdown).ok();
+
+    let reading = weft::outside::Fixed::new().answers(
+        "ringframe",
+        &["deltas", "list", "--override"],
+        0,
+        "{}",
+    );
+    let w = World::in_world("rf-yes", "", reading);
+    let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
+    let got = one.set("project", &key, Some(rule.clone())).unwrap();
+    let layers = &got["effective"]["ringframe"];
+    assert_eq!(layers[0]["layer"], "weft-project");
+    assert_eq!(layers[0]["ringframe"]["deltas"]["practices/software-development"]["entries"], rule);
     one.answer(Call::Shutdown).ok();
 }
