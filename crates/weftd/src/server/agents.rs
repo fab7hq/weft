@@ -127,8 +127,11 @@ impl Session {
                 })
                 .map(|s| s.map.pane)
                 .collect();
+            // Receipts are written only on a signal, which reads them at
+            // once: the turns are current, and telling the agents reads them
+            // again, once a tick.
             for pane in &quiet {
-                self.sense_pane_now(at, *pane);
+                self.sense_pane(at, *pane);
             }
             if !quiet.is_empty() {
                 self.tell_agents(at);
@@ -136,12 +139,17 @@ impl Session {
         }
     }
 
-    /// Evaluate `weft-sense` Head 1 on `pane` now (once its output settled,
-    /// or when a hook signal arrives).
+    /// Evaluate `weft-sense` Head 1 on `pane` now, when a hook signal
+    /// arrives: its receipt read first.
     pub(super) fn sense_pane_now(&mut self, at: usize, pane: u32) {
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
+        self.projects[at].turns.refresh(&dir);
+        self.sense_pane(at, pane);
+    }
+
+    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read.
+    fn sense_pane(&mut self, at: usize, pane: u32) {
         let p = &mut self.projects[at];
-        p.turns.refresh(&dir);
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
         let raw_states = crate::turns::pane_states(&map, &sessions);
@@ -315,7 +323,6 @@ impl Session {
                     turbo,
                     token,
                     transcript: None,
-                    reply: Default::default(),
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
@@ -612,7 +619,7 @@ impl Session {
             .and_then(|s| s.transcript.clone());
         let (home, harness, session, root) =
             (h.config_home(), sent.harness.clone(), sent.session.clone(), p.root.clone());
-        let (tx, sense, pane) = (self.tx.clone(), std::sync::Arc::clone(&self.sense), sent.pane);
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
             let at = (crate::turns::now_millis() / 1000).max(0) as u64;
             let items = crate::suggest::items_of(&mapping, &home, &session, named.as_deref());
@@ -620,15 +627,6 @@ impl Session {
             let project = root.to_string_lossy().into_owned();
             let entries =
                 weft_core::suggest::from_conversation(&items, &harness, &project, &session, at);
-            // The next prompt follows this reply, by its words and its embedding.
-            let reply = weft_core::suggest::last_reply(&items);
-            let near = match sense.read().ok().as_deref().and_then(Option::as_ref) {
-                Some(model) if !reply.is_empty() => model.embed(&reply),
-                _ => Vec::new(),
-            };
-            if let Some(pane) = pane {
-                let _ = tx.send(super::Wake::Replied { root: root.clone(), pane, reply, near });
-            }
             let source = Some(format!("session:{session}"));
             let _ = tx.send(super::Wake::Suggested { root, source, entries, built: false });
         });

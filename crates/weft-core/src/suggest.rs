@@ -452,20 +452,6 @@ fn kept_end(reply: &str) -> String {
     tail.find(char::is_whitespace).map_or(tail, |n| tail[n..].trim_start()).to_string()
 }
 
-/// The agent's whole reply after the person's last message: what the next
-/// prompt follows. Empty while nothing has been said since.
-pub fn last_reply(items: &[crate::conversation::Item]) -> String {
-    use crate::conversation::Kind;
-    let from = items.iter().rposition(|i| i.kind == Kind::Person).map_or(0, |n| n + 1);
-    let reply = items[from..]
-        .iter()
-        .filter(|i| i.kind == Kind::Agent)
-        .filter_map(|i| i.text.as_deref().map(str::trim).filter(|t| !t.is_empty()))
-        .collect::<Vec<_>>()
-        .join("\n");
-    kept_end(&reply)
-}
-
 /// How a replay of the person's own messages scored, at one confidence floor.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Score {
@@ -815,15 +801,12 @@ mod tests {
         let untimed =
             from_conversation(&[item(Kind::Person, "hi", None)], "claude", "/work/weft", "8b2e", 7);
         assert_eq!(untimed[0].at, 7);
-        assert_eq!(last_reply(&items[..4]), "Reading it.\nDone. Both tests pass.");
-        assert_eq!(last_reply(&items), "", "nothing said since the last message");
         // A long reply is kept by its end, the part the next message answers.
         let long = format!("{} Shall I commit?", "word ".repeat(400));
         let said = [item(Kind::Agent, &long, None), item(Kind::Person, "yes", None)];
         let got = from_conversation(&said, "claude", "/w", "s", 7);
         assert!(got[0].reply.chars().count() <= REPLY_KEPT, "{}", got[0].reply.len());
         assert!(got[0].reply.ends_with("Shall I commit?") && got[0].reply.starts_with("word"));
-        assert_eq!(last_reply(&said[..1]), got[0].reply, "the same end the entries keep");
     }
 
     #[test]

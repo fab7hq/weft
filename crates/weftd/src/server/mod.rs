@@ -93,9 +93,6 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
-    /// The agent's last reply and Sense's embedding of it, read when its turn
-    /// ended: what the next prompt follows.
-    reply: (String, Vec<f32>),
     /// When the pane last printed output, and the PTY sequence and reading
     /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
     last_output_at: std::time::Instant,
@@ -159,8 +156,6 @@ struct Project {
     /// What the person sent here, for suggestions: loaded or built in the
     /// background when the project opens, nothing until then.
     suggest: Option<Vec<weft_core::suggest::Entry>>,
-    /// Its replies are being embedded: one pass at a time.
-    embedding: bool,
     /// `suggest = true`: the message field gets suggestions here.
     suggest_on: bool,
     /// The index its suggestions come from, and the change it was built at.
@@ -347,18 +342,6 @@ enum Wake {
     },
     /// The habits every project's suggestions share, read at start.
     Habits(Vec<weft_core::suggest::Entry>),
-    /// An agent's turn ended: its last reply, and Sense's embedding of it.
-    Replied {
-        root: PathBuf,
-        pane: u32,
-        reply: String,
-        near: Vec<f32>,
-    },
-    /// Sense embedded a project's replies.
-    Embedded {
-        root: PathBuf,
-        vectors: Vec<(crate::suggest::Key, Vec<f32>)>,
-    },
     /// Time to send screen frames: ten times a second.
     Frames,
     /// A harness answered what it has installed. Asked off the run loop,
@@ -868,20 +851,9 @@ impl Session {
                 Wake::Suggested { root, source, entries, built } => {
                     self.suggested(&root, source, entries, built)
                 }
-                Wake::Embedded { root, vectors } => self.embedded(&root, vectors),
                 Wake::Habits(entries) => {
                     self.habits = entries;
                     self.suggest_changes += 1;
-                }
-                Wake::Replied { root, pane, reply, near } => {
-                    if let Some(slot) = self
-                        .projects
-                        .iter_mut()
-                        .find(|p| p.root == root && !p.closed)
-                        .and_then(|p| p.panes.iter_mut().find(|s| s.map.pane == pane))
-                    {
-                        slot.reply = (reply, near);
-                    }
                 }
                 Wake::Checked => {
                     let open: Vec<usize> =
@@ -1593,7 +1565,6 @@ impl Session {
                 }
             }
         }
-        self.embed_suggestions(root);
     }
 
     /// `pane.suggest`: what the pane's message field could show, or nothing:
@@ -1607,7 +1578,7 @@ impl Session {
         if !p.suggest_on {
             return Answer::Ok(serde_json::json!({}));
         }
-        let (harness, reply) = (slot.map.harness.clone(), slot.reply.clone());
+        let harness = slot.map.harness.clone();
         // Built again only after a project's entries or the habits changed.
         let changes = self.suggest_changes;
         if p.index.as_ref().is_none_or(|(at_change, _)| *at_change != changes) {
@@ -1627,50 +1598,9 @@ impl Session {
             return Answer::Ok(serde_json::json!({}));
         };
         let now = (crate::turns::now_millis() / 1000).max(0) as u64;
-        match crate::suggest::ask(index, &harness, draft, (&reply.0, &reply.1), now) {
+        match crate::suggest::ask(index, &harness, draft, now) {
             Some(s) => Answer::Ok(serde_json::json!({"text": s.text, "score": s.score})),
             None => Answer::Ok(serde_json::json!({})),
-        }
-    }
-
-    /// Embed the replies not embedded yet, off the run loop, when Sense is loaded.
-    fn embed_suggestions(&mut self, root: &Path) {
-        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
-            return;
-        };
-        let todo = p.suggest.as_deref().map(crate::suggest::unembedded).unwrap_or_default();
-        if p.embedding || todo.is_empty() {
-            return;
-        }
-        p.embedding = true;
-        let (sense, tx, root) = (Arc::clone(&self.sense), self.tx.clone(), root.to_path_buf());
-        std::thread::spawn(move || {
-            let vectors = match sense.read().ok().as_deref().and_then(Option::as_ref) {
-                Some(model) => {
-                    todo.into_iter().map(|(k, reply)| (k, model.embed(&reply))).collect()
-                }
-                None => Vec::new(),
-            };
-            let _ = tx.send(Wake::Embedded { root, vectors });
-        });
-    }
-
-    /// Take Sense's embeddings of a project's replies, and keep them.
-    fn embedded(&mut self, root: &Path, vectors: Vec<(crate::suggest::Key, Vec<f32>)>) {
-        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
-            return;
-        };
-        p.embedding = false;
-        let got = !vectors.is_empty();
-        if let Some(all) = p.suggest.as_mut()
-            && crate::suggest::embedded(all, vectors)
-        {
-            let _ = crate::suggest::save(&self.config, root, all);
-            self.suggest_changes += 1;
-        }
-        // What changed meanwhile is embedded next; with no Sense, nothing is.
-        if got {
-            self.embed_suggestions(root);
         }
     }
 
@@ -1937,7 +1867,6 @@ impl Session {
                     next_pane: 0,
                     ledger,
                     suggest: None,
-                    embedding: false,
                     suggest_on: config.suggest(),
                     index: None,
                     waiting: Vec::new(),
