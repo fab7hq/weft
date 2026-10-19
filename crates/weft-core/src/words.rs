@@ -457,6 +457,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.remote.open_at", "Open weft.getfab7.com, signed in as {login}."),
     ("desktop.remote.tunnel_up", "Tunnel up · {address}"),
     ("desktop.remote.tunnel_starting", "Tunnel starting"),
+    ("desktop.remote.tunnel_said", "{tunnel} SAID"),
+    ("desktop.remote.change_tunnel", "Change tunnel"),
     (
         "desktop.remote.login_off",
         "Start at login is off: Remote stops when this machine restarts, until you open Weft.",

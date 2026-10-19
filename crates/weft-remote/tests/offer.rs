@@ -206,6 +206,7 @@ fn a_tunnel_that_has_not_started_says_why() {
     let why = h.app.wait_view(|v| v["tunnel_why"].is_string());
     assert_eq!(why["tunnel"], "starting");
     assert_eq!(why["tunnel_why"], "Funnel is not enabled on your tailnet.");
+    assert_eq!(why["tunnel_title"], "Cloudflare Tunnel", "whose words they are");
     assert!(why["can_change_tunnel"].is_null(), "one adapter: {why}");
 }
 

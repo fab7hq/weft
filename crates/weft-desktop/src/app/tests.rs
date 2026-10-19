@@ -1760,6 +1760,60 @@ fn remote_sheet(app: &mut WeftDesktopApp, view: Option<Value>) -> Element {
     app.render().find_layer("sheet Remote").expect("the Remote sheet").clone()
 }
 
+/// Until a tunnel gives its address, the sheet says what its program said,
+/// under its name; with two tunnels, Change tunnel goes back to the list with
+/// the current one picked, and the person switches one way and back.
+#[test]
+fn remote_says_why_its_tunnel_has_not_started_and_changes_tunnel() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let said = |e: &Element| e.all_text();
+    let on = |tunnel: &str, why: Option<&str>| {
+        let mut v = json!({"state": "on", "login": "octo", "tunnel": "starting",
+                           "tunnel_title": tunnel, "can_change_tunnel": true, "devices": []});
+        if let Some(why) = why {
+            v["tunnel_why"] = json!(why);
+        }
+        v
+    };
+    let why = remote_sheet(
+        &mut app,
+        Some(on("Tailscale Funnel", Some("Funnel is not enabled on your tailnet."))),
+    );
+    assert!(said(&why).contains(words::word("desktop.remote.tunnel_starting")));
+    assert!(said(&why).contains("TAILSCALE FUNNEL SAID"), "{}", said(&why));
+    assert!(said(&why).contains("Funnel is not enabled on your tailnet."));
+    let up = remote_sheet(&mut app, Some(on("Tailscale Funnel", None)));
+    assert!(!said(&up).contains("SAID"), "nothing said, nothing shown");
+
+    let tunnels = json!([{"id": "cloudflared", "title": "Cloudflare Tunnel"},
+                         {"id": "tailscale", "title": "Tailscale Funnel"}]);
+    for (from, to) in [("cloudflared", "tailscale"), ("tailscale", "cloudflared")] {
+        assert!(up.find_layer("btn Change tunnel").is_some());
+        app.dispatch(SheetAct::RemoteChangeTunnel);
+        assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "change_tunnel"}) });
+        remote_sheet(
+            &mut app,
+            Some(json!({"state": "choose", "tunnels": tunnels, "chosen": from})),
+        );
+        app.dispatch(SheetAct::RemoteUse);
+        assert_eq!(
+            wire.call().1,
+            Call::Remote { act: json!({"act": "choose", "tunnel": from}) },
+            "the current one is picked"
+        );
+        app.dispatch(SheetAct::RemotePick(to.into()));
+        app.dispatch(SheetAct::RemoteUse);
+        assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "choose", "tunnel": to}) });
+    }
+
+    let one = remote_sheet(
+        &mut app,
+        Some(json!({"state": "on", "login": "octo",
+        "tunnel": "up", "address": "https://a.trycloudflare.com", "devices": []})),
+    );
+    assert!(one.find_layer("btn Change tunnel").is_none(), "one tunnel: nothing to change to");
+}
+
 #[test]
 fn remote_says_every_state_weft_remote_can_be_in_and_acts_on_it() {
     let (_tmp, mut app, mut wire) = wired_app();

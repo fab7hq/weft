@@ -577,17 +577,22 @@ impl WeftDesktopApp {
             }
             SheetAct::RemotePick(tunnel) => self.remote_pick = Some(tunnel),
             SheetAct::RemoteUse => {
-                let first = self
+                // The one chosen until now, else the first: as the list draws it.
+                let shown = self
                     .remote_view()
-                    .and_then(|v| v["tunnels"][0]["id"].as_str())
+                    .and_then(|v| v["chosen"].as_str().or(v["tunnels"][0]["id"].as_str()))
                     .map(str::to_string);
-                if let Some(tunnel) = self.remote_pick.take().or(first) {
+                if let Some(tunnel) = self.remote_pick.take().or(shown) {
                     self.remote_act(serde_json::json!({"act": "choose", "tunnel": tunnel}));
                 }
             }
             SheetAct::RemoteInstall => self.remote_act(serde_json::json!({"act": "install"})),
             SheetAct::RemoteSignIn => self.remote_act(serde_json::json!({"act": "sign_in"})),
             SheetAct::RemoteCancel => self.remote_act(serde_json::json!({"act": "cancel"})),
+            SheetAct::RemoteChangeTunnel => {
+                self.remote_pick = None;
+                self.remote_act(serde_json::json!({"act": "change_tunnel"}))
+            }
             SheetAct::AskRemoveDevice { device, name } => {
                 self.bottom_bar =
                     BottomBarState::RemoveDeviceConfirm { device_id: device, device_name: name };

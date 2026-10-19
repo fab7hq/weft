@@ -56,6 +56,28 @@ fn device_row(d: &Value) -> Option<Element> {
     )
 }
 
+/// What the tunnel's program last said before it gave an address, under
+/// its name, word for word.
+fn tunnel_why(title: &str, said: &str) -> Element {
+    div()
+        .layer("tunnel_why")
+        .self_stretch()
+        .flex_col()
+        .gap(6)
+        .pad(10, 14)
+        .bg(palette::AMBER_BG)
+        .border(palette::AMBER_BORDER)
+        .child(
+            div()
+                .font_mono()
+                .font_size(11)
+                .font_weight(600)
+                .color(palette::AMBER)
+                .text(fill("desktop.remote.tunnel_said", &[("tunnel", &title.to_uppercase())])),
+        )
+        .child(div().font_mono().font_size(12).color(palette::AMBER).text(said))
+}
+
 pub(super) fn render(props: &SheetProps) -> Element {
     let view = props.clients.iter().find_map(|c| c.remote.as_ref());
     // No view from a daemon that answered: Remote is not running. From none
@@ -73,6 +95,16 @@ pub(super) fn render(props: &SheetProps) -> Element {
             Size::Sheet,
         )
     };
+    // Beside Turn off, while weft remote says there is another tunnel to use.
+    let change = view.is_some_and(|v| v["can_change_tunnel"] == true).then(|| {
+        button(
+            "btn Change tunnel",
+            word("desktop.remote.change_tunnel"),
+            SheetAct::RemoteChangeTunnel,
+            Tone::Plain,
+            Size::Sheet,
+        )
+    });
     let mut body = sheet_body();
     let (aside, (left, right)) = match state {
         "off" => {
@@ -89,7 +121,8 @@ pub(super) fn render(props: &SheetProps) -> Element {
         "choose" => {
             let tunnels = view.and_then(|v| v["tunnels"].as_array()).cloned().unwrap_or_default();
             let first = tunnels.first().and_then(|t| t["id"].as_str());
-            let picked = props.remote_pick.or(first);
+            let chosen = view.and_then(|v| v["chosen"].as_str());
+            let picked = props.remote_pick.or(chosen).or(first);
             let rows = tunnels.iter().filter_map(|t| {
                 let (id, title) = (t["id"].as_str()?, t["title"].as_str()?);
                 let on = picked == Some(id);
@@ -181,7 +214,10 @@ pub(super) fn render(props: &SheetProps) -> Element {
                 None => body = body.child(note(s("why"), palette::AMBER)),
             }
             let needed = fill("desktop.remote.needed", &[("program", program)]);
-            ((needed, palette::AMBER), (left, vec![turn_off()]))
+            (
+                (needed, palette::AMBER),
+                (left, [Some(turn_off()), change].into_iter().flatten().collect()),
+            )
         }
         "installing" => {
             body = body.child(note(s("line"), palette::MUTED));
@@ -230,7 +266,10 @@ pub(super) fn render(props: &SheetProps) -> Element {
             );
             (
                 (word("desktop.remote.signed_out").to_string(), palette::MUTED),
-                (vec![sign_in], vec![turn_off(), close]),
+                (
+                    vec![sign_in],
+                    [Some(turn_off()), change, Some(close)].into_iter().flatten().collect(),
+                ),
             )
         }
         "on" => {
@@ -238,12 +277,16 @@ pub(super) fn render(props: &SheetProps) -> Element {
                 fill("desktop.remote.open_at", &[("login", &s("login"))]),
                 palette::TEXT,
             ));
-            let tunnel = if s("tunnel") == "up" {
+            let up = s("tunnel") == "up";
+            let tunnel = if up {
                 fill("desktop.remote.tunnel_up", &[("address", &s("address"))])
             } else {
                 word("desktop.remote.tunnel_starting").to_string()
             };
             body = body.child(div().font_mono().font_size(12).color(palette::MUTED).text(tunnel));
+            if !s("tunnel_why").is_empty() {
+                body = body.child(tunnel_why(&s("tunnel_title"), &s("tunnel_why")));
+            }
             if !s("note").is_empty() {
                 body = body.child(note(s("note"), palette::MUTED));
             }
@@ -283,10 +326,12 @@ pub(super) fn render(props: &SheetProps) -> Element {
             } else {
                 body.child(row_list(devices))
             };
-            (
-                (word("desktop.remote.on").to_string(), palette::TEAL),
-                (vec![turn_off()], vec![close]),
-            )
+            let aside = if up {
+                (word("desktop.remote.on").to_string(), palette::TEAL)
+            } else {
+                (word("desktop.remote.starting").to_string(), palette::AMBER)
+            };
+            (aside, ([Some(turn_off()), change].into_iter().flatten().collect(), vec![close]))
         }
         "" => {
             ((word("web.link.connecting").to_string(), palette::MUTED), (Vec::new(), vec![close]))
@@ -299,6 +344,9 @@ pub(super) fn render(props: &SheetProps) -> Element {
     };
     if !s("failed").is_empty() {
         body = body.child(note(s("failed"), palette::AMBER));
+    }
+    if state != "on" && !s("tunnel_why").is_empty() {
+        body = body.child(tunnel_why(&s("tunnel_title"), &s("tunnel_why")));
     }
     sheet(
         "sheet Remote",

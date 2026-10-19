@@ -32,6 +32,8 @@ pub struct View {
     /// The tunnel has no address yet: the last line its program said, or
     /// why it ended.
     pub tunnel_why: Option<String>,
+    /// The chosen tunnel's name, whose words `tunnel_why` are.
+    pub tunnel_title: Option<String>,
     /// More than one tunnel adapter is installed: the tunnel may be changed.
     pub can_change_tunnel: bool,
     /// Choosing again: the adapter chosen until now.
@@ -54,6 +56,7 @@ impl Default for View {
             offer: Err(String::new()),
             installing: None,
             tunnel_why: None,
+            tunnel_title: None,
             can_change_tunnel: false,
             chosen: None,
         }
@@ -94,6 +97,9 @@ impl View {
         }
         if let (Some(why), false) = (&self.tunnel_why, self.up) {
             v["tunnel_why"] = json!(why);
+            if let Some(title) = &self.tunnel_title {
+                v["tunnel_title"] = json!(title);
+            }
         }
         if self.can_change_tunnel && matches!(state, "on" | "not_installed" | "signed_out") {
             v["can_change_tunnel"] = json!(true);

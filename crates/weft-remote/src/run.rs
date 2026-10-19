@@ -784,6 +784,7 @@ impl Remote {
         match start_tunnel(&self.settings.weft, self.port, &self.tx) {
             Ready::Up(tunnel, tool) => {
                 self.view.note = tool.note.clone();
+                self.view.tunnel_title = Some(tool.title.clone());
                 self.tunnel = Some(tunnel);
                 self.adapter = Some(tool);
                 if self.machine.is_none() && self.view.signing_in.is_none() {

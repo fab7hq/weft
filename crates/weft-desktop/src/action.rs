@@ -195,6 +195,8 @@ pub enum SheetAct {
     RemoteInstall,
     RemoteSignIn,
     RemoteCancel,
+    /// Stop the tunnel and choose again.
+    RemoteChangeTunnel,
     AskRemoveDevice {
         device: String,
         name: String,
