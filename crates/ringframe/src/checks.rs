@@ -297,19 +297,13 @@ fn added_lines(ws: &Workspace, eval_id: &str) -> Vec<(String, BTreeSet<u32>, Str
     let mut out = Vec::new();
     for (id, text) in doc["windows"].as_object().into_iter().flatten() {
         let text = text.as_str().unwrap_or_default();
-        let mut file = String::new();
+        // A window is its file's path, as written, then its hunks.
+        let mut text = text.lines();
+        let file = text.next().and_then(|l| l.strip_prefix("--- ")).unwrap_or_default();
         let mut lines = BTreeSet::new();
         let mut next = 0u32;
-        for l in text.lines() {
-            if let Some(p) = l.strip_prefix("+++ ").or_else(|| l.strip_prefix("--- ")) {
-                if file.is_empty() {
-                    file = p
-                        .strip_prefix("b/")
-                        .or_else(|| p.strip_prefix("a/"))
-                        .unwrap_or(p)
-                        .to_string();
-                }
-            } else if let Some(h) = l.strip_prefix("@@ ") {
+        for l in text {
+            if let Some(h) = l.strip_prefix("@@ ") {
                 next = h
                     .split_whitespace()
                     .find_map(|p| p.strip_prefix('+'))
@@ -324,7 +318,7 @@ fn added_lines(ws: &Workspace, eval_id: &str) -> Vec<(String, BTreeSet<u32>, Str
             }
         }
         if !file.is_empty() && !lines.is_empty() {
-            out.push((file, lines, id.clone()));
+            out.push((file.to_string(), lines, id.clone()));
         }
     }
     out
@@ -382,16 +376,18 @@ mod tests {
     }
 
     #[test]
-    fn a_diff_path_loses_one_prefix_only() {
+    fn a_window_s_path_is_used_as_written_and_every_added_line_counts() {
         let dir = crate::testing::repo();
         let ws = crate::testing::ws_for(dir.path());
         let evals = ws.rf_dir().join("evals/e1");
         std::fs::create_dir_all(&evals).unwrap();
-        let window = "--- a/a/lib.rs\n+++ b/a/lib.rs\n@@ -1,0 +1,1 @@\n+fn x() {}\n";
+        // As RingFrame writes a window: its path, then hunks. An added line
+        // may itself begin `++ ` or `-- `.
+        let window = "--- b/lib.rs\n@@ -1 +1 @@\n+fn x() {}\n+++ y\n--- z\n+-- w\n";
         let doc = serde_json::json!({"windows": {"w1": window}});
         std::fs::write(evals.join("windows.json"), doc.to_string()).unwrap();
         let found = added_lines(&ws, "e1");
-        assert_eq!(found, [("a/lib.rs".to_string(), BTreeSet::from([1]), "w1".to_string())]);
+        assert_eq!(found, [("b/lib.rs".to_string(), BTreeSet::from([1, 2, 3]), "w1".to_string())]);
     }
 
     #[test]
