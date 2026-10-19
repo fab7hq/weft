@@ -488,6 +488,12 @@ impl WeftDesktopApp {
                     *shown = tab;
                 }
                 self.choice = None;
+                // How each harness stands, as Updates asks it.
+                if tab == crate::action::SettingsTab::Harnesses {
+                    for c in &mut self.clients {
+                        let _ = c.setup("look", "", "");
+                    }
+                }
                 self.want_rules();
             }
             SheetAct::PreviewPick(i, value) => {
@@ -495,6 +501,11 @@ impl WeftDesktopApp {
                 if let Some(slot) = self.preview.get_mut(i) {
                     *slot = value;
                 }
+            }
+            SheetAct::ShowHarness(name) => {
+                self.harness_shown = name;
+                self.choice = None;
+                self.want_rules();
             }
             SheetAct::ShowPreview => {
                 let unit = self.preview_unit();

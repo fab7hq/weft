@@ -1216,8 +1216,9 @@ impl Session {
         match what {
             // Rules through every project's layer (`unit` `machine`) or this
             // project's too (`project`); a preview, `<host>|<route>|<task>`,
-            // through what applies here.
-            "rules" | "preview" => {
+            // and a harness's profile (`unit` its name), through what applies
+            // here.
+            "rules" | "preview" | "profile" => {
                 let config = crate::routing::read_at(&self.config, &self.projects[at].harnesses);
                 let layers = if what == "rules" && unit != "project" {
                     config.machine_ringframe_override()
@@ -1229,6 +1230,9 @@ impl Session {
                 std::thread::spawn(move || {
                     let answer = if what == "rules" {
                         crate::ringframe::rules(out.as_ref(), &root, layers.as_deref())
+                            .map_or_else(ringframe_error, Answer::Ok)
+                    } else if what == "profile" {
+                        crate::ringframe::profile(out.as_ref(), &root, layers.as_deref(), &unit)
                             .map_or_else(ringframe_error, Answer::Ok)
                     } else {
                         match unit.split('|').collect::<Vec<_>>()[..] {

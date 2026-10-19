@@ -4,6 +4,7 @@
 
 mod ask;
 mod eval;
+mod harnesses;
 mod menu;
 mod project;
 mod remote;
@@ -49,6 +50,8 @@ pub struct SheetProps<'a> {
     pub setting_text: &'a str,
     /// The RingFrame preview's `<host>|<route>|<task>`.
     pub preview: &'a str,
+    /// The harness Settings › Harnesses shows.
+    pub harness: &'a str,
 }
 
 impl SheetProps<'_> {

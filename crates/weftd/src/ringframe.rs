@@ -63,6 +63,20 @@ pub fn rules(out: &dyn Outside, project: &Path, layers: Option<&str>) -> Result<
     Ok(serde_json::json!({"domains": domains["domains"], "catalogs": catalogs["catalogs"]}))
 }
 
+/// What RingFrame says of `host`: its routes, how each is delivered, its limits.
+pub fn profile(
+    out: &dyn Outside,
+    project: &Path,
+    layers: Option<&str>,
+    host: &str,
+) -> Result<Value, Error> {
+    let mut args = vec!["profile", "show", "--host", host, "--json"];
+    if let Some(layers) = layers {
+        args.extend(["--override", layers]);
+    }
+    json(out, project, &args)
+}
+
 /// The Rules block RingFrame would write for `host`'s route `capability` and
 /// a task of `task`, through these layers.
 pub fn preview(

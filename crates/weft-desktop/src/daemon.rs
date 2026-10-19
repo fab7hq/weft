@@ -246,6 +246,10 @@ pub enum Then {
     Preview {
         unit: String,
     },
+    /// What RingFrame says of a harness: its routes and its limits.
+    Profile {
+        host: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -706,6 +710,7 @@ impl ProjectClient {
                         | Then::Wording { .. }
                         | Then::Rules { .. }
                         | Then::Preview { .. }
+                        | Then::Profile { .. }
                 ) {
                     self.read.insert(then, result);
                     return None;
@@ -743,8 +748,12 @@ impl ProjectClient {
             Event::Config { config } => {
                 self.config = Some(config);
                 // What RingFrame said of the rules may no longer hold.
-                self.read
-                    .retain(|then, _| !matches!(then, Then::Rules { .. } | Then::Preview { .. }));
+                self.read.retain(|then, _| {
+                    !matches!(
+                        then,
+                        Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. }
+                    )
+                });
             }
             Event::StartAtLogin { on } => self.start_at_login = on,
             Event::Reopened { since } => self.reopened_since = since,

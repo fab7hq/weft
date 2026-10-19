@@ -167,6 +167,8 @@ pub struct WeftDesktopApp {
     pub(crate) project_menu: Option<PathBuf>,
     /// The RingFrame preview's host (empty: the first harness), route and task.
     pub(crate) preview: [String; 3],
+    /// The harness Settings › Harnesses shows (empty: the first).
+    pub(crate) harness_shown: String,
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -238,6 +240,7 @@ impl WeftDesktopApp {
             project_menu: None,
             // No host picked yet: the first harness Weft has.
             preview: [String::new(), "native_plan".into(), "implement".into()],
+            harness_shown: String::new(),
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -469,10 +472,34 @@ impl WeftDesktopApp {
         picked.join("|")
     }
 
-    /// RingFrame's rules, asked of the daemon while a sheet shows them.
+    /// The harness Settings › Harnesses shows: the one picked, or the first.
+    pub(crate) fn harness_shown(&self) -> String {
+        if !self.harness_shown.is_empty() {
+            return self.harness_shown.clone();
+        }
+        self.clients
+            .iter()
+            .find_map(|c| c.harnesses.iter().next().map(|h| h.name.clone()))
+            .unwrap_or_default()
+    }
+
+    /// RingFrame's rules, asked of the daemon while a sheet shows them; on
+    /// Harnesses, the shown harness's profile too.
     pub(crate) fn want_rules(&mut self) {
+        use crate::action::SettingsTab;
+        if let Some(ActiveSheet::Settings { tab: SettingsTab::Harnesses }) = &self.active_sheet {
+            let host = self.harness_shown();
+            if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+                let then = crate::daemon::Then::Profile { host: host.clone() };
+                if !c.read.contains_key(&then) && !host.is_empty() {
+                    let _ = c.read("profile", &host, None, then);
+                }
+            }
+        }
         let project = match &self.active_sheet {
-            Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::RingFrame }) => None,
+            Some(ActiveSheet::Settings {
+                tab: SettingsTab::RingFrame | SettingsTab::Harnesses,
+            }) => None,
             Some(ActiveSheet::ProjectSettings { project }) => Some(project.clone()),
             _ => return,
         };
@@ -1209,6 +1236,7 @@ impl WeftDesktopApp {
             _ => None,
         };
         let preview = self.preview_unit();
+        let harness = self.harness_shown();
         let sheet = self.active_sheet.as_ref().map(|sheet| {
             render_sheet(&SheetProps {
                 sheet,
@@ -1224,6 +1252,7 @@ impl WeftDesktopApp {
                 setting_editing: self.setting_editing.as_ref(),
                 setting_text: self.setting_field.text(),
                 preview: &preview,
+                harness: &harness,
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

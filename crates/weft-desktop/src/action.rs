@@ -54,6 +54,7 @@ pub enum SettingsTab {
     General,
     Workflow,
     RingFrame,
+    Harnesses,
 }
 
 /// A switch in Settings that only the machine has (Turbo and Start at login
@@ -188,6 +189,8 @@ pub enum SheetAct {
     PreviewPick(usize, String),
     /// The preview shown, as RingFrame writes it.
     ShowPreview,
+    /// A harness's details shown in Settings › Harnesses, by its name.
+    ShowHarness(String),
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.

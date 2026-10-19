@@ -247,7 +247,8 @@ fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
     let world = weft::outside::Fixed::new()
         .answers("ringframe", &["deltas", "domains"], 0, r#"{"domains":[{"domain":"autonomous-trading","base":false}]}"#)
         .answers("ringframe", &["deltas", "list"], 0, r#"{"catalogs":[{"catalog":"practices/software-development","entries":[{"id":"practice.kiss","source":"weft"}]}]}"#)
-        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, "Rules:\n- KISS: keep it plain\n");
+        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, "Rules:\n- KISS: keep it plain\n")
+        .answers("ringframe", &["profile", "show", "--host", "codex"], 0, r#"{"host":"codex","paste_fold_chars":1001}"#);
     let w = World::in_world(
         "rules",
         "[ringframe.deltas.\"practices/software-development\"]\nentries = [{ id = \"practice.kiss\", enabled = false }]\n",
@@ -273,5 +274,6 @@ fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
         read(&mut one, "preview", "claude-code").is_err(),
         "a preview names a host, a route and a task"
     );
+    assert_eq!(read(&mut one, "profile", "codex").unwrap()["paste_fold_chars"], 1001);
     one.answer(Call::Shutdown).ok();
 }

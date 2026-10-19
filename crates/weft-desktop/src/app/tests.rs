@@ -2575,3 +2575,76 @@ fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
         }
     );
 }
+
+/// Harnesses: inspect and tune, never add. A harness shows how RingFrame
+/// sends to it and its route rules; a rule's status is switched, written as
+/// the list RingFrame reads.
+#[test]
+fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].config = Some(json!({"machine": {}, "project": null}));
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Harnesses));
+    let mut asked = Vec::new();
+    while asked.len() < 2 {
+        let (id, call) = wire.call();
+        match call {
+            Call::Read { what, unit, .. } if what == "profile" => {
+                assert_eq!(unit, "antigravity", "the first harness");
+                wire.answer(id, json!({"capabilities": [
+                    {"id": "native_plan", "delivery_mode": "native_dispatch"},
+                    {"id": "native_goal", "delivery_mode": "human_handoff", "max_prompt_chars": 4000}],
+                    "paste_fold_chars": 512}));
+                asked.push("profile");
+            }
+            Call::Read { what, .. } if what == "rules" => {
+                wire.answer(id, json!({"domains": [], "catalogs": [{"catalog": "antigravity", "entries": [
+                    {"id": "agy.plan_as_files", "label": "Plan As Files", "text": "Draft the plan.", "status": "qualified", "source": "shipped"}]}]}));
+                asked.push("rules");
+            }
+            _ => {}
+        }
+    }
+    pumped(&mut app, |a| a.clients[0].read.len() >= 2);
+    let dom = app.render();
+    for layer in
+        ["harness Antigravity", "harness Claude Code", "harness Codex", "harness Grok Build"]
+    {
+        assert!(dom.find_layer(layer).is_some(), "{layer}");
+    }
+    let goal = dom.find_layer("sends native_goal").expect("Goal");
+    assert!(
+        goal.all_text().contains(words::word("desktop.harness.you_send")),
+        "{}",
+        goal.all_text()
+    );
+    assert!(goal.all_text().contains("4000"), "{}", goal.all_text());
+    assert!(dom.find_layer("sends folds").unwrap().all_text().contains("512"));
+    let rule = dom.find_layer("route rule agy.plan_as_files").expect("its route rule");
+    assert!(rule.find_layer("status desktop.harness.candidate").is_some());
+
+    app.dispatch(SheetAct::Choose {
+        project: None,
+        key: ["ringframe", "deltas", "antigravity", "entries", "agy.plan_as_files", "status"]
+            .map(String::from)
+            .to_vec(),
+        value: Some(json!("candidate")),
+    });
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: ["ringframe", "deltas", "antigravity", "entries"].map(String::from).to_vec(),
+            value: Some(json!([{"id": "agy.plan_as_files", "status": "candidate"}])),
+        }
+    );
+    app.dispatch(SheetAct::ShowHarness("codex".into()));
+    loop {
+        let (_, call) = wire.call();
+        if let Call::Read { what, unit, .. } = call {
+            assert_eq!((what.as_str(), unit.as_str()), ("profile", "codex"));
+            break;
+        }
+    }
+}

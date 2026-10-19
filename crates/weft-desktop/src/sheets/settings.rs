@@ -16,10 +16,11 @@ use crate::gpui::{Element, div, input_el, palette};
 use crate::ui::{close_button, row_list, section_label, sheet, sheet_body, sheet_foot, sheet_head};
 
 /// The tabs, in their order.
-const TABS: [(SettingsTab, &str, &str); 3] = [
+const TABS: [(SettingsTab, &str, &str); 4] = [
     (SettingsTab::General, "General", "desktop.settings.tab.general"),
     (SettingsTab::Workflow, "Workflow", "desktop.settings.tab.workflow"),
     (SettingsTab::RingFrame, "RingFrame", "desktop.settings.tab.ringframe"),
+    (SettingsTab::Harnesses, "Harnesses", "desktop.settings.tab.harnesses"),
 ];
 
 /// What a setting takes.
@@ -107,6 +108,7 @@ pub(super) fn render(props: &SheetProps, tab: SettingsTab) -> Element {
         SettingsTab::General => general(props),
         SettingsTab::Workflow => workflow(props),
         SettingsTab::RingFrame => super::ringframe::render(props),
+        SettingsTab::Harnesses => super::harnesses::render(props),
     };
     sheet(
         "sheet Settings",
