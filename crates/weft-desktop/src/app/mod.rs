@@ -387,6 +387,24 @@ impl WeftDesktopApp {
         if panes.groups.iter().map(|g| g.tabs.len()).sum::<usize>() != before {
             let _ = self.save_state();
         }
+        self.drop_gone_panes();
+    }
+
+    /// What is kept for an agent, its conversation, draft and suggestion,
+    /// goes with it: once its project's daemon has said it has no such pane,
+    /// or the project is closed. So does where a send no longer staged goes.
+    pub(crate) fn drop_gone_panes(&mut self) {
+        let clients = &self.clients;
+        let here = |(root, pane): &(PathBuf, u32)| {
+            clients.iter().any(|c| &c.root == root && (!c.opened || c.view(*pane).is_some()))
+        };
+        self.conversations.retain(|k, _| here(k));
+        self.messages.retain(|k, _| here(k));
+        self.suggestions.retain(|k, _| here(k));
+        let staged = |id: &String| {
+            clients.iter().any(|c| !c.opened || c.waiting.iter().any(|w| &w.id == id))
+        };
+        self.staged_to.retain(|id, _| staged(id));
     }
 
     /// Nothing is set up and something could be: Updates opens by itself,

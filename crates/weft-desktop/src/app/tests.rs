@@ -692,6 +692,41 @@ fn a_tab_of_a_pane_the_daemon_does_not_have_goes() {
     assert_eq!(panes, [1]);
 }
 
+/// What the app keeps per agent, its conversation, draft and suggestion, and
+/// the pick of where a staged send goes, leave with the agent or its project.
+#[test]
+fn what_is_kept_for_a_gone_agent_or_a_closed_project_goes() {
+    let (_tmp, mut app) = sample_app(false);
+    app.clients[0].panes = vec![PaneView::new(1, "claude".into(), "claude".into())];
+    app.clients[0].opened = true;
+    let staged = |id: &str| crate::daemon::Staged {
+        id: id.into(),
+        pane: 1,
+        what: String::new(),
+        why: String::new(),
+        payload: Vec::new(),
+        sends: None,
+    };
+    app.clients[0].waiting = vec![staged("pending_1")];
+    let elsewhere = PathBuf::from("/work/closed");
+    for key in [(weft(), 1), (weft(), 7), (elsewhere.clone(), 1)] {
+        app.conversations.insert(key.clone(), Vec::new());
+        app.messages.insert(key.clone(), TextField::new(Shape::Line));
+        app.suggestions.insert(key, (String::new(), String::new()));
+    }
+    app.staged_to.insert("pending_1".into(), "2".into());
+    app.staged_to.insert("pending_gone".into(), "2".into());
+    app.drop_gone_tabs();
+    let kept = [(weft(), 1)];
+    assert_eq!(app.conversations.keys().cloned().collect::<Vec<_>>(), kept);
+    assert_eq!(app.messages.keys().cloned().collect::<Vec<_>>(), kept);
+    assert_eq!(app.suggestions.keys().cloned().collect::<Vec<_>>(), kept);
+    assert_eq!(app.staged_to.keys().collect::<Vec<_>>(), ["pending_1"]);
+    app.close_project(&weft());
+    assert!(app.conversations.is_empty() && app.messages.is_empty());
+    assert!(app.suggestions.is_empty() && app.staged_to.is_empty());
+}
+
 /// Resume is in a session's Details only: an ended row selected opens them,
 /// Resume their act, and the row carries none.
 #[test]

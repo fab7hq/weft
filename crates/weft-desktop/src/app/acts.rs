@@ -774,6 +774,7 @@ impl WeftDesktopApp {
         self.not_opened.remove(root);
         self.state.open_projects.retain(|p| p != root);
         self.state.folded_projects.retain(|p| p != root);
+        self.drop_gone_panes();
         let _ = self.save_state();
     }
 
