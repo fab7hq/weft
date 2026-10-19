@@ -177,10 +177,17 @@ pub const APP_ID: &str = "weft-desktop";
 fn start_newer(shared: &Mutex<SharedState>) -> bool {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return false };
     let Some(weft) = crate::daemon::newer_weft(&home) else { return false };
+    hand_over(shared, || crate::daemon::open_app_of(&weft).is_ok())
+}
+
+/// Go, for the app `open` starts: this one's state written first, so the
+/// newer one opens to it. Whether it started.
+fn hand_over(shared: &Mutex<SharedState>, open: impl FnOnce() -> bool) -> bool {
+    write_state(shared);
     let Ok(mut guard) = shared.lock() else { return false };
     // The newer app listens where this one did.
     guard.instance = None;
-    if crate::daemon::open_app_of(&weft).is_err() {
+    if !open() {
         return false;
     }
     guard.app.quit_requested = true;
@@ -1414,6 +1421,26 @@ mod tests {
     fn the_window_is_known_by_the_desktop_entrys_name() {
         let entry = include_str!("../../../assets/linux/weft.desktop");
         assert!(entry.lines().any(|l| l == format!("StartupWMClass={APP_ID}")), "{entry}");
+    }
+
+    #[test]
+    fn a_newer_app_opens_to_this_one_s_state_written() {
+        let (tmp, mut app, _wire) = wired_app();
+        app.state.folded_projects.push(PathBuf::from("/work/folded"));
+        let _ = app.save_state();
+        let want = app.state.clone();
+        let shared = Mutex::new(SharedState {
+            app,
+            dirty: false,
+            grids: HashMap::new(),
+            instance: None,
+            raise: false,
+        });
+        let opened = hand_over(&shared, || {
+            assert_eq!(crate::app::load_state_from_home(tmp.path()), want, "written before");
+            true
+        });
+        assert!(opened && shared.lock().unwrap().app.quit_requested);
     }
 
     /// The desktop's view in a window without a screen, a pane open and the message row focused.
