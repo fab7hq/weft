@@ -83,6 +83,38 @@ fn catalog(relative: &str, over: &Overrides) -> Result<Value, ConfigError> {
     Ok(merged)
 }
 
+/// Every catalog, the hosts' then the practices', its entries as the layers
+/// leave them: each with `source`, the layer that last set it (`shipped`, or
+/// an override layer's name), and the catalog's `render`.
+pub fn list(over: &Overrides) -> Result<Vec<Value>, ConfigError> {
+    let practices = domain_names(over)?.into_iter().map(|d| format!("practices/{d}"));
+    let mut out = Vec::new();
+    for relative in host_catalog_names()?.into_iter().chain(practices) {
+        let mut merged = Value::Object(Map::new());
+        let mut source = std::collections::HashMap::new();
+        for layer in layers(over, &relative)? {
+            let name = if layer.root == "config" { "shipped" } else { layer.root.as_str() };
+            for e in entries(&layer.document) {
+                if let Some(id) = e.get("id").and_then(Value::as_str) {
+                    source.insert(id.to_string(), name.to_string());
+                }
+            }
+            merged = config::merge(&merged, &layer.document);
+        }
+        let listed: Vec<Value> = entries(&merged)
+            .iter()
+            .map(|e| {
+                let mut e = e.clone();
+                let id = text_of(&e, "id");
+                e["source"] = json!(source.get(&id));
+                e
+            })
+            .collect();
+        out.push(json!({"catalog": relative, "render": merged.get("render"), "entries": listed}));
+    }
+    Ok(out)
+}
+
 fn entries(cat: &Value) -> &[Value] {
     cat.get("entries").and_then(Value::as_array).map_or(&[], Vec::as_slice)
 }

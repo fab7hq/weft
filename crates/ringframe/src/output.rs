@@ -128,6 +128,16 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
             "domains": d["domains"].as_array().into_iter().flatten()
                 .map(|x| pick(x, &DOMAIN_KEYS)).collect::<Vec<_>>()
         }),
+        ("deltas", Some("list")) => json!({
+            "catalogs": d["catalogs"].as_array().into_iter().flatten()
+                .map(|c| json!({
+                    "catalog": c["catalog"],
+                    "entries": c["entries"].as_array().into_iter().flatten()
+                        .map(|e| pick(e, &["id", "label", "tier", "status", "enabled", "source"]))
+                        .collect::<Vec<_>>(),
+                }))
+                .collect::<Vec<_>>()
+        }),
         ("deltas", Some("render")) => d["text"].clone(),
         ("ask", Some("list")) => {
             json!({"asks": candidates(d["asks"].as_array().map_or(&[], Vec::as_slice))})

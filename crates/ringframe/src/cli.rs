@@ -143,6 +143,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("seal", Some("check")) => s(&["--seal"], NONE, &["--seal"], true, NONE),
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
         ("deltas", Some("domains")) => s(&["--override"], NONE, NONE, true, NONE),
+        ("deltas", Some("list")) => s(&["--override"], NONE, NONE, true, NONE),
         ("deltas", Some("render")) => s(
             &[
                 "--host",
@@ -177,7 +178,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 34] = [
+const SURFACE: [(&str, Option<&str>); 35] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -207,6 +208,7 @@ const SURFACE: [(&str, Option<&str>); 34] = [
     ("seal", Some("check")),
     ("ledger", Some("verify")),
     ("deltas", Some("domains")),
+    ("deltas", Some("list")),
     ("deltas", Some("render")),
     ("observe", Some("prompt")),
     ("observe", Some("tool")),
@@ -277,6 +279,9 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
         ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
+        ("deltas", Some("list")) => {
+            "every catalog's rules as the layers leave them, each with the layer that last set it"
+        }
         ("deltas", Some("render")) => "the directives that apply to one classification",
         ("observe", Some("prompt")) => {
             "a prompt --by someone saw submitted in --session; reads its bytes on stdin and \
@@ -669,9 +674,10 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
 }
 
 /// The commands that read configuration, and so take `--override`.
-const READS_CONFIG: [(&str, Option<&str>); 5] = [
+const READS_CONFIG: [(&str, Option<&str>); 6] = [
     ("profile", Some("show")),
     ("deltas", Some("domains")),
+    ("deltas", Some("list")),
     ("deltas", Some("render")),
     ("ask", Some("compile")),
     ("eval", Some("open")),
@@ -1113,6 +1119,10 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
         "domains" => {
             let listed = config_try!(deltas::domains(&ns.overrides));
             (ws, Outcome::Ok(0, json!({"domains": listed})))
+        }
+        "list" => {
+            let listed = config_try!(deltas::list(&ns.overrides));
+            (ws, Outcome::Ok(0, json!({"catalogs": listed})))
         }
         _ => {
             let host = json!({"name": ns.one("--host"),
@@ -2533,6 +2543,35 @@ limitations = []
                     );
                 }
             }
+        });
+    }
+
+    #[test]
+    fn every_rule_is_listed_with_the_layer_that_last_set_it() {
+        cli(|c| {
+            let over = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"render":{"core_cap":3},"entries":[{"id":"practice.kiss","enabled":false},{"id":"mine.plain","text":"Say it plainly.","applies_to":["implement"]}]}}}},{"layer":"weft-project","ringframe":{"deltas":{"practices/software-development":{"entries":[{"id":"practice.yagni","tier":"situational"}]}}}}]"#;
+            let (code, out, err) = c.go(&["deltas", "list", "--json", "--override", over]);
+            assert_eq!(code, 0, "{err}");
+            let catalogs = out["catalogs"].as_array().unwrap();
+            let sd = catalogs
+                .iter()
+                .find(|c| c["catalog"] == "practices/software-development")
+                .expect("the base practice");
+            assert_eq!(sd["render"]["core_cap"], 3);
+            let entry = |id: &str| {
+                sd["entries"].as_array().unwrap().iter().find(|e| e["id"] == id).unwrap().clone()
+            };
+            assert_eq!(entry("practice.kiss")["source"], "weft");
+            assert_eq!(entry("practice.kiss")["enabled"], false);
+            assert_eq!(entry("practice.yagni")["source"], "weft-project");
+            assert_eq!(entry("practice.yagni")["tier"], "situational");
+            assert_eq!(entry("practice.dry")["source"], "shipped");
+            assert_eq!(entry("mine.plain")["source"], "weft");
+            assert!(
+                catalogs.iter().any(|c| c["catalog"] == "claude-code"
+                    && c["entries"].as_array().is_some_and(|e| !e.is_empty())),
+                "the hosts' route rules too"
+            );
         });
     }
 
