@@ -329,6 +329,27 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
     d.send(json!({"type": "set", "project": "work", "scope": "machine", "key": ["turbo"],
                   "value": "yes", "req": 3}));
     assert_eq!(d.answer(3)["type"], "error", "what Weft would not read is refused");
+    // RingFrame's rules, a preview and a harness's profile reach the daemon
+    // too, which asks RingFrame.
+    for (n, (what, unit)) in
+        [("rules", "machine"), ("preview", "codex|native_plan|implement"), ("profile", "codex")]
+            .into_iter()
+            .enumerate()
+    {
+        let req = 20 + n as i64;
+        d.send(
+            json!({"type": "settings", "project": "work", "what": what, "unit": unit, "req": req}),
+        );
+        let answer = d.answer(req);
+        // Whatever RingFrame on this machine says, or that it is missing:
+        // never refused before the daemon.
+        assert!(
+            answer["type"] == "ok"
+                || ["no_ringframe", "refused"]
+                    .contains(&answer["code"].as_str().unwrap_or_default()),
+            "{what}: {answer}"
+        );
+    }
     // Which program runs, for a harness or the tunnel, is set on the machine
     // only: a device naming one is refused before the daemon hears it.
     for (n, key) in

@@ -371,10 +371,26 @@ impl Remote {
     }
 
     /// The project a message names by `project`.
-    /// The machine's settings, as the project's daemon client has them.
+    /// The machine's settings, as the project's daemon client has them; with
+    /// `what`, what Settings reads of RingFrame through the daemon: `rules`,
+    /// a `preview` or a harness's `profile`, by `unit`.
     fn settings(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let at = self.project_named(m)?;
-        self.ask(at, Call::ConfigGet, conn, req, Carries::Settings)
+        let call = match m["what"].as_str() {
+            None => Call::ConfigGet,
+            Some(what @ ("rules" | "preview" | "profile")) => Call::Read {
+                what: what.to_string(),
+                unit: m["unit"].as_str().unwrap_or_default().to_string(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: None,
+            },
+            Some(_) => {
+                return Err(("bad_request", "settings reads rules, a preview or a profile".into()));
+            }
+        };
+        self.ask(at, call, conn, req, Carries::Settings)
     }
 
     /// One setting changed, as the desktop changes it (weft-after-desktop

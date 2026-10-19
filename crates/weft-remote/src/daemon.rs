@@ -171,6 +171,9 @@ pub fn allowed(call: &Call) -> bool {
                     | "eval"
                     | "window"
                     | "conversation"
+                    | "rules"
+                    | "preview"
+                    | "profile"
             )
         }
         _ => false,
