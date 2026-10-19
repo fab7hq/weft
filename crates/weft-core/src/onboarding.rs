@@ -55,6 +55,22 @@ impl State {
     }
 
     /// What the row says after its name.
+    /// How it stands in a word or two, for a list of harnesses.
+    pub fn label(&self) -> &'static str {
+        match self {
+            State::Ready { .. } => "Ready",
+            State::Behind { .. } => "Plugin behind",
+            State::NotFound => "Not found",
+            State::NotSetUp => "Not set up",
+            State::CannotInstall => "Set up by hand",
+            State::Unknown => "Unknown",
+            State::Checking => "Checking",
+            State::NoCli => "No RingFrame",
+            State::Running(_) => "Setting up",
+            State::Failed { .. } => "Failed",
+        }
+    }
+
     pub fn words(&self) -> String {
         match self {
             State::Ready { version: Some(v) } => format!("ready · plugin {v}"),
@@ -100,6 +116,18 @@ pub struct Row {
     /// person said it is.
     pub program: String,
     pub state: State,
+    /// The program's own version, as its `--version` says it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// The first version number a program's `--version` says: digits with at
+/// least one dot (`codex-cli 0.163.0` is `0.163.0`).
+pub fn program_version(said: &str) -> Option<String> {
+    said.split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .map(|w| w.trim_matches('.'))
+        .find(|w| w.contains('.') && w.split('.').all(|p| !p.is_empty()))
+        .map(str::to_string)
 }
 
 impl Row {
@@ -276,6 +304,7 @@ pub fn checking(h: &Harness) -> Row {
         title: h.title.clone(),
         program: h.program.clone(),
         state: State::Checking,
+        version: None,
     }
 }
 
@@ -300,12 +329,44 @@ pub fn row(h: &Harness, found: Option<(Readiness, Option<String>)>, latest: Opti
         }
         Some((Readiness::Missing(_), _)) => State::NotSetUp,
     };
-    Row { name: h.name.clone(), title: h.title.clone(), program: h.program.clone(), state }
+    Row {
+        name: h.name.clone(),
+        title: h.title.clone(),
+        program: h.program.clone(),
+        state,
+        version: None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What each harness's `--version` printed in HostLab, 2026-10-19.
+    #[test]
+    fn a_program_s_version_is_the_first_number_it_says() {
+        for (said, version) in [
+            ("2.1.302 (Claude Code)\n", "2.1.302"),
+            ("codex-cli 0.163.0\n", "0.163.0"),
+            ("grok 1.0.62 (1474f9cbdd91)\n", "1.0.62"),
+            ("1.4.2\n", "1.4.2"),
+        ] {
+            assert_eq!(program_version(said).as_deref(), Some(version), "{said}");
+        }
+        assert_eq!(program_version("no number here"), None);
+        assert_eq!(program_version("build 7"), None, "a version has a dot");
+    }
+
+    #[test]
+    fn a_row_s_label_is_a_word_or_two() {
+        let ready = State::Ready { version: Some("0.2.0".into()) };
+        assert_eq!(ready.label(), "Ready");
+        assert_eq!(
+            State::Behind { have: "0.1".into(), latest: "0.2".into() }.label(),
+            "Plugin behind"
+        );
+        assert_eq!(State::NotFound.label(), "Not found");
+    }
 
     fn harness(name: &str) -> Harness {
         Harness::of(name, &crate::harness::fixture::file(name)).expect(name)
@@ -472,6 +533,7 @@ mod tests {
             title: "C".into(),
             program: "c".into(),
             state: State::Behind { have: "0.1.0".into(), latest: "0.2.0".into() },
+            version: None,
         });
         assert!(!v.up_to_date());
     }

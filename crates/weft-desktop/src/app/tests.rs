@@ -855,6 +855,7 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
         title: name.into(),
         program: name.into(),
         state,
+        version: None,
     };
     app.clients[0].setup = Some(SetupView {
         weft: "0.4.3".into(),
@@ -1962,6 +1963,7 @@ fn a_failed_step_shows_its_own_last_lines_under_its_row() {
                 step: "claude plugin install rf@fab7".into(),
                 said: said.into(),
             },
+            version: None,
         }],
         ..Default::default()
     });
@@ -1980,6 +1982,7 @@ fn updates_opens_by_itself_once_when_nothing_is_set_up_and_something_could_be() 
         title: "Claude Code".into(),
         program: "claude".into(),
         state,
+        version: None,
     };
     let view = |state| SetupView { rows: vec![row(state)], ..Default::default() };
     // Ready: nothing opens.
@@ -2096,6 +2099,7 @@ fn updates_does_not_open_on_a_view_still_being_asked() {
         title: name.into(),
         program: name.into(),
         state,
+        version: None,
     };
     // The first look: one harness still answering, one not on this machine.
     let asking = SetupView {

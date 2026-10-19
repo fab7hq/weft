@@ -177,14 +177,26 @@ pub fn look_as_they_answer(
         for (at, h) in harnesses.iter().enumerate().filter(|(at, _)| found[*at]) {
             let tx = tx.clone();
             scope.spawn(move || {
-                let _ = tx.send((at, crate::readiness::look(out, h, cli)));
+                let answer = crate::readiness::look(out, h, cli);
+                // The program's own version, as its `--version` says it.
+                let version = out
+                    .run(&h.program, &["--version"], None)
+                    .ok()
+                    .filter(|o| o.status.success())
+                    .and_then(|o| {
+                        weft_core::onboarding::program_version(&String::from_utf8_lossy(&o.stdout))
+                    });
+                let _ = tx.send((at, answer, version));
             });
         }
         drop(tx);
-        for (at, answer) in rx {
+        for (at, answer, version) in rx {
             let h = &harnesses.0[at];
             states.push((h.name.clone(), answer.0));
-            view.rows[at] = row(h, Some(answer), view.plugin.as_deref());
+            view.rows[at] = weft_core::onboarding::Row {
+                version,
+                ..row(h, Some(answer), view.plugin.as_deref())
+            };
             shown(&view);
         }
     });
@@ -365,7 +377,7 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\ncase \"$1\" in\n  list) if [ -f {m} ]; then echo '{{\"installed\":[{{\"name\":\"rf\"}}]}}'; else echo '{{\"installed\":[]}}'; fi ;;\n  install) touch {m} ;;\n  --version) echo 1 ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n  list) if [ -f {m} ]; then echo '{{\"installed\":[{{\"name\":\"rf\"}}]}}'; else echo '{{\"installed\":[]}}'; fi ;;\n  install) touch {m} ;;\n  --version) echo 'stubh 3.2.1 (stub)' ;;\nesac\n",
                 m = marker.display()
             ),
         )
@@ -381,6 +393,17 @@ mod tests {
         let (read, unread) = Harnesses::read(vec![("stub".into(), file)]);
         assert!(unread.is_empty(), "{unread:?}");
         read.find("stub").cloned().expect("the stub harness file reads")
+    }
+
+    /// Each harness found says its own version, as its `--version` does.
+    #[test]
+    fn the_look_says_each_harness_s_own_version() {
+        let dir = std::env::temp_dir().join(format!("weft-setup-version-{}", std::process::id()));
+        let harnesses = Harnesses(vec![stub(&dir)]);
+        let (view, _) =
+            look(&Machine, &harnesses, &Ok(serde_json::json!({})), &WeftCheck::default(), true);
+        assert_eq!(view.rows[0].version.as_deref(), Some("3.2.1"), "{:?}", view.rows);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

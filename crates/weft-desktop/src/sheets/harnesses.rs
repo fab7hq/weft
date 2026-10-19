@@ -35,6 +35,8 @@ pub(super) fn render(props: &SheetProps) -> Element {
         .map(|v| v.rows.clone())
         .unwrap_or_default();
     let state_of = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.state.clone());
+    let version_of =
+        |name: &str| rows.iter().find(|r| r.name == name).and_then(|r| r.version.clone());
     let shown = props.harness;
     let mut list = div().layer("harness list").w(240).flex_col().border_right(palette::LINE);
     for h in props.harnesses.iter() {
@@ -72,7 +74,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
                         .font_mono()
                         .font_size(11)
                         .color(palette::DIM)
-                        .text(state.as_ref().map(State::words).unwrap_or_default()),
+                        .text(state.as_ref().map_or("", State::label).to_string()),
                 ),
         );
     }
@@ -88,13 +90,15 @@ pub(super) fn render(props: &SheetProps) -> Element {
             .gap(10)
             .items_baseline()
             .child(div().font_weight(600).font_size(16).text(h.title.clone()));
-        if let Some(c) = &h.conversation {
+        // Its own version, and the one Weft was verified with.
+        let verified = h
+            .conversation
+            .as_ref()
+            .map(|c| fill("desktop.harness.verified", &[("version", &c.verified)]));
+        let said: Vec<String> = version_of(&h.name).into_iter().chain(verified).collect();
+        if !said.is_empty() {
             head = head.child(
-                div()
-                    .font_mono()
-                    .font_size(12)
-                    .color(palette::MUTED)
-                    .text(fill("desktop.harness.verified", &[("version", &c.verified)])),
+                div().font_mono().font_size(12).color(palette::MUTED).text(said.join(" · ")),
             );
         }
         let found = !matches!(state, Some(State::NotFound));

@@ -288,8 +288,9 @@ impl Project {
     }
 
     /// This project's rows of the `harnesses` message: what can be started.
-    /// Every harness this Weft supports, for Settings: its title, the version
-    /// it was verified with, and how it stands, as a mark and in words.
+    /// Every harness this Weft supports, for Settings: its title, its own
+    /// version and the one it was verified with, and how it stands, as a mark
+    /// and a word or two.
     pub fn supported(&self) -> Value {
         use weft_core::onboarding::State;
         let rows = self.standing.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -297,15 +298,15 @@ impl Project {
             .0
             .iter()
             .map(|h| {
-                let state: Option<State> = rows
-                    .iter()
-                    .find(|r| r["name"] == h.name.as_str())
-                    .and_then(|r| serde_json::from_value(r["state"].clone()).ok());
+                let row = rows.iter().find(|r| r["name"] == h.name.as_str());
+                let state: Option<State> =
+                    row.and_then(|r| serde_json::from_value(r["state"].clone()).ok());
                 json!({
                     "harness": h.name, "title": h.title,
+                    "version": row.and_then(|r| r["version"].as_str()),
                     "verified": h.conversation.as_ref().map(|c| c.verified.clone()),
                     "mark": state.as_ref().map_or("?", State::mark),
-                    "state": state.as_ref().map(State::words).unwrap_or_default(),
+                    "state": state.as_ref().map_or("", State::label),
                 })
             })
             .collect()
