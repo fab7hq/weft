@@ -2413,8 +2413,14 @@ mod tests {
         let harnesses = weft_core::harness::fixture::harnesses();
         let sock_srv = sock.clone();
         let cfg_srv = cfg.clone();
+        // A world of its own: the release questions the setup view asks are
+        // answered here, never by the network.
+        let world = crate::outside::Fixed::new()
+            .with_release(Ok(serde_json::json!({"tag_name": "v0.5.0"})))
+            .with_weft(Some("0.5.0"), true)
+            .shared();
         let srv = std::thread::spawn(move || {
-            let _ = Session::serve_with(&sock_srv, &cfg_srv, Some(harnesses));
+            let _ = Session::serve_in(&sock_srv, &cfg_srv, Some(harnesses), world);
         });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
