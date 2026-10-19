@@ -65,12 +65,12 @@ impl WeftDesktopApp {
                 self.layout_menu_pane = None;
             }
             WindowAct::ClosePopovers => {}
-            WindowAct::ToggleTurbo => {
-                // The machine's, in config.toml: one daemon tells every project.
-                let next = !self.turbo();
-                if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
-                    let _ = c.set_config("machine", &["turbo"], Some(serde_json::json!(next)));
-                }
+            // The machine's, in config.toml: one daemon tells every project.
+            WindowAct::ToggleTurbo => self.turn("turbo", !self.turbo()),
+            WindowAct::OpenSettings => {
+                self.menu_open = false;
+                self.active_sheet =
+                    Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::General });
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.
@@ -471,6 +471,18 @@ impl WeftDesktopApp {
                 if let Some((sheet, _)) = self.sheet_back.pop() {
                     self.active_sheet = Some(sheet);
                 }
+            }
+            SheetAct::SettingsTab(tab) => {
+                if let Some(ActiveSheet::Settings { tab: shown }) = &mut self.active_sheet {
+                    *shown = tab;
+                }
+            }
+            SheetAct::Toggle(setting) => {
+                let (key, on) = match setting {
+                    crate::action::Setting::Notify => ("notify", self.machine_setting("notify")),
+                    crate::action::Setting::Suggest => ("suggest", self.machine_setting("suggest")),
+                };
+                self.turn(key, !on);
             }
             SheetAct::Close => {
                 self.send_to_open = false;

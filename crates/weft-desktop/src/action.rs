@@ -39,10 +39,25 @@ pub enum WindowAct {
     OpenProject,
     OpenUpdates,
     OpenRemote,
+    OpenSettings,
     /// ■ NEEDS YOU: the next agent waiting.
     NextNeedsYou,
     RequestQuit,
     Focus(Focus),
+}
+
+/// Settings' tabs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+}
+
+/// A switch in Settings that only the machine has (Turbo and Start at login
+/// are ☰'s too, so they are its acts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Setting {
+    Notify,
+    Suggest,
 }
 
 /// The tree's rows.
@@ -140,6 +155,10 @@ pub enum BarAct {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SheetAct {
     Close,
+    /// Settings shows another of its tabs.
+    SettingsTab(SettingsTab),
+    /// A switch in Settings turned: the machine's, through the daemon.
+    Toggle(Setting),
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.

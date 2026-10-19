@@ -465,7 +465,12 @@ impl GpuiDesktopView {
             }
             if !matches!(
                 shortcut,
-                Some(Shortcut::Quit | Shortcut::OpenProject | Shortcut::ToggleList)
+                Some(
+                    Shortcut::Quit
+                        | Shortcut::OpenProject
+                        | Shortcut::ToggleList
+                        | Shortcut::Settings
+                )
             ) {
                 return;
             }
@@ -475,6 +480,7 @@ impl GpuiDesktopView {
             Some(Shortcut::Quit) => Action::from(WindowAct::RequestQuit),
             Some(Shortcut::OpenProject) => Action::from(WindowAct::OpenProject),
             Some(Shortcut::ToggleList) => Action::from(WindowAct::ToggleSidebar),
+            Some(Shortcut::Settings) => Action::from(WindowAct::OpenSettings),
             Some(Shortcut::Copy) => {
                 let text = self.shared.lock().ok().and_then(|mut guard| {
                     guard.app.active_pane_view_mut().and_then(|p| p.selection_text())

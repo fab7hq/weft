@@ -19,7 +19,7 @@ pub struct MenuProps<'a> {
 }
 
 /// An `ON`/`OFF` badge, in `accent` when on.
-fn badge(layer: &str, on: bool, accent: (&str, &str, &str)) -> Element {
+pub(crate) fn badge(layer: &str, on: bool, accent: (&str, &str, &str)) -> Element {
     let (bg, line, text) =
         if on { accent } else { (palette::SURFACE, palette::LINE, palette::MUTED) };
     div()
@@ -138,6 +138,10 @@ pub fn render_menu_popover(props: &MenuProps) -> Element {
                 (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER),
             ),
         ))
+        .child(
+            item("menu Settings", WindowAct::OpenSettings, word("desktop.menu.settings"))
+                .child(aside(crate::keys::hint_here(Shortcut::Settings), palette::DIM)),
+        )
         .child(
             item("menu Remote", WindowAct::OpenRemote, words::word("desktop.menu.remote"))
                 .child(aside(remote, remote_colour)),

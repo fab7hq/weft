@@ -14,6 +14,7 @@ pub enum Shortcut {
     Copy,
     /// The clipboard into the agent in front.
     Paste,
+    Settings,
 }
 
 /// Each shortcut, as `modifiers-key` in the text key table's order: the
@@ -24,6 +25,7 @@ pub const SHORTCUTS: &[(Shortcut, &str, &str)] = &[
     (Shortcut::ToggleList, "cmd-b", "ctrl-shift-b"),
     (Shortcut::Copy, "cmd-c", "ctrl-shift-c"),
     (Shortcut::Paste, "cmd-v", "ctrl-shift-v"),
+    (Shortcut::Settings, "cmd-,", "ctrl-shift-,"),
 ];
 
 fn chord_of(
@@ -77,6 +79,7 @@ mod tests {
             ("cmd-b", Shortcut::ToggleList),
             ("cmd-c", Shortcut::Copy),
             ("cmd-v", Shortcut::Paste),
+            ("cmd-,", Shortcut::Settings),
         ] {
             assert_eq!(shortcut(System::Mac, chord), Some(s), "{chord}");
         }
@@ -86,6 +89,7 @@ mod tests {
             ("ctrl-shift-b", Shortcut::ToggleList),
             ("ctrl-shift-c", Shortcut::Copy),
             ("ctrl-shift-v", Shortcut::Paste),
+            ("ctrl-shift-,", Shortcut::Settings),
         ] {
             assert_eq!(shortcut(System::Linux, chord), Some(s), "{chord}");
         }

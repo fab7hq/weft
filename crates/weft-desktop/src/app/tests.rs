@@ -17,7 +17,9 @@ use weft_core::words;
 use weft_proto::{Call, Event, Line, Lines};
 
 use super::*;
-use crate::action::{Action, Answer, BarAct, Focus, PaneAct, SheetAct, TreeAct, WindowAct};
+use crate::action::{
+    Action, Answer, BarAct, Focus, PaneAct, Setting, SettingsTab, SheetAct, TreeAct, WindowAct,
+};
 use crate::gpui::{Element, palette};
 
 /// The daemon's end of a project's link, played by the test: it reads the
@@ -2255,4 +2257,63 @@ fn the_turbo_switch_sets_the_machine_s_turbo_through_the_daemon() {
     assert!(!app.turbo(), "not until the daemon says so");
     wire.event(Event::Config { config: json!({"machine": {"turbo": true}, "project": null}) });
     pumped(&mut app, |a| a.turbo());
+}
+
+/// ☰ › Settings… and its shortcut open Settings on General; each switch is
+/// the machine's, set through the daemon, and shows what the daemon says.
+#[test]
+fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].config =
+        Some(json!({"machine": {"turbo": false, "suggest": false}, "project": null}));
+    app.dispatch(WindowAct::ToggleMenu);
+    assert!(app.render().find_layer("menu Settings").is_some(), "in ☰");
+    app.dispatch(WindowAct::OpenSettings);
+    assert!(matches!(app.active_sheet, Some(ActiveSheet::Settings { tab: SettingsTab::General })));
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Settings").expect("the Settings sheet");
+    assert!(sheet.find_layer("settings tab General").is_some());
+    let badge = |row: &str| {
+        sheet
+            .find_layer(row)
+            .unwrap_or_else(|| panic!("{row}"))
+            .find_layer("setting badge")
+            .unwrap()
+            .all_text()
+    };
+    assert_eq!(badge("setting Turbo"), "OFF");
+    assert_eq!(badge("setting Start at login"), "OFF");
+    assert_eq!(badge("setting Notifications"), "ON", "on until turned off");
+    assert_eq!(badge("setting Suggestions"), "OFF");
+
+    app.dispatch(SheetAct::Toggle(Setting::Notify));
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: vec!["notify".into()],
+            value: Some(json!(false))
+        }
+    );
+    app.dispatch(SheetAct::Toggle(Setting::Suggest));
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: vec!["suggest".into()],
+            value: Some(json!(true))
+        }
+    );
+    wire.event(Event::Config { config: json!({"machine": {"suggest": true, "notify": false}}) });
+    pumped(&mut app, |a| {
+        a.clients[0].config.as_ref().is_some_and(|c| c["machine"]["notify"] == false)
+    });
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Settings").unwrap();
+    let said =
+        |row: &str| sheet.find_layer(row).unwrap().find_layer("setting badge").unwrap().all_text();
+    assert_eq!(said("setting Notifications"), "OFF");
+    assert_eq!(said("setting Suggestions"), "ON");
 }

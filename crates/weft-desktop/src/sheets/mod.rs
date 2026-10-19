@@ -9,6 +9,7 @@ mod remote;
 mod seal;
 pub mod send_to;
 mod session;
+mod settings;
 mod unit;
 mod updates;
 mod work;
@@ -95,5 +96,6 @@ fn sheet_of(props: &SheetProps) -> Element {
         ActiveSheet::SessionDetail { project, session } => session::render(props, project, session),
         ActiveSheet::Updates => updates::render(props),
         ActiveSheet::Remote => remote::render(props),
+        ActiveSheet::Settings { tab } => settings::render(props, *tab),
     }
 }

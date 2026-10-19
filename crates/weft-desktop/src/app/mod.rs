@@ -89,6 +89,10 @@ const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActiveSheet {
+    /// Settings, on one of its tabs.
+    Settings {
+        tab: crate::action::SettingsTab,
+    },
     Ask {
         project: PathBuf,
         send_to: Option<String>,
@@ -279,6 +283,23 @@ impl WeftDesktopApp {
     /// The machine's turbo, as the daemon last said.
     pub fn turbo(&self) -> bool {
         self.clients.iter().find(|c| c.config.is_some()).is_some_and(|c| c.machine_turbo())
+    }
+
+    /// A machine switch that is on until turned off (`notify`, `suggest`), as
+    /// the daemon last said.
+    pub(crate) fn machine_setting(&self, key: &str) -> bool {
+        self.clients
+            .iter()
+            .find_map(|c| c.config.as_ref())
+            .is_none_or(|c| c["machine"][key].as_bool() != Some(false))
+    }
+
+    /// One of the machine's settings turned, through the first daemon that
+    /// answers: it tells every project.
+    pub(crate) fn turn(&mut self, key: &str, on: bool) {
+        if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+            let _ = c.set_config("machine", &[key], Some(serde_json::json!(on)));
+        }
     }
 
     /// Put a connected project in place of the one it connects, and open a
