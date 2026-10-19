@@ -477,7 +477,16 @@ impl Config {
     /// then the project's, each as it stands. A `'` is written as JSON's
     /// `\u0027`, so the value is always one single-quoted shell word.
     pub fn ringframe_override(&self, root: &Path) -> Option<String> {
-        let project = self.project(root).map(|p| &p.ringframe);
+        self.override_of(self.project(root).map(|p| &p.ringframe))
+    }
+
+    /// The machine's layer alone: what every project gets, before any
+    /// project's own.
+    pub fn machine_ringframe_override(&self) -> Option<String> {
+        self.override_of(None)
+    }
+
+    fn override_of(&self, project: Option<&Map<String, Value>>) -> Option<String> {
         let layers: Vec<Value> =
             [("weft", Some(&self.machine.ringframe)), ("weft-project", project)]
                 .into_iter()

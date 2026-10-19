@@ -239,3 +239,39 @@ fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
     assert_eq!(layers[0]["ringframe"]["deltas"]["practices/software-development"]["entries"], rule);
     one.answer(Call::Shutdown).ok();
 }
+
+/// What the RingFrame tab reads, through the daemon: the practices and every
+/// rule with its source, and the Rules block a route would get.
+#[test]
+fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
+    let world = weft::outside::Fixed::new()
+        .answers("ringframe", &["deltas", "domains"], 0, r#"{"domains":[{"domain":"autonomous-trading","base":false}]}"#)
+        .answers("ringframe", &["deltas", "list"], 0, r#"{"catalogs":[{"catalog":"practices/software-development","entries":[{"id":"practice.kiss","source":"weft"}]}]}"#)
+        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, "Rules:\n- KISS: keep it plain\n");
+    let w = World::in_world(
+        "rules",
+        "[ringframe.deltas.\"practices/software-development\"]\nentries = [{ id = \"practice.kiss\", enabled = false }]\n",
+        world,
+    );
+    let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
+    let read = |c: &mut Client, what: &str, unit: &str| {
+        c.answer(Call::Read {
+            what: what.into(),
+            unit: unit.into(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None,
+        })
+    };
+    let rules = read(&mut one, "rules", "machine").unwrap();
+    assert_eq!(rules["domains"][0]["domain"], "autonomous-trading");
+    assert_eq!(rules["catalogs"][0]["entries"][0]["source"], "weft");
+    let preview = read(&mut one, "preview", "claude-code|native_plan|implement").unwrap();
+    assert_eq!(preview["text"], "Rules:\n- KISS: keep it plain\n");
+    assert!(
+        read(&mut one, "preview", "claude-code").is_err(),
+        "a preview names a host, a route and a task"
+    );
+    one.answer(Call::Shutdown).ok();
+}

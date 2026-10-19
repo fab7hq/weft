@@ -48,6 +48,43 @@ fn run_program(
     })
 }
 
+/// Every practice and every rule, with the layer that last set each, through
+/// these `--override` layers: `{"domains": […], "catalogs": […]}`.
+pub fn rules(out: &dyn Outside, project: &Path, layers: Option<&str>) -> Result<Value, Error> {
+    let with = |args: &[&str]| {
+        let mut args = args.to_vec();
+        if let Some(layers) = layers {
+            args.extend(["--override", layers]);
+        }
+        json(out, project, &args)
+    };
+    let domains = with(&["deltas", "domains", "--json"])?;
+    let catalogs = with(&["deltas", "list", "--json"])?;
+    Ok(serde_json::json!({"domains": domains["domains"], "catalogs": catalogs["catalogs"]}))
+}
+
+/// The Rules block RingFrame would write for `host`'s route `capability` and
+/// a task of `task`, through these layers.
+pub fn preview(
+    out: &dyn Outside,
+    project: &Path,
+    layers: Option<&str>,
+    (host, capability, task): (&str, &str, &str),
+) -> Result<String, Error> {
+    let result = if task == "plan" { "plan" } else { "workspace_change" };
+    let classification = serde_json::json!({"task": [task], "result": result,
+        "interaction": "approval_gated", "horizon": "session", "effects": ["read", "write"]})
+    .to_string();
+    let mut args =
+        vec!["deltas", "render", "--host", host, "--capability", capability, "--classification"];
+    args.push(&classification);
+    args.push("--minimal");
+    if let Some(layers) = layers {
+        args.extend(["--override", layers]);
+    }
+    run(out, project, &args).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 /// Whether RingFrame reads these `--override` layers: every catalog listed
 /// through them, which refuses what any command reading them would.
 pub fn reads_overrides(out: &dyn Outside, project: &Path, layers: &str) -> Result<(), Error> {

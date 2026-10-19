@@ -587,6 +587,11 @@ fn workspace_gap(out: &dyn crate::outside::Outside, root: &Path) -> Option<Strin
 
 /// What a client is told when RingFrame would not open an Eval.
 fn eval_refused(e: crate::ringframe::Error) -> Answer {
+    ringframe_error(e)
+}
+
+/// What a client is told when RingFrame would not answer.
+fn ringframe_error(e: crate::ringframe::Error) -> Answer {
     match e {
         crate::ringframe::Error::NotInstalled => {
             Answer::No("no_ringframe", "the ringframe CLI is not installed".into())
@@ -1204,10 +1209,48 @@ impl Session {
         self.stage(at, pane, built)
     }
 
-    /// The exact wording, or an Eval record, as RingFrame wrote them.
+    /// The exact wording, or an Eval record, as RingFrame wrote them; and
+    /// for Settings, RingFrame's rules and a route's Rules block.
     fn read(&mut self, client: u64, call_id: u64, at: usize, what: &str, unit: &str) -> Answer {
         let root = self.projects[at].root.clone();
         match what {
+            // Rules through every project's layer (`unit` `machine`) or this
+            // project's too (`project`); a preview, `<host>|<route>|<task>`,
+            // through what applies here.
+            "rules" | "preview" => {
+                let config = crate::routing::read_at(&self.config, &self.projects[at].harnesses);
+                let layers = if what == "rules" && unit != "project" {
+                    config.machine_ringframe_override()
+                } else {
+                    config.ringframe_override(&root)
+                };
+                let (tx, out, what, unit) =
+                    (self.tx.clone(), self.outside.clone(), what.to_string(), unit.to_string());
+                std::thread::spawn(move || {
+                    let answer = if what == "rules" {
+                        crate::ringframe::rules(out.as_ref(), &root, layers.as_deref())
+                            .map_or_else(ringframe_error, Answer::Ok)
+                    } else {
+                        match unit.split('|').collect::<Vec<_>>()[..] {
+                            [host, capability, task] => crate::ringframe::preview(
+                                out.as_ref(),
+                                &root,
+                                layers.as_deref(),
+                                (host, capability, task),
+                            )
+                            .map_or_else(ringframe_error, |text| {
+                                Answer::Ok(serde_json::json!({ "text": text }))
+                            }),
+                            _ => Answer::No(
+                                "bad_request",
+                                "a preview names a host, a route and a task".into(),
+                            ),
+                        }
+                    };
+                    let _ = tx.send(Wake::Answer { client, call_id, answer });
+                });
+                Answer::Later
+            }
             "wording" => match crate::ringframe::ask_copy(self.outside.as_ref(), &root, unit) {
                 Ok(bytes) => Answer::Ok(serde_json::json!({
                     "text": String::from_utf8_lossy(&bytes)
