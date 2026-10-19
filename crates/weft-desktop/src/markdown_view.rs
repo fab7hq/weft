@@ -1,13 +1,43 @@
 //! An agent's message drawn from its markdown: headings, lists, code, quotes
 //! and tables as blocks, bold, italic, code and links within a line.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use weft_core::markdown::{Block, Span, blocks};
 
 use crate::gpui::{Element, Run, div, edge_bar, palette, rich};
 
+/// How many messages' blocks are kept parsed.
+const KEPT: usize = 512;
+
+thread_local! {
+    /// Each message's blocks by its text: a window draws every message each
+    /// frame, and parses only the ones it has not seen.
+    static PARSED: RefCell<HashMap<String, Rc<Vec<Block>>>> = RefCell::default();
+}
+
 /// An agent's message, from its text.
 pub fn message(text: &str) -> Element {
-    column(&blocks(text))
+    column(&parsed(text))
+}
+
+/// `text`'s blocks, parsed once while kept. When more are kept than
+/// `KEPT`, all go and are parsed again as they are drawn.
+fn parsed(text: &str) -> Rc<Vec<Block>> {
+    PARSED.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(b) = cache.get(text) {
+            return Rc::clone(b);
+        }
+        if cache.len() >= KEPT {
+            cache.clear();
+        }
+        let b = Rc::new(blocks(text));
+        cache.insert(text.to_string(), Rc::clone(&b));
+        b
+    })
 }
 
 fn column(blocks: &[Block]) -> Element {
@@ -153,5 +183,16 @@ mod tests {
             .map(|(r, s)| (&para.text.as_deref().unwrap()[r.clone()], s.bold, s.mono))
             .collect();
         assert_eq!(styled, [("/health", true, false), ("cargo test", false, true)]);
+    }
+
+    #[test]
+    fn a_message_is_parsed_once_for_as_long_as_its_text_is_the_same() {
+        let first = parsed("Done. **Both** pass.");
+        assert!(std::rc::Rc::ptr_eq(&first, &parsed("Done. **Both** pass.")));
+        assert!(!std::rc::Rc::ptr_eq(&first, &parsed("Done. **Both** pass. More")));
+        for n in 0..=KEPT {
+            parsed(&format!("message {n}"));
+        }
+        assert!(PARSED.with(|p| p.borrow().len()) <= KEPT, "the cache is bounded");
     }
 }
