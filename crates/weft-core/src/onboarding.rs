@@ -122,7 +122,7 @@ pub struct Row {
 }
 
 /// The first version number a program's `--version` says: digits with at
-/// least one dot (`codex-cli 0.163.0` is `0.163.0`).
+/// least one dot (`tool-cli 0.163.0` is `0.163.0`).
 pub fn program_version(said: &str) -> Option<String> {
     said.split(|c: char| !(c.is_ascii_digit() || c == '.'))
         .map(|w| w.trim_matches('.'))
