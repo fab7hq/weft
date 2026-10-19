@@ -2405,16 +2405,29 @@ fn workflow_sets_every_project_s_routing_and_debate() {
 #[test]
 fn a_project_s_own_settings_list_what_differs_and_reset_it() {
     let (_tmp, mut app, mut wire) = wired_app();
+    let base = "practices/software-development";
     app.clients[0].config = Some(json!({
         "machine": {"routing": {"eval": "claude"}},
-        "project": {"routing": {"eval": "codex"}}}));
+        "project": {"routing": {"eval": "codex"},
+                    "ringframe": {"deltas": {base: {"entries": [{"id": "practice.kiss", "tier": "situational"}]}}}}}));
     app.dispatch(TreeAct::ToggleProjectMenu(weft()));
-    let dom = app.render();
-    assert!(dom.find_layer("project menu Settings").is_some());
+    assert!(app.render().find_layer("project menu Settings").is_some());
     app.dispatch(TreeAct::OpenProjectSettings(weft()));
     assert!(
         matches!(&app.active_sheet, Some(ActiveSheet::ProjectSettings { project }) if *project == weft())
     );
+    // Its rules as this project has them, and every project's beside them.
+    let rules = |tier: &str| {
+        json!({"domains": [], "catalogs": [{"catalog": base, "render": {"core_cap": 5}, "entries": [
+        {"id": "practice.kiss", "label": "KISS", "tier": tier, "source": "weft-project"},
+        {"id": "practice.yagni", "label": "YAGNI", "tier": "core", "source": "shipped"}]}]})
+    };
+    for _ in 0..2 {
+        let (id, call) = wire.call();
+        let Call::Read { unit, .. } = call else { panic!("a read: {call:?}") };
+        wire.answer(id, rules(if unit == "project" { "situational" } else { "core" }));
+    }
+    pumped(&mut app, |a| a.clients[0].read.len() >= 2);
     let dom = app.render();
     let sheet = dom.find_layer("sheet Project settings").expect("the project's settings");
     let row = sheet.find_layer("project setting routing.eval").expect("Eval differs here");
@@ -2425,15 +2438,140 @@ fn a_project_s_own_settings_list_what_differs_and_reset_it() {
         row.all_text()
     );
     assert!(sheet.find_layer("project setting routing.ask").is_none(), "only what differs");
+    let kiss =
+        sheet.find_layer("project setting ringframe.practice.kiss").expect("KISS differs here");
+    assert_eq!(kiss.find_layer("setting value").unwrap().all_text(), "situational, on ▾");
+    assert!(kiss.all_text().contains("core, on"), "every project's beside it: {}", kiss.all_text());
+    assert!(sheet.find_layer("project setting ringframe.practice.yagni").is_none());
 
     let key = vec!["routing".to_string(), "eval".to_string()];
     app.dispatch(SheetAct::Choose { project: Some(weft()), key: key.clone(), value: None });
     let (_, call) = wire.call();
     assert_eq!(call, Call::ConfigSet { scope: "project".into(), key, value: None });
+    let kiss_key: Vec<String> =
+        ["ringframe", "deltas", base, "entries", "practice.kiss"].map(String::from).to_vec();
+    app.dispatch(SheetAct::Choose { project: Some(weft()), key: kiss_key, value: None });
+    let (_, call) = wire.call();
+    let entries: Vec<String> = ["ringframe", "deltas", base, "entries"].map(String::from).to_vec();
+    assert_eq!(call, Call::ConfigSet { scope: "project".into(), key: entries, value: None });
 
     app.dispatch(SheetAct::AddProjectSetting);
     let dom = app.render();
     let list = dom.find_layer("choices add").expect("what can be set here");
     assert!(list.find_layer("choice Ask").is_some() && list.find_layer("choice Seal").is_some());
+    assert!(list.find_layer("choice RingFrame · YAGNI").is_some(), "a rule not set here");
+    assert!(
+        list.find_layer(&format!("choice {}", words::word("desktop.settings.core_cap"))).is_some()
+    );
     assert!(list.find_layer("choice Turbo").is_none(), "Turbo is every project's only");
+}
+
+/// RingFrame: the practices, the cap, each rule with where it comes from, what
+/// judges must not do, and a preview; each change written as RingFrame reads
+/// it, a rule as the list that holds it.
+#[test]
+fn ringframe_shows_the_rules_and_writes_each_change_as_ringframe_reads_it() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let base = "practices/software-development";
+    app.clients[0].config = Some(json!({"machine": {"ringframe": {"deltas": {base: {
+        "entries": [{"id": "practice.kiss", "enabled": false}]}}}}, "project": null}));
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    let (id, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::Read {
+            what: "rules".into(),
+            unit: "machine".into(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None
+        }
+    );
+    wire.answer(id, json!({
+        "domains": [{"domain": "software-development", "base": true}, {"domain": "autonomous-trading", "base": false, "description": "Trading"}],
+        "catalogs": [{"catalog": base, "render": {"core_cap": 5}, "entries": [
+            {"id": "practice.kiss", "label": "KISS", "text": "Keep it simple.", "tier": "core", "enabled": false, "source": "weft", "applies_to": ["implement"]},
+            {"id": "practice.yagni", "label": "YAGNI", "text": "Only what is needed.", "tier": "core", "source": "shipped"}]}]}));
+    pumped(&mut app, |a| {
+        a.clients[0].read.contains_key(&crate::daemon::Then::Rules { project: false })
+    });
+    let dom = app.render();
+    let kiss = dom.find_layer("rule practice.kiss").expect("KISS");
+    assert!(
+        kiss.all_text().contains(words::word("desktop.settings.changed")),
+        "{}",
+        kiss.all_text()
+    );
+    assert_eq!(kiss.find_layer("setting badge").unwrap().all_text(), "OFF");
+    assert!(dom.find_layer("rule practice.yagni").unwrap().find_layer("edit").is_some());
+
+    let k = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+    let set = |w: &mut Wire, key: Vec<String>, value: Option<Value>| {
+        let (_, call) = w.call();
+        assert_eq!(call, Call::ConfigSet { scope: "machine".into(), key, value });
+    };
+    app.dispatch(SheetAct::Choose {
+        project: None,
+        key: k(&["ringframe", "deltas", base, "entries", "practice.kiss", "enabled"]),
+        value: Some(json!(true)),
+    });
+    set(
+        &mut wire,
+        k(&["ringframe", "deltas", base, "entries"]),
+        Some(json!([{"id": "practice.kiss", "enabled": true}])),
+    );
+    app.dispatch(SheetAct::Choose {
+        project: None,
+        key: k(&["ringframe", "deltas", base, "entries", "practice.kiss"]),
+        value: None,
+    });
+    set(&mut wire, k(&["ringframe", "deltas", base, "entries"]), None);
+    app.dispatch(SheetAct::Choose {
+        project: None,
+        key: k(&["ringframe", "deltas", "practices/autonomous-trading"]),
+        value: Some(json!({"domain": "autonomous-trading"})),
+    });
+    set(
+        &mut wire,
+        k(&["ringframe", "deltas", "practices/autonomous-trading"]),
+        Some(json!({"domain": "autonomous-trading"})),
+    );
+
+    app.dispatch(SheetAct::EditSetting {
+        project: None,
+        key: k(&["ringframe", "deltas", base, "entries", "own.1", "text"]),
+    });
+    app.setting_field.paste("Say it plainly.");
+    app.dispatch(SheetAct::CommitSetting);
+    set(
+        &mut wire,
+        k(&["ringframe", "deltas", base, "entries"]),
+        Some(json!([
+        {"id": "practice.kiss", "enabled": false},
+        {"id": "own.1", "text": "Say it plainly.", "applies_to": ["implement"], "tier": "situational"}])),
+    );
+
+    app.dispatch(SheetAct::EditSetting {
+        project: None,
+        key: k(&["ringframe", "eval", "deny", "+"]),
+    });
+    app.setting_field.paste("Push to any remote.");
+    app.dispatch(SheetAct::CommitSetting);
+    set(&mut wire, k(&["ringframe", "eval", "deny"]), Some(json!(["Push to any remote."])));
+
+    app.dispatch(SheetAct::ShowPreview);
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::Read {
+            what: "preview".into(),
+            unit: "antigravity|native_plan|implement".into(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None
+        }
+    );
 }

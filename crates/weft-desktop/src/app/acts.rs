@@ -153,6 +153,7 @@ impl WeftDesktopApp {
                 self.project_menu = None;
                 self.choice = None;
                 self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p });
+                self.want_rules();
             }
             TreeAct::TogglePlus(p) => {
                 if self.plus_popover_project.as_ref() == Some(&p) {
@@ -486,6 +487,25 @@ impl WeftDesktopApp {
                 if let Some(ActiveSheet::Settings { tab: shown }) = &mut self.active_sheet {
                     *shown = tab;
                 }
+                self.choice = None;
+                self.want_rules();
+            }
+            SheetAct::PreviewPick(i, value) => {
+                self.choice = None;
+                if let Some(slot) = self.preview.get_mut(i) {
+                    *slot = value;
+                }
+            }
+            SheetAct::ShowPreview => {
+                let unit = self.preview_unit();
+                if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+                    let _ = c.read(
+                        "preview",
+                        &unit,
+                        None,
+                        crate::daemon::Then::Preview { unit: unit.clone() },
+                    );
+                }
             }
             SheetAct::OpenChoice(key) => {
                 let key = key.join(".");
@@ -496,15 +516,29 @@ impl WeftDesktopApp {
                 self.set_setting(project.as_deref(), &key, value);
             }
             SheetAct::EditSetting { project, key } => {
-                let now = self.setting_now(project.as_deref(), &key);
-                self.setting_field.set_text(now.as_str().unwrap_or_default());
+                let now = self.field_now(project.as_deref(), &key);
+                self.setting_field.set_text(&now);
                 self.setting_editing = Some((project, key));
                 self.focus = Focus::Setting;
             }
             SheetAct::CommitSetting => {
                 if let Some((project, key)) = self.setting_editing.take() {
                     let text = self.setting_field.text().trim().to_string();
-                    let value = (!text.is_empty()).then(|| serde_json::json!(text));
+                    // A rule's tasks and concerns are lists, typed with commas.
+                    let listed =
+                        matches!(key.last().map(String::as_str), Some("applies_to" | "concerns"));
+                    let value = (!text.is_empty()).then(|| {
+                        if listed {
+                            serde_json::json!(
+                                text.split(',')
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .collect::<Vec<_>>()
+                            )
+                        } else {
+                            serde_json::json!(text)
+                        }
+                    });
                     self.set_setting(project.as_deref(), &key, value);
                 }
                 self.focus = Focus::Terminal;

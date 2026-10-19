@@ -165,6 +165,8 @@ pub struct WeftDesktopApp {
     pub(crate) choice: Option<String>,
     /// The project whose row's ⋯ is open.
     pub(crate) project_menu: Option<PathBuf>,
+    /// The RingFrame preview's host (empty: the first harness), route and task.
+    pub(crate) preview: [String; 3],
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -234,6 +236,8 @@ impl WeftDesktopApp {
             setting_editing: None,
             choice: None,
             project_menu: None,
+            // No host picked yet: the first harness Weft has.
+            preview: [String::new(), "native_plan".into(), "implement".into()],
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -318,19 +322,172 @@ impl WeftDesktopApp {
     }
 
     /// A setting set, or taken out: every project's through the first daemon
-    /// that answers, or `project`'s own through its.
+    /// that answers, or `project`'s own through its. A RingFrame rule's field
+    /// (`ringframe.deltas.<catalog>.entries.<id>[.<field>]`) and a line of
+    /// what judges must not do (`ringframe.eval.deny.<n | +>`) are written as
+    /// the list that holds them.
     pub(crate) fn set_setting(
         &mut self,
         project: Option<&Path>,
         key: &[String],
         value: Option<serde_json::Value>,
     ) {
+        let (key, value) = self.as_written(project, key, value);
         let (scope, client) = match project {
             Some(root) => ("project", self.clients.iter_mut().find(|c| c.root == root)),
             None => ("machine", self.clients.iter_mut().find(|c| c.is_connected())),
         };
         if let Some(c) = client {
-            let _ = c.set_config(scope, key, value);
+            let _ = c.set_config(scope, &key, value);
+        }
+    }
+
+    /// A key into a list written as the whole list, as the daemon last said it.
+    fn as_written(
+        &self,
+        project: Option<&Path>,
+        key: &[String],
+        value: Option<serde_json::Value>,
+    ) -> (Vec<String>, Option<serde_json::Value>) {
+        use serde_json::{Value, json};
+        let k: Vec<&str> = key.iter().map(String::as_str).collect();
+        match k[..] {
+            ["ringframe", "deltas", catalog, "entries", id, ref field @ ..] => {
+                let list_key: Vec<String> =
+                    ["ringframe", "deltas", catalog, "entries"].map(String::from).to_vec();
+                let mut list =
+                    self.setting_now(project, &list_key).as_array().cloned().unwrap_or_default();
+                let at = list.iter().position(|e| e["id"] == id);
+                match (field.first(), value) {
+                    (None, None) => {
+                        if let Some(i) = at {
+                            list.remove(i);
+                        }
+                    }
+                    // Several fields at once: the entry's own, with these on top.
+                    (None, Some(Value::Object(fields))) => {
+                        let i = at.unwrap_or_else(|| {
+                            list.push(json!({"id": id}));
+                            list.len() - 1
+                        });
+                        if let Some(entry) = list[i].as_object_mut() {
+                            entry.extend(fields);
+                        }
+                    }
+                    (None, Some(_)) => {}
+                    (Some(f), v) => {
+                        let i = at.unwrap_or_else(|| {
+                            list.push(json!({"id": id}));
+                            list.len() - 1
+                        });
+                        let entry = list[i].as_object_mut().expect("an entry is a table");
+                        match v {
+                            Some(v) => {
+                                entry.insert(f.to_string(), v);
+                            }
+                            None => {
+                                entry.remove(*f);
+                            }
+                        }
+                        // A rule of the person's own: what RingFrame needs of one.
+                        if id.starts_with("own.") {
+                            entry.entry("applies_to").or_insert(json!(["implement"]));
+                            entry.entry("tier").or_insert(json!("situational"));
+                        }
+                        if entry.len() == 1 {
+                            list.remove(i);
+                        }
+                    }
+                }
+                (list_key, (!list.is_empty()).then_some(Value::Array(list)))
+            }
+            ["ringframe", "eval", "deny", which] => {
+                let list_key: Vec<String> =
+                    ["ringframe", "eval", "deny"].map(String::from).to_vec();
+                let mut list =
+                    self.setting_now(project, &list_key).as_array().cloned().unwrap_or_default();
+                match (which, value) {
+                    ("+", Some(v)) => list.push(v),
+                    (n, None) => {
+                        if let Ok(i) = n.parse::<usize>()
+                            && i < list.len()
+                        {
+                            list.remove(i);
+                        }
+                    }
+                    _ => {}
+                }
+                // Emptied, the list denies nothing: it stays, as written.
+                (list_key, Some(Value::Array(list)))
+            }
+            _ => (key.to_vec(), value),
+        }
+    }
+
+    /// What a setting's field starts with: the setting as written, or a
+    /// RingFrame rule's field as RingFrame merged it (a list with commas).
+    pub(crate) fn field_now(&self, project: Option<&Path>, key: &[String]) -> String {
+        let k: Vec<&str> = key.iter().map(String::as_str).collect();
+        let v = match k[..] {
+            ["ringframe", "deltas", catalog, "entries", id, field] => {
+                let then = crate::daemon::Then::Rules { project: project.is_some() };
+                self.clients
+                    .iter()
+                    .find_map(|c| c.read.get(&then))
+                    .and_then(|r| r["catalogs"].as_array().cloned())
+                    .into_iter()
+                    .flatten()
+                    .find(|c| c["catalog"] == catalog)
+                    .and_then(|c| c["entries"].as_array().cloned())
+                    .into_iter()
+                    .flatten()
+                    .find(|e| e["id"] == id)
+                    .map_or(serde_json::Value::Null, |e| e[field].clone())
+            }
+            _ => self.setting_now(project, key),
+        };
+        match v {
+            serde_json::Value::String(s) => s,
+            serde_json::Value::Array(items) => {
+                items.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(", ")
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// What the preview asks for: `<host>|<route>|<task>`, the host the
+    /// first harness Weft has until one is picked.
+    pub(crate) fn preview_unit(&self) -> String {
+        let mut picked = self.preview.clone();
+        if picked[0].is_empty() {
+            picked[0] = self
+                .clients
+                .iter()
+                .find_map(|c| c.harnesses.iter().next().map(|h| h.name.clone()))
+                .unwrap_or_default();
+        }
+        picked.join("|")
+    }
+
+    /// RingFrame's rules, asked of the daemon while a sheet shows them.
+    pub(crate) fn want_rules(&mut self) {
+        let project = match &self.active_sheet {
+            Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::RingFrame }) => None,
+            Some(ActiveSheet::ProjectSettings { project }) => Some(project.clone()),
+            _ => return,
+        };
+        let client = match &project {
+            Some(root) => self.clients.iter_mut().find(|c| &c.root == root),
+            None => self.clients.iter_mut().find(|c| c.is_connected()),
+        };
+        let Some(c) = client else { return };
+        // A project's own settings say every project's beside them.
+        let wanted = if project.is_some() { &[true, false][..] } else { &[false][..] };
+        for &mine in wanted {
+            let then = crate::daemon::Then::Rules { project: mine };
+            if !c.read.contains_key(&then) {
+                let _ = c.read("rules", if mine { "project" } else { "machine" }, None, then);
+            }
         }
     }
 
@@ -421,6 +578,7 @@ impl WeftDesktopApp {
             self.refresh_eval_view();
         }
         if changed {
+            self.want_rules();
             self.offer_allow();
             self.offer_updates();
             self.drop_gone_tabs();
@@ -1050,6 +1208,7 @@ impl WeftDesktopApp {
             }
             _ => None,
         };
+        let preview = self.preview_unit();
         let sheet = self.active_sheet.as_ref().map(|sheet| {
             render_sheet(&SheetProps {
                 sheet,
@@ -1064,6 +1223,7 @@ impl WeftDesktopApp {
                 choice: self.choice.as_deref(),
                 setting_editing: self.setting_editing.as_ref(),
                 setting_text: self.setting_field.text(),
+                preview: &preview,
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

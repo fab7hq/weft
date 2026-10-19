@@ -53,6 +53,7 @@ pub enum WindowAct {
 pub enum SettingsTab {
     General,
     Workflow,
+    RingFrame,
 }
 
 /// A switch in Settings that only the machine has (Turbo and Start at login
@@ -183,6 +184,10 @@ pub enum SheetAct {
     CommitSetting,
     /// "+ Change a setting here": what a project can set for itself.
     AddProjectSetting,
+    /// The preview's host, route or task picked (`0`, `1`, `2`).
+    PreviewPick(usize, String),
+    /// The preview shown, as RingFrame writes it.
+    ShowPreview,
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.

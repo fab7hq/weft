@@ -238,6 +238,14 @@ pub enum Then {
     },
     /// Nothing but a refusal, which the person is shown.
     Refusal,
+    /// RingFrame's practices and rules: every project's, or this project's too.
+    Rules {
+        project: bool,
+    },
+    /// The Rules block a route would get: `<host>|<route>|<task>`.
+    Preview {
+        unit: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -696,6 +704,8 @@ impl ProjectClient {
                         | Then::Seal { .. }
                         | Then::Source { .. }
                         | Then::Wording { .. }
+                        | Then::Rules { .. }
+                        | Then::Preview { .. }
                 ) {
                     self.read.insert(then, result);
                     return None;
@@ -730,7 +740,12 @@ impl ProjectClient {
                 }
             }
             Event::Turbo { on } => self.turbo = on,
-            Event::Config { config } => self.config = Some(config),
+            Event::Config { config } => {
+                self.config = Some(config);
+                // What RingFrame said of the rules may no longer hold.
+                self.read
+                    .retain(|then, _| !matches!(then, Then::Rules { .. } | Then::Preview { .. }));
+            }
             Event::StartAtLogin { on } => self.start_at_login = on,
             Event::Reopened { since } => self.reopened_since = since,
             Event::Update { version } => self.update = version,

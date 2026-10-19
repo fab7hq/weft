@@ -7,6 +7,7 @@ mod eval;
 mod menu;
 mod project;
 mod remote;
+mod ringframe;
 mod seal;
 pub mod send_to;
 mod session;
@@ -46,6 +47,8 @@ pub struct SheetProps<'a> {
     /// The setting being typed, and its text.
     pub setting_editing: Option<&'a (Option<std::path::PathBuf>, Vec<String>)>,
     pub setting_text: &'a str,
+    /// The RingFrame preview's `<host>|<route>|<task>`.
+    pub preview: &'a str,
 }
 
 impl SheetProps<'_> {
