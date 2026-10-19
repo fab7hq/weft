@@ -18,6 +18,12 @@ pub fn key(key: &str, typed: Option<&str>, held: Held, modes: Modes) -> Option<V
     if held.platform {
         return None;
     }
+    if held.control
+        && let Some(byte) = control_byte(key)
+    {
+        // With Alt too, the control byte after an Escape.
+        return Some(if held.alt { vec![0x1b, byte] } else { vec![byte] });
+    }
     let modifier = 1 + u8::from(held.shift) + 2 * u8::from(held.alt) + 4 * u8::from(held.control);
     // A cursor key: application mode sends SS3, a modifier always CSI.
     let cursor = |end: char| -> Vec<u8> {
@@ -50,16 +56,21 @@ pub fn key(key: &str, typed: Option<&str>, held: Held, modes: Modes) -> Option<V
     Some(bytes)
 }
 
-fn text_key(key: &str, typed: Option<&str>, held: Held) -> Option<Vec<u8>> {
-    if held.control && key.len() == 1 {
-        let ch = key.as_bytes()[0].to_ascii_lowercase();
-        if ch.is_ascii_lowercase() {
-            return Some(vec![ch - b'a' + 1]);
-        }
-        if ch == b']' {
-            return Some(vec![0x1d]);
-        }
+/// The byte Ctrl with `key` sends, as a terminal sends it.
+fn control_byte(key: &str) -> Option<u8> {
+    match key.as_bytes() {
+        b"space" | b"@" => Some(0),
+        [ch] if ch.is_ascii_alphabetic() => Some(ch.to_ascii_lowercase() - b'a' + 1),
+        b"[" => Some(0x1b),
+        b"\\" => Some(0x1c),
+        b"]" => Some(0x1d),
+        b"^" => Some(0x1e),
+        b"_" | b"/" => Some(0x1f),
+        _ => None,
     }
+}
+
+fn text_key(key: &str, typed: Option<&str>, held: Held) -> Option<Vec<u8>> {
     let text = typed
         .filter(|t| !t.is_empty())
         .or((key.chars().count() == 1 && !held.control).then_some(key))?;
@@ -159,6 +170,27 @@ mod tests {
         let cmd = Held { platform: true, ..Held::default() };
         assert_eq!(key("v", Some("v"), cmd, modes()), None, "⌘V is the window's");
         assert_eq!(key("enter", None, Held::default(), modes()), Some(b"\r".to_vec()));
+    }
+
+    #[test]
+    fn control_with_punctuation_and_space_and_with_alt_sends_what_a_terminal_does() {
+        let ctrl = Held { control: true, ..Held::default() };
+        let sent = |k: &str, held| key(k, None, held, modes());
+        for (k, byte) in [
+            ("space", 0),
+            ("[", 0x1b),
+            ("\\", 0x1c),
+            ("]", 0x1d),
+            ("^", 0x1e),
+            ("_", 0x1f),
+            ("/", 0x1f),
+        ] {
+            assert_eq!(sent(k, ctrl), Some(vec![byte]), "ctrl {k}");
+        }
+        let ctrl_alt = Held { alt: true, ..ctrl };
+        assert_eq!(sent("c", ctrl_alt), Some(vec![0x1b, 3]));
+        assert_eq!(sent("]", ctrl_alt), Some(vec![0x1b, 0x1d]));
+        assert_eq!(sent("1", ctrl), None, "no control byte, nothing sent");
     }
 
     #[test]
