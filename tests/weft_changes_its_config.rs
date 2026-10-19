@@ -240,6 +240,35 @@ fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
     one.answer(Call::Shutdown).ok();
 }
 
+/// A route rule changed in Settings › Harnesses is written to `config.toml`'s
+/// `[ringframe.deltas."<host>"]`; the harness files fab7 ships are never touched.
+#[test]
+fn a_route_rule_is_written_to_config_and_no_harness_file_changes() {
+    let reading = weft::outside::Fixed::new().answers(
+        "ringframe",
+        &["deltas", "list", "--override"],
+        0,
+        "{}",
+    );
+    let w = World::in_world("route-rule", "", reading);
+    let harness = w.root.join("harnesses/codex.toml");
+    std::fs::create_dir_all(harness.parent().unwrap()).unwrap();
+    let shipped = weft_core::harness::fixture::text("codex");
+    std::fs::write(&harness, &shipped).unwrap();
+    let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
+    let rule = json!([{"id": "codex.native_goal.step_loop", "status": "candidate"}]);
+    one.set("machine", &["ringframe", "deltas", "codex", "entries"], Some(rule)).unwrap();
+    let read = one.answer(Call::ConfigGet).unwrap();
+    assert_eq!(
+        read["machine"]["ringframe"]["deltas"]["codex"]["entries"][0]["status"],
+        "candidate"
+    );
+    assert!(w.text().contains("candidate"), "in config.toml: {}", w.text());
+    assert_eq!(std::fs::read_to_string(&harness).unwrap(), shipped, "the harness file as shipped");
+    assert_eq!(std::fs::read_dir(harness.parent().unwrap()).unwrap().count(), 1);
+    one.answer(Call::Shutdown).ok();
+}
+
 /// What the RingFrame tab reads, through the daemon: the practices and every
 /// rule with its source, and the Rules block a route would get.
 #[test]
