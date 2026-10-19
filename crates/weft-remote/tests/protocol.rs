@@ -303,3 +303,30 @@ fn a_device_watches_two_agents_side_by_side() {
         seen.push_str(&String::from_utf8_lossy(&bytes));
     }
 }
+
+/// The machine's settings, read and changed from a device (weft-after-desktop
+/// ADR-0003 D6): every device is told what changed, Turbo included.
+#[test]
+fn a_device_reads_and_changes_the_machine_s_settings() {
+    let mut h = Harness::start("settings");
+    let _shell = h.shell("work");
+    let (mut d, _) = h.allowed("d_1");
+    d.agents(1);
+    let (mut other, _) = h.allowed("d_2");
+    other.agents(1);
+    d.send(json!({"type": "settings", "project": "work", "req": 1}));
+    let got = d.answer(1);
+    assert_eq!(got["type"], "ok", "{got}");
+    assert_eq!(got["settings"]["effective"]["turbo"], false);
+    let set = json!({"type": "set", "project": "work", "scope": "machine", "key": ["turbo"],
+                     "value": true, "req": 2});
+    d.send(set);
+    let changed = d.answer(2);
+    assert_eq!(changed["settings"]["effective"]["turbo"], true, "{changed}");
+    let told = other.next_of("settings");
+    assert_eq!(told["project"], "work");
+    assert_eq!(told["settings"]["machine"]["turbo"], true);
+    d.send(json!({"type": "set", "project": "work", "scope": "machine", "key": ["turbo"],
+                  "value": "yes", "req": 3}));
+    assert_eq!(d.answer(3)["type"], "error", "what Weft would not read is refused");
+}

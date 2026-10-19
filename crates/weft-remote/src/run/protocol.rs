@@ -36,6 +36,8 @@ impl Remote {
             Some("start") => self.start_agent(conn, m, &req),
             Some("resolve") => self.resolve(conn, m, &req),
             Some("read") => self.read(conn, m, &req),
+            Some("settings") => self.settings(conn, m, &req),
+            Some("set") => self.set(conn, m, &req),
             Some("seen") => self.seen(conn, m),
             Some("follow") => self.follow(conn, m),
             Some("suggest") => self.suggest(conn, m, &req),
@@ -130,6 +132,7 @@ impl Remote {
                         }
                         return;
                     }
+                    Carries::Settings => ok["settings"] = v,
                     Carries::Suggestion => {
                         if v.get("text").is_some() {
                             ok["text"] = v["text"].clone();
@@ -368,6 +371,26 @@ impl Remote {
     }
 
     /// The project a message names by `project`.
+    /// The machine's settings, as the project's daemon client has them.
+    fn settings(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
+        let at = self.project_named(m)?;
+        self.ask(at, Call::ConfigGet, conn, req, Carries::Settings)
+    }
+
+    /// One setting changed, as the desktop changes it (weft-after-desktop
+    /// ADR-0003 D6); every device is told what follows.
+    fn set(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
+        let at = self.project_named(m)?;
+        let scope = m["scope"].as_str().ok_or(("bad_request", "set names a scope".to_string()))?;
+        let key = m["key"]
+            .as_array()
+            .and_then(|k| k.iter().map(|p| p.as_str().map(str::to_string)).collect::<Option<_>>())
+            .ok_or(("bad_request", "set names a key, as a list of names".to_string()))?;
+        let value = m.get("value").filter(|v| !v.is_null()).cloned();
+        let call = Call::ConfigSet { scope: scope.to_string(), key, value };
+        self.ask(at, call, conn, req, Carries::Settings)
+    }
+
     fn project_named(&self, m: &Value) -> Result<usize, Refusal> {
         let project = m["project"].as_str().ok_or(("bad_request", "no project".to_string()))?;
         let at =

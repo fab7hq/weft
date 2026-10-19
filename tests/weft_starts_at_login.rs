@@ -349,6 +349,29 @@ fn the_option_is_kept_in_config_and_changes_the_service() {
     app.answer(Call::Shutdown).ok();
 }
 
+/// Set from Settings (`config.set`), the option is the same switch: the
+/// service is written and removed with the daemon's own program and `PATH`.
+#[test]
+fn the_option_set_from_settings_changes_the_service_too() {
+    let w = World::new("settings");
+    let s = w.service(System::Systemd);
+    let (socket, config) = daemon(&w, s.clone());
+    let (mut app, _) = Client::open(&socket, &w.root);
+    let set = |on: bool| Call::ConfigSet {
+        scope: "machine".into(),
+        key: vec!["service".into(), "start_at_login".into()],
+        value: Some(serde_json::json!(on)),
+    };
+    let got = app.answer(set(true)).unwrap();
+    assert_eq!(got["machine"]["service"]["start_at_login"], true);
+    assert_eq!(app.told(), Some(true));
+    assert!(s.installed(), "the service is written");
+    assert!(std::fs::read_to_string(&config).unwrap().contains("start_at_login = true"));
+    app.answer(set(false)).unwrap();
+    assert!(!s.installed(), "and removed");
+    app.answer(Call::Shutdown).ok();
+}
+
 /// Turning Remote on or off writes no service and runs no `launchctl` or
 /// `systemctl`.
 #[test]

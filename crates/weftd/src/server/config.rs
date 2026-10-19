@@ -53,6 +53,22 @@ impl Session {
         key: Vec<String>,
         value: Option<serde_json::Value>,
     ) -> Answer {
+        // The login service is written with the option, as ☰'s switch does,
+        // for the weft running here and the PATH it was started with.
+        if scope == "machine" && key == ["service", "start_at_login"] {
+            let Some(on) = value.as_ref().and_then(serde_json::Value::as_bool) else {
+                return Answer::No("config", "start_at_login is on or off".into());
+            };
+            let program = std::env::current_exe().unwrap_or_default();
+            let path = std::env::var("PATH").unwrap_or_default();
+            return match self.turn_start_at_login(on, &program.to_string_lossy(), &path) {
+                Answer::Ok(_) => {
+                    self.reread_config();
+                    Answer::Ok(self.config_json(at))
+                }
+                other => other,
+            };
+        }
         if key.first().map(String::as_str) != Some("ringframe") {
             return self.change_config(at, &scope, &key, value.as_ref());
         }

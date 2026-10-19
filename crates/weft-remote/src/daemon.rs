@@ -131,7 +131,8 @@ impl Project {
 /// and view; `agent.start` with the command line the daemon's harness file
 /// gives; `project.dismiss`. Never `agent.close`, `stage`, `setup`,
 /// `project.turbo`, `shutdown`, `unit.confirm`, `update` or `service.login`;
-/// `force: true` only as protocol.rs allows it.
+/// `force: true` only as protocol.rs allows it. The machine's settings, read
+/// and changed as the desktop does (weft-after-desktop ADR-0003 D6).
 pub fn allowed(call: &Call) -> bool {
     match call {
         Call::Hello { .. } | Call::RemoteView { .. } => true,
@@ -141,6 +142,7 @@ pub fn allowed(call: &Call) -> bool {
         // What to suggest in a watched agent's message field.
         Call::Suggest { .. } => true,
         Call::Available => true,
+        Call::ConfigGet | Call::ConfigSet { .. } => true,
         // A fresh agent, or a work's session resumed, with the command line
         // the daemon's harness file gives: never one a device sent.
         Call::StartAgent { .. } => true,

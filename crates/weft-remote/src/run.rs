@@ -155,6 +155,8 @@ enum Carries {
     Follow(u64, usize, u32),
     /// What to suggest in the agent's message field, or nothing.
     Suggestion,
+    /// The machine's settings, as `config.get` answers them.
+    Settings,
 }
 
 /// The daemon's reads one device read is gathered from.
@@ -473,6 +475,14 @@ impl Remote {
             }
             Heard::Event(_, Event::Presence { .. }) => self.presence(),
             Heard::Event(CONTROL, _) => {}
+            Heard::Event(at, Event::Config { config }) => {
+                if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {
+                    let project = open.agents.name.clone();
+                    self.to_devices(
+                        &json!({"type": "settings", "project": project, "settings": config}),
+                    );
+                }
+            }
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
             Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
             Heard::Event(at, pending @ Event::Pending { .. }) => self.pending_added(at, pending),
