@@ -29,7 +29,7 @@ impl WeftDesktopApp {
             action,
             Action::Window(
                 WindowAct::ToggleMenu | WindowAct::ToggleTurbo | WindowAct::ToggleStartAtLogin
-            ) | Action::Tree(TreeAct::TogglePlus(_))
+            ) | Action::Tree(TreeAct::TogglePlus(_) | TreeAct::ToggleProjectMenu(_))
                 | Action::Pane(PaneAct::ToggleLayoutMenu(_))
         ) {
             self.close_popovers();
@@ -45,6 +45,7 @@ impl WeftDesktopApp {
 
     fn close_popovers(&mut self) {
         self.menu_open = false;
+        self.project_menu = None;
         self.plus_popover_project = None;
         self.layout_menu_pane = None;
     }
@@ -143,6 +144,15 @@ impl WeftDesktopApp {
                     };
                     self.why_not(words::fill(key, &[("harness", &r.harness)]));
                 }
+            }
+            TreeAct::ToggleProjectMenu(p) => {
+                self.project_menu =
+                    if self.project_menu.as_ref() == Some(&p) { None } else { Some(p) };
+            }
+            TreeAct::OpenProjectSettings(p) => {
+                self.project_menu = None;
+                self.choice = None;
+                self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p });
             }
             TreeAct::TogglePlus(p) => {
                 if self.plus_popover_project.as_ref() == Some(&p) {
@@ -476,6 +486,32 @@ impl WeftDesktopApp {
                 if let Some(ActiveSheet::Settings { tab: shown }) = &mut self.active_sheet {
                     *shown = tab;
                 }
+            }
+            SheetAct::OpenChoice(key) => {
+                let key = key.join(".");
+                self.choice = if self.choice.as_deref() == Some(&key) { None } else { Some(key) };
+            }
+            SheetAct::Choose { project, key, value } => {
+                self.choice = None;
+                self.set_setting(project.as_deref(), &key, value);
+            }
+            SheetAct::EditSetting { project, key } => {
+                let now = self.setting_now(project.as_deref(), &key);
+                self.setting_field.set_text(now.as_str().unwrap_or_default());
+                self.setting_editing = Some((project, key));
+                self.focus = Focus::Setting;
+            }
+            SheetAct::CommitSetting => {
+                if let Some((project, key)) = self.setting_editing.take() {
+                    let text = self.setting_field.text().trim().to_string();
+                    let value = (!text.is_empty()).then(|| serde_json::json!(text));
+                    self.set_setting(project.as_deref(), &key, value);
+                }
+                self.focus = Focus::Terminal;
+            }
+            SheetAct::AddProjectSetting => {
+                self.choice =
+                    if self.choice.as_deref() == Some("add") { None } else { Some("add".into()) };
             }
             SheetAct::Toggle(setting) => {
                 let (key, on) = match setting {

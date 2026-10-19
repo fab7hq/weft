@@ -37,6 +37,7 @@ fn field(app: &mut WeftDesktopApp, which: Focus) -> Option<&mut TextField> {
         Focus::Search => Some(&mut app.search),
         Focus::Message => Some(app.message_field()),
         Focus::Ask => app.ask_draft_mut(),
+        Focus::Setting => app.setting_field_mut(),
         Focus::Terminal => None,
     }
 }
@@ -545,6 +546,7 @@ impl GpuiDesktopView {
             Outcome::Send => match which {
                 Focus::Message => guard.app.dispatch(crate::action::PaneAct::SendMessage),
                 Focus::Ask => guard.app.dispatch(SheetAct::SubmitAsk),
+                Focus::Setting => guard.app.dispatch(SheetAct::CommitSetting),
                 _ => {}
             },
             // Tab takes the suggestion shown in the message field; Escape drops
@@ -688,7 +690,11 @@ impl GpuiDesktopView {
             placeholder: parse_color(palette::DIM),
             caret: parse_color(palette::TEXT),
             selection: parse_color("#388bfd55"),
-            max_lines: if el.tag == "input" && which == Focus::Search { 1 } else { 6 },
+            max_lines: if el.tag == "input" && matches!(which, Focus::Search | Focus::Setting) {
+                1
+            } else {
+                6
+            },
         };
         let snapshot = self.shared.lock().ok().and_then(|mut g| {
             let is_focused = g.app.focus == which;

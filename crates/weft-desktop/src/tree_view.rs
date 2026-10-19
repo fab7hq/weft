@@ -67,6 +67,8 @@ pub struct TreeProps<'a> {
     pub turbo: bool,
     pub unfolded_earlier: &'a std::collections::HashSet<PathBuf>,
     pub clients: &'a [crate::daemon::ProjectClient],
+    /// The project whose row's ⋯ is open.
+    pub project_menu: Option<&'a Path>,
 }
 
 /// Render the `380px` left `Tree` panel.
@@ -161,6 +163,9 @@ pub fn render_tree(props: &TreeProps) -> Element {
         let proj_selected =
             props.selection == Some(&TreeSelection::Project { project: root.clone() });
         tree_el = tree_el.child(render_project_row(root, proj, proj_selected));
+        if props.project_menu == Some(root.as_path()) {
+            tree_el = tree_el.child(render_project_menu(root, &proj.name));
+        }
         // Selected, a project says where it sends its acts, in plain words.
         if proj_selected && !routes.is_empty() {
             let said: Vec<String> = routes
@@ -447,6 +452,21 @@ fn render_project_row(root: &Path, proj: &Project, selected: bool) -> Element {
     }
     el = el.child(
         div()
+            .layer(format!("more {}", proj.name))
+            .role("button")
+            .aria_label(words::fill("desktop.project.menu_settings", &[("project", &proj.name)]))
+            .on_click(TreeAct::ToggleProjectMenu(root.to_path_buf()))
+            .flex_row()
+            .pad(2, 7)
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .font_mono()
+            .font_size(13)
+            .color(palette::MUTED)
+            .text("⋯"),
+    );
+    el = el.child(
+        div()
             .layer(format!("plus {}", proj.name))
             .role("button")
             .aria_label(words::fill("web.start.in", &[("project", &proj.name)]))
@@ -473,6 +493,36 @@ fn render_project_row(root: &Path, proj: &Project, selected: bool) -> Element {
         );
     }
     el
+}
+
+/// A project row's ⋯: its own settings, and closing it.
+fn render_project_menu(root: &Path, name: &str) -> Element {
+    let item = |layer: &str, act: TreeAct, text: String| {
+        div()
+            .layer(layer)
+            .on_click(act)
+            .self_stretch()
+            .pad(9, 14)
+            .font_size(13)
+            .border_bottom(palette::LINE)
+            .text(text)
+    };
+    div()
+        .layer("project menu")
+        .self_stretch()
+        .flex_col()
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(palette::LINE)
+        .child(item(
+            "project menu Settings",
+            TreeAct::OpenProjectSettings(root.to_path_buf()),
+            words::fill("desktop.project.menu_settings", &[("project", name)]),
+        ))
+        .child(item(
+            "project menu Close",
+            TreeAct::CloseProject(root.to_path_buf()),
+            words::fill("desktop.project.menu_close", &[("project", name)]),
+        ))
 }
 
 fn render_setup_checklist(needs: &weft_core::workspace::Needs) -> Element {

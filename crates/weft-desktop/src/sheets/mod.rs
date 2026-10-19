@@ -5,6 +5,7 @@
 mod ask;
 mod eval;
 mod menu;
+mod project;
 mod remote;
 mod seal;
 pub mod send_to;
@@ -40,6 +41,11 @@ pub struct SheetProps<'a> {
     pub send_to: Option<&'a send_to::SendTo>,
     /// The Details this one was opened from, by name.
     pub back: Option<&'a str>,
+    /// The setting whose choices are open, by its dotted key, or `add`.
+    pub choice: Option<&'a str>,
+    /// The setting being typed, and its text.
+    pub setting_editing: Option<&'a (Option<std::path::PathBuf>, Vec<String>)>,
+    pub setting_text: &'a str,
 }
 
 impl SheetProps<'_> {
@@ -97,5 +103,6 @@ fn sheet_of(props: &SheetProps) -> Element {
         ActiveSheet::Updates => updates::render(props),
         ActiveSheet::Remote => remote::render(props),
         ActiveSheet::Settings { tab } => settings::render(props, *tab),
+        ActiveSheet::ProjectSettings { project } => project::render(props, project),
     }
 }

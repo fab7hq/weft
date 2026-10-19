@@ -93,6 +93,10 @@ pub enum ActiveSheet {
     Settings {
         tab: crate::action::SettingsTab,
     },
+    /// A project's own settings: what differs from every project's.
+    ProjectSettings {
+        project: PathBuf,
+    },
     Ask {
         project: PathBuf,
         send_to: Option<String>,
@@ -152,6 +156,15 @@ pub struct WeftDesktopApp {
     pub selection: Option<TreeSelection>,
     /// The tree's search field.
     pub search: TextField,
+    /// A setting being typed in Settings, and where it goes: every
+    /// project's, or a project's own.
+    pub setting_field: TextField,
+    pub(crate) setting_editing: Option<(Option<PathBuf>, Vec<String>)>,
+    /// The setting whose choices are shown, by its dotted key; `add` for what
+    /// a project can set for itself.
+    pub(crate) choice: Option<String>,
+    /// The project whose row's ⋯ is open.
+    pub(crate) project_menu: Option<PathBuf>,
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -217,6 +230,10 @@ impl WeftDesktopApp {
             clients: Vec::new(),
             selection: None,
             search: TextField::new(Shape::Line),
+            setting_field: TextField::new(Shape::Line),
+            setting_editing: None,
+            choice: None,
+            project_menu: None,
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -297,9 +314,46 @@ impl WeftDesktopApp {
     /// One of the machine's settings turned, through the first daemon that
     /// answers: it tells every project.
     pub(crate) fn turn(&mut self, key: &str, on: bool) {
-        if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
-            let _ = c.set_config("machine", &[key], Some(serde_json::json!(on)));
+        self.set_setting(None, &[key.to_string()], Some(serde_json::json!(on)));
+    }
+
+    /// A setting set, or taken out: every project's through the first daemon
+    /// that answers, or `project`'s own through its.
+    pub(crate) fn set_setting(
+        &mut self,
+        project: Option<&Path>,
+        key: &[String],
+        value: Option<serde_json::Value>,
+    ) {
+        let (scope, client) = match project {
+            Some(root) => ("project", self.clients.iter_mut().find(|c| c.root == root)),
+            None => ("machine", self.clients.iter_mut().find(|c| c.is_connected())),
+        };
+        if let Some(c) = client {
+            let _ = c.set_config(scope, key, value);
         }
+    }
+
+    /// A setting as the daemon last said it: every project's, or `project`'s
+    /// own; null when it says nothing.
+    pub(crate) fn setting_now(&self, project: Option<&Path>, key: &[String]) -> serde_json::Value {
+        let config = match project {
+            Some(root) => {
+                self.clients.iter().find(|c| c.root == root).and_then(|c| c.config.as_ref())
+            }
+            None => self.clients.iter().find_map(|c| c.config.as_ref()),
+        };
+        let table = if project.is_some() { "project" } else { "machine" };
+        let mut v = config.map_or(&serde_json::Value::Null, |c| &c[table]);
+        for k in key {
+            v = &v[k.as_str()];
+        }
+        v.clone()
+    }
+
+    /// The setting field, while one is being typed.
+    pub fn setting_field_mut(&mut self) -> Option<&mut TextField> {
+        self.setting_editing.is_some().then_some(&mut self.setting_field)
     }
 
     /// Put a connected project in place of the one it connects, and open a
@@ -986,6 +1040,7 @@ impl WeftDesktopApp {
                 turbo: self.turbo(),
                 unfolded_earlier: &self.unfolded_earlier,
                 clients: &self.clients,
+                project_menu: self.project_menu.as_deref(),
             }));
         }
 
@@ -1006,6 +1061,9 @@ impl WeftDesktopApp {
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
                 back: self.sheet_back.last().map(|(_, name)| name.as_str()),
+                choice: self.choice.as_deref(),
+                setting_editing: self.setting_editing.as_ref(),
+                setting_text: self.setting_field.text(),
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

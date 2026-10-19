@@ -2317,3 +2317,123 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     assert_eq!(said("setting Notifications"), "OFF");
     assert_eq!(said("setting Suggestions"), "ON");
 }
+
+/// Workflow: who does each act and the Eval debate, every project's; a
+/// choice lists "The agent you are in" and each harness; a role's model is
+/// typed and kept on Enter.
+#[test]
+fn workflow_sets_every_project_s_routing_and_debate() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].config = Some(json!({"machine": {"routing": {"eval": "claude"},
+        "eval": {"debate": {"harness": "codex", "map": {"effort": "low"}}}}, "project": null}));
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::Workflow));
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Settings").unwrap();
+    let value = |row: &str| {
+        sheet
+            .find_layer(row)
+            .unwrap_or_else(|| panic!("{row}"))
+            .find_layer("setting value")
+            .unwrap()
+            .all_text()
+    };
+    assert_eq!(
+        value("setting Ask"),
+        format!("{} ▾", words::word("desktop.settings.agent_you_are_in"))
+    );
+    assert_eq!(value("setting Eval"), "Claude Code ▾");
+    assert_eq!(value("setting Runs in"), "Codex ▾");
+    assert_eq!(value("setting Map effort"), "low ▾");
+
+    let key = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    app.dispatch(SheetAct::OpenChoice(key(&["routing", "seal"])));
+    let dom = app.render();
+    let list = dom.find_layer("choices routing.seal").expect("the choices");
+    for option in [
+        "choice The agent you are in",
+        "choice Antigravity",
+        "choice Claude Code",
+        "choice Codex",
+        "choice Grok Build",
+    ] {
+        assert!(list.find_layer(option).is_some(), "{option}");
+    }
+    app.dispatch(SheetAct::Choose {
+        project: None,
+        key: key(&["routing", "seal"]),
+        value: Some(json!("codex")),
+    });
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: key(&["routing", "seal"]),
+            value: Some(json!("codex"))
+        }
+    );
+    assert!(app.render().find_layer("choices routing.seal").is_none(), "closed once chosen");
+    app.dispatch(SheetAct::Choose { project: None, key: key(&["routing", "eval"]), value: None });
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet { scope: "machine".into(), key: key(&["routing", "eval"]), value: None }
+    );
+
+    app.dispatch(SheetAct::EditSetting {
+        project: None,
+        key: key(&["eval", "debate", "reduce", "model"]),
+    });
+    assert_eq!(app.focus, Focus::Setting);
+    app.setting_field.paste("gpt-6-luna");
+    app.dispatch(SheetAct::CommitSetting);
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: key(&["eval", "debate", "reduce", "model"]),
+            value: Some(json!("gpt-6-luna"))
+        }
+    );
+    assert_eq!(app.focus, Focus::Terminal);
+}
+
+/// A project's own settings, from its row's ⋯: only what differs from every
+/// project's, each beside every project's value, with Reset; and more added.
+#[test]
+fn a_project_s_own_settings_list_what_differs_and_reset_it() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.clients[0].config = Some(json!({
+        "machine": {"routing": {"eval": "claude"}},
+        "project": {"routing": {"eval": "codex"}}}));
+    app.dispatch(TreeAct::ToggleProjectMenu(weft()));
+    let dom = app.render();
+    assert!(dom.find_layer("project menu Settings").is_some());
+    app.dispatch(TreeAct::OpenProjectSettings(weft()));
+    assert!(
+        matches!(&app.active_sheet, Some(ActiveSheet::ProjectSettings { project }) if *project == weft())
+    );
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Project settings").expect("the project's settings");
+    let row = sheet.find_layer("project setting routing.eval").expect("Eval differs here");
+    assert_eq!(row.find_layer("setting value").unwrap().all_text(), "Codex ▾");
+    assert!(
+        row.all_text().contains("Claude Code"),
+        "every project's value beside it: {}",
+        row.all_text()
+    );
+    assert!(sheet.find_layer("project setting routing.ask").is_none(), "only what differs");
+
+    let key = vec!["routing".to_string(), "eval".to_string()];
+    app.dispatch(SheetAct::Choose { project: Some(weft()), key: key.clone(), value: None });
+    let (_, call) = wire.call();
+    assert_eq!(call, Call::ConfigSet { scope: "project".into(), key, value: None });
+
+    app.dispatch(SheetAct::AddProjectSetting);
+    let dom = app.render();
+    let list = dom.find_layer("choices add").expect("what can be set here");
+    assert!(list.find_layer("choice Ask").is_some() && list.find_layer("choice Seal").is_some());
+    assert!(list.find_layer("choice Turbo").is_none(), "Turbo is every project's only");
+}

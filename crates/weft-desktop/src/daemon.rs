@@ -820,8 +820,13 @@ impl ProjectClient {
 
     /// One key of `config.toml` set in `scope` (`machine` or `project`), or
     /// taken out; every client is told the settings that follow.
-    pub fn set_config(&mut self, scope: &str, key: &[&str], value: Option<Value>) -> Result<u64> {
-        let key = key.iter().map(|k| k.to_string()).collect();
+    pub fn set_config(
+        &mut self,
+        scope: &str,
+        key: &[impl AsRef<str>],
+        value: Option<Value>,
+    ) -> Result<u64> {
+        let key = key.iter().map(|k| k.as_ref().to_string()).collect();
         self.tell(Call::ConfigSet { scope: scope.into(), key, value }, Then::Refusal)
     }
 

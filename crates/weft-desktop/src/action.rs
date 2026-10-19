@@ -25,6 +25,8 @@ pub enum Focus {
     Message,
     /// The open Ask's field.
     Ask,
+    /// A setting typed in Settings (a role's model).
+    Setting,
 }
 
 /// The top bar, `☰` and the window itself.
@@ -50,6 +52,7 @@ pub enum WindowAct {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     General,
+    Workflow,
 }
 
 /// A switch in Settings that only the machine has (Turbo and Start at login
@@ -72,6 +75,9 @@ pub enum TreeAct {
         session: String,
     },
     TogglePlus(PathBuf),
+    /// A project row's ⋯: its settings, and closing it.
+    ToggleProjectMenu(PathBuf),
+    OpenProjectSettings(PathBuf),
     StartAgent {
         project: PathBuf,
         harness: String,
@@ -159,6 +165,24 @@ pub enum SheetAct {
     SettingsTab(SettingsTab),
     /// A switch in Settings turned: the machine's, through the daemon.
     Toggle(Setting),
+    /// A setting's choices shown, or hidden again, by its key.
+    OpenChoice(Vec<String>),
+    /// A setting chosen: every project's, or `project`'s own; `None` takes
+    /// it out.
+    Choose {
+        project: Option<PathBuf>,
+        key: Vec<String>,
+        value: Option<serde_json::Value>,
+    },
+    /// A setting typed: its field takes the keyboard.
+    EditSetting {
+        project: Option<PathBuf>,
+        key: Vec<String>,
+    },
+    /// The typed setting kept (Enter); empty takes it out.
+    CommitSetting,
+    /// "+ Change a setting here": what a project can set for itself.
+    AddProjectSetting,
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.
