@@ -17,11 +17,11 @@ pub const SLEPT: Duration = Duration::from_secs(15);
 /// everywhere, a lookup of it can say it does not exist.
 pub const NEW_NAME: Duration = Duration::from_secs(120);
 /// A new name is told to the service this long after it appears. Resolvers
-/// learn it a moment after the tunnel prints it, and one asked sooner answers
-/// that it does not exist and keeps that answer for a minute or more: a phone
-/// told at once looked it up within 2 s and could not reach it for 90 s.
-/// Asked 3 s and more after, every lookup found it.
-pub const PUBLISHED: Duration = Duration::from_secs(5);
+/// learn it some seconds after the tunnel prints it, and one asked sooner
+/// answers that it does not exist and keeps that answer for a minute or more:
+/// a phone that looked it up too soon could not reach it for 90 s. Cloudflare
+/// published a quick tunnel's name 6.5 to 9.9 s after it was printed.
+pub const PUBLISHED: Duration = Duration::from_secs(11);
 /// How often the tunnel is looked at while it answers: often enough that one
 /// Cloudflare dropped is found, ended and replaced within the 60 s target
 /// (15 + 2 × 10 s of looks, then a new tunnel's few seconds).
@@ -371,5 +371,13 @@ mod tests {
         );
         let acts = r.tick(mono + PUBLISHED, wall, Some(name), true, true);
         assert!(acts.contains(&Act::Report(name.into())), "{acts:?}");
+    }
+
+    /// Cloudflare's own name server first answered for a new quick tunnel
+    /// 6.5 to 9.9 s after the tunnel printed it (eight tunnels, 2026-10-19):
+    /// the name is told after the slowest of them.
+    #[test]
+    fn a_new_name_is_told_after_its_provider_publishes_it() {
+        assert!(PUBLISHED > Duration::from_millis(9_900), "{PUBLISHED:?}");
     }
 }

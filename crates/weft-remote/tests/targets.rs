@@ -18,6 +18,9 @@ use weft_remote::health::{Act, Recovery};
 use weft_remote::tunnel::{ADDRESS_WITHIN, Backoff};
 
 const PHONE: Duration = Duration::from_secs(10);
+/// A target in which the tunnel comes back at a new address is this much
+/// longer: the name is told only once its provider has published it.
+const NEW_ADDRESS: Duration = Duration::from_secs(10);
 /// A tunnel's program gives its address this long after it starts.
 const ADDRESS_AFTER: Duration = Duration::from_secs(3);
 /// A look or a report is answered this long after it is made.
@@ -229,10 +232,12 @@ impl World {
     }
 
     /// How long until the phone could work again, from now; panics past
-    /// `most`, the machine's budget.
+    /// `most`, the machine's budget, and `NEW_ADDRESS` more once the tunnel
+    /// has a new address.
     fn works_within(&mut self, most: Duration) -> Duration {
-        let from = self.t;
+        let (from, names) = (self.t, self.names);
         while !self.works() {
+            let most = if self.names > names { most + NEW_ADDRESS } else { most };
             assert!(
                 self.t - from <= most,
                 "not working {:?} after; the budget is {most:?}",

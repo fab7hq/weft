@@ -208,8 +208,8 @@ impl App {
 
     /// Views until one is picked, keeping each as `view`.
     pub fn wait_view(&mut self, mut pick: impl FnMut(&Value) -> bool) -> Value {
-        // A new address reaches the service `PUBLISHED` (5 s) after it appears.
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // A new address reaches the service `PUBLISHED` after it appears.
+        let deadline = Instant::now() + weft_remote::health::PUBLISHED + Duration::from_secs(5);
         self.out.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         while Instant::now() < deadline {
             if let Ok(Some(Line::Event(Event::Remote { view }))) = self.lines.next() {
