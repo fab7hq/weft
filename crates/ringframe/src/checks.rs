@@ -27,6 +27,8 @@ const MAX_CHECKS: usize = 4;
 const CHECK_SECONDS: u64 = 600;
 /// How much of a check's output its fact keeps.
 const TAIL_BYTES: usize = 4096;
+/// The most of a check's output, per stream, that is kept.
+const OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 /// At most this many warnings become findings, per check.
 const MAX_WARNINGS: usize = 40;
 
@@ -199,13 +201,7 @@ fn execute(ws: &Workspace, command: &str) -> (&'static str, Option<i32>, String,
     let Ok(mut child) = child else {
         return ("not_run", None, "the check could not be started".into(), 0);
     };
-    let drain = |mut r: Box<dyn Read + Send>| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = r.read_to_end(&mut buf);
-            buf
-        })
-    };
+    let drain = |mut r: Box<dyn Read + Send>| std::thread::spawn(move || read_capped(&mut r));
     let out = drain(Box::new(child.stdout.take().expect("piped")));
     let err = drain(Box::new(child.stderr.take().expect("piped")));
     let limit = Duration::from_secs(CHECK_SECONDS);
@@ -230,6 +226,15 @@ fn execute(ws: &Workspace, command: &str) -> (&'static str, Option<i32>, String,
         Some(s) => ("failed", s.code(), output, secs),
         None => ("timed_out", None, output, secs),
     }
+}
+
+/// A stream's first `OUTPUT_BYTES`; the rest is read and dropped, so a check
+/// that writes without end neither fills memory nor blocks on a full pipe.
+fn read_capped(r: &mut impl Read) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let _ = r.by_ref().take(OUTPUT_BYTES as u64).read_to_end(&mut buf);
+    let _ = std::io::copy(r, &mut std::io::sink());
+    buf
 }
 
 fn tail_of(output: &str) -> String {
@@ -298,7 +303,11 @@ fn added_lines(ws: &Workspace, eval_id: &str) -> Vec<(String, BTreeSet<u32>, Str
         for l in text.lines() {
             if let Some(p) = l.strip_prefix("+++ ").or_else(|| l.strip_prefix("--- ")) {
                 if file.is_empty() {
-                    file = p.trim_start_matches("b/").trim_start_matches("a/").to_string();
+                    file = p
+                        .strip_prefix("b/")
+                        .or_else(|| p.strip_prefix("a/"))
+                        .unwrap_or(p)
+                        .to_string();
                 }
             } else if let Some(h) = l.strip_prefix("@@ ") {
                 next = h
@@ -370,5 +379,26 @@ mod tests {
                 ("src/app.ts".into(), 12, "warning: 'x' is unused".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_diff_path_loses_one_prefix_only() {
+        let dir = crate::testing::repo();
+        let ws = crate::testing::ws_for(dir.path());
+        let evals = ws.rf_dir().join("evals/e1");
+        std::fs::create_dir_all(&evals).unwrap();
+        let window = "--- a/a/lib.rs\n+++ b/a/lib.rs\n@@ -1,0 +1,1 @@\n+fn x() {}\n";
+        let doc = serde_json::json!({"windows": {"w1": window}});
+        std::fs::write(evals.join("windows.json"), doc.to_string()).unwrap();
+        let found = added_lines(&ws, "e1");
+        assert_eq!(found, [("a/lib.rs".to_string(), BTreeSet::from([1]), "w1".to_string())]);
+    }
+
+    #[test]
+    fn a_check_output_is_kept_to_its_cap_and_the_rest_read_away() {
+        let mut long = std::io::repeat(b'x').take(OUTPUT_BYTES as u64 + 4096);
+        let kept = read_capped(&mut long);
+        assert_eq!(kept.len(), OUTPUT_BYTES);
+        assert_eq!(long.limit(), 0, "the rest is read so the check never blocks on a full pipe");
     }
 }

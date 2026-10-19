@@ -1646,7 +1646,8 @@ pub fn log_read(ws: &Workspace, task: &str, window: &str) -> Result<(), EvalErro
         std::fs::create_dir_all(p)?;
     }
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
-    writeln!(f, "{}", json!({"task": task, "window": window}))?;
+    // One write per line, so reads logged at once never tear a line.
+    f.write_all(format!("{}\n", json!({"task": task, "window": window})).as_bytes())?;
     Ok(())
 }
 
@@ -2767,6 +2768,28 @@ mod tests {
     const S1: &str = "plans/plan.md#Phase 1/1";
     const S2: &str = "plans/plan.md#Phase 1/2";
     const UPTIME: &str = "export const uptime_seconds = () => process.uptime();\n";
+
+    #[test]
+    fn reads_logged_at_once_are_each_one_whole_line() {
+        let dir = crate::testing::repo();
+        let ws = crate::testing::ws_for(dir.path());
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let ws = &ws;
+                s.spawn(move || {
+                    for w in 0..200 {
+                        log_read(ws, &format!("e1~t{t}"), &format!("w{w}")).unwrap();
+                    }
+                });
+            }
+        });
+        let text = std::fs::read_to_string(tmp(&ws, "e1").join("reads.jsonl")).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 1600);
+        for l in lines {
+            serde_json::from_str::<Value>(l).unwrap_or_else(|_| panic!("a torn line: {l}"));
+        }
+    }
 
     struct Bench {
         eval_id: String,
