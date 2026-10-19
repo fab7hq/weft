@@ -53,8 +53,8 @@ impl Backoff {
 }
 
 /// Where the tunnel's program is: where `[remote] program` says, else on
-/// `PATH` by its name, else at one of the places its adapter names (`paths`).
-pub fn find(configured: Option<&str>, program: &str, paths: &[String]) -> Option<PathBuf> {
+/// `PATH` by its name.
+pub fn find(configured: Option<&str>, program: &str) -> Option<PathBuf> {
     let runnable = |p: &Path| {
         use std::os::unix::fs::PermissionsExt;
         p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -62,10 +62,8 @@ pub fn find(configured: Option<&str>, program: &str, paths: &[String]) -> Option
     if let Some(path) = configured {
         return runnable(Path::new(path)).then(|| PathBuf::from(path));
     }
-    let on_path = std::env::var_os("PATH").and_then(|dirs| {
-        std::env::split_paths(&dirs).map(|d| d.join(program)).find(|p| runnable(p))
-    });
-    on_path.or_else(|| paths.iter().map(PathBuf::from).find(|p| runnable(p)))
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).map(|d| d.join(program)).find(|p| runnable(p))
 }
 
 /// The first address in a line of the program's output: an `https://` URL

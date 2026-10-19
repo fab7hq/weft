@@ -18,9 +18,9 @@ use crate::agents;
 use crate::daemon::{self, CONTROL, Heard};
 use crate::devices::{self, Devices, Gate};
 use crate::health::{Act, Recovery};
-use crate::install::Tool;
 use crate::socket::{self, Outbox, Socket};
 use crate::store::{self, Machine};
+use crate::tool::Tool;
 use crate::tunnel::{self, Tunnel, TunnelEvent};
 use crate::view::View;
 
@@ -42,8 +42,6 @@ pub struct Settings {
     pub account: Account,
     /// Fab7's assertion key.
     pub key: VerifyingKey,
-    /// GitHub's API, where Cloudflare's latest release is found.
-    pub github: String,
 }
 
 impl Settings {
@@ -54,7 +52,6 @@ impl Settings {
             socket: weft_proto::socket_path(),
             account: Account::new(),
             key: devices::fab7_key(),
-            github: crate::install::GITHUB_API.to_string(),
         }
     }
 }
@@ -72,10 +69,6 @@ pub enum Wake {
     },
     /// A push service said a device's subscription is gone.
     PushGone(crate::push::Gone),
-    /// Installing cloudflared said this.
-    Installing(String),
-    /// Installing cloudflared ended, or why it failed.
-    Installed(Result<(), String>),
     /// The service said this machine is no longer on an account.
     Left,
     /// What became of a report of this address.
@@ -277,9 +270,7 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
     let config = weft_core::config::read(&config, &Default::default());
     let chosen = config.remote().tunnel.as_deref().and_then(|id| Tool::tunnel(weft, id));
     let Some(tool) = chosen else { return Ready::Choose(Tool::tunnels(weft)) };
-    let Some(program) =
-        tunnel::find(config.remote().program.as_deref(), &tool.program, &tool.paths)
-    else {
+    let Some(program) = tunnel::find(config.remote().program.as_deref(), &tool.program) else {
         return Ready::Missing(tool);
     };
     // A tunnel a killed weft remote left running is stopped first.
@@ -300,69 +291,10 @@ fn start_tunnel(weft: &std::path::Path, port: u16, tx: &Sender<Wake>) -> Ready {
 
 /// The tunnel adapters to choose from, as the Remote view lists them.
 fn tunnel_list(tools: &[Tool]) -> Vec<Value> {
-    tools.iter().map(|t| json!({"id": t.id, "title": t.title})).collect()
-}
-
-/// How Install would install the tunnel's program here (remote.md §7a):
-/// Homebrew when it is there, else the release built for this machine; or
-/// why neither.
-fn offer(tool: &Tool) -> Result<Value, String> {
-    if let Some(argv) = tool.brew.as_ref().filter(|a| on_path(&a[0])) {
-        return Ok(json!({"how": "brew", "argv": argv.join(" ")}));
-    }
-    if let (Some(repo), Some(_)) = (&tool.repo, tool.asset()) {
-        return Ok(json!({"how": "download", "from": format!("github.com/{repo}")}));
-    }
-    Err(format!(
-        "Weft has no way to install {} on {}: put its path in config.toml as [remote] program.",
-        tool.program,
-        crate::install::machine()
-    ))
-}
-
-/// A program on `PATH`, or at the path it names.
-fn on_path(program: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    let runnable = |p: &std::path::Path| {
-        p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    };
-    if program.contains('/') {
-        return runnable(std::path::Path::new(program));
-    }
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|d| runnable(&d.join(program))))
-}
-
-/// Homebrew's install, each line it says sent to the view; whether it worked.
-fn run_brew(argv: &[String], tx: &Sender<Wake>) -> Result<(), String> {
-    use std::io::BufRead;
-    let mut child = std::process::Command::new(&argv[0])
-        .args(&argv[1..])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("{} could not start: {e}", argv.join(" ")))?;
-    let err = child.stderr.take().map(|e| {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
-                let _ = tx.send(Wake::Installing(line));
-            }
-        })
-    });
-    if let Some(out) = child.stdout.take() {
-        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
-            let _ = tx.send(Wake::Installing(line));
-        }
-    }
-    if let Some(e) = err {
-        let _ = e.join();
-    }
-    match child.wait() {
-        Ok(s) if s.success() => Ok(()),
-        _ => Err(format!("{} did not finish: see its output above.", argv.join(" "))),
-    }
+    tools
+        .iter()
+        .map(|t| json!({"id": t.id, "title": t.title, "note": t.note, "guide": t.guide}))
+        .collect()
 }
 
 /// Run until told to stop, or the daemon goes.
@@ -463,21 +395,6 @@ impl Remote {
                     if let Some(d) = self.devices.get_mut(&g.device) {
                         d.push = None;
                         let _ = self.devices.save();
-                    }
-                    true
-                }
-                Wake::Installing(line) => {
-                    self.view.installing = Some(line);
-                    true
-                }
-                Wake::Installed(result) => {
-                    self.view.installing = None;
-                    match result {
-                        Ok(()) => {
-                            self.view.failed = None;
-                            self.look();
-                        }
-                        Err(why) => self.view.failed = Some(why),
                     }
                     true
                 }
@@ -689,7 +606,8 @@ impl Remote {
                     conn.outbox.close();
                 }
             }
-            // `cloudflared` was missing: look again, and start if it is there.
+            // Check: its program was missing; look again, and start if the
+            // person has installed it.
             Some("look") if self.tunnel.is_none() => self.look(),
             // The tunnel the person picked from the list. Another than the
             // one before forgets where that one's program was.
@@ -713,9 +631,7 @@ impl Remote {
             }
             // Stop the tunnel and choose again, the current one picked.
             Some("change_tunnel")
-                if self.view.can_change_tunnel
-                    && self.view.installing.is_none()
-                    && self.view.signing_in.is_none() =>
+                if self.view.can_change_tunnel && self.view.signing_in.is_none() =>
             {
                 self.tunnel = None;
                 self.view.up = false;
@@ -725,10 +641,6 @@ impl Remote {
                 self.view.note = None;
                 self.view.chosen = self.adapter.take().map(|t| t.id);
                 self.view.choose = Some(tunnel_list(&Tool::tunnels(&self.settings.weft)));
-            }
-            // Install it, as the offer says, now the person said yes (§7a).
-            Some("install") if self.tunnel.is_none() && self.view.installing.is_none() => {
-                self.install()
             }
             Some("cancel") => {
                 self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -793,32 +705,10 @@ impl Remote {
             }
             Ready::Choose(tools) => self.view.choose = Some(tunnel_list(&tools)),
             Ready::Missing(tool) => {
-                self.view.missing =
-                    Some(json!({"id": tool.id, "title": tool.title, "program": tool.program}));
-                self.view.offer = offer(&tool);
+                self.view.missing = Some(json!({"id": tool.id, "title": tool.title,
+                                                "program": tool.program, "guide": tool.guide}));
                 self.adapter = Some(tool);
             }
-        }
-    }
-
-    /// Install the chosen tunnel's program as the offer says, off the loop.
-    fn install(&mut self) {
-        let Some(tool) = self.adapter.clone() else { return };
-        let Ok(offer) = offer(&tool) else { return };
-        let tx = self.tx.clone();
-        if offer["how"] == "brew" {
-            let argv = tool.brew.clone().unwrap_or_default();
-            self.view.installing = Some(argv.join(" "));
-            std::thread::spawn(move || {
-                let _ = tx.send(Wake::Installed(run_brew(&argv, &tx)));
-            });
-        } else {
-            self.view.installing = Some(format!("Downloading {} from GitHub", tool.program));
-            let (github, weft) = (self.settings.github.clone(), self.settings.weft.clone());
-            std::thread::spawn(move || {
-                let done = crate::install::download(&github, &tool, &weft).map(|_| ());
-                let _ = tx.send(Wake::Installed(done));
-            });
         }
     }
 

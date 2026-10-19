@@ -3,11 +3,13 @@
 
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct View {
-    /// No tunnel is chosen: the adapters to choose from, `[{id, title}]`.
+    /// No tunnel is chosen: the adapters to choose from,
+    /// `[{id, title, note, guide}]`.
     pub choose: Option<Vec<Value>>,
-    /// The chosen tunnel's program was not found: `{id, title, program}`.
+    /// The chosen tunnel's program was not found: `{id, title, program,
+    /// guide}`; installing it is the person's.
     pub missing: Option<Value>,
     /// What the tunnel can see, from its adapter, said wherever it is on.
     pub note: Option<String>,
@@ -24,11 +26,6 @@ pub struct View {
     pub devices: Vec<Value>,
     /// A device asking to be allowed: `{device, name, login}`.
     pub asking: Option<Value>,
-    /// With the program missing: how Install would install it (remote.md
-    /// §7a), or why it cannot.
-    pub offer: Result<Value, String>,
-    /// Installing it: the last line it said.
-    pub installing: Option<String>,
     /// The tunnel has no address yet: the last line its program said, or
     /// why it ended.
     pub tunnel_why: Option<String>,
@@ -40,34 +37,9 @@ pub struct View {
     pub chosen: Option<String>,
 }
 
-impl Default for View {
-    fn default() -> Self {
-        View {
-            choose: None,
-            missing: None,
-            note: None,
-            signing_in: None,
-            failed: None,
-            login: None,
-            address: None,
-            up: false,
-            devices: Vec::new(),
-            asking: None,
-            offer: Err(String::new()),
-            installing: None,
-            tunnel_why: None,
-            tunnel_title: None,
-            can_change_tunnel: false,
-            chosen: None,
-        }
-    }
-}
-
 impl View {
     pub fn json(&self) -> Value {
-        let state = if self.installing.is_some() {
-            "installing"
-        } else if self.choose.is_some() {
+        let state = if self.choose.is_some() {
             "choose"
         } else if self.missing.is_some() {
             "not_installed"
@@ -86,9 +58,6 @@ impl View {
         if let Some(why) = &self.failed {
             v["failed"] = json!(why);
         }
-        if let Some(line) = &self.installing {
-            v["line"] = json!(line);
-        }
         if let Some(tunnels) = &self.choose {
             v["tunnels"] = json!(tunnels);
             if let Some(id) = &self.chosen {
@@ -106,13 +75,6 @@ impl View {
         }
         if let (Some(tunnel), "not_installed") = (&self.missing, state) {
             v["tunnel"] = tunnel.clone();
-            match &self.offer {
-                Ok(offer) => v["offer"] = offer.clone(),
-                Err(why) => {
-                    v["offer"] = Value::Null;
-                    v["why"] = json!(why);
-                }
-            }
         }
         if state == "on" {
             v["login"] = json!(self.login);

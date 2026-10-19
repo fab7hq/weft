@@ -192,7 +192,10 @@ pub enum SheetAct {
     /// A tunnel picked, not yet used.
     RemotePick(String),
     RemoteUse,
-    RemoteInstall,
+    /// Look for the chosen tunnel's program again, the person having installed it.
+    RemoteLook,
+    /// A tunnel's installation guide, opened in the browser.
+    OpenGuide(String),
     RemoteSignIn,
     RemoteCancel,
     /// Stop the tunnel and choose again.

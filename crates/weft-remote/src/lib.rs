@@ -13,11 +13,11 @@ pub mod conversation;
 pub mod daemon;
 pub mod devices;
 pub mod health;
-pub mod install;
 pub mod push;
 pub mod run;
 pub mod socket;
 pub mod store;
+pub mod tool;
 pub mod tunnel;
 pub mod view;
 

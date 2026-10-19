@@ -419,6 +419,14 @@ impl GpuiDesktopView {
                 let prompt = weft_core::words::word("desktop.pick.project");
                 return self.pick(true, prompt, cx, WeftDesktopApp::open_project_path);
             }
+            // Only a web page: a guide is a tool file's, which the person
+            // installed but did not write.
+            Action::Sheet(SheetAct::OpenGuide(url)) => {
+                if url.starts_with("https://") {
+                    cx.open_url(url);
+                }
+                return;
+            }
             Action::Sheet(SheetAct::Locate(harness)) => {
                 let harness = harness.clone();
                 let prompt =

@@ -25,8 +25,7 @@ fn a_machine_removed_from_the_account_signs_in_again() {
         "/login/oauth/access_token",
         &[(200, r#"{"error":"authorization_pending"}"#)],
     );
-    let mut h =
-        Harness::until_at("left", |_| {}, "on", "http://127.0.0.1:9", &service.url, &login.url);
+    let mut h = Harness::until_at("left", |_| {}, "on", &service.url, &login.url);
     let view = h.app.wait_view(|v| v["code"] == "AB-CD");
     assert!(view["login"].is_null(), "no longer on octo's account: {view}");
     assert!(!h.dir.join("remote/machine.toml").exists(), "its old place is forgotten");

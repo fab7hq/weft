@@ -586,7 +586,9 @@ impl WeftDesktopApp {
                     self.remote_act(serde_json::json!({"act": "choose", "tunnel": tunnel}));
                 }
             }
-            SheetAct::RemoteInstall => self.remote_act(serde_json::json!({"act": "install"})),
+            SheetAct::RemoteLook => self.remote_act(serde_json::json!({"act": "look"})),
+            // The window opens it in the browser.
+            SheetAct::OpenGuide(_) => {}
             SheetAct::RemoteSignIn => self.remote_act(serde_json::json!({"act": "sign_in"})),
             SheetAct::RemoteCancel => self.remote_act(serde_json::json!({"act": "cancel"})),
             SheetAct::RemoteChangeTunnel => {

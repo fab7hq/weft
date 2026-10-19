@@ -1827,43 +1827,40 @@ fn remote_says_every_state_weft_remote_can_be_in_and_acts_on_it() {
     let starting = remote_sheet(&mut app, Some(json!({"state": "starting"})));
     assert!(said(&starting).contains(words::word("desktop.remote.starting")));
 
-    // Choose a tunnel: picking is a choice, Use it sends it.
-    let tunnels = json!([{"id": "cloudflared", "title": "Cloudflare quick tunnel"},
-                         {"id": "tailscale", "title": "Tailscale"}]);
+    // Choose a tunnel: each with its note and guide; picking is a choice,
+    // Check sends it.
+    let guide = "https://github.com/fab7hq/fab7/blob/main/products/weft/tools/tailscale.md";
+    let tunnels = json!([{"id": "cloudflared", "title": "Cloudflare Tunnel",
+                          "note": "traffic is decrypted at Cloudflare's edge", "guide": null},
+                         {"id": "tailscale", "title": "Tailscale Funnel", "note": null,
+                          "guide": guide}]);
     let choose = remote_sheet(&mut app, Some(json!({"state": "choose", "tunnels": tunnels})));
-    assert!(choose.find_layer("tunnel Cloudflare quick tunnel").is_some());
+    assert!(said(&choose).contains("traffic is decrypted at Cloudflare's edge"));
+    assert!(choose.find_layer("guide cloudflared").is_none(), "no guide, no link");
+    assert_eq!(
+        choose.find_layer("guide tailscale").and_then(|g| g.action.clone()),
+        Some(SheetAct::OpenGuide(guide.into()).into()),
+        "the guide opens in the browser"
+    );
     app.dispatch(SheetAct::RemotePick("tailscale".into()));
     assert!(wire.calls().is_empty(), "a pick sends nothing");
+    assert!(choose.find_layer("btn Check").is_some());
     app.dispatch(SheetAct::RemoteUse);
     assert_eq!(
         wire.call().1,
         Call::Remote { act: json!({"act": "choose", "tunnel": "tailscale"}) }
     );
 
-    // Its program is missing: the exact command, run only on a yes.
-    let tunnel =
-        json!({"id": "cloudflared", "title": "Cloudflare quick tunnel", "program": "cloudflared"});
-    let missing = remote_sheet(
-        &mut app,
-        Some(json!({"state": "not_installed", "tunnel": tunnel,
-        "offer": {"how": "brew", "argv": "brew install cloudflared"}})),
-    );
-    assert!(said(&missing).contains("brew install cloudflared"), "{}", said(&missing));
-    assert!(said(&missing).contains("cloudflared needed"));
-    app.dispatch(SheetAct::RemoteInstall);
-    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "install"}) });
-    let cannot = remote_sheet(
-        &mut app,
-        Some(json!({"state": "not_installed", "tunnel": tunnel,
-        "offer": null, "why": "Weft has no way to install cloudflared here."})),
-    );
-    assert!(said(&cannot).contains("Weft has no way to install cloudflared here."));
-    assert!(cannot.find_layer("btn Run it").is_none(), "nothing to run");
-    let installing = remote_sheet(
-        &mut app,
-        Some(json!({"state": "installing", "line": "==> Pouring cloudflared"})),
-    );
-    assert!(said(&installing).contains("==> Pouring cloudflared"));
+    // Its program is not found: its guide, and Check again. Weft installs nothing.
+    let tunnel = json!({"id": "tailscale", "title": "Tailscale Funnel", "program": "tailscale",
+                        "guide": guide});
+    let missing = remote_sheet(&mut app, Some(json!({"state": "not_installed", "tunnel": tunnel})));
+    assert!(said(&missing).contains(words::word("desktop.remote.not_found")));
+    assert!(said(&missing).contains("Tailscale Funnel needs tailscale"), "{}", said(&missing));
+    assert!(missing.find_layer("guide tailscale").is_some());
+    assert!(missing.find_layer("btn Run it").is_none(), "nothing to run");
+    app.dispatch(SheetAct::RemoteLook);
+    assert_eq!(wire.call().1, Call::Remote { act: json!({"act": "look"}) });
 
     // Signing in: the code and where; Cancel stops it.
     let signing = remote_sheet(

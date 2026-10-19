@@ -238,7 +238,10 @@ impl App {
 
 /// A fake cloudflared: says where it was pointed, prints an address, waits.
 /// The tunnel adapter, as fab7 ships Cloudflare Tunnel's.
-pub const ADAPTER: &str = "kind = \"tunnel\"\ntitle = \"Cloudflare Tunnel\"\nprogram = \"cloudflared\"\nrun = [\"tunnel\", \"--no-autoupdate\", \"--url\", \"http://127.0.0.1:{port}\"]\naddress = \".trycloudflare.com\"\nnote = \"traffic is decrypted at Cloudflare's edge\"\n";
+pub const ADAPTER: &str = "kind = \"tunnel\"\ntitle = \"Cloudflare Tunnel\"\nprogram = \"cloudflared\"\nrun = [\"tunnel\", \"--no-autoupdate\", \"--url\", \"http://127.0.0.1:{port}\"]\naddress = \".trycloudflare.com\"\nnote = \"traffic is decrypted at Cloudflare's edge\"\nguide = \"https://guides.example/cloudflared.md\"\n";
+
+/// Where the test adapter's guide is.
+pub const GUIDE: &str = "https://guides.example/cloudflared.md";
 
 pub const CLOUDFLARED: &str = "#!/bin/sh\necho \"$*\" > \"$0.args\"\necho '|  https://test-tunnel.trycloudflare.com  |' >&2\nexec sleep 600\n";
 
@@ -256,26 +259,15 @@ impl Harness {
 
     /// The same, until the view's state is `state`.
     pub fn until(name: &str, prepare: impl FnOnce(&Path), state: &str) -> Self {
-        Self::until_github(name, prepare, state, "http://127.0.0.1:9")
+        Self::until_at(name, prepare, state, "http://127.0.0.1:9", "http://127.0.0.1:9")
     }
 
-    /// The same, with GitHub's API at `github`.
-    pub fn until_github(
-        name: &str,
-        prepare: impl FnOnce(&Path),
-        state: &str,
-        github: &str,
-    ) -> Self {
-        Self::until_at(name, prepare, state, github, "http://127.0.0.1:9", "http://127.0.0.1:9")
-    }
-
-    /// The same, with GitHub's API at `github`, and Fab7's account service and
-    /// GitHub's sign-in at `service` and `login`.
+    /// The same, with Fab7's account service and GitHub's sign-in at
+    /// `service` and `login`.
     pub fn until_at(
         name: &str,
         prepare: impl FnOnce(&Path),
         state: &str,
-        github: &str,
         service: &str,
         login: &str,
     ) -> Self {
@@ -322,7 +314,6 @@ impl Harness {
             socket: socket.clone(),
             account: weft_remote::account::Account::at(service, login),
             key: fab7().verifying_key(),
-            github: github.to_string(),
         };
         std::thread::spawn(move || weft_remote::run::serve(settings).unwrap());
         app.wait_view(|v| v["state"] == state);

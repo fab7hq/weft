@@ -27,7 +27,7 @@ sha2 = "0.11.0"
 toml = "1.1.6"
 # The WebSocket, blocking, one thread per connection.
 tungstenite = "0.30.0"
-# HTTPS to the account service, GitHub and push services.
+# HTTPS to the account service, GitHub's sign-in and push services.
 ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 # Web Push's encryption, without its own HTTP. Its VAPID feature is off: it
 # brings jwt-simple and, through it, the rsa crate (RUSTSEC-2023-0071); the

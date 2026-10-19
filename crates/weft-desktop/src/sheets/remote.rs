@@ -22,6 +22,11 @@ pub fn ago(millis: i64, now: i64) -> String {
     }
 }
 
+/// A string field of a JSON object, or empty.
+fn s_of(v: &Value, k: &str) -> String {
+    v[k].as_str().unwrap_or_default().to_string()
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -54,6 +59,16 @@ fn device_row(d: &Value) -> Option<Element> {
                 Size::Row,
             )),
     )
+}
+
+/// A tunnel's installation guide, opened in the browser: `id` names its layer.
+fn guide_link(id: &str, url: &str, shown: &str) -> Element {
+    div()
+        .layer(format!("guide {id}"))
+        .font_size(13)
+        .color(palette::BLUE_BORDER)
+        .on_click(SheetAct::OpenGuide(url.to_string()))
+        .text(shown)
 }
 
 /// What the tunnel's program last said before it gave an address, under
@@ -126,18 +141,26 @@ pub(super) fn render(props: &SheetProps) -> Element {
             let rows = tunnels.iter().filter_map(|t| {
                 let (id, title) = (t["id"].as_str()?, t["title"].as_str()?);
                 let on = picked == Some(id);
+                let mut name = div().flex_1().flex_col().gap(2).child(
+                    div()
+                        .font_size(14)
+                        .font_weight(if on { 600 } else { 400 })
+                        .color(if on { palette::BLUE_BORDER } else { palette::TEXT })
+                        .text(title),
+                );
+                if let Some(note) = t["note"].as_str() {
+                    name = name.child(div().font_size(12).color(palette::MUTED).text(note));
+                }
                 let mut row = list_row()
                     .layer(format!("tunnel {title}"))
+                    .gap(12)
                     .pad(12, 16)
+                    .items_center()
                     .on_click(SheetAct::RemotePick(id.to_string()))
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_size(14)
-                            .font_weight(if on { 600 } else { 400 })
-                            .color(if on { palette::BLUE_BORDER } else { palette::TEXT })
-                            .text(title),
-                    );
+                    .child(name);
+                if let Some(url) = t["guide"].as_str() {
+                    row = row.child(guide_link(id, url, word("desktop.remote.guide")));
+                }
                 if on {
                     row = row.bg(palette::SELECTED_BG).child(edge_bar(
                         "left",
@@ -150,80 +173,53 @@ pub(super) fn render(props: &SheetProps) -> Element {
             body = body
                 .child(note(word("desktop.remote.choose_what"), palette::MUTED))
                 .child(row_list(rows.collect()));
-            let use_it = button(
-                "btn Use it",
-                word("desktop.remote.use_it"),
+            let check = button(
+                "btn Check",
+                word("desktop.remote.check"),
                 SheetAct::RemoteUse,
                 Tone::Primary,
                 Size::Sheet,
             );
             (
                 (word("desktop.remote.choose").to_string(), palette::MUTED),
-                (vec![use_it], vec![close]),
+                (vec![check], vec![close]),
             )
         }
         "not_installed" => {
             let tunnel = view.map(|v| v["tunnel"].clone()).unwrap_or_default();
-            let program = tunnel["program"].as_str().unwrap_or_default();
-            let title = tunnel["title"].as_str().unwrap_or(program);
-            body = body.child(note(
-                fill("desktop.remote.needs", &[("title", title), ("program", program)]),
-                palette::MUTED,
-            ));
-            let offer = view.map(|v| v["offer"].clone()).filter(Value::is_object);
-            let mut left = Vec::new();
-            match &offer {
-                Some(o) => {
-                    let (run, said) = match o["how"].as_str() {
-                        Some("brew") => (
-                            o["argv"].as_str().unwrap_or_default().to_string(),
-                            fill("desktop.remote.by_brew", &[("program", program)]),
-                        ),
-                        _ => {
-                            let from = o["from"].as_str().unwrap_or_default();
-                            (
-                                from.to_string(),
-                                fill(
-                                    "desktop.remote.by_download",
-                                    &[("program", program), ("from", from)],
-                                ),
-                            )
-                        }
-                    };
-                    body = body
-                        .child(section_label(word("desktop.remote.run_this")))
-                        .child(row_list(vec![
-                            list_row().pad(12, 16).font_mono().font_size(12).text(run),
-                        ]))
-                        .child(note(said, palette::MUTED));
-                    left.push(button(
-                        "btn Run it",
-                        word("desktop.remote.run_it"),
-                        SheetAct::RemoteInstall,
-                        Tone::Primary,
-                        Size::Sheet,
-                    ));
-                    left.push(button(
-                        "btn Cancel",
-                        word("act.cancel"),
-                        SheetAct::Close,
-                        Tone::Plain,
-                        Size::Sheet,
-                    ));
-                }
-                None => body = body.child(note(s("why"), palette::AMBER)),
+            let (id, program) = (s_of(&tunnel, "id"), s_of(&tunnel, "program"));
+            let title = tunnel["title"].as_str().unwrap_or(&program).to_string();
+            body = body.child(
+                div()
+                    .layer("not found")
+                    .self_stretch()
+                    .flex_col()
+                    .gap(6)
+                    .pad(10, 14)
+                    .bg(palette::AMBER_BG)
+                    .border(palette::AMBER_BORDER)
+                    .color(palette::AMBER)
+                    .font_size(13)
+                    .child(div().text(fill(
+                        "desktop.remote.not_found_what",
+                        &[("title", &title), ("program", &program)],
+                    )))
+                    .child(div().text(word("desktop.remote.not_found_then"))),
+            );
+            if let Some(url) = tunnel["guide"].as_str() {
+                let shown = format!("{} {}", word("desktop.remote.guide"), url);
+                body = body.child(guide_link(&id, url, &shown));
             }
-            let needed = fill("desktop.remote.needed", &[("program", program)]);
+            let check = button(
+                "btn Check",
+                word("desktop.remote.check"),
+                SheetAct::RemoteLook,
+                Tone::Primary,
+                Size::Sheet,
+            );
             (
-                (needed, palette::AMBER),
-                (left, [Some(turn_off()), change].into_iter().flatten().collect()),
-            )
-        }
-        "installing" => {
-            body = body.child(note(s("line"), palette::MUTED));
-            (
-                (word("desktop.remote.installing").to_string(), palette::AMBER),
-                (Vec::new(), vec![close]),
+                (word("desktop.remote.not_found").to_string(), palette::AMBER),
+                ([Some(check), change].into_iter().flatten().collect(), vec![turn_off(), close]),
             )
         }
         "signing_in" => {

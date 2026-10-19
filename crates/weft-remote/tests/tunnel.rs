@@ -121,22 +121,10 @@ fn an_address_may_have_several_labels_before_the_suffix() {
 fn cloudflared_is_where_the_person_said_or_on_path() {
     use weft_remote::tunnel::find;
     assert_eq!(
-        find(Some("/bin/sh"), "cloudflared", &[]).as_deref(),
+        find(Some("/bin/sh"), "cloudflared").as_deref(),
         Some(std::path::Path::new("/bin/sh"))
     );
-    assert_eq!(find(Some("/no/such/cloudflared"), "cloudflared", &[]), None, "said, and not there");
-}
-
-/// A program off `PATH` is found where its adapter says it lives.
-#[test]
-fn a_program_off_path_is_found_where_its_adapter_says() {
-    use weft_remote::tunnel::find;
-    let paths = ["/no/such/Tunnel".to_string(), "/bin/sh".to_string()];
-    assert_eq!(
-        find(None, "no-such-tunnel-program", &paths).as_deref(),
-        Some(std::path::Path::new("/bin/sh"))
-    );
-    assert_eq!(find(None, "no-such-tunnel-program", &[]), None);
+    assert_eq!(find(Some("/no/such/cloudflared"), "cloudflared"), None, "said, and not there");
 }
 
 /// A program that prints its address on stdout is read there.
