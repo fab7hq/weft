@@ -191,6 +191,8 @@ pub enum SheetAct {
     ShowPreview,
     /// A harness's details shown in Settings › Harnesses, by its name.
     ShowHarness(String),
+    /// Settings › RingFrame shows every rule, not the first few.
+    AllRules,
     /// SEND TO opened or closed.
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.

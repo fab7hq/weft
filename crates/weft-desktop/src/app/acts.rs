@@ -73,6 +73,7 @@ impl WeftDesktopApp {
                 self.active_sheet =
                     Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::General });
                 self.clients.iter_mut().for_each(|c| c.refused.clear());
+                self.all_rules = false;
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.
@@ -504,6 +505,7 @@ impl WeftDesktopApp {
                     *slot = value;
                 }
             }
+            SheetAct::AllRules => self.all_rules = true,
             SheetAct::ShowHarness(name) => {
                 self.harness_shown = name;
                 self.choice = None;

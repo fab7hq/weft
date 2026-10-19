@@ -52,6 +52,8 @@ pub struct SheetProps<'a> {
     pub preview: &'a str,
     /// The harness Settings › Harnesses shows.
     pub harness: &'a str,
+    /// Settings › RingFrame shows every rule, not the first few.
+    pub all_rules: bool,
 }
 
 impl SheetProps<'_> {

@@ -488,6 +488,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.settings.show", "Show ›"),
     ("desktop.settings.asking", "Asking RingFrame…"),
     ("desktop.settings.refused", "RingFrame did not answer: {why}"),
+    ("desktop.settings.more_rules", "+ {n} more"),
     ("desktop.settings.tab.harnesses", "Harnesses"),
     (
         "desktop.harness.supported",

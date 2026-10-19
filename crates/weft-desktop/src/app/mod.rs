@@ -169,6 +169,8 @@ pub struct WeftDesktopApp {
     pub(crate) preview: [String; 3],
     /// The harness Settings › Harnesses shows (empty: the first).
     pub(crate) harness_shown: String,
+    /// Settings › RingFrame shows every rule, not the first few.
+    pub(crate) all_rules: bool,
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
@@ -241,6 +243,7 @@ impl WeftDesktopApp {
             // No host picked yet: the first harness Weft has.
             preview: [String::new(), "native_plan".into(), "implement".into()],
             harness_shown: String::new(),
+            all_rules: false,
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
@@ -1254,6 +1257,7 @@ impl WeftDesktopApp {
                 setting_text: self.setting_field.text(),
                 preview: &preview,
                 harness: &harness,
+                all_rules: self.all_rules,
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

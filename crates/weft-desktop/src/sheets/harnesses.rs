@@ -202,9 +202,18 @@ fn sends(props: &SheetProps, host: &str) -> Element {
                         .color(palette::MUTED)
                         .style("white-space", "nowrap")
                         .style("overflow", "hidden")
+                        .style("text-overflow", "ellipsis")
                         .text(said),
                 )
-                .child(div().font_mono().font_size(10).color(palette::DIM).text(word(who))),
+                .child(
+                    div()
+                        .pad(2, 6)
+                        .border(palette::LINE)
+                        .font_mono()
+                        .font_size(10)
+                        .color(palette::DIM)
+                        .text(word(who)),
+                ),
         );
     }
     if let Some(n) = p["paste_fold_chars"].as_u64() {
@@ -282,6 +291,7 @@ fn route_rules(props: &SheetProps, host: &str) -> Element {
                 .color(palette::MUTED)
                 .style("white-space", "nowrap")
                 .style("overflow", "hidden")
+                .style("text-overflow", "ellipsis")
                 .text(e["text"].as_str().unwrap_or_default().to_string())
         };
         rows.push(

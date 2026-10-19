@@ -100,6 +100,9 @@ pub(super) fn unanswered(refused: Option<&String>) -> String {
     }
 }
 
+/// How many rules show before "+ N more".
+const FIRST_RULES: usize = 5;
+
 pub(super) fn render(props: &SheetProps) -> Element {
     let then = Then::Rules { project: false };
     let rules = props.clients.iter().find_map(|c| c.read.get(&then));
@@ -229,10 +232,25 @@ pub(super) fn render(props: &SheetProps) -> Element {
             .children(choices(props, &dotted, options)),
     );
 
-    // The base practice's rules.
+    // The base practice's rules: the first few, then how many more.
+    let entries = base["entries"].as_array().cloned().unwrap_or_default();
+    let folded = !props.all_rules && entries.len() > FIRST_RULES + 1;
     let mut rows = Vec::new();
-    for e in base["entries"].as_array().into_iter().flatten() {
+    for e in entries.iter().take(if folded { FIRST_RULES } else { entries.len() }) {
         rows.push(rule(props, e));
+    }
+    if folded {
+        let n = (entries.len() - FIRST_RULES).to_string();
+        rows.push(
+            div()
+                .layer("more rules")
+                .on_click(SheetAct::AllRules)
+                .self_stretch()
+                .pad(8, 14)
+                .font_size(13)
+                .color(palette::MUTED)
+                .text(fill("desktop.settings.more_rules", &[("n", &n)])),
+        );
     }
     let own = base["entries"].as_array().map_or(0, |e| {
         e.iter().filter(|x| x["id"].as_str().is_some_and(|i| i.starts_with("own."))).count()
@@ -369,6 +387,7 @@ fn rule(props: &SheetProps, e: &Value) -> Element {
                         .color(palette::MUTED)
                         .style("white-space", "nowrap")
                         .style("overflow", "hidden")
+                        .style("text-overflow", "ellipsis")
                         .text(e["text"].as_str().unwrap_or_default().to_string()),
                 )
                 .child(tag(
@@ -451,6 +470,18 @@ fn preview(props: &SheetProps) -> Element {
     let mut parts = props.preview.split('|');
     let mut part = || parts.next().unwrap_or_default().to_string();
     let (host, route, task) = (part(), part(), part());
+    // A harness by its title, a route by its name, a task as RingFrame names it.
+    let said = |i: usize, v: &str| -> String {
+        match i {
+            0 => props.harnesses.iter().find(|h| h.name == v).map_or(v, |h| &h.title).to_string(),
+            1 => weft_core::words::WORDS
+                .iter()
+                .find(|(k, _)| *k == format!("desktop.harness.{v}"))
+                .map_or(v, |(_, w)| *w)
+                .to_string(),
+            _ => v.to_string(),
+        }
+    };
     let pick = |i: usize, now: &str, all: Vec<String>| {
         let dotted = format!("preview.{i}");
         div()
@@ -462,12 +493,12 @@ fn preview(props: &SheetProps) -> Element {
                     .pad(4, 8)
                     .border(palette::LINE)
                     .font_size(12)
-                    .text(format!("{now} ▾")),
+                    .text(format!("{} ▾", said(i, now))),
             )
             .children(choices(
                 props,
                 &dotted,
-                all.into_iter().map(|v| (v.clone(), SheetAct::PreviewPick(i, v))).collect(),
+                all.into_iter().map(|v| (said(i, &v), SheetAct::PreviewPick(i, v))).collect(),
             ))
     };
     let hosts: Vec<String> = props.harnesses.iter().map(|h| h.name.clone()).collect();

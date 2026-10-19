@@ -151,6 +151,7 @@
   "desktop.settings.map": "Map",
   "desktop.settings.map_what": "Reads each change on its own",
   "desktop.settings.model": "{role} model",
+  "desktop.settings.more_rules": "+ {n} more",
   "desktop.settings.notify": "Notifications",
   "desktop.settings.notify_what": "Tell you when an agent needs you",
   "desktop.settings.own_effort": "Its own",

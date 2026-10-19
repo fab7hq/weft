@@ -2466,6 +2466,32 @@ fn a_project_s_own_settings_list_what_differs_and_reset_it() {
     assert!(list.find_layer("choice Turbo").is_none(), "Turbo is every project's only");
 }
 
+/// Many rules: the first five, then how many more; asked, every one.
+#[test]
+fn ringframe_folds_its_rules_after_five() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    let (id, _) = wire.call();
+    let entries: Vec<Value> = (0..8)
+        .map(|i| json!({"id": format!("r{i}"), "text": "A rule.", "source": "shipped"}))
+        .collect();
+    wire.answer(
+        id,
+        json!({"domains": [], "catalogs": [
+        {"catalog": "practices/software-development", "entries": entries}]}),
+    );
+    pumped(&mut app, |a| {
+        a.clients[0].read.contains_key(&crate::daemon::Then::Rules { project: false })
+    });
+    let dom = app.render();
+    assert!(dom.find_layer("rule r4").is_some() && dom.find_layer("rule r5").is_none());
+    assert_eq!(dom.find_layer("more rules").unwrap().all_text(), "+ 3 more");
+    app.dispatch(SheetAct::AllRules);
+    let dom = app.render();
+    assert!(dom.find_layer("rule r7").is_some() && dom.find_layer("more rules").is_none());
+}
+
 /// RingFrame would not say its rules: the sheet says why, asks nothing more
 /// while it stays open, and asks again when Settings opens again.
 #[test]
