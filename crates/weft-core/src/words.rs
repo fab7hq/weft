@@ -342,9 +342,25 @@ pub const WORDS: &[(&str, &str)] = &[
         "These are {machine}'s own settings: every device that reaches {machine} sees and changes the same ones, at once.",
     ),
     ("web.machine.no_project", "Open a project on {machine} to see its settings."),
+    ("web.settings.more_rules", "{n} more ›"),
+    ("web.settings.preview_rules", "Preview the rules"),
+    ("web.workflow.own", "its own"),
+    (
+        "web.workflow.foot",
+        "A role opens its model (empty: the harness's own) and its effort: low, medium, high, xhigh.",
+    ),
+    ("web.settings.preview_kept", "{kept} core kept · {left_out} left out by the cap"),
+    (
+        "web.ringframe.foot",
+        "A rule opens its wording, when it applies, its concerns, and Reset when changed.",
+    ),
     (
         "web.harness.foot",
         "The harnesses this Weft supports. Finding, updating and setting one up is done on {machine}, in Updates.",
+    ),
+    (
+        "web.project.foot_phone",
+        "Everything not listed is every project's, from {machine}'s Settings. A setting opens Reset, back to every project's.",
     ),
     (
         "web.project.foot",
@@ -489,6 +505,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.settings.asking", "Asking RingFrame…"),
     ("desktop.settings.refused", "RingFrame did not answer: {why}"),
     ("desktop.settings.more_rules", "+ {n} more"),
+    ("desktop.settings.tier", "Tier"),
     ("desktop.settings.preview_kept", "{kept} core rules kept · {left_out} left out by the cap"),
     ("desktop.settings.tab.harnesses", "Harnesses"),
     (
