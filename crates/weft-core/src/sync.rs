@@ -131,8 +131,29 @@ pub fn weft(have: &str, latest: Option<&str>, installed: bool) -> (String, Optio
 
 /// Whether `have` is an older version than `latest`, part by part.
 pub fn older(have: &str, latest: &str) -> bool {
-    let parts = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(have) < parts(latest)
+    use std::cmp::Ordering;
+    // `1.0.0-beta-1`: the numbers, then what follows the first `-`.
+    let split = |s: &str| match s.split_once('-') {
+        Some((core, pre)) => (core.to_string(), Some(pre.to_string())),
+        None => (s.to_string(), None),
+    };
+    let numbers = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    // A pre-release's words and numbers, each number counted as one.
+    let pieces = |s: &str| {
+        s.split(['.', '-'])
+            .map(|p| p.parse::<u64>().map_err(|_| p.to_string()))
+            .collect::<Vec<Result<u64, String>>>()
+    };
+    let ((have_core, have_pre), (latest_core, latest_pre)) = (split(have), split(latest));
+    match numbers(&have_core).cmp(&numbers(&latest_core)) {
+        Ordering::Equal => match (have_pre, latest_pre) {
+            // The release comes after every pre-release of it.
+            (Some(_), None) => true,
+            (Some(h), Some(l)) => pieces(&h) < pieces(&l),
+            _ => false,
+        },
+        order => order == Ordering::Less,
+    }
 }
 
 /// Sense bundle's line: where the installed `~/.fab7/weft/sense/current.json`
@@ -177,6 +198,17 @@ mod tests {
         assert_eq!(configuration(Some(&current)).0, "0.2.0 is the latest");
         assert_eq!(configuration(None).0, "could not reach the latest release");
         assert!(older("0.1.2", "0.1.10") && !older("0.1.3", "0.1.3"));
+    }
+
+    /// A pre-release comes before its release, and pre-releases count up.
+    #[test]
+    fn a_pre_release_is_older_than_its_release() {
+        assert!(older("0.5.0", "1.0.0-beta-1"));
+        assert!(older("1.0.0-beta-1", "1.0.0"));
+        assert!(!older("1.0.0", "1.0.0-beta-1"));
+        assert!(older("1.0.0-beta-2", "1.0.0-beta-10"));
+        assert!(!older("1.0.0-beta-1", "1.0.0-beta-1"));
+        assert!(older("1.0.0-beta-1", "1.0.1-beta-1"));
     }
 
     #[test]

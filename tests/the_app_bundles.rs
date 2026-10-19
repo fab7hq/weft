@@ -70,6 +70,11 @@ fn the_bundle_holds_the_app_its_tools_and_icon_and_is_signed() {
             "<key>CFBundleShortVersionString</key>\n    <string>{}</string>",
             env!("CARGO_PKG_VERSION")
         ),
+        // The build number is the version's numbers alone, as macOS reads one.
+        &format!(
+            "<key>CFBundleVersion</key>\n    <string>{}</string>",
+            env!("CARGO_PKG_VERSION").split('-').next().unwrap()
+        ),
     ] {
         assert!(plist.contains(held), "{held}\n{plist}");
     }
