@@ -29,16 +29,13 @@ impl Session {
             return Answer::No("failed", why);
         }
         let text = std::fs::read_to_string(&self.config).unwrap_or_default();
-        match weft_core::config::set_start_at_login(&text, on) {
-            Ok(text) => {
-                if let Some(dir) = self.config.parent() {
-                    let _ = std::fs::create_dir_all(dir);
-                }
-                if let Err(e) = std::fs::write(&self.config, text) {
-                    return Answer::No("failed", format!("config.toml was not written: {e}"));
-                }
-            }
-            Err(why) => return Answer::No("config", why),
+        if let Err(why) = weft_core::config::set_start_at_login(&text, on) {
+            return Answer::No("config", why);
+        }
+        let changed =
+            crate::routing::change(&self.config, |t| weft_core::config::set_start_at_login(t, on));
+        if let Err(why) = changed {
+            return Answer::No("failed", why);
         }
         self.clients.broadcast_all(&Out::StartAtLogin { on });
         Answer::Ok(serde_json::json!({"start_at_login": on}))

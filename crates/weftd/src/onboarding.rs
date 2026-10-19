@@ -234,12 +234,7 @@ pub fn check_program(path: &str) -> Result<String, String> {
 /// Set one key of `[harnesses.<name>]` in `config.toml`, keeping the rest of
 /// the file as the person wrote it.
 pub fn save(config: &Path, name: &str, key: &str, value: serde_json::Value) -> Result<(), String> {
-    let text = std::fs::read_to_string(config).unwrap_or_default();
-    let out = weft_core::config::set_harness(&text, name, key, &value)?;
-    if let Some(dir) = config.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(config, out).map_err(|e| format!("config.toml could not be written: {e}"))
+    crate::routing::change(config, |text| weft_core::config::set_harness(text, name, key, &value))
 }
 
 /// Run this harness's setup commands in order, showing its row at every

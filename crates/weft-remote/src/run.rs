@@ -624,7 +624,10 @@ impl Remote {
                         set = set.and_then(|t| weft_core::config::set_program(&t, ""));
                     }
                     if let Ok(text) = set {
-                        let _ = std::fs::write(&config, text);
+                        // Whole or not at all, as weftd writes it.
+                        let part = config.with_extension("toml.part");
+                        let _ = std::fs::write(&part, text)
+                            .and_then(|()| std::fs::rename(&part, &config));
                     }
                     self.look();
                 }

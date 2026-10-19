@@ -167,64 +167,123 @@ pub fn set_program(text: &str, path: &str) -> Result<String, String> {
 }
 
 /// `config.toml` with one key of `[harnesses.<harness>]` set, the rest of the
-/// file as the person wrote it, comments included: the section's line is
-/// replaced, or added to the section, or the section added at the end. The
-/// result is parsed before it is handed back; a file this cannot edit safely
-/// (a harness set some other way, say) is an error, and the person edits it.
+/// file as the person wrote it, comments included (see [`edit`]).
 pub fn set_harness(text: &str, harness: &str, key: &str, value: &Value) -> Result<String, String> {
     set(text, &["harnesses", harness], key, value)
 }
 
-/// One key of the table at `section` set, as [`set_harness`] says.
+/// One key of the table at `section` set, as [`edit`] says.
 fn set(text: &str, section: &[&str], key: &str, value: &Value) -> Result<String, String> {
-    let name = section.join(".");
-    let literal = match value {
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
-        Value::Bool(b) => b.to_string(),
-        other => return Err(format!("{other} is not a value config.toml keeps here")),
-    };
-    let header = format!("[{name}]");
-    let line = format!("{key} = {literal}");
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let start = lines.iter().position(|l| l.trim() == header);
-    match start {
-        Some(i) => {
-            let end = lines[i + 1..]
-                .iter()
-                .position(|l| l.trim_start().starts_with('['))
-                .map_or(lines.len(), |n| i + 1 + n);
-            let at = lines[i + 1..end].iter().position(|l| {
-                l.trim_start().strip_prefix(key).is_some_and(|r| r.trim_start().starts_with('='))
-            });
-            match at {
-                Some(n) => lines[i + 1 + n] = line,
-                None => lines.insert(i + 1, line),
+    let path: Vec<&str> = section.iter().copied().chain([key]).collect();
+    edit(text, &path, Some(value))
+}
+
+/// `config.toml` with the value at `path` (its tables, then the key) set, or
+/// taken out when `value` is `None` along with any table that leaves empty and
+/// that carries no comment of its own. Every other line stays as the person
+/// wrote it, comments included; a table that is not there is added. The result
+/// is read back before it is handed over: a value that did not land, or a file
+/// this cannot edit safely, is an error, and the person edits it.
+pub fn edit(text: &str, path: &[&str], value: Option<&Value>) -> Result<String, String> {
+    let shown = path.join(".");
+    let (key, tables) = path.split_last().ok_or("nothing to set")?;
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|e| format!("config.toml could not be read ({e}); set `{shown}` by hand"))?;
+    match value {
+        Some(value) => {
+            let mut table: &mut dyn toml_edit::TableLike = doc.as_table_mut();
+            for part in tables {
+                // A table that is not there goes at the end of the file.
+                let mut implicit = toml_edit::Table::new();
+                implicit.set_implicit(true);
+                implicit.set_position(Some(isize::MAX));
+                table = table
+                    .entry(part)
+                    .or_insert(toml_edit::Item::Table(implicit))
+                    .as_table_like_mut()
+                    .ok_or_else(|| {
+                        format!(
+                            "config.toml sets `{part}` some other way; set `{shown}` there by hand"
+                        )
+                    })?;
             }
+            table.insert(key, toml_edit::Item::Value(toml_value(value)?));
         }
-        None => {
-            if lines.last().is_some_and(|l| !l.trim().is_empty()) {
-                lines.push(String::new());
-            }
-            lines.push(header);
-            lines.push(line);
-        }
+        None => take_out(doc.as_table_mut(), path),
     }
-    let mut out = lines.join("\n");
-    out.push('\n');
-    let parsed = out.parse::<toml::Table>().map_err(|e| {
-        format!("config.toml could not be edited safely ({e}); add `{key}` under [{name}] by hand")
+    let out = doc.to_string();
+    let parsed: toml::Table = out.parse().map_err(|e| {
+        format!("config.toml could not be edited safely ({e}); set `{shown}` by hand")
     })?;
-    let table = section.iter().try_fold(&parsed, |t, part| t.get(*part)?.as_table());
-    let got = table.and_then(|t| t.get(key));
-    let want = match value {
-        Value::String(s) => toml::Value::String(s.clone()),
-        Value::Bool(b) => toml::Value::Boolean(*b),
-        _ => unreachable!(),
-    };
-    if got != Some(&want) {
-        return Err(format!("config.toml sets [{name}] some other way; set `{key}` there by hand"));
+    let parsed = serde_json::to_value(parsed).map_err(|e| e.to_string())?;
+    let got = path.iter().try_fold(&parsed, |v, part| v.get(*part));
+    if got != value {
+        return Err(format!("config.toml sets `{shown}` some other way; set it there by hand"));
     }
     Ok(out)
+}
+
+/// A JSON value as TOML writes it: objects inline, so a key stays one line.
+fn toml_value(value: &Value) -> Result<toml_edit::Value, String> {
+    Ok(match value {
+        Value::String(s) => s.as_str().into(),
+        Value::Bool(b) => (*b).into(),
+        Value::Number(n) => match n.as_i64() {
+            Some(i) => i.into(),
+            None => {
+                n.as_f64().ok_or_else(|| format!("{n} is not a number config.toml keeps"))?.into()
+            }
+        },
+        Value::Array(items) => {
+            let mut array = toml_edit::Array::new();
+            for item in items {
+                array.push(toml_value(item)?);
+            }
+            toml_edit::Value::Array(array)
+        }
+        Value::Object(map) => {
+            let mut table = toml_edit::InlineTable::new();
+            for (k, v) in map {
+                table.insert(k, toml_value(v)?);
+            }
+            toml_edit::Value::InlineTable(table)
+        }
+        Value::Null => return Err("config.toml has no null: leave the key out instead".into()),
+    })
+}
+
+/// The key at `path` taken out, and each table on the way that it leaves empty,
+/// unless the table's header carries a comment (the starting file's do).
+fn take_out(table: &mut dyn toml_edit::TableLike, path: &[&str]) {
+    let Some((first, rest)) = path.split_first() else { return };
+    if rest.is_empty() {
+        table.remove(first);
+        return;
+    }
+    let Some(inner) = table.get_mut(first) else { return };
+    let keep = match inner {
+        toml_edit::Item::Table(t) => {
+            take_out(t, rest);
+            !t.is_empty() || commented(t)
+        }
+        toml_edit::Item::Value(toml_edit::Value::InlineTable(t)) => {
+            take_out(t, rest);
+            !t.is_empty()
+        }
+        _ => true,
+    };
+    if !keep {
+        table.remove(first);
+    }
+}
+
+fn commented(table: &toml_edit::Table) -> bool {
+    let decor = table.decor();
+    [decor.prefix(), decor.suffix()]
+        .into_iter()
+        .flatten()
+        .any(|raw| raw.as_str().is_some_and(|s| s.contains('#')))
 }
 
 /// A harness Weft supports, or the name reported as unknown.
@@ -480,9 +539,12 @@ mod tests {
         let added = set_harness(text, "claude-code", "program", &json!("/x/claude")).unwrap();
         assert!(added.ends_with("\n[harnesses.claude-code]\nprogram = \"/x/claude\"\n"), "{added}");
         assert_eq!(read_(&added).routing(Path::new(HERE)), read_(text).routing(Path::new(HERE)));
-        // A harness set some other way is the person's to edit.
+        // A harness written inline is edited where it is; one that is not a
+        // table at all is the person's to edit.
         let inline = "harnesses = { codex = { program = \"/x\" } }\n";
-        assert!(set_harness(inline, "codex", "program", &json!("/y")).is_err());
+        let edited = set_harness(inline, "codex", "program", &json!("/y")).unwrap();
+        assert_eq!(edited, "harnesses = { codex = { program = \"/y\" } }\n");
+        assert!(set_harness("harnesses = \"codex\"\n", "codex", "program", &json!("/y")).is_err());
         assert_eq!(read_("[harnesses.nowhere]\nprogram = \"/x\"\n").unknown, ["harnesses.nowhere"]);
     }
 
@@ -553,6 +615,82 @@ mod tests {
             Some("/home/me/.fab7/weft/bin/cloudflared")
         );
         assert!(read_(&at).remote().enabled, "the rest kept");
+    }
+
+    #[test]
+    fn an_edit_keeps_every_comment_and_line_it_does_not_touch() {
+        let text = "# mine\nturbo = true   # all of them\n\n[routing]   # who does what\nask = \"codex\"\n# eval = \"codex\"\n\n[eval.debate]\nharness = \"codex\"\n";
+        let out = edit(text, &["routing", "seal"], Some(&json!("claude-code"))).unwrap();
+        assert_eq!(
+            out,
+            "# mine\nturbo = true   # all of them\n\n[routing]   # who does what\nask = \"codex\"\nseal = \"claude-code\"\n# eval = \"codex\"\n\n[eval.debate]\nharness = \"codex\"\n"
+        );
+        let back = edit(&out, &["routing", "seal"], None).unwrap();
+        assert_eq!(back, text, "taking it out again gives the file back");
+        let numbers =
+            edit(text, &["eval", "debate", "map"], Some(&json!({"effort": "high"}))).unwrap();
+        assert!(
+            numbers.ends_with("harness = \"codex\"\nmap = { effort = \"high\" }\n"),
+            "{numbers}"
+        );
+    }
+
+    #[test]
+    fn a_project_s_ringframe_table_is_written_nested_and_read_back() {
+        let entries = json!([{"id": "practice.kiss", "enabled": false, "tier": "situational"}]);
+        let path = [
+            "projects",
+            "/work/thing",
+            "ringframe",
+            "deltas",
+            "practices/software-development",
+            "entries",
+        ];
+        let out = edit(STARTING, &path, Some(&entries)).unwrap();
+        assert!(
+            out.contains("\n[projects.\"/work/thing\".ringframe.deltas.\"practices/software-development\"]\nentries = [{ enabled = false, id = \"practice.kiss\", tier = \"situational\" }]\n"),
+            "{out}"
+        );
+        let added: Vec<&str> = out.lines().filter(|l| !STARTING.lines().any(|s| s == *l)).collect();
+        assert_eq!(added.len(), 2, "only the table's two lines are new: {added:?}");
+        let kept: Vec<&str> = out.lines().filter(|l| !added.contains(l) && !l.is_empty()).collect();
+        let starting: Vec<&str> = STARTING.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(kept, starting, "every line of the starting file, in its order");
+        let layers: Value =
+            serde_json::from_str(&read_(&out).ringframe_override(Path::new(HERE)).unwrap())
+                .unwrap();
+        assert_eq!(layers[0]["layer"], "weft-project");
+        assert_eq!(
+            layers[0]["ringframe"]["deltas"]["practices/software-development"]["entries"],
+            entries
+        );
+        let cap = edit(
+            &out,
+            &["ringframe", "deltas", "practices/software-development", "render", "core_cap"],
+            Some(&json!(3)),
+        )
+        .unwrap();
+        assert_eq!(
+            read_(&cap).ringframe_override(Path::new("/elsewhere")).unwrap(),
+            r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"render":{"core_cap":3}}}}}]"#
+        );
+    }
+
+    #[test]
+    fn taking_out_the_last_key_takes_out_the_tables_it_empties_but_not_a_commented_one() {
+        let text = "[routing]   # who does what\n\n[projects.\"/p\".routing]\neval = \"codex\"\n";
+        let out = edit(text, &["projects", "/p", "routing", "eval"], None).unwrap();
+        assert_eq!(out, "[routing]   # who does what\n");
+        assert_eq!(edit(text, &["routing", "nothing"], None).unwrap(), text, "nothing to take out");
+        let inline = "[projects.\"/p\"]\nrouting = { eval = \"codex\" }\n";
+        assert_eq!(edit(inline, &["projects", "/p", "routing", "eval"], None).unwrap(), "");
+    }
+
+    #[test]
+    fn a_value_toml_cannot_hold_or_a_file_it_cannot_read_is_refused() {
+        assert!(edit("", &["turbo"], Some(&Value::Null)).is_err());
+        assert!(edit("not = toml = here", &["turbo"], Some(&json!(true))).is_err());
+        assert!(edit("[routing]\n", &[], Some(&json!(true))).is_err());
     }
 
     #[test]
