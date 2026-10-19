@@ -333,6 +333,7 @@
   "web.eval.seal_what_one": "Seal records your decision on this Eval and the Ask it covers. It does not make the work right.",
   "web.eval.sealed_in": "Sealed in Seal {n}",
   "web.eval.verdict": "Verdict",
+  "web.harness.foot": "The harnesses this Weft supports. Finding, updating and setting one up is done on {machine}, in Updates.",
   "web.layout.join": "Join all panes",
   "web.layout.next_pane": "Move tab to the next pane",
   "web.layout.split_down": "Split down",

@@ -343,6 +343,10 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("web.machine.no_project", "Open a project on {machine} to see its settings."),
     (
+        "web.harness.foot",
+        "The harnesses this Weft supports. Finding, updating and setting one up is done on {machine}, in Updates.",
+    ),
+    (
         "web.project.foot",
         "Everything not listed is every project's, from {machine}'s Settings. Reset brings a setting back to every project's.",
     ),
