@@ -331,6 +331,17 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("web.settings.privacy", "Privacy"),
     ("web.menu.settings", "Settings…"),
+    // A machine's own settings, from a device (Settings › Machines).
+    ("web.machine.title", "Settings · {machine}"),
+    ("web.machine.every_project", "Every project on {machine}"),
+    ("web.machine.login_what", "Keep Weft running on {machine}"),
+    ("web.machine.notify_what", "{machine} tells you when an agent needs you"),
+    ("web.machine.suggest_what", "Dim suggestions from your own words"),
+    (
+        "web.machine.foot",
+        "These are {machine}'s own settings: every device that reaches {machine} sees and changes the same ones, at once.",
+    ),
+    ("web.machine.no_project", "Open a project on {machine} to see its settings."),
     // The agent's pane (M3.6, M3.7): whose history, and the message box's own name.
     ("web.agent.message_box", "Message"),
     // The desktop's toggle for the list of agents and works.
