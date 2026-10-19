@@ -161,10 +161,14 @@ pub(super) fn render(props: &SheetProps) -> Element {
 
 /// How RingFrame sends to it, as its profile says.
 fn sends(props: &SheetProps, host: &str) -> Element {
-    let profile =
-        props.clients.iter().find_map(|c| c.read.get(&Then::Profile { host: host.to_string() }));
+    let then = Then::Profile { host: host.to_string() };
+    let profile = props.clients.iter().find_map(|c| c.read.get(&then));
     let Some(p) = profile else {
-        return div().font_size(12).color(palette::MUTED).text(word("desktop.settings.asking"));
+        let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
+        return div()
+            .font_size(12)
+            .color(palette::MUTED)
+            .text(super::ringframe::unanswered(refused));
     };
     let mut rows = Vec::new();
     for cap in p["capabilities"].as_array().into_iter().flatten() {
@@ -229,8 +233,15 @@ fn sends(props: &SheetProps, host: &str) -> Element {
 /// Its route rules, from RingFrame's catalog for it: each on or off,
 /// qualified or candidate, its wording, and Reset once changed.
 fn route_rules(props: &SheetProps, host: &str) -> Element {
-    let rules = props.clients.iter().find_map(|c| c.read.get(&Then::Rules { project: false }));
-    let catalog = rules
+    let then = Then::Rules { project: false };
+    let Some(rules) = props.clients.iter().find_map(|c| c.read.get(&then)) else {
+        let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
+        return div()
+            .font_size(12)
+            .color(palette::MUTED)
+            .text(super::ringframe::unanswered(refused));
+    };
+    let catalog = Some(rules)
         .and_then(|r| r["catalogs"].as_array())
         .and_then(|cs| cs.iter().find(|c| c["catalog"] == host))
         .cloned()

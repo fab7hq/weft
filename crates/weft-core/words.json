@@ -159,6 +159,7 @@
   "desktop.settings.preview": "Preview",
   "desktop.settings.reduce": "Reduce",
   "desktop.settings.reduce_what": "Weighs what the map found",
+  "desktop.settings.refused": "RingFrame did not answer: {why}",
   "desktop.settings.remove": "Remove",
   "desktop.settings.rules": "{practice} · rules",
   "desktop.settings.runs_in": "Runs in",

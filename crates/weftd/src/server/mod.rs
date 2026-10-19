@@ -600,6 +600,19 @@ fn ringframe_error(e: crate::ringframe::Error) -> Answer {
     }
 }
 
+/// What a client is told when RingFrame would not answer a Settings read:
+/// its own reason, when it gave one as JSON, in place of the JSON.
+fn read_refused(e: crate::ringframe::Error) -> Answer {
+    match e {
+        crate::ringframe::Error::Refused { message, .. } => {
+            let said: Option<serde_json::Value> = serde_json::from_str(&message).ok();
+            let why = said.as_ref().and_then(|v| v["detail"].as_str()).unwrap_or(&message);
+            Answer::No("refused", why.to_string())
+        }
+        e => ringframe_error(e),
+    }
+}
+
 /// Readiness as a client reads it: one word per harness.
 fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> serde_json::Value {
     use weft_core::readiness::{Gap, Readiness};
@@ -1230,10 +1243,10 @@ impl Session {
                 std::thread::spawn(move || {
                     let answer = if what == "rules" {
                         crate::ringframe::rules(out.as_ref(), &root, layers.as_deref())
-                            .map_or_else(ringframe_error, Answer::Ok)
+                            .map_or_else(read_refused, Answer::Ok)
                     } else if what == "profile" {
                         crate::ringframe::profile(out.as_ref(), &root, layers.as_deref(), &unit)
-                            .map_or_else(ringframe_error, Answer::Ok)
+                            .map_or_else(read_refused, Answer::Ok)
                     } else {
                         match unit.split('|').collect::<Vec<_>>()[..] {
                             [host, capability, task] => crate::ringframe::preview(
@@ -1242,7 +1255,7 @@ impl Session {
                                 layers.as_deref(),
                                 (host, capability, task),
                             )
-                            .map_or_else(ringframe_error, |text| {
+                            .map_or_else(read_refused, |text| {
                                 Answer::Ok(serde_json::json!({ "text": text }))
                             }),
                             _ => Answer::No(

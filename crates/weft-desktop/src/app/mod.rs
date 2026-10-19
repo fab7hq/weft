@@ -491,7 +491,8 @@ impl WeftDesktopApp {
             let host = self.harness_shown();
             if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
                 let then = crate::daemon::Then::Profile { host: host.clone() };
-                if !c.read.contains_key(&then) && !host.is_empty() {
+                if !c.read.contains_key(&then) && !c.refused.contains_key(&then) && !host.is_empty()
+                {
                     let _ = c.read("profile", &host, None, then);
                 }
             }
@@ -512,7 +513,7 @@ impl WeftDesktopApp {
         let wanted = if project.is_some() { &[true, false][..] } else { &[false][..] };
         for &mine in wanted {
             let then = crate::daemon::Then::Rules { project: mine };
-            if !c.read.contains_key(&then) {
+            if !c.read.contains_key(&then) && !c.refused.contains_key(&then) {
                 let _ = c.read("rules", if mine { "project" } else { "machine" }, None, then);
             }
         }

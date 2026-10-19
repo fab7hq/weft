@@ -91,10 +91,21 @@ fn choices(props: &SheetProps, dotted: &str, options: Vec<(String, SheetAct)>) -
     })
 }
 
+/// What a Settings read shows until RingFrame answers: that it is asked,
+/// or why RingFrame would not say.
+pub(super) fn unanswered(refused: Option<&String>) -> String {
+    match refused {
+        Some(why) => fill("desktop.settings.refused", &[("why", why)]),
+        None => word("desktop.settings.asking").to_string(),
+    }
+}
+
 pub(super) fn render(props: &SheetProps) -> Element {
-    let rules = props.clients.iter().find_map(|c| c.read.get(&Then::Rules { project: false }));
+    let then = Then::Rules { project: false };
+    let rules = props.clients.iter().find_map(|c| c.read.get(&then));
     let Some(rules) = rules else {
-        return sheet_body().child(note(word("desktop.settings.asking"), palette::MUTED));
+        let refused = props.clients.iter().find_map(|c| c.refused.get(&then));
+        return sheet_body().child(note(unanswered(refused), palette::MUTED));
     };
     let machine = props
         .clients
@@ -488,6 +499,18 @@ fn preview(props: &SheetProps) -> Element {
                 .color(palette::MUTED)
                 .style("white-space", "pre-wrap")
                 .text(text.to_string()),
+        );
+    } else if let Some(why) =
+        props.clients.iter().find_map(|c| c.refused.get(&Then::Preview { unit: unit.clone() }))
+    {
+        el = el.child(
+            div()
+                .layer("preview text")
+                .self_stretch()
+                .pad(8, 14)
+                .font_size(12)
+                .color(palette::MUTED)
+                .text(unanswered(Some(why))),
         );
     }
     el

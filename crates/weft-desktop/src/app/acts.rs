@@ -72,6 +72,7 @@ impl WeftDesktopApp {
                 self.menu_open = false;
                 self.active_sheet =
                     Some(ActiveSheet::Settings { tab: crate::action::SettingsTab::General });
+                self.clients.iter_mut().for_each(|c| c.refused.clear());
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.
@@ -153,6 +154,7 @@ impl WeftDesktopApp {
                 self.project_menu = None;
                 self.choice = None;
                 self.active_sheet = Some(ActiveSheet::ProjectSettings { project: p });
+                self.clients.iter_mut().for_each(|c| c.refused.clear());
                 self.want_rules();
             }
             TreeAct::TogglePlus(p) => {

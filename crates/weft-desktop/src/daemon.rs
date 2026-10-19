@@ -360,6 +360,9 @@ pub struct ProjectClient {
     /// was read for: an Eval's record, a Seal's checked receipt, an Ask's
     /// wording. What was not read, or could not be, is not here.
     pub read: HashMap<Then, Value>,
+    /// What RingFrame would not say for Settings, by what it was asked for:
+    /// its reason. Not asked again until a Settings sheet opens.
+    pub refused: HashMap<Then, String>,
 }
 
 /// A daemon that speaks another protocol: another version of Weft.
@@ -427,6 +430,7 @@ impl ProjectClient {
             unread: Vec::new(),
             lost: false,
             read: HashMap::new(),
+            refused: HashMap::new(),
         }
     }
 
@@ -719,6 +723,11 @@ impl ProjectClient {
             }
             Line::Error { id, message, .. } => {
                 let then = self.owed.remove(&id)?;
+                if matches!(then, Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. })
+                {
+                    self.refused.insert(then, message);
+                    return None;
+                }
                 return Some(Answered { then, answer: Err(message) });
             }
             Line::Call { .. } => return None,
@@ -754,6 +763,7 @@ impl ProjectClient {
                         Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. }
                     )
                 });
+                self.refused.clear();
             }
             Event::StartAtLogin { on } => self.start_at_login = on,
             Event::Reopened { since } => self.reopened_since = since,
@@ -898,6 +908,7 @@ impl ProjectClient {
         }
         // What was read before may no longer hold: nothing is shown until it is read again.
         self.read.remove(&then);
+        self.refused.remove(&then);
         let call = Call::Read {
             what: what.to_string(),
             unit: unit.to_string(),

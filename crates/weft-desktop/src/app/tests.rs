@@ -2466,6 +2466,29 @@ fn a_project_s_own_settings_list_what_differs_and_reset_it() {
     assert!(list.find_layer("choice Turbo").is_none(), "Turbo is every project's only");
 }
 
+/// RingFrame would not say its rules: the sheet says why, asks nothing more
+/// while it stays open, and asks again when Settings opens again.
+#[test]
+fn a_refused_settings_read_says_why_and_is_asked_again_on_opening() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let rules = crate::daemon::Then::Rules { project: false };
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    let (id, _) = wire.call();
+    wire.refuse(id, "config.absent: no configuration");
+    pumped(&mut app, |a| a.clients[0].refused.contains_key(&rules));
+    assert!(app.render().all_text().contains("RingFrame did not answer: config.absent"));
+
+    wire.event(Event::Turbo { on: true });
+    pumped(&mut app, |a| a.clients[0].turbo);
+    assert!(!app.clients[0].owes(&rules), "not asked again while the sheet stays open");
+
+    app.dispatch(WindowAct::OpenSettings);
+    app.dispatch(SheetAct::SettingsTab(SettingsTab::RingFrame));
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Read { what, .. } if what == "rules"));
+}
+
 /// RingFrame: the practices, the cap, each rule with where it comes from, what
 /// judges must not do, and a preview; each change written as RingFrame reads
 /// it, a rule as the list that holds it.
