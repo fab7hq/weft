@@ -2176,11 +2176,11 @@ impl Session {
             }
             Call::Turbo { on } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                // This project's `turbo` in `config.toml`; every client of
-                // the project is told, a device's tree among them.
+                // Every project's `turbo` in `config.toml`, the only one;
+                // every client is told, a device's tree among them.
                 let key = ["turbo".to_string()];
                 return Ok(
-                    match self.change_config(at, "project", &key, Some(&serde_json::json!(on))) {
+                    match self.change_config(at, "machine", &key, Some(&serde_json::json!(on))) {
                         Answer::Ok(_) => Answer::Ok(serde_json::json!({"turbo": on})),
                         other => other,
                     },

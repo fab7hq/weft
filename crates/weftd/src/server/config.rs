@@ -5,8 +5,9 @@
 
 use super::*;
 
-/// Keys only the machine has: a project's would be ignored.
-const MACHINE_ONLY: [&str; 5] = ["notify", "suggest", "service", "remote", "harnesses"];
+/// Keys only the machine has: a project's would be ignored. Turbo is every
+/// project's only (weft-after-desktop ADR-0003 D4).
+const MACHINE_ONLY: [&str; 6] = ["notify", "suggest", "service", "remote", "harnesses", "turbo"];
 
 impl Session {
     /// This project's settings: the file's machine tables and this project's

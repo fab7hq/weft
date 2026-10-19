@@ -150,36 +150,41 @@ fn a_set_from_one_client_reaches_every_open_project_and_every_client_at_once() {
         json!({"ask": "codex", "eval": "claude-code"})
     );
 
-    // One project's: that project only, and its turbo badge moves.
+    // Every project's turbo: every project's badge moves.
     one.set("machine", &["turbo"], Some(json!(true))).unwrap();
     assert_eq!(two.told().unwrap()["effective"]["turbo"], true);
-    let mine = one.set("project", &["turbo"], Some(json!(false))).unwrap();
-    assert_eq!(mine["effective"]["turbo"], false);
-    assert_eq!(mine["project"]["turbo"], false);
-    assert!(one.heard.iter().any(|e| matches!(e, Event::Turbo { on: false })), "{:?}", one.heard);
-    let other = two.answer(Call::ConfigGet).unwrap();
-    assert_eq!(other["effective"]["turbo"], true, "the other project keeps the machine's");
+    assert!(one.heard.iter().any(|e| matches!(e, Event::Turbo { on: true })), "{:?}", one.heard);
 
-    // Taken out again: the machine's applies, and the project's table goes.
-    let back = one.set("project", &["turbo"], None).unwrap();
-    assert_eq!(back["effective"]["turbo"], true);
+    // One project's: that project only.
+    let mine = one.set("project", &["routing", "eval"], Some(json!("codex"))).unwrap();
+    assert_eq!(mine["effective"]["routing"]["acts"]["eval"], "codex");
+    assert_eq!(mine["project"]["routing"]["eval"], "codex");
+    let other = two.answer(Call::ConfigGet).unwrap();
+    assert_eq!(
+        other["effective"]["routing"]["acts"]["eval"], "claude-code",
+        "the other keeps every project's"
+    );
+
+    // Taken out again: every project's applies, and the project's table goes.
+    let back = one.set("project", &["routing", "eval"], None).unwrap();
+    assert_eq!(back["effective"]["routing"]["acts"]["eval"], "claude-code");
     assert!(!w.text().contains("[projects."), "{}", w.text());
     drop(two);
     one.answer(Call::Shutdown).ok();
 }
 
+/// Turbo is every project's only: the turbo switch writes the machine's, and
+/// a project's own is refused.
 #[test]
-fn the_turbo_switch_writes_the_project_s_turbo() {
+fn turbo_is_every_project_s_only() {
     let w = World::new("turbo", "");
     let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
     assert_eq!(one.answer(Call::Turbo { on: true }).unwrap()["turbo"], true);
-    let root = w.root.join("one");
-    assert!(
-        w.text().contains(&format!("[projects.\"{}\"]\nturbo = true", root.display())),
-        "{}",
-        w.text()
-    );
+    assert_eq!(w.text(), "turbo = true\n");
     assert_eq!(one.answer(Call::ConfigGet).unwrap()["effective"]["turbo"], true);
+    let why = one.set("project", &["turbo"], Some(json!(false))).unwrap_err();
+    assert!(why.contains("turbo"), "{why}");
+    assert_eq!(w.text(), "turbo = true\n", "nothing written");
     one.answer(Call::Shutdown).ok();
 }
 

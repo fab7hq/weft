@@ -1039,14 +1039,7 @@ fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
     let off = project("turbo-off");
     let socket = protocol::private_socket("weft-turbo");
     let config = socket.with_extension("turbo-config.toml");
-    std::fs::write(
-        &config,
-        format!(
-            "turbo = true\n\n[projects.\"{}\"]\nturbo = false\n",
-            off.canonicalize().unwrap().display()
-        ),
-    )
-    .expect("config");
+    std::fs::write(&config, "turbo = true\n").expect("config");
     let listening = socket.clone();
     std::thread::spawn(move || {
         let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
@@ -1055,6 +1048,10 @@ fn turbo_adds_each_harnesses_own_flags_to_the_agents_it_starts() {
     for (root, want, turbo) in [(&on, "hello TURBO-FLAG", true), (&off, "hello", false)] {
         let mut c = Client::attach(&socket, &root.canonicalize().unwrap());
         c.hello();
+        // Turbo is every project's: turned off before the second agent starts.
+        if !turbo {
+            c.send(Call::Turbo { on: false });
+        }
         c.send(Call::StartAgent {
             harness: "echo-agent".into(),
             spec: "echo hello".into(),

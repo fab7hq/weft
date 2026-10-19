@@ -315,10 +315,10 @@ impl Config {
         !self.unsuggested
     }
 
-    /// Whether agents Weft starts in the project at `root` run in turbo mode:
-    /// the project's `turbo` line, else the machine's, else off.
-    pub fn turbo(&self, root: &Path) -> bool {
-        self.project(root).and_then(|p| p.turbo).or(self.machine.turbo).unwrap_or(false)
+    /// Whether agents Weft starts run in turbo mode: the machine's `turbo`
+    /// line, for every project, else off.
+    pub fn turbo(&self, _root: &Path) -> bool {
+        self.machine.turbo.unwrap_or(false)
     }
 
     /// One scope's tables, keeping what Weft knows and reporting the rest.
@@ -357,7 +357,9 @@ impl Config {
                 ("ringframe", Value::Object(r)) => out.ringframe = r.clone(),
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
                 ("suggest", Value::Bool(on)) if at.is_empty() => self.unsuggested = !on,
-                ("turbo", Value::Bool(on)) => out.turbo = Some(*on),
+                // Every project's only (weft-after-desktop ADR-0003 D4): a
+                // project's own line is reported and not read.
+                ("turbo", Value::Bool(on)) if at.is_empty() => out.turbo = Some(*on),
                 ("projects", _) if at.is_empty() => {}
                 ("remote", Value::Object(r)) if at.is_empty() => {
                     for (k, v) in r {
@@ -727,17 +729,18 @@ mod tests {
         assert_eq!(c.ignored, ["suggest"]);
     }
 
-    /// Turbo mode: off unless turned on, for every project or for one, the
-    /// project's line over the machine's.
+    /// Turbo mode: off unless turned on, for every project; a project's own
+    /// line is reported and not read.
     #[test]
-    fn turbo_is_off_unless_turned_on_and_a_project_wins() {
+    fn turbo_is_off_unless_turned_on_and_is_the_machine_s_only() {
         let here = Path::new(HERE);
         assert!(!read_(STARTING).turbo(here), "off in the starting file");
         let uncommented = STARTING.replace("# turbo = true", "turbo = true");
         assert!(read_(&uncommented).turbo(here), "its own line works uncommented");
         let text = format!("turbo = true\n\n[projects.\"{HERE}\"]\nturbo = false\n");
-        assert!(!read_(&text).turbo(here), "the project's own line wins");
-        assert!(read_(&text).turbo(Path::new("/elsewhere")), "the machine's holds elsewhere");
+        assert!(read_(&text).turbo(here), "a project's own line is not read");
+        assert!(read_(&text).turbo(Path::new("/elsewhere")));
+        assert_eq!(read_(&text).ignored, [format!("projects.\"{HERE}\".turbo")]);
         let c = read_("turbo = \"yes\"\n");
         assert!(!c.turbo(here), "anything but a yes or a no changes nothing");
         assert_eq!(c.ignored, ["turbo"]);

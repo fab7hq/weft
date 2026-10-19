@@ -134,7 +134,7 @@ pub enum Call {
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
     Available,
-    /// Turn this project's turbo mode on or off: its `turbo` in
+    /// Turn turbo mode on or off, for every project: `turbo` in
     /// `config.toml`. Agents started from now on follow it; one already
     /// running keeps the mode it was started in. Answers with `{"turbo": bool}`.
     Turbo {
