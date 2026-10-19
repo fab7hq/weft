@@ -99,10 +99,8 @@ mod tests {
             open_projects: vec![PathBuf::from("/work/p1"), PathBuf::from("/work/p2")],
             folded_projects: vec![PathBuf::from("/work/p2")],
             settings: WeftSettings {
-                turbo: true,
                 start_at_login: true,
                 sidebar_open: false,
-                notify_waiting: true,
                 default_view: PaneViewMode::Conversation,
                 window_bounds: Some(WindowBounds {
                     x: 100.0,
@@ -151,7 +149,7 @@ mod tests {
             version: 1,
             open_projects: vec![PathBuf::from("/work/replicated")],
             folded_projects: Vec::new(),
-            settings: WeftSettings { turbo: true, ..WeftSettings::default() },
+            settings: WeftSettings { sidebar_open: false, ..WeftSettings::default() },
             panes: SavedPanesLayout::default(),
         };
         save(&src_weft, &state).unwrap();

@@ -14,7 +14,7 @@ use std::path::Path;
 const ALLOWED: &[(&str, &[&str], &str)] = &[
     (
         "weft-core",
-        &["pulldown-cmark", "serde", "serde_json", "sha2", "toml"],
+        &["pulldown-cmark", "serde", "serde_json", "sha2", "toml", "toml_edit"],
         "the rules parse, hash and decide; they do not do",
     ),
     (

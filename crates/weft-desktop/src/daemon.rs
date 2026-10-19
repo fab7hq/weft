@@ -336,6 +336,8 @@ pub struct ProjectClient {
     pub notify: bool,
     pub turbo: bool,
     pub start_at_login: bool,
+    /// This project's settings, as the daemon last told them (`config`).
+    pub config: Option<serde_json::Value>,
     pub update: Option<String>,
     pub reopened_since: Option<i64>,
     pub harnesses: Harnesses,
@@ -406,6 +408,7 @@ impl ProjectClient {
             notify: true,
             turbo: false,
             start_at_login: false,
+            config: None,
             update: None,
             reopened_since: None,
             harnesses: Default::default(),
@@ -485,6 +488,8 @@ impl ProjectClient {
         })?;
         let opened = client.wait(open)?.map_err(|e| anyhow!(e))?;
         client.take_opened(&opened);
+        let config = client.send(Call::ConfigGet)?;
+        client.config = client.wait(config)?.ok();
         Ok(())
     }
 
@@ -725,6 +730,7 @@ impl ProjectClient {
                 }
             }
             Event::Turbo { on } => self.turbo = on,
+            Event::Config { config } => self.config = Some(config),
             Event::StartAtLogin { on } => self.start_at_login = on,
             Event::Reopened { since } => self.reopened_since = since,
             Event::Update { version } => self.update = version,
@@ -812,8 +818,16 @@ impl ProjectClient {
         self.tell(Call::CloseAgent { pane }, Then::Refusal).map(|_| ())
     }
 
-    pub fn set_turbo(&mut self, on: bool) -> Result<u64> {
-        self.tell(Call::Turbo { on }, Then::Refusal)
+    /// One key of `config.toml` set in `scope` (`machine` or `project`), or
+    /// taken out; every client is told the settings that follow.
+    pub fn set_config(&mut self, scope: &str, key: &[&str], value: Option<Value>) -> Result<u64> {
+        let key = key.iter().map(|k| k.to_string()).collect();
+        self.tell(Call::ConfigSet { scope: scope.into(), key, value }, Then::Refusal)
+    }
+
+    /// The machine's turbo, as `config.toml` says: off until it is turned on.
+    pub fn machine_turbo(&self) -> bool {
+        self.config.as_ref().and_then(|c| c["machine"]["turbo"].as_bool()).unwrap_or(false)
     }
 
     pub fn set_start_at_login(&mut self, on: bool, program: &str, path: &str) -> Result<u64> {

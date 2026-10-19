@@ -276,6 +276,11 @@ impl WeftDesktopApp {
         self.quit_requested = true;
     }
 
+    /// The machine's turbo, as the daemon last said.
+    pub fn turbo(&self) -> bool {
+        self.clients.iter().find(|c| c.config.is_some()).is_some_and(|c| c.machine_turbo())
+    }
+
     /// Put a connected project in place of the one it connects, and open a
     /// tab for each running agent no pane shows yet.
     pub fn integrate_connected_client(&mut self, mut client: ProjectClient) {
@@ -286,9 +291,6 @@ impl WeftDesktopApp {
             client.detach();
             return;
         };
-        if self.state.settings.turbo && !client.turbo {
-            let _ = client.set_turbo(true);
-        }
         self.not_opened.remove(&p);
         let running: Vec<u32> = client.panes.iter().filter(|v| v.running).map(|v| v.id).collect();
         self.clients[pos] = client;
@@ -960,7 +962,7 @@ impl WeftDesktopApp {
                 searching: self.focus == Focus::Search,
                 plus_popover_project: self.plus_popover_project.as_deref(),
                 harnesses: &harnesses,
-                turbo: self.state.settings.turbo,
+                turbo: self.turbo(),
                 unfolded_earlier: &self.unfolded_earlier,
                 clients: &self.clients,
             }));
@@ -1006,11 +1008,11 @@ impl WeftDesktopApp {
         }
 
         if let Some(root) = &self.plus_popover_project {
-            body = body.child(render_plus_popover(root, &harnesses, self.state.settings.turbo));
+            body = body.child(render_plus_popover(root, &harnesses, self.turbo()));
         }
         if self.menu_open {
             body = body.child(render_menu_popover(&MenuProps {
-                turbo: self.state.settings.turbo,
+                turbo: self.turbo(),
                 start_at_login: self.clients.iter().any(|c| c.start_at_login),
                 remote: self.clients.iter().find_map(|c| c.remote.as_ref()),
                 heard: self.clients.iter().any(|c| c.is_connected()),

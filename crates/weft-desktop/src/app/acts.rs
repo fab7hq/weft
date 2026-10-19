@@ -66,12 +66,11 @@ impl WeftDesktopApp {
             }
             WindowAct::ClosePopovers => {}
             WindowAct::ToggleTurbo => {
-                let next = !self.state.settings.turbo;
-                self.state.settings.turbo = next;
-                for c in &mut self.clients {
-                    let _ = c.set_turbo(next);
+                // The machine's, in config.toml: one daemon tells every project.
+                let next = !self.turbo();
+                if let Some(c) = self.clients.iter_mut().find(|c| c.is_connected()) {
+                    let _ = c.set_config("machine", &["turbo"], Some(serde_json::json!(next)));
                 }
-                let _ = self.save_state();
             }
             WindowAct::ToggleStartAtLogin => {
                 // The daemon's own setting is what is turned, whatever was saved here.

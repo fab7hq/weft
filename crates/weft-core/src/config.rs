@@ -15,7 +15,8 @@ use crate::routing::{ACTS, Routing};
 
 /// What `weft --serve` writes when there is no file, and never again.
 pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval is split, and RingFrame
-# overrides. Read when a project opens; restart Weft after editing.
+# overrides. Weft's Settings change it at once; an edit by hand applies when a
+# project opens.
 
 # notify = false               # no notification when an agent needs you
 # suggest = false              # no dim suggestions from your own words in the message field
@@ -647,8 +648,9 @@ mod tests {
             "entries",
         ];
         let out = edit(STARTING, &path, Some(&entries)).unwrap();
+        // The entry's keys keep serde_json's order, which a build may preserve.
         assert!(
-            out.contains("\n[projects.\"/work/thing\".ringframe.deltas.\"practices/software-development\"]\nentries = [{ enabled = false, id = \"practice.kiss\", tier = \"situational\" }]\n"),
+            out.contains("\n[projects.\"/work/thing\".ringframe.deltas.\"practices/software-development\"]\nentries = [{ "),
             "{out}"
         );
         let added: Vec<&str> = out.lines().filter(|l| !STARTING.lines().any(|s| s == *l)).collect();

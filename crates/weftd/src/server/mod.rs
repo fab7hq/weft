@@ -24,6 +24,7 @@ use crate::pane::Pane;
 use crate::turns::Turn;
 
 mod agents;
+mod config;
 mod login;
 mod remote;
 mod screens;
@@ -2162,11 +2163,23 @@ impl Session {
             }
             Call::Turbo { on } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                // Held while the daemon runs; `config.toml` says where it starts.
-                self.projects[at].turbo = on;
-                // Every client of the project, a device's tree among them.
-                self.clients.broadcast(at, &Out::Turbo { on });
-                return Ok(Answer::Ok(serde_json::json!({"turbo": on})));
+                // This project's `turbo` in `config.toml`; every client of
+                // the project is told, a device's tree among them.
+                let key = ["turbo".to_string()];
+                return Ok(
+                    match self.change_config(at, "project", &key, Some(&serde_json::json!(on))) {
+                        Answer::Ok(_) => Answer::Ok(serde_json::json!({"turbo": on})),
+                        other => other,
+                    },
+                );
+            }
+            Call::ConfigGet => {
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                return Ok(Answer::Ok(self.config_json(at)));
+            }
+            Call::ConfigSet { scope, key, value } => {
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                return Ok(self.change_config(at, &scope, &key, value.as_ref()));
             }
             Call::RemoteView { view } => {
                 if !self.clients.named(client, "weft-remote") {

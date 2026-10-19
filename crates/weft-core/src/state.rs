@@ -63,18 +63,12 @@ impl Default for WeftState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeftSettings {
-    /// When true, newly started agents receive full permissions (--dangerously-skip-permissions / --yolo).
-    #[serde(default)]
-    pub turbo: bool,
     /// When true, com.fab7.weft launchd service starts Weft at login.
     #[serde(default)]
     pub start_at_login: bool,
     /// Whether the left 380px project/agent/work tree is open.
     #[serde(default = "default_true")]
     pub sidebar_open: bool,
-    /// Whether macOS desktop notifications fire when an agent enters Waiting.
-    #[serde(default = "default_true")]
-    pub notify_waiting: bool,
     #[serde(default)]
     pub default_view: PaneViewMode,
     #[serde(default)]
@@ -84,10 +78,8 @@ pub struct WeftSettings {
 impl Default for WeftSettings {
     fn default() -> Self {
         Self {
-            turbo: false,
             start_at_login: false,
             sidebar_open: true,
-            notify_waiting: true,
             default_view: PaneViewMode::Terminal,
             window_bounds: None,
         }
@@ -247,10 +239,8 @@ mod tests {
             open_projects: vec![PathBuf::from("/work/alpha"), PathBuf::from("/work/beta")],
             folded_projects: vec![PathBuf::from("/work/beta")],
             settings: WeftSettings {
-                turbo: true,
                 start_at_login: true,
                 sidebar_open: false,
-                notify_waiting: true,
                 default_view: PaneViewMode::Conversation,
                 window_bounds: Some(WindowBounds {
                     x: 120.0,

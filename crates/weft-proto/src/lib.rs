@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 6;
+pub const PROTOCOL: u64 = 7;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -134,11 +134,23 @@ pub enum Call {
     /// The agents that could be started here: fresh, or picking up a session
     /// RingFrame has a receipt for.
     Available,
-    /// Turn this project's turbo mode on or off. Agents started from now on
-    /// follow it; one already running keeps the mode it was started in.
-    /// Answers with `{"turbo": bool}`.
+    /// Turn this project's turbo mode on or off: its `turbo` in
+    /// `config.toml`. Agents started from now on follow it; one already
+    /// running keeps the mode it was started in. Answers with `{"turbo": bool}`.
     Turbo {
         on: bool,
+    },
+    /// Weft's settings for this project: `config.toml`'s machine tables, this
+    /// project's, what applies here, and what Weft did not read.
+    ConfigGet,
+    /// One key of `config.toml` set, or taken out when `value` is `None`:
+    /// `scope` is `machine` (every project) or `project` (this one), `key` the
+    /// path inside it. Applied to every open project at once, and every client
+    /// is told (`Event::Config`). Answers as [`Call::ConfigGet`] does.
+    ConfigSet {
+        scope: String,
+        key: Vec<String>,
+        value: Option<Value>,
     },
     /// `weft remote`'s view, from the client whose hello names it
     /// `weft-remote`: kept, and sent to every client as `remote` (remote.md D8).
@@ -280,6 +292,11 @@ pub enum Event {
     /// A project's turbo switch changed: agents started from now on run so.
     Turbo {
         on: bool,
+    },
+    /// `config.toml` changed: this project's settings, as `config.get`
+    /// answers them.
+    Config {
+        config: Value,
     },
     /// Weft's "Start at login" was turned on or off, to every client.
     StartAtLogin {
@@ -442,6 +459,10 @@ impl Call {
             }
             Call::Available => ("agents.available", json!({})),
             Call::Turbo { on } => ("project.turbo", json!({"on": on})),
+            Call::ConfigGet => ("config.get", json!({})),
+            Call::ConfigSet { scope, key, value } => {
+                ("config.set", json!({"scope": scope, "key": key, "value": value}))
+            }
             Call::RemoteView { view } => ("remote.view", json!({"view": view})),
             Call::Remote { act } => ("remote", act.clone()),
             Call::StartAtLogin { on, program, path } => {
@@ -517,6 +538,17 @@ impl Call {
             },
             "agents.available" => Call::Available,
             "project.turbo" => Call::Turbo { on: p.get("on")?.as_bool()? },
+            "config.get" => Call::ConfigGet,
+            "config.set" => Call::ConfigSet {
+                scope: s("scope")?,
+                key: p
+                    .get("key")?
+                    .as_array()?
+                    .iter()
+                    .map(|k| k.as_str().map(str::to_string))
+                    .collect::<Option<_>>()?,
+                value: p.get("value").filter(|v| !v.is_null()).cloned(),
+            },
             "remote.view" => Call::RemoteView { view: p.get("view")?.clone() },
             "remote" => {
                 p.get("act")?.as_str()?;
@@ -575,6 +607,7 @@ impl Event {
             }
             Event::Presence { at } => ("presence", json!({"at": at})),
             Event::Turbo { on } => ("turbo", json!({"on": on})),
+            Event::Config { config } => ("config", config.clone()),
             Event::StartAtLogin { on } => ("start_at_login", json!({"on": on})),
             Event::Reopened { since } => ("project.reopened", json!({"since": since})),
             Event::Update { version } => ("update.waiting", json!({"version": version})),
@@ -632,6 +665,7 @@ impl Event {
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
             "turbo" => Event::Turbo { on: p.get("on")?.as_bool()? },
+            "config" => Event::Config { config: p.clone() },
             "start_at_login" => Event::StartAtLogin { on: p.get("on")?.as_bool()? },
             "project.reopened" => Event::Reopened { since: p.get("since")?.as_i64() },
             "update.waiting" => {
@@ -1047,6 +1081,13 @@ mod tests {
             },
             Call::Available,
             Call::Turbo { on: true },
+            Call::ConfigGet,
+            Call::ConfigSet {
+                scope: "project".into(),
+                key: vec!["routing".into(), "eval".into()],
+                value: Some(json!("codex")),
+            },
+            Call::ConfigSet { scope: "machine".into(), key: vec!["turbo".into()], value: None },
             Call::RemoteView { view: json!({"state": "off"}) },
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
@@ -1137,6 +1178,7 @@ mod tests {
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
             Event::Turbo { on: true },
+            Event::Config { config: json!({"machine": {"turbo": true}, "project": null}) },
             Event::StartAtLogin { on: false },
             Event::Reopened { since: Some(1_790_000_000_000) },
             Event::Reopened { since: None },

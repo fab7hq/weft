@@ -228,11 +228,11 @@ fn home_with(state: WeftState) -> tempfile::TempDir {
 pub(crate) fn sample_app(turbo: bool) -> (tempfile::TempDir, WeftDesktopApp) {
     let tmp = home_with(WeftState {
         open_projects: vec![PathBuf::from("/work/weft")],
-        settings: weft_core::state::WeftSettings { turbo, ..Default::default() },
         ..Default::default()
     });
     let mut app = WeftDesktopApp::new(tmp.path().to_path_buf(), "studio");
     app.clients[0].turbo = turbo;
+    app.clients[0].config = Some(serde_json::json!({"machine": {"turbo": turbo}}));
     populate_sample_project(&mut app.clients[0]);
     (tmp, app)
 }
@@ -300,7 +300,6 @@ fn restores_window_bounds_and_open_projects_from_durable_state_json() {
         folded_projects: vec![PathBuf::from("/work/docs")],
         ..Default::default()
     };
-    initial.settings.turbo = true;
     initial.settings.sidebar_open = true;
     initial.settings.window_bounds =
         Some(WindowBounds { x: 120.0, y: 80.0, width: 1440.0, height: 900.0 });
@@ -311,7 +310,6 @@ fn restores_window_bounds_and_open_projects_from_durable_state_json() {
     assert_eq!(app.clients.len(), 2);
     assert_eq!(app.clients[0].name, "weft");
     assert_eq!(app.clients[1].name, "docs");
-    assert!(app.state.settings.turbo);
     assert_eq!(
         app.state.settings.window_bounds,
         Some(WindowBounds { x: 120.0, y: 80.0, width: 1440.0, height: 900.0 })
@@ -2236,4 +2234,25 @@ fn a_staged_send_goes_where_staged_or_where_sent_to() {
         matches!(&call, Call::Resolve { to: None, start: Some(h), .. } if h == "grok"),
         "{call:?}"
     );
+}
+
+/// ☰ › Turbo turns the machine's turbo in `config.toml`, through the daemon;
+/// the switch shows what the daemon then says, not what the window kept.
+#[test]
+fn the_turbo_switch_sets_the_machine_s_turbo_through_the_daemon() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    assert!(!app.turbo());
+    app.dispatch(WindowAct::ToggleTurbo);
+    let (_, call) = wire.call();
+    assert_eq!(
+        call,
+        Call::ConfigSet {
+            scope: "machine".into(),
+            key: vec!["turbo".into()],
+            value: Some(json!(true))
+        }
+    );
+    assert!(!app.turbo(), "not until the daemon says so");
+    wire.event(Event::Config { config: json!({"machine": {"turbo": true}, "project": null}) });
+    pumped(&mut app, |a| a.turbo());
 }
