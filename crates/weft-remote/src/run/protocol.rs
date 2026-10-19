@@ -388,6 +388,9 @@ impl Remote {
             .ok_or(("bad_request", "set names a key, as a list of names".to_string()))?;
         let value = m.get("value").filter(|v| !v.is_null()).cloned();
         let call = Call::ConfigSet { scope: scope.to_string(), key, value };
+        if !crate::daemon::allowed(&call) {
+            return Err(("not_allowed", "which program runs is set on the machine".into()));
+        }
         self.ask(at, call, conn, req, Carries::Settings)
     }
 

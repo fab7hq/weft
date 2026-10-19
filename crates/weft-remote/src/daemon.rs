@@ -142,7 +142,12 @@ pub fn allowed(call: &Call) -> bool {
         // What to suggest in a watched agent's message field.
         Call::Suggest { .. } => true,
         Call::Available => true,
-        Call::ConfigGet | Call::ConfigSet { .. } => true,
+        // Every setting but which program runs, for a harness or the tunnel:
+        // that is set on the machine only (weft-after-desktop ADR-0003 D6).
+        Call::ConfigGet => true,
+        Call::ConfigSet { key, .. } => {
+            !matches!(key.first().map(String::as_str), Some("harnesses" | "remote"))
+        }
         // A fresh agent, or a work's session resumed, with the command line
         // the daemon's harness file gives: never one a device sent.
         Call::StartAgent { .. } => true,

@@ -329,4 +329,17 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
     d.send(json!({"type": "set", "project": "work", "scope": "machine", "key": ["turbo"],
                   "value": "yes", "req": 3}));
     assert_eq!(d.answer(3)["type"], "error", "what Weft would not read is refused");
+    // Which program runs, for a harness or the tunnel, is set on the machine
+    // only: a device naming one is refused before the daemon hears it.
+    for (n, key) in
+        [json!(["harnesses", "codex", "program"]), json!(["remote", "program"]), json!(["remote"])]
+            .into_iter()
+            .enumerate()
+    {
+        let req = 10 + n as i64;
+        d.send(json!({"type": "set", "project": "work", "scope": "machine", "key": key,
+                      "value": "/tmp/anything", "req": req}));
+        let answer = d.answer(req);
+        assert_eq!(answer["code"], "not_allowed", "{key}: {answer}");
+    }
 }
