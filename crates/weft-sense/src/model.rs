@@ -1461,6 +1461,9 @@ impl SenseModel {
 
         let tokenizer = SenseTokenizer::from_bytes(&tok_bytes)?;
         let weights = parse_onnx_weights(&model_bytes)?;
+        if weights.position_embeddings.len() / 384 < manifest.max_seq_len {
+            bail!("the model has fewer positions than max_seq_len {}", manifest.max_seq_len);
+        }
 
         #[cfg(target_os = "macos")]
         unsafe {
@@ -2174,6 +2177,29 @@ impl RawTensor {
         self.int32_data.iter().map(|&x| x as u8).collect()
     }
 
+    /// How many values its shape holds; `None` past `usize`.
+    fn count(&self) -> Option<usize> {
+        self.dims.iter().try_fold(1usize, |n, &d| n.checked_mul(d))
+    }
+
+    /// Its values as bytes, refused unless there are as many as its shape holds.
+    fn u8s(&self, name: &str) -> anyhow::Result<Vec<u8>> {
+        let v = self.to_u8_vec();
+        if self.count() != Some(v.len()) {
+            bail!("{name} has {} values for its shape {:?}", v.len(), self.dims);
+        }
+        Ok(v)
+    }
+
+    /// Its values as floats, refused unless there are as many as its shape holds.
+    fn f32s(&self, name: &str) -> anyhow::Result<Vec<f32>> {
+        let v = self.to_f32_vec();
+        if self.count() != Some(v.len()) {
+            bail!("{name} has {} values for its shape {:?}", v.len(), self.dims);
+        }
+        Ok(v)
+    }
+
     fn scalar_f32(&self) -> f32 {
         self.to_f32_vec().first().copied().unwrap_or(1.0)
     }
@@ -2208,21 +2234,26 @@ fn read_varint(buf: &[u8], pos: &mut usize) -> anyhow::Result<u64> {
     bail!("unexpected EOF in varint")
 }
 
+/// A length-delimited field's bytes, with `pos` moved past them.
+fn read_bytes<'a>(buf: &'a [u8], pos: &mut usize) -> anyhow::Result<&'a [u8]> {
+    let len = usize::try_from(read_varint(buf, pos)?)?;
+    let end = pos.checked_add(len).filter(|&end| end <= buf.len());
+    let end = end.context("protobuf field exceeds buffer")?;
+    let bytes = &buf[*pos..end];
+    *pos = end;
+    Ok(bytes)
+}
+
 fn skip_field(buf: &[u8], pos: &mut usize, wire_type: u8) -> anyhow::Result<()> {
     match wire_type {
         0 => {
             let _ = read_varint(buf, pos)?;
         }
-        1 => {
-            *pos += 8;
-        }
+        1 => *pos = pos.saturating_add(8),
         2 => {
-            let len = read_varint(buf, pos)? as usize;
-            *pos += len;
+            let _ = read_bytes(buf, pos)?;
         }
-        5 => {
-            *pos += 4;
-        }
+        5 => *pos = pos.saturating_add(4),
         other => bail!("unsupported protobuf wire type {other}"),
     }
     if *pos > buf.len() {
@@ -2240,21 +2271,10 @@ fn parse_node_proto(buf: &[u8]) -> anyhow::Result<RawNode> {
         let wire_type = (tag & 0x7) as u8;
         match (field_num, wire_type) {
             (1, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                let s = std::str::from_utf8(&buf[pos..pos + len])?.to_string();
-                pos += len;
-                node.inputs.push(s);
+                node.inputs.push(std::str::from_utf8(read_bytes(buf, &mut pos)?)?.to_string());
             }
-            (3, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                node.name = std::str::from_utf8(&buf[pos..pos + len])?.to_string();
-                pos += len;
-            }
-            (4, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                node.op_type = std::str::from_utf8(&buf[pos..pos + len])?.to_string();
-                pos += len;
-            }
+            (3, 2) => node.name = std::str::from_utf8(read_bytes(buf, &mut pos)?)?.to_string(),
+            (4, 2) => node.op_type = std::str::from_utf8(read_bytes(buf, &mut pos)?)?.to_string(),
             _ => skip_field(buf, &mut pos, wire_type)?,
         }
     }
@@ -2273,47 +2293,37 @@ fn parse_tensor_proto(buf: &[u8]) -> anyhow::Result<RawTensor> {
                 t.dims.push(read_varint(buf, &mut pos)? as usize);
             }
             (1, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                let end = pos + len;
-                while pos < end {
-                    t.dims.push(read_varint(buf, &mut pos)? as usize);
+                let packed = read_bytes(buf, &mut pos)?;
+                let mut p = 0;
+                while p < packed.len() {
+                    t.dims.push(read_varint(packed, &mut p)? as usize);
                 }
             }
             (2, 0) => {
                 t.data_type = read_varint(buf, &mut pos)? as i32;
             }
             (4, 5) => {
-                let v = f32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+                let v = buf.get(pos..pos + 4).context("protobuf field exceeds buffer")?;
                 pos += 4;
-                t.float_data.push(v);
+                t.float_data.push(f32::from_le_bytes(v.try_into()?));
             }
             (4, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                for chunk in buf[pos..pos + len].as_chunks::<4>().0 {
+                for chunk in read_bytes(buf, &mut pos)?.as_chunks::<4>().0 {
                     t.float_data.push(f32::from_le_bytes(*chunk));
                 }
-                pos += len;
             }
             (5, 0) => {
                 t.int32_data.push(read_varint(buf, &mut pos)? as i32);
             }
             (5, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                let end = pos + len;
-                while pos < end {
-                    t.int32_data.push(read_varint(buf, &mut pos)? as i32);
+                let packed = read_bytes(buf, &mut pos)?;
+                let mut p = 0;
+                while p < packed.len() {
+                    t.int32_data.push(read_varint(packed, &mut p)? as i32);
                 }
             }
-            (8, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                t.name = std::str::from_utf8(&buf[pos..pos + len])?.to_string();
-                pos += len;
-            }
-            (9, 2) => {
-                let len = read_varint(buf, &mut pos)? as usize;
-                t.raw_data = buf[pos..pos + len].to_vec();
-                pos += len;
-            }
+            (8, 2) => t.name = std::str::from_utf8(read_bytes(buf, &mut pos)?)?.to_string(),
+            (9, 2) => t.raw_data = read_bytes(buf, &mut pos)?.to_vec(),
             _ => skip_field(buf, &mut pos, wire_type)?,
         }
     }
@@ -2330,9 +2340,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         let field_num = (tag >> 3) as u32;
         let wire_type = (tag & 0x7) as u8;
         if field_num == 7 && wire_type == 2 {
-            let graph_len = read_varint(model_bytes, &mut pos)? as usize;
-            let graph_buf = &model_bytes[pos..pos + graph_len];
-            pos += graph_len;
+            let graph_buf = read_bytes(model_bytes, &mut pos)?;
 
             let mut gpos = 0;
             while gpos < graph_buf.len() {
@@ -2341,17 +2349,13 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
                 let gwire = (gtag & 0x7) as u8;
                 match (gfield, gwire) {
                     (1, 2) => {
-                        let nlen = read_varint(graph_buf, &mut gpos)? as usize;
-                        let n = parse_node_proto(&graph_buf[gpos..gpos + nlen])?;
-                        gpos += nlen;
+                        let n = parse_node_proto(read_bytes(graph_buf, &mut gpos)?)?;
                         if !n.name.is_empty() {
                             nodes.insert(n.name.clone(), n);
                         }
                     }
                     (5, 2) => {
-                        let tlen = read_varint(graph_buf, &mut gpos)? as usize;
-                        let t = parse_tensor_proto(&graph_buf[gpos..gpos + tlen])?;
-                        gpos += tlen;
+                        let t = parse_tensor_proto(read_bytes(graph_buf, &mut gpos)?)?;
                         if !t.name.is_empty() {
                             inits.insert(t.name.clone(), t);
                         }
@@ -2364,11 +2368,18 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         }
     }
 
+    // The model's widths, as the forward pass reads them.
+    const D: usize = 384;
+    const FFN_DIM: usize = 1536;
+    const HEAD_DIM: usize = 192;
+
     let dequant_emb = |prefix: &str| -> anyhow::Result<Vec<f32>> {
-        let q = inits
-            .get(&format!("{prefix}_quantized"))
-            .with_context(|| format!("missing {prefix}_quantized"))?
-            .to_u8_vec();
+        let name = format!("{prefix}_quantized");
+        let t = inits.get(&name).with_context(|| format!("missing {name}"))?;
+        if t.dims.len() != 2 || t.dims[0] == 0 || t.dims[1] != D {
+            bail!("{name} has shape {:?}, not rows of {D}", t.dims);
+        }
+        let q = t.u8s(&name)?;
         let zp = inits
             .get(&format!("{prefix}_zero_point"))
             .with_context(|| format!("missing {prefix}_zero_point"))?
@@ -2381,12 +2392,20 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
     };
 
     let load_ln = |w_name: &str, b_name: &str| -> anyhow::Result<LayerNorm> {
-        let weight = inits.get(w_name).with_context(|| format!("missing {w_name}"))?.to_f32_vec();
-        let bias = inits.get(b_name).with_context(|| format!("missing {b_name}"))?.to_f32_vec();
+        let weight =
+            inits.get(w_name).with_context(|| format!("missing {w_name}"))?.f32s(w_name)?;
+        let bias = inits.get(b_name).with_context(|| format!("missing {b_name}"))?.f32s(b_name)?;
+        if weight.len() != D || bias.len() != D {
+            bail!("{w_name} and {b_name} have {} and {} values, not {D}", weight.len(), bias.len());
+        }
         Ok(LayerNorm { weight, bias })
     };
 
-    let load_qlinear = |node_name: &str, bias_name: &str| -> anyhow::Result<QuantLinear> {
+    let load_qlinear = |node_name: &str,
+                        bias_name: &str,
+                        in_dim: usize,
+                        out_dim: usize|
+     -> anyhow::Result<QuantLinear> {
         let node =
             nodes.get(node_name).with_context(|| format!("missing ONNX node {node_name}"))?;
         let w_q_name =
@@ -2396,9 +2415,10 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             .with_context(|| format!("unexpected weight name {w_q_name}"))?;
         let w_tensor =
             inits.get(w_q_name).with_context(|| format!("missing initializer {w_q_name}"))?;
-        let in_dim = w_tensor.dims[0];
-        let out_dim = w_tensor.dims[1];
-        let w_raw = w_tensor.to_u8_vec();
+        if w_tensor.dims != [in_dim, out_dim] {
+            bail!("{w_q_name} has shape {:?}, not [{in_dim}, {out_dim}]", w_tensor.dims);
+        }
+        let w_raw = w_tensor.u8s(w_q_name)?;
         let w_zp = inits
             .get(&format!("{prefix}_zero_point"))
             .with_context(|| format!("missing {prefix}_zero_point"))?
@@ -2407,8 +2427,13 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             .get(&format!("{prefix}_scale"))
             .with_context(|| format!("missing {prefix}_scale"))?
             .scalar_f32();
-        let bias =
-            inits.get(bias_name).with_context(|| format!("missing {bias_name}"))?.to_f32_vec();
+        let bias = inits
+            .get(bias_name)
+            .with_context(|| format!("missing {bias_name}"))?
+            .f32s(bias_name)?;
+        if bias.len() != out_dim {
+            bail!("{bias_name} has {} values, not {out_dim}", bias.len());
+        }
 
         #[cfg(not(target_os = "macos"))]
         let w_int: Vec<i16> = w_raw.iter().map(|&v| i16::from(v) - w_zp as i16).collect();
@@ -2427,7 +2452,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
     let word_embeddings = dequant_emb("backbone.embeddings.word_embeddings.weight")?;
     let position_embeddings = dequant_emb("backbone.embeddings.position_embeddings.weight")?;
     let token_type_all = dequant_emb("backbone.embeddings.token_type_embeddings.weight")?;
-    let token_type_0 = token_type_all[..384].to_vec();
+    let token_type_0 = token_type_all[..D].to_vec();
     let emb_ln =
         load_ln("backbone.embeddings.LayerNorm.weight", "backbone.embeddings.LayerNorm.bias")?;
 
@@ -2438,14 +2463,20 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         let q = load_qlinear(
             &format!("{p}/attention/self/query/MatMul_quant"),
             &format!("{bp}.attention.self.query.bias"),
+            D,
+            D,
         )?;
         let k = load_qlinear(
             &format!("{p}/attention/self/key/MatMul_quant"),
             &format!("{bp}.attention.self.key.bias"),
+            D,
+            D,
         )?;
         let v = load_qlinear(
             &format!("{p}/attention/self/value/MatMul_quant"),
             &format!("{bp}.attention.self.value.bias"),
+            D,
+            D,
         )?;
 
         let in_dim = q.in_dim;
@@ -2483,6 +2514,8 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             attn_out: load_qlinear(
                 &format!("{p}/attention/output/dense/MatMul_quant"),
                 &format!("{bp}.attention.output.dense.bias"),
+                D,
+                D,
             )?,
             attn_ln: load_ln(
                 &format!("{bp}.attention.output.LayerNorm.weight"),
@@ -2491,10 +2524,14 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             ffn_inter: load_qlinear(
                 &format!("{p}/intermediate/dense/MatMul_quant"),
                 &format!("{bp}.intermediate.dense.bias"),
+                D,
+                FFN_DIM,
             )?,
             ffn_out: load_qlinear(
                 &format!("{p}/output/dense/MatMul_quant"),
                 &format!("{bp}.output.dense.bias"),
+                FFN_DIM,
+                D,
             )?,
             ffn_ln: load_ln(
                 &format!("{bp}.output.LayerNorm.weight"),
@@ -2505,19 +2542,32 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
 
     let layers = [load_encoder_layer(0)?, load_encoder_layer(1)?, load_encoder_layer(2)?];
 
-    let pool_linear = load_qlinear("/pool_proj/pool_proj.0/Gemm_MatMul_quant", "pool_proj.0.bias")?;
+    let pool_linear =
+        load_qlinear("/pool_proj/pool_proj.0/Gemm_MatMul_quant", "pool_proj.0.bias", 2 * D, D)?;
     let pool_ln = load_ln("pool_proj.2.weight", "pool_proj.2.bias")?;
-    let surface_fc0 =
-        load_qlinear("/surface_head/surface_head.0/Gemm_MatMul_quant", "surface_head.0.bias")?;
-    let surface_fc2 =
-        load_qlinear("/surface_head/surface_head.2/Gemm_MatMul_quant", "surface_head.2.bias")?;
+    let surface_fc0 = load_qlinear(
+        "/surface_head/surface_head.0/Gemm_MatMul_quant",
+        "surface_head.0.bias",
+        D,
+        HEAD_DIM,
+    )?;
+    let surface_fc2 = load_qlinear(
+        "/surface_head/surface_head.2/Gemm_MatMul_quant",
+        "surface_head.2.bias",
+        HEAD_DIM,
+        8,
+    )?;
     let conv_fc0 = load_qlinear(
         "/conversation_head/conversation_head.0/Gemm_MatMul_quant",
         "conversation_head.0.bias",
+        D,
+        HEAD_DIM,
     )?;
     let conv_fc2 = load_qlinear(
         "/conversation_head/conversation_head.2/Gemm_MatMul_quant",
         "conversation_head.2.bias",
+        HEAD_DIM,
+        5,
     )?;
 
     Ok(OnnxDualHeadWeights {
@@ -2547,6 +2597,39 @@ mod tests {
         }
         let home = std::env::var("HOME").unwrap_or_default();
         PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
+    }
+
+    #[test]
+    fn a_tensor_field_past_its_buffer_is_refused() {
+        // raw_data says 16 bytes and has 2; a float has 2 of its 4; packed dims say 5 and have 1.
+        for bad in [&[0x4A, 0x10, 1, 2][..], &[0x25, 1, 2], &[0x0A, 0x05, 1]] {
+            assert!(parse_tensor_proto(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_tensor_whose_values_are_not_its_shape_is_refused() {
+        let t = RawTensor { dims: vec![2, 3], raw_data: vec![0; 5], ..Default::default() };
+        assert!(t.u8s("w").is_err());
+        let t = RawTensor { dims: vec![usize::MAX, 2], raw_data: vec![0; 2], ..Default::default() };
+        assert!(t.u8s("w").is_err());
+        let t = RawTensor { dims: vec![2], float_data: vec![1.0, 2.0], ..Default::default() };
+        assert_eq!(t.f32s("b").unwrap(), [1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_damaged_model_is_refused_never_a_panic() {
+        let bytes = std::fs::read(test_bundle_dir().join("sense.int8.onnx")).unwrap();
+        assert!(parse_onnx_weights(&bytes).is_ok());
+        // One byte in every 4099 spoiled in turn: lengths, tags, shapes and values alike.
+        for at in (0..bytes.len()).step_by(4099).take(400) {
+            let mut bad = bytes.clone();
+            bad[at] ^= 0xFF;
+            let _ = parse_onnx_weights(&bad);
+        }
+        for cut in (0..bytes.len()).step_by(bytes.len() / 50) {
+            assert!(parse_onnx_weights(&bytes[..cut]).is_err(), "cut at {cut}");
+        }
     }
 
     #[test]
