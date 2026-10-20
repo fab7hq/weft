@@ -2548,6 +2548,59 @@ limitations = []
         });
     }
 
+    /// A route rule made a candidate in a layer, as Weft's Harnesses writes
+    /// one: listed as such, from that layer, and no longer in the prompt.
+    #[test]
+    fn a_route_rule_a_layer_makes_a_candidate_is_listed_so_and_left_out() {
+        cli(|c| {
+            let (_, out, _) = c.go(&["deltas", "list", "--json"]);
+            let rule = out["catalogs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|c| c["catalog"] == "claude-code")
+                .and_then(|c| c["entries"].as_array())
+                .and_then(|e| {
+                    e.iter()
+                        .find(|e| e["status"] == "qualified" && e["capability"] == "native_plan")
+                })
+                .cloned()
+                .expect("a qualified plan rule");
+            let (id, label) = (rule["id"].as_str().unwrap(), rule["label"].as_str().unwrap());
+            let over = json!([{"layer": "weft", "ringframe": {"deltas": {"claude-code":
+                {"entries": [{"id": id, "status": "candidate"}]}}}}])
+            .to_string();
+            let (_, listed, _) = c.go(&["deltas", "list", "--json", "--override", &over]);
+            let now = listed["catalogs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|c| c["catalog"] == "claude-code")
+                .flat_map(|c| c["entries"].as_array().unwrap().clone())
+                .find(|e| e["id"] == id)
+                .unwrap();
+            assert_eq!((&now["status"], &now["source"]), (&json!("candidate"), &json!("weft")));
+            let class = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read","write"]}"#;
+            let render = |extra: &[&str]| {
+                let mut args = vec![
+                    "deltas",
+                    "render",
+                    "--host",
+                    "claude-code",
+                    "--capability",
+                    "native_plan",
+                    "--classification",
+                    class,
+                    "--json",
+                ];
+                args.extend(extra);
+                c.go(&args).1["text"].as_str().unwrap_or_default().to_string()
+            };
+            assert!(render(&[]).contains(label), "shipped, it is in the prompt");
+            assert!(!render(&["--override", &over]).contains(label), "a candidate is not");
+        });
+    }
+
     #[test]
     fn every_rule_is_listed_with_the_layer_that_last_set_it() {
         cli(|c| {
