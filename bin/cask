@@ -53,9 +53,8 @@ cask "weft" do
   binary "#{appdir}/Weft.app/Contents/MacOS/ringframe"
 
   # Signed ad hoc: without its quarantine it opens from Finder and the Dock.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Weft.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Weft.app"]
   end
 
   zap trash: "~/.fab7/weft"
