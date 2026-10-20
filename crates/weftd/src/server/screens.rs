@@ -1,27 +1,45 @@
 //! Screen frames for a client that attached to a pane (remote.md D2, D3).
 //!
-//! On each 100 ms tick, every attachment whose pane printed since its last
-//! frame is sent the pane's visible screen: whole the first time, after a
-//! resize and when the alternate screen switched, else as the difference
-//! from the screen it was sent last. The screen is read from the pane's own
-//! terminal under its lock, with the number of the last chunk in it, so a
-//! frame always shows bytes the pane has seen. A quiet pane sends nothing.
+//! Frames follow the change: output after a quiet spell is framed within
+//! `GATHER`, and while the pane keeps printing, at most one frame in each
+//! `FRAME_EVERY`. A frame is the pane's visible screen: whole the first time,
+//! after a resize and when the alternate screen switched, else as the
+//! difference from the screen it was sent last. The screen is read from the
+//! pane's own terminal under its lock, with the number of the last chunk in
+//! it, so a frame always shows bytes the pane has seen, and never while the
+//! program is in the middle of a redraw. A quiet pane sends nothing.
 //!
 //! Only the visible screen is sent, never the normal screen behind the
 //! alternate one: a device that starts while the alternate screen is on gets
 //! the whole screen again when the harness leaves it. The pane's scrollback
 //! is never copied.
 
+use std::time::{Duration, Instant};
+
 use super::*;
+
+/// How long output after a quiet spell waits for the rest of its burst.
+const GATHER: Duration = Duration::from_millis(8);
+/// While a pane keeps printing, at most one frame in this long.
+const FRAME_EVERY: Duration = Duration::from_millis(33);
 
 pub(super) struct Attachment {
     pub(super) client: u64,
     pub(super) project: usize,
     pub(super) pane: u32,
-    /// The pane printed since the last frame.
-    pub(super) dirty: bool,
-    /// What this client was sent last, as a screen to diff against.
+    /// When the next frame is due: set when the pane prints, cleared once
+    /// the frame is sent.
+    due: Option<Instant>,
+    /// When the last frame was sent, and what it showed, to diff against.
+    sent_at: Option<Instant>,
     last: Option<weft_term::Snapshot>,
+}
+
+/// When output arriving `now` is framed: after `GATHER`, and no sooner than
+/// `FRAME_EVERY` after the last frame.
+fn frame_due(now: Instant, sent_at: Option<Instant>) -> Instant {
+    let soonest = now + GATHER;
+    sent_at.map_or(soonest, |sent| soonest.max(sent + FRAME_EVERY))
 }
 
 impl Session {
@@ -37,7 +55,8 @@ impl Session {
                 client,
                 project: at,
                 pane,
-                dirty: true,
+                due: Some(Instant::now()),
+                sent_at: None,
                 last: None,
             }),
             "none" => {}
@@ -46,15 +65,38 @@ impl Session {
         Answer::nothing()
     }
 
-    /// Mark every attachment of this pane as having something new.
+    /// The pane printed: a frame falls due for each attachment of it that
+    /// has none due yet.
     pub(super) fn printed(&mut self, project: usize, pane: u32) {
+        let now = Instant::now();
         for a in self.attached.iter_mut().filter(|a| a.project == project && a.pane == pane) {
-            a.dirty = true;
+            a.due.get_or_insert_with(|| frame_due(now, a.sent_at));
         }
     }
 
-    /// The 100 ms tick: one frame to each attachment with something new.
+    /// The next event for the run loop, or none once every sender has gone.
+    /// Frames that fall due meanwhile are sent, even while events keep
+    /// arriving.
+    pub(super) fn next_wake(&mut self, rx: &Receiver<Wake>) -> Option<Wake> {
+        use std::sync::mpsc::RecvTimeoutError;
+        loop {
+            let now = Instant::now();
+            match self.attached.iter().filter_map(|a| a.due).min() {
+                None => return rx.recv().ok(),
+                Some(due) if due <= now => self.frames(),
+                Some(due) => match rx.recv_timeout(due - now) {
+                    Ok(event) => return Some(event),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return None,
+                },
+            }
+        }
+    }
+
+    /// One frame to each attachment whose frame is due, or whose pane was
+    /// resized.
     pub(super) fn frames(&mut self) {
+        let now = Instant::now();
         let clients = &self.clients.sinks;
         self.attached.retain(|a| clients.contains_key(&a.client));
         let mut attached = std::mem::take(&mut self.attached);
@@ -65,15 +107,19 @@ impl Session {
             // The size the pane was last given, which its terminal has.
             let size = slot.size;
             let resized = a.last.as_ref().is_some_and(|l| l.size() != size);
-            if !(a.dirty || resized) {
+            if !(a.due.is_some_and(|due| due <= now) || resized) {
                 return true;
             }
-            // Mid-redraw: still dirty, framed on a later tick.
-            let Some(frame) = slot.pane.frame(a.last.as_ref()) else { return true };
-            a.dirty = false;
+            // Mid-redraw: asked again shortly, until the redraw ends.
+            let Some(frame) = slot.pane.frame(a.last.as_ref()) else {
+                a.due = Some(now + GATHER);
+                return true;
+            };
+            a.due = None;
             if !frame.full && frame.bytes.is_empty() {
                 return true;
             }
+            a.sent_at = Some(now);
             a.last = Some(frame.shown);
             let (rows, cols) = size;
             let frame = Out::Screen {

@@ -153,12 +153,50 @@ fn serve<T: From<Socket> + Send + 'static>(id: u64, stream: TcpStream, tx: Sende
 
 #[derive(Default)]
 struct Queue {
-    items: VecDeque<String>,
+    items: VecDeque<Item>,
     /// Frames were dropped since it last emptied.
     stale: bool,
     /// Close once what is queued is written.
     finishing: bool,
     closed: bool,
+}
+
+enum Item {
+    Message(String),
+    Screen(Screen, usize),
+}
+
+/// An agent's screen frame for a device (remote.md D3): its visible screen
+/// whole, or the change from the frame before. It waits as it is, not yet
+/// written as a message, so that a newer frame can join it.
+pub struct Screen {
+    pub agent: String,
+    pub seq: u64,
+    pub full: bool,
+    pub rows: u16,
+    pub cols: u16,
+    pub bytes: Vec<u8>,
+}
+
+impl Screen {
+    /// A newer frame of the same agent: a whole screen replaces this one, a
+    /// change is drawn after it.
+    fn join(&mut self, newer: Screen) {
+        if newer.full {
+            *self = newer;
+        } else {
+            self.bytes.extend(newer.bytes);
+            self.seq = newer.seq;
+        }
+    }
+
+    fn message(&self) -> String {
+        use base64ct::{Base64, Encoding};
+        serde_json::json!({"type": "screen", "agent": self.agent, "seq": self.seq,
+            "full": self.full, "rows": self.rows, "cols": self.cols,
+            "bytes": Base64::encode_string(&self.bytes)})
+        .to_string()
+    }
 }
 
 /// What waits to be written to one device. Pushing never blocks.
@@ -174,23 +212,42 @@ impl Outbox {
         if q.items.len() >= 2 * QUEUE {
             q.closed = true;
         } else {
-            q.items.push_back(text);
+            q.items.push_back(Item::Message(text));
         }
         ready.notify_one();
     }
 
-    /// A screen frame: dropped when the queue is full, which marks the device
-    /// stale until it drains. Whether it was queued.
-    pub fn frame(&self, text: String) -> bool {
+    /// A screen frame. One for an agent whose last frame is still unsent
+    /// joins it, up to `QUEUE` frames; past that, or when the queue is full,
+    /// it is dropped, which marks the device stale until it drains. Whether
+    /// it was taken.
+    pub fn frame(&self, screen: Screen) -> bool {
         let (lock, ready) = &*self.0;
         let mut q = lock.lock().expect("outbox");
-        if q.stale || q.items.len() >= QUEUE {
-            q.stale = true;
+        if q.stale {
             return false;
         }
-        q.items.push_back(text);
-        ready.notify_one();
-        true
+        let room = q.items.len() < QUEUE;
+        let waiting = q.items.iter_mut().find_map(|item| match item {
+            Item::Screen(s, joined) if s.agent == screen.agent => Some((s, joined)),
+            _ => None,
+        });
+        match waiting {
+            Some((s, joined)) if *joined < QUEUE => {
+                s.join(screen);
+                *joined += 1;
+                return true;
+            }
+            Some(_) => {}
+            None if room => {
+                q.items.push_back(Item::Screen(screen, 0));
+                ready.notify_one();
+                return true;
+            }
+            None => {}
+        }
+        q.stale = true;
+        false
     }
 
     /// How many messages wait to be written.
@@ -236,7 +293,10 @@ impl Outbox {
                 if q.closed || (q.finishing && q.items.is_empty()) {
                     break;
                 }
-                let text = q.items.pop_front().expect("an item");
+                let text = match q.items.pop_front().expect("an item") {
+                    Item::Message(text) => text,
+                    Item::Screen(screen, _) => screen.message(),
+                };
                 let emptied = q.items.is_empty() && q.stale;
                 if emptied {
                     q.stale = false;

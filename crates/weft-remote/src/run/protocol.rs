@@ -8,6 +8,7 @@ use weft_proto::{Call, Event};
 
 use super::{Asked, Carries, Gather, Gathering, PANES, Part, Remote, Wake};
 use crate::agents;
+use crate::socket::Screen;
 
 /// How many lines of history a device is sent.
 const HISTORY: u64 = 2_000;
@@ -234,15 +235,14 @@ impl Remote {
 
     pub(super) fn screen(&mut self, at: usize, screen: Event) {
         let Event::Screen { pane, seq, full, rows, cols, bytes } = screen else { return };
-        let message =
-            json!({"type": "screen", "agent": self.agent_id(at, pane), "seq": seq, "full": full,
-                             "rows": rows, "cols": cols, "bytes": Base64::encode_string(&bytes)})
-            .to_string();
+        let agent = self.agent_id(at, pane);
         for c in self.conns.values_mut().filter(|c| c.watching.contains(&(at, pane))) {
             if c.needs_full.contains(&(at, pane)) && !full {
                 continue;
             }
-            if c.outbox.frame(message.clone()) {
+            let frame =
+                Screen { agent: agent.clone(), seq, full, rows, cols, bytes: bytes.clone() };
+            if c.outbox.frame(frame) {
                 c.needs_full.remove(&(at, pane));
             }
         }

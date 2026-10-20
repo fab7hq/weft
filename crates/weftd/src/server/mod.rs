@@ -343,7 +343,8 @@ enum Wake {
     },
     /// The habits every project's suggestions share, read at start.
     Habits(Vec<weft_core::suggest::Entry>),
-    /// Time to send screen frames: ten times a second.
+    /// Ten times a second: time to read what settled, and to frame a pane
+    /// resized without printing.
     Frames,
     /// A harness answered what it has installed. Asked off the run loop,
     /// because asking costs a process and panes must not wait on it.
@@ -850,7 +851,7 @@ impl Session {
     }
 
     fn run(&mut self, rx: Receiver<Wake>) -> Result<()> {
-        while let Ok(event) = rx.recv() {
+        while let Some(event) = self.next_wake(&rx) {
             match event {
                 Wake::Client(stream) => self.accept(stream),
                 Wake::Left(client) => self.left(client),

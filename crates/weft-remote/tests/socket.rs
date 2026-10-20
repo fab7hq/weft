@@ -111,9 +111,54 @@ fn more_than_fifty_messages_in_a_second_closes_the_socket() {
     assert_eq!(heard, 50);
 }
 
+/// A screen frame: a whole screen of `bytes`, or a change to the last one.
+fn screen(seq: u64, full: bool, bytes: Vec<u8>) -> socket::Screen {
+    socket::Screen { agent: "a".into(), seq, full, rows: 24, cols: 80, bytes }
+}
+
+/// A screen message's number and bytes.
+fn screen_of(message: Message) -> (u64, Vec<u8>) {
+    use base64ct::{Base64, Encoding};
+    let v: serde_json::Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+    assert_eq!(v["type"], "screen");
+    (v["seq"].as_u64().unwrap(), Base64::decode_vec(v["bytes"].as_str().unwrap()).unwrap())
+}
+
+/// A frame for a device whose last frame is still unsent joins it: the
+/// device gets the newest screen with nothing lost, and its queue does not
+/// grow (remote.md D3).
+#[test]
+fn a_frame_still_unsent_is_joined_by_the_next() {
+    let (port, rx) = listening();
+    let mut device = connect(port, "/ws", socket::ORIGIN).unwrap();
+    let (_, outbox) = opened(&rx);
+    // A whole screen far bigger than the socket holds, so the device's
+    // writer waits on it while the changes come.
+    let whole = vec![b'x'; 4 << 20];
+    assert!(outbox.frame(screen(0, true, whole.clone())));
+    let mut most = 0;
+    for n in 1..=50u64 {
+        assert!(outbox.frame(screen(n, false, format!("{n};").into_bytes())), "frame {n}");
+        most = most.max(outbox.queued());
+    }
+    assert!(most <= 1, "{most} frames waited for the device");
+
+    device.get_mut().set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let (mut drawn, mut messages, mut seq) = (Vec::new(), 0, 0);
+    while seq < 50 {
+        let (n, bytes) = screen_of(device.read().unwrap());
+        drawn.extend(bytes);
+        seq = n;
+        messages += 1;
+    }
+    let changes: String = (1..=50).map(|n| format!("{n};")).collect();
+    assert!(drawn.starts_with(&whole) && drawn[whole.len()..] == *changes.as_bytes());
+    assert!(messages <= 3, "{messages} messages for 51 frames");
+}
+
 /// §14 test 2, at the socket: a device that stops reading never delays
-/// another's frames; its frames are dropped instead, and when it reads
-/// again it says so, ready for a whole screen.
+/// another's frames; past what one frame may join, its frames are dropped
+/// instead, and when it reads again it says so, ready for a whole screen.
 #[test]
 fn a_device_that_stops_reading_never_delays_another() {
     let (port, rx) = listening();
@@ -127,11 +172,10 @@ fn a_device_that_stops_reading_never_delays_another() {
     let mut slowest_push = Duration::ZERO;
     for n in 0..200 {
         let pushed = Instant::now();
-        to_stopped.frame(format!("{n} {frame}"));
-        to_reading.frame(format!("{n} {frame}"));
+        to_stopped.frame(screen(n, false, frame.clone().into_bytes()));
+        to_reading.frame(screen(n, false, frame.clone().into_bytes()));
         slowest_push = slowest_push.max(pushed.elapsed());
-        let got = reading.read().unwrap();
-        assert!(got.to_text().unwrap().starts_with(&format!("{n} ")), "in order, at once");
+        assert_eq!(screen_of(reading.read().unwrap()).0, n, "in order, at once");
     }
     assert!(slowest_push < Duration::from_millis(50), "the loop never waited: {slowest_push:?}");
     assert!(to_stopped.is_stale(), "frames for the stopped device were dropped");
@@ -151,10 +195,6 @@ fn a_device_that_stops_reading_never_delays_another() {
     assert_eq!(drained, stopped_id);
     assert!(caught_up < 200, "frames were dropped, not all queued: {caught_up}");
     assert!(!to_stopped.is_stale());
-    assert!(to_stopped.frame("full".into()), "it takes frames again");
-    loop {
-        if stopped.read().unwrap().to_text().unwrap() == "full" {
-            break;
-        }
-    }
+    assert!(to_stopped.frame(screen(0, true, b"full".to_vec())), "it takes frames again");
+    while screen_of(stopped.read().unwrap()).1 != b"full" {}
 }
