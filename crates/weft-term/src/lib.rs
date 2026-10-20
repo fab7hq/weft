@@ -12,7 +12,7 @@ mod screen;
 mod text;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::grid::{Dimensions, Scroll};
@@ -26,6 +26,13 @@ pub use screen::Snapshot;
 const CELL_WIDTH: u16 = 8;
 const CELL_HEIGHT: u16 = 16;
 
+/// A synchronized update (DEC 2026) opens with `BEGIN_UPDATE` and closes
+/// with `END_UPDATE`. A frame waits for it at most `UPDATE_LIMIT` from its
+/// start, xterm.js's own limit.
+const BEGIN_UPDATE: &[u8] = b"\x1b[?2026h";
+const END_UPDATE: &[u8] = b"\x1b[?2026l";
+const UPDATE_LIMIT: Duration = Duration::from_secs(1);
+
 /// A terminal: what a program printed, as a screen and its history.
 pub struct Term {
     term: alacritty_terminal::Term<Events>,
@@ -35,6 +42,10 @@ pub struct Term {
     /// Every row is to be painted again: the selection changed, which the
     /// emulator's own record of changes leaves out.
     repaint: bool,
+    /// When the open synchronized update began, and the end of the last read,
+    /// short of a whole marker, where one may have been cut in two.
+    update_since: Option<Instant>,
+    tail: Vec<u8>,
 }
 
 /// Where a terminal's answers go.
@@ -79,13 +90,29 @@ impl Term {
         let config = Config { scrolling_history: history, ..Config::default() };
         let events = Events::default();
         let term = alacritty_terminal::Term::new(config, &Size::new(rows, cols), events.clone());
-        Term { term, parser: Processor::new(), events, answer: Box::new(answer), repaint: true }
+        Term {
+            term,
+            parser: Processor::new(),
+            events,
+            answer: Box::new(answer),
+            repaint: true,
+            update_since: None,
+            tail: Vec::new(),
+        }
     }
 
     /// Take what the program printed.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.advance(&mut self.term, bytes);
         self.answer_questions();
+        self.follow_updates(bytes);
+    }
+
+    /// Whether the program is in the middle of a synchronized update begun
+    /// less than a second before `now`: a frame taken now would show half a
+    /// redraw.
+    pub fn holding(&self, now: Instant) -> bool {
+        self.update_since.is_some_and(|since| now.duration_since(since) < UPDATE_LIMIT)
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
@@ -233,6 +260,24 @@ impl Term {
         screen::diff(&self.term, last)
     }
 
+    /// Note each synchronized update's begin and end in these bytes. The
+    /// parser draws the update as it arrives (`NoSync`); only whether one is
+    /// open is kept, for `holding`.
+    fn follow_updates(&mut self, bytes: &[u8]) {
+        let mut seen = std::mem::take(&mut self.tail);
+        seen.extend_from_slice(bytes);
+        for at in 0..seen.len() {
+            let rest = &seen[at..];
+            if rest.starts_with(BEGIN_UPDATE) {
+                self.update_since.get_or_insert_with(Instant::now);
+            } else if rest.starts_with(END_UPDATE) {
+                self.update_since = None;
+            }
+        }
+        let keep = seen.len().saturating_sub(BEGIN_UPDATE.len() - 1);
+        self.tail = seen.split_off(keep);
+    }
+
     fn answer_questions(&mut self) {
         let events = std::mem::take(&mut *self.events.0.lock().expect("terminal events"));
         for event in events {
@@ -269,7 +314,7 @@ impl EventListener for Events {
 
 /// Draws a synchronized update as it arrives rather than holding it back:
 /// the daemon reads the screen on its own clock, and a held update would
-/// need a timer to let go.
+/// need a timer to let go. `Term::holding` tells that clock when to wait.
 #[derive(Default)]
 struct NoSync;
 

@@ -215,14 +215,18 @@ impl Pane {
     /// The next frame for a device that last drew `last`: the change from
     /// it, or the whole visible screen (`full`) when there is no last, the
     /// size changed or the alternate screen switched. Read under one lock
-    /// with the number of the last chunk in it.
-    pub fn frame(&self, last: Option<&Snapshot>) -> Frame {
+    /// with the number of the last chunk in it. Nothing while the program is
+    /// in the middle of a redraw: a device never sees half of one.
+    pub fn frame(&self, last: Option<&Snapshot>) -> Option<Frame> {
         let term = self.term.lock().expect("pane terminal");
+        if term.holding(std::time::Instant::now()) {
+            return None;
+        }
         let (full, bytes) = match last.and_then(|l| term.diff(l)) {
             Some(change) => (false, change),
             None => (true, term.formatted(0)),
         };
-        Frame { full, bytes, shown: term.snapshot(), seq: self.seq.load(Ordering::SeqCst) }
+        Some(Frame { full, bytes, shown: term.snapshot(), seq: self.seq.load(Ordering::SeqCst) })
     }
 
     pub fn current_seq(&self) -> u64 {

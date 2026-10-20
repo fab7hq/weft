@@ -68,8 +68,9 @@ impl Session {
             if !(a.dirty || resized) {
                 return true;
             }
+            // Mid-redraw: still dirty, framed on a later tick.
+            let Some(frame) = slot.pane.frame(a.last.as_ref()) else { return true };
             a.dirty = false;
-            let frame = slot.pane.frame(a.last.as_ref());
             if !frame.full && frame.bytes.is_empty() {
                 return true;
             }
