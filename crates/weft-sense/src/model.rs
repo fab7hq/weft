@@ -461,7 +461,6 @@ fn is_bert_punctuation(ch: char) -> bool {
 #[cfg(target_os = "macos")]
 #[link(name = "Accelerate", kind = "framework")]
 unsafe extern "C" {
-    fn BLASSetThreading(threading: i32) -> i32;
     fn cblas_sgemm(
         order: i32,
         trans_a: i32,
@@ -483,6 +482,32 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+/// Keep Accelerate's BLAS on the calling thread, which avoids GCD's dispatch
+/// overhead. `BLASSetThreading` is macOS 15's, so it is looked up when the
+/// program runs: a Weft built or run on an older macOS goes on without it.
+#[cfg(target_os = "macos")]
+fn blas_single_threaded() {
+    static SET: std::sync::OnceLock<Option<unsafe extern "C" fn(i32) -> i32>> =
+        std::sync::OnceLock::new();
+    let set = SET.get_or_init(|| {
+        // RTLD_DEFAULT: every image loaded, Accelerate among them.
+        let found =
+            unsafe { dlsym(-2isize as *mut std::ffi::c_void, c"BLASSetThreading".as_ptr()) };
+        (!found.is_null()).then(|| unsafe {
+            std::mem::transmute::<*mut std::ffi::c_void, unsafe extern "C" fn(i32) -> i32>(found)
+        })
+    });
+    if let Some(set) = set {
+        unsafe {
+            set(1);
+        }
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -1354,8 +1379,9 @@ fn get_worker_pool() -> &'static WorkerPool {
                     #[cfg(target_os = "macos")]
                     unsafe {
                         let _ = pthread_set_qos_class_self_np(0x21, 0);
-                        let _ = BLASSetThreading(1);
                     }
+                    #[cfg(target_os = "macos")]
+                    blas_single_threaded();
                     let mut last_gen = 0usize;
                     loop {
                         let mut spins = 0u32;
@@ -1468,8 +1494,9 @@ impl SenseModel {
         #[cfg(target_os = "macos")]
         unsafe {
             let _ = pthread_set_qos_class_self_np(0x21, 0); // QOS_CLASS_USER_INTERACTIVE
-            let _ = BLASSetThreading(1); // Single-threaded AMX avoids GCD dispatch overhead
         }
+        #[cfg(target_os = "macos")]
+        blas_single_threaded();
 
         let model = Self {
             version: manifest.version,
@@ -1589,9 +1616,7 @@ impl SenseModel {
         const FFN_DIM: usize = 1536;
 
         #[cfg(target_os = "macos")]
-        unsafe {
-            let _ = BLASSetThreading(1);
-        }
+        blas_single_threaded();
 
         let seq_len = ids.len();
         let w = &self.weights;
