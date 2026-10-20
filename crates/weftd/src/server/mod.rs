@@ -788,6 +788,18 @@ impl Session {
             &weft_dir,
             harnesses.is_none(),
         )));
+        // The Sense bundle this Weft was built with, downloaded once in the
+        // background when it is missing or older; until then the one found
+        // reads, or none.
+        if harnesses.is_none() && crate::versions::sense_wanted(&weft_dir) {
+            let (weft_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
+            std::thread::spawn(move || {
+                match crate::versions::hot_reload_from_hub(&weft_dir, &*out, &slot) {
+                    Ok(current) => eprintln!("weft: Sense {} installed", current.version),
+                    Err(e) => eprintln!("weft: Sense not installed: {e}"),
+                }
+            });
+        }
         let mut session = Session {
             projects: Vec::new(),
             socket: socket.to_path_buf(),

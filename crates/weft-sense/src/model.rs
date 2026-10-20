@@ -2134,7 +2134,8 @@ pub fn calibrated_argmax(logits: &[f32], temperature: f32) -> (usize, u16) {
     (best_idx, bp)
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+/// A file's SHA-256, as a manifest writes it: lowercase hex.
+pub fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();

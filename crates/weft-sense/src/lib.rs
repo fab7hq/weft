@@ -3,7 +3,7 @@ pub mod normalize;
 
 pub use model::{
     ConversationEntry, ConversationReading, PaneSnapshot, SenseCurrentPointer, SenseModel,
-    SurfaceReading, SurfaceState, TranscriptSnippet,
+    SurfaceReading, SurfaceState, TranscriptSnippet, sha256_hex,
 };
 pub use normalize::{
     ADDED_TOKENS, compute_surface_dynamics, normalize_conversation_entry, normalize_surface_frame,

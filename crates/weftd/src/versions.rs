@@ -233,6 +233,86 @@ pub fn hot_reload_sense(
     Ok(current)
 }
 
+/// The Sense bundle this Weft was built with: the version, the tag on
+/// Hugging Face it is downloaded from, and its `manifest.json`'s SHA-256.
+/// The manifest names every other file's digest, so pinning it pins them all.
+pub const SENSE_VERSION: &str = "0.2.0";
+pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense/resolve/v0.2.0";
+pub const SENSE_MANIFEST_SHA256: &str =
+    "ed08996f6591f04e6cad670142015b5cd9215a7ad20aa7cca64f0d2f3d6d31a7";
+
+/// Whether the bundle under `weft_dir` is missing or older than this Weft's.
+pub fn sense_wanted(weft_dir: &Path) -> bool {
+    sense_version(weft_dir).is_none_or(|v| weft_core::sync::older(&v, SENSE_VERSION))
+}
+
+/// Download this Weft's Sense bundle with `curl`, as `out` runs it, and
+/// install it under `weft_dir`.
+pub fn fetch_sense(
+    weft_dir: &Path,
+    out: &dyn crate::outside::Outside,
+) -> anyhow::Result<SenseCurrent> {
+    fetch_sense_from(weft_dir, out, SENSE_URL, SENSE_MANIFEST_SHA256)
+}
+
+/// Download this Weft's Sense bundle, install it and swap it into `slot`.
+pub fn hot_reload_from_hub(
+    weft_dir: &Path,
+    out: &dyn crate::outside::Outside,
+    slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
+) -> anyhow::Result<SenseCurrent> {
+    let current = fetch_sense(weft_dir, out)?;
+    let model = weft_sense::SenseModel::load(&current.path)?;
+    if let Ok(mut guard) = slot.write() {
+        *guard = Some(model);
+    }
+    Ok(current)
+}
+
+/// Download a bundle from `url` into `<weft_dir>/sense/download`: the manifest
+/// first, refused unless its digest is `manifest_sha256`, then the files it
+/// names, which [`install_sense_bundle`] checks against it.
+fn fetch_sense_from(
+    weft_dir: &Path,
+    out: &dyn crate::outside::Outside,
+    url: &str,
+    manifest_sha256: &str,
+) -> anyhow::Result<SenseCurrent> {
+    let dir = weft_dir.join("sense").join("download");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let got = (|| {
+        let get = |name: &str| -> anyhow::Result<()> {
+            let (to, from) = (dir.join(name), format!("{url}/{name}"));
+            let to = to.to_string_lossy();
+            let ok = out
+                .run("curl", &["-fsSL", "--max-time", "300", "-o", &to, &from], None)?
+                .status
+                .success();
+            anyhow::ensure!(ok, "could not download Sense's {name}");
+            Ok(())
+        };
+        get("manifest.json")?;
+        let bytes = std::fs::read(dir.join("manifest.json"))?;
+        anyhow::ensure!(
+            weft_sense::sha256_hex(&bytes) == manifest_sha256,
+            "Sense's manifest.json is not the one this Weft names"
+        );
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+        for file in ["model", "tokenizer"] {
+            let name = manifest["files"][file]["path"].as_str().unwrap_or_default();
+            anyhow::ensure!(
+                ["sense.int8.onnx", "model.int8.onnx", "tokenizer.json"].contains(&name),
+                "Sense's manifest names an unknown {file} file: {name}"
+            );
+            get(name)?;
+        }
+        install_sense_bundle(weft_dir, &dir).map(|(current, _)| current)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    got
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +434,28 @@ mod tests {
         manifest["version"] = serde_json::json!(version);
         std::fs::write(dst.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn a_sense_bundle_is_fetched_only_when_its_manifest_is_the_one_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join(".fab7/weft");
+        let hosted = tmp.path().join("hosted");
+        stage_sense_bundle(&hosted, SENSE_VERSION);
+        let url = format!("file://{}", hosted.display());
+        let manifest = std::fs::read(hosted.join("manifest.json")).unwrap();
+        assert!(sense_wanted(&weft_dir), "nothing installed yet");
+
+        let wrong = "0".repeat(64);
+        assert!(fetch_sense_from(&weft_dir, &*crate::outside::machine(), &url, &wrong).is_err());
+        assert_eq!(sense_version(&weft_dir), None, "a manifest not named installs nothing");
+
+        let named = weft_sense::sha256_hex(&manifest);
+        let current =
+            fetch_sense_from(&weft_dir, &*crate::outside::machine(), &url, &named).unwrap();
+        assert_eq!(current.version, SENSE_VERSION);
+        assert!(!sense_wanted(&weft_dir));
+        assert!(!weft_dir.join("sense/download").exists(), "the download folder goes");
     }
 
     #[test]

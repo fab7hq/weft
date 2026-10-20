@@ -155,6 +155,9 @@ fn main() -> Result<()> {
     }
 
     if first.as_deref() == Some("update") {
+        if std::env::args().nth(2).as_deref() == Some("--sense") {
+            return update_sense();
+        }
         return update();
     }
 
@@ -177,6 +180,7 @@ const HELP: &str = "weft VERSION
 
 weft [project-dir]     open the Weft app, on that project if one is named
 weft update            install the latest Weft and RingFrame
+weft update --sense    install the Sense model this Weft was built with
 weft stop              end the session and its agents
 weft remote            Weft from another device (the session starts it)
 weft signal <harness> <hook>   what a harness's hooks run
@@ -391,6 +395,20 @@ fn update() -> Result<()> {
         anyhow::bail!("the installer did not finish");
     }
     println!("\n{}", after_update(&protocol::socket_path(), tag.trim_start_matches('v')));
+    Ok(())
+}
+
+/// The Sense model this Weft was built with, downloaded from its tag and
+/// checked; a running daemon picks it up when its Updates step ends.
+fn update_sense() -> Result<()> {
+    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    let weft_dir = std::path::PathBuf::from(home).join(".fab7/weft");
+    if !weftd::versions::sense_wanted(&weft_dir) {
+        println!("Sense {} is installed", weftd::versions::SENSE_VERSION);
+        return Ok(());
+    }
+    let current = weftd::versions::fetch_sense(&weft_dir, &*weftd::outside::machine())?;
+    println!("Sense {} installed", current.version);
     Ok(())
 }
 
