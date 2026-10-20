@@ -254,7 +254,7 @@ fn a_route_rule_is_written_to_config_and_no_harness_file_changes() {
     let harness = w.root.join("harnesses/codex.toml");
     std::fs::create_dir_all(harness.parent().unwrap()).unwrap();
     let shipped = weft_core::harness::fixture::text("codex");
-    std::fs::write(&harness, &shipped).unwrap();
+    std::fs::write(&harness, shipped).unwrap();
     let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
     let rule = json!([{"id": "codex.native_goal.step_loop", "status": "candidate"}]);
     one.set("machine", &["ringframe", "deltas", "codex", "entries"], Some(rule)).unwrap();
