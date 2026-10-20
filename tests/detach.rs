@@ -964,6 +964,26 @@ fn a_second_window_resizes_nothing_and_the_pane_follows_whoever_types() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// An agent a device started keeps the size a window gave it: the device's
+/// keys and wheel follow no size of its own (ADR-0038).
+#[test]
+fn a_device_never_resizes_the_agent_it_started() {
+    let (root, socket) = session("device-size");
+    let mut device = Client::attach_as(&socket, &root, 24, 80, "weft-remote/0.6.0");
+    device.send(Call::StartAgent { harness: "sh".into(), spec: "/bin/sh".into(), session: None });
+    device.wait_for_added();
+    assert_eq!(size_seen(&mut device, "started"), "24 80", "the size weft remote opened at");
+
+    let mut window = Client::attach(&socket, &root);
+    window.hello();
+    window.send(Call::Resize { pane: 0, rows: 40, cols: 120 });
+    assert_eq!(size_seen(&mut window, "shown"), "40 120", "the window's size");
+
+    assert_eq!(size_seen(&mut device, "typed"), "40 120", "the device's keys resized it");
+    window.send(Call::Shutdown);
+    std::fs::remove_dir_all(&root).ok();
+}
+
 /// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt it types
 /// nothing and says why; after `ready` it types; told to type anyway, it
 /// types whatever the state.

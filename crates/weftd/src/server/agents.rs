@@ -287,6 +287,13 @@ impl Session {
         p.next_pane += 1;
         let (tx, harness_name) = (self.tx.clone(), harness.to_string());
         let size = self.clients.sizes.get(&client).copied().unwrap_or((24, 80));
+        // A device never sizes an agent, not even one it started: the agent
+        // takes a window's size once a window shows it (ADR-0038).
+        let wants = if self.clients.named(client, "weft-remote") {
+            HashMap::new()
+        } else {
+            HashMap::from([(client, size)])
+        };
         // Its hooks tell this daemon what it is doing, from inside this pane.
         let Some(token) = new_token() else {
             let refusal = Some("the system gave no randomness for the pane's token".into());
@@ -319,7 +326,7 @@ impl Session {
                     map: crate::turns::Started::new(id, harness, spec, now, resumed),
                     pane,
                     size,
-                    wants: HashMap::from([(client, size)]),
+                    wants,
                     turbo,
                     token,
                     transcript: None,
