@@ -385,11 +385,17 @@ impl Device {
         self.ws.send(tungstenite::Message::text(message.to_string())).unwrap();
     }
 
-    /// The next message, or panic within five seconds.
+    /// The next message, or panic within five seconds. A read a signal
+    /// interrupted is read again: something in this process may catch one.
     pub fn next(&mut self) -> Value {
-        match self.ws.read() {
-            Ok(tungstenite::Message::Text(t)) => serde_json::from_str(t.as_str()).unwrap(),
-            other => panic!("expected a message, got {other:?}"),
+        loop {
+            match self.ws.read() {
+                Ok(tungstenite::Message::Text(t)) => {
+                    return serde_json::from_str(t.as_str()).unwrap();
+                }
+                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                other => panic!("expected a message, got {other:?}"),
+            }
         }
     }
 
