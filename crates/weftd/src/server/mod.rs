@@ -2618,8 +2618,8 @@ mod tests {
         let project = dir.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
 
-        let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../sense/dist/fab7-sense-v1");
+        let bundle = dir.path().join("bundle");
+        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
         crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
 
         let harnesses = weft_core::harness::fixture::harnesses();
