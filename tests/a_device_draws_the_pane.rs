@@ -370,8 +370,10 @@ fn the_first_change_after_quiet_is_framed_at_once() {
     }
     delays.sort();
     assert!(delays.len() >= 5, "{delays:?}");
+    // On a quiet machine 8.5–10.5 ms; a shared CI runner under the other
+    // tests' load reached 19 ms. Polling every 100 ms gave about 50.
     let median = delays[delays.len() / 2];
-    assert!(median <= Duration::from_millis(15), "framed after {median:?}: {delays:?}");
+    assert!(median <= Duration::from_millis(30), "framed after {median:?}: {delays:?}");
 }
 
 /// A pane that keeps printing is framed at most 30 times a second, and
