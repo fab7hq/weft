@@ -2,7 +2,8 @@
 # The Homebrew cask for a release, `Casks/weft.rb` in the current folder (a
 # checkout of fab7hq/homebrew-tap), from the release's tag and the checksums
 # of its two macOS archives; then checked. It writes the file and nothing
-# else: committing and pushing it are the person's.
+# else: `.github/workflows/tap.yml` commits and pushes it when a release is
+# published.
 #
 #   bin/cask <tag> <arm64-sha256> <x86_64-sha256>
 #

@@ -1,0 +1,61 @@
+name: tap
+
+# Homebrew's cask for a release, written into fab7hq/homebrew-tap when the
+# release is published: `brew install --cask fab7hq/tap/weft` then installs
+# it. Not in release.yml: that one uploads into a draft, whose archives no one
+# can download until a person publishes it.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published release to write the cask for
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  cask:
+    # A pre-release is never what `brew upgrade` offers.
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+          sparse-checkout: bin/cask
+          sparse-checkout-cone-mode: false
+      # Pushes with the tap's deploy key, which may write to the tap and
+      # nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: fab7hq/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_KEY }}
+          path: tap
+      # The checksums the release workflow published beside its archives.
+      - name: Write the cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir sums \
+              --pattern "fab7-$TAG-aarch64-apple-darwin.tar.gz.sha256" \
+              --pattern "fab7-$TAG-x86_64-apple-darwin.tar.gz.sha256"
+          arm=$(cut -d' ' -f1 "sums/fab7-$TAG-aarch64-apple-darwin.tar.gz.sha256")
+          intel=$(cut -d' ' -f1 "sums/fab7-$TAG-x86_64-apple-darwin.tar.gz.sha256")
+          cd tap && ../bin/cask "$TAG" "$arm" "$intel"
+      - name: Commit and push it
+        working-directory: tap
+        run: |
+          set -eu
+          git add Casks/weft.rb
+          if git diff --cached --quiet; then echo "the cask is already $TAG"; exit 0; fi
+          git -c user.name=0xnairb -c user.email=0xnairb@gmail.com -c commit.gpgsign=false \
+              commit -q -m "Weft ${TAG#v}"
+          git push origin HEAD:main
