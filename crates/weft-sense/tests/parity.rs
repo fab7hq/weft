@@ -121,7 +121,10 @@ fn golden_vectors_parity_and_p99_latency_under_5ms() {
     let p99_ms = latencies_ms[p99_idx.min(latencies_ms.len() - 1)];
     eprintln!("weft-sense CPU latency: p50={p50_ms:.2}ms, p99={p99_ms:.2}ms");
     // An Apple Silicon Mac's number, with `SDOT` and its performance cores;
-    // elsewhere the plain product is slower.
+    // elsewhere the plain product is slower. Not timed on CI: its shared VMs
+    // measure the runner, not the model.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    assert!(p99_ms < 5.0, "expected p99 CPU latency < 5.0 ms, got {p99_ms:.2} ms");
+    if std::env::var_os("CI").is_none() {
+        assert!(p99_ms < 5.0, "expected p99 CPU latency < 5.0 ms, got {p99_ms:.2} ms");
+    }
 }

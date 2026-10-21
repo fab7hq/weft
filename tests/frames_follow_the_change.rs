@@ -114,14 +114,14 @@ fn the_first_change_after_quiet_is_framed_at_once() {
     }
     delays.sort();
     assert!(delays.len() >= 5, "{delays:?}");
-    // On a quiet machine 8.5–10.5 ms; a shared Linux CI runner, 14–36 ms.
-    // Polling every 100 ms gave about 50. The macOS CI VM wakes late even
-    // with this test alone (median 34–44 ms, up to 72), so it is not timed
-    // there.
-    if cfg!(target_os = "macos") && std::env::var_os("CI").is_some() {
+    // On a quiet machine 8.5–10.5 ms; polling every 100 ms gave about 50.
+    // Not timed on CI: its shared VMs wake late (macOS median 34–44 ms, up
+    // to 72, with this test alone).
+    let median = delays[delays.len() / 2];
+    eprintln!("framed after {median:?}: {delays:?}");
+    if std::env::var_os("CI").is_some() {
         return;
     }
-    let median = delays[delays.len() / 2];
     assert!(median <= Duration::from_millis(30), "framed after {median:?}: {delays:?}");
 }
 
@@ -142,5 +142,11 @@ fn steady_output_is_framed_at_most_thirty_times_a_second() {
     let rate = frames as f64 / span;
     assert!(span > 1.0, "printed for {span:.2} s");
     assert!(rate <= 30.5, "{frames} frames in {span:.2} s: {rate:.1}/s");
+    // The floor is a speed, so not timed on CI; the ceiling above holds on
+    // any machine, since a slow one only frames less often.
+    eprintln!("{frames} frames in {span:.2} s: {rate:.1}/s");
+    if std::env::var_os("CI").is_some() {
+        return;
+    }
     assert!(rate > 15.0, "{frames} frames in {span:.2} s: {rate:.1}/s, no faster than polling");
 }
