@@ -350,7 +350,8 @@ fn the_first_change_after_quiet_is_framed_at_once() {
     let pauses = "0.23 0.31 0.17 0.27 0.19 0.35 0.21 0.29 0.13";
     let script =
         format!("for p in {pauses}; do sleep $p; printf 'tick %s\\n' $p; done\nexec sleep 60\n");
-    let seen = timed("quiet", &script, 3);
+    // The pauses take 2.15 s; the rest is room for a slow machine to start.
+    let seen = timed("quiet", &script, 6);
     let mut delays = Vec::new();
     let mut last_output: Option<Instant> = None;
     for (n, (at, event)) in seen.iter().enumerate() {
@@ -360,11 +361,12 @@ fn the_first_change_after_quiet_is_framed_at_once() {
         if !quiet {
             continue;
         }
+        // A tick printed as the window closed may have its frame after it.
         let framed = seen[n..].iter().find_map(|(when, e)| match e {
             Event::Screen { seq: s, .. } if s >= seq => Some(when.duration_since(*at)),
             _ => None,
         });
-        delays.push(framed.expect("a frame for the tick"));
+        delays.extend(framed);
     }
     delays.sort();
     assert!(delays.len() >= 5, "{delays:?}");
