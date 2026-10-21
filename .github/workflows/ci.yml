@@ -50,6 +50,28 @@ jobs:
           echo "$PWD/target/debug" >> "$GITHUB_PATH"
           ./target/debug/ringframe init --global \
             --from crates/ringframe/tests/fixtures/config
+      - name: The Sense bundle this Weft pins, where a first start puts it
+        # The model's tests read it; Weft downloads it rather than ship it.
+        # Checked as Weft checks it: the manifest against the digest
+        # versions.rs names, each file against the manifest.
+        run: |
+          set -eu
+          v=crates/weftd/src/versions.rs
+          url=$(sed -n 's/^pub const SENSE_URL: &str = "\(.*\)";/\1/p' "$v")
+          want=$(grep -A1 '^pub const SENSE_MANIFEST_SHA256' "$v" | grep -oE '[0-9a-f]{64}')
+          dir="$HOME/.fab7/sense/fab7-sense-v1"
+          mkdir -p "$dir"
+          for f in manifest.json sense.int8.onnx tokenizer.json golden_vectors.jsonl; do
+              curl -fsSL --retry 3 -o "$dir/$f" "$url/$f"
+          done
+          sum() { shasum -a 256 "$1" | cut -d' ' -f1; }
+          [ "$(sum "$dir/manifest.json")" = "$want" ] || { echo "manifest.json is not the pinned one"; exit 1; }
+          python3 - "$dir" <<'PY'
+          import hashlib, json, pathlib, sys
+          d = pathlib.Path(sys.argv[1])
+          for f in json.loads((d / "manifest.json").read_text())["files"].values():
+              assert hashlib.sha256((d / f["path"]).read_bytes()).hexdigest() == f["sha256"], f["path"]
+          PY
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
