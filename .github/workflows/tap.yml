@@ -31,12 +31,21 @@ jobs:
           persist-credentials: false
           sparse-checkout: bin/cask
           sparse-checkout-cone-mode: false
-      # Pushes with the tap's deploy key, which may write to the tap and
-      # nothing else.
+      # Pushes as the Fab7 Release app, installed on the tap alone with
+      # Contents only: a token that lives for this job and can write nothing
+      # else.
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_KEY }}
+          owner: fab7hq
+          repositories: homebrew-tap
+          permission-contents: write
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           repository: fab7hq/homebrew-tap
-          ssh-key: ${{ secrets.HOMEBREW_TAP_KEY }}
+          token: ${{ steps.app.outputs.token }}
           path: tap
       # The checksums the release workflow published beside its archives.
       - name: Write the cask
