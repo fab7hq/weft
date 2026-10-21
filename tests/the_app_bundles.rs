@@ -177,7 +177,8 @@ fn the_cask_installs_the_release_archives() {
         "app \"Weft.app\"",
         "binary \"#{appdir}/Weft.app/Contents/MacOS/weft\"",
         "binary \"#{appdir}/Weft.app/Contents/MacOS/ringframe\"",
-        "\"-dr\", \"com.apple.quarantine\", \"#{appdir}/Weft.app\"",
+        "postflight_steps do",
+        "\"-dr\", \"com.apple.quarantine\", \"{{appdir}}/Weft.app\"",
         "zap trash: \"~/.fab7/weft\"",
     ] {
         assert!(rb.contains(held), "{held}\n{rb}");
