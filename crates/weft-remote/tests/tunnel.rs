@@ -2,10 +2,20 @@
 //! box and an address, exits, and prints another: two addresses reported,
 //! and the backoff between them respected (§7).
 
-use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 use weft_remote::tunnel::{self, Tunnel, TunnelEvent};
+
+/// Put `script` at `path`, ready to run. Another process writes it, never this
+/// one: had a parallel test forked while this process held the file open for
+/// writing, running it would fail with "Text file busy".
+fn install(path: &std::path::Path, script: &str) {
+    let source = path.with_extension("source");
+    std::fs::write(&source, script).unwrap();
+    let done =
+        std::process::Command::new("install").args(["-m", "755"]).arg(&source).arg(path).status();
+    assert!(done.unwrap().success(), "install {}", path.display());
+}
 
 /// The first address the tunnel gives, past the lines its program said before it.
 fn address_of(events: &std::sync::mpsc::Receiver<TunnelEvent>) -> TunnelEvent {
@@ -40,8 +50,7 @@ fn each_new_address_is_reported_and_restarts_back_off() {
     let dir = std::env::temp_dir().join(format!("weft-tunnel-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("cloudflared");
-    std::fs::write(&program, FAKE).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&program, FAKE);
 
     let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
     let events = tunnel.start(48123);
@@ -134,8 +143,7 @@ fn an_address_printed_on_stdout_is_read() {
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("funnel");
     let script = "#!/bin/sh\necho 'Available on the internet:'\necho\necho 'https://mac.tail1234.ts.net/'\nexec sleep 30\n";
-    std::fs::write(&program, script).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&program, script);
     let run = ["funnel", "{port}"].map(String::from).to_vec();
     let tunnel = Tunnel::new(program.clone(), run, ".ts.net".into());
     let events = tunnel.start(48126);
@@ -151,8 +159,7 @@ fn dropping_the_tunnel_stops_cloudflared() {
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("cloudflared");
     let script = "#!/bin/sh\necho $$ > \"$0.pid\"\necho '|  https://up-a-while.trycloudflare.com  |' >&2\nexec sleep 30\n";
-    std::fs::write(&program, script).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&program, script);
     let tunnel = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into());
     let events = tunnel.start(48124);
     address_of(&events);
@@ -170,12 +177,10 @@ fn another_adapter_is_started_and_read_by_its_own_file() {
     let dir = std::env::temp_dir().join(format!("weft-tunnel-other-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("othertunnel");
-    std::fs::write(
+    install(
         &program,
         "#!/bin/sh\necho \"args: $*\" >> \"$0.args\"\necho 'see https://x.trycloudflare.com' >&2\necho 'ready at https://calm-fox.tunnels.example.net/' >&2\nexec sleep 30\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let run = ["expose", "{port}", "--quiet"].map(String::from).to_vec();
     let tunnel = Tunnel::new(program.clone(), run, ".tunnels.example.net".into());
     let events = tunnel.start(48124);
@@ -197,8 +202,7 @@ fn a_tunnel_left_by_a_killed_weft_remote_is_stopped_by_the_next() {
     let program = dir.join("cloudflared");
     // Not exec: the process keeps the program's name, as cloudflared's does.
     let script = "#!/bin/sh\necho '|  https://left-over.trycloudflare.com  |' >&2\nsleep 30\n";
-    std::fs::write(&program, script).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&program, script);
     let kept = dir.join("tunnel.pid");
     let left = Tunnel::new(program.clone(), quick(), ".trycloudflare.com".into())
         .keeping_pid(kept.clone());
@@ -234,8 +238,7 @@ fn a_tunnel_waiting_to_start_again_starts_at_once_when_the_network_returns() {
     let dir = std::env::temp_dir().join(format!("weft-tunnel-back-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let program = dir.join("cloudflared");
-    std::fs::write(&program, NO_ADDRESS).unwrap();
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    install(&program, NO_ADDRESS);
     let runs = || {
         std::fs::read_to_string(dir.join("cloudflared.runs")).unwrap_or_default().lines().count()
     };
