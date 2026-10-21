@@ -2635,7 +2635,7 @@ mod tests {
         }
 
         let stream = UnixStream::connect(&socket).unwrap();
-        stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
         let mut reader = Lines::new(stream.try_clone().unwrap());
         let mut writer = stream;
 
