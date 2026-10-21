@@ -999,21 +999,17 @@ impl LayerNorm {
                 }
             }
         }
+        // Summed in f64: one f32 sum along a 384-wide row rounds far enough
+        // from the reference to tip quantized activations, and the logits
+        // drift past the golden vectors' tolerance.
         #[cfg(not(target_arch = "aarch64"))]
         {
             let eps = 1e-12_f32;
             for row in x.chunks_exact_mut(dim) {
-                let mut sum = 0.0_f32;
-                for &v in row.iter() {
-                    sum += v;
-                }
-                let mean = sum * inv_dim;
-                let mut var = 0.0_f32;
-                for &v in row.iter() {
-                    let d = v - mean;
-                    var += d * d;
-                }
-                let inv_std = 1.0_f32 / (var * inv_dim + eps).sqrt();
+                let sum: f64 = row.iter().map(|&v| f64::from(v)).sum();
+                let mean = (sum * f64::from(inv_dim)) as f32;
+                let var: f64 = row.iter().map(|&v| f64::from(v - mean).powi(2)).sum();
+                let inv_std = 1.0_f32 / ((var * f64::from(inv_dim)) as f32 + eps).sqrt();
                 for ((v, &w), &b) in row.iter_mut().zip(self.weight.iter()).zip(self.bias.iter()) {
                     *v = (*v - mean) * inv_std * w + b;
                 }
@@ -1036,18 +1032,14 @@ impl LayerNorm {
         {
             let eps = 1e-12_f32;
             for row in x.chunks_exact_mut(dim) {
-                let mut sum = 0.0_f32;
+                let mut sum = 0.0_f64;
                 for (v, &ab) in row.iter_mut().zip(add_bias.iter()) {
                     *v += ab;
-                    sum += *v;
+                    sum += f64::from(*v);
                 }
-                let mean = sum * inv_dim;
-                let mut var = 0.0_f32;
-                for &v in row.iter() {
-                    let d = v - mean;
-                    var += d * d;
-                }
-                let inv_std = 1.0_f32 / (var * inv_dim + eps).sqrt();
+                let mean = (sum * f64::from(inv_dim)) as f32;
+                let var: f64 = row.iter().map(|&v| f64::from(v - mean).powi(2)).sum();
+                let inv_std = 1.0_f32 / ((var * f64::from(inv_dim)) as f32 + eps).sqrt();
                 for ((v, &w), &b) in row.iter_mut().zip(self.weight.iter()).zip(self.bias.iter()) {
                     *v = (*v - mean) * inv_std * w + b;
                 }
