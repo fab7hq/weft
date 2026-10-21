@@ -14,6 +14,10 @@ use weft::server;
 const ROWS: u16 = 24;
 const COLS: u16 = 80;
 
+/// One timed test at a time: the other's output would load the machine
+/// this one measures.
+static TIMED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn connect(socket: &Path, project: &Path) -> (UnixStream, Lines<UnixStream>) {
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut stream = loop {
@@ -49,6 +53,7 @@ fn connect(socket: &Path, project: &Path) -> (UnixStream, Lines<UnixStream>) {
 /// Start `script` in a pane, attach to it as a raw client, and note when
 /// each chunk of output and each frame arrives, for `secs`.
 fn timed(name: &str, script: &str, secs: u64) -> Vec<(Instant, Event)> {
+    let _alone = TIMED.lock().unwrap_or_else(|e| e.into_inner());
     let root = std::env::temp_dir().join(format!("weft-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("print.sh");
