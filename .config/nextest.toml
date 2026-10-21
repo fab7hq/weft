@@ -13,6 +13,12 @@ slow-timeout = { period = "60s", terminate-after = 3 }
 [test-groups]
 daemons = { max-threads = 4 }
 
+# The frame-timing tests measure milliseconds, so they run with nothing else
+# beside them: on a 3-core runner the other daemons' streams doubled the delay.
+[[profile.default.overrides]]
+filter = 'binary(frames_follow_the_change)'
+threads-required = 'num-cpus'
+
 [[profile.default.overrides]]
 filter = 'kind(test)'
 test-group = 'daemons'
