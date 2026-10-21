@@ -40,7 +40,7 @@ rm -rf "$folder.new"
 mkdir -p "$folder.new"
 if [ "$(uname -s)" = Darwin ]; then
     programs="Weft.app/Contents/MacOS"
-    "$root/bin/bundle" "$root/target/release" "$folder.new" >/dev/null
+    "$root/bin/bundle" "$root/target/release" "$folder.new" "$fab7" >/dev/null
     ln -s "$programs/weft" "$folder.new/weft"
 else
     programs=.
