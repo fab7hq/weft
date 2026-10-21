@@ -120,7 +120,8 @@ fn golden_vectors_parity_and_p99_latency_under_5ms() {
     let p99_idx = ((latencies_ms.len() as f64) * 0.99).floor() as usize;
     let p99_ms = latencies_ms[p99_idx.min(latencies_ms.len() - 1)];
     eprintln!("weft-sense CPU latency: p50={p50_ms:.2}ms, p99={p99_ms:.2}ms");
-    // Accelerate's number; elsewhere the product is the portable one, slower.
-    #[cfg(target_os = "macos")]
+    // An Apple Silicon Mac's number, with `SDOT` and its performance cores;
+    // elsewhere the plain product is slower.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     assert!(p99_ms < 5.0, "expected p99 CPU latency < 5.0 ms, got {p99_ms:.2} ms");
 }

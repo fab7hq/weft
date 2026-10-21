@@ -459,55 +459,15 @@ fn is_bert_punctuation(ch: char) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-#[link(name = "Accelerate", kind = "framework")]
-unsafe extern "C" {
-    fn cblas_sgemm(
-        order: i32,
-        trans_a: i32,
-        trans_b: i32,
-        m: i32,
-        n: i32,
-        k: i32,
-        alpha: f32,
-        a: *const f32,
-        lda: i32,
-        b: *const f32,
-        ldb: i32,
-        beta: f32,
-        c: *mut f32,
-        ldc: i32,
-    );
-}
-
-#[cfg(target_os = "macos")]
 unsafe extern "C" {
     fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
-    fn dlsym(
-        handle: *mut std::ffi::c_void,
-        symbol: *const std::ffi::c_char,
-    ) -> *mut std::ffi::c_void;
-}
-
-/// Keep Accelerate's BLAS on the calling thread, which avoids GCD's dispatch
-/// overhead. `BLASSetThreading` is macOS 15's, so it is looked up when the
-/// program runs: a Weft built or run on an older macOS goes on without it.
-#[cfg(target_os = "macos")]
-fn blas_single_threaded() {
-    static SET: std::sync::OnceLock<Option<unsafe extern "C" fn(i32) -> i32>> =
-        std::sync::OnceLock::new();
-    let set = SET.get_or_init(|| {
-        // RTLD_DEFAULT: every image loaded, Accelerate among them.
-        let found =
-            unsafe { dlsym(-2isize as *mut std::ffi::c_void, c"BLASSetThreading".as_ptr()) };
-        (!found.is_null()).then(|| unsafe {
-            std::mem::transmute::<*mut std::ffi::c_void, unsafe extern "C" fn(i32) -> i32>(found)
-        })
-    });
-    if let Some(set) = set {
-        unsafe {
-            set(1);
-        }
-    }
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> i32;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -678,75 +638,279 @@ impl QuantizedActivation {
     }
 }
 
-/// Rows the product without Accelerate takes at once.
-#[cfg(not(target_os = "macos"))]
-const BLOCK: usize = 8;
-
-/// Room for a block of rows' sums, kept between blocks.
-#[cfg(not(target_os = "macos"))]
-#[derive(Default)]
-struct Sums {
-    int: Vec<i32>,
-    wide: Vec<f64>,
+/// One attention head's scores: `scores[i][j]` is row `i`'s query with row
+/// `j`'s key, `DIM` wide, both in rows of `qkv` `stride` apart.
+fn head_scores<const DIM: usize>(
+    qkv: &[f32],
+    stride: usize,
+    q_col: usize,
+    k_col: usize,
+    seq: usize,
+    scores: &mut [f32],
+) {
+    #[cfg(target_arch = "aarch64")]
+    if DIM == 32 {
+        // SAFETY: every row read lies in `qkv`, every score in `scores`.
+        unsafe { head_scores_32_neon(qkv, stride, q_col, k_col, seq, scores) };
+        return;
+    }
+    for (i, row) in scores[..seq * seq].chunks_exact_mut(seq).enumerate() {
+        let q = &qkv[i * stride + q_col..][..DIM];
+        for (j, score) in row.iter_mut().enumerate() {
+            *score = dot_f32(q, &qkv[j * stride + k_col..][..DIM]);
+        }
+    }
 }
 
+/// The same, 32 wide, with NEON: a query kept in registers, four keys at a
+/// time, each in two sums, the four results joined by pairwise adds.
+#[cfg(target_arch = "aarch64")]
+unsafe fn head_scores_32_neon(
+    qkv: &[f32],
+    stride: usize,
+    q_col: usize,
+    k_col: usize,
+    seq: usize,
+    scores: &mut [f32],
+) {
+    use std::arch::aarch64::{
+        float32x4_t, vaddq_f32, vaddvq_f32, vdupq_n_f32, vfmaq_f32, vld1q_f32, vpaddq_f32,
+        vst1q_f32,
+    };
+    assert!(seq == 0 || (seq - 1) * stride + q_col.max(k_col) + 32 <= qkv.len());
+    assert!(scores.len() >= seq * seq);
+    let dot = |q: &[float32x4_t; 8], k: *const f32| -> float32x4_t {
+        // SAFETY: `k` starts 32 floats inside a row of `qkv`.
+        unsafe {
+            let (mut even, mut odd) = (vdupq_n_f32(0.0), vdupq_n_f32(0.0));
+            for t in (0..8).step_by(2) {
+                even = vfmaq_f32(even, q[t], vld1q_f32(k.add(4 * t)));
+                odd = vfmaq_f32(odd, q[t + 1], vld1q_f32(k.add(4 * t + 4)));
+            }
+            vaddq_f32(even, odd)
+        }
+    };
+    let base = qkv.as_ptr();
+    for i in 0..seq {
+        // SAFETY: row `i < seq` of `qkv`, 32 floats from `q_col`.
+        let q = unsafe {
+            [0, 1, 2, 3, 4, 5, 6, 7].map(|t| vld1q_f32(base.add(i * stride + q_col + 4 * t)))
+        };
+        let row = &mut scores[i * seq..(i + 1) * seq];
+        let key = |j: usize| unsafe { base.add(j * stride + k_col) };
+        let mut j = 0;
+        while j + 4 <= seq {
+            let (a, b, c, d) =
+                (dot(&q, key(j)), dot(&q, key(j + 1)), dot(&q, key(j + 2)), dot(&q, key(j + 3)));
+            // SAFETY: `j + 4 <= seq`, inside `row`.
+            unsafe {
+                vst1q_f32(row.as_mut_ptr().add(j), vpaddq_f32(vpaddq_f32(a, b), vpaddq_f32(c, d)))
+            };
+            j += 4;
+        }
+        while j < seq {
+            row[j] = unsafe { vaddvq_f32(dot(&q, key(j))) };
+            j += 1;
+        }
+    }
+}
+
+/// One attention head's output: row `i` of `ctx`, at `ctx_col`, is the rows'
+/// values (`v_col` in `qkv`) weighted by row `i`'s scores.
+#[allow(clippy::too_many_arguments)]
+fn head_context<const DIM: usize>(
+    scores: &[f32],
+    qkv: &[f32],
+    stride: usize,
+    v_col: usize,
+    seq: usize,
+    ctx: &mut [f32],
+    ctx_stride: usize,
+    ctx_col: usize,
+) {
+    #[cfg(target_arch = "aarch64")]
+    if DIM == 32 {
+        // SAFETY: every row read lies in `qkv` and `scores`, every write in `ctx`.
+        unsafe { head_context_32_neon(scores, qkv, stride, v_col, seq, ctx, ctx_stride, ctx_col) };
+        return;
+    }
+    for (i, weights) in scores[..seq * seq].chunks_exact(seq).enumerate() {
+        let mut sum = [0.0_f32; DIM];
+        for (j, &w) in weights.iter().enumerate() {
+            for (s, &v) in sum.iter_mut().zip(&qkv[j * stride + v_col..][..DIM]) {
+                *s += w * v;
+            }
+        }
+        ctx[i * ctx_stride + ctx_col..][..DIM].copy_from_slice(&sum);
+    }
+}
+
+/// The same, 32 wide, with NEON: two query rows at once, so each value row
+/// is read once for both and sixteen sums run side by side.
+#[cfg(target_arch = "aarch64")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn head_context_32_neon(
+    scores: &[f32],
+    qkv: &[f32],
+    stride: usize,
+    v_col: usize,
+    seq: usize,
+    ctx: &mut [f32],
+    ctx_stride: usize,
+    ctx_col: usize,
+) {
+    use std::arch::aarch64::{float32x4_t, vdupq_n_f32, vfmaq_n_f32, vld1q_f32, vst1q_f32};
+    assert!(seq == 0 || (seq - 1) * stride + v_col + 32 <= qkv.len());
+    assert!(scores.len() >= seq * seq);
+    assert!(seq == 0 || (seq - 1) * ctx_stride + ctx_col + 32 <= ctx.len());
+    let (vp, sp, cp) = (qkv.as_ptr(), scores.as_ptr(), ctx.as_mut_ptr());
+    let mut i = 0;
+    while i < seq {
+        let pair = if i + 1 < seq { 2 } else { 1 };
+        // SAFETY: NEON is part of every aarch64 CPU.
+        let zero = unsafe { vdupq_n_f32(0.0) };
+        let (mut a, mut b): ([float32x4_t; 8], [float32x4_t; 8]) = ([zero; 8], [zero; 8]);
+        for j in 0..seq {
+            // SAFETY: rows `i`, `i + 1 < seq` of `scores`; row `j` of `qkv`.
+            unsafe {
+                let wa = *sp.add(i * seq + j);
+                let wb = if pair == 2 { *sp.add((i + 1) * seq + j) } else { 0.0 };
+                let v = vp.add(j * stride + v_col);
+                for t in 0..8 {
+                    let vt = vld1q_f32(v.add(4 * t));
+                    a[t] = vfmaq_n_f32(a[t], vt, wa);
+                    b[t] = vfmaq_n_f32(b[t], vt, wb);
+                }
+            }
+        }
+        // SAFETY: rows `i`, `i + 1 < seq` of `ctx`, 32 floats from `ctx_col`.
+        unsafe {
+            for t in 0..8 {
+                vst1q_f32(cp.add(i * ctx_stride + ctx_col + 4 * t), a[t]);
+                if pair == 2 {
+                    vst1q_f32(cp.add((i + 1) * ctx_stride + ctx_col + 4 * t), b[t]);
+                }
+            }
+        }
+        i += pair;
+    }
+}
+
+/// `a · b`, in eight sums side by side: one would be a chain of dependent
+/// adds, which the compiler may not reorder.
+#[inline(always)]
+fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
+    let mut sums = [0.0_f32; 8];
+    let (a8, a_rest) = a.as_chunks::<8>();
+    let (b8, b_rest) = b.as_chunks::<8>();
+    for (ac, bc) in a8.iter().zip(b8) {
+        for t in 0..8 {
+            sums[t] += ac[t] * bc[t];
+        }
+    }
+    let rest: f32 = a_rest.iter().zip(b_rest).map(|(x, y)| x * y).sum();
+    sums.iter().sum::<f32>() + rest
+}
+
+/// A layer's weights as the integer product reads them: one output column
+/// after another, each its quantized weights less 128 along the input, so
+/// they fit an `i8`. What the shift moved is put back with the column's
+/// `offset` (`128 - w_zp`) and `sum`. Every column has its own `scale`, as the
+/// fused attention layer joins three tensors' columns.
 #[derive(Clone)]
 struct QuantLinear {
     in_dim: usize,
     out_dim: usize,
-    /// `(w_q - w_zp)` stored row-major as `[in_dim, out_dim]` in `f32`.
-    w_f32: Vec<f32>,
-    /// The same as integers, where they are (not the fused, pre-scaled
-    /// attention weights), for the product without Accelerate.
-    #[cfg(not(target_os = "macos"))]
-    w_int: Vec<i16>,
-    w_scale: f32,
+    cols: Vec<i8>,
+    offset: Vec<i32>,
+    sum: Vec<i32>,
+    scale: Vec<f32>,
     bias: Vec<f32>,
 }
 
 impl QuantLinear {
-    #[inline(always)]
-    fn forward_slice_no_bias(&self, xq_data: &[f32], rows: usize, x_scale: f32, out: &mut [f32]) {
-        if rows == 0 {
-            return;
-        }
-        let m = rows;
-        let k = self.in_dim;
-        let n = self.out_dim;
-        let combined_scale = x_scale * self.w_scale;
-
-        #[cfg(target_os = "macos")]
-        unsafe {
-            cblas_sgemm(
-                101,
-                111,
-                111,
-                m as i32,
-                n as i32,
-                k as i32,
-                combined_scale,
-                xq_data.as_ptr(),
-                k as i32,
-                self.w_f32.as_ptr(),
-                n as i32,
-                0.0_f32,
-                out.as_mut_ptr(),
-                n as i32,
-            );
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let mut sums = Sums::default();
-            for (x_rows, out_rows) in
-                xq_data.chunks(k * BLOCK).zip(out[..m * n].chunks_mut(n * BLOCK))
-            {
-                self.unscaled_rows(x_rows, &mut sums, out_rows);
-                for dst in out_rows.iter_mut() {
-                    *dst *= combined_scale;
-                }
+    /// From the quantized weights, row-major `[in_dim, out_dim]`.
+    fn new(in_dim: usize, out_dim: usize, w: &[u8], zp: u8, scale: f32, bias: Vec<f32>) -> Self {
+        let mut cols = vec![0_i8; in_dim * out_dim];
+        for (i, row) in w.chunks_exact(out_dim).enumerate() {
+            for (j, &v) in row.iter().enumerate() {
+                cols[j * in_dim + i] = (i16::from(v) - 128) as i8;
             }
         }
+        let sum =
+            cols.chunks_exact(in_dim).map(|c| c.iter().map(|&v| i32::from(v)).sum()).collect();
+        let offset = vec![128 - i32::from(zp); out_dim];
+        QuantLinear { in_dim, out_dim, cols, offset, sum, scale: vec![scale; out_dim], bias }
+    }
+
+    /// Layers' columns side by side, each layer's scale times its factor.
+    fn joined(parts: &[(&QuantLinear, f32)], bias: Vec<f32>) -> Self {
+        let in_dim = parts[0].0.in_dim;
+        let mut joined = QuantLinear {
+            in_dim,
+            out_dim: 0,
+            cols: Vec::new(),
+            offset: Vec::new(),
+            sum: Vec::new(),
+            scale: Vec::new(),
+            bias,
+        };
+        for (part, factor) in parts {
+            joined.out_dim += part.out_dim;
+            joined.cols.extend_from_slice(&part.cols);
+            joined.offset.extend_from_slice(&part.offset);
+            joined.sum.extend_from_slice(&part.sum);
+            joined.scale.extend(part.scale.iter().map(|s| s * factor));
+        }
+        joined
+    }
+
+    /// Each row of activations times each column, summed exactly in
+    /// integers as the reference's integer product is, then scaled, and
+    /// given to `put` with its place in `out`. A row's activations are
+    /// integers in a window 255 wide: less their smallest value and 128 they
+    /// fit an `i8`, and that shift is put back in integers too. The same
+    /// integers on every machine, so the same answers.
+    fn product(
+        &self,
+        xq: &[f32],
+        rows: usize,
+        x_scale: f32,
+        out: &mut [f32],
+        put: impl Fn(&mut f32, f32),
+    ) {
+        let (k, n) = (self.in_dim, self.out_dim);
+        let mut x8 = vec![0_i8; rows * k];
+        let mut shifts = vec![0_i32; rows];
+        let mut x_sums = vec![0_i32; rows];
+        for (r, row) in xq[..rows * k].chunks_exact(k).enumerate() {
+            let shift = row.iter().fold(f32::INFINITY, |m, &v| m.min(v)) as i32 + 128;
+            let mut x_sum = 0;
+            for (d, &v) in x8[r * k..(r + 1) * k].iter_mut().zip(row) {
+                let shifted = v as i32 - shift;
+                *d = shifted as i8;
+                x_sum += shifted;
+            }
+            (shifts[r], x_sums[r]) = (shift, x_sum);
+        }
+        let mut dots = vec![0_i32; rows * n];
+        dot_columns(&x8, rows, &self.cols, k, &mut dots);
+        for r in 0..rows {
+            let (shift, x_sum) = (shifts[r], x_sums[r]);
+            let out_row = &mut out[r * n..(r + 1) * n];
+            for j in 0..n {
+                let exact = dots[r * n + j]
+                    + self.offset[j] * x_sum
+                    + shift * self.sum[j]
+                    + k as i32 * shift * self.offset[j];
+                put(&mut out_row[j], exact as f32 * (x_scale * self.scale[j]));
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn forward_slice_no_bias(&self, xq_data: &[f32], rows: usize, x_scale: f32, out: &mut [f32]) {
+        self.product(xq_data, rows, x_scale, out, |o, v| *o = v);
     }
 
     #[inline(always)]
@@ -768,94 +932,7 @@ impl QuantLinear {
         x_scale: f32,
         accum: &mut [f32],
     ) {
-        if rows == 0 {
-            return;
-        }
-        let m = rows;
-        let k = self.in_dim;
-        let n = self.out_dim;
-        let combined_scale = x_scale * self.w_scale;
-
-        #[cfg(target_os = "macos")]
-        unsafe {
-            cblas_sgemm(
-                101,
-                111,
-                111,
-                m as i32,
-                n as i32,
-                k as i32,
-                combined_scale,
-                xq_data.as_ptr(),
-                k as i32,
-                self.w_f32.as_ptr(),
-                n as i32,
-                1.0_f32,
-                accum.as_mut_ptr(),
-                n as i32,
-            );
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            let mut sums = Sums::default();
-            let mut rows = vec![0.0_f32; n * BLOCK];
-            for (x_rows, out_rows) in
-                xq_data.chunks(k * BLOCK).zip(accum[..m * n].chunks_mut(n * BLOCK))
-            {
-                let rows = &mut rows[..out_rows.len()];
-                self.unscaled_rows(x_rows, &mut sums, rows);
-                for (dst, &s) in out_rows.iter_mut().zip(rows.iter()) {
-                    *dst += combined_scale * s;
-                }
-            }
-        }
-    }
-
-    /// Rows of the product, summed exactly and scaled by nothing, as the
-    /// reference's integer matrix product is: scaling each term first, or
-    /// summing in `f32`, rounds differently and the difference grows through
-    /// the layers. Integers where the weights are, else `f64`. Up to
-    /// [`BLOCK`] rows at once, so each weight row is read once for them all.
-    #[cfg(not(target_os = "macos"))]
-    fn unscaled_rows(&self, x_rows: &[f32], sums: &mut Sums, out: &mut [f32]) {
-        let (k, n) = (self.in_dim, self.out_dim);
-        let rows = x_rows.len() / k;
-        if self.w_int.is_empty() {
-            sums.wide.clear();
-            sums.wide.resize(rows * n, 0.0);
-            for (i, w_row) in self.w_f32.chunks_exact(n).enumerate() {
-                for (r, acc) in sums.wide.chunks_exact_mut(n).enumerate() {
-                    let xv = x_rows[r * k + i];
-                    if xv != 0.0 {
-                        let xv = f64::from(xv);
-                        for (a, &wv) in acc.iter_mut().zip(w_row) {
-                            *a += xv * f64::from(wv);
-                        }
-                    }
-                }
-            }
-            for (o, &a) in out.iter_mut().zip(&sums.wide) {
-                *o = a as f32;
-            }
-        } else {
-            sums.int.clear();
-            sums.int.resize(rows * n, 0);
-            for (i, w_row) in self.w_int.chunks_exact(n).enumerate() {
-                for (r, acc) in sums.int.chunks_exact_mut(n).enumerate() {
-                    // An activation is an integer of at most 255 either way.
-                    let xv = x_rows[r * k + i] as i32;
-                    if xv != 0 {
-                        for (a, &wv) in acc.iter_mut().zip(w_row) {
-                            *a += xv * i32::from(wv);
-                        }
-                    }
-                }
-            }
-            for (o, &a) in out.iter_mut().zip(&sums.int) {
-                *o = a as f32;
-            }
-        }
+        self.product(xq_data, rows, x_scale, accum, |o, v| *o += v);
     }
 
     fn forward_quant_no_bias(&self, xq: &QuantizedActivation, out: &mut [f32]) {
@@ -874,6 +951,148 @@ impl QuantLinear {
         let xq = QuantizedActivation::from_f32(x, rows, self.in_dim, scratch);
         self.forward_quant(&xq, out);
         xq.recycle(scratch);
+    }
+}
+
+/// `dots[r][j]`: row `r` of `x` (`rows` of `k`) with column `j` of `cols`.
+fn dot_columns(x: &[i8], rows: usize, cols: &[i8], k: usize, dots: &mut [i32]) {
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("dotprod") {
+        // SAFETY: the CPU has the dot product instructions, just checked.
+        unsafe { dot_columns_sdot(x, rows, cols, k, dots) };
+        return;
+    }
+    let n = cols.len() / k;
+    for (row, out) in x.chunks_exact(k).zip(dots.chunks_exact_mut(n)) {
+        for (o, col) in out.iter_mut().zip(cols.chunks_exact(k)) {
+            *o = row.iter().zip(col).map(|(&a, &b)| i32::from(a) * i32::from(b)).sum();
+        }
+    }
+    let _ = rows;
+}
+
+/// Arm's `SDOT`: four sums of four `i8` products each, added to `acc`.
+/// Rust's intrinsic for it is not stable yet; the instruction is.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+#[inline]
+unsafe fn sdot(
+    acc: std::arch::aarch64::int32x4_t,
+    a: std::arch::aarch64::int8x16_t,
+    b: std::arch::aarch64::int8x16_t,
+) -> std::arch::aarch64::int32x4_t {
+    let mut acc = acc;
+    // SAFETY: registers only; the caller checked the CPU has `SDOT`.
+    unsafe {
+        std::arch::asm!(
+            "sdot {acc:v}.4s, {a:v}.16b, {b:v}.16b",
+            acc = inout(vreg) acc,
+            a = in(vreg) a,
+            b = in(vreg) b,
+            options(pure, nomem, nostack),
+        );
+    }
+    acc
+}
+
+/// The same with Arm's `SDOT`, sixteen products a step: four columns at a
+/// time, four rows by four columns while four rows are left, then a row by
+/// four columns; the columns left one at a time; a width past the last 16 is
+/// summed plainly.
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "dotprod")]
+unsafe fn dot_columns_sdot(x: &[i8], rows: usize, cols: &[i8], k: usize, dots: &mut [i32]) {
+    use std::arch::aarch64::{vaddvq_s32, vdupq_n_s32, vld1q_s8};
+    let n = cols.len() / k;
+    let whole = k / 16 * 16;
+    let tail = |r: usize, j: usize| -> i32 {
+        let (xr, col) = (&x[r * k + whole..(r + 1) * k], &cols[j * k + whole..(j + 1) * k]);
+        xr.iter().zip(col).map(|(&p, &q)| i32::from(p) * i32::from(q)).sum()
+    };
+    let (xp, cp) = (x.as_ptr(), cols.as_ptr());
+    let mut j = 0;
+    // SAFETY, for every load below: `i + 16 <= whole <= k`, so each reads
+    // inside row `r < rows` of `x` and column `j + c < n` of `cols`.
+    while j + 4 <= n {
+        let c = [0, 1, 2, 3].map(|t| unsafe { cp.add((j + t) * k) });
+        // These four columns stay in the cache while every row passes.
+        let mut r0 = 0;
+        while r0 + 4 <= rows {
+            let xr = [0, 1, 2, 3].map(|r| unsafe { xp.add((r0 + r) * k) });
+            // Sixteen named sums, so they stay in registers.
+            let z = vdupq_n_s32(0);
+            let (mut a00, mut a01, mut a02, mut a03) = (z, z, z, z);
+            let (mut a10, mut a11, mut a12, mut a13) = (z, z, z, z);
+            let (mut a20, mut a21, mut a22, mut a23) = (z, z, z, z);
+            let (mut a30, mut a31, mut a32, mut a33) = (z, z, z, z);
+            let mut i = 0;
+            while i < whole {
+                unsafe {
+                    let (w0, w1) = (vld1q_s8(c[0].add(i)), vld1q_s8(c[1].add(i)));
+                    let (w2, w3) = (vld1q_s8(c[2].add(i)), vld1q_s8(c[3].add(i)));
+                    let v = vld1q_s8(xr[0].add(i));
+                    (a00, a01, a02, a03) =
+                        (sdot(a00, v, w0), sdot(a01, v, w1), sdot(a02, v, w2), sdot(a03, v, w3));
+                    let v = vld1q_s8(xr[1].add(i));
+                    (a10, a11, a12, a13) =
+                        (sdot(a10, v, w0), sdot(a11, v, w1), sdot(a12, v, w2), sdot(a13, v, w3));
+                    let v = vld1q_s8(xr[2].add(i));
+                    (a20, a21, a22, a23) =
+                        (sdot(a20, v, w0), sdot(a21, v, w1), sdot(a22, v, w2), sdot(a23, v, w3));
+                    let v = vld1q_s8(xr[3].add(i));
+                    (a30, a31, a32, a33) =
+                        (sdot(a30, v, w0), sdot(a31, v, w1), sdot(a32, v, w2), sdot(a33, v, w3));
+                }
+                i += 16;
+            }
+            let a = [
+                [a00, a01, a02, a03],
+                [a10, a11, a12, a13],
+                [a20, a21, a22, a23],
+                [a30, a31, a32, a33],
+            ];
+            for r in 0..4 {
+                for t in 0..4 {
+                    dots[(r0 + r) * n + j + t] = vaddvq_s32(a[r][t]) + tail(r0 + r, j + t);
+                }
+            }
+            r0 += 4;
+        }
+        {
+            for r in r0..rows {
+                let xr = unsafe { xp.add(r * k) };
+                let mut a = [vdupq_n_s32(0); 4];
+                let mut i = 0;
+                while i < whole {
+                    unsafe {
+                        let v = vld1q_s8(xr.add(i));
+                        a[0] = sdot(a[0], v, vld1q_s8(c[0].add(i)));
+                        a[1] = sdot(a[1], v, vld1q_s8(c[1].add(i)));
+                        a[2] = sdot(a[2], v, vld1q_s8(c[2].add(i)));
+                        a[3] = sdot(a[3], v, vld1q_s8(c[3].add(i)));
+                    }
+                    i += 16;
+                }
+                for t in 0..4 {
+                    dots[r * n + j + t] = vaddvq_s32(a[t]) + tail(r, j + t);
+                }
+            }
+        }
+        j += 4;
+    }
+    while j < n {
+        let c = unsafe { cp.add(j * k) };
+        for r in 0..rows {
+            let xr = unsafe { xp.add(r * k) };
+            let mut a = vdupq_n_s32(0);
+            let mut i = 0;
+            while i < whole {
+                unsafe { a = sdot(a, vld1q_s8(xr.add(i)), vld1q_s8(c.add(i))) };
+                i += 16;
+            }
+            dots[r * n + j] = vaddvq_s32(a) + tail(r, j);
+        }
+        j += 1;
     }
 }
 
@@ -1050,7 +1269,8 @@ impl LayerNorm {
 
 #[derive(Clone)]
 struct EncoderLayer {
-    /// Fused `[Q_scaled; K_scaled; V]` linear layer (`out_dim = 1152`, `in_dim = 384`, `w_scale = 1.0`).
+    /// Q's, K's and V's columns side by side (`out_dim = 1152`, `in_dim = 384`), Q's and K's
+    /// scales times the attention scale.
     qkv: QuantLinear,
     attn_out: QuantLinear,
     attn_ln: LayerNorm,
@@ -1094,7 +1314,7 @@ struct InferenceScratch {
     ctx: Vec<f32>,
     ffn_mid: Vec<f32>,
     fq_buf: Vec<f32>,
-    scores: [Vec<f32>; 4],
+    scores: Vec<Vec<f32>>,
     quant_buf: Vec<f32>,
 }
 
@@ -1103,16 +1323,56 @@ thread_local! {
         std::cell::RefCell::new(InferenceScratch::default());
 }
 
+/// How many threads run a long input's layers: the most performance cores
+/// that share the attention heads evenly, at most six. More would wait on
+/// each other at every barrier; on a machine with few cores, fewer threads
+/// than cores never spin against each other. Every output is one thread's
+/// whole work, so the answers are the same for any count.
+fn layer_threads() -> usize {
+    static THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *THREADS.get_or_init(|| {
+        let cores = performance_cores()
+            .or_else(|| std::thread::available_parallelism().ok().map(usize::from))
+            .unwrap_or(1);
+        [6, 4, 3, 2, 1].into_iter().find(|&t| t <= cores).unwrap_or(1)
+    })
+}
+
+/// The Mac's performance cores, which the efficiency cores would hold up.
+fn performance_cores() -> Option<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut n: i32 = 0;
+        let mut len = std::mem::size_of::<i32>();
+        // SAFETY: a named sysctl read into an `i32` of the length given.
+        let got = unsafe {
+            sysctlbyname(
+                c"hw.perflevel0.physicalcpu".as_ptr(),
+                (&raw mut n).cast(),
+                &raw mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if got == 0 && n > 0 {
+            return Some(n as usize);
+        }
+    }
+    None
+}
+
 struct SpinBarrier {
     step: std::sync::atomic::AtomicUsize,
     count: std::sync::atomic::AtomicUsize,
+    threads: usize,
 }
 
 impl SpinBarrier {
-    const fn new() -> Self {
+    const fn new(threads: usize) -> Self {
         Self {
             step: std::sync::atomic::AtomicUsize::new(0),
             count: std::sync::atomic::AtomicUsize::new(0),
+            threads,
         }
     }
 
@@ -1121,7 +1381,7 @@ impl SpinBarrier {
         use std::sync::atomic::Ordering;
         let s = self.step.load(Ordering::Acquire);
         let c = self.count.fetch_add(1, Ordering::AcqRel);
-        if c + 1 == 4 {
+        if c + 1 == self.threads {
             self.count.store(0, Ordering::Relaxed);
             self.step.fetch_add(1, Ordering::Release);
         } else {
@@ -1141,9 +1401,10 @@ struct ParallelLayerJob {
     ctx: *mut f32,
     ffn_mid: *mut f32,
     fq_buf: *mut f32,
-    scores: [*mut f32; 4],
-    thread_min: [[std::cell::UnsafeCell<f32>; 4]; 2],
-    thread_max: [[std::cell::UnsafeCell<f32>; 4]; 2],
+    threads: usize,
+    scores: Vec<*mut f32>,
+    thread_min: [Vec<std::cell::UnsafeCell<f32>>; 2],
+    thread_max: [Vec<std::cell::UnsafeCell<f32>>; 2],
     barrier: SpinBarrier,
 }
 
@@ -1164,7 +1425,7 @@ impl ParallelLayerJob {
         let s = slot & 1;
         let mut mn = 0.0_f32;
         let mut mx = 0.0_f32;
-        for t in 0..4 {
+        for t in 0..self.threads {
             let tmn = unsafe { *self.thread_min[s][t].get() };
             let tmx = unsafe { *self.thread_max[s][t].get() };
             mn = mn.min(tmn);
@@ -1182,8 +1443,9 @@ unsafe fn run_layers_worker(tid: usize, job: &ParallelLayerJob) {
 
     let seq_len = job.seq_len;
     let w = unsafe { &*job.weights };
-    let r_start = (seq_len * tid) / 4;
-    let r_end = (seq_len * (tid + 1)) / 4;
+    let threads = job.threads;
+    let r_start = (seq_len * tid) / threads;
+    let r_end = (seq_len * (tid + 1)) / threads;
     let r_cnt = r_end - r_start;
 
     let x_rows = unsafe { std::slice::from_raw_parts_mut(job.x.add(r_start * D), r_cnt * D) };
@@ -1212,87 +1474,26 @@ unsafe fn run_layers_worker(tid: usize, job: &ParallelLayerJob) {
         layer.qkv.forward_slice_with_bias(xq_rows, r_cnt, x_scale, qkv_rows);
         job.barrier.wait();
 
-        // Phase 2: 3 attention heads per thread
-        for h in (tid * 3)..((tid + 1) * 3) {
+        // Phase 2: an equal share of the twelve attention heads per thread
+        let heads = 12 / threads;
+        for h in (tid * heads)..((tid + 1) * heads) {
             let h_col = h * HEAD_DIM;
-            #[cfg(target_os = "macos")]
-            unsafe {
-                cblas_sgemm(
-                    101,
-                    111,
-                    112,
-                    seq_len as i32,
-                    seq_len as i32,
-                    HEAD_DIM as i32,
-                    1.0_f32,
-                    job.qkv_buf.add(h_col),
-                    D3 as i32,
-                    job.qkv_buf.add(D + h_col),
-                    D3 as i32,
-                    0.0_f32,
-                    scores_buf.as_mut_ptr(),
-                    seq_len as i32,
-                );
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let qkv_all = unsafe { std::slice::from_raw_parts(job.qkv_buf, seq_len * D3) };
-                for i in 0..seq_len {
-                    let q_r = &qkv_all[i * D3 + h_col..i * D3 + h_col + HEAD_DIM];
-                    let s_row = &mut scores_buf[i * seq_len..(i + 1) * seq_len];
-                    for (j, s_val) in s_row.iter_mut().enumerate() {
-                        let k_r = &qkv_all[j * D3 + D + h_col..j * D3 + D + h_col + HEAD_DIM];
-                        // Eight sums side by side: one would be a chain of
-                        // dependent adds, which the compiler may not reorder.
-                        let mut sums = [0.0_f32; 8];
-                        for (qc, kc) in q_r.as_chunks::<8>().0.iter().zip(k_r.as_chunks::<8>().0) {
-                            for t in 0..8 {
-                                sums[t] += qc[t] * kc[t];
-                            }
-                        }
-                        *s_val = sums.iter().sum();
-                    }
-                }
-            }
+            let qkv_all = unsafe { std::slice::from_raw_parts(job.qkv_buf, seq_len * D3) };
+            head_scores::<HEAD_DIM>(qkv_all, D3, h_col, D + h_col, seq_len, scores_buf);
             for score_row in scores_buf.chunks_exact_mut(seq_len) {
                 softmax_row_in_place(score_row);
             }
-            #[cfg(target_os = "macos")]
-            unsafe {
-                cblas_sgemm(
-                    101,
-                    111,
-                    111,
-                    seq_len as i32,
-                    HEAD_DIM as i32,
-                    seq_len as i32,
-                    1.0_f32,
-                    scores_buf.as_ptr(),
-                    seq_len as i32,
-                    job.qkv_buf.add(2 * D + h_col),
-                    D3 as i32,
-                    0.0_f32,
-                    job.ctx.add(h_col),
-                    D as i32,
-                );
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                let qkv_all = unsafe { std::slice::from_raw_parts(job.qkv_buf, seq_len * D3) };
-                let ctx_all = unsafe { std::slice::from_raw_parts_mut(job.ctx, seq_len * D) };
-                for i in 0..seq_len {
-                    let s_row = &scores_buf[i * seq_len..(i + 1) * seq_len];
-                    let c_row = &mut ctx_all[i * D + h_col..i * D + h_col + HEAD_DIM];
-                    c_row.fill(0.0);
-                    for (j, &prob) in s_row.iter().enumerate() {
-                        let v_r =
-                            &qkv_all[j * D3 + 2 * D + h_col..j * D3 + 2 * D + h_col + HEAD_DIM];
-                        for d in 0..HEAD_DIM {
-                            c_row[d] += prob * v_r[d];
-                        }
-                    }
-                }
-            }
+            let ctx_all = unsafe { std::slice::from_raw_parts_mut(job.ctx, seq_len * D) };
+            head_context::<HEAD_DIM>(
+                scores_buf,
+                qkv_all,
+                D3,
+                2 * D + h_col,
+                seq_len,
+                ctx_all,
+                D,
+                h_col,
+            );
         }
         job.barrier.wait();
 
@@ -1349,7 +1550,7 @@ struct WorkerPoolState {
 struct WorkerPool {
     run_lock: std::sync::Mutex<()>,
     state: std::sync::Arc<WorkerPoolState>,
-    workers: [std::thread::Thread; 3],
+    workers: Vec<std::thread::Thread>,
 }
 
 static WORKER_POOL: std::sync::OnceLock<WorkerPool> = std::sync::OnceLock::new();
@@ -1361,8 +1562,8 @@ fn get_worker_pool() -> &'static WorkerPool {
             job_gen: std::sync::atomic::AtomicUsize::new(0),
             done_count: std::sync::atomic::AtomicUsize::new(0),
         });
-        let mut handles = Vec::with_capacity(3);
-        for worker_idx in 1..=3 {
+        let mut handles = Vec::with_capacity(layer_threads() - 1);
+        for worker_idx in 1..layer_threads() {
             let st = std::sync::Arc::clone(&state);
             let h = std::thread::Builder::new()
                 .name(format!("weft-sense-w{worker_idx}"))
@@ -1372,8 +1573,6 @@ fn get_worker_pool() -> &'static WorkerPool {
                     unsafe {
                         let _ = pthread_set_qos_class_self_np(0x21, 0);
                     }
-                    #[cfg(target_os = "macos")]
-                    blas_single_threaded();
                     let mut last_gen = 0usize;
                     loop {
                         let mut spins = 0u32;
@@ -1403,8 +1602,7 @@ fn get_worker_pool() -> &'static WorkerPool {
                 .expect("spawn weft-sense worker");
             handles.push(h.thread().clone());
         }
-        let [w1, w2, w3]: [std::thread::Thread; 3] = handles.try_into().unwrap();
-        WorkerPool { run_lock: std::sync::Mutex::new(()), state, workers: [w1, w2, w3] }
+        WorkerPool { run_lock: std::sync::Mutex::new(()), state, workers: handles }
     })
 }
 
@@ -1487,8 +1685,6 @@ impl SenseModel {
         unsafe {
             let _ = pthread_set_qos_class_self_np(0x21, 0); // QOS_CLASS_USER_INTERACTIVE
         }
-        #[cfg(target_os = "macos")]
-        blas_single_threaded();
 
         let model = Self {
             version: manifest.version,
@@ -1501,12 +1697,6 @@ impl SenseModel {
             tokenizer,
             weights,
         };
-        // Accelerate is slow on its first products; the fallback is not, and
-        // warming it would only hold up whoever loads the model.
-        #[cfg(target_os = "macos")]
-        for _ in 0..2 {
-            let _ = model.forward_ids(&[101u32; 256]);
-        }
         Ok(model)
     }
 
@@ -1607,9 +1797,6 @@ impl SenseModel {
         const HEAD_DIM: usize = 32;
         const FFN_DIM: usize = 1536;
 
-        #[cfg(target_os = "macos")]
-        blas_single_threaded();
-
         let seq_len = ids.len();
         let w = &self.weights;
 
@@ -1619,6 +1806,7 @@ impl SenseModel {
         s.ctx.resize(seq_len * D, 0.0);
         s.ffn_mid.resize(seq_len * FFN_DIM, 0.0);
         s.fq_buf.resize(seq_len * FFN_DIM, 0.0);
+        s.scores.resize_with(layer_threads(), Vec::new);
         for sc in &mut s.scores {
             sc.resize(seq_len * seq_len, 0.0);
         }
@@ -1644,11 +1832,12 @@ impl SenseModel {
         }
         w.emb_ln.forward_in_place(x, D);
 
-        if seq_len >= 64 {
+        if seq_len >= 32 {
             use std::sync::atomic::Ordering;
             let pool = get_worker_pool();
             let _guard = pool.run_lock.lock().unwrap();
-            let [sc0, sc1, sc2, sc3] = &mut s.scores;
+            let threads = layer_threads();
+            let cells = || (0..threads).map(|_| std::cell::UnsafeCell::new(0.0)).collect();
             let job = ParallelLayerJob {
                 weights: w as *const OnnxDualHeadWeights,
                 seq_len,
@@ -1658,36 +1847,11 @@ impl SenseModel {
                 ctx: ctx.as_mut_ptr(),
                 ffn_mid: ffn_mid.as_mut_ptr(),
                 fq_buf: fq_buf.as_mut_ptr(),
-                scores: [sc0.as_mut_ptr(), sc1.as_mut_ptr(), sc2.as_mut_ptr(), sc3.as_mut_ptr()],
-                thread_min: [
-                    [
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                    ],
-                    [
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                    ],
-                ],
-                thread_max: [
-                    [
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                    ],
-                    [
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                        std::cell::UnsafeCell::new(0.0),
-                    ],
-                ],
-                barrier: SpinBarrier::new(),
+                threads,
+                scores: s.scores.iter_mut().map(|sc| sc.as_mut_ptr()).collect(),
+                thread_min: [cells(), cells()],
+                thread_max: [cells(), cells()],
+                barrier: SpinBarrier::new(threads),
             };
             pool.state.done_count.store(0, Ordering::Relaxed);
             pool.state
@@ -1700,7 +1864,7 @@ impl SenseModel {
             unsafe {
                 run_layers_worker(0, &job);
             }
-            while pool.state.done_count.load(Ordering::Acquire) < 3 {
+            while pool.state.done_count.load(Ordering::Acquire) < threads - 1 {
                 std::hint::spin_loop();
             }
             pool.state.job_ptr.store(std::ptr::null_mut(), Ordering::Release);
@@ -1713,80 +1877,20 @@ impl SenseModel {
 
                 for h in 0..HEADS {
                     let h_col = h * HEAD_DIM;
-                    #[cfg(target_os = "macos")]
-                    unsafe {
-                        cblas_sgemm(
-                            101,
-                            111,
-                            112,
-                            seq_len as i32,
-                            seq_len as i32,
-                            HEAD_DIM as i32,
-                            1.0_f32,
-                            qkv_buf.as_ptr().add(h_col),
-                            D3 as i32,
-                            qkv_buf.as_ptr().add(D + h_col),
-                            D3 as i32,
-                            0.0_f32,
-                            scores.as_mut_ptr(),
-                            seq_len as i32,
-                        );
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        for i in 0..seq_len {
-                            let q_r = &qkv_buf[i * D3 + h_col..i * D3 + h_col + HEAD_DIM];
-                            let s_row = &mut scores[i * seq_len..(i + 1) * seq_len];
-                            for (j, s_val) in s_row.iter_mut().enumerate() {
-                                let k_r =
-                                    &qkv_buf[j * D3 + D + h_col..j * D3 + D + h_col + HEAD_DIM];
-                                let mut dot = 0.0_f32;
-                                for d in 0..HEAD_DIM {
-                                    dot += q_r[d] * k_r[d];
-                                }
-                                *s_val = dot;
-                            }
-                        }
-                    }
-
+                    head_scores::<HEAD_DIM>(qkv_buf, D3, h_col, D + h_col, seq_len, scores);
                     for score_row in scores.chunks_exact_mut(seq_len) {
                         softmax_row_in_place(score_row);
                     }
-
-                    #[cfg(target_os = "macos")]
-                    unsafe {
-                        cblas_sgemm(
-                            101,
-                            111,
-                            111,
-                            seq_len as i32,
-                            HEAD_DIM as i32,
-                            seq_len as i32,
-                            1.0_f32,
-                            scores.as_ptr(),
-                            seq_len as i32,
-                            qkv_buf.as_ptr().add(2 * D + h_col),
-                            D3 as i32,
-                            0.0_f32,
-                            ctx.as_mut_ptr().add(h_col),
-                            D as i32,
-                        );
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        for i in 0..seq_len {
-                            let s_row = &scores[i * seq_len..(i + 1) * seq_len];
-                            let c_row = &mut ctx[i * D + h_col..i * D + h_col + HEAD_DIM];
-                            c_row.fill(0.0);
-                            for (j, &prob) in s_row.iter().enumerate() {
-                                let v_r = &qkv_buf
-                                    [j * D3 + 2 * D + h_col..j * D3 + 2 * D + h_col + HEAD_DIM];
-                                for d in 0..HEAD_DIM {
-                                    c_row[d] += prob * v_r[d];
-                                }
-                            }
-                        }
-                    }
+                    head_context::<HEAD_DIM>(
+                        scores,
+                        qkv_buf,
+                        D3,
+                        2 * D + h_col,
+                        seq_len,
+                        ctx,
+                        D,
+                        h_col,
+                    );
                 }
 
                 let ctx_q = QuantizedActivation::from_f32(ctx, seq_len, D, scratch);
@@ -2440,7 +2544,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         let w_zp = inits
             .get(&format!("{prefix}_zero_point"))
             .with_context(|| format!("missing {prefix}_zero_point"))?
-            .scalar_u8() as f32;
+            .scalar_u8();
         let w_scale = inits
             .get(&format!("{prefix}_scale"))
             .with_context(|| format!("missing {prefix}_scale"))?
@@ -2453,18 +2557,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             bail!("{bias_name} has {} values, not {out_dim}", bias.len());
         }
 
-        #[cfg(not(target_os = "macos"))]
-        let w_int: Vec<i16> = w_raw.iter().map(|&v| i16::from(v) - w_zp as i16).collect();
-        let w_f32: Vec<f32> = w_raw.into_iter().map(|v| (v as f32) - w_zp).collect();
-        Ok(QuantLinear {
-            in_dim,
-            out_dim,
-            w_f32,
-            #[cfg(not(target_os = "macos"))]
-            w_int,
-            w_scale,
-            bias,
-        })
+        Ok(QuantLinear::new(in_dim, out_dim, &w_raw, w_zp, w_scale, bias))
     };
 
     let word_embeddings = dequant_emb("backbone.embeddings.word_embeddings.weight")?;
@@ -2497,35 +2590,11 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
             D,
         )?;
 
-        let in_dim = q.in_dim;
-        let out_dim = q.out_dim + k.out_dim + v.out_dim;
-        let mut qkv_w = Vec::with_capacity(in_dim * out_dim);
-        let q_sc = q.w_scale * ATTN_SCALE;
-        let k_sc = k.w_scale * ATTN_SCALE;
-        let v_sc = v.w_scale;
-        for row_idx in 0..in_dim {
-            let qr = &q.w_f32[row_idx * q.out_dim..(row_idx + 1) * q.out_dim];
-            let kr = &k.w_f32[row_idx * k.out_dim..(row_idx + 1) * k.out_dim];
-            let vr = &v.w_f32[row_idx * v.out_dim..(row_idx + 1) * v.out_dim];
-            qkv_w.extend(qr.iter().map(|&x| x * q_sc));
-            qkv_w.extend(kr.iter().map(|&x| x * k_sc));
-            qkv_w.extend(vr.iter().map(|&x| x * v_sc));
-        }
-
-        let mut qkv_bias = Vec::with_capacity(out_dim);
+        let mut qkv_bias = Vec::with_capacity(q.out_dim + k.out_dim + v.out_dim);
         qkv_bias.extend(q.bias.iter().map(|&b| b * ATTN_SCALE));
         qkv_bias.extend(k.bias.iter().map(|&b| b * ATTN_SCALE));
         qkv_bias.extend(v.bias.iter().copied());
-
-        let qkv = QuantLinear {
-            in_dim,
-            out_dim,
-            w_f32: qkv_w,
-            #[cfg(not(target_os = "macos"))]
-            w_int: Vec::new(),
-            w_scale: 1.0_f32,
-            bias: qkv_bias,
-        };
+        let qkv = QuantLinear::joined(&[(&q, ATTN_SCALE), (&k, ATTN_SCALE), (&v, 1.0)], qkv_bias);
 
         Ok(EncoderLayer {
             qkv,
