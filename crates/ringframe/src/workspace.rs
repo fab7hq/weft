@@ -512,7 +512,8 @@ pub fn check_config() -> Result<Value, WorkspaceError> {
     Ok(freshness(&revision, &latest, &manifest))
 }
 
-/// `local` is someone's working tree, and is never behind.
+/// Anything but the latest release is behind, `local` (a configuration
+/// installed from a folder) too: installing or syncing always replaces it.
 fn freshness(revision: &str, latest: &str, manifest: &[u8]) -> Value {
     let plugin = serde_json::from_slice::<Value>(manifest).ok().and_then(|m| {
         m["plugins"].as_array()?.iter().find(|p| p["name"] == "rf")?["version"]
@@ -523,7 +524,7 @@ fn freshness(revision: &str, latest: &str, manifest: &[u8]) -> Value {
         "revision": revision,
         "latest": latest,
         "plugin": plugin,
-        "behind": revision != "local" && revision != latest,
+        "behind": revision != latest,
     })
 }
 
@@ -729,7 +730,8 @@ mod tests {
         assert_eq!(behind["behind"], true);
         assert_eq!(behind["plugin"], "0.1.2");
         assert_eq!(freshness("v0.1.1", "v0.1.1", manifest)["behind"], false);
-        assert_eq!(freshness("local", "v0.1.1", manifest)["behind"], false);
+        // A configuration from a folder is replaced by the next release too.
+        assert_eq!(freshness("local", "v0.1.1", manifest)["behind"], true);
         assert_eq!(freshness("none", "v0.1.1", manifest)["behind"], true);
         assert_eq!(freshness("v0.1.1", "v0.1.1", b"not json")["plugin"], Value::Null);
     }

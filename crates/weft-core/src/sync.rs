@@ -95,7 +95,6 @@ pub fn configuration(check: Option<&Value>) -> (String, Option<Step>) {
             format!("{} → {}", text(c, "revision"), text(c, "latest")),
             Some(Step::new("ringframe", &["sync"])),
         ),
-        Some(c) if c["revision"] == "local" => ("local, not replaced".into(), None),
         Some(c) if c["latest"].is_string() => {
             (format!("{} is the latest", text(c, "latest")), None)
         }
@@ -168,8 +167,13 @@ mod tests {
             (line.as_str(), step.map(|s| s.line())),
             ("0.1.0 → 0.1.1", Some("ringframe sync".into()))
         );
-        let local = json!({"revision": "local", "latest": "v0.1.1", "behind": false});
-        assert_eq!(configuration(Some(&local)).0, "local, not replaced");
+        let local = json!({"revision": "local", "latest": "v0.1.1", "behind": true});
+        let (line, step) = configuration(Some(&local));
+        assert_eq!(
+            (line.as_str(), step.map(|s| s.line())),
+            ("local → 0.1.1", Some("ringframe sync".into())),
+            "a configuration from a folder is replaced by the release"
+        );
         assert_eq!(configuration(Some(&json!({"behind": false}))).0, "up to date");
         let current = json!({"revision": "v0.2.0", "latest": "v0.2.0", "behind": false});
         assert_eq!(configuration(Some(&current)).0, "0.2.0 is the latest");

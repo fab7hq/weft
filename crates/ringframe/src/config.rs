@@ -400,19 +400,19 @@ mod tests {
                     ),
                     (
                         "config/harnesses/antigravity.toml",
-                        "b0de5b5e5489f45dc45d97d73f2cb10cad3a13cecb85416e77af687bd577846d",
+                        "3f10f5de7eafcaca1850c4cf133ee2251fbe8e4c4e6d74e8e30f743510f0ebbe",
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "4c5ad30198fcfe8c09b8c80b5222c82647ee5ffe4f68c1bf27c16de927b532dd",
+                        "b40c481fe868f2498b9522779e3bfb05942ebb37aeca91dafc8032943cf9ce9c",
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "4fd19ce9f22d14b19056112c84bfaf8e682edb09d6f7493db302b2b1c43961b8",
+                        "fb4c0a1d274c4054e4c4cbb262dc5a6d30f0ab07758cfa0441ddc11a61655441",
                     ),
                     (
                         "config/harnesses/unknown.toml",
-                        "dfedc7b4b74791f7e91d747c54fecf12e1b3bc8bf5d1186b2d72d6cb20673bfc",
+                        "4034ecdeaed228dd062c0a9c4f1cd4df9695646b9791ee53c45b7958b1e61ceb",
                     ),
                 ],
             ));
