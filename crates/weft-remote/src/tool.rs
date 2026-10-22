@@ -54,7 +54,9 @@ impl Tool {
     }
 
     pub fn read(id: &str, text: &str) -> Result<Self, String> {
-        let broken = || format!("Weft's tool file {id}.toml cannot be read: run weft update.");
+        let broken = || {
+            format!("Weft's tool file {id}.toml cannot be read: update Weft, or install it again.")
+        };
         let t: toml::Table = text.parse().map_err(|_| broken())?;
         let s = |k: &str| t.get(k).and_then(toml::Value::as_str).map(str::to_string);
         let kind = s("kind").ok_or_else(broken)?;

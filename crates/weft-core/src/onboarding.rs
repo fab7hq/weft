@@ -140,7 +140,7 @@ impl Row {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct View {
     /// Weft itself: its line, the latest release when it could be reached,
-    /// and whether a step catches it up.
+    /// and whether it is behind it.
     #[serde(default)]
     pub weft: String,
     #[serde(default)]
@@ -251,10 +251,10 @@ impl View {
     }
 
     /// Whether Proceed has anything to run: the configuration, Sense, and
-    /// every harness to set up or update. Finding a program is the person's to say.
+    /// every harness to set up or update. Finding a program, and updating
+    /// Weft, are the person's.
     pub fn proceeds(&self) -> bool {
-        self.weft_behind
-            || self.configuration_behind
+        self.configuration_behind
             || self.sense_behind
             || self.rows.iter().any(|r| matches!(r.state.next(), Some(Next::SetUp | Next::Update)))
     }

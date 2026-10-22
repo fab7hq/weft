@@ -97,7 +97,8 @@ pub(super) fn render(props: &SheetProps) -> Element {
             v.weft_mark(),
             "Weft",
             weft_said,
-            v.weft_behind.then(|| update("Weft", SheetAct::SetupRun("weft".into()))),
+            // Weft is updated the way it was installed, never from here.
+            None,
         ),
         row(
             "update row RingFrame".into(),

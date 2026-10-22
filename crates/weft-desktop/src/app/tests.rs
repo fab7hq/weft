@@ -879,6 +879,9 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
     assert!(upd.all_text().contains("0.4.3 → 0.4.4"));
     assert!(upd.find_layer("btn Find app… codex").is_some());
     assert!(upd.find_layer("btn Update all").is_some());
+    // Weft is updated the way it was installed: its row says so, with no act.
+    assert!(upd.find_layer("btn Update Weft").is_none());
+    assert!(upd.find_layer("btn Update RingFrame").is_none(), "RingFrame is current");
     for (name, state) in [("grok", SetupState::CannotInstall), ("agy", SetupState::Unknown)] {
         let r = upd.find_layer(&format!("update row {name}")).unwrap().all_text();
         assert!(r.starts_with(state.mark()), "{r}");

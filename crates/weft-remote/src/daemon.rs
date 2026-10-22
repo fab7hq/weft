@@ -225,7 +225,7 @@ mod tests {
             Call::Open { path: "/p".into(), rows: 24, cols: 80, raw: true },
             Call::Remote { act: serde_json::json!({"act": "on"}) },
             Call::Detach,
-            Call::Update { version: "0.2.1".into() },
+            Call::Update { version: "0.2.1".into(), program: "/w/weft".into() },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: String::new() },
         ];
         for call in never {

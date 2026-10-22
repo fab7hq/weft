@@ -381,7 +381,7 @@
   "web.refused.signed_out": "{machine} is not signed in to Weft. On {machine}, open ☰ › Remote… and sign in with the code it shows at github.com/login/device.",
   "web.refused.signed_out_title": "Sign in again on {machine}",
   "web.refused.title": "Not allowed",
-  "web.refused.update": "{machine} runs an older Weft than this page. On {machine}, run weft update, then try again.",
+  "web.refused.update": "{machine} runs an older Weft than this page. Update Weft on {machine}, then try again.",
   "web.refused.update_title": "Update Weft on {machine}",
   "web.refused.version": "This page and Weft on your machine are different versions. Reload this page; if it stays, update Weft on your machine.",
   "web.reload": "Reload",

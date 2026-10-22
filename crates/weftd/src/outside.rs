@@ -30,9 +30,6 @@ pub trait Outside: Send + Sync {
     /// The latest Weft release, by version, or nothing when it cannot be
     /// reached; kept like `release`.
     fn weft_release(&self, fresh: bool) -> Option<String>;
-    /// Whether Weft `version` is installed on this machine beside the one
-    /// running.
-    fn weft_installed(&self, version: &str) -> bool;
     /// The program the person pointed at, if it is one that starts.
     fn check_program(&self, path: &str) -> Result<String, String>;
     /// The text of the newest file at `pattern`, where a `*` folder stands
@@ -107,12 +104,6 @@ impl Outside for Machine {
         crate::onboarding::weft_latest(fresh)
     }
 
-    fn weft_installed(&self, version: &str) -> bool {
-        std::env::var_os("HOME").is_some_and(|home| {
-            Path::new(&home).join(".fab7/weft/versions").join(version).join("weft").is_file()
-        })
-    }
-
     fn check_program(&self, path: &str) -> Result<String, String> {
         crate::onboarding::check_program(path)
     }
@@ -163,8 +154,8 @@ impl Outside for Machine {
 pub struct Fixed {
     programs: BTreeMap<String, Vec<(Vec<String>, i32, String)>>,
     release: Result<serde_json::Value, String>,
-    /// The latest Weft release, and whether it is installed here already.
-    weft: (Option<String>, bool),
+    /// The latest Weft release.
+    weft: Option<String>,
     files: Vec<(std::path::PathBuf, String)>,
     /// When `weft remote` was started. Each run ends at once, failing.
     remote_runs: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
@@ -177,7 +168,7 @@ impl Default for Fixed {
         Fixed {
             programs: BTreeMap::new(),
             release: Err("no release check in this world".into()),
-            weft: (None, false),
+            weft: None,
             files: Vec::new(),
             remote_runs: Arc::default(),
             service: None,
@@ -214,9 +205,9 @@ impl Fixed {
         self
     }
 
-    /// The latest Weft release in this world, and whether it is installed.
-    pub fn with_weft(mut self, latest: Option<&str>, installed: bool) -> Self {
-        self.weft = (latest.map(str::to_string), installed);
+    /// The latest Weft release in this world.
+    pub fn with_weft(mut self, latest: Option<&str>) -> Self {
+        self.weft = latest.map(str::to_string);
         self
     }
 
@@ -278,11 +269,7 @@ impl Outside for Fixed {
     }
 
     fn weft_release(&self, _fresh: bool) -> Option<String> {
-        self.weft.0.clone()
-    }
-
-    fn weft_installed(&self, _version: &str) -> bool {
-        self.weft.1
+        self.weft.clone()
     }
 
     fn check_program(&self, path: &str) -> Result<String, String> {

@@ -120,6 +120,13 @@ impl Slot {
     }
 }
 
+/// A newer Weft, and where its program is.
+#[derive(Clone)]
+struct Newer {
+    version: String,
+    program: PathBuf,
+}
+
 /// Something that would be typed, waiting on a person.
 ///
 /// It lives here rather than in a client so that every attached client sees
@@ -476,9 +483,8 @@ pub struct Session {
     supervisor: remote::Supervisor,
     /// A project a client dismissed, closed once its answer is sent.
     dismissed: Option<usize>,
-    /// A newer Weft installed beside this one, by its version: started on
-    /// once no agent runs.
-    update: Option<String>,
+    /// A newer Weft a window said is installed: started on once no agent runs.
+    update: Option<Newer>,
     /// The short messages every kept index holds, read in the background at
     /// start: the habits every project's suggestions share.
     habits: Vec<weft_core::suggest::Entry>,
@@ -1357,11 +1363,13 @@ impl Session {
         let harnesses = self.projects[at].harnesses.clone();
         let (act, harness, path) = (act.to_string(), harness.to_string(), path.to_string());
         let out = self.outside.clone();
+        let waits = self.update.as_ref().map(|u| u.version.clone());
         if !matches!(act.as_str(), "look" | "locate" | "run" | "all" | "sense") {
             return Answer::No("unknown_act", format!("the RingFrame view has no {act}"));
         }
-        if matches!(act.as_str(), "locate" | "run")
-            && harness != "sense"
+        // Sense and RingFrame are Weft's own rows; Weft's has no act.
+        if (act == "locate" || act == "run")
+            && !(act == "run" && matches!(harness.as_str(), "sense" | "ringframe"))
             && harnesses.find(&harness).is_none()
         {
             return Answer::No(
@@ -1386,9 +1394,10 @@ impl Session {
             // Opening the view asks both releases again, at once: Weft's and
             // RingFrame's; the other acts read the kept answers.
             let fresh = act == "look";
-            let (mut check, mut weft) = std::thread::scope(|scope| {
+            let (mut check, weft) = std::thread::scope(|scope| {
                 let release = scope.spawn(|| out.release(fresh));
-                let weft = scope.spawn(|| crate::onboarding::weft_check(out, fresh));
+                let weft =
+                    scope.spawn(|| crate::onboarding::weft_check(out, fresh, waits.as_deref()));
                 (
                     release.join().unwrap_or_else(|_| Err("the check did not finish".into())),
                     weft.join().unwrap_or_default(),
@@ -1458,25 +1467,11 @@ impl Session {
                             }
                         }
                     } else {
+                        // Weft is the person's to update, as they installed it.
                         let (base, _) = look(out, &harnesses, &check, &weft, cli);
-                        // Weft first: it brings RingFrame's program with it, and the
-                        // steps after it run on that.
-                        if act == "all" && base.weft_behind {
-                            let updating = weft_core::onboarding::View {
-                                weft: "updating…".into(),
-                                ..base.clone()
-                            };
-                            show(&updating);
-                            let step = vec![weft_core::sync::Step::new("weft", &["update"])];
-                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                                proceed(out, step, |_| {})
-                            {
-                                note = Some(format!("{step} failed: {said}"));
-                            }
-                            weft = crate::onboarding::weft_check(out, true);
-                        }
-                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
-                        if act == "all" && base.configuration_behind {
+                        let sync_it = (act == "all" && base.configuration_behind)
+                            || (act == "run" && harness == "ringframe");
+                        if sync_it {
                             let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
                             if let Some(weft_core::onboarding::State::Failed { step, said }) =
                                 proceed(out, sync, |_| {})
@@ -1787,21 +1782,33 @@ impl Session {
         self.write_projects();
     }
 
-    /// `update {version}`: a newer Weft is in `versions/<version>`; start on
-    /// it once no agent runs. Every client is told it waits.
-    fn update_to(&mut self, version: String) -> Answer {
-        let plain = !version.is_empty()
-            && version.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
-            && !version.starts_with('.');
-        let program = self.config.with_file_name("versions").join(&version).join("weft");
-        if !plain || !program.is_file() {
-            return Answer::No("no_version", format!("Weft {version} is not installed here"));
-        }
-        // Already this one: nothing to wait for, and no restart to make.
-        if version == env!("CARGO_PKG_VERSION") {
+    /// `update {version, program}`: a newer Weft is installed at `program`;
+    /// start on it once no agent runs. Every client is told it waits. One
+    /// that is not newer than this daemon, or than the one waiting, changes
+    /// nothing.
+    fn update_to(&mut self, version: String, program: String) -> Answer {
+        use std::os::unix::fs::MetadataExt as _;
+        // The real file, this user's and writable by no one else: what is
+        // checked is what starts.
+        let path = PathBuf::from(&program);
+        let real = path.is_absolute().then(|| path.canonicalize().ok()).flatten();
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let own = |m: &std::fs::Metadata| m.uid() == unsafe { libc::geteuid() };
+        let safe = real
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .is_some_and(|m| m.is_file() && own(&m) && m.mode() & 0o022 == 0);
+        let Some(path) = real.filter(|_| safe) else {
+            return Answer::No(
+                "no_version",
+                format!("Weft {version} is not installed at {program}"),
+            );
+        };
+        let waiting = self.update.as_ref().map_or(env!("CARGO_PKG_VERSION"), |u| &u.version);
+        if !weft_core::sync::older(waiting, &version) {
             return Answer::Ok(serde_json::json!({"update": version}));
         }
-        self.update = Some(version.clone());
+        self.update = Some(Newer { version: version.clone(), program: path });
         self.clients.broadcast_all(&Out::Update { version: Some(version.clone()) });
         Answer::Ok(serde_json::json!({"update": version}))
     }
@@ -1810,7 +1817,7 @@ impl Session {
     /// the new version: the same process, so a service that runs it keeps
     /// it; windows and `weft remote` lose their connections and come back.
     fn update_when_idle(&mut self) {
-        let Some(version) = self.update.clone() else { return };
+        let Some(Newer { program, .. }) = self.update.clone() else { return };
         let busy = self
             .projects
             .iter_mut()
@@ -1819,7 +1826,6 @@ impl Session {
         if busy {
             return;
         }
-        let program = self.config.with_file_name("versions").join(&version).join("weft");
         use std::os::unix::process::CommandExt as _;
         let failed = std::process::Command::new(&program).arg("--serve").env(UPDATED, "1").exec();
         // Only reached when it could not start: stay on this version, and say so.
@@ -2049,7 +2055,7 @@ impl Session {
             "turbo": self.projects[at].turbo,
             "start_at_login": self.start_at_login(),
             "reopened": self.projects[at].reopened,
-            "update": self.update,
+            "update": self.update.as_ref().map(|u| &u.version),
             "harnesses": &self.projects[at].harnesses,
             // Harness files that would not read, to be said once.
             "unread": &self.projects[at].unread,
@@ -2345,7 +2351,7 @@ impl Session {
             // A client leaving is not the session ending. That is the point.
             // What it is done with is when its connection ends (`left`).
             Call::Detach => {}
-            Call::Update { version } => return Ok(self.update_to(version)),
+            Call::Update { version, program } => return Ok(self.update_to(version, program)),
             Call::Dismiss => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let root = self.projects[at].root.clone();
@@ -2418,6 +2424,66 @@ mod tests {
             .unwrap();
     }
 
+    /// Updates' rows send only acts the daemon knows: RingFrame's row syncs
+    /// its configuration; Weft's has none, since Weft is the person's to update.
+    #[test]
+    fn ringframe_s_row_syncs_and_weft_s_row_has_no_act() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (weft_dir, proj_dir) = (tmp.path().join("weft"), tmp.path().join("proj"));
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        let (sock, cfg) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&cfg, "").unwrap();
+        let world = crate::outside::Fixed::new()
+            .answers("ringframe", &["sync"], 1, "the sync ran")
+            .with_release(Err("no release in this world".into()))
+            .shared();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (sock_srv, cfg_srv) = (sock.clone(), cfg.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_in(&sock_srv, &cfg_srv, Some(harnesses), world);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&sock) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&sock).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut call = |id: u64, call: Call| {
+            weft_proto::send(&mut writer, &Line::Call { id, call }.encode()).unwrap();
+        };
+        call(1, Call::Hello { client: "test".into(), protocol: PROTOCOL });
+        let path = proj_dir.display().to_string();
+        call(2, Call::Open { path, rows: 24, cols: 80, raw: true });
+        let run = |harness: &str| Call::Setup {
+            act: "run".into(),
+            harness: harness.into(),
+            path: String::new(),
+        };
+        call(3, run("weft"));
+        call(4, run("ringframe"));
+
+        let (mut refused, mut synced) = (None, false);
+        while std::time::Instant::now() < deadline && (refused.is_none() || !synced) {
+            match reader.next() {
+                Ok(Some(Line::Error { id: 3, code, .. })) => refused = Some(code),
+                Ok(Some(Line::Event(Out::Setup { view })))
+                    if view["note"].as_str().is_some_and(|n| n.contains("the sync ran")) =>
+                {
+                    synced = true;
+                }
+                Ok(None) => break,
+                _ => {}
+            }
+        }
+        assert_eq!(refused.as_deref(), Some("unknown_harness"), "Weft's row has no act");
+        assert!(synced, "RingFrame's row ran its configuration sync");
+        let _ = UnixStream::connect(&sock).map(|mut s| {
+            weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
+        });
+    }
+
     #[test]
     fn hot_reloading_sense_bundle_in_weftd_keeps_running_panes_alive() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2443,7 +2509,7 @@ mod tests {
         // answered here, never by the network.
         let world = crate::outside::Fixed::new()
             .with_release(Ok(serde_json::json!({"tag_name": "v0.5.0"})))
-            .with_weft(Some("0.5.0"), true)
+            .with_weft(Some("0.5.0"))
             .shared();
         let srv = std::thread::spawn(move || {
             let _ = Session::serve_in(&sock_srv, &cfg_srv, Some(harnesses), world);

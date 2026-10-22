@@ -86,20 +86,21 @@ fn ask_check() -> Result<serde_json::Value, String> {
     }
 }
 
-/// What the machine says of Weft's own releases: the latest, and whether it
-/// is installed beside the running one already.
+/// What the machine says of Weft's own releases: the latest, and whether a
+/// Weft at least that new waits for no agent to be running.
 #[derive(Clone, Default)]
 pub struct WeftCheck {
     pub latest: Option<String>,
-    pub installed: bool,
+    pub waiting: bool,
 }
 
-/// Ask for [`WeftCheck`]; the latest is the kept answer, as `check`'s is,
-/// unless `fresh` asks again.
-pub fn weft_check(out: &dyn Outside, fresh: bool) -> WeftCheck {
+/// Ask for [`WeftCheck`], with the version the daemon was told waits, if
+/// any; the latest is the kept answer, as `check`'s is, unless `fresh` asks
+/// again.
+pub fn weft_check(out: &dyn Outside, fresh: bool, waits: Option<&str>) -> WeftCheck {
     let latest = out.weft_release(fresh);
-    let installed = latest.as_deref().is_some_and(|l| out.weft_installed(l));
-    WeftCheck { latest, installed }
+    let waiting = matches!((&latest, waits), (Some(l), Some(w)) if !weft_core::sync::older(w, l));
+    WeftCheck { latest, waiting }
 }
 
 /// The view: RingFrame's configuration against the latest release (`check`),
@@ -157,10 +158,10 @@ pub fn look_as_they_answer(
         plugin,
         ..View::default()
     };
-    let (line, step) =
-        weft_core::sync::weft(env!("CARGO_PKG_VERSION"), weft.latest.as_deref(), weft.installed);
-    (view.weft, view.weft_behind, view.weft_latest) = (line, step.is_some(), weft.latest.clone());
-    view.weft_waiting = weft.installed
+    let (line, behind) =
+        weft_core::sync::weft(env!("CARGO_PKG_VERSION"), weft.latest.as_deref(), weft.waiting);
+    (view.weft, view.weft_behind, view.weft_latest) = (line, behind, weft.latest.clone());
+    view.weft_waiting = weft.waiting
         && weft
             .latest
             .as_deref()
@@ -455,32 +456,20 @@ mod tests {
     fn the_view_says_where_weft_stands() {
         use crate::outside::Fixed;
         let out = Fixed::new().shared();
-        let look = |latest: Option<&str>, installed: bool| {
-            let weft = WeftCheck { latest: latest.map(str::to_string), installed };
+        let look = |latest: Option<&str>, waiting: bool| {
+            let weft = WeftCheck { latest: latest.map(str::to_string), waiting };
             look(out.as_ref(), &Harnesses::default(), &Ok(serde_json::json!({})), &weft, true).0
         };
         let now = env!("CARGO_PKG_VERSION");
         let behind = look(Some("99.0.0"), false);
         assert_eq!(behind.weft, format!("{now} → 99.0.0"));
-        assert!(behind.weft_behind && behind.needs_anything() && behind.proceeds());
+        // Updating Weft is the person's: it marks Updates, and Proceed runs nothing for it.
+        assert!(behind.weft_behind && behind.needs_anything() && !behind.proceeds());
         assert_eq!(behind.weft_latest.as_deref(), Some("99.0.0"));
         let waiting = look(Some("99.0.0"), true);
         assert_eq!(waiting.weft, "99.0.0 is installed: it starts when no agent is running");
         assert!(!waiting.weft_behind);
         assert_eq!(look(Some(now), false).weft, format!("{now} is the latest"));
         assert_eq!(look(None, false).weft, "could not reach the latest release");
-    }
-
-    /// Weft's step is the CLI's own update; its failure comes back with what it said.
-    #[test]
-    fn weft_updates_by_its_own_command() {
-        use crate::outside::Fixed;
-        let step = || vec![Step::new("weft", &["update"])];
-        let ok = Fixed::new().answers("weft", &["update"], 0, "weft 0.2.0 → v0.2.1\n").shared();
-        assert_eq!(proceed(ok.as_ref(), step(), |_| {}), None);
-        let bad = Fixed::new()
-            .answers("weft", &["update"], 1, "could not reach the latest release")
-            .shared();
-        assert!(matches!(proceed(bad.as_ref(), step(), |_| {}), Some(State::Failed { .. })));
     }
 }

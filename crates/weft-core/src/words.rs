@@ -268,7 +268,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.refused.update_title", "Update Weft on {machine}"),
     (
         "web.refused.update",
-        "{machine} runs an older Weft than this page. On {machine}, run weft update, then try again.",
+        "{machine} runs an older Weft than this page. Update Weft on {machine}, then try again.",
     ),
     ("web.refused.reload_title", "Reload this page"),
     ("web.refused.reload", "Weft on {machine} is newer than this page."),

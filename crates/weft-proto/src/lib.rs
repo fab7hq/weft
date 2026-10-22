@@ -182,11 +182,12 @@ pub enum Call {
         to: Option<u32>,
         start: Option<String>,
     },
-    /// A newer Weft is installed in `versions/<version>`: the
-    /// daemon starts again on it once no agent is running. Needs no hello,
-    /// as `shutdown`, so the `weft update` of any version can say it.
+    /// A newer Weft, `version`, is installed at `program`: the daemon starts
+    /// again on it once no agent is running. Needs no hello, as `shutdown`,
+    /// so a window of any version can say it.
     Update {
         version: String,
+        program: String,
     },
     /// Close a project reopened after an unclean end, from a device or a
     /// window that has nothing to do in it. It closes as any
@@ -474,7 +475,9 @@ impl Call {
             ),
             Call::Detach => ("detach", json!({})),
             Call::Dismiss => ("project.dismiss", json!({})),
-            Call::Update { version } => ("update", json!({"version": version})),
+            Call::Update { version, program } => {
+                ("update", json!({"version": version, "program": program}))
+            }
             Call::Shutdown => ("shutdown", json!({})),
         }
     }
@@ -571,7 +574,7 @@ impl Call {
             }
             "detach" => Call::Detach,
             "project.dismiss" => Call::Dismiss,
-            "update" => Call::Update { version: s("version")? },
+            "update" => Call::Update { version: s("version")?, program: s("program")? },
             "shutdown" => Call::Shutdown,
             _ => return None,
         })
@@ -880,12 +883,13 @@ pub fn stop(socket: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Tell the daemon at `socket` that Weft `version` is installed beside it.
 /// Like `stop`, it needs no hello, so an older daemon is told by a newer
-/// `weft update`. Its refusal, when it refused.
-pub fn tell_update(socket: &Path, version: &str) -> io::Result<Result<(), String>> {
+/// one. Tell the daemon at `socket` that Weft `version` is installed at
+/// `program`. Its refusal, when it refused.
+pub fn tell_update(socket: &Path, version: &str, program: &Path) -> io::Result<Result<(), String>> {
     let mut stream = UnixStream::connect(socket)?;
-    let call = Call::Update { version: version.into() };
+    let call =
+        Call::Update { version: version.into(), program: program.to_string_lossy().into_owned() };
     send(&mut stream, &Line::Call { id: 1, call }.encode())?;
     stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
     let mut line = String::new();
@@ -1092,7 +1096,7 @@ mod tests {
             Call::Remote { act: json!({"act": "allow", "device": "d_1", "yes": true}) },
             Call::StartAtLogin { on: true, program: "/w/weft".into(), path: "/usr/bin".into() },
             Call::Dismiss,
-            Call::Update { version: "0.2.1".into() },
+            Call::Update { version: "0.2.1".into(), program: "/w/weft".into() },
             Call::Detach,
             Call::Shutdown,
         ] {

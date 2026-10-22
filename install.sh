@@ -187,7 +187,7 @@ main() {
         fi
     else
         printf '\n%s\n' "Weft's harness files could not be installed, so Weft offers no harness yet."
-        printf '%s\n' 'Run `weft update` again once the configuration is in place.'
+        printf '%s\n' 'Run this installer again once the configuration is in place.'
     fi
 
     case ":$PATH:" in

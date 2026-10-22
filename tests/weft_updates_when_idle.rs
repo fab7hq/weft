@@ -175,17 +175,31 @@ fn an_update_waits_for_the_last_agent_and_the_daemon_becomes_the_new_version() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // `weft update` tells it; it waits while the agent runs.
-    assert_eq!(
-        c.answer(Call::Update { version: "b".into() }),
-        Ok(serde_json::json!({"update": "b"}))
-    );
-    assert!(c.heard.contains(&Event::Update { version: Some("b".into()) }), "{:?}", c.heard);
-    assert_eq!(
-        c.answer(Call::Update { version: "../a".into() }),
-        Err("no_version".into()),
-        "only a version's folder"
-    );
+    // A newer window tells it where its Weft is, wherever that was
+    // installed; it waits while the agent runs.
+    let brew = m.home.join("Applications/Weft.app/Contents/MacOS/weft");
+    std::fs::create_dir_all(brew.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_weft"), &brew).unwrap();
+    let tell = |c: &mut Client, version: &str, program: &Path| {
+        let program = program.to_string_lossy().into_owned();
+        c.answer(Call::Update { version: version.into(), program })
+    };
+    assert_eq!(tell(&mut c, "98.0.0", &brew), Ok(serde_json::json!({"update": "98.0.0"})));
+    assert!(c.heard.contains(&Event::Update { version: Some("98.0.0".into()) }), "{:?}", c.heard);
+    assert_eq!(tell(&mut c, "99.0.0", &b), Ok(serde_json::json!({"update": "99.0.0"})));
+    assert!(c.heard.contains(&Event::Update { version: Some("99.0.0".into()) }), "{:?}", c.heard);
+    // Not newer than the one waiting, or nowhere: nothing changes.
+    let heard = c.heard.len();
+    assert!(tell(&mut c, "98.5.0", &brew).is_ok());
+    assert_eq!(c.heard.len(), heard, "an older one is not waited for");
+    assert_eq!(tell(&mut c, "100.0.0", Path::new("weft")), Err("no_version".into()));
+    assert_eq!(tell(&mut c, "100.0.0", &m.home.join("none/weft")), Err("no_version".into()));
+    // One anyone could have written is not started.
+    let open = m.home.join("open/weft");
+    std::fs::create_dir_all(open.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_weft"), &open).unwrap();
+    std::fs::set_permissions(&open, std::os::unix::fs::PermissionsExt::from_mode(0o777)).unwrap();
+    assert_eq!(tell(&mut c, "100.0.0", &open), Err("no_version".into()));
     assert!(!c.closed_within(Duration::from_millis(1500)), "an agent runs: it waits");
     assert!(args_of(pid).contains("--serve"));
 

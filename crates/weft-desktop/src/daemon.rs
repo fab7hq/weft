@@ -447,6 +447,10 @@ impl ProjectClient {
         if !is_live(&socket) {
             clear_dead(&socket);
             start_server()?;
+        } else if let Some(weft) = own_weft() {
+            // A daemon an older Weft started starts again on this one once no
+            // agent runs; one as new or newer ignores it.
+            let _ = weft_proto::tell_update(&socket, env!("CARGO_PKG_VERSION"), &weft);
         }
         Self::connect(&socket, root, rows, cols)
     }
@@ -1059,6 +1063,13 @@ pub fn newer_weft(home: &Path) -> Option<PathBuf> {
 pub fn open_app_of(weft: &Path) -> Result<()> {
     reaped(detached(weft, &[]).spawn()?);
     Ok(())
+}
+
+/// The `weft` beside this app, by its real path: the one of its version.
+fn own_weft() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
+    let weft = exe.with_file_name("weft");
+    weft.is_file().then_some(weft)
 }
 
 /// The `weft` this app came with: beside it, else where Weft installs it.

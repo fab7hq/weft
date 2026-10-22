@@ -113,19 +113,17 @@ pub fn release_version(tag: &str) -> Option<&str> {
 }
 
 /// Weft's own line: where this Weft stands against the latest release (`None`
-/// when it could not be reached), and the step that catches it up when it is
-/// behind. `installed` says the latest is already on this machine and starts
-/// once no agent runs, so nothing is left to do.
-pub fn weft(have: &str, latest: Option<&str>, installed: bool) -> (String, Option<Step>) {
+/// when it could not be reached), and whether it is behind. Weft is updated
+/// the way it was installed, so no step catches it up. `waiting` says the
+/// latest is already on this machine and starts once no agent runs.
+pub fn weft(have: &str, latest: Option<&str>, waiting: bool) -> (String, bool) {
     match latest {
-        None => ("could not reach the latest release".into(), None),
-        Some(l) if older(have, l) && installed => {
-            (format!("{l} is installed: it starts when no agent is running"), None)
+        None => ("could not reach the latest release".into(), false),
+        Some(l) if older(have, l) && waiting => {
+            (format!("{l} is installed: it starts when no agent is running"), false)
         }
-        Some(l) if older(have, l) => {
-            (format!("{have} → {l}"), Some(Step::new("weft", &["update"])))
-        }
-        Some(_) => (format!("{have} is the latest"), None),
+        Some(l) if older(have, l) => (format!("{have} → {l}"), true),
+        Some(_) => (format!("{have} is the latest"), false),
     }
 }
 
@@ -189,14 +187,10 @@ mod tests {
 
     #[test]
     fn weft_is_behind_installed_current_or_out_of_reach() {
-        let (line, step) = weft("0.2.0", Some("0.2.1"), false);
-        assert_eq!(
-            (line.as_str(), step.map(|s| s.line())),
-            ("0.2.0 → 0.2.1", Some("weft update".into()))
-        );
-        let (line, step) = weft("0.2.0", Some("0.2.1"), true);
+        assert_eq!(weft("0.2.0", Some("0.2.1"), false), ("0.2.0 → 0.2.1".into(), true));
+        let (line, behind) = weft("0.2.0", Some("0.2.1"), true);
         assert_eq!(line, "0.2.1 is installed: it starts when no agent is running");
-        assert!(step.is_none());
+        assert!(!behind);
         assert_eq!(weft("0.2.1", Some("0.2.1"), false).0, "0.2.1 is the latest");
         assert_eq!(weft("0.2.1", None, false).0, "could not reach the latest release");
     }

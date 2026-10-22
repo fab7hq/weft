@@ -34,8 +34,8 @@ curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | 
 ```
 
 It installs the Weft app — in Applications on macOS, in your desktop's apps
-on Linux — and `weft` and `ringframe`. Open Weft, or run `weft`. `weft update`
-installs the next release.
+on Linux — and `weft` and `ringframe`. Open Weft, or run `weft`. Run the same
+line again to install the next release.
 
 On macOS, Homebrew installs the same app:
 

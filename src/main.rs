@@ -158,7 +158,8 @@ fn main() -> Result<()> {
         if std::env::args().nth(2).as_deref() == Some("--sense") {
             return update_sense();
         }
-        return update();
+        println!("{UPDATE_WEFT}");
+        return Ok(());
     }
 
     if matches!(first.as_deref(), Some("--help" | "-h")) {
@@ -179,7 +180,6 @@ fn main() -> Result<()> {
 const HELP: &str = "weft VERSION
 
 weft [project-dir]     open the Weft app, on that project if one is named
-weft update            install the latest Weft and RingFrame
 weft update --sense    install the Sense model this Weft was built with
 weft stop              end the session and its agents
 weft remote            Weft from another device (the session starts it)
@@ -293,31 +293,7 @@ fn start_program(
     Ok(())
 }
 
-const REPO: &str = "fab7hq/weft";
-
-/// The latest published release's tag, or nothing when it cannot be reached.
-fn latest_release() -> Option<String> {
-    let out = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "10"])
-        .arg(format!("https://api.github.com/repos/{REPO}/releases/latest"))
-        .output()
-        .ok()?;
-    let release: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    release["tag_name"].as_str().map(str::to_string)
-}
-
-fn is_newer(tag: &str) -> bool {
-    let parts = |s: &str| s.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    parts(tag.trim_start_matches('v')) > parts(env!("CARGO_PKG_VERSION"))
-}
-
-/// A release's tag, and nothing else: `v`, then numbers and dots.
-fn is_release_tag(tag: &str) -> bool {
-    tag.strip_prefix('v')
-        .is_some_and(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit() || c == '.'))
-}
-
-/// What updates the Weft at `exe`.
+/// What put the Weft at `exe` there.
 #[derive(Debug, PartialEq, Eq)]
 enum Updater {
     /// Weft's own installer, which keeps each version in `~/.fab7/weft/versions`.
@@ -326,18 +302,8 @@ enum Updater {
     Homebrew,
 }
 
-impl Updater {
-    /// What to tell the person instead of updating, when it is not Weft's.
-    fn says(&self) -> Option<&'static str> {
-        match self {
-            Updater::Installer => None,
-            Updater::Homebrew => Some("Run: brew upgrade --cask weft"),
-        }
-    }
-}
-
 /// A Weft.app outside `~/.fab7/weft/versions` came from Homebrew; anything
-/// else is updated as Weft's installer put it there.
+/// else is laid out as Weft's installer put it there.
 fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
     let in_app = exe.parent().is_some_and(|d| d.ends_with("Contents/MacOS"));
     let versions = home.join(".fab7/weft/versions");
@@ -345,58 +311,9 @@ fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
     if in_app && !exe.starts_with(versions) { Updater::Homebrew } else { Updater::Installer }
 }
 
-/// Replace this Weft with the latest release, with that release's own
-/// installer, pinned to it: never `main`'s, which no release has vouched for.
-/// Restarting is the person's. One Homebrew installed is Homebrew's to update.
-fn update() -> Result<()> {
-    let now = env!("CARGO_PKG_VERSION");
-    if let (Some(home), Ok(exe)) =
-        (std::env::var_os("HOME"), std::env::current_exe().and_then(|e| e.canonicalize()))
-        && let Some(say) = updated_by(&exe, std::path::Path::new(&home)).says()
-    {
-        println!("{say}");
-        return Ok(());
-    }
-    let Some(tag) = latest_release() else {
-        anyhow::bail!("could not reach the latest release");
-    };
-    if !is_release_tag(&tag) {
-        anyhow::bail!("the latest release is not tagged as one: {tag}");
-    }
-    if !is_newer(&tag) {
-        println!("weft {now} is the latest");
-        // Installed by hand, or by an earlier update: a service on an older
-        // Weft is told to start on this one once no agent runs.
-        let socket = protocol::socket_path();
-        if protocol::is_live(&socket) {
-            let _ = protocol::tell_update(&socket, now);
-        }
-        return Ok(());
-    }
-    println!("weft {now} → {tag}");
-    // Downloaded whole before it runs, in a folder of the person's own.
-    let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let dir = std::path::PathBuf::from(home).join(".fab7/weft/update");
-    std::fs::create_dir_all(&dir)?;
-    let script = dir.join("install.sh");
-    let url = format!("https://github.com/{REPO}/releases/download/{tag}/install.sh");
-    let got = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "60", "-o"])
-        .arg(&script)
-        .arg(&url)
-        .status()?;
-    if !got.success() {
-        let _ = std::fs::remove_dir_all(&dir);
-        anyhow::bail!("{tag} publishes no installer");
-    }
-    let ran = std::process::Command::new("sh").arg(&script).env("WEFT_VERSION", &tag).status();
-    let _ = std::fs::remove_dir_all(&dir);
-    if !ran?.success() {
-        anyhow::bail!("the installer did not finish");
-    }
-    println!("\n{}", after_update(&protocol::socket_path(), tag.trim_start_matches('v')));
-    Ok(())
-}
+/// Weft is updated the way it was installed, never by itself.
+const UPDATE_WEFT: &str = "Weft updates the way you installed it: brew upgrade --cask weft, \
+or the install.sh line again. weft update --sense installs the Sense model.";
 
 /// The Sense model this Weft was built with, downloaded from its tag and
 /// checked; a running daemon picks it up when its Updates step ends.
@@ -410,21 +327,6 @@ fn update_sense() -> Result<()> {
     let current = weftd::versions::fetch_sense(&weft_dir, &*weftd::outside::machine())?;
     println!("Sense {} installed", current.version);
     Ok(())
-}
-
-/// Tell a running daemon a newer Weft is installed beside it, which it starts
-/// on once no agent runs; what to say to the person.
-fn after_update(socket: &std::path::Path, version: &str) -> String {
-    if !protocol::is_live(socket) {
-        return format!("Weft {version} starts the next time you run weft.");
-    }
-    match protocol::tell_update(socket, version) {
-        Ok(Ok(())) => format!(
-            "Weft {version} is installed. It starts when no agent is running; nothing to restart."
-        ),
-        Ok(Err(why)) => format!("Weft {version} is installed, but Weft's service said: {why}"),
-        Err(e) => format!("Weft {version} is installed; Weft's service could not be told ({e})."),
-    }
 }
 
 #[cfg(test)]
@@ -442,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_weft_homebrew_installed_is_updated_by_homebrew() {
+    fn a_weft_app_outside_the_versions_came_from_homebrew() {
         let home = std::path::Path::new("/Users/p");
         let installed = home.join(".fab7/weft/versions/0.5.0/Weft.app/Contents/MacOS/weft");
         assert_eq!(updated_by(&installed, home), Updater::Installer);
@@ -450,18 +352,14 @@ mod tests {
         assert_eq!(updated_by(&linux, home), Updater::Installer);
         let cask = std::path::Path::new("/Applications/Weft.app/Contents/MacOS/weft");
         assert_eq!(updated_by(cask, home), Updater::Homebrew);
-        assert_eq!(Updater::Homebrew.says(), Some("Run: brew upgrade --cask weft"));
-        assert_eq!(Updater::Installer.says(), None);
     }
 
+    /// Weft says how it is updated, and updates nothing itself.
     #[test]
-    fn only_a_release_tag_is_updated_to() {
-        for tag in ["v0.2.0", "v1.10.3"] {
-            assert!(is_release_tag(tag), "{tag}");
-        }
-        for tag in ["0.2.0", "v", "v0.2.0;rm -rf ~", "v0.2.0-rc1", "main", "v0.2.0 "] {
-            assert!(!is_release_tag(tag), "{tag:?}");
-        }
+    fn weft_update_says_how_weft_is_updated() {
+        assert!(UPDATE_WEFT.contains("brew upgrade --cask weft"));
+        assert!(UPDATE_WEFT.contains("install.sh"));
+        assert!(!HELP.contains("install the latest Weft"));
     }
 
     #[test]
