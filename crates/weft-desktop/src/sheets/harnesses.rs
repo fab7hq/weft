@@ -182,10 +182,15 @@ fn sends(props: &SheetProps, host: &str) -> Element {
         } else {
             "desktop.harness.weft_sends"
         };
-        let mut said = cap["selection"].as_str().unwrap_or_default().to_string();
-        if let Some(n) = cap["max_prompt_chars"].as_u64() {
-            said = fill("desktop.harness.limit", &[("n", &n.to_string())]);
-        }
+        // What it does, in a line for people, and its limit when it has one.
+        let limit = cap["max_prompt_chars"]
+            .as_u64()
+            .map(|n| fill("desktop.harness.limit", &[("n", &n.to_string())]));
+        let said = [cap["purpose"].as_str().map(str::to_string), limit]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
         let name = weft_core::words::WORDS
             .iter()
             .find(|(k, _)| *k == format!("desktop.harness.{id}"))
@@ -199,16 +204,7 @@ fn sends(props: &SheetProps, host: &str) -> Element {
                 .pad(8, 14)
                 .items_center()
                 .child(div().w(170).font_weight(600).font_size(13).text(name.to_string()))
-                .child(
-                    div()
-                        .flex_1()
-                        .font_size(12)
-                        .color(palette::MUTED)
-                        .style("white-space", "nowrap")
-                        .style("overflow", "hidden")
-                        .style("text-overflow", "ellipsis")
-                        .text(said),
-                )
+                .child(div().flex_1().font_size(12).color(palette::MUTED).text(said))
                 .child(
                     div()
                         .pad(2, 6)

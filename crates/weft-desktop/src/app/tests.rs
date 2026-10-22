@@ -2423,11 +2423,11 @@ fn workflow_sets_every_project_s_routing_and_debate() {
 #[test]
 fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     let (_tmp, mut app, mut wire) = wired_app();
-    let efforts = |e: &str| json!({"map": {"effort": e}, "reduce": {"effort": e}, "confirm": {"effort": e}});
+    let efforts =
+        |e: &str| json!({"map": {"effort": e}, "reduce": {"effort": e}, "confirm": {"effort": e}});
     let mut debate = efforts("low");
     debate["harness"] = json!("codex");
-    app.clients[0].config =
-        Some(json!({"machine": {"eval": {"debate": debate}}, "project": null}));
+    app.clients[0].config = Some(json!({"machine": {"eval": {"debate": debate}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
     app.dispatch(SheetAct::SettingsTab(SettingsTab::Workflow));
     let dom = app.render();
@@ -2440,7 +2440,10 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     for role in ["map", "reduce", "confirm"] {
         let (_, call) = wire.call();
         let key = ["eval", "debate", role, "effort"].map(String::from).to_vec();
-        assert_eq!(call, Call::ConfigSet { scope: "machine".into(), key, value: Some(json!("high")) });
+        assert_eq!(
+            call,
+            Call::ConfigSet { scope: "machine".into(), key, value: Some(json!("high")) }
+        );
     }
     app.dispatch(SheetAct::HowHard("balanced".into()));
     let (_, call) = wire.call();
@@ -2451,11 +2454,22 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     app.dispatch(SheetAct::ShowJudges);
     let dom = app.render();
     let value = |row: &str| {
-        dom.find_layer(row).unwrap_or_else(|| panic!("{row}")).find_layer("setting value").unwrap().all_text()
+        dom.find_layer(row)
+            .unwrap_or_else(|| panic!("{row}"))
+            .find_layer("setting value")
+            .unwrap()
+            .all_text()
     };
-    assert_eq!(dom.find_layer("setting How hard").unwrap().find_layer("how hard on").unwrap().all_text(), "Balanced");
+    assert_eq!(
+        dom.find_layer("setting How hard").unwrap().find_layer("how hard on").unwrap().all_text(),
+        "Balanced"
+    );
     assert_eq!(value("setting Reduce effort"), "medium · default ▾");
-    assert_eq!(value("setting Map model"), words::word("desktop.settings.own_model"), "typed in Codex");
+    assert_eq!(
+        value("setting Map model"),
+        words::word("desktop.settings.own_model"),
+        "typed in Codex"
+    );
 }
 
 /// A project's own settings, from its row's ⋯: only what differs from every
@@ -2706,8 +2720,10 @@ fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
             Call::Read { what, unit, .. } if what == "profile" => {
                 assert_eq!(unit, "antigravity", "the first harness");
                 wire.answer(id, json!({"capabilities": [
-                    {"id": "native_plan", "delivery_mode": "native_dispatch"},
-                    {"id": "native_goal", "delivery_mode": "human_handoff", "max_prompt_chars": 4000}],
+                    {"id": "native_plan", "delivery_mode": "native_dispatch",
+                     "selection": "A plan or analysis before implementation.", "purpose": "Plans first"},
+                    {"id": "native_goal", "delivery_mode": "human_handoff", "max_prompt_chars": 4000,
+                     "purpose": "Works on its own until it marks the goal done"}],
                     "paste_fold_chars": 512}));
                 asked.push("profile");
             }
@@ -2733,6 +2749,15 @@ fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
         goal.all_text()
     );
     assert!(goal.all_text().contains("4000"), "{}", goal.all_text());
+    assert!(
+        goal.all_text().contains("Works on its own until it marks the goal done"),
+        "its purpose, and its limit"
+    );
+    let plan = dom.find_layer("sends native_plan").unwrap().all_text();
+    assert!(
+        plan.contains("Plans first") && !plan.contains("before implementation"),
+        "for people, not the model: {plan}"
+    );
     assert!(dom.find_layer("sends folds").unwrap().all_text().contains("512"));
     let rule = dom.find_layer("route rule agy.plan_as_files").expect("its route rule");
     assert!(rule.find_layer("status desktop.harness.candidate").is_some());

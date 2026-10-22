@@ -333,11 +333,13 @@ fn how_hard(props: &SheetProps) -> Element {
                 .text(word("desktop.settings.custom").to_string()),
         );
     }
-    let (title, judge) = judges_harness(props)
-        .map_or((String::new(), None), |h| (h.title.clone(), h.eval.as_ref()));
+    let (title, judge) =
+        judges_harness(props).map_or((String::new(), None), |h| (h.title.clone(), h.eval.as_ref()));
     let reach = match judge.map(|j| j.effort) {
         Some(weft_core::harness::EffortReaches::Model) => "desktop.settings.effort_reaches_model",
-        Some(weft_core::harness::EffortReaches::Lookups) => "desktop.settings.effort_reaches_lookups",
+        Some(weft_core::harness::EffortReaches::Lookups) => {
+            "desktop.settings.effort_reaches_lookups"
+        }
         None => "desktop.settings.effort_reaches_unknown",
     };
     div()
