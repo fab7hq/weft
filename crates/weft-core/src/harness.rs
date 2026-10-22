@@ -591,7 +591,11 @@ mod tests {
         assert_eq!(claude.models, ["haiku", "sonnet", "opus", "fable"]);
         assert!(!claude.model_typed);
         assert_eq!(
-            (claude.default.map.as_str(), claude.default.reduce.as_str(), claude.default.confirm.as_str()),
+            (
+                claude.default.map.as_str(),
+                claude.default.reduce.as_str(),
+                claude.default.confirm.as_str()
+            ),
             ("low", "medium", "medium")
         );
         let codex = eval("codex").expect("codex's [eval]");
