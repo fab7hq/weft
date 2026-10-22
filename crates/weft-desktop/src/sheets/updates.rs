@@ -87,10 +87,8 @@ pub(super) fn render(props: &SheetProps) -> Element {
             Size::Row,
         )
     };
-    let mut weft_said = with_version(&v.weft, status(v.weft_mark()));
-    if let (true, Some(latest)) = (v.weft_behind, &v.weft_latest) {
-        weft_said = format!("{} → {latest} · {}", v.weft, status("↑"));
-    }
+    // The daemon's line already says where Weft stands: "0.6.0 → 0.6.3" when behind.
+    let weft_said = with_version(&v.weft, status(v.weft_mark()));
     let ours = row_list(vec![
         row(
             "update row Weft".into(),

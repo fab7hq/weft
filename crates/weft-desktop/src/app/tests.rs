@@ -858,7 +858,7 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
         version: None,
     };
     app.clients[0].setup = Some(SetupView {
-        weft: "0.4.3".into(),
+        weft: "0.4.3 → 0.4.4".into(),
         weft_latest: Some("0.4.4".into()),
         weft_behind: true,
         configuration: "0.4.4".into(),
@@ -876,7 +876,10 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
     });
     let dom = app.render();
     let upd = dom.find_layer("sheet Updates").unwrap();
-    assert!(upd.all_text().contains("0.4.3 → 0.4.4"));
+    // The daemon's line once, never the latest added again.
+    let weft_row = upd.find_layer("update row Weft").unwrap().all_text();
+    assert!(weft_row.contains("0.4.3 → 0.4.4 · update available"), "{weft_row}");
+    assert!(!weft_row.contains("0.4.4 → 0.4.4"), "{weft_row}");
     assert!(upd.find_layer("btn Find app… codex").is_some());
     assert!(upd.find_layer("btn Update all").is_some());
     // Weft is updated the way it was installed: its row says so, with no act.
