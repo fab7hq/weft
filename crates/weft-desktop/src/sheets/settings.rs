@@ -458,7 +458,7 @@ pub(super) fn control(props: &SheetProps, project: Option<&Path>, e: &Entry) -> 
     let editing = props.setting_editing.is_some_and(|(p, k)| p.as_deref() == project && *k == key);
     let boxed = div()
         .layer("setting value")
-        .w(if e.kind == Kind::Effort { 110 } else { 190 })
+        .w(if e.kind == Kind::Effort { 160 } else { 190 })
         .pad(6, 10)
         .bg(palette::SURFACE_ALT)
         .border(if project.is_some() { palette::BLUE_BORDER } else { palette::LINE })
