@@ -99,6 +99,7 @@ mod tests {
             manifest: None,
             signal: None,
             conversation: None,
+            eval: None,
             listen: None,
             resume_joins: false,
             server_args: Vec::new(),

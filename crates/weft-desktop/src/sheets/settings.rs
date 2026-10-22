@@ -1,6 +1,6 @@
 //! Settings: the machine's, for every project, on tabs. General holds Turbo,
-//! Start at login, Notifications and Suggestions; Workflow who does each act
-//! and the Eval debate. A project's own settings use the same rows, for what
+//! Start at login, Notifications and Suggestions; Workflow who runs each step
+//! and Eval's judges. A project's own settings use the same rows, for what
 //! differs from every project's. Each is set through the daemon and shows
 //! what it last said.
 
@@ -30,9 +30,10 @@ pub(super) enum Kind {
     Act,
     /// A harness, or where Eval runs.
     DebateHarness,
-    /// An effort, or the harness's own.
+    /// An effort, or the judge's default.
     Effort,
-    /// A model, typed; empty is the harness's own.
+    /// A model, picked or typed as the judges' harness takes one; empty is the
+    /// session's.
     Model,
 }
 
@@ -67,7 +68,7 @@ pub(super) fn entries() -> Vec<Entry> {
         act(&["routing", "seal"][..], "Seal", "Seal", "desktop.settings.seal_what"),
         Entry {
             key: &["eval", "debate", "harness"],
-            name: "Runs in".to_string(),
+            name: word("desktop.settings.runs_in").to_string(),
             label: word("desktop.settings.runs_in").to_string(),
             what: Some(word("desktop.settings.runs_in_what").to_string()),
             kind: Kind::DebateHarness,
@@ -231,12 +232,26 @@ fn workflow(props: &SheetProps) -> Element {
             .children(choices(props, None, e))
     };
     let acts: Vec<Element> = all.iter().take(3).map(row_of).collect();
-    let mut debate = vec![row_of(&all[3])];
-    // Each role: its model and its effort, on one row.
-    for (i, (_, name, key)) in ROLES.iter().enumerate() {
+    let mut judges = vec![row_of(&all[3]), how_hard(props)];
+    judges.push(
+        div()
+            .layer("setting Each judge")
+            .on_click(SheetAct::ShowJudges)
+            .self_stretch()
+            .pad(10, 16)
+            .font_size(13)
+            .color(palette::BLUE_BORDER)
+            .text(format!(
+                "{} {}",
+                if props.judges_shown { "⌄" } else { "›" },
+                word("desktop.settings.each_judge")
+            )),
+    );
+    // Each judge, once opened: its model and its effort, on one row.
+    for (i, (_, name, key)) in ROLES.iter().enumerate().filter(|_| props.judges_shown) {
         let (model, effort) = (&all[4 + 2 * i], &all[5 + 2 * i]);
         let what = word(&format!("{key}_what")).to_string();
-        debate.push(
+        judges.push(
             div()
                 .layer(format!("setting {name}"))
                 .self_stretch()
@@ -248,6 +263,8 @@ fn workflow(props: &SheetProps) -> Element {
                         .gap(12)
                         .pad(10, 16)
                         .items_center()
+                        // Under "Each judge", a step in.
+                        .child(div().w(4))
                         .child(label_col(word(key), Some(&what)))
                         .child(
                             div()
@@ -260,6 +277,7 @@ fn workflow(props: &SheetProps) -> Element {
                                 .child(control(props, None, effort)),
                         ),
                 )
+                .children(choices(props, None, model))
                 .children(choices(props, None, effort)),
         );
     }
@@ -267,7 +285,114 @@ fn workflow(props: &SheetProps) -> Element {
         .child(section_label(word("desktop.settings.acts")))
         .child(row_list(acts))
         .child(section_label(word("desktop.settings.debate")))
-        .child(row_list(debate))
+        .child(row_list(judges))
+        .child(
+            div()
+                .self_stretch()
+                .pad(10, 0)
+                .font_size(12)
+                .color(palette::DIM)
+                .text(word("desktop.settings.workflow_foot").to_string()),
+        )
+}
+
+/// How hard the judges look, one choice for all three, and what an effort
+/// changes in the harness they run in.
+fn how_hard(props: &SheetProps) -> Element {
+    let on = how_hard_now(props);
+    let mut seg = div().flex_row().border(palette::LINE);
+    let choices = [
+        ("quick", "desktop.settings.quick"),
+        ("balanced", "desktop.settings.balanced"),
+        ("thorough", "desktop.settings.thorough"),
+    ];
+    for (how, key) in choices {
+        let chosen = on == how;
+        let mut part = div()
+            .layer(if chosen { "how hard on".to_string() } else { format!("how hard {how}") })
+            .pad(6, 14)
+            .font_size(13)
+            .border_right(palette::LINE)
+            .color(if chosen { palette::BLUE_BORDER } else { palette::MUTED })
+            .text(word(key).to_string());
+        if chosen {
+            part = part.bg(palette::SURFACE_ALT).font_weight(600);
+        } else {
+            part = part.on_click(SheetAct::HowHard(how.to_string()));
+        }
+        seg = seg.child(part);
+    }
+    if on == "custom" {
+        seg = seg.child(
+            div()
+                .layer("how hard on")
+                .pad(6, 14)
+                .font_size(13)
+                .bg(palette::SURFACE_ALT)
+                .color(palette::BLUE_BORDER)
+                .text(word("desktop.settings.custom").to_string()),
+        );
+    }
+    let (title, judge) = judges_harness(props)
+        .map_or((String::new(), None), |h| (h.title.clone(), h.eval.as_ref()));
+    let reach = match judge.map(|j| j.effort) {
+        Some(weft_core::harness::EffortReaches::Model) => "desktop.settings.effort_reaches_model",
+        Some(weft_core::harness::EffortReaches::Lookups) => "desktop.settings.effort_reaches_lookups",
+        None => "desktop.settings.effort_reaches_unknown",
+    };
+    div()
+        .layer("setting How hard")
+        .self_stretch()
+        .flex_col()
+        .gap(6)
+        .pad(10, 16)
+        .child(
+            div()
+                .self_stretch()
+                .flex_row()
+                .gap(12)
+                .items_center()
+                .child(label_col(word("desktop.settings.how_hard"), None))
+                .child(seg),
+        )
+        .child(
+            div()
+                .font_size(12)
+                .color(palette::MUTED)
+                .text(fill(reach, &[("harness", title.as_str())])),
+        )
+}
+
+/// The choice the three judges' efforts make: `quick`, `balanced`,
+/// `thorough`, or `custom`.
+fn how_hard_now(props: &SheetProps) -> &'static str {
+    let set: Vec<Value> = ROLES
+        .iter()
+        .map(|(role, _, _)| now(props, None, &["eval", "debate", role, "effort"]))
+        .collect();
+    let all = |v: Value| set.iter().all(|x| *x == v);
+    if all(Value::Null) {
+        "balanced"
+    } else if all(json!("low")) {
+        "quick"
+    } else if all(json!("high")) {
+        "thorough"
+    } else {
+        "custom"
+    }
+}
+
+/// The harness Eval's judges run in: the debate's, else Eval's.
+fn judges_harness<'a>(props: &'a SheetProps) -> Option<&'a weft_core::harness::Harness> {
+    let set = now(props, None, &["eval", "debate", "harness"]);
+    let set = if set.is_null() { now(props, None, &["routing", "eval"]) } else { set };
+    let name = set.as_str()?;
+    props.harnesses.iter().find(|h| h.name == name)
+}
+
+/// What a judge in that harness takes, from its harness file.
+fn judge<'a>(props: &'a SheetProps) -> Option<&'a weft_core::harness::Eval> {
+    judges_harness(props)?.eval.as_ref()
 }
 
 /// A setting as the daemon last said it: every project's, or `project`'s own.
@@ -284,12 +409,37 @@ pub(super) fn now(props: &SheetProps, project: Option<&Path>, key: &[&str]) -> V
     v.clone()
 }
 
-/// What a value of `kind` reads as: a harness by its title.
-pub(super) fn shown(props: &SheetProps, kind: Kind, v: &Value) -> String {
+/// The judge a setting's key is about: `map`, `reduce` or `confirm`.
+fn key_role<'a>(key: &[&'a str]) -> &'a str {
+    key.get(2).copied().unwrap_or_default()
+}
+
+/// A judge's default effort, from its harness's `[eval]`.
+fn default_of<'a>(judge: &'a weft_core::harness::Eval, role: &str) -> Option<&'a str> {
+    let d = &judge.default;
+    match role {
+        "map" => Some(&d.map),
+        "reduce" => Some(&d.reduce),
+        "confirm" => Some(&d.confirm),
+        _ => None,
+    }
+    .map(String::as_str)
+}
+
+/// What a value of `kind` (at `key`) reads as: a harness by its title, and
+/// nothing set by what applies then.
+pub(super) fn shown(props: &SheetProps, kind: Kind, key: &[&str], v: &Value) -> String {
     match (kind, v.as_str()) {
         (Kind::Act, None) => word("desktop.settings.agent_you_are_in").to_string(),
         (Kind::DebateHarness, None) => word("desktop.settings.where_eval_runs").to_string(),
-        (Kind::Effort, None) => word("desktop.settings.own_effort").to_string(),
+        (Kind::Effort, None) => {
+            // The judge's default, by its value, where the harness says it.
+            let role = key_role(key);
+            match judge(props).and_then(|j| default_of(j, role)) {
+                Some(effort) => fill("desktop.settings.effort_default", &[("effort", effort)]),
+                None => word("desktop.settings.own_effort").to_string(),
+            }
+        }
         (Kind::Model, None) => word("desktop.settings.own_model").to_string(),
         (Kind::Act | Kind::DebateHarness, Some(h)) => {
             props.harnesses.iter().find(|x| x.name == h).map_or(h.to_string(), |x| x.title.clone())
@@ -311,7 +461,13 @@ pub(super) fn control(props: &SheetProps, project: Option<&Path>, e: &Entry) -> 
         .bg(palette::SURFACE_ALT)
         .border(if project.is_some() { palette::BLUE_BORDER } else { palette::LINE })
         .font_size(13);
-    if e.kind == Kind::Model {
+    let judge = judge(props);
+    let typed = judge.is_none_or(|j| j.model_typed);
+    if e.kind == Kind::Model && !typed && judge.is_some_and(|j| j.models.is_empty()) {
+        // A judge here always runs on the session's model.
+        return boxed.color(palette::DIM).text(shown(props, e.kind, e.key, &v));
+    }
+    if e.kind == Kind::Model && typed {
         if editing {
             return boxed.child(
                 input_el(Focus::Setting).text(props.setting_text.to_string()).font_size(13),
@@ -322,31 +478,37 @@ pub(super) fn control(props: &SheetProps, project: Option<&Path>, e: &Entry) -> 
         return boxed
             .on_click(SheetAct::EditSetting { project, key })
             .color(colour)
-            .text(shown(props, e.kind, &v));
+            .text(shown(props, e.kind, e.key, &v));
     }
     let colour = if project.is_some() { palette::BLUE_BORDER } else { palette::TEXT };
     boxed
         .on_click(SheetAct::OpenChoice(key))
         .color(colour)
-        .text(format!("{} ▾", shown(props, e.kind, &v)))
+        .text(format!("{} ▾", shown(props, e.kind, e.key, &v)))
 }
 
 /// A setting's choices, when they are open: each sets it.
 pub(super) fn choices(props: &SheetProps, project: Option<&Path>, e: &Entry) -> Option<Element> {
     let dotted = e.key.join(".");
-    if props.choice != Some(dotted.as_str()) || e.kind == Kind::Model {
+    if props.choice != Some(dotted.as_str()) {
         return None;
     }
-    let none = shown(props, e.kind, &Value::Null);
+    let judge = judge(props);
+    let none = shown(props, e.kind, e.key, &Value::Null);
     let mut options: Vec<(String, Option<Value>)> = vec![(none, None)];
     match e.kind {
         Kind::Act | Kind::DebateHarness => {
             options.extend(props.harnesses.iter().map(|h| (h.title.clone(), Some(json!(h.name)))))
         }
-        Kind::Effort => options.extend(
-            ["low", "medium", "high", "xhigh"].iter().map(|x| (x.to_string(), Some(json!(x)))),
-        ),
-        Kind::Model => {}
+        Kind::Effort => {
+            let common = ["low", "medium", "high", "xhigh"].map(String::from);
+            let efforts = judge.map_or(&common[..], |j| &j.efforts[..]);
+            options.extend(efforts.iter().map(|x| (x.clone(), Some(json!(x)))))
+        }
+        Kind::Model => {
+            let models = judge.map(|j| &j.models[..]).unwrap_or_default();
+            options.extend(models.iter().map(|x| (x.clone(), Some(json!(x)))))
+        }
     }
     let key: Vec<String> = e.key.iter().map(|k| k.to_string()).collect();
     let mut list = div()

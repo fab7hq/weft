@@ -289,8 +289,8 @@ impl Project {
 
     /// This project's rows of the `harnesses` message: what can be started.
     /// Every harness this Weft supports, for Settings: its title, its own
-    /// version and the one it was verified with, and how it stands, as a mark
-    /// and a word or two.
+    /// version and the one it was verified with, how it stands, as a mark
+    /// and a word or two, and what an Eval judge there takes.
     pub fn supported(&self) -> Value {
         use weft_core::onboarding::State;
         let rows = self.standing.as_array().map(Vec::as_slice).unwrap_or_default();
@@ -307,6 +307,7 @@ impl Project {
                     "verified": h.conversation.as_ref().map(|c| c.verified.clone()),
                     "mark": state.as_ref().map_or("?", State::mark),
                     "state": state.as_ref().map_or("", State::label),
+                    "eval": h.eval,
                 })
             })
             .collect()
@@ -1029,6 +1030,21 @@ mod tests {
         let p = Project::opened(Path::new("/work/weft"), &answer);
         assert_eq!(p.transcript(1).as_deref(), Some("Ctrl+T"));
         assert_eq!(p.transcript(2), None, "it prints inline: the terminal keeps its history");
+    }
+
+    /// Settings' rows carry what a judge in each harness takes, from its
+    /// file, and nothing for a harness whose file says none.
+    #[test]
+    fn each_supported_harness_says_what_a_judge_there_takes() {
+        let files = weft_core::harness::fixture::harnesses();
+        let mut codex = serde_json::to_value(files.find("codex").unwrap()).unwrap();
+        codex["eval"] = Value::Null;
+        let answer = json!({"harnesses": [
+            serde_json::to_value(files.find("claude-code").unwrap()).unwrap(), codex]});
+        let rows = Project::opened(Path::new("/work/weft"), &answer).supported();
+        assert_eq!(rows[0]["eval"]["effort"], "model");
+        assert_eq!(rows[0]["eval"]["default"]["map"], "low");
+        assert_eq!(rows[1]["eval"], Value::Null);
     }
 
     /// The header's ⚡ turbo (M2.9): the project's switch, as opened and as

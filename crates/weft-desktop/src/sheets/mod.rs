@@ -56,6 +56,8 @@ pub struct SheetProps<'a> {
     pub all_rules: bool,
     /// The preview's text shown, not only what it keeps.
     pub preview_shown: bool,
+    /// Workflow's "Each judge" is open.
+    pub judges_shown: bool,
 }
 
 impl SheetProps<'_> {

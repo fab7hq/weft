@@ -86,7 +86,7 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
 
 /// One setting of the project's: every project's value beside it, and Reset.
 fn row(props: &SheetProps, project: &Path, e: &Entry) -> Element {
-    let every = shown(props, e.kind, &now(props, None, e.key));
+    let every = shown(props, e.kind, e.key, &now(props, None, e.key));
     let key: Vec<String> = e.key.iter().map(|k| k.to_string()).collect();
     div()
         .layer(format!("project setting {}", e.key.join(".")))

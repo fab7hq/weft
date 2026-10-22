@@ -189,6 +189,11 @@ pub enum SheetAct {
     PreviewPick(usize, String),
     /// The preview shown, as RingFrame writes it.
     ShowPreview,
+    /// Workflow's "Each judge" opened, or closed again.
+    ShowJudges,
+    /// How hard Eval's judges look: `quick`, `balanced` or `thorough`, which
+    /// sets all three judges' efforts.
+    HowHard(String),
     /// A harness's details shown in Settings › Harnesses, by its name.
     ShowHarness(String),
     /// Settings › RingFrame shows every rule, not the first few.

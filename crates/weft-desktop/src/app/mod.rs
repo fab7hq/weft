@@ -169,6 +169,8 @@ pub struct WeftDesktopApp {
     pub(crate) preview: [String; 3],
     /// The preview's text shown, not only what it keeps.
     pub(crate) preview_shown: bool,
+    /// Workflow's "Each judge" is open.
+    pub(crate) judges_shown: bool,
     /// The harness Settings › Harnesses shows (empty: the first).
     pub(crate) harness_shown: String,
     /// Settings › RingFrame shows every rule, not the first few.
@@ -245,6 +247,7 @@ impl WeftDesktopApp {
             // No host picked yet: the first harness Weft has.
             preview: [String::new(), "native_plan".into(), "implement".into()],
             preview_shown: false,
+            judges_shown: false,
             harness_shown: String::new(),
             all_rules: false,
             plus_popover_project: None,
@@ -1280,6 +1283,7 @@ impl WeftDesktopApp {
                 harness: &harness,
                 all_rules: self.all_rules,
                 preview_shown: self.preview_shown,
+                judges_shown: self.judges_shown,
             })
         });
         // Ask docks under the panes it is about; every other sheet takes the

@@ -514,6 +514,18 @@ impl WeftDesktopApp {
                 self.want_rules();
             }
             SheetAct::ShowPreview => self.preview_shown = !self.preview_shown,
+            SheetAct::ShowJudges => self.judges_shown = !self.judges_shown,
+            SheetAct::HowHard(how) => {
+                let effort = match how.as_str() {
+                    "quick" => Some(serde_json::json!("low")),
+                    "thorough" => Some(serde_json::json!("high")),
+                    _ => None,
+                };
+                for role in ["map", "reduce", "confirm"] {
+                    let key = ["eval", "debate", role, "effort"].map(String::from);
+                    self.set_setting(None, &key, effort.clone());
+                }
+            }
             SheetAct::OpenChoice(key) => {
                 let key = key.join(".");
                 self.choice = if self.choice.as_deref() == Some(&key) { None } else { Some(key) };
