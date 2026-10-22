@@ -127,3 +127,13 @@ steps = [
   { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "FileChange" }, name = "Edited", input = "payload.item.changes.@key", failed = { "payload.item.status" = "failed" } },
   { when = { type = "event_msg", "payload.type" = "item_completed", "payload.item.type" = "McpToolCall" }, tool = "payload.item.tool", input = "payload.item.arguments", failed = { "payload.item.status" = "failed" } },
 ]
+
+# What Settings offers an Eval judge that runs here. Its effort reaches the
+# model: the eval skill passes it to each spawn as `reasoning_effort`. Any
+# model Codex lists may be typed (`codex debug models`). The defaults are
+# RingFrame's plugin's agent files'.
+[eval]
+efforts = ["low", "medium", "high", "xhigh"]
+effort = "model"
+model_typed = true
+default = { map = "low", reduce = "medium", confirm = "medium" }

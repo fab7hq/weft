@@ -90,3 +90,13 @@ steps = { when = { type = "assistant" }, in = "message.content", kind = "tool_us
 outcomes = { when = { type = "user" }, in = "message.content", kind = "tool_result", call = "tool_use_id", failed = { is_error = true } }
 argument = { Bash = "command", Read = "file_path", Edit = "file_path", MultiEdit = "file_path", Write = "file_path", NotebookEdit = "notebook_path", Grep = "pattern", Glob = "pattern", WebFetch = "url", WebSearch = "query", Agent = "description" }
 names = { Edit = "Update", MultiEdit = "Update" }
+
+# What Settings offers an Eval judge that runs here. Its effort reaches the
+# model: the eval skill passes it to each spawn, which Claude Code takes since
+# 2.1.292. Its models are the aliases the Agent tool takes (it refuses a full
+# model ID). The defaults are RingFrame's plugin's agent files'.
+[eval]
+efforts = ["low", "medium", "high", "xhigh", "max"]
+effort = "model"
+models = ["haiku", "sonnet", "opus", "fable"]
+default = { map = "low", reduce = "medium", confirm = "medium" }

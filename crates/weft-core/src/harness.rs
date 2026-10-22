@@ -88,6 +88,44 @@ pub struct Harness {
     /// Without it, its conversation cannot be shown.
     #[serde(default)]
     pub conversation: Option<crate::conversation::Conversation>,
+    /// What Settings offers an Eval judge that runs in it (`[eval]`).
+    /// Without it, Settings offers the common efforts and a typed model.
+    #[serde(default)]
+    pub eval: Option<Eval>,
+}
+
+/// What an Eval judge in a harness takes, for Settings to offer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Eval {
+    /// The efforts a judge can be set to, in order.
+    pub efforts: Vec<String>,
+    /// What a judge's effort changes there.
+    pub effort: EffortReaches,
+    /// The models a judge can be given; none: it runs on the session's.
+    #[serde(default)]
+    pub models: Vec<String>,
+    /// Any other model may be typed too.
+    #[serde(default)]
+    pub model_typed: bool,
+    /// Each judge's effort when none is set.
+    pub default: JudgeEfforts,
+}
+
+/// What a judge's effort changes: the model's own reasoning (and how far the
+/// judge looks), or only how far it looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EffortReaches {
+    Model,
+    Lookups,
+}
+
+/// An effort for each of Eval's judges.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JudgeEfforts {
+    pub map: String,
+    pub reduce: String,
+    pub confirm: String,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -153,6 +191,8 @@ impl Harness {
                 Value::Null => None,
                 table => Some(crate::conversation::Conversation::of(table)?),
             },
+            // One that does not read leaves the harness offered, without it.
+            eval: serde_json::from_value(p["eval"].clone()).ok(),
         })
     }
 
@@ -538,6 +578,31 @@ mod tests {
             ["codex", "-c", "approval_policy=never"]
         );
         assert_eq!(with_turbo("claude", &[]), ["claude"]);
+    }
+
+    /// What Settings offers a judge comes from `[eval]`; a file without it,
+    /// or with one that does not read, is still a harness, with none.
+    #[test]
+    fn eval_says_what_a_judge_takes_and_a_file_without_it_still_reads() {
+        let eval = |name: &str| Harness::of(name, &file(name)).expect("a harness").eval;
+        let claude = eval("claude-code").expect("claude's [eval]");
+        assert_eq!(claude.efforts, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(claude.effort, EffortReaches::Model);
+        assert_eq!(claude.models, ["haiku", "sonnet", "opus", "fable"]);
+        assert!(!claude.model_typed);
+        assert_eq!(
+            (claude.default.map.as_str(), claude.default.reduce.as_str(), claude.default.confirm.as_str()),
+            ("low", "medium", "medium")
+        );
+        let codex = eval("codex").expect("codex's [eval]");
+        assert!(codex.models.is_empty() && codex.model_typed, "any model is typed");
+        assert_eq!(eval("grok").expect("grok's [eval]").effort, EffortReaches::Lookups);
+
+        let mut p = file("codex");
+        p.as_object_mut().unwrap().remove("eval");
+        assert_eq!(Harness::of("codex", &p).expect("still a harness").eval, None);
+        p["eval"] = serde_json::json!({"efforts": ["low"], "effort": "sometimes"});
+        assert_eq!(Harness::of("codex", &p).expect("still a harness").eval, None, "unread");
     }
 
     /// A made-up harness, from its file alone, is read and offered.

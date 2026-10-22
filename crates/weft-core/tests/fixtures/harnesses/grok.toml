@@ -87,3 +87,12 @@ run_terminal_command = "Run"
 ask_user_question = "Ask"
 write = "Write"
 exit_plan_mode = "Plan"
+
+# What Settings offers an Eval judge that runs here. A judge runs on the
+# session's model, and an effort set here changes only how far it looks:
+# `spawn_subagent` takes no effort, so only the agent file's own reaches the
+# model (grok 1.0.67). The defaults are RingFrame's plugin's agent files'.
+[eval]
+efforts = ["low", "medium", "high", "xhigh"]
+effort = "lookups"
+default = { map = "low", reduce = "medium", confirm = "medium" }

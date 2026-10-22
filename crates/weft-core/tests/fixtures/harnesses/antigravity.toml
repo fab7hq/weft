@@ -74,3 +74,12 @@ outcomes = { when = { type = ["GENERIC", "TOOL_RESPONSE"] }, call = "step_index"
 argument = { run_command = "CommandLine", view_file = "AbsolutePath", write_to_file = "TargetFile", replace_file_content = "TargetFile", ask_question = "questions.0.question", search_web = "query", read_url_content = "Url" }
 names = { run_command = "Run", view_file = "Read", write_to_file = "Write", replace_file_content = "Update", ask_question = "Ask" }
 
+# What Settings offers an Eval judge that runs here. Antigravity takes no
+# effort per subagent, so an effort changes only how far a judge looks. Its
+# models are the tiers a subagent takes. The defaults are RingFrame's plugin's
+# agent files'.
+[eval]
+efforts = ["low", "medium", "high"]
+effort = "lookups"
+models = ["flash_lite", "flash", "pro"]
+default = { map = "low", reduce = "medium", confirm = "medium" }
