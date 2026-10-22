@@ -32,6 +32,10 @@ pub struct Signal {
     /// Questions the harness asks without stopping the turn.
     #[serde(default)]
     pub questions: Option<Questions>,
+    /// The payload path that marks a hook as fired inside a sub-agent, in
+    /// the sub-agent's own session: such a hook is not the pane's.
+    #[serde(default)]
+    pub child: Option<String>,
     pub on: Vec<Row>,
 }
 
@@ -209,6 +213,10 @@ pub struct Row {
     pub outcome: Option<String>,
     #[serde(default)]
     pub reply: Option<String>,
+    /// The parent fires this hook about a sub-agent: it is the pane's own
+    /// even though its payload carries `child`.
+    #[serde(default)]
+    pub parent: bool,
 }
 
 /// The `signal` message: one hook, as `weft signal` saw it, and only what
@@ -269,11 +277,17 @@ impl Signal {
     }
 
     /// The row for this hook and the tool its payload names: a row naming
-    /// that tool first, else one naming none.
+    /// that tool first, else one naming none. A sub-agent's hook has only
+    /// the rows its parent fires.
     pub fn row(&self, hook: &str, payload: &Value) -> Option<&Row> {
         let tool = self.tool.as_deref().and_then(|p| text_at(payload, p));
-        let of_hook =
-            || self.on.iter().filter(move |r| r.hook == hook && fields_match(payload, &r.when));
+        let child =
+            self.child.as_deref().and_then(|p| text_at(payload, p)).is_some_and(|c| !c.is_empty());
+        let of_hook = || {
+            self.on.iter().filter(move |r| {
+                r.hook == hook && fields_match(payload, &r.when) && (r.parent || !child)
+            })
+        };
         of_hook()
             .find(|r| r.tool.is_some() && r.tool == tool)
             .or_else(|| of_hook().find(|r| r.tool.is_none()))
@@ -488,6 +502,41 @@ mod tests {
         assert_eq!(s.row("PreToolUse", &other), None, "no row for another tool");
         assert_eq!(s.row("NoSuchHook", &asking), None);
         assert_eq!(s.sent("claude-code", "PreToolUse", &other), None, "nothing to send");
+    }
+
+    /// A hook from inside a sub-agent is not the pane's session: it sets no
+    /// state and forwards nothing, except on a row the parent fires about it.
+    #[test]
+    fn a_sub_agent_s_hook_is_not_the_pane_s_unless_its_row_is_the_parent_s() {
+        let s = Signal::of(&json!({
+            "session": "session_id", "workspace": "cwd", "prompt": "prompt", "child": "subagentType",
+            "on": [
+                {"hook": "UserPromptSubmit", "state": "working", "forward": "prompt"},
+                {"hook": "SessionEnd", "state": "ended"},
+                {"hook": "SubagentStart", "parent": true, "forward": "prompt"},
+            ],
+        }))
+        .expect("a [signal] that reads");
+        let own = json!({"session_id": "s1", "prompt": "hello"});
+        let sent = s.sent("grok", "UserPromptSubmit", &own).expect("the pane's own prompt");
+        assert_eq!(sent.prompt.as_deref(), Some("hello"));
+        let child = json!({"session_id": "s2", "prompt": "You are the Goal Plan Writer", "subagentType": "general-purpose"});
+        assert_eq!(s.sent("grok", "UserPromptSubmit", &child), None, "a sub-agent's prompt");
+        assert_eq!(
+            s.sent("grok", "SessionEnd", &child),
+            None,
+            "a sub-agent's end is not the pane's"
+        );
+        let start = json!({"session_id": "s1", "subagentType": "general-purpose"});
+        let sent =
+            s.sent("grok", "SubagentStart", &start).expect("the parent's, about its sub-agent");
+        assert_eq!((sent.session.as_str(), sent.forward.as_deref()), ("s1", Some("prompt")));
+        assert!(
+            Signal::of(&json!({"session": "s", "workspace": "w", "on": []}))
+                .unwrap()
+                .child
+                .is_none()
+        );
     }
 
     #[test]
@@ -842,6 +891,30 @@ mod tests {
         let typed = json!({"session_id": "c1", "cwd": "/w", "transcript_path": "/r.jsonl", "prompt": "fix it"});
         let got = s.prompt_in("UserPromptSubmit", &typed, &end, &whole).expect("typed");
         assert_eq!((got.text.as_str(), got.key), ("fix it", None), "the payload first");
+    }
+
+    /// The Grok fixture's transcript, as grok 1.0.67 writes a `/goal`
+    /// (HostLab probe grok-goal): no prompt hook in its own session, a
+    /// goal_updated line, then the session's SubagentStart for the goal's
+    /// planner, which reads it; the planner's own prompt is not the pane's.
+    #[test]
+    fn a_grok_goal_is_read_from_its_transcript_when_its_planner_starts() {
+        let s = signal("grok");
+        let start = json!({"session_id": "g1", "cwd": "/w", "transcript_path": "/u.jsonl",
+            "subagentType": "general-purpose", "hook_event_name": "SubagentStart"});
+        let goal = json!({"timestamp": 1792678781, "method": "_x.ai/session/update",
+            "params": {"sessionId": "g1", "update": {"sessionUpdate": "goal_updated",
+                       "objective": "[goal-short] Reply with the single word ok.", "status": "active"}}});
+        let other = json!({"method": "session/update", "params": {"update": {"sessionUpdate": "agent_thought_chunk"}}});
+        let file = format!("{goal}\n{other}\n");
+        let end = |_: &str| Some((0, file.clone()));
+        let sent = s.sent("grok", "SubagentStart", &start).expect("the session's own hook");
+        assert_eq!((sent.session.as_str(), sent.forward.as_deref()), ("g1", Some("prompt")));
+        let got = s.prompt_in("SubagentStart", &start, &end, &|_| None).expect("the goal line");
+        assert_eq!(got.text, "[goal-short] Reply with the single word ok.");
+        let planner = json!({"session_id": "g2", "cwd": "/w", "prompt": "You are the Goal Plan Writer",
+            "subagentType": "general-purpose"});
+        assert_eq!(s.sent("grok", "UserPromptSubmit", &planner), None, "the planner's own prompt");
     }
 
     /// The Claude Code fixture's transcript, as claude-code 2.1.296 writes a

@@ -44,10 +44,19 @@ want = ["rf"]
 # only as a `permission_prompt` notification. Closing a session sends
 # `SessionEnd`, then a `Stop` whose reason is `shutdown`: only an `end_turn` Stop
 # ends a turn. An interrupt is `StopCancelled`.
+# A `/goal` fires no prompt hook in its own session: Grok records it in its
+# transcript as `goal_updated`, its `objective` the prompt without `/goal `, and
+# starts the goal's planning sub-agent, which the session's `SubagentStart`
+# reports (grok 1.0.67, recorded in HostLab). A sub-agent's own hooks carry
+# `subagentType` and its own session: they are not the pane's.
 [signal]
 session = "session_id"
 workspace = "cwd"
-prompt = "prompt"
+prompt = [
+  "prompt",
+  { file = "transcript_path", newest = true, last = { method = "_x.ai/session/update", "params.update.sessionUpdate" = "goal_updated" }, field = "params.update.objective" },
+]
+child = "subagentType"
 tool = "tool_name"
 command = "tool_input.command"
 on = [
@@ -61,6 +70,7 @@ on = [
   { hook = "StopCancelled",                            state = "turn_ended" },
   { hook = "StopFailure",                              state = "turn_ended" },
   { hook = "SessionEnd",                               state = "ended" },
+  { hook = "SubagentStart", parent = true,             forward = "prompt" },
 ]
 
 # Its own transcript, `updates.jsonl` in the session's folder: ACP session
