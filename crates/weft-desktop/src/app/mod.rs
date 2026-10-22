@@ -186,6 +186,9 @@ pub struct WeftDesktopApp {
     /// When the bar's why-not was first shown.
     why_not_since: Option<std::time::Instant>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
+    /// Where each conversation held ends: the page before its first item,
+    /// when there is one, and what the file adds after its last.
+    conversation_cursors: HashMap<(PathBuf, u32), (Option<String>, String)>,
     pub unfolded_steps: HashSet<(PathBuf, u32, usize)>,
     /// Each agent's message field, by its project and pane: switching
     /// agents brings each one's draft back. The open Ask's field.
@@ -258,6 +261,7 @@ impl WeftDesktopApp {
             sheet_back: Vec::new(),
             why_not_since: None,
             conversations: HashMap::new(),
+            conversation_cursors: HashMap::new(),
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
@@ -689,6 +693,7 @@ impl WeftDesktopApp {
             clients.iter().any(|c| &c.root == root && (!c.opened || c.view(*pane).is_some()))
         };
         self.conversations.retain(|k, _| here(k));
+        self.conversation_cursors.retain(|k, _| here(k));
         self.messages.retain(|k, _| here(k));
         self.suggestions.retain(|k, _| here(k));
         let staged = |id: &String| {
@@ -806,9 +811,10 @@ impl WeftDesktopApp {
                 }
             }
             (Then::Conversation { pane }, Ok(v)) => {
-                if let Ok(items) = serde_json::from_value(v["conversation"]["items"].clone()) {
-                    self.conversations.insert((root.to_path_buf(), pane), items);
-                }
+                self.take_conversation(root, pane, false, &v["conversation"]);
+            }
+            (Then::Older { pane }, Ok(v)) => {
+                self.take_conversation(root, pane, true, &v["conversation"]);
             }
             (Then::Suggest { pane, draft }, answer) => {
                 let key = (root.to_path_buf(), pane);
@@ -930,9 +936,59 @@ impl WeftDesktopApp {
             }
         }
         for (proj, pane) in targets {
-            if let Some(client) = self.client_mut(&proj) {
-                let _ = client.read("conversation", "", Some(pane), Then::Conversation { pane });
+            self.read_conversation(&proj, pane);
+        }
+    }
+
+    /// Read a pane's conversation: what was added since it was last read,
+    /// or its newest page.
+    pub(crate) fn read_conversation(&mut self, root: &Path, pane: u32) {
+        let after = self.conversation_cursors.get(&(root.to_path_buf(), pane)).map(|c| c.1.clone());
+        if let Some(client) = self.client_mut(root) {
+            let _ = client.conversation(pane, None, after);
+        }
+    }
+
+    /// Read the page before a pane's conversation's first item, if there is one.
+    pub(crate) fn read_older(&mut self, root: &Path, pane: u32) {
+        let key = (root.to_path_buf(), pane);
+        let Some(before) = self.conversation_cursors.get(&key).and_then(|c| c.0.clone()) else {
+            return;
+        };
+        if let Some(client) = self.client_mut(root) {
+            let _ = client.conversation(pane, Some(before), None);
+        }
+    }
+
+    /// A conversation read: the newest page, an older page, or what the file
+    /// added. A file replaced is read again from its newest page.
+    fn take_conversation(&mut self, root: &Path, pane: u32, older: bool, c: &serde_json::Value) {
+        let key = (root.to_path_buf(), pane);
+        if c["reset"] == true {
+            self.conversation_cursors.remove(&key);
+            return self.read_conversation(root, pane);
+        }
+        let items: Vec<Item> = serde_json::from_value(c["items"].clone()).unwrap_or_default();
+        let cursor = |k: &str| c[k].as_str().map(str::to_string);
+        let held = self.conversations.entry(key.clone()).or_default();
+        match self.conversation_cursors.get_mut(&key) {
+            Some((before, _)) if older => {
+                held.splice(0..0, items);
+                *before = cursor("before");
             }
+            Some((_, after)) => {
+                held.extend(items);
+                if let Some(next) = cursor("after") {
+                    *after = next;
+                }
+            }
+            None if !older => {
+                *held = items;
+                if let Some(after) = cursor("after") {
+                    self.conversation_cursors.insert(key, (cursor("before"), after));
+                }
+            }
+            None => {}
         }
     }
 

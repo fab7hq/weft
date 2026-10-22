@@ -207,6 +207,10 @@ pub enum Then {
     Conversation {
         pane: u32,
     },
+    /// The page before a pane's conversation's first item.
+    Older {
+        pane: u32,
+    },
     /// An Eval's record, when the board's records do not hold it.
     Judges {
         eval: String,
@@ -920,6 +924,30 @@ impl ProjectClient {
             lines: None,
             before: None,
             after: None,
+        };
+        self.tell(call, then).map(|_| ())
+    }
+
+    /// Read a pane's conversation: its newest page, the page before
+    /// `before`, or what was added after `after`; once, until answered.
+    pub fn conversation(
+        &mut self,
+        pane: u32,
+        before: Option<String>,
+        after: Option<String>,
+    ) -> Result<()> {
+        let then =
+            if before.is_some() { Then::Older { pane } } else { Then::Conversation { pane } };
+        if self.owes(&then) {
+            return Ok(());
+        }
+        let call = Call::Read {
+            what: "conversation".to_string(),
+            unit: String::new(),
+            pane: Some(pane),
+            lines: None,
+            before,
+            after,
         };
         self.tell(call, then).map(|_| ())
     }

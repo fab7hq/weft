@@ -279,6 +279,7 @@ pub enum PaneAct {
     CloseTab { group: usize, tab: usize },
     SetView { group: usize, tab: usize, view: PaneViewMode },
     ToggleSteps { project: PathBuf, pane: u32, block: usize },
+    Older { project: PathBuf, pane: u32 },
     TakeSuggestion,
     SendMessage,
 }

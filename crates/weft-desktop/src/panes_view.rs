@@ -741,24 +741,21 @@ fn render_conversation_viewport(
             .map(|h| h.conversation.is_some())
             .unwrap_or(true);
 
-    let mut chat_col = div()
-        .layer("chat column")
-        .self_stretch()
-        .style("max-width", "740px")
-        .flex_col()
-        .gap(16)
-        .items_start();
+    // The blocks are the scroll's own children, so one that was at the top
+    // stays there when an older page goes in above it.
+    let mut chat_col = Vec::new();
 
     if !supports_conversation {
-        chat_col = chat_col.child(
+        chat_col.push(
             div()
                 .layer("conversation unreadable")
+                .self_stretch()
                 .font_size(14)
                 .color(palette::MUTED)
                 .text(words::say("web.conversation.unreadable", &harness)),
         );
     } else if let Some(items) = props.conversations.get(&(tab.project.clone(), tab.pane)) {
-        chat_col = chat_col.children(conversation_blocks(
+        chat_col.extend(conversation_blocks(
             items,
             &harness,
             &tab.project,
@@ -772,7 +769,7 @@ fn render_conversation_viewport(
     if turns::is_asking(turn) {
         let waiting_prefix = words::say("web.waiting.for_you", &harness);
         let waiting_cta = words::word("web.waiting.answer");
-        chat_col = chat_col.child(
+        chat_col.push(
             div()
                 .layer("waiting line")
                 .on_click(PaneAct::SetView {
@@ -802,10 +799,12 @@ fn render_conversation_viewport(
         .pad(24, 20)
         .items_center()
         .bg(palette::TERMINAL_BG)
+        .gap(16)
         .style("min-height", "0")
         .style("overflow-y", "auto")
         .style("overflow-x", "hidden")
-        .child(chat_col)
+        .at_top(PaneAct::Older { project: tab.project.clone(), pane: tab.pane })
+        .children(chat_col.into_iter().map(|block| block.style("max-width", "740px")))
 }
 
 /// The conversation's blocks, in order.
@@ -845,6 +844,7 @@ fn conversation_blocks(
                 chat_col.push(
                     div()
                         .layer("msg you")
+                        .id(items[i].id.clone())
                         .self_stretch()
                         .style("position", "relative")
                         .flex_col()
@@ -887,6 +887,7 @@ fn conversation_blocks(
                 chat_col.push(
                     div()
                         .layer(layer)
+                        .id(items[i].id.clone())
                         .self_stretch()
                         .style("position", "relative")
                         .flex_col()
@@ -924,14 +925,12 @@ fn conversation_blocks(
                     }
                 }
                 let is_open = unfolded_steps.contains(&(project.to_path_buf(), pane, block_idx));
-                chat_col.push(render_step_block(
-                    &steps_group,
-                    &outcomes,
-                    project,
-                    pane,
-                    block_idx,
-                    is_open,
-                ));
+                // Named by its last step: steps an older page adds go in before it.
+                let last = steps_group.last().map(|s| s.id.clone()).unwrap_or_default();
+                chat_col.push(
+                    render_step_block(&steps_group, &outcomes, project, pane, block_idx, is_open)
+                        .id(last),
+                );
                 block_idx += 1;
             }
             Kind::Outcome => {

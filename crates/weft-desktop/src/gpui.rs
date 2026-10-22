@@ -46,6 +46,9 @@ pub struct Element {
     pub attrs: Vec<(String, String)>,
     pub text: Option<String>,
     pub action: Option<Action>,
+    /// A scroll: what scrolling up past its top asks for. Its children
+    /// named by `id` keep their place when more goes in above them.
+    pub at_top: Option<Action>,
     /// A text field: which one.
     pub field: Option<Focus>,
     /// A tab that can be dragged.
@@ -84,6 +87,7 @@ pub fn div() -> Element {
         attrs: Vec::new(),
         text: None,
         action: None,
+        at_top: None,
         field: None,
         drag: None,
         drop: None,
@@ -333,6 +337,11 @@ impl Element {
 
     pub fn on_click(mut self, action: impl Into<Action>) -> Self {
         self.action = Some(action.into());
+        self
+    }
+
+    pub fn at_top(mut self, action: impl Into<Action>) -> Self {
+        self.at_top = Some(action.into());
         self
     }
 

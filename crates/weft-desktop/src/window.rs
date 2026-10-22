@@ -13,9 +13,9 @@ use ::gpui::{
     AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, EntityInputHandler,
     FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, SystemNotification,
-    UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions, div as gpui_div,
-    point, prelude::*, px, relative, rgba, size,
+    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
+    SystemNotification, UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions,
+    div as gpui_div, point, prelude::*, px, relative, rgba, size,
 };
 use anyhow::Result;
 use weft_core::state::WindowBounds;
@@ -95,6 +95,8 @@ struct GpuiDesktopView {
     selecting: Option<(PathBuf, u32)>,
     /// Where the focused text field was last painted.
     painted: Rc<RefCell<Painted>>,
+    /// Each scroll that reads more above its top, and its first child's id.
+    scrolls: RefCell<HashMap<String, (ScrollHandle, Option<String>)>>,
 }
 
 impl Focusable for GpuiDesktopView {
@@ -373,6 +375,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
                         wheel_accum: 0.0,
                         selecting: None,
                         painted: Rc::default(),
+                        scrolls: RefCell::default(),
                     }
                 })
             },
@@ -994,9 +997,23 @@ impl GpuiDesktopView {
                 Some(ln) => format!("layer:{ln}:{path}"),
                 None => format!("node:{path}"),
             };
-            let mut stateful = d.id(ElementId::Name(SharedString::from(id_str)));
+            let mut stateful = d.id(ElementId::Name(SharedString::from(id_str.clone())));
             if is_scroll_y {
                 stateful = stateful.overflow_y_scroll();
+            }
+            if let Some(action) = el.at_top.clone() {
+                let handle = self.kept_scroll(&id_str, el);
+                stateful = stateful.track_scroll(&handle).on_scroll_wheel(cx.listener(
+                    move |this, e: &ScrollWheelEvent, _window, _cx| {
+                        let up = e.delta.pixel_delta(px(1.0)).y > px(0.0);
+                        if up
+                            && handle.offset().y >= px(0.0)
+                            && let Ok(mut guard) = this.shared.lock()
+                        {
+                            guard.app.dispatch(action.clone());
+                        }
+                    },
+                ));
             }
             if let Some(tab) = el.drag.clone() {
                 stateful = stateful.on_drag(tab, |tab, _, _, cx| cx.new(|_| DragChip(tab.clone())));
@@ -1014,6 +1031,20 @@ impl GpuiDesktopView {
         }
 
         d.into_any_element()
+    }
+
+    /// The scroll of an element that reads more above its top, kept from
+    /// frame to frame. When more went in above the child that was first,
+    /// that child is kept at the top.
+    fn kept_scroll(&self, key: &str, el: &Element) -> ScrollHandle {
+        let mut scrolls = self.scrolls.borrow_mut();
+        let (handle, first) = scrolls.entry(key.to_string()).or_default();
+        let at = el.children.iter().position(|c| c.id.is_some() && c.id == *first);
+        if let Some(at) = at.filter(|&at| at > 0) {
+            handle.scroll_to_top_of_item(at);
+        }
+        *first = el.children.first().and_then(|c| c.id.clone());
+        handle.clone()
     }
 }
 
@@ -1513,6 +1544,7 @@ mod tests {
                 wheel_accum: 0.0,
                 selecting: None,
                 painted: Rc::default(),
+                scrolls: RefCell::default(),
             }
         });
         cx.run_until_parked();

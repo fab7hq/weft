@@ -782,13 +782,12 @@ impl WeftDesktopApp {
                 };
                 t.view = view;
                 let (proj, pane) = (t.project.clone(), t.pane);
-                if view == PaneViewMode::Conversation
-                    && let Some(c) = self.client_mut(&proj)
-                {
-                    let _ = c.read("conversation", "", Some(pane), Then::Conversation { pane });
+                if view == PaneViewMode::Conversation {
+                    self.read_conversation(&proj, pane);
                 }
                 let _ = self.save_state();
             }
+            PaneAct::Older { project, pane } => self.read_older(&project, pane),
             PaneAct::ToggleSteps { project, pane, block } => {
                 let key = (project, pane, block);
                 if !self.unfolded_steps.remove(&key) {

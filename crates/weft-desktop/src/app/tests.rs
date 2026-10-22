@@ -1467,6 +1467,45 @@ fn a_conversation_is_read_again_when_the_agent_moves_not_when_its_read_is_answer
 }
 
 #[test]
+fn a_conversation_reads_its_older_pages_and_what_comes_after_the_newest() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let pane = start(&mut app, &mut wire, "claude");
+    let key = (weft(), pane);
+    let ids =
+        |a: &WeftDesktopApp| a.conversations[&key].iter().map(|i| i.id.clone()).collect::<Vec<_>>();
+    let read = |wire: &mut Wire| match wire.call() {
+        (id, Call::Read { before, after, .. }) => (id, before, after),
+        (_, call) => panic!("{call:?}"),
+    };
+
+    app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Conversation });
+    let (id, before, after) = read(&mut wire);
+    assert_eq!((before, after), (None, None), "the newest page first");
+    let newest = vec![item("50.0", Kind::Person, None, Some("two"))];
+    wire.answer(id, json!({"conversation": {"items": newest, "before": "1:50", "after": "1:90"}}));
+    pumped(&mut app, |a| a.conversations.contains_key(&key));
+
+    app.dispatch(PaneAct::Older { project: weft(), pane });
+    let (id, before, after) = read(&mut wire);
+    assert_eq!((before.as_deref(), after), (Some("1:50"), None));
+    let older = vec![item("0.0", Kind::Person, None, Some("one"))];
+    wire.answer(id, json!({"conversation": {"items": older, "before": null, "after": "1:90"}}));
+    pumped(&mut app, |a| a.conversations[&key].len() == 2);
+    assert_eq!(ids(&app), ["0.0", "50.0"]);
+    app.dispatch(PaneAct::Older { project: weft(), pane });
+    assert!(wire.calls().is_empty(), "nothing is older than the file's start");
+
+    app.refresh_active_conversations();
+    let (id, before, after) = read(&mut wire);
+    assert_eq!((before, after.as_deref()), (None, Some("1:90")), "only what was added");
+    let added = vec![item("90.0", Kind::Agent, None, Some("three"))];
+    wire.answer(id, json!({"conversation": {"items": added, "after": "1:120"}}));
+    pumped(&mut app, |a| a.conversations[&key].len() == 3);
+    assert_eq!(ids(&app), ["0.0", "50.0", "90.0"]);
+}
+
+#[test]
 fn a_read_refused_leaves_the_bar_and_a_refusal_never_covers_a_question() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(TreeAct::SelectAsk { project: weft(), unit: "ask_2".into() });
