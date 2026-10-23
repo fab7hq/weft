@@ -137,7 +137,29 @@ pub fn publish(
 }
 
 /// An advisory exclusive lock, released when the guard drops.
-struct Lock(std::fs::File);
+struct Lock(std::fs::File, std::path::PathBuf);
+
+thread_local! {
+    /// The store locks this thread holds, so what it does under one does not
+    /// wait for itself.
+    static HELD: std::cell::RefCell<Vec<std::path::PathBuf>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `body` holding the store's lock: one writer at a time, across threads
+/// and processes, as every append is. A body that appends keeps the lock it
+/// already holds.
+pub fn locked<T, E: From<LedgerError>>(
+    ws: &Workspace,
+    body: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    let path = ws.rf_dir().join("lock");
+    if HELD.with_borrow(|held| held.contains(&path)) {
+        return body();
+    }
+    let _lock = Lock::acquire(&path)?;
+    body()
+}
 
 impl Lock {
     fn acquire(path: &Path) -> Result<Self, LedgerError> {
@@ -153,7 +175,8 @@ impl Lock {
         loop {
             // SAFETY: a valid fd owned by `file` for the duration of the call.
             if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-                return Ok(Lock(file));
+                HELD.with_borrow_mut(|held| held.push(path.to_path_buf()));
+                return Ok(Lock(file, path.to_path_buf()));
             }
             if Instant::now() > deadline {
                 return Err(LedgerError::new("ledger.lock_timeout", path.to_string_lossy()));
@@ -165,6 +188,7 @@ impl Lock {
 
 impl Drop for Lock {
     fn drop(&mut self) {
+        HELD.with_borrow_mut(|held| held.retain(|p| *p != self.1));
         // SAFETY: the fd is still open; the file is dropped right after.
         unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
     }
@@ -182,11 +206,14 @@ pub fn append(ws: &Workspace, event: &Value) -> Result<(), LedgerError> {
     let mut line = canonical(event);
     line.push(b'\n');
     let ledger = ws.rf_dir().join("ledger.jsonl");
-    let _lock = Lock::acquire(&ws.rf_dir().join("lock"))?;
-    if let Ok(meta) = std::fs::metadata(&ledger)
+    locked(ws, || append_line(&ledger, &line))
+}
+
+fn append_line(ledger: &Path, line: &[u8]) -> Result<(), LedgerError> {
+    if let Ok(meta) = std::fs::metadata(ledger)
         && meta.len() > 0
     {
-        let mut f = std::fs::File::open(&ledger)?;
+        let mut f = std::fs::File::open(ledger)?;
         f.seek(SeekFrom::End(-1))?;
         let mut last = [0u8; 1];
         f.read_exact(&mut last)?;
@@ -194,9 +221,8 @@ pub fn append(ws: &Workspace, event: &Value) -> Result<(), LedgerError> {
             return Err(LedgerError::new("ledger.torn_tail", "last line has no newline"));
         }
     }
-    let mut out =
-        std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(&ledger)?;
-    out.write_all(&line)?;
+    let mut out = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(ledger)?;
+    out.write_all(line)?;
     out.sync_all()?;
     Ok(())
 }

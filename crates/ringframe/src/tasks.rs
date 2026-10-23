@@ -1371,15 +1371,17 @@ fn now_secs() -> i64 {
 /// Record the harness that runs this Eval's tasks, as its skill names it.
 pub fn note_host(ws: &Workspace, eval_id: &str, host: &str) -> Result<(), EvalError> {
     let path = state_path(ws, eval_id);
-    let mut state = read_json(&path).unwrap_or_else(|| json!({"handed": {}}));
-    let hosts = state["hosts"].as_array().cloned().unwrap_or_default();
-    if !hosts.iter().any(|h| h == host) {
-        let mut hosts = hosts;
-        hosts.push(json!(host));
-        state["hosts"] = json!(hosts);
-        write(&path, &store::canonical(&state))?;
-    }
-    Ok(())
+    store::locked(ws, || {
+        let mut state = read_json(&path).unwrap_or_else(|| json!({"handed": {}}));
+        let hosts = state["hosts"].as_array().cloned().unwrap_or_default();
+        if !hosts.iter().any(|h| h == host) {
+            let mut hosts = hosts;
+            hosts.push(json!(host));
+            state["hosts"] = json!(hosts);
+            write(&path, &store::canonical(&state))?;
+        }
+        Ok(())
+    })
 }
 
 /// Whether this Eval runs by tasks: `eval next` has been asked for it.
@@ -1477,6 +1479,18 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
 /// left unset: an Eval opened by one caller is judged on the tiers of the
 /// harness that runs its tasks.
 pub fn next(
+    ws: &Workspace,
+    eval_id: &str,
+    parallel: usize,
+    agents: Option<&Value>,
+    returned: &[String],
+) -> Result<Value, EvalError> {
+    // Its state and the ledger are read, changed and written as one: two
+    // callers at once would hand a task out twice, or settle twice.
+    store::locked(ws, || hand_out(ws, eval_id, parallel, agents, returned))
+}
+
+fn hand_out(
     ws: &Workspace,
     eval_id: &str,
     parallel: usize,
@@ -2133,6 +2147,12 @@ fn record(
 /// Check a task's output. Accepted, it counts; refused, the judge is told what
 /// to fix; refused a third time, the task is recorded failed.
 pub fn submit(ws: &Workspace, task: &str) -> Result<(i32, Value), EvalError> {
+    // Whether it is in yet, and recording it, are one step: a task is
+    // recorded once.
+    store::locked(ws, || check_and_record(ws, task))
+}
+
+fn check_and_record(ws: &Workspace, task: &str) -> Result<(i32, Value), EvalError> {
     let Some(eval_id) = eval_of(task) else {
         return Err(ledger("eval.task_unknown", format!("{task} is not a task id")));
     };
@@ -4274,6 +4294,51 @@ mod tests {
             assert!(!ids(&after).contains(&t), "failed, not handed out a third time");
             let ctx = Ctx::load(ws, e).unwrap();
             assert!(status(&ctx).unwrap().failed.contains(&t));
+        });
+    }
+
+    /// Eight judges at once, each asking for work, answering what it is handed
+    /// and submitting it: no hand-out is lost, so no task is handed out twice
+    /// or recorded twice, and the Eval settles once.
+    #[test]
+    fn next_and_submit_race_without_loss() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            std::thread::scope(|s| {
+                for _ in 0..8 {
+                    s.spawn(|| {
+                        while std::time::Instant::now() < until {
+                            let out = next(ws, e, 8, None, &[]).unwrap();
+                            if out["state"] == "done" {
+                                return;
+                            }
+                            for t in ids(&out) {
+                                crate::testing::answer_task(ws, &t);
+                                let (code, said) = submit(ws, &t).unwrap();
+                                assert_eq!(code, 0, "{said}");
+                            }
+                        }
+                        panic!("the Eval did not settle");
+                    });
+                }
+            });
+            let mut ends: BTreeMap<String, Vec<String>> = BTreeMap::new();
+            for ev in store::events(ws).unwrap().iter().filter(|ev| ev["type"] == "eval.task") {
+                ends.entry(str_of(&ev["data"], "task_id"))
+                    .or_default()
+                    .push(str_of(&ev["data"], "outcome"));
+            }
+            assert!(!ends.is_empty());
+            for (task, outcomes) in &ends {
+                assert_eq!(outcomes.len(), 1, "{task} ended {outcomes:?}");
+            }
+            let ctx = Ctx::load(ws, e).unwrap();
+            let planned: Vec<String> =
+                plan(&ctx, &status(&ctx).unwrap()).into_iter().map(|t| t.id).collect();
+            assert!(planned.iter().all(|t| ends.contains_key(t)), "{planned:?} {ends:?}");
+            assert!(crate::evaluate::load_record(ws, e).unwrap().is_some(), "settled");
         });
     }
 
