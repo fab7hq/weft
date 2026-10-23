@@ -260,9 +260,12 @@ pub fn share(ws: &Workspace, id: &str, over: &Overrides) -> Result<Value, AskErr
     }
     text.push_str(&block);
     std::fs::create_dir_all(ws.root.join(".fab7"))?;
-    // Written whole beside it, then renamed over it: never a half-written file.
-    let fresh = ws.root.join(format!("{REPO_FILE}.{}", std::process::id()));
-    std::fs::write(&fresh, text)?;
+    // Written whole beside it, then renamed over it: never a half-written
+    // file. Created new, so nothing already there, a link least of all, is
+    // written through.
+    let fresh = ws.root.join(format!("{REPO_FILE}.{}", crate::ids::new_id("tmp")));
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&fresh)?;
+    std::io::Write::write_all(&mut file, text.as_bytes())?;
     std::fs::rename(&fresh, &path)?;
     Ok(entry)
 }
