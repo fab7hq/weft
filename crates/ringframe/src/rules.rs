@@ -230,7 +230,13 @@ pub fn share(ws: &Workspace, id: &str, over: &Overrides) -> Result<Value, AskErr
     let Some(entry) = mine else {
         return Err(ledger("rules.not_personal", format!("'{id}' is in none of your layers")));
     };
+    // A cloned repository is not trusted: a link here would write elsewhere.
     let path = ws.root.join(REPO_FILE);
+    for p in [ws.root.join(".fab7"), path.clone()] {
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(ledger("rules.link", format!("{} is a link; RingFrame writes no link", p.display())));
+        }
+    }
     let mut team = if path.exists() { config::load_toml(&path)? } else { json!({}) };
     if team["entries"].as_array().is_some_and(|l| l.iter().any(|e| e["id"] == id)) {
         return Err(ledger("rules.already_shared", format!("'{id}' is in {REPO_FILE} already")));
@@ -254,7 +260,10 @@ pub fn share(ws: &Workspace, id: &str, over: &Overrides) -> Result<Value, AskErr
     }
     text.push_str(&block);
     std::fs::create_dir_all(ws.root.join(".fab7"))?;
-    std::fs::write(&path, text)?;
+    // Written whole beside it, then renamed over it: never a half-written file.
+    let fresh = ws.root.join(format!("{REPO_FILE}.{}", std::process::id()));
+    std::fs::write(&fresh, text)?;
+    std::fs::rename(&fresh, &path)?;
     Ok(entry)
 }
 
@@ -453,6 +462,25 @@ mod tests {
             let got = ids(&rules);
             assert!(got.contains(&"team.commits".to_string()), "{got:?}");
             assert!(got.contains(&"practice.idempotent_orders".to_string()), "{got:?}");
+        });
+    }
+
+    #[test]
+    fn sharing_refuses_a_rules_file_that_is_a_link() {
+        crate::testing::eval_bench(|ws| {
+            let elsewhere = crate::testing::tmp_dir();
+            let target = elsewhere.path().join("profile");
+            std::fs::write(&target, "kept\n").unwrap();
+            std::fs::create_dir_all(ws.root.join(".fab7")).unwrap();
+            std::os::unix::fs::symlink(&target, ws.root.join(REPO_FILE)).unwrap();
+            let mine = json!({"id": "own.1", "label": "Commits", "text": "One commit per item.",
+                              "when": "Work is committed.", "family": "cleanup",
+                              "applies_to": {"task": ["implement"]}});
+            let layers = over(json!([{"layer": "weft", "ringframe": {"deltas": {
+                "practices/software-development": {"entries": [mine]}}}}]));
+            let e = share(ws, "own.1", &layers).unwrap_err().to_string();
+            assert!(e.contains("rules.link"), "{e}");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "kept\n");
         });
     }
 
