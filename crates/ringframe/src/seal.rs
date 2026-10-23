@@ -11,6 +11,17 @@ use crate::{ask, digest, evaluate, ids, schema, sessions, store};
 
 pub const DISPOSITIONS: [&str; 4] = ["accepted", "rejected", "deferred", "abandoned"];
 
+/// Why a change was not accepted, from a fixed list per disposition, so a
+/// rejection for the workflow reads apart from one for the work.
+pub fn reasons(disposition: &str) -> &'static [&'static str] {
+    match disposition {
+        "rejected" => &["wrong_approach", "broke_something", "not_what_i_asked"],
+        "deferred" => &["finish_later", "waiting_on_something"],
+        "abandoned" => &["not_needed", "superseded"],
+        _ => &[],
+    }
+}
+
 fn limitations() -> Vec<String> {
     vec![
         "a Seal is a decision record; it does not merge, publish, deploy, or certify correctness"
@@ -133,6 +144,7 @@ pub fn create(
     ws: &Workspace,
     disposition: &str,
     eval_id: Option<&str>,
+    reason: Option<&str>,
     note: Option<&str>,
     actor: Option<&Value>,
 ) -> Result<Value, SealError> {
@@ -143,6 +155,17 @@ pub fn create(
                 "'{disposition}' not in ({})",
                 DISPOSITIONS.iter().map(|d| format!("'{d}'")).collect::<Vec<_>>().join(", ")
             ),
+        ));
+    }
+    if let Some(reason) = reason.filter(|r| !reasons(disposition).contains(r)) {
+        let known = reasons(disposition);
+        return Err(ledger(
+            "seal.reason",
+            if known.is_empty() {
+                format!("'{reason}': {disposition} takes no reason")
+            } else {
+                format!("'{reason}' is not a reason to be {disposition}: {}", known.join(", "))
+            },
         ));
     }
     let actor = actor.cloned().unwrap_or_else(
@@ -202,6 +225,9 @@ pub fn create(
         "basis": {"asks": ask_ids}, "eval": fact, "subject": subject,
         "disposition": disposition, "authority": authority_block,
     });
+    if let Some(reason) = reason {
+        base["reason"] = json!(reason);
+    }
     if let Some(note) = note.filter(|n| !n.is_empty()) {
         base["note"] = json!(note);
     }
@@ -347,14 +373,14 @@ mod tests {
     fn a_seal_names_who_observed_its_asks_or_that_nothing_was() {
         eval_bench(|ws| {
             confirm_ask(ws, "t", b"s\n", b"p\n");
-            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             let limits = strings_at(&receipt, "limitations");
             assert!(limits.contains(&crate::evaluate::NOTHING_OBSERVED.to_string()), "{limits:?}");
         });
         eval_bench(|ws| {
             confirm_ask(ws, "t", b"s\n", b"p\n");
             crate::observe::prompt(ws, "weft", "claude-code", "s1", "p\n", None).unwrap();
-            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             let limits = strings_at(&receipt, "limitations");
             assert!(limits.contains(&"submission observed by weft".to_string()), "{limits:?}");
         });
@@ -365,7 +391,7 @@ mod tests {
         eval_bench(|ws| {
             let (a, b, rec) = judged(ws, ["yes", "yes", "yes"]);
             let receipt =
-                create(ws, "accepted", None, Some("good enough for the demo"), None).unwrap();
+                create(ws, "accepted", None, None, Some("good enough for the demo"), None).unwrap();
             assert!(str_of(&receipt, "seal_id").starts_with("sel_"));
             assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
             assert_eq!(receipt["disposition"], "accepted");
@@ -412,7 +438,7 @@ mod tests {
         eval_bench(|ws| {
             let (a, b, _) = judged(ws, ["yes", "yes", "yes"]);
             let later = str_of(&confirm_ask(ws, "Another unit", b"other\n", b"Other.\n"), "ask_id");
-            let receipt = create(ws, "accepted", None, None, None).unwrap();
+            let receipt = create(ws, "accepted", None, None, None, None).unwrap();
             assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
             let open: Vec<String> =
                 ask::open_asks(ws).unwrap().iter().map(|x| str_of(x, "ask_id")).collect();
@@ -429,7 +455,7 @@ mod tests {
             let later = confirm_ask(ws, "Third", b"third\n", b"Third.\n");
             let later = str_of(&later, "ask_id");
             let eval_id = str_of(&rec, "eval_id");
-            let receipt = create(ws, "accepted", Some(&eval_id), None, None).unwrap();
+            let receipt = create(ws, "accepted", Some(&eval_id), None, None, None).unwrap();
             assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
             assert_eq!(receipt["eval"]["eval_id"], rec["eval_id"]);
             let open: Vec<String> =
@@ -444,7 +470,7 @@ mod tests {
         eval_bench(|ws| {
             let (_a, _b, rec) = judged(ws, ["no", "no", "unknown"]);
             assert_eq!(rec["verdict"], "drifted");
-            let receipt = create(ws, "accepted", None, None, None).unwrap();
+            let receipt = create(ws, "accepted", None, None, None, None).unwrap();
             assert_eq!(receipt["eval"]["verdict"], "drifted");
             assert_eq!(receipt["disposition"], "accepted");
             assert_eq!(store::events(ws).unwrap().pop().unwrap()["type"], "seal.created");
@@ -455,7 +481,7 @@ mod tests {
     fn a_seal_without_an_eval_records_the_gap() {
         eval_bench(|ws| {
             opened(ws); // opened but never closed
-            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             assert_eq!(receipt["eval"], json!(null));
             assert!(
                 strings_at(&receipt, "limitations").iter().any(|l| l.contains("no Eval")),
@@ -470,7 +496,7 @@ mod tests {
         eval_bench(|ws| {
             let (_a, _b, rec) = judged(ws, ["yes", "yes", "yes"]);
             commit(&ws.root, &[("src/uptime.js", Some("changed after eval\n"))], "later");
-            let receipt = create(ws, "accepted", None, None, None).unwrap();
+            let receipt = create(ws, "accepted", None, None, None, None).unwrap();
             assert_eq!(receipt["eval"]["subject_matches"], false);
             assert!(
                 strings_at(&receipt, "limitations").iter().any(|l| l.contains("subject changed"))
@@ -490,10 +516,10 @@ mod tests {
             let (_a, _b, rec) = judged(ws, ["yes", "yes", "yes"]);
             let eval_id = str_of(&rec, "eval_id");
             crate::evaluate::void_eval(ws, &eval_id, "the judges were scripts", None).unwrap();
-            let e = create(ws, "accepted", Some(&eval_id), None, None).unwrap_err();
+            let e = create(ws, "accepted", Some(&eval_id), None, None, None).unwrap_err();
             assert_eq!(codes_of(e), ["seal.eval_voided"]);
             // Without --eval the Seal finds no Eval to stand on.
-            let receipt = create(ws, "deferred", None, None, None).unwrap();
+            let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             assert_eq!(receipt["eval"], Value::Null);
         });
     }
@@ -502,23 +528,23 @@ mod tests {
     fn refusals_name_a_missing_eval_an_unrelated_one_and_no_open_ask() {
         eval_bench(|ws| {
             let (_a, _b, rec) = judged(ws, ["yes", "yes", "yes"]);
-            let e = create(ws, "accepted", Some("evl_missing"), None, None).unwrap_err();
+            let e = create(ws, "accepted", Some("evl_missing"), None, None, None).unwrap_err();
             assert_eq!(codes_of(e), ["seal.eval_missing"]);
             let eval_id = str_of(&rec, "eval_id");
             assert_eq!(
-                create(ws, "accepted", Some(&eval_id), None, None).unwrap()["eval"]["eval_id"],
+                create(ws, "accepted", Some(&eval_id), None, None, None).unwrap()["eval"]["eval_id"],
                 rec["eval_id"]
             );
             // A later basis cannot seal against an Eval of the earlier, closed Asks.
             let c = confirm_ask(ws, "Third", b"third\n", b"Third.\n");
-            let e = create(ws, "accepted", Some(&eval_id), None, None).unwrap_err();
+            let e = create(ws, "accepted", Some(&eval_id), None, None, None).unwrap_err();
             assert_eq!(codes_of(e), ["seal.eval_unrelated"]);
-            create(ws, "abandoned", None, None, None).unwrap();
+            create(ws, "abandoned", None, None, None, None).unwrap();
             let listed = ask::list_asks(ws).unwrap();
             let last = listed.last().unwrap();
             assert_eq!(last["state"], "sealed");
             assert_eq!(last["ask_id"], c["ask_id"]);
-            let e = create(ws, "accepted", None, None, None).unwrap_err();
+            let e = create(ws, "accepted", None, None, None, None).unwrap_err();
             assert_eq!(codes_of(e), ["seal.no_open_ask"]);
             let types: Vec<String> =
                 store::events(ws).unwrap().iter().map(|e| str_of(e, "type")).collect();
@@ -532,7 +558,7 @@ mod tests {
         eval_bench(|ws| {
             judged(ws, ["yes", "yes", "yes"]);
             let agent = json!({"kind": "agent", "id": "ci", "authority": "preauthorized"});
-            let e = create(ws, "accepted", None, None, Some(&agent)).unwrap_err();
+            let e = create(ws, "accepted", None, None, None, Some(&agent)).unwrap_err();
             assert_eq!(codes_of(e), ["seal.authority_missing"]);
             std::fs::create_dir_all(ws.rf_dir().join("authorizations")).unwrap();
             std::fs::write(
@@ -546,9 +572,9 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            let e = create(ws, "rejected", None, None, Some(&agent)).unwrap_err();
+            let e = create(ws, "rejected", None, None, None, Some(&agent)).unwrap_err();
             assert_eq!(codes_of(e), ["seal.authority_missing"]);
-            let r = create(ws, "accepted", None, None, Some(&agent)).unwrap();
+            let r = create(ws, "accepted", None, None, None, Some(&agent)).unwrap();
             assert_eq!(r["authority"]["authority"], "preauthorized:authorizations/ci.json");
         });
     }
@@ -557,7 +583,7 @@ mod tests {
     fn check_detects_tampering() {
         eval_bench(|ws| {
             judged(ws, ["yes", "yes", "yes"]);
-            let receipt = create(ws, "accepted", None, None, None).unwrap();
+            let receipt = create(ws, "accepted", None, None, None, None).unwrap();
             let seal_id = str_of(&receipt, "seal_id");
             let p = ws.rf_dir().join(format!("seals/{seal_id}.json"));
             crate::testing::run(&["chmod", "600", &p.to_string_lossy()]);
@@ -574,11 +600,45 @@ mod tests {
     }
 
     #[test]
+    fn a_reason_from_the_dispositions_list_is_on_the_receipt_and_in_the_event() {
+        eval_bench(|ws| {
+            judged(ws, ["no", "no", "no"]);
+            let receipt = create(ws, "rejected", None, Some("wrong_approach"), None, None).unwrap();
+            assert_eq!(receipt["reason"], "wrong_approach");
+            let last = store::events(ws).unwrap().pop().unwrap();
+            assert_eq!(last["type"], "seal.created");
+            assert_eq!(last["data"]["reason"], "wrong_approach");
+            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
+        });
+    }
+
+    #[test]
+    fn an_unknown_reason_is_refused_before_anything_is_written() {
+        eval_bench(|ws| {
+            judged(ws, ["yes", "yes", "yes"]);
+            let before = store::events(ws).unwrap().len();
+            for (disposition, reason) in [
+                ("rejected", "vibes"),
+                // Each disposition has its own list; accepted has none.
+                ("rejected", "finish_later"),
+                ("accepted", "not_needed"),
+            ] {
+                let e = create(ws, disposition, None, Some(reason), None, None).unwrap_err();
+                assert!(e.to_string().contains("seal.reason"), "{disposition} {reason}: {e}");
+            }
+            assert_eq!(store::events(ws).unwrap().len(), before);
+            // No reason at all is fine.
+            let receipt = create(ws, "deferred", None, None, None, None).unwrap();
+            assert!(receipt.get("reason").is_none(), "{receipt}");
+        });
+    }
+
+    #[test]
     fn an_unknown_disposition_is_refused_before_anything_is_written() {
         eval_bench(|ws| {
             judged(ws, ["yes", "yes", "yes"]);
             let before = store::events(ws).unwrap().len();
-            let e = create(ws, "vibes", None, None, None).unwrap_err();
+            let e = create(ws, "vibes", None, None, None, None).unwrap_err();
             assert!(e.to_string().contains("seal.disposition"), "{e}");
             assert_eq!(store::events(ws).unwrap().len(), before);
         });

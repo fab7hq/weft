@@ -395,7 +395,7 @@ mod tests {
             assert_eq!(listed[0]["submission"], "unobserved");
             assert!(listed[0]["delivery"].is_null(), "no recorded delivery outcome");
             assert!(events(ws).iter().all(|e| e["type"] != "tool.fact"), "no tool facts");
-            let seal = crate::seal::create(ws, "deferred", None, None, None).unwrap();
+            let seal = crate::seal::create(ws, "deferred", None, None, None, None).unwrap();
             let limits = seal["limitations"].to_string();
             assert!(limits.contains(crate::evaluate::NOTHING_OBSERVED), "{limits}");
         });

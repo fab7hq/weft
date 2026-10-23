@@ -454,6 +454,8 @@ pub struct SealCreate<'a> {
     pub disposition: &'a str,
     /// The Eval it records; None takes the latest over the open Asks.
     pub eval_id: Option<&'a str>,
+    /// Why, from the disposition's list (`seal::reasons`); accepted takes none.
+    pub reason: Option<&'a str>,
     pub note: Option<&'a str>,
 }
 
@@ -465,7 +467,8 @@ pub struct Sealed {
 }
 
 pub fn seal_create(ws: &Workspace, req: SealCreate<'_>) -> Result<Sealed, Error> {
-    let receipt = seal::create(ws, req.disposition, req.eval_id, req.note, Some(&person()))?;
+    let receipt =
+        seal::create(ws, req.disposition, req.eval_id, req.reason, req.note, Some(&person()))?;
     Ok(Sealed { seal_id: str_of(&receipt, "seal_id"), receipt })
 }
 
@@ -650,6 +653,7 @@ mod tests {
                 let req = SealCreate {
                     disposition: "accepted",
                     eval_id: Some(eval_id),
+                    reason: None,
                     note: Some("ship it"),
                 };
                 seal_create(ws, req).unwrap().seal_id
@@ -843,9 +847,10 @@ mod tests {
             assert_eq!(code(eval_void(&ws, "evl_none", "").unwrap_err()), "eval.void_reason");
             assert_eq!(code(eval_void(&ws, "evl_none", "why").unwrap_err()), "eval.missing");
             assert_eq!(code(eval_submit(&ws, "nothing").unwrap_err()), "eval.task_unknown");
-            let bad = SealCreate { disposition: "merged", eval_id: None, note: None };
+            let bad = SealCreate { disposition: "merged", eval_id: None, reason: None, note: None };
             assert_eq!(code(seal_create(&ws, bad).unwrap_err()), "seal.disposition");
-            let none = SealCreate { disposition: "accepted", eval_id: None, note: None };
+            let none =
+                SealCreate { disposition: "accepted", eval_id: None, reason: None, note: None };
             assert_eq!(
                 seal_create(&ws, none).unwrap_err(),
                 Error::SealRefused(vec!["seal.no_open_ask".into()])

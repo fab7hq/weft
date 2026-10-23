@@ -939,6 +939,7 @@ fn dispatch(
                 &ws,
                 ns.one("--disposition").unwrap_or_default(),
                 ns.one("--eval"),
+                None,
                 ns.one("--note"),
                 Some(&actor),
             );

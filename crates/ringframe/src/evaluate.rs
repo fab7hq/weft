@@ -1871,7 +1871,7 @@ mod tests {
             let js: Vec<Value> =
                 angles().iter().map(|ang| judgement(&o.brief_sha, ang, &[("i1", "yes")])).collect();
             close(ws, &str_of(&o.out, "eval_id"), &intent_doc(&o.brief_sha, items), &js).unwrap();
-            crate::seal::create(ws, "accepted", None, None, None).unwrap();
+            crate::seal::create(ws, "accepted", None, None, None, None).unwrap();
 
             // Two plain prompts, then a commit, then the next Ask.
             for text in ["also update the docs", "and drop the cache bit"] {
