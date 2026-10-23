@@ -279,3 +279,60 @@ pub fn eval_bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
         body(&ws)
     })
 }
+
+/// A judge that finds everything done: every window serves every
+/// requirement, and every requirement is met, citing its first window.
+/// Written where RingFrame said the answer goes.
+pub fn answer_task(ws: &Workspace, task_id: &str) {
+    let eval_id = task_id.split_once('~').expect("a task id").0;
+    let dir = ws.rf_dir().join("tmp").join(format!("eval-{eval_id}"));
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    let file: Value =
+        serde_json::from_str(&read(&dir.join(format!("tasks/{task_id}.json")))).unwrap();
+    let windows = read(Path::new(file["windows_file"].as_str().unwrap()));
+    let text = |key: &str| file[key].as_str().unwrap_or_default().to_string();
+    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+    let ids = |key: &str, field: &str| -> Vec<String> {
+        list(key).iter().map(|v| v[field].as_str().unwrap().to_string()).collect()
+    };
+    let requirements = ids("requirements", "id");
+    let mut doc = json!({});
+    if text("kind") == "map" {
+        doc["windows"] = json!(
+            ids("windows", "id")
+                .iter()
+                .map(|w| json!({"window": w, "serves": requirements}))
+                .collect::<Vec<_>>()
+        );
+    } else {
+        doc["requirements"] = json!(
+            list("requirements")
+                .iter()
+                .map(|r| {
+                    let id = r["id"].as_str().unwrap();
+                    let w = r["windows"][0].as_str().unwrap();
+                    json!({"id": id, "vote": "met",
+                           "reason": format!("{id} is done ({})", text("role")),
+                           "citations": [{"window": w, "quote": quote_in(&windows, w)}]})
+                })
+                .collect::<Vec<_>>()
+        );
+        if !list("found").is_empty() {
+            doc["findings"] = json!([{"finding": "as listed", "means": "no change to the vote"}]);
+        }
+    }
+    std::fs::write(text("output"), doc.to_string()).unwrap();
+}
+
+/// The start of the first added line of window `w` in a task's windows text.
+fn quote_in(windows: &str, w: &str) -> String {
+    let head = format!("=== {w} ");
+    windows
+        .lines()
+        .skip_while(|l| !l.starts_with(&head))
+        .skip(1)
+        .take_while(|l| !l.starts_with("=== "))
+        .find(|l| l.starts_with('+') && l.len() > 12)
+        .map(|l| l[1..].chars().take(24).collect())
+        .expect("an added line to quote")
+}
