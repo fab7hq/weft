@@ -119,9 +119,10 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         return Err(ledger(
             "ask.too_long",
             format!(
-                "{} on {host_name} allows {m} characters; with no practice rule this is {} over",
+                "{} characters over the {m} that {} on {host_name} allows, with no practice \
+                 rule left",
+                typed_chars(&practices) - m,
                 req.capability,
-                typed_chars(&practices) - m
             ),
         ));
     }
@@ -377,6 +378,80 @@ mod tests {
             let e = compile(ws, req).unwrap_err().to_string();
             assert!(e.contains("ask.practice_unknown") && e.contains("practice.telepathy"), "{e}");
             assert!(crate::store::events(ws).unwrap().is_empty(), "nothing recorded");
+        });
+    }
+
+    /// A goal of `n` characters of words, naming the plan.
+    fn long_goal(n: usize) -> Vec<u8> {
+        let head = "Build Phase 1 of plans/uptime/plan.md. ";
+        format!("{head}{}", "x".repeat(n - head.len())).into_bytes()
+    }
+
+    #[test]
+    fn a_goal_over_its_limit_drops_practices_lowest_score_first_and_keeps_every_route_rule() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            let source = long_goal(2600);
+            let mut req = request(&source, &over);
+            req.capability = "native_goal";
+            req.plan = Some("plans/uptime/plan.md");
+            req.practices = ["practice.kiss", "practice.yagni", "practice.gall",
+                             "practice.boy_scout", "practice.testing_pyramid"]
+                .map(String::from).to_vec();
+            // Boy Scout is the person's own addition: no score, so it stays.
+            req.selected_by = json!({"by": "sense@0.3.0", "probabilities": {
+                "practice.kiss": 0.4, "practice.yagni": 0.9, "practice.gall": 0.2,
+                "practice.testing_pyramid": 0.6}});
+            let out = compile(ws, req).unwrap();
+            let trimmed: Vec<String> = list_of(&out, "trimmed");
+            assert!(!trimmed.is_empty(), "the fixture must need trimming");
+            let order = ["practice.gall", "practice.kiss", "practice.testing_pyramid", "practice.yagni"];
+            assert_eq!(trimmed, order[..trimmed.len()], "lowest score first");
+            let ask_id = str_of(&out, "ask_id");
+            let typed = crate::ask::prompt_text(ws, &ask_id).unwrap();
+            assert!(typed.trim_end().chars().count() <= 4000, "{}", typed.chars().count());
+            assert!(typed.contains("- Boy Scout: "), "the person's rule stays");
+            for kept in order[trimmed.len()..].iter() {
+                let label = rules::practice_rules(&over, &["implement".into()]).unwrap()
+                    .into_iter().find(|e| e["id"] == *kept).map(|e| crate::deltas::label(&e)).unwrap();
+                assert!(typed.contains(&format!("- {label}: ")), "{kept} kept");
+            }
+            assert!(typed.contains("- Step Loop: ") && typed.contains("- Done Check: "));
+            let d = &crate::store::events(ws).unwrap()[0]["data"];
+            assert_eq!(list_of(&d["compiler"], "trimmed"), trimmed);
+        });
+    }
+
+    #[test]
+    fn a_goal_that_cannot_fit_without_practices_is_refused_with_the_overage() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            let source = long_goal(4000);
+            let mut req = request(&source, &over);
+            req.capability = "native_goal";
+            req.plan = Some("plans/uptime/plan.md");
+            let e = compile(ws, req).unwrap_err().to_string();
+            assert!(e.starts_with("ask.too_long"), "{e}");
+            let over_by: usize = e.split_whitespace()
+                .find_map(|w| w.parse().ok()).expect("the overage in characters");
+            let route = rules::route_rules(&over, "claude-code", "native_goal", &implement()).unwrap();
+            let bare = rules::compose(&String::from_utf8_lossy(&source),
+                                      &["Plan: plans/uptime/plan.md".into()], &[], &route,
+                                      &["implement".into()]);
+            assert_eq!(over_by, "/goal ".len() + bare.trim_end().chars().count() - 4000, "{e}");
+            assert!(crate::store::events(ws).unwrap().is_empty(), "nothing recorded");
+        });
+    }
+
+    #[test]
+    fn no_limit_drops_nothing() {
+        eval_bench(|ws| {
+            let over = Overrides::default();
+            let source = long_goal(6000);
+            let out = compile(ws, request(&source, &over)).unwrap();
+            assert_eq!(out["trimmed"], json!([]));
         });
     }
 }
