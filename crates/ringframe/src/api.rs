@@ -101,19 +101,53 @@ pub struct Link<'a> {
     pub id: &'a str,
 }
 
+/// The harness the Ask is for.
+pub struct Harness<'a> {
+    pub name: &'a str,
+    pub version: Option<&'a str>,
+    pub session_ref: Option<&'a str>,
+}
+
+/// What the work is: its tasks, what it delivers, and what it may do.
+pub struct Classification {
+    pub task: Vec<String>,
+    pub result: String,
+    pub effects: Vec<String>,
+}
+
+/// Who chose: the person, or Sense with how sure it was of each choice.
+pub enum Chooser {
+    Person,
+    Sense { version: String, probabilities: std::collections::BTreeMap<String, f64> },
+}
+
+impl Chooser {
+    fn recorded(&self) -> Value {
+        match self {
+            Chooser::Person => json!({"by": "person"}),
+            Chooser::Sense { version, probabilities } => {
+                json!({"by": format!("sense@{version}"), "probabilities": probabilities})
+            }
+        }
+    }
+}
+
+/// What the person sent from Weft's dialog. Sending is the confirmation.
 pub struct Compile<'a> {
-    /// The folder holding `source.txt` and the prompt; read, then deleted.
-    pub staged: &'a Path,
-    pub title: &'a str,
+    /// The person's words, kept as they are.
+    pub source: &'a str,
+    pub harness: Harness<'a>,
+    /// The route: a capability of the harness's profile.
     pub capability: &'a str,
-    /// Recorded as given, once checked: `task`, `result`, `interaction`,
-    /// `horizon`, `effects`, and any `domains` and `concerns`.
-    pub classification: Value,
-    /// Recorded as given: why this capability fits, and its alternatives.
-    pub route: Value,
-    /// The harness: `name`, and its `version`, `surface` and `session_ref`
-    /// when known.
-    pub host: Value,
+    pub classification: Classification,
+    /// The plan the work follows, by its path (`plans/<slug>/plan.md`).
+    pub plan: Option<&'a str>,
+    /// The practice rules chosen, by id.
+    pub practices: Vec<String>,
+    pub classified_by: Chooser,
+    /// Sense's probabilities are the scores trimming drops by; a rule the
+    /// person added scores above all of them.
+    pub selected_by: Chooser,
     pub links: Vec<Link<'a>>,
     pub overrides: &'a Overrides,
 }
@@ -121,32 +155,42 @@ pub struct Compile<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Compiled {
     pub ask_id: String,
+    /// `prompt.txt`: the words, then the practices, then the route rules.
+    pub prompt: String,
     pub prompt_path: PathBuf,
-    pub delivery_mode: String,
-    pub source_verified: String,
+    /// Practice rules dropped to fit the harness's limit, lowest score first.
+    pub trimmed: Vec<String>,
 }
 
 pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
-    let out = ask::compile(
+    let c = &req.classification;
+    let out = crate::compile::compile(
         ws,
-        ask::Compile {
-            staged: req.staged,
-            title: req.title,
+        crate::compile::Request {
+            source: req.source.as_bytes(),
+            host: json!({"name": req.harness.name, "version": req.harness.version,
+                         "session_ref": req.harness.session_ref}),
             capability: req.capability,
-            classification: req.classification,
-            route: req.route,
-            host: req.host,
+            classification: json!({"task": c.task, "result": c.result, "effects": c.effects}),
+            plan: req.plan,
+            practices: req.practices,
+            classified_by: req.classified_by.recorded(),
+            selected_by: req.selected_by.recorded(),
             links: req.links.iter().map(|l| json!({"rel": l.rel, "id": l.id})).collect(),
-            limitations: Vec::new(),
-            actor: Some(person()),
             overrides: req.overrides,
         },
     )?;
     Ok(Compiled {
         ask_id: str_of(&out, "ask_id"),
+        prompt: str_of(&out, "prompt"),
         prompt_path: PathBuf::from(str_of(&out, "prompt_path")),
-        delivery_mode: str_of(&out, "delivery_mode"),
-        source_verified: str_of(&out, "source_verified"),
+        trimmed: out["trimmed"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
     })
 }
 
@@ -405,26 +449,11 @@ pub fn events(ws: &Workspace) -> Result<Vec<Value>, Error> {
 mod tests {
     use super::*;
     use crate::config::Overrides;
-    use crate::testing::{answer_task, commit, eval_bench, repo, stage_in, ws_for};
+    use crate::testing::{answer_task, commit, eval_bench, repo, ws_for};
 
-    const PLAN: &str = "## Phase 1\n\n| # | Step | Done when |\n| --- | --- | --- |\n\
+    const PLAN: &str = "# Uptime\n\n## Phase 1\n\n| # | Step | Done when |\n| --- | --- | --- |\n\
                         | 1 | Add `uptime_seconds` to the server. | A test calls `uptime_seconds`. |\n";
-    const GOAL: &[u8] = b"/goal Build Phase 1 of plans/plan.md, step 1.\n";
-
-    fn classification() -> Value {
-        json!({"task": ["implement"], "result": "workspace_change", "interaction": "interactive",
-               "horizon": "session", "effects": ["workspace_write"]})
-    }
-
-    fn route() -> Value {
-        json!({"fits": "bounded", "alternatives": [], "continuation": "goal",
-               "effects": "writes", "gaps": []})
-    }
-
-    fn host() -> Value {
-        json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
-               "session_ref": "s1"})
-    }
+    const WORDS: &str = "Build Phase 1 of plans/uptime/plan.md, step 1.";
 
     /// The same steps, through the CLI as weftd ran them, or through this API.
     #[derive(Clone, Copy, PartialEq)]
@@ -442,56 +471,33 @@ mod tests {
         serde_json::from_str(&run.out).unwrap_or(Value::String(run.out))
     }
 
-    fn compiled(ws: &Workspace, via: Via) -> String {
-        commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-        let staged = stage_in(ws, "prompt.txt", b"build phase 1\n", GOAL);
-        let ask_id = match via {
-            Via::Cli => {
-                let (c, r, h) = (classification(), route(), host());
-                let out = cli(
-                    ws,
-                    &[
-                        "ask",
-                        "compile",
-                        "--staged",
-                        &staged.to_string_lossy(),
-                        "--title",
-                        "Build it",
-                        "--capability",
-                        "native_goal",
-                        "--classification",
-                        &c.to_string(),
-                        "--route",
-                        &r.to_string(),
-                        "--host",
-                        &h.to_string(),
-                    ],
-                );
-                out["ask_id"].as_str().expect("compiled").to_string()
-            }
-            Via::Api => {
-                let out = compile(
-                    ws,
-                    Compile {
-                        staged: &staged,
-                        title: "Build it",
-                        capability: "native_goal",
-                        classification: classification(),
-                        route: route(),
-                        host: host(),
-                        links: Vec::new(),
-                        overrides: &Overrides::default(),
-                    },
-                )
-                .unwrap();
-                assert!(out.prompt_path.ends_with("prompt.txt"));
-                out.ask_id
-            }
-        };
-        // Confirming is not weftd's to call: an Ask is confirmed as it compiles
-        // from the next phase on. Both sides confirm the same way here.
-        crate::ask::confirm(ws, &ask_id, Some(&person())).unwrap();
-        ask_id
+    fn request<'a>(source: &'a str, over: &'a Overrides) -> Compile<'a> {
+        Compile {
+            source,
+            harness: Harness { name: "claude-code", version: Some("2.1.260"), session_ref: None },
+            capability: "native_goal",
+            classification: Classification {
+                task: vec!["implement".into()],
+                result: "workspace_change".into(),
+                effects: vec!["write".into()],
+            },
+            plan: Some("plans/uptime/plan.md"),
+            practices: Vec::new(),
+            classified_by: Chooser::Person,
+            selected_by: Chooser::Person,
+            links: Vec::new(),
+            overrides: over,
+        }
+    }
+
+    /// Compiled through this API on either side: weftd never compiled
+    /// through the CLI, and the Eval and Seal steps are what is compared.
+    fn compiled(ws: &Workspace, _: Via) -> String {
+        commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+        let over = Overrides::default();
+        let out = compile(ws, request(WORDS, &over)).unwrap();
+        assert!(out.prompt_path.ends_with("prompt.txt"));
+        out.ask_id
     }
 
     fn worked(ws: &Workspace) {
@@ -694,14 +700,6 @@ mod tests {
     }
 
     #[test]
-    fn compile_records_what_the_cli_recorded() {
-        eval_bench(|_| {
-            let ((cw, _), (aw, _)) = both(compiled);
-            assert_same_events(&cw, &aw);
-        });
-    }
-
-    #[test]
     fn an_eval_opened_voided_judged_and_settled_records_what_the_cli_recorded() {
         eval_bench(|_| {
             let ((cw, c), (aw, a)) = both(|ws, via| {
@@ -742,7 +740,9 @@ mod tests {
             let want = said(&["ask", "copy", "--ask", &aa, "--host", "codex"]);
             assert_eq!(got.text, want["prompt"].as_str().unwrap());
             assert_eq!(got.delivery, want["delivery"]);
-            assert_eq!(prompt(&aw, &aa, Some("claude-code")).unwrap().text.as_bytes(), GOAL);
+            let typed = prompt(&aw, &aa, Some("claude-code")).unwrap().text;
+            assert!(typed.starts_with(&format!("/goal {WORDS}\n")), "{typed}");
+            assert_eq!(json!(typed), said(&["ask", "copy", "--ask", &aa]));
             assert_eq!(
                 prompt(&aw, &aa, None).unwrap(),
                 prompt(&aw, &aa, Some("claude-code")).unwrap()

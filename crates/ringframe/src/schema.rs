@@ -341,12 +341,16 @@ fn truthy(v: &Value) -> bool {
 
 fn validate_compiled(data: &Value) -> Result<(), LedgerError> {
     let c = &data["classification"];
-    for k in ["task", "result", "interaction", "horizon", "effects"] {
+    for k in ["task", "result", "effects"] {
         get(c, k, &format!("data.classification.{k}"))?;
     }
     check_enum_list("data.classification.task", "classification.task[]", &c["task"])?;
-    for k in ["result", "interaction", "horizon"] {
-        check_enum(&format!("data.classification.{k}"), &format!("classification.{k}"), &c[k])?;
+    check_enum("data.classification.result", "classification.result", &c["result"])?;
+    // Recorded before the classification lost them; read as they were.
+    for k in ["interaction", "horizon"] {
+        if let Some(v) = c.get(k) {
+            check_enum(&format!("data.classification.{k}"), &format!("classification.{k}"), v)?;
+        }
     }
     check_enum_list("data.classification.effects", "classification.effects[]", &c["effects"])?;
     if let Some(v) = c.get("concerns")
@@ -369,9 +373,12 @@ fn validate_compiled(data: &Value) -> Result<(), LedgerError> {
         let ok = comp
             .get("source")
             .and_then(Value::as_str)
-            .is_some_and(|s| ["prompt", "body", "composed"].contains(&s));
+            .is_some_and(|s| ["prompt", "body", "composed", "verbatim"].contains(&s));
         if !ok {
-            return Err(fail("data.compiler", "must be {source: prompt|body|composed, ...}"));
+            return Err(fail(
+                "data.compiler",
+                "must be {source: prompt|body|composed|verbatim, ...}",
+            ));
         }
     }
     for k in

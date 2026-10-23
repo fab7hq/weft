@@ -310,7 +310,12 @@ pub fn answer_task(ws: &Workspace, task_id: &str) {
                 .iter()
                 .map(|r| {
                     let id = r["id"].as_str().unwrap();
-                    let w = r["windows"][0].as_str().unwrap();
+                    // A rule of the prompt that no change touches.
+                    let Some(w) = r["windows"][0].as_str() else {
+                        return json!({"id": id, "vote": "unknown",
+                                      "reason": "no window bears on it",
+                                      "missing": "a change that shows it"});
+                    };
                     json!({"id": id, "vote": "met",
                            "reason": format!("{id} is done ({})", text("role")),
                            "citations": [{"window": w, "quote": quote_in(&windows, w)}]})

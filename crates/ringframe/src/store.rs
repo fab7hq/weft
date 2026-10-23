@@ -202,14 +202,23 @@ fn initialized(ws: &Workspace) -> Result<(), LedgerError> {
 }
 
 pub fn append(ws: &Workspace, event: &Value) -> Result<(), LedgerError> {
-    initialized(ws)?;
-    let mut line = canonical(event);
-    line.push(b'\n');
-    let ledger = ws.rf_dir().join("ledger.jsonl");
-    locked(ws, || append_line(&ledger, &line))
+    append_all(ws, std::slice::from_ref(event))
 }
 
-fn append_line(ledger: &Path, line: &[u8]) -> Result<(), LedgerError> {
+/// Events that are one fact, written in one append: a reader sees all of
+/// them or none.
+pub fn append_all(ws: &Workspace, events: &[Value]) -> Result<(), LedgerError> {
+    initialized(ws)?;
+    let mut lines = Vec::new();
+    for event in events {
+        lines.extend(canonical(event));
+        lines.push(b'\n');
+    }
+    let ledger = ws.rf_dir().join("ledger.jsonl");
+    locked(ws, || append_lines(&ledger, &lines))
+}
+
+fn append_lines(ledger: &Path, line: &[u8]) -> Result<(), LedgerError> {
     if let Ok(meta) = std::fs::metadata(ledger)
         && meta.len() > 0
     {
@@ -454,6 +463,25 @@ mod tests {
             String::from_utf8_lossy(&raw)
         );
         assert_eq!(events(&ws).unwrap(), vec![ev]);
+    }
+
+    #[test]
+    fn append_all_writes_every_event_in_one_append_or_none() {
+        let repo = repo();
+        let ws = ws_for(repo.path());
+        let ev = |id: &str| {
+            json!({"schema": "ringframe.ledger/1", "event_id": id, "type": "x", "time": "t",
+                   "id": "i", "actor": {"kind": "human", "id": "u"}, "links": [], "data": {}})
+        };
+        append_all(&ws, &[ev("evt_1"), ev("evt_2")]).unwrap();
+        assert_eq!(events(&ws).unwrap(), vec![ev("evt_1"), ev("evt_2")]);
+
+        let other = crate::testing::repo();
+        let ws = ws_for(other.path());
+        std::fs::write(ws.rf_dir().join("ledger.jsonl"), b"{\"partial\": ").unwrap();
+        let e = append_all(&ws, &[ev("evt_1"), ev("evt_2")]).unwrap_err();
+        assert_eq!(e.code, "ledger.torn_tail");
+        assert_eq!(std::fs::read(ws.rf_dir().join("ledger.jsonl")).unwrap(), b"{\"partial\": ");
     }
 
     #[test]

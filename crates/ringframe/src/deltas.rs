@@ -230,7 +230,7 @@ fn non_empty_list(v: Option<&Value>) -> bool {
 /// Whether an entry's `applies_to` matches the classification. A host entry
 /// is keyed by its capability as well; a route that serves two kinds of work
 /// (`native_plan` for a plan, and for bounded work) tells them apart here.
-fn matches(entry: &Value, classification: &Value) -> bool {
+pub(crate) fn matches(entry: &Value, classification: &Value) -> bool {
     let a = entry.get("applies_to").cloned().unwrap_or_else(|| json!({}));
     if non_empty_list(a.get("task"))
         && !any_shared(&a["task"], classification.get("task").unwrap_or(&Value::Null))
@@ -355,7 +355,7 @@ pub const EVERY_PHASE: &str = "Throughout:";
 /// deliverable listed third of ten reads like an aside.
 pub const THIS_ROUTE: &str = "For this route:";
 
-fn phase_heading(task: &str) -> Option<&'static str> {
+pub(crate) fn phase_heading(task: &str) -> Option<&'static str> {
     PHASES.iter().find(|(t, _)| *t == task).map(|(_, h)| *h)
 }
 
@@ -380,7 +380,7 @@ pub fn label(entry: &Value) -> String {
     id.rsplit('.').next().unwrap_or(&id).to_string()
 }
 
-fn squeeze(text: &str) -> String {
+pub(crate) fn squeeze(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -391,13 +391,13 @@ struct Ranked {
     entry: Value,
 }
 
-fn status_of(entry: &Value) -> String {
+pub(crate) fn status_of(entry: &Value) -> String {
     let s = text_of(entry, "status");
     if s.is_empty() { "attributed".into() } else { s }
 }
 
 /// Which named task this rule belongs to, or every one of them.
-fn phase_of(entry: &Value, tasks: &[String]) -> String {
+pub(crate) fn phase_of(entry: &Value, tasks: &[String]) -> String {
     let declared: Vec<String> = entry
         .get("applies_to")
         .and_then(|a| a.get("task"))

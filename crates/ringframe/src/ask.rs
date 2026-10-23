@@ -139,11 +139,11 @@ impl From<config::ConfigError> for AskError {
     }
 }
 
-fn ledger(code: &str, detail: impl Into<String>) -> AskError {
+pub(crate) fn ledger(code: &str, detail: impl Into<String>) -> AskError {
     AskError::Ledger(LedgerError::new_public(code, detail))
 }
 
-fn event(type_: &str, id: &str, actor: &Value, data: Value, links: &[Value]) -> Value {
+pub(crate) fn event(type_: &str, id: &str, actor: &Value, data: Value, links: &[Value]) -> Value {
     json!({
         "schema": store::SCHEMA, "event_id": ids::new_id("evt"), "type": type_,
         "time": sessions::now(), "id": id, "actor": actor, "links": links, "data": data
@@ -156,11 +156,11 @@ fn default_actor(actor: Option<&Value>) -> Value {
         .unwrap_or_else(|| json!({"kind": "human", "id": "local-user", "authority": "interactive"}))
 }
 
-fn str_of(v: &Value, key: &str) -> String {
+pub(crate) fn str_of(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
-fn list_of(v: &Value, key: &str) -> Vec<String> {
+pub(crate) fn list_of(v: &Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(Value::as_array)
         .into_iter()
@@ -369,7 +369,7 @@ fn render_prompt(
 /// as an ordinary request. `paste_fold_chars` is the measured size at which
 /// that starts. A `mode` prefix can be sent on its own first and confirmed; an
 /// `inline` one consumes its argument and cannot.
-fn delivery_block(profile: &Value, cap: &Value, prompt: &[u8]) -> Value {
+pub(crate) fn delivery_block(profile: &Value, cap: &Value, prompt: &[u8]) -> Value {
     let prefix = cap.get("prompt_prefix").and_then(Value::as_str).filter(|p| !p.is_empty());
     let prefix_bytes = prefix.map_or(0, str::len);
     let fold = profile.get("paste_fold_chars").and_then(Value::as_u64);
@@ -430,7 +430,7 @@ pub struct Compile<'a> {
 /// Every link names something this workspace has, of the kind the link means:
 /// a revision names an Ask, a follow-up an Ask or an Eval, a remedy a
 /// completed Eval. A link to nothing would read as history that never happened.
-fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
+pub(crate) fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskError> {
     let events = store::events(ws)?;
     for l in links {
         let (rel, id) = (str_of(l, "rel"), str_of(l, "id"));
@@ -822,7 +822,7 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
 /// with the Eval's Git helper, which tries a failed read once more: a read
 /// that failed for a moment left an Ask with no base, and its Eval with no
 /// anchor (q07, Antigravity confirm a3).
-fn head(ws: &Workspace) -> Value {
+pub(crate) fn head(ws: &Workspace) -> Value {
     crate::evaluate::git(&ws.root, &["rev-parse", "--verify", "--quiet", "HEAD"])
         .ok()
         .map(|s| s.trim().to_string())
@@ -1032,7 +1032,11 @@ fn prompt_match(
     if str_of(reference, "sha256") == sha256 {
         return Ok(Some("exact".into()));
     }
-    let data = std::fs::read(ws.rf_dir().join(str_of(reference, "path")))?;
+    let stored = std::fs::read(ws.rf_dir().join(str_of(reference, "path")))?;
+    let data = [unstored_prefix(compiled).as_bytes(), &stored].concat();
+    if digest::sha256_bytes(&data) == sha256 {
+        return Ok(Some("exact".into()));
+    }
     let trimmed: &[u8] = {
         let mut end = data.len();
         while end > 0 && data[end - 1] == b'\n' {
@@ -1125,6 +1129,9 @@ pub fn prompt_body(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
     let rec = record(ws, ask_id)?;
     let d = &rec.compiled.expect("compiled")["data"];
     let text = std::fs::read_to_string(ws.rf_dir().join(str_of(&d["prompt"], "path")))?;
+    if d["compiler"]["source"] == "verbatim" {
+        return Ok(text);
+    }
     // A record from before `delivery` existed says nothing about a prefix, so
     // fall back to what the capability declares, and to the whole prompt.
     let prefix = d
@@ -1142,10 +1149,22 @@ pub fn prompt_body(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
     Ok(text.get(prefix..).unwrap_or(&text).to_string())
 }
 
+/// The prompt as it is typed: `prompt.txt`, with the capability's command
+/// in front when the compile stored the words without it.
 pub fn prompt_text(ws: &Workspace, ask_id: &str) -> Result<String, AskError> {
     let rec = record(ws, ask_id)?;
-    let path = str_of(&rec.compiled.expect("compiled")["data"]["prompt"], "path");
-    Ok(std::fs::read_to_string(ws.rf_dir().join(path))?)
+    let d = &rec.compiled.expect("compiled")["data"];
+    let stored = std::fs::read_to_string(ws.rf_dir().join(str_of(&d["prompt"], "path")))?;
+    Ok(format!("{}{stored}", unstored_prefix(d)))
+}
+
+/// The command a verbatim compile left out of `prompt.txt`; none for one
+/// that stored it.
+fn unstored_prefix(d: &Value) -> String {
+    if d["compiler"]["source"] != "verbatim" {
+        return String::new();
+    }
+    host_prefix(&str_of(&d["host"], "name"), &str_of(d, "selected_capability"))
 }
 
 /// Everything the ledger says about one Ask.
