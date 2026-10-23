@@ -284,4 +284,99 @@ mod tests {
             assert_eq!(rec["ask_id"], json!(ask_id), "{rec}");
         });
     }
+
+    fn read_prompt(ws: &Workspace, out: &Value) -> String {
+        let id = str_of(out, "ask_id");
+        std::fs::read_to_string(ws.rf_dir().join(format!("asks/{id}/prompt.txt"))).unwrap()
+    }
+
+    #[test]
+    fn every_route_rule_appears_for_every_route_on_every_host() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            let results = ["plan", "workspace_change", "answer", "continuing_objective"];
+            let mut seen = 0;
+            for host in crate::deltas::host_catalog_names().unwrap() {
+                let profile = profiles::load(&host).unwrap();
+                for cap in profile["capabilities"].as_array().unwrap() {
+                    let capability = str_of(cap, "id");
+                    for result in results {
+                        let cls = json!({"task": ["implement"], "result": result, "effects": ["write"]});
+                        let mut req = request(b"Build Phase 1 of plans/uptime/plan.md.", &over);
+                        req.host = json!({"name": host});
+                        req.capability = &capability;
+                        req.classification = cls.clone();
+                        req.plan = Some("plans/uptime/plan.md");
+                        req.practices = Vec::new();
+                        let prompt = read_prompt(ws, &compile(ws, req).unwrap());
+                        let route = rules::route_rules(&over, &host, &capability, &cls).unwrap();
+                        if route.is_empty() {
+                            assert!(!prompt.contains(crate::deltas::THIS_ROUTE), "{prompt}");
+                            continue;
+                        }
+                        let (_, block) = prompt.split_once("For this route:\n").expect("the block");
+                        let want: Vec<String> = route
+                            .iter()
+                            .map(|r| format!("- {}: {}", crate::deltas::label(r),
+                                             crate::deltas::squeeze(&str_of(r, "text"))))
+                            .collect();
+                        assert_eq!(block.lines().collect::<Vec<_>>(), want, "{host} {capability} {result}");
+                        seen += want.len();
+                    }
+                }
+            }
+            assert!(seen > 0);
+        });
+    }
+
+    #[test]
+    fn the_words_then_the_practices_in_shipped_order_then_the_route() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            let mut req = request(b"Build Phase 1 of plans/uptime/plan.md.\n", &over);
+            req.capability = "native_goal";
+            req.plan = Some("plans/uptime/plan.md");
+            // Chosen in the reverse of shipped order.
+            req.practices = vec!["practice.yagni".into(), "practice.kiss".into()];
+            let prompt = read_prompt(ws, &compile(ws, req).unwrap());
+            let shipped = rules::practice_rules(&over, &["implement".into()]).unwrap();
+            let kiss = shipped.iter().find(|e| e["id"] == "practice.kiss").unwrap();
+            let kiss_line =
+                format!("- KISS: {}", crate::deltas::squeeze(&str_of(kiss, "text")));
+            let at = |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
+            assert!(prompt.starts_with("Build Phase 1 of plans/uptime/plan.md.\n\nPlan: plans/uptime/plan.md\n\nRules:\n"));
+            assert!(at(&kiss_line) < at("- YAGNI: "));
+            assert!(at("- YAGNI: ") < at("For this route:\n- Step Loop: "));
+            assert!(at("- Step Loop: ") < at("- Done Check: "));
+        });
+    }
+
+    #[test]
+    fn several_tasks_put_each_practice_under_its_phase() {
+        eval_bench(|ws| {
+            let over = Overrides::default();
+            let mut req = request(b"Look into the cache, then fix it.", &over);
+            req.classification = json!({"task": ["research", "implement"],
+                                        "result": "workspace_change", "effects": ["write"]});
+            req.practices = vec!["practice.occam".into(), "practice.testing_pyramid".into()];
+            let prompt = read_prompt(ws, &compile(ws, req).unwrap());
+            let at = |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
+            assert!(at("While researching:\n- Occam") < at("While implementing:\n- Testing Pyramid"));
+            assert!(at("- Testing Pyramid") < at("For this route:"));
+        });
+    }
+
+    #[test]
+    fn a_practice_id_in_no_layer_is_refused() {
+        eval_bench(|ws| {
+            let over = Overrides::default();
+            let mut req = request(b"Add an uptime check.", &over);
+            req.practices = vec!["practice.kiss".into(), "practice.telepathy".into()];
+            let e = compile(ws, req).unwrap_err().to_string();
+            assert!(e.contains("ask.practice_unknown") && e.contains("practice.telepathy"), "{e}");
+            assert!(crate::store::events(ws).unwrap().is_empty(), "nothing recorded");
+        });
+    }
 }
