@@ -158,10 +158,23 @@ pub struct Prompt {
 }
 
 /// The Ask's prompt as `host` takes it: as compiled for the harness it was
-/// composed in, or with that host's command for the same capability.
-pub fn prompt(ws: &Workspace, ask_id: &str, host: &str) -> Result<Prompt, Error> {
-    let out = ask::prompt_for_host(ws, ask_id, host)?;
+/// composed in, or with that host's command for the same capability. No host
+/// is the harness it was composed in.
+pub fn prompt(ws: &Workspace, ask_id: &str, host: Option<&str>) -> Result<Prompt, Error> {
+    let compiled_for = match host {
+        Some(h) => h.to_string(),
+        None => compiled_host(ws, ask_id)?,
+    };
+    let out = ask::prompt_for_host(ws, ask_id, &compiled_for)?;
     Ok(Prompt { text: str_of(&out, "prompt"), delivery: out["delivery"].clone() })
+}
+
+fn compiled_host(ws: &Workspace, ask_id: &str) -> Result<String, Error> {
+    events(ws)?
+        .iter()
+        .find(|e| e["type"] == "ask.compiled" && e["id"] == ask_id)
+        .map(|e| str_of(&e["data"]["host"], "name"))
+        .ok_or_else(|| Error::Refused { code: "ask.not_compiled".into(), detail: ask_id.into() })
 }
 
 // ---- Eval -------------------------------------------------------------------------
@@ -350,20 +363,24 @@ pub struct SealCheck {
     pub subject_matches: bool,
     /// Why it is not fresh.
     pub codes: Vec<String>,
+    /// Everything the check says, as `seal check` prints it: the
+    /// disposition, its basis and the Eval it records.
+    pub report: Value,
 }
 
 pub fn seal_check(ws: &Workspace, seal_id: &str) -> Result<SealCheck, Error> {
-    let out = seal::check(ws, seal_id)?;
+    let report = seal::check(ws, seal_id)?;
     Ok(SealCheck {
-        fresh: out["fresh"] == json!(true),
-        subject_matches: out["subject_matches"] == json!(true),
-        codes: out["codes"]
+        fresh: report["fresh"] == json!(true),
+        subject_matches: report["subject_matches"] == json!(true),
+        codes: report["codes"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect(),
+        report,
     })
 }
 
@@ -721,16 +738,22 @@ mod tests {
             let said = |args: &[&str]| cli(&aw, args);
 
             preflight(&aw).unwrap();
-            let got = prompt(&aw, &aa, "codex").unwrap();
+            let got = prompt(&aw, &aa, Some("codex")).unwrap();
             let want = said(&["ask", "copy", "--ask", &aa, "--host", "codex"]);
             assert_eq!(got.text, want["prompt"].as_str().unwrap());
             assert_eq!(got.delivery, want["delivery"]);
-            assert_eq!(prompt(&aw, &aa, "claude-code").unwrap().text.as_bytes(), GOAL);
+            assert_eq!(prompt(&aw, &aa, Some("claude-code")).unwrap().text.as_bytes(), GOAL);
+            assert_eq!(
+                prompt(&aw, &aa, None).unwrap(),
+                prompt(&aw, &aa, Some("claude-code")).unwrap()
+            );
+            assert_eq!(prompt(&aw, "ask_none", None).unwrap_err().code(), "ask.not_compiled");
 
             let check = seal_check(&aw, &a_s).unwrap();
             let want = said(&["seal", "check", "--seal", &a_s]);
             assert_eq!((check.fresh, check.subject_matches), (true, true));
             assert_eq!(json!(check.codes), want["codes"]);
+            assert_eq!(check.report, want);
 
             assert_eq!(json!(asks(&aw).unwrap()), said(&["ask", "list"])["asks"]);
             assert_eq!(json!(evals(&aw).unwrap()), said(&["eval", "list"])["evals"]);
