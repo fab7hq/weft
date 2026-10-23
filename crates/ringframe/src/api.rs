@@ -894,4 +894,30 @@ mod tests {
             assert_eq!(shared.code(), "rules.incomplete");
         });
     }
+
+    #[test]
+    fn a_seal_through_the_library_holds_its_disposition_and_reason() {
+        eval_bench(|ws| {
+            let ask_id = compiled(ws, Via::Api);
+            worked(ws);
+            let eval_id = opened(ws, Via::Api, &ask_id);
+            judged(ws, Via::Api, &eval_id);
+            let req = SealCreate {
+                disposition: "rejected",
+                eval_id: Some(&eval_id),
+                reason: Some("not_what_i_asked"),
+                note: None,
+            };
+            let sealed = seal_create(ws, req).unwrap();
+            assert_eq!(sealed.receipt["disposition"], "rejected");
+            assert_eq!(sealed.receipt["reason"], "not_what_i_asked");
+            let on_disk = std::fs::read(ws.rf_dir().join(format!("seals/{}.json", sealed.seal_id)));
+            let on_disk: Value = serde_json::from_slice(&on_disk.unwrap()).unwrap();
+            assert_eq!(
+                (&on_disk["disposition"], &on_disk["reason"]),
+                (&json!("rejected"), &json!("not_what_i_asked"))
+            );
+            assert_eq!(seal_check(ws, &sealed.seal_id).unwrap().fresh, true);
+        });
+    }
 }
