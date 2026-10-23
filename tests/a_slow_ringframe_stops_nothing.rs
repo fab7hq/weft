@@ -208,7 +208,12 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let ws = ringframe::api::workspace(&root).expect("workspace");
     let sealed = ringframe::api::seal_create(
         &ws,
-        ringframe::api::SealCreate { disposition: "accepted", eval_id: None, note: None },
+        ringframe::api::SealCreate {
+            disposition: "accepted",
+            eval_id: None,
+            reason: None,
+            note: None,
+        },
     )
     .expect("sealed");
     let read = a.call(Call::Read {

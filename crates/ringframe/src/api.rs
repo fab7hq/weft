@@ -917,7 +917,7 @@ mod tests {
                 (&on_disk["disposition"], &on_disk["reason"]),
                 (&json!("rejected"), &json!("not_what_i_asked"))
             );
-            assert_eq!(seal_check(ws, &sealed.seal_id).unwrap().fresh, true);
+            assert!(seal_check(ws, &sealed.seal_id).unwrap().fresh);
         });
     }
 }
