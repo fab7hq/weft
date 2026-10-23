@@ -86,44 +86,10 @@ fn strings(v: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// Interactive humans decide by being present; any other actor needs a
-/// pre-authorization record.
-fn authority(
-    ws: &Workspace,
-    actor: &Value,
-    disposition: &str,
-    subject_kind: &Value,
-) -> (Option<String>, Option<String>) {
-    let declared = {
-        let a = str_of(actor, "authority");
-        if a.is_empty() { "interactive".to_string() } else { a }
-    };
-    if str_of(actor, "kind") == "human" && declared == "interactive" {
-        return (Some("interactive".into()), None);
-    }
-    let id = str_of(actor, "id");
-    let path = ws.rf_dir().join("authorizations").join(format!("{id}.json"));
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return (None, Some("seal.authority_missing".into()));
-    };
-    let grant: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    let allowed = grant.get("allowed").cloned().unwrap_or_else(|| json!({}));
-    let expires = grant.get("expires").and_then(Value::as_str);
-    let live = expires.is_none()
-        || expires.and_then(sessions::parse_time).is_some_and(|e| e > sessions::now_millis());
-    let ok = grant.get("actor").and_then(Value::as_str)
-        == Some(&format!("{}:{id}", str_of(actor, "kind")))
-        && strings(&allowed, "dispositions").iter().any(|d| d == disposition)
-        && allowed
-            .get("subject_kinds")
-            .and_then(Value::as_array)
-            .is_some_and(|k| k.contains(subject_kind))
-        && live;
-    if ok {
-        (Some(format!("preauthorized:authorizations/{id}.json")), None)
-    } else {
-        (None, Some("seal.authority_missing".into()))
-    }
+/// Only the person seals, by being there: no agent, policy or grant does.
+fn is_the_person(actor: &Value) -> bool {
+    let authority = str_of(actor, "authority");
+    str_of(actor, "kind") == "human" && (authority.is_empty() || authority == "interactive")
 }
 
 fn eval_fact(ws: &Workspace, record: Option<&Value>, subject_sha: &Value) -> Value {
@@ -212,15 +178,15 @@ pub fn create(
         asks.retain(|a| basis.contains(&str_of(a, "ask_id")));
         ask_ids.retain(|a| basis.contains(a));
     }
-    let (granted, code) = authority(ws, &actor, disposition, &subject["kind"]);
-    if let Some(code) = code {
-        codes.push(code);
+    if !is_the_person(&actor) {
+        codes.push("seal.not_a_person".into());
     }
     let seal_id = ids::new_id("sel");
     let fact = eval_fact(ws, record.as_ref(), &subject["sha256"]);
     let mut authority_block = actor.clone();
-    authority_block["authority"] = granted
-        .map_or_else(|| actor.get("authority").cloned().unwrap_or(Value::Null), Value::String);
+    if is_the_person(&actor) {
+        authority_block["authority"] = json!("interactive");
+    }
     let mut base = json!({
         "basis": {"asks": ask_ids}, "eval": fact, "subject": subject,
         "disposition": disposition, "authority": authority_block,
@@ -554,12 +520,10 @@ mod tests {
     }
 
     #[test]
-    fn a_non_human_actor_needs_a_grant() {
+    fn only_a_person_seals_and_no_grant_changes_that() {
         eval_bench(|ws| {
             judged(ws, ["yes", "yes", "yes"]);
-            let agent = json!({"kind": "agent", "id": "ci", "authority": "preauthorized"});
-            let e = create(ws, "accepted", None, None, None, Some(&agent)).unwrap_err();
-            assert_eq!(codes_of(e), ["seal.authority_missing"]);
+            // A grant from before no longer counts.
             std::fs::create_dir_all(ws.rf_dir().join("authorizations")).unwrap();
             std::fs::write(
                 ws.rf_dir().join("authorizations/ci.json"),
@@ -572,10 +536,17 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            let e = create(ws, "rejected", None, None, None, Some(&agent)).unwrap_err();
-            assert_eq!(codes_of(e), ["seal.authority_missing"]);
-            let r = create(ws, "accepted", None, None, None, Some(&agent)).unwrap();
-            assert_eq!(r["authority"]["authority"], "preauthorized:authorizations/ci.json");
+            for actor in [
+                json!({"kind": "agent", "id": "ci", "authority": "preauthorized"}),
+                json!({"kind": "policy", "id": "nightly"}),
+                json!({"kind": "human", "id": "bot", "authority": "preauthorized"}),
+            ] {
+                let e = create(ws, "accepted", None, None, None, Some(&actor)).unwrap_err();
+                assert_eq!(codes_of(e), ["seal.not_a_person"], "{actor}");
+            }
+            assert_eq!(store::events(ws).unwrap().pop().unwrap()["type"], "seal.refused");
+            let r = create(ws, "accepted", None, None, None, None).unwrap();
+            assert_eq!(r["authority"]["authority"], "interactive");
         });
     }
 
