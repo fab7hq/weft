@@ -24,6 +24,8 @@ weftd = { path = "crates/weftd" }
 
 [dev-dependencies]
 weft-core = { path = "crates/weft-core", features = ["fixtures"] }
+# The tests make real RingFrame records for the daemon to read.
+ringframe = { path = "crates/ringframe" }
 sha2 = "0.10"
 tempfile = "3"
 weft-term = { path = "crates/weft-term" }

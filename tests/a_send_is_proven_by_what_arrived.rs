@@ -58,9 +58,21 @@ on = [
 ]
 "#;
 
-/// A `ringframe` that hands over the Ask's wording and logs every call into
-/// the workspace it is given. `observe prompt` answers as RingFrame does:
-/// the Ask's submission when what arrived is its prompt, none otherwise.
+/// A host profile for RingFrame: the command a harness takes a planning
+/// prompt with.
+fn profile(host: &str, prefix: &str) -> String {
+    format!(
+        "schema = \"ringframe.profile/1\"\nprofile_id = \"{host}\"\nhost = \"{host}\"\n\
+         [[capabilities]]\nid = \"native_plan\"\ndelivery_mode = \"human_handoff\"\n\
+         prompt_prefix = \"{prefix}\"\n"
+    )
+}
+
+/// A `ringframe` that logs every call into the workspace it is given.
+/// `observe prompt` answers as RingFrame does: the Ask's submission when what
+/// arrived is its prompt, none otherwise. The wording comes from the crate,
+/// which reads its host profiles from this binary's own `HOME`: `weave` takes
+/// a prompt with its own command in front.
 fn stand_in() -> PathBuf {
     static ONCE: Once = Once::new();
     let bin = std::env::temp_dir().join(format!("weft-proven-bin-{}", std::process::id()));
@@ -68,11 +80,6 @@ fn stand_in() -> PathBuf {
         std::fs::create_dir_all(&bin).unwrap();
         let script = format!(
             "#!/bin/sh\nws=$2\nprintf '%s\\n' \"$*\" >> \"$ws/calls.log\"\ncase \"$*\" in\n  \
-             *\"ask copy\"*\"--host spool\"*) \
-               printf '{{\"prompt\":\"{WORDING}\",\"delivery\":{{\"prefix_bytes\":0}}}}' ;;\n  \
-             *\"ask copy\"*\"--host weave\"*) \
-               printf '{{\"prompt\":\"/weave {WORDING}\",\"delivery\":{{\"prefix_bytes\":0}}}}' ;;\n  \
-             *\"ask copy\"*) printf '{WORDING}' ;;\n  \
              *\"observe prompt\"*) got=$(cat)\n    \
                if [ \"$got\" = '{WORDING}' ] || [ \"$got\" = '/weave {WORDING}' ]; then \
                  printf '{{\"recorded\":true,\"submission\":{{\"ask_id\":\"ask_1\"}}}}'; \
@@ -84,8 +91,16 @@ fn stand_in() -> PathBuf {
         std::fs::write(&path, script).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let profiles = bin.join("home/.fab7/rf/config/harnesses");
+        std::fs::create_dir_all(&profiles).unwrap();
+        for (host, prefix) in [("weave", "/weave "), ("spool", ""), ("unknown", "")] {
+            std::fs::write(profiles.join(format!("{host}.toml")), profile(host, prefix)).unwrap();
+        }
         // SAFETY: set once, before any daemon in this binary runs a program.
-        unsafe { std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display())) };
+        unsafe {
+            std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
+            std::env::set_var("HOME", bin.join("home"));
+        }
     });
     bin
 }
@@ -205,13 +220,17 @@ impl Bench {
                 serde_json::json!({
                     "title": "Ship it", "selected_capability": "native_plan",
                     "delivery_mode": "human_handoff", "host": {"name": harness},
-                    "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
+                    "source": {}, "prompt": {"path": "asks/ask_1/prompt.txt"},
+                    "delivery": {"prefix_bytes": 0},
+                    "source_verified": "exact", "limitations": [],
                     "classification": {}, "route_explanation": {}}),
             ),
             event("ask.confirmed", "2026-10-10T10:00:01Z", serde_json::json!({})),
         ];
         let text: String = ledger.iter().map(|e| format!("{e}\n")).collect();
         std::fs::write(root.join(".fab7/rf/ledger.jsonl"), text).unwrap();
+        std::fs::create_dir_all(root.join(".fab7/rf/asks/ask_1")).unwrap();
+        std::fs::write(root.join(".fab7/rf/asks/ask_1/prompt.txt"), WORDING).unwrap();
 
         let dir = tmp.path().join("agent");
         let spec = agent(&dir, &home, harness, mode);

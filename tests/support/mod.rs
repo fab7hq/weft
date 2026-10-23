@@ -86,3 +86,56 @@ pub fn pane_says(
 pub fn agents_dir(socket: &Path) -> PathBuf {
     socket.with_extension("agents")
 }
+
+/// A real RingFrame record at `root`, as the daemon finds one: a Git
+/// repository, RingFrame's test configuration in `home`, and an Ask for the
+/// harness `host`, compiled and confirmed, followed by a commit of work.
+/// `HOME` must already be `home`. Returns the Ask's id.
+pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
+    use ringframe::api;
+    std::fs::create_dir_all(root).unwrap();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("/usr/bin/git")
+            .arg("-C")
+            .arg(root)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .status()
+            .unwrap();
+        assert!(ok.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    assert_eq!(std::env::var_os("HOME").as_deref(), Some(home.as_os_str()));
+    let config =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ringframe/tests/fixtures/config");
+    ringframe::workspace::install_config(Some(&config)).unwrap();
+    let ws = api::workspace(root).unwrap();
+    ws.ensure().unwrap();
+    let staged = ws.rf_dir().join("tmp/stage-1");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::write(staged.join("source.txt"), "ship it\n").unwrap();
+    std::fs::write(staged.join("prompt.txt"), "Ship it.\n").unwrap();
+    let overrides = ringframe::config::Overrides::default();
+    let compiled = api::compile(
+        &ws,
+        api::Compile {
+            staged: &staged,
+            title: "Ship it",
+            capability: "human_handoff",
+            classification: serde_json::json!({"task": ["plan"], "result": "plan",
+                "interaction": "approval_gated", "horizon": "session", "effects": ["read"]}),
+            route: serde_json::json!({"fits": "bounded", "alternatives": [],
+                "continuation": "manual", "effects": "reads", "gaps": []}),
+            host: serde_json::json!({"name": host}),
+            links: Vec::new(),
+            overrides: &overrides,
+        },
+    )
+    .unwrap();
+    ringframe::ask::confirm(&ws, &compiled.ask_id, None).unwrap();
+    std::fs::write(root.join("work.txt"), "the work\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["commit", "-q", "-m", "work"]);
+    compiled.ask_id
+}

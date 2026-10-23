@@ -6483,6 +6483,7 @@ name = "weft"
 version = "0.6.4"
 dependencies = [
  "anyhow",
+ "ringframe",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",

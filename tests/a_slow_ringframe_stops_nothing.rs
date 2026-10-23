@@ -1,9 +1,9 @@
-//! A slow `ringframe` holds up only what waits on it: while `init`,
-//! `ask preflight`, `eval open` and `seal check` run, the daemon goes on
-//! answering every other call.
+//! A slow RingFrame holds up only what waits on it: while `ringframe init`
+//! runs, and while the crate's preflight, Eval open and Seal check wait on a
+//! slow Git, the daemon goes on answering every other call.
 //!
-//! Its own test binary because it puts a stand-in `ringframe` first on PATH,
-//! which is global: one test, one process.
+//! Its own test binary because it puts stand-ins first on PATH and sets
+//! `HOME`, which are global: one test, one process.
 
 mod support;
 
@@ -15,29 +15,29 @@ use std::time::{Duration, Instant};
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
-/// How long the stand-in takes over each of the four.
+/// How long each stand-in takes over what it is slow at.
 const SLOW: &str = "2";
 
-/// A `ringframe` that takes its time over `init`, `ask preflight`, `eval
-/// open` and `seal check`, then answers as RingFrame does.
-fn stand_in(dir: &Path, ledger: &Path) {
-    let opened = r#"{"schema":"ringframe.ledger/1","event_id":"evt_o","type":"eval.opened","time":"2026-09-28T10:00:00Z","id":"evl_new","actor":{"kind":"human","id":"me"},"links":[],"data":{"basis":{"asks":["ask_1"]}}}"#;
-    let gathered = r#"{"schema":"ringframe.ledger/1","event_id":"evt_g","type":"eval.gathered","time":"2026-09-28T10:00:01Z","id":"evl_new","actor":{"kind":"human","id":"me"},"links":[],"data":{"eval_id":"evl_new","host":"weft"}}"#;
-    let script = format!(
+/// A `ringframe` that takes its time over `init`, then answers as RingFrame
+/// does; and a `git` that takes its time over `rev-parse --show-prefix`,
+/// which the crate's preflight, Eval open and Seal check each ask.
+fn stand_ins(dir: &Path) {
+    let ringframe = format!(
         "#!/bin/sh\ncase \"$*\" in\n  \
          *\" init\") sleep {SLOW}; mkdir -p \"$2/.fab7/rf\" ;;\n  \
-         *\"ask preflight\"*) sleep {SLOW} ;;\n  \
-         *\"eval open\"*) sleep {SLOW}; printf '%s\\n%s\\n' '{opened}' '{gathered}' >> '{ledger}'; printf '{{\"eval_id\":\"evl_new\"}}' ;;\n  \
-         *\"seal check\"*) sleep {SLOW}; printf '{{\"fresh\":true,\"subject_matches\":true}}' ;;\n  \
          *\"profile show\"*) printf '{{\"invocation_prefix\":\"/rf:\"}}' ;;\n  \
          *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  \
          *) printf '{{}}' ;;\nesac\nexit 0\n",
-        ledger = ledger.display(),
     );
-    let path = dir.join("ringframe");
-    std::fs::write(&path, script).expect("stand-in");
+    let git = format!(
+        "#!/bin/sh\ncase \"$*\" in *--show-prefix*) sleep {SLOW} ;; esac\nexec /usr/bin/git \"$@\"\n"
+    );
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    for (name, script) in [("ringframe", ringframe), ("git", git)] {
+        let path = dir.join(name);
+        std::fs::write(&path, script).expect("stand-in");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
 }
 
 struct Client {
@@ -113,23 +113,19 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let tmp = std::env::temp_dir().join(format!("weft-slow-rf-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
     let (bin, fresh, root) = (tmp.join("bin"), tmp.join("fresh"), tmp.join("project"));
+    let home = tmp.join("home");
     std::fs::create_dir_all(&bin).expect("bin");
     std::fs::create_dir_all(&fresh).expect("fresh");
-    std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
-    let ledger = root.join(".fab7/rf/ledger.jsonl");
-    stand_in(&bin, &ledger);
     // SAFETY: this binary holds exactly one test.
+    unsafe {
+        std::env::set_var("HOME", &home);
+    }
+    let ask = support::real_ask(&root, &home, "sh");
+    stand_ins(&bin);
+    // SAFETY: as above.
     unsafe {
         std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
     }
-    let compiled = serde_json::json!({"schema": "ringframe.ledger/1", "event_id": "evt_1",
-        "type": "ask.compiled", "time": "2026-09-27T10:00:00Z", "id": "ask_1",
-        "actor": {"kind": "human", "id": "me"}, "links": [],
-        "data": {"title": "Ship it", "selected_capability": "native_plan",
-                 "delivery_mode": "human_handoff", "host": {"name": "sh"},
-                 "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
-                 "classification": {}, "route_explanation": {}}});
-    std::fs::write(&ledger, format!("{compiled}\n")).expect("ledger");
 
     let socket = protocol::private_socket("weft-slow-rf");
     let agent = support::agent(&support::agents_dir(&socket));
@@ -153,7 +149,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let opened = a.answer(opening, Duration::from_secs(10));
     assert_eq!(opened["setup"], serde_json::Value::Null, "set up by its init: {opened}");
 
-    // A set-up project: `ask preflight` only. A window already in it stages
+    // A set-up project: preflight only. A window already in it stages
     // a send meanwhile: the opening window gets it in its answer, and not as
     // an event before the answer too.
     let mut b = Client::connect(&socket);
@@ -164,7 +160,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let opening = open(&mut a, &root);
     std::thread::sleep(Duration::from_millis(300));
     let took = probe(&socket);
-    assert!(took < quick, "a hello waited {took:?} on ask preflight");
+    assert!(took < quick, "a hello waited {took:?} on preflight");
     let staged = b.call(Call::Stage {
         pane: 0,
         bytes: b"hello".to_vec(),
@@ -182,7 +178,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
         a.seen
     );
 
-    // Eval: `eval open`, then the debate is staged.
+    // Eval: opened, then the debate is staged.
     a.call(Call::StartAgent { harness: "sh".into(), spec: agent, session: None });
     a.wait(|e| matches!(e, Event::Added { .. }).then_some(()));
     support::pane_says(&socket, &support::agents_dir(&socket), &root, "sh", 0, "s1", "ready");
@@ -196,7 +192,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     });
     let check = a.call(Call::Act {
         act: "check".into(),
-        unit: Some("ask_1".into()),
+        unit: Some(ask.clone()),
         pane: None,
         text: None,
         eval: None,
@@ -208,10 +204,16 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let staged = a.answer(check, Duration::from_secs(10));
     assert!(staged["pending"].is_string(), "the debate staged: {staged}");
 
-    // A receipt's check: `seal check`.
+    // A receipt's check.
+    let ws = ringframe::api::workspace(&root).expect("workspace");
+    let sealed = ringframe::api::seal_create(
+        &ws,
+        ringframe::api::SealCreate { disposition: "accepted", eval_id: None, note: None },
+    )
+    .expect("sealed");
     let read = a.call(Call::Read {
         what: "seal".into(),
-        unit: "sel_1".into(),
+        unit: sealed.seal_id,
         pane: None,
         lines: None,
         before: None,

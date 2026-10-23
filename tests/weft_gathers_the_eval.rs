@@ -1,9 +1,9 @@
-//! Eval gathers the Eval in Weft, through `ringframe eval open`, then
-//! offers only the debate to a harness; an Eval already gathered is debated
-//! without opening again.
+//! Eval gathers the Eval in Weft, through RingFrame's crate, then offers only
+//! the debate to a harness; an Eval already gathered is debated without
+//! opening again.
 //!
-//! Its own test binary because it puts a stand-in `ringframe` first on PATH,
-//! which is global: one test, one process.
+//! Its own test binary because it puts a stand-in `ringframe` first on PATH
+//! and sets `HOME`, which are global: one test, one process.
 
 mod support;
 
@@ -15,21 +15,28 @@ use std::time::{Duration, Instant};
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
-/// A `ringframe` that opens an Eval as RingFrame does, recording it opened and
-/// gathered, answers everything else, and logs every call it gets.
-fn stand_in(dir: &Path, ledger: &Path) {
+/// A `ringframe` for what weftd still runs as a program: it answers
+/// everything, and logs every call it gets.
+fn stand_in(dir: &Path) {
     let log = dir.join("calls.log");
-    let opened = r#"{"schema":"ringframe.ledger/1","event_id":"evt_o","type":"eval.opened","time":"2026-09-28T10:00:00Z","id":"evl_new","actor":{"kind":"human","id":"me"},"links":[],"data":{"basis":{"asks":["ask_1"]}}}"#;
-    let gathered = r#"{"schema":"ringframe.ledger/1","event_id":"evt_g","type":"eval.gathered","time":"2026-09-28T10:00:01Z","id":"evl_new","actor":{"kind":"human","id":"me"},"links":[],"data":{"eval_id":"evl_new","host":"weft"}}"#;
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n  *\"eval open\"*) printf '%s\\n%s\\n' '{opened}' '{gathered}' >> '{ledger}'; printf '{{\"eval_id\":\"evl_new\"}}' ;;\n  *\"profile show\"*) printf '{{\"invocation_prefix\":\"/rf:\"}}' ;;\n  *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  *) printf '{{}}' ;;\nesac\nexit 0\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n  *\"profile show\"*) printf '{{\"invocation_prefix\":\"/rf:\"}}' ;;\n  *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  *) printf '{{}}' ;;\nesac\nexit 0\n",
         log = log.display(),
-        ledger = ledger.display(),
     );
     let path = dir.join("ringframe");
     std::fs::write(&path, script).expect("stand-in");
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// The ledger's events of `kind`.
+fn events(ledger: &Path, kind: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(ledger)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|e| e["type"] == kind)
+        .collect()
 }
 
 fn calls(dir: &Path) -> String {
@@ -63,24 +70,19 @@ fn wait<T>(
 fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_again() {
     let tmp = std::env::temp_dir().join(format!("weft-gathers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let bin = tmp.join("bin");
-    let root = tmp.join("project");
+    let (bin, root, home) = (tmp.join("bin"), tmp.join("project"), tmp.join("home"));
     std::fs::create_dir_all(&bin).expect("bin");
-    std::fs::create_dir_all(root.join(".fab7/rf")).expect("record");
-    let ledger = root.join(".fab7/rf/ledger.jsonl");
-    stand_in(&bin, &ledger);
+    stand_in(&bin);
     // SAFETY: this binary holds exactly one test.
+    unsafe {
+        std::env::set_var("HOME", &home);
+    }
+    let ask = support::real_ask(&root, &home, "sh");
+    let ledger = root.join(".fab7/rf/ledger.jsonl");
+    // SAFETY: as above.
     unsafe {
         std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
     }
-    let compiled = serde_json::json!({"schema": "ringframe.ledger/1", "event_id": "evt_1",
-        "type": "ask.compiled", "time": "2026-09-27T10:00:00Z", "id": "ask_1",
-        "actor": {"kind": "human", "id": "me"}, "links": [],
-        "data": {"title": "Ship it", "selected_capability": "native_plan",
-                 "delivery_mode": "human_handoff", "host": {"name": "sh"},
-                 "source": {}, "prompt": {}, "source_verified": "exact", "limitations": [],
-                 "classification": {}, "route_explanation": {}}});
-    std::fs::write(&ledger, format!("{compiled}\n")).expect("ledger");
 
     let socket = protocol::private_socket("weft-gathers");
     let agent = support::agent(&support::agents_dir(&socket));
@@ -133,7 +135,7 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
     });
     let check = || Call::Act {
         act: "check".into(),
-        unit: Some("ask_1".into()),
+        unit: Some(ask.clone()),
         pane: None,
         text: None,
         eval: None,
@@ -152,24 +154,24 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
     let typed = pending(&mut frames, &stream);
     let took = started.elapsed();
     let log = calls(&bin);
-    assert!(log.contains("eval open --host weft"), "Weft gathered through the CLI:\n{log}");
-    assert!(typed.contains("eval debate evl_new"), "only the debate goes to the harness: {typed}");
+    assert!(!log.contains("eval open"), "Weft gathered through the crate, not the CLI:\n{log}");
+    let opened = events(&ledger, "eval.opened");
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    let eval = opened[0]["id"].as_str().expect("an Eval id").to_string();
+    let gathered = events(&ledger, "eval.gathered");
+    assert_eq!(gathered[0]["data"]["host"], "weft", "{gathered:?}");
+    let debate = format!("eval debate {eval}");
+    assert!(typed.contains(&debate), "only the debate goes to the harness: {typed}");
     assert!(!typed.contains("gather"), "{typed}");
     assert!(took < Duration::from_secs(3), "the gather held the press for {took:?}");
 
     // The board has seen the gathered Eval: the next press debates it and
     // opens nothing.
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline
-        && !std::fs::read_to_string(&ledger).unwrap_or_default().contains("eval.gathered")
-    {
-        std::thread::sleep(Duration::from_millis(50));
-    }
     std::thread::sleep(Duration::from_millis(600));
     call(&mut stream, check());
     let again = pending(&mut frames, &stream);
-    assert!(again.contains("eval debate evl_new"), "{again}");
-    assert_eq!(calls(&bin).matches("eval open").count(), 1, "gathered once:\n{}", calls(&bin));
+    assert!(again.contains(&debate), "{again}");
+    assert_eq!(events(&ledger, "eval.opened").len(), 1, "gathered once");
 
     call(&mut stream, Call::Shutdown);
     std::fs::remove_dir_all(&tmp).ok();
