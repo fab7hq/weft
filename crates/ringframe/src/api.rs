@@ -194,6 +194,72 @@ pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
     })
 }
 
+/// A rule an Ask can carry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rule {
+    pub id: String,
+    pub label: String,
+    pub text: String,
+    /// When it matters; a person's own rule may not say.
+    pub when: Option<String>,
+    pub family: Option<String>,
+    /// The layer that last set it: `shipped`, `repo`, or a layer of the
+    /// person's.
+    pub layer: String,
+}
+
+/// The rules for one route and kind of work.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Rules {
+    /// Every practice rule for the tasks, in shipped order: the ones to
+    /// choose from.
+    pub practices: Vec<Rule>,
+    /// Every rule of the route; each prompt carries them all.
+    pub route: Vec<Rule>,
+}
+
+fn rule(e: &Value) -> Rule {
+    let some = |key: &str| e[key].as_str().filter(|s| !s.trim().is_empty()).map(str::to_string);
+    Rule {
+        id: str_of(e, "id"),
+        label: crate::deltas::label(e),
+        text: crate::deltas::squeeze(&str_of(e, "text")),
+        when: some("when"),
+        family: some("family"),
+        layer: some("layer").unwrap_or_else(|| "shipped".into()),
+    }
+}
+
+fn config_error(e: crate::config::ConfigError) -> Error {
+    Error::Refused { code: "config.error".into(), detail: e.0 }
+}
+
+pub fn rules(
+    ws: &Workspace,
+    host: &str,
+    capability: &str,
+    classification: &Classification,
+    overrides: &Overrides,
+) -> Result<Rules, Error> {
+    let layers = crate::rules::with_repo(ws, overrides).map_err(config_error)?;
+    let c = json!({"task": classification.task, "result": classification.result,
+                   "effects": classification.effects});
+    let route = crate::rules::route_rules(&layers, host, capability, &c).map_err(config_error)?;
+    let practices =
+        crate::rules::practice_rules(&layers, &classification.task).map_err(config_error)?;
+    Ok(Rules {
+        practices: practices.iter().map(rule).collect(),
+        route: route.iter().map(rule).collect(),
+    })
+}
+
+/// Move one of the person's rules into the project's `.fab7/rules.toml`,
+/// shared through its Git. Returns the rule as moved, to take out of the
+/// person's own layer.
+pub fn rules_share(ws: &Workspace, id: &str, overrides: &Overrides) -> Result<Value, Error> {
+    Ok(crate::rules::share(ws, id, overrides)?)
+}
+
 /// What is typed into a harness for an Ask, and how it has to be sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prompt {
@@ -779,6 +845,35 @@ mod tests {
                 seal_create(&ws, none).unwrap_err(),
                 Error::SealRefused(vec!["seal.no_open_ask".into()])
             );
+        });
+    }
+
+    #[test]
+    fn rules_lists_the_practices_with_their_layer_when_and_family_and_the_route_rules() {
+        eval_bench(|ws| {
+            let layers = Overrides::parse(&json!([{"layer": "weft", "ringframe": {"deltas": {
+                "practices/software-development": {"entries": [
+                    {"id": "own.1", "text": "One commit per item.",
+                     "applies_to": {"task": ["implement"]}}]}}}}]).to_string()).unwrap();
+            let c = request(WORDS, &layers).classification;
+            let got = rules(ws, "claude-code", "native_goal", &c, &layers).unwrap();
+            let kiss = got.practices.iter().find(|r| r.id == "practice.kiss").expect("kiss");
+            assert_eq!((kiss.label.as_str(), kiss.layer.as_str()), ("KISS", "shipped"));
+            assert!(kiss.when.is_some() && kiss.family.as_deref() == Some("simplicity"));
+            let own = got.practices.iter().find(|r| r.id == "own.1").expect("the person's own");
+            assert_eq!((own.layer.as_str(), own.when.as_deref()), ("weft", None));
+            let route: Vec<&str> = got.route.iter().map(|r| r.label.as_str()).collect();
+            assert_eq!(route, ["Step Loop", "Done Check"]);
+            assert!(got.route.iter().all(|r| r.layer == "shipped"));
+            let on = Overrides::parse(&json!([{"layer": "eval", "ringframe": {"deltas": {
+                "claude-code": {"entries": [{"id": "claude-code.native_goal.done_check",
+                                             "text": "Show each check."}]}}}}]).to_string()).unwrap();
+            let got = rules(ws, "claude-code", "native_goal", &c, &on).unwrap();
+            let done = got.route.iter().find(|r| r.label == "Done Check").unwrap();
+            assert_eq!((done.layer.as_str(), done.text.as_str()), ("eval", "Show each check."));
+
+            let shared = rules_share(ws, "own.1", &layers).unwrap_err();
+            assert_eq!(shared.code(), "rules.incomplete");
         });
     }
 }

@@ -52,7 +52,7 @@ impl Layer {
 /// The synced bundle, then each `--override` layer in order. Later layers win
 /// by id. `relative` is the document's path under `deltas/`, without the
 /// extension.
-fn layers(over: &Overrides, relative: &str) -> Result<Vec<Layer>, ConfigError> {
+pub(crate) fn layers(over: &Overrides, relative: &str) -> Result<Vec<Layer>, ConfigError> {
     let mut docs: Vec<(String, String, Value)> = Vec::new();
     let synced = dir()?.join(format!("{relative}.toml"));
     if synced.exists() || synced.with_extension("yaml").exists() {

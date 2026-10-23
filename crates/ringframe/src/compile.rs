@@ -83,9 +83,10 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         ));
     };
     let config = |e: crate::config::ConfigError| ledger("ask.rules", e.0);
-    let route = rules::route_rules(req.overrides, &host_name, req.capability, &classification)
+    let layers = rules::with_repo(ws, req.overrides).map_err(config)?;
+    let route = rules::route_rules(&layers, &host_name, req.capability, &classification)
         .map_err(config)?;
-    let offered = rules::practice_rules(req.overrides, &tasks).map_err(config)?;
+    let offered = rules::practice_rules(&layers, &tasks).map_err(config)?;
     if let Some(unknown) = req.practices.iter().find(|id| !offered.iter().any(|e| e["id"] == **id)) {
         return Err(ledger(
             "ask.practice_unknown",

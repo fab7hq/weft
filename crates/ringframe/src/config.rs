@@ -200,6 +200,13 @@ impl Overrides {
         self.0.iter().filter_map(move |(name, deltas)| Some((name.as_str(), deltas.get(path)?)))
     }
 
+    /// These layers with one more read before all of them.
+    pub fn with_first(&self, name: &str, deltas: Map<String, Value>) -> Overrides {
+        let mut layers = vec![(name.to_string(), deltas)];
+        layers.extend(self.0.iter().cloned());
+        Overrides(layers, self.1.clone())
+    }
+
     /// The practice domains any layer names.
     pub fn domains(&self) -> impl Iterator<Item = &str> {
         self.0.iter().flat_map(|(_, d)| d.keys()).filter_map(|k| k.strip_prefix("practices/"))
