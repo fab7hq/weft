@@ -224,29 +224,23 @@ fn authorized(
     Ok(out)
 }
 
-/// Domain names are file names, so their hyphens are significant and must
-/// survive normalization.
-const VERBATIM: [&str; 1] = ["domains"];
-
-/// Accept `approval-gated` for `approval_gated`; the vocabulary itself is
-/// unchanged.
+/// The classification as recorded: `task`, `result` and `effects`, with
+/// `workspace-change` read as `workspace_change`. Anything else a skill
+/// sends is left out: nothing reads it.
 fn normalize_classification(c: &Value) -> Value {
-    let Some(map) = c.as_object() else { return c.clone() };
     let fix = |v: &Value| match v.as_str() {
         Some(s) => Value::String(s.replace('-', "_")),
         None => v.clone(),
     };
     let mut out = Map::new();
-    for (k, v) in map {
-        let next = if VERBATIM.contains(&k.as_str()) {
-            v.clone()
-        } else {
-            match v.as_array() {
+    for k in ["task", "result", "effects"] {
+        if let Some(v) = c.get(k) {
+            let next = match v.as_array() {
                 Some(items) => Value::Array(items.iter().map(fix).collect()),
                 None => fix(v),
-            }
-        };
-        out.insert(k.clone(), next);
+            };
+            out.insert(k.to_string(), next);
+        }
     }
     Value::Object(out)
 }
@@ -2614,15 +2608,19 @@ mod tests {
     }
 
     #[test]
-    fn hyphenated_vocabulary_is_accepted() {
+    fn the_classification_keeps_task_result_and_effects_only() {
         bench(|ws| {
             let mut c = cls();
             c["interaction"] = json!("approval-gated");
             c["horizon"] = json!("one-turn");
+            c["concerns"] = json!(["api_surface"]);
+            c["domains"] = json!(["software-development"]);
+            c["result"] = json!("workspace-change");
             compile_with(ws, Args { classification: c, ..Default::default() }).unwrap();
             let recorded = events(ws)[0]["data"]["classification"].clone();
-            assert_eq!(recorded["interaction"], "approval_gated");
-            assert_eq!(recorded["horizon"], "one_turn");
+            let keys: Vec<&String> = recorded.as_object().unwrap().keys().collect();
+            assert_eq!(keys, ["effects", "result", "task"]);
+            assert_eq!(recorded["result"], "workspace_change");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }
@@ -3645,16 +3643,5 @@ mod tests {
             assert_eq!(ev["data"]["selected_capability"], "native_review");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
-    }
-
-    #[test]
-    fn classification_normalization_keeps_domain_names_verbatim() {
-        // `approval-gated` is normalized, but a domain name is a file name:
-        // its hyphens are significant.
-        let c = normalize_classification(
-            &json!({"interaction": "approval-gated", "domains": ["autonomous-trading"]}),
-        );
-        assert_eq!(c["interaction"], "approval_gated");
-        assert_eq!(c["domains"], json!(["autonomous-trading"]));
     }
 }

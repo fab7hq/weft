@@ -534,4 +534,46 @@ mod tests {
             refuses(&ev, expect);
         }
     }
+
+    /// Copy `from` into `to`, folders and all.
+    fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+        std::fs::create_dir_all(to).unwrap();
+        for entry in std::fs::read_dir(from).unwrap().flatten() {
+            let (src, dst) = (entry.path(), to.join(entry.file_name()));
+            if src.is_dir() { copy_tree(&src, &dst) } else { std::fs::copy(&src, &dst).map(|_| ()).unwrap() }
+        }
+    }
+
+    /// Written by the release before an Ask compiled the person's words:
+    /// three Asks whose classifications carry `interaction`, `horizon`,
+    /// `concerns` and `domains`, and what `ask list` said of them then.
+    #[test]
+    fn a_ledger_written_before_this_phase_projects_unchanged() {
+        crate::testing::with_config_home(|_| {
+            let dir = crate::testing::repo();
+            let ws = crate::testing::ws_for(dir.path());
+            let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/ledger-before-verbatim");
+            copy_tree(&fixture.join("rf"), &ws.rf_dir());
+            let old = crate::store::events(&ws).unwrap();
+            assert!(old.iter().any(|e| e["data"]["classification"].get("horizon").is_some()));
+            for e in &old {
+                validate_event(e).unwrap_or_else(|err| panic!("{err}: {e}"));
+            }
+            assert_eq!(crate::store::verify(&ws).unwrap(), Vec::<Value>::new());
+
+            let root = ws.root.to_string_lossy().to_string();
+            let argv: Vec<String> =
+                ["--workspace", &root, "ask", "list"].iter().map(|s| s.to_string()).collect();
+            let run = crate::cli::run(&argv, &mut String::new);
+            let real = std::fs::canonicalize(&ws.root).unwrap().to_string_lossy().to_string();
+            let said = run.out.replace(&real, "/fixture/repo").replace(&root, "/fixture/repo");
+            let got: Value = serde_json::from_str(&said).unwrap();
+            let want: Value = serde_json::from_str(
+                &std::fs::read_to_string(fixture.join("ask-list.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(got, want);
+        });
+    }
 }

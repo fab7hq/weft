@@ -1,0 +1,118 @@
+{
+  "asks": [
+    {
+      "id": "ask_01M5N0Z16JC1G39QG7JDV11EHH",
+      "ask_id": "ask_01M5N0Z16JC1G39QG7JDV11EHH",
+      "title": "Health endpoint",
+      "time": "2026-10-23T18:39:24.412Z",
+      "outcome": "confirmed",
+      "state": "open",
+      "confirmed_at": "2026-10-23T18:39:24.462Z",
+      "base_commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+      "baselines": [
+        {
+          "commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+          "dirty": false,
+          "repo": ".",
+          "root": "/fixture/repo"
+        }
+      ],
+      "unanswered_at": null,
+      "links": [],
+      "capability": "native_plan",
+      "session_ref": "s1",
+      "source_verified": "unverified",
+      "source": {
+        "bytes": 24,
+        "path": "asks/ask_01M5N0Z16JC1G39QG7JDV11EHH/source.txt",
+        "role": "source_intent",
+        "sha256": "120504750f992b33dcae9a82935822737ef63805d5f8c6e11e5a21f00135d90f"
+      },
+      "prompt": {
+        "bytes": 2310,
+        "path": "asks/ask_01M5N0Z16JC1G39QG7JDV11EHH/prompt.txt",
+        "role": "generated_prompt",
+        "sha256": "cb7dddf25375d60fe8ba7e11bb53d03bedf68ba2ca0467825a0d919a5ab5bb6b"
+      },
+      "prompt_path": "/fixture/repo/.fab7/rf/asks/ask_01M5N0Z16JC1G39QG7JDV11EHH/prompt.txt",
+      "delivery": null,
+      "submission": "unobserved"
+    },
+    {
+      "id": "ask_01M5N0Z1AZ1Q0NTZE2BPPJE7W5",
+      "ask_id": "ask_01M5N0Z1AZ1Q0NTZE2BPPJE7W5",
+      "title": "Login bug",
+      "time": "2026-10-23T18:39:24.566Z",
+      "outcome": "cancelled",
+      "state": "cancelled",
+      "confirmed_at": null,
+      "base_commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+      "baselines": [
+        {
+          "commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+          "dirty": false,
+          "repo": ".",
+          "root": "/fixture/repo"
+        }
+      ],
+      "unanswered_at": null,
+      "links": [],
+      "capability": "native_plan",
+      "session_ref": "s1",
+      "source_verified": "unverified",
+      "source": {
+        "bytes": 18,
+        "path": "asks/ask_01M5N0Z1AZ1Q0NTZE2BPPJE7W5/source.txt",
+        "role": "source_intent",
+        "sha256": "d338c281e43726d9304bd38472023b7477c5859f8095acb2285ceacd9c5e8d1f"
+      },
+      "prompt": {
+        "bytes": 19,
+        "path": "asks/ask_01M5N0Z1AZ1Q0NTZE2BPPJE7W5/prompt.txt",
+        "role": "generated_prompt",
+        "sha256": "66119d9f148bd30d11ed5d3fd10d3cef3dd9be4c4cf275fd4541d43ae963fffe"
+      },
+      "prompt_path": "/fixture/repo/.fab7/rf/asks/ask_01M5N0Z1AZ1Q0NTZE2BPPJE7W5/prompt.txt",
+      "delivery": null,
+      "submission": "unobserved"
+    },
+    {
+      "id": "ask_01M5N0Z1FNMM1RWHKWR4MGSGNG",
+      "ask_id": "ask_01M5N0Z1FNMM1RWHKWR4MGSGNG",
+      "title": "Skip the cache",
+      "time": "2026-10-23T18:39:24.733Z",
+      "outcome": "compiled",
+      "state": "open",
+      "confirmed_at": null,
+      "base_commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+      "baselines": [
+        {
+          "commit": "e6b4791a070414c53cff74241246f9a55568fe83",
+          "dirty": false,
+          "repo": ".",
+          "root": "/fixture/repo"
+        }
+      ],
+      "unanswered_at": "2026-10-23T18:39:24.771Z",
+      "links": [],
+      "capability": "native_plan",
+      "session_ref": "s1",
+      "source_verified": "unverified",
+      "source": {
+        "bytes": 15,
+        "path": "asks/ask_01M5N0Z1FNMM1RWHKWR4MGSGNG/source.txt",
+        "role": "source_intent",
+        "sha256": "8e3bc21560124fdd1a7bcca3f3cf803b20faff6572114bbb14170fe89adcbad7"
+      },
+      "prompt": {
+        "bytes": 16,
+        "path": "asks/ask_01M5N0Z1FNMM1RWHKWR4MGSGNG/prompt.txt",
+        "role": "generated_prompt",
+        "sha256": "1295e549bc5b78518a2eee58a2c308df2ac120cbd67c016cf2b5e069952ea5ee"
+      },
+      "prompt_path": "/fixture/repo/.fab7/rf/asks/ask_01M5N0Z1FNMM1RWHKWR4MGSGNG/prompt.txt",
+      "delivery": null,
+      "submission": "unobserved"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+Add GET /health returning uptime.
+Rules:
+For this route:
+- After Approval: Present the plan with ExitPlanMode, naming the checks that will show the work is done before its steps. Once it is approved, carry it out in this session, run those checks, and confirm every requested file exists before you finish.
+
+- KISS: Write readable code: choose clear names and short functions so anyone can understand the logic quickly. Avoid over-engineering: do not add design patterns or layers of abstraction until they are actually required. Build a working solution first and optimize only when performance data proves it necessary. Stick to the immediate requirement instead of guessing at future needs.
+- YAGNI: Add a capability only when a present requirement needs it; leave out options, parameters, and extension points that nobody has asked for, and remove code that no current path uses.
+- Gall: Start from the simplest version that works end to end and grow it; never design the complete system before a simple one runs.
+- Boy Scout: Leave the code you touch better than you found it; for problems outside what the requirement touches, record them instead of fixing them.
+- Testing Pyramid: Write the failing test from the requirement first and make it pass with the smallest change; prefer many fast tests against the real unit, mocking only boundaries you do not own; add slower integration tests only where a unit test cannot see the behaviour.
+- SOLID: Give each unit one responsibility and one reason to change; extend behaviour through the seams the code already has rather than by editing stable code; keep substitutes honest to the contract they replace; keep interfaces small enough that callers depend only on what they use; let high-level code depend on abstractions that already exist, not on concrete details.
+- Least Astonishment: Make names, signatures, defaults, and behaviour match what a reader of the surrounding code would expect; when a choice would surprise, prefer the conventional one.
+- Hyrum: Treat every observable behaviour as something someone depends on; preserve it unless the requirement says to change it, and name the change when you do.
+- Postel: Be strict in what you produce and tolerant in what you accept at a boundary, without silently accepting what the contract forbids.
