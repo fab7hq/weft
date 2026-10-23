@@ -278,7 +278,9 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("seal", Some("create")) => "record the decision that closes the open Asks",
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
-        ("deltas", Some("domains")) => "installed practice domains and whether a layer switches each on",
+        ("deltas", Some("domains")) => {
+            "installed practice domains and whether a layer switches each on"
+        }
         ("deltas", Some("list")) => {
             "every catalog's rules as the layers leave them, each with the layer that last set it"
         }

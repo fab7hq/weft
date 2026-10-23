@@ -28,6 +28,8 @@ pub struct Request<'a> {
     pub selected_by: Value,
     pub links: Vec<Value>,
     pub overrides: &'a Overrides,
+    /// The tool the person sent it from, whose dialog confirmed it.
+    pub via: &'a str,
 }
 
 const CLASSIFIED: [&str; 3] = ["task", "result", "effects"];
@@ -46,9 +48,15 @@ fn score(selected_by: &Value, id: &str) -> f64 {
 
 /// The plan, when one is named, must be one this workspace holds; a route
 /// rule that works a plan needs one.
-fn plan_line(ws: &Workspace, plan: Option<&str>, route: &[Value]) -> Result<Option<String>, AskError> {
-    let held: Vec<String> =
-        workspace::plans(ws).iter().filter_map(|p| p["path"].as_str().map(str::to_string)).collect();
+fn plan_line(
+    ws: &Workspace,
+    plan: Option<&str>,
+    route: &[Value],
+) -> Result<Option<String>, AskError> {
+    let held: Vec<String> = workspace::plans(ws)
+        .iter()
+        .filter_map(|p| p["path"].as_str().map(str::to_string))
+        .collect();
     match plan {
         Some(path) if held.iter().any(|h| h == path) => Ok(Some(format!("Plan: {path}"))),
         Some(path) => Err(ledger(
@@ -84,10 +92,11 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
     };
     let config = |e: crate::config::ConfigError| ledger("ask.rules", e.0);
     let layers = rules::with_repo(ws, req.overrides).map_err(config)?;
-    let route = rules::route_rules(&layers, &host_name, req.capability, &classification)
-        .map_err(config)?;
+    let route =
+        rules::route_rules(&layers, &host_name, req.capability, &classification).map_err(config)?;
     let offered = rules::practice_rules(&layers, &tasks).map_err(config)?;
-    if let Some(unknown) = req.practices.iter().find(|id| !offered.iter().any(|e| e["id"] == **id)) {
+    if let Some(unknown) = req.practices.iter().find(|id| !offered.iter().any(|e| e["id"] == **id))
+    {
         return Err(ledger(
             "ask.practice_unknown",
             format!("'{unknown}' is not a practice rule for {tasks:?} in any layer"),
@@ -154,7 +163,7 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         "host": {
             "name": host_name,
             "version": req.host.get("version").cloned().unwrap_or(Value::Null),
-            "surface": "weft",
+            "surface": req.via,
             "session_ref": req.host.get("session_ref").cloned().unwrap_or(Value::Null),
             "workspace": ws.describe(),
             "profile_id": str_of(&profile, "profile_id"),
@@ -177,7 +186,7 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         "ask.confirmed",
         &ask_id,
         &person,
-        json!({"confirmation": {"by": "person", "via": "weft", "observed_by": "weft"}}),
+        json!({"confirmation": {"by": "person", "via": req.via, "observed_by": req.via}}),
         &[],
     );
     schema::validate_event(&compiled)?;
@@ -220,6 +229,7 @@ mod tests {
                                 "probabilities": {"practice.kiss": 0.9, "practice.yagni": 0.7}}),
             links: Vec::new(),
             overrides: over,
+            via: "weft",
         }
     }
 
@@ -242,8 +252,10 @@ mod tests {
             let lines = ledger_lines(ws);
             assert_eq!(lines.len(), 2, "one compile, one confirmation, nothing else");
             let (compiled, confirmed) = (&lines[0], &lines[1]);
-            assert_eq!((compiled["type"].as_str(), confirmed["type"].as_str()),
-                       (Some("ask.compiled"), Some("ask.confirmed")));
+            assert_eq!(
+                (compiled["type"].as_str(), confirmed["type"].as_str()),
+                (Some("ask.compiled"), Some("ask.confirmed"))
+            );
             assert_eq!((&compiled["id"], &confirmed["id"]), (&json!(ask_id), &json!(ask_id)));
             assert_eq!(confirmed["data"]["confirmation"]["by"], "person");
             assert_eq!(confirmed["data"]["confirmation"]["via"], "weft");
@@ -271,7 +283,8 @@ mod tests {
             req.plan = Some("plans/uptime/plan.md");
             let out = compile(ws, req).unwrap();
             let ask_id = str_of(&out, "ask_id");
-            let stored = std::fs::read_to_string(ws.rf_dir().join(format!("asks/{ask_id}/prompt.txt")));
+            let stored =
+                std::fs::read_to_string(ws.rf_dir().join(format!("asks/{ask_id}/prompt.txt")));
             let stored = stored.unwrap();
             assert!(stored.starts_with("Build the uptime plan.\n"), "{stored}");
             assert_eq!(str_of(&out, "prompt"), stored);
@@ -304,7 +317,8 @@ mod tests {
                 for cap in profile["capabilities"].as_array().unwrap() {
                     let capability = str_of(cap, "id");
                     for result in results {
-                        let cls = json!({"task": ["implement"], "result": result, "effects": ["write"]});
+                        let cls =
+                            json!({"task": ["implement"], "result": result, "effects": ["write"]});
                         let mut req = request(b"Build Phase 1 of plans/uptime/plan.md.", &over);
                         req.host = json!({"name": host});
                         req.capability = &capability;
@@ -320,10 +334,19 @@ mod tests {
                         let (_, block) = prompt.split_once("For this route:\n").expect("the block");
                         let want: Vec<String> = route
                             .iter()
-                            .map(|r| format!("- {}: {}", crate::deltas::label(r),
-                                             crate::deltas::squeeze(&str_of(r, "text"))))
+                            .map(|r| {
+                                format!(
+                                    "- {}: {}",
+                                    crate::deltas::label(r),
+                                    crate::deltas::squeeze(&str_of(r, "text"))
+                                )
+                            })
                             .collect();
-                        assert_eq!(block.lines().collect::<Vec<_>>(), want, "{host} {capability} {result}");
+                        assert_eq!(
+                            block.lines().collect::<Vec<_>>(),
+                            want,
+                            "{host} {capability} {result}"
+                        );
                         seen += want.len();
                     }
                 }
@@ -345,10 +368,12 @@ mod tests {
             let prompt = read_prompt(ws, &compile(ws, req).unwrap());
             let shipped = rules::practice_rules(&over, &["implement".into()]).unwrap();
             let kiss = shipped.iter().find(|e| e["id"] == "practice.kiss").unwrap();
-            let kiss_line =
-                format!("- KISS: {}", crate::deltas::squeeze(&str_of(kiss, "text")));
-            let at = |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
-            assert!(prompt.starts_with("Build Phase 1 of plans/uptime/plan.md.\n\nPlan: plans/uptime/plan.md\n\nRules:\n"));
+            let kiss_line = format!("- KISS: {}", crate::deltas::squeeze(&str_of(kiss, "text")));
+            let at =
+                |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
+            assert!(prompt.starts_with(
+                "Build Phase 1 of plans/uptime/plan.md.\n\nPlan: plans/uptime/plan.md\n\nRules:\n"
+            ));
             assert!(at(&kiss_line) < at("- YAGNI: "));
             assert!(at("- YAGNI: ") < at("For this route:\n- Step Loop: "));
             assert!(at("- Step Loop: ") < at("- Done Check: "));
@@ -364,8 +389,11 @@ mod tests {
                                         "result": "workspace_change", "effects": ["write"]});
             req.practices = vec!["practice.occam".into(), "practice.testing_pyramid".into()];
             let prompt = read_prompt(ws, &compile(ws, req).unwrap());
-            let at = |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
-            assert!(at("While researching:\n- Occam") < at("While implementing:\n- Testing Pyramid"));
+            let at =
+                |needle: &str| prompt.find(needle).unwrap_or_else(|| panic!("{needle}: {prompt}"));
+            assert!(
+                at("While researching:\n- Occam") < at("While implementing:\n- Testing Pyramid")
+            );
             assert!(at("- Testing Pyramid") < at("For this route:"));
         });
     }
@@ -397,9 +425,15 @@ mod tests {
             let mut req = request(&source, &over);
             req.capability = "native_goal";
             req.plan = Some("plans/uptime/plan.md");
-            req.practices = ["practice.kiss", "practice.yagni", "practice.gall",
-                             "practice.boy_scout", "practice.testing_pyramid"]
-                .map(String::from).to_vec();
+            req.practices = [
+                "practice.kiss",
+                "practice.yagni",
+                "practice.gall",
+                "practice.boy_scout",
+                "practice.testing_pyramid",
+            ]
+            .map(String::from)
+            .to_vec();
             // Boy Scout is the person's own addition: no score, so it stays.
             req.selected_by = json!({"by": "sense@0.3.0", "probabilities": {
                 "practice.kiss": 0.4, "practice.yagni": 0.9, "practice.gall": 0.2,
@@ -407,15 +441,20 @@ mod tests {
             let out = compile(ws, req).unwrap();
             let trimmed: Vec<String> = list_of(&out, "trimmed");
             assert!(!trimmed.is_empty(), "the fixture must need trimming");
-            let order = ["practice.gall", "practice.kiss", "practice.testing_pyramid", "practice.yagni"];
+            let order =
+                ["practice.gall", "practice.kiss", "practice.testing_pyramid", "practice.yagni"];
             assert_eq!(trimmed, order[..trimmed.len()], "lowest score first");
             let ask_id = str_of(&out, "ask_id");
             let typed = crate::ask::prompt_text(ws, &ask_id).unwrap();
             assert!(typed.trim_end().chars().count() <= 4000, "{}", typed.chars().count());
             assert!(typed.contains("- Boy Scout: "), "the person's rule stays");
             for kept in order[trimmed.len()..].iter() {
-                let label = rules::practice_rules(&over, &["implement".into()]).unwrap()
-                    .into_iter().find(|e| e["id"] == *kept).map(|e| crate::deltas::label(&e)).unwrap();
+                let label = rules::practice_rules(&over, &["implement".into()])
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| e["id"] == *kept)
+                    .map(|e| crate::deltas::label(&e))
+                    .unwrap();
                 assert!(typed.contains(&format!("- {label}: ")), "{kept} kept");
             }
             assert!(typed.contains("- Step Loop: ") && typed.contains("- Done Check: "));
@@ -435,12 +474,19 @@ mod tests {
             req.plan = Some("plans/uptime/plan.md");
             let e = compile(ws, req).unwrap_err().to_string();
             assert!(e.starts_with("ask.too_long"), "{e}");
-            let over_by: usize = e.split_whitespace()
-                .find_map(|w| w.parse().ok()).expect("the overage in characters");
-            let route = rules::route_rules(&over, "claude-code", "native_goal", &implement()).unwrap();
-            let bare = rules::compose(&String::from_utf8_lossy(&source),
-                                      &["Plan: plans/uptime/plan.md".into()], &[], &route,
-                                      &["implement".into()]);
+            let over_by: usize = e
+                .split_whitespace()
+                .find_map(|w| w.parse().ok())
+                .expect("the overage in characters");
+            let route =
+                rules::route_rules(&over, "claude-code", "native_goal", &implement()).unwrap();
+            let bare = rules::compose(
+                &String::from_utf8_lossy(&source),
+                &["Plan: plans/uptime/plan.md".into()],
+                &[],
+                &route,
+                &["implement".into()],
+            );
             assert_eq!(over_by, "/goal ".len() + bare.trim_end().chars().count() - 4000, "{e}");
             assert!(crate::store::events(ws).unwrap().is_empty(), "nothing recorded");
         });

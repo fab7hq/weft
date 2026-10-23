@@ -112,28 +112,28 @@ pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
     ringframe::workspace::install_config(Some(&config)).unwrap();
     let ws = api::workspace(root).unwrap();
     ws.ensure().unwrap();
-    let staged = ws.rf_dir().join("tmp/stage-1");
-    std::fs::create_dir_all(&staged).unwrap();
-    std::fs::write(staged.join("source.txt"), "ship it\n").unwrap();
-    std::fs::write(staged.join("prompt.txt"), "Ship it.\n").unwrap();
     let overrides = ringframe::config::Overrides::default();
     let compiled = api::compile(
         &ws,
         api::Compile {
-            staged: &staged,
-            title: "Ship it",
+            source: "Ship it.",
+            harness: api::Harness { name: host, version: None, session_ref: None },
             capability: "human_handoff",
-            classification: serde_json::json!({"task": ["plan"], "result": "plan",
-                "interaction": "approval_gated", "horizon": "session", "effects": ["read"]}),
-            route: serde_json::json!({"fits": "bounded", "alternatives": [],
-                "continuation": "manual", "effects": "reads", "gaps": []}),
-            host: serde_json::json!({"name": host}),
+            classification: api::Classification {
+                task: vec!["plan".into()],
+                result: "plan".into(),
+                effects: vec!["read".into()],
+            },
+            plan: None,
+            practices: Vec::new(),
+            classified_by: api::Chooser::Person,
+            selected_by: api::Chooser::Person,
             links: Vec::new(),
             overrides: &overrides,
+            via: "weft",
         },
     )
     .unwrap();
-    ringframe::ask::confirm(&ws, &compiled.ask_id, None).unwrap();
     std::fs::write(root.join("work.txt"), "the work\n").unwrap();
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "work"]);

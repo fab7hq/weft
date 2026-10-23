@@ -158,7 +158,8 @@ pub fn trim(
         let lowest = (0..practices.len())
             .rev()
             .min_by(|&a, &b| {
-                let (sa, sb) = (score(&text(&practices[a], "id")), score(&text(&practices[b], "id")));
+                let (sa, sb) =
+                    (score(&text(&practices[a], "id")), score(&text(&practices[b], "id")));
                 sa.total_cmp(&sb)
             })
             .expect("not empty");
@@ -188,7 +189,11 @@ fn domain_of(id: &str, over: &Overrides) -> Result<String, ConfigError> {
 /// `rules.toml` as a layer: each rule under the domain that ships its id,
 /// and each pack it names switched on.
 fn repo_layer(doc: &Value, over: &Overrides) -> Result<Map<String, Value>, ConfigError> {
-    if let Some(key) = doc.as_object().into_iter().flatten().map(|(k, _)| k)
+    if let Some(key) = doc
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, _)| k)
         .find(|k| !["packs", "entries"].contains(&k.as_str()))
     {
         return Err(ConfigError(format!("{REPO_FILE}: unknown key \"{key}\"")));
@@ -200,7 +205,8 @@ fn repo_layer(doc: &Value, over: &Overrides) -> Result<Map<String, Value>, Confi
     for e in doc["entries"].as_array().into_iter().flatten() {
         let path = format!("practices/{}", domain_of(&text(e, "id"), over)?);
         let slot = deltas.entry(path).or_insert_with(|| json!({}));
-        let list = slot.as_object_mut().expect("a document").entry("entries").or_insert_with(|| json!([]));
+        let list =
+            slot.as_object_mut().expect("a document").entry("entries").or_insert_with(|| json!([]));
         list.as_array_mut().expect("a list").push(e.clone());
     }
     Ok(deltas)
@@ -234,20 +240,25 @@ pub fn share(ws: &Workspace, id: &str, over: &Overrides) -> Result<Value, AskErr
     let path = ws.root.join(REPO_FILE);
     for p in [ws.root.join(".fab7"), path.clone()] {
         if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err(ledger("rules.link", format!("{} is a link; RingFrame writes no link", p.display())));
+            return Err(ledger(
+                "rules.link",
+                format!("{} is a link; RingFrame writes no link", p.display()),
+            ));
         }
     }
     let mut team = if path.exists() { config::load_toml(&path)? } else { json!({}) };
     if team["entries"].as_array().is_some_and(|l| l.iter().any(|e| e["id"] == id)) {
         return Err(ledger("rules.already_shared", format!("'{id}' is in {REPO_FILE} already")));
     }
-    let list = team.as_object_mut().expect("a document").entry("entries").or_insert_with(|| json!([]));
+    let list =
+        team.as_object_mut().expect("a document").entry("entries").or_insert_with(|| json!([]));
     list.as_array_mut().expect("a list").push(entry.clone());
     // The team's file as it would be, on its own, must load.
     let layer = repo_layer(&team, over)?;
     let alone = Overrides::default().with_first("repo", layer.clone());
     for domain in layer.keys().filter_map(|k| k.strip_prefix("practices/")) {
-        deltas::load_practice_catalog(domain, &alone).map_err(|e| ledger("rules.incomplete", e.0))?;
+        deltas::load_practice_catalog(domain, &alone)
+            .map_err(|e| ledger("rules.incomplete", e.0))?;
     }
     let block = toml::to_string(&json!({"entries": [entry]}))
         .map_err(|e| ledger("rules.share", e.to_string()))?;
@@ -295,8 +306,14 @@ mod tests {
         let path = config::config_dir().join("deltas/practices/software-development.toml");
         let mut text = std::fs::read_to_string(&path).unwrap();
         let mut doc = config::load_toml_text(&text, "fixture").unwrap();
-        let entry = doc["entries"].as_array_mut().unwrap().iter_mut()
-            .find(|e| e["id"] == id).unwrap().as_object_mut().unwrap();
+        let entry = doc["entries"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|e| e["id"] == id)
+            .unwrap()
+            .as_object_mut()
+            .unwrap();
         edit(entry);
         text = toml::to_string(&doc).unwrap();
         std::fs::write(path, text).unwrap();
@@ -346,9 +363,12 @@ mod tests {
             }
             // A rule only for planning is not for implementing.
             assert!(!got.contains(&"practice.pareto".to_string()));
-            let shipped = deltas::load_practice_catalog(deltas::DEFAULT_DOMAIN, &Overrides::default());
+            let shipped =
+                deltas::load_practice_catalog(deltas::DEFAULT_DOMAIN, &Overrides::default());
             let shipped = shipped.unwrap();
-            assert!(shipped.get("concerns").is_none() && shipped["render"].get("core_cap").is_none());
+            assert!(
+                shipped.get("concerns").is_none() && shipped["render"].get("core_cap").is_none()
+            );
         });
     }
 
@@ -432,21 +452,31 @@ mod tests {
             assert_eq!(kiss(&offered(json!([])))["layer"], "shipped");
             team_file(ws, "[[entries]]\nid = \"practice.kiss\"\ntext = \"The team's KISS.\"\n");
             let k = kiss(&offered(json!([])));
-            assert_eq!((k["layer"].as_str(), k["text"].as_str()), (Some("repo"), Some("The team's KISS.")));
+            assert_eq!(
+                (k["layer"].as_str(), k["text"].as_str()),
+                (Some("repo"), Some("The team's KISS."))
+            );
             // Still the shipped rule's `when` and family: the team changed the wording.
             assert!(!text(&k, "when").is_empty());
             let k = kiss(&offered(json!([person("weft", "Mine.")])));
             assert_eq!((k["layer"].as_str(), k["text"].as_str()), (Some("weft"), Some("Mine.")));
-            let k = kiss(&offered(json!([person("weft", "Mine."), person("weft-project", "Here.")])));
-            assert_eq!((k["layer"].as_str(), k["text"].as_str()), (Some("weft-project"), Some("Here.")));
+            let k =
+                kiss(&offered(json!([person("weft", "Mine."), person("weft-project", "Here.")])));
+            assert_eq!(
+                (k["layer"].as_str(), k["text"].as_str()),
+                (Some("weft-project"), Some("Here."))
+            );
         });
     }
 
     #[test]
     fn a_team_rule_says_when_it_matters_and_a_team_can_switch_a_pack_on() {
         crate::testing::eval_bench(|ws| {
-            team_file(ws, "[[entries]]\nid = \"team.commits\"\nlabel = \"Commits\"\n\
-                           text = \"One commit per item.\"\napplies_to = { task = [\"implement\"] }\n");
+            team_file(
+                ws,
+                "[[entries]]\nid = \"team.commits\"\nlabel = \"Commits\"\n\
+                           text = \"One commit per item.\"\napplies_to = { task = [\"implement\"] }\n",
+            );
             let e = with_repo(ws, &Overrides::default())
                 .and_then(|o| practice_rules(&o, &["implement".into()]))
                 .unwrap_err();
@@ -457,11 +487,17 @@ mod tests {
                 config::config_dir().join("deltas/practices/autonomous-trading.toml"),
             )
             .unwrap();
-            team_file(ws, "packs = [\"autonomous-trading\"]\n\n[[entries]]\nid = \"team.commits\"\n\
+            team_file(
+                ws,
+                "packs = [\"autonomous-trading\"]\n\n[[entries]]\nid = \"team.commits\"\n\
                            label = \"Commits\"\nwhen = \"Work is committed.\"\nfamily = \"cleanup\"\n\
-                           text = \"One commit per item.\"\napplies_to = { task = [\"implement\"] }\n");
-            let rules = practice_rules(&with_repo(ws, &Overrides::default()).unwrap(),
-                                       &["implement".into()]).unwrap();
+                           text = \"One commit per item.\"\napplies_to = { task = [\"implement\"] }\n",
+            );
+            let rules = practice_rules(
+                &with_repo(ws, &Overrides::default()).unwrap(),
+                &["implement".into()],
+            )
+            .unwrap();
             let got = ids(&rules);
             assert!(got.contains(&"team.commits".to_string()), "{got:?}");
             assert!(got.contains(&"practice.idempotent_orders".to_string()), "{got:?}");
@@ -501,12 +537,18 @@ mod tests {
             let file = std::fs::read_to_string(ws.root.join(REPO_FILE)).unwrap();
             assert!(file.starts_with("# Our rules.\n"), "the team's file keeps what it held");
             let ignored = std::process::Command::new("git")
-                .arg("-C").arg(&ws.root).args(["check-ignore", "-q", REPO_FILE])
-                .status().unwrap();
+                .arg("-C")
+                .arg(&ws.root)
+                .args(["check-ignore", "-q", REPO_FILE])
+                .status()
+                .unwrap();
             assert_eq!(ignored.code(), Some(1), "Git keeps the team's file");
             // Without the person's layer, the team's file offers it.
-            let rules = practice_rules(&with_repo(ws, &Overrides::default()).unwrap(),
-                                       &["implement".into()]).unwrap();
+            let rules = practice_rules(
+                &with_repo(ws, &Overrides::default()).unwrap(),
+                &["implement".into()],
+            )
+            .unwrap();
             let own = rules.iter().find(|e| e["id"] == "own.1").expect("shared");
             assert_eq!(own["layer"], "repo");
 

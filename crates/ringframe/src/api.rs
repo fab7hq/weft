@@ -132,7 +132,8 @@ impl Chooser {
     }
 }
 
-/// What the person sent from Weft's dialog. Sending is the confirmation.
+/// What the person sent, from the one dialog of the tool they use. Sending is
+/// the confirmation.
 pub struct Compile<'a> {
     /// The person's words, kept as they are.
     pub source: &'a str,
@@ -150,6 +151,8 @@ pub struct Compile<'a> {
     pub selected_by: Chooser,
     pub links: Vec<Link<'a>>,
     pub overrides: &'a Overrides,
+    /// The tool, by name; recorded as where the person confirmed it.
+    pub via: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +181,7 @@ pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
             selected_by: req.selected_by.recorded(),
             links: req.links.iter().map(|l| json!({"rel": l.rel, "id": l.id})).collect(),
             overrides: req.overrides,
+            via: req.via,
         },
     )?;
     Ok(Compiled {
@@ -553,6 +557,7 @@ mod tests {
             selected_by: Chooser::Person,
             links: Vec::new(),
             overrides: over,
+            via: "weft",
         }
     }
 
@@ -851,10 +856,14 @@ mod tests {
     #[test]
     fn rules_lists_the_practices_with_their_layer_when_and_family_and_the_route_rules() {
         eval_bench(|ws| {
-            let layers = Overrides::parse(&json!([{"layer": "weft", "ringframe": {"deltas": {
+            let layers = Overrides::parse(
+                &json!([{"layer": "weft", "ringframe": {"deltas": {
                 "practices/software-development": {"entries": [
                     {"id": "own.1", "text": "One commit per item.",
-                     "applies_to": {"task": ["implement"]}}]}}}}]).to_string()).unwrap();
+                     "applies_to": {"task": ["implement"]}}]}}}}])
+                .to_string(),
+            )
+            .unwrap();
             let c = request(WORDS, &layers).classification;
             let got = rules(ws, "claude-code", "native_goal", &c, &layers).unwrap();
             let kiss = got.practices.iter().find(|r| r.id == "practice.kiss").expect("kiss");
@@ -865,9 +874,13 @@ mod tests {
             let route: Vec<&str> = got.route.iter().map(|r| r.label.as_str()).collect();
             assert_eq!(route, ["Step Loop", "Done Check"]);
             assert!(got.route.iter().all(|r| r.layer == "shipped"));
-            let on = Overrides::parse(&json!([{"layer": "eval", "ringframe": {"deltas": {
+            let on = Overrides::parse(
+                &json!([{"layer": "eval", "ringframe": {"deltas": {
                 "claude-code": {"entries": [{"id": "claude-code.native_goal.done_check",
-                                             "text": "Show each check."}]}}}}]).to_string()).unwrap();
+                                             "text": "Show each check."}]}}}}])
+                .to_string(),
+            )
+            .unwrap();
             let got = rules(ws, "claude-code", "native_goal", &c, &on).unwrap();
             let done = got.route.iter().find(|r| r.label == "Done Check").unwrap();
             assert_eq!((done.layer.as_str(), done.text.as_str()), ("eval", "Show each check."));

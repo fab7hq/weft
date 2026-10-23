@@ -193,7 +193,9 @@ pub fn load_practice_catalog(domain: &str, over: &Overrides) -> Result<Value, Co
         if shared.contains(id) {
             check(
                 ["label", "when", "family"].iter().all(|k| !text_of(e, k).trim().is_empty()),
-                format!("practice entry {id}: a shipped or shared rule needs label, when and family"),
+                format!(
+                    "practice entry {id}: a shipped or shared rule needs label, when and family"
+                ),
             )?;
             let family = text_of(e, "family");
             check(
@@ -503,8 +505,7 @@ pub fn render(
     }
 
     // ---- practice layers: the base first, then each pack switched on
-    let names =
-        if domain == DEFAULT_DOMAIN { domains_on(over)? } else { vec![domain.to_string()] };
+    let names = if domain == DEFAULT_DOMAIN { domains_on(over)? } else { vec![domain.to_string()] };
     let blocks: Vec<Practice> = names
         .iter()
         .map(|n| practice(over, n, classification, statuses))
@@ -811,8 +812,14 @@ mod tests {
     fn practice_selection_is_by_task() {
         bench(|_, _| {
             let implementing = selected(&rendered("codex", &impl_task()));
-            for want in ["practice.kiss", "practice.yagni", "practice.testing_pyramid",
-                         "practice.boy_scout", "practice.hyrum", "practice.dry"] {
+            for want in [
+                "practice.kiss",
+                "practice.yagni",
+                "practice.testing_pyramid",
+                "practice.boy_scout",
+                "practice.hyrum",
+                "practice.dry",
+            ] {
                 assert!(implementing.contains(&want.to_string()), "{want}");
             }
             let text = text_of(&rendered("codex", &impl_task()), "text");
@@ -948,7 +955,14 @@ mod tests {
     // ---- catalog reachability and task coverage ----------------------------
 
     const TASKS: [&str; 9] = [
-        "question", "research", "clarify", "plan", "implement", "diagnose", "review", "operate",
+        "question",
+        "research",
+        "clarify",
+        "plan",
+        "implement",
+        "diagnose",
+        "review",
+        "operate",
         "document",
     ];
 

@@ -540,7 +540,11 @@ mod tests {
         std::fs::create_dir_all(to).unwrap();
         for entry in std::fs::read_dir(from).unwrap().flatten() {
             let (src, dst) = (entry.path(), to.join(entry.file_name()));
-            if src.is_dir() { copy_tree(&src, &dst) } else { std::fs::copy(&src, &dst).map(|_| ()).unwrap() }
+            if src.is_dir() {
+                copy_tree(&src, &dst)
+            } else {
+                std::fs::copy(&src, &dst).map(|_| ()).unwrap()
+            }
         }
     }
 
