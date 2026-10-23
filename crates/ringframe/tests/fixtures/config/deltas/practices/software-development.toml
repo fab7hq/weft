@@ -5,23 +5,12 @@ domain = "software-development"
 description = """\
 Building and changing software: design, implementation, refactoring, tests, \
 debugging, review, dependencies, and running what you shipped."""
-render = { heading = "Rules:", core_cap = 5 }
+render = { heading = "Rules:" }
 source = "https://lawsofsoftwareengineering.com/"
-concerns = [
-  "api_surface",
-  "auth",
-  "data_migration",
-  "concurrency",
-  "performance",
-  "refactor",
-  "dependency_change",
-  "ui",
-  "cli",
-  "tests_only",
-  "operate",
-]
 
-# tier: core | situational | reference (default situational); concerns from the domain vocabulary
+# when: the situation the rule matters in, matched against the request.
+# family: scope, simplicity, reuse, testing, cleanup or domain; one rule of
+# each family is proposed at most.
 
 # ================= design philosophies
 
@@ -30,7 +19,8 @@ id = "practice.kiss"
 label = "KISS"
 principle = "KISS"
 applies_to = { task = ["implement", "plan"] }
-tier = "core"
+when = "The work writes or designs code where a simpler shape could do: new modules, layers, patterns or abstractions."
+family = "simplicity"
 text = """\
 Write readable code: choose clear names and short functions so anyone can \
 understand the logic quickly. Avoid over-engineering: do not add design \
@@ -44,7 +34,8 @@ id = "practice.yagni"
 label = "YAGNI"
 principle = "YAGNI"
 applies_to = { task = ["implement", "plan"] }
-tier = "core"
+when = "The request could invite extra scope: options, settings, extensibility, 'support for', future cases."
+family = "scope"
 text = """\
 Add a capability only when a present requirement needs it; leave out \
 options, parameters, and extension points that nobody has asked for, and \
@@ -55,7 +46,8 @@ id = "practice.dry"
 label = "DRY"
 principle = "DRY"
 applies_to = { task = ["implement"] }
-concerns = ["refactor"]
+when = "The change repeats logic that already exists elsewhere, or gathers repeated code into one place."
+family = "reuse"
 text = """\
 Give every piece of knowledge one authoritative place; when the same logic \
 appears a third time, consolidate it, and until then tolerate the \
@@ -66,7 +58,8 @@ id = "practice.solid"
 label = "SOLID"
 principle = "SOLID"
 applies_to = { task = ["implement"] }
-concerns = ["refactor", "api_surface"]
+when = "The change reshapes units, what each is responsible for, or the interfaces between them."
+family = "simplicity"
 text = """\
 Give each unit one responsibility and one reason to change; extend behaviour \
 through the seams the code already has rather than by editing stable code; \
@@ -79,7 +72,8 @@ id = "practice.demeter"
 label = "Demeter"
 principle = "Law of Demeter"
 applies_to = { task = ["implement"] }
-concerns = ["refactor"]
+when = "The code reaches through one object into another's internals, or the change would add such a chain."
+family = "simplicity"
 text = """\
 Talk to immediate collaborators only; do not reach through one object to \
 operate on another's internals."""
@@ -89,7 +83,8 @@ id = "practice.least_astonishment"
 label = "Least Astonishment"
 principle = "Principle of Least Astonishment"
 applies_to = { task = ["implement", "document"] }
-concerns = ["api_surface", "cli", "ui"]
+when = "The change adds or renames a name, signature, default, flag or visible behaviour that others will use."
+family = "reuse"
 text = """\
 Make names, signatures, defaults, and behaviour match what a reader of the \
 surrounding code would expect; when a choice would surprise, prefer the \
@@ -102,7 +97,8 @@ id = "practice.gall"
 label = "Gall"
 principle = "Gall's Law"
 applies_to = { task = ["plan", "implement"] }
-tier = "core"
+when = "The work builds a new system or feature that could start as a smaller version running end to end."
+family = "simplicity"
 text = """\
 Start from the simplest version that works end to end and grow it; never \
 design the complete system before a simple one runs."""
@@ -112,8 +108,8 @@ id = "practice.hyrum"
 label = "Hyrum"
 principle = "Hyrum's Law"
 applies_to = { task = ["implement"] }
-tier = "situational"
-concerns = ["api_surface", "refactor"]
+when = "The change alters behaviour others can observe: an API, an output or file format, a command, a default."
+family = "reuse"
 text = """\
 Treat every observable behaviour as something someone depends on; preserve \
 it unless the requirement says to change it, and name the change when you \
@@ -124,7 +120,8 @@ id = "practice.leaky_abstractions"
 label = "Leaky Abstractions"
 principle = "Law of Leaky Abstractions and Tesler's Law"
 applies_to = { task = ["implement", "plan"] }
-concerns = ["refactor"]
+when = "The work wraps complex or unreliable behaviour behind a new layer."
+family = "simplicity"
 text = """\
 Do not add a layer to hide complexity that will leak through anyway; put \
 irreducible complexity where it is visible and tested, and do not pretend it \
@@ -135,7 +132,8 @@ id = "practice.second_system"
 label = "Second System"
 principle = "Second-System Effect"
 applies_to = { task = ["plan"] }
-concerns = ["refactor"]
+when = "The work replaces or rewrites something that already works."
+family = "scope"
 text = """\
 When replacing something that works, carry over only what the requirement \
 needs; do not use the rewrite to add everything the first version lacked."""
@@ -145,7 +143,8 @@ id = "practice.unintended_consequences"
 label = "Unintended Consequences"
 principle = "Law of Unintended Consequences"
 applies_to = { task = ["implement", "operate"] }
-concerns = ["data_migration", "concurrency", "operate"]
+when = "The change touches a running or tightly coupled system: stored data, concurrency, a deployment."
+family = "testing"
 text = """\
 Change one thing at a time in a complex system and observe the effect before \
 the next change."""
@@ -157,8 +156,8 @@ id = "practice.knuth"
 label = "Knuth"
 principle = "Premature Optimization"
 applies_to = { task = ["plan", "implement"] }
-tier = "situational"
-concerns = ["performance"]
+when = "The request is about speed, or the change is tempted to optimise."
+family = "simplicity"
 text = "Do not optimize on suspicion; measure first, and optimize the measured bottleneck only."
 
 [[entries]]
@@ -166,7 +165,8 @@ id = "practice.ninety_ninety"
 label = "Ninety-Ninety"
 principle = "Ninety-Ninety Rule and Hofstadter's Law"
 applies_to = { task = ["plan"] }
-tier = "core"
+when = "A plan breaks large work into items."
+family = "scope"
 text = """\
 Break the work into small items, each with a done condition a command or a \
 named person can check, so that the last ten percent is visible rather than \
@@ -177,7 +177,8 @@ id = "practice.goodhart"
 label = "Goodhart"
 principle = "Goodhart's Law"
 applies_to = { task = ["plan", "review"] }
-concerns = ["tests_only"]
+when = "Done is being defined, or progress is measured by a number such as coverage or test count."
+family = "testing"
 text = """\
 Define done by the requirement being met, not by a proxy such as coverage, \
 line count, or test count; check the behaviour the requirement describes."""
@@ -187,7 +188,8 @@ id = "practice.pareto"
 label = "Pareto"
 principle = "Pareto Principle"
 applies_to = { task = ["plan"] }
-tier = "core"
+when = "A plan orders work that has uncertain or risky parts."
+family = "scope"
 text = """\
 Order items by the value and risk they retire; put the thinnest end-to-end \
 path through the riskiest part first."""
@@ -197,8 +199,8 @@ id = "practice.brooks"
 label = "Brooks"
 principle = "Brooks's Law and Amdahl's Law"
 applies_to = { task = ["plan", "implement"] }
-requires = { host_capability = "subagents" }
-concerns = ["refactor", "data_migration"]
+when = "The work could be split across several agents or sub-agents."
+family = "scope"
 text = """\
 Split work across agents only along independent items; hand research and \
 review to a sub-agent when the context would grow past what one agent holds \
@@ -211,7 +213,8 @@ id = "practice.boy_scout"
 label = "Boy Scout"
 principle = "Boy Scout Rule and Broken Windows"
 applies_to = { task = ["implement"] }
-tier = "core"
+when = "The change edits existing code that has problems of its own nearby."
+family = "cleanup"
 text = """\
 Leave the code you touch better than you found it; for problems outside what \
 the requirement touches, record them instead of fixing them."""
@@ -221,7 +224,8 @@ id = "practice.testing_pyramid"
 label = "Testing Pyramid"
 principle = "Testing Pyramid"
 applies_to = { task = ["implement"] }
-tier = "core"
+when = "The work changes behaviour that tests can check."
+family = "testing"
 text = """\
 Write the failing test from the requirement first and make it pass with the \
 smallest change; prefer many fast tests against the real unit, mocking only \
@@ -233,7 +237,8 @@ id = "practice.pesticide"
 label = "Pesticide Paradox"
 principle = "Pesticide Paradox"
 applies_to = { task = ["diagnose", "implement"] }
-concerns = ["tests_only"]
+when = "A fault got past the existing tests."
+family = "testing"
 text = """\
 When a fault escaped the existing tests, add the test that would have caught \
 it rather than re-running the ones that did not."""
@@ -243,7 +248,8 @@ id = "practice.kernighan"
 label = "Kernighan"
 principle = "Kernighan's Law"
 applies_to = { task = ["implement", "review"] }
-concerns = ["refactor"]
+when = "The change could be written in a clever, compact way that is harder to read."
+family = "simplicity"
 text = """\
 Write code plain enough to debug at half your cleverness; when a clever \
 construct saves lines but costs clarity, choose clarity."""
@@ -253,7 +259,8 @@ id = "practice.linus"
 label = "Linus"
 principle = "Linus's Law"
 applies_to = { task = ["review"] }
-tier = "core"
+when = "A change or a plan is being reviewed."
+family = "testing"
 text = """\
 Review as an independent reader: judge the change against the requirement \
 rather than its description, and report each finding with the concrete way \
@@ -264,8 +271,8 @@ id = "practice.postel"
 label = "Postel"
 principle = "Postel's Law"
 applies_to = { task = ["implement"] }
-tier = "situational"
-concerns = ["api_surface", "auth"]
+when = "The change reads or writes data at a boundary: an API, a file, a protocol, input from people."
+family = "reuse"
 text = """\
 Be strict in what you produce and tolerant in what you accept at a boundary, \
 without silently accepting what the contract forbids."""
@@ -275,7 +282,8 @@ id = "practice.murphy"
 label = "Murphy"
 principle = "Murphy's Law"
 applies_to = { task = ["operate", "implement"] }
-concerns = ["operate", "data_migration"]
+when = "The work changes live systems, data or deployments, where any step can fail."
+family = "testing"
 text = """\
 Assume every step can fail; verify the current state before changing it and \
 name the rollback before the first change."""
@@ -287,7 +295,8 @@ id = "practice.occam"
 label = "Occam"
 principle = "Occam's Razor and First Principles"
 applies_to = { task = ["diagnose", "research"] }
-tier = "core"
+when = "A fault is being diagnosed or a question researched."
+family = "testing"
 text = """\
 Reproduce the fault first and reduce it to the smallest case; prefer the \
 simplest explanation that fits all the evidence; reason from what the system \
@@ -298,7 +307,8 @@ id = "practice.confirmation_bias"
 label = "Confirmation Bias"
 principle = "Confirmation Bias and Dunning-Kruger"
 applies_to = { task = ["research", "question", "clarify", "review", "diagnose"] }
-tier = "core"
+when = "A conclusion is drawn from evidence: a diagnosis, a review, research, an answer."
+family = "testing"
 text = """\
 Look for the evidence that would prove you wrong before concluding; keep \
 what you observed apart from what you inferred, and state your confidence."""
@@ -308,7 +318,8 @@ id = "practice.map_territory"
 label = "Map Is Not Territory"
 principle = "The Map Is Not the Territory"
 applies_to = { task = ["diagnose", "implement"] }
-concerns = ["dependency_change"]
+when = "The work relies on an API, option, library or behaviour that may differ from its docs or from memory."
+family = "testing"
 text = """\
 Trust the running system and the repository over documentation, memory, or \
 assumption; confirm an API, option, or behaviour exists before relying on \
@@ -319,7 +330,8 @@ id = "practice.sunk_cost"
 label = "Sunk Cost"
 principle = "Sunk Cost Fallacy"
 applies_to = { task = ["implement", "plan"] }
-concerns = ["refactor", "dependency_change"]
+when = "An approach is struggling, or the effort already spent pulls toward continuing it."
+family = "cleanup"
 text = """\
 When an approach is not working, abandon it regardless of the effort already \
 spent, and say so."""
@@ -329,7 +341,8 @@ id = "practice.lindy"
 label = "Lindy"
 principle = "Lindy Effect"
 applies_to = { task = ["research", "plan"] }
-concerns = ["dependency_change"]
+when = "The work chooses a library, tool, pattern or approach."
+family = "reuse"
 text = """\
 Prefer approaches, libraries, and patterns with a long record over new ones \
 unless the requirement needs what only the new one offers."""
@@ -341,8 +354,9 @@ id = "practice.assumptions"
 label = "Assumptions"
 principle = "owner practice"
 applies_to = { task = ["plan", "implement", "diagnose"] }
-tier = "core"
+when = "The request leaves details unstated that the work must decide."
+family = "scope"
 text = """\
 Where the requirement is silent, write the assumption you are making in one \
 line before acting on it."""
-status = "candidate"   # q09 found no effect from the abstract form; this form is to be evaluated
+status = "candidate"   # the abstract form showed no effect; this form is to be evaluated

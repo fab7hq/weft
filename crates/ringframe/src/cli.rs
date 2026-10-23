@@ -278,7 +278,7 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("seal", Some("create")) => "record the decision that closes the open Asks",
         ("seal", Some("check")) => "re-verify a receipt and say whether the subject still matches",
         ("ledger", _) => "re-check every event and every published artifact",
-        ("deltas", Some("domains")) => "installed practice domains and their concern vocabularies",
+        ("deltas", Some("domains")) => "installed practice domains and whether a layer switches each on",
         ("deltas", Some("list")) => {
             "every catalog's rules as the layers leave them, each with the layer that last set it"
         }
@@ -2219,7 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn deltas_domains_and_an_unknown_domain_is_refused() {
+    fn deltas_domains_lists_the_base() {
         cli(|c| {
             let (code, out, _) = c.go(&["deltas", "domains", "--json"]);
             assert_eq!(code, 0);
@@ -2230,29 +2230,6 @@ mod tests {
                 .find(|d| d["base"] == json!(true))
                 .unwrap();
             assert_eq!(base["domain"], "software-development");
-            assert!(!base["concerns"].as_array().unwrap().is_empty());
-            let cls = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read"],"domains":["teleportation"]}"#;
-            let staged = c.staged("stage-1");
-            let host = host_json("s1");
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "T",
-                "--capability",
-                "native_plan",
-                "--classification",
-                cls,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "ask.classification");
-            assert!(out["detail"].as_str().unwrap().contains("installed"));
         });
     }
 
@@ -2646,23 +2623,6 @@ limitations = []
     }
 
     #[test]
-    fn a_delta_listing_exposes_the_merged_concern_vocabulary() {
-        cli(|c| {
-            let over = r#"[{"layer":"weft","ringframe":{"deltas":{"practices/software-development":{"concerns":["team_boundary"]}}}}]"#;
-            let (code, out, err) = c.go(&["deltas", "domains", "--json", "--override", over]);
-            assert_eq!(code, 0);
-            assert_eq!(err, "", "no folder, nothing to report");
-            let base = out["domains"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|d| d["base"] == true)
-                .expect("the base domain");
-            assert_eq!(base["concerns"], json!(["team_boundary"]));
-        });
-    }
-
-    #[test]
     fn a_malformed_override_is_refused_by_every_command_that_reads_configuration() {
         cli(|c| {
             for cmd in [
@@ -2715,7 +2675,7 @@ limitations = []
             std::fs::create_dir_all(project.join("practices")).unwrap();
             std::fs::write(
                 project.join("practices/software-development.toml"),
-                "concerns = [\"team_boundary\"]\n",
+                "description = \"team_boundary\"\n",
             )
             .unwrap();
             let personal = crate::config::home().join("overrides");
@@ -2732,9 +2692,7 @@ limitations = []
                 )
             );
             let base = out["domains"].as_array().unwrap().iter().find(|d| d["base"] == true);
-            assert!(
-                !base.unwrap()["concerns"].as_array().unwrap().contains(&json!("team_boundary"))
-            );
+            assert_ne!(base.unwrap()["description"], "team_boundary");
             // Only the commands that read configuration say so.
             let (_, _, err) = c.go(&["ask", "list"]);
             assert_eq!(err, "");

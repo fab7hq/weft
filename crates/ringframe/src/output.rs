@@ -16,7 +16,7 @@ pub fn pick(data: &Value, keys: &[&str]) -> Value {
 }
 
 const ASK_KEYS: [&str; 4] = ["ask_id", "title", "state", "capability"];
-const DOMAIN_KEYS: [&str; 5] = ["domain", "base", "description", "concerns", "project_opted_in"];
+const DOMAIN_KEYS: [&str; 4] = ["domain", "base", "description", "project_opted_in"];
 
 pub fn candidates(items: &[Value]) -> Value {
     json!(items.iter().map(|i| pick(i, &ASK_KEYS)).collect::<Vec<_>>())

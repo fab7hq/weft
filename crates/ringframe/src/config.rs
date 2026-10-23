@@ -349,7 +349,7 @@ mod tests {
                 ),
                 (
                     "deltas/practices/software-development.toml",
-                    "95712a43be78b03ca64a6b62022688b282e8b57df9b7b41ca617d4121dad40de",
+                    "ece8a0360b9fa982eb463fd345299b9faed15624b2a1671005b30bb6299ee3e6",
                 ),
                 (
                     "harnesses/antigravity.toml",
@@ -392,11 +392,11 @@ mod tests {
                     ),
                     (
                         "config/deltas/practices/autonomous-trading.toml",
-                        "39466af5142c804275669dd55d036e6464d863a3b581bbacfa1ed71b57c2c2a3",
+                        "efb51999de42f9d3dfeaa1c07bb26bb5233e1cf4c8eb98590ed117695ff92acc",
                     ),
                     (
                         "config/deltas/practices/software-development.toml",
-                        "95712a43be78b03ca64a6b62022688b282e8b57df9b7b41ca617d4121dad40de",
+                        "ece8a0360b9fa982eb463fd345299b9faed15624b2a1671005b30bb6299ee3e6",
                     ),
                     (
                         "config/harnesses/antigravity.toml",
@@ -492,12 +492,11 @@ mod tests {
             let mut doc =
                 load_toml(&config_dir().join("deltas/practices/software-development.toml"))
                     .unwrap();
-            doc["render"]["core_cap"] = json!(1);
             doc["entries"][0]["text"] = json!("Machine rule.");
             let layers = over(json!([
                 {"layer": "weft", "ringframe": {"deltas": {"practices/software-development": doc}}},
                 {"layer": "weft-project", "ringframe": {"deltas": {
-                    "practices/software-development": {"render": {"core_cap": 2},
+                    "practices/software-development": {
                         "entries": [{"id": "practice.kiss", "text": "Project rule."}]},
                     "codex": {"entries": [{"id": "codex.native_plan.after_approval",
                         "status": "qualified", "text": "Project host rule."}]}}}},
@@ -511,7 +510,7 @@ mod tests {
                 deltas::DEFAULT_DOMAIN,
             )
             .unwrap();
-            assert_eq!(result["practice"]["selected"], json!(["practice.kiss", "practice.yagni"]));
+            assert_eq!(result["practice"]["selected"][0], "practice.kiss");
             let text = result["text"].as_str().unwrap();
             assert!(text.contains("Project rule."), "{text}");
             assert!(!text.contains("Machine rule."));

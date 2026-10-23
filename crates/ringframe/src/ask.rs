@@ -667,10 +667,6 @@ pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
             ),
         ));
     }
-    let domains = deltas::selected_domains(&classification, overrides)
-        .map_err(|e| ledger("ask.classification", e.0))?;
-    deltas::validate_concerns(&list_of(&classification, "concerns"), &domains, overrides)
-        .map_err(|e| ledger("ask.classification", e.0))?;
     let mut compiler = json!({"source": "prompt"});
     let mut names_plan = false;
     if form != "prompt" {
@@ -3123,7 +3119,7 @@ mod tests {
             // A continuing objective carries the goal's Done Check, not the
             // Step Loop, which works a plan.
             assert!(text.contains("\nRules:\nFor this route:\n- Done Check: "), "{text}");
-            // A labelled directive, selected by the performance concern.
+            // A labelled directive, offered for implementing.
             assert!(
                 text.contains("- Knuth: Do not optimize on suspicion; measure first"),
                 "{text}"
@@ -3133,7 +3129,6 @@ mod tests {
             assert_eq!(comp["source"], "body");
             assert_eq!(comp["host"]["deltas"], json!(["codex.native_goal.done_check"]));
             assert!(list_of(&comp["practice"], "selected").contains(&"practice.knuth".to_string()));
-            assert_eq!(comp["practice"]["matched_concerns"], json!(["performance"]));
             assert_eq!(str_of(&comp["practice"], "shipped_sha256").len(), 64);
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
 
@@ -3142,17 +3137,6 @@ mod tests {
             std::fs::write(d2.join("body.txt"), b"x\n").unwrap();
             let e = compile_with(ws, Args { staged: Some(d2), ..Default::default() }).unwrap_err();
             assert_eq!(ledger_error(e).code, "ask.staged_dir");
-        });
-    }
-
-    #[test]
-    fn compile_rejects_an_unknown_concern_before_writing() {
-        bench(|ws| {
-            let mut c = cls();
-            c["concerns"] = json!(["telepathy"]);
-            let e = compile_with(ws, Args { classification: c, ..Default::default() }).unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.classification");
-            assert_eq!(std::fs::read_dir(ws.rf_dir().join("asks")).unwrap().count(), 0);
         });
     }
 
@@ -3203,7 +3187,6 @@ mod tests {
             let selected = list_of(&comp["practice"], "selected");
             assert!(selected.contains(&"practice.hyrum".to_string()));
             assert!(selected.contains(&"practice.kiss".to_string()));
-            assert_eq!(comp["practice"]["matched_concerns"], json!(["api_surface"]));
             assert_eq!(comp["host"]["deltas"], json!([]));
         });
     }
@@ -3417,7 +3400,30 @@ mod tests {
             hold_plan(ws, "x");
             hold_plan(ws, "y");
             let d = stage_named(ws, "body.txt", b"build plans/x\n", b"Build plans/x/plan.md.\n");
-            let out = compile_with(ws, goal_args(d)).unwrap();
+            // Every implementing rule is offered now; a goal has room for one.
+            let cat = crate::deltas::load_practice_catalog(
+                crate::deltas::DEFAULT_DOMAIN,
+                &crate::config::Overrides::default(),
+            )
+            .unwrap();
+            let off: Vec<Value> = cat["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|e| e["id"] != "practice.kiss")
+                .map(|e| json!({"id": e["id"], "enabled": false}))
+                .collect();
+            let on = |id: &str| json!({"id": id, "status": "qualified"});
+            let mut args = goal_args(d);
+            args.overrides = crate::config::Overrides::parse(
+                &json!([{"layer": "eval", "ringframe": {"deltas": {
+                    "claude-code": {"entries": [on("claude-code.native_goal.step_loop"),
+                                                on("claude-code.native_goal.done_check")]},
+                    "practices/software-development": {"entries": off}}}}])
+                .to_string(),
+            )
+            .unwrap();
+            let out = compile_with(ws, args).unwrap();
             let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
             assert!(
                 text.starts_with(

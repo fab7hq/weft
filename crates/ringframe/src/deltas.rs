@@ -14,7 +14,6 @@ use crate::config::{self, ConfigError, Overrides};
 pub const SCHEMA: &str = "ringframe.deltas/1";
 pub const HOST_STATUS: [&str; 3] = ["candidate", "qualified", "retired"];
 pub const PRACTICE_STATUS: [&str; 4] = ["attributed", "candidate", "qualified", "retired"];
-pub const TIERS: [&str; 3] = ["core", "situational", "reference"];
 pub const DEFAULT_DOMAIN: &str = "software-development";
 
 fn check(ok: bool, message: impl Into<String>) -> Result<(), ConfigError> {
@@ -158,22 +157,24 @@ pub fn load_host_catalog(host: &str, over: &Overrides) -> Result<Value, ConfigEr
 }
 
 pub fn load_practice_catalog(domain: &str, over: &Overrides) -> Result<Value, ConfigError> {
-    let mut cat = catalog(&format!("practices/{domain}"), over)?;
+    let relative = format!("practices/{domain}");
+    let cat = catalog(&relative, over)?;
     check(
         cat.get("schema").and_then(Value::as_str) == Some(SCHEMA)
             && cat.get("scope").and_then(Value::as_str) == Some("practice"),
         format!("deltas/practices/{domain}.toml: not a practice catalog"),
     )?;
-    let map = cat.as_object_mut().expect("a catalog is a mapping");
-    let render = map.entry("render").or_insert_with(|| json!({}));
-    if let Some(r) = render.as_object_mut() {
-        r.entry("core_cap").or_insert_with(|| json!(5));
-    }
-    map.entry("concerns").or_insert_with(|| json!([]));
+    // A rule that ships, or that a team shares, says when it matters and
+    // which family it is of. The person's own rules come only from their
+    // layers, and may say less.
+    let shared: BTreeSet<String> = layers(over, &relative)?
+        .iter()
+        .filter(|l| l.root == "config" || l.root == "repo")
+        .flat_map(|l| entries(&l.document).iter().map(|e| text_of(e, "id")).collect::<Vec<_>>())
+        .collect();
     // Nothing here judges the content. Catalogs live on the user's machine and
-    // are theirs to edit; a rule that never matches, or a label the
-    // composed-prompt audit reads as two, is the author's choice to make. Only
-    // the structure the CLI must read is required.
+    // are theirs to edit; a rule that never matches is the author's choice to
+    // make. Only the structure RingFrame must read is required.
     for e in entries(&cat) {
         let id = e.get("id").and_then(Value::as_str).unwrap_or("None");
         check(
@@ -189,8 +190,33 @@ pub fn load_practice_catalog(domain: &str, over: &Overrides) -> Result<Value, Co
                  host entries (deltas/<host>.toml)"
             ),
         )?;
+        if shared.contains(id) {
+            check(
+                ["label", "when", "family"].iter().all(|k| !text_of(e, k).trim().is_empty()),
+                format!("practice entry {id}: a shipped or shared rule needs label, when and family"),
+            )?;
+            let family = text_of(e, "family");
+            check(
+                crate::rules::FAMILIES.contains(&family.as_str()),
+                format!(
+                    "practice entry {id}: family '{family}' is not one of {}",
+                    crate::rules::FAMILIES.join(", ")
+                ),
+            )?;
+        }
     }
     Ok(cat)
+}
+
+/// The base domain, then each pack a layer switches on by naming it.
+pub fn domains_on(over: &Overrides) -> Result<Vec<String>, ConfigError> {
+    let mut out = vec![DEFAULT_DOMAIN.to_string()];
+    for name in domain_names(over)? {
+        if name != DEFAULT_DOMAIN && over.documents(&format!("practices/{name}")).next().is_some() {
+            out.push(name);
+        }
+    }
+    Ok(out)
 }
 
 /// Merged entries in catalog order, annotated with the last scope defining
@@ -251,47 +277,7 @@ pub(crate) fn matches(entry: &Value, classification: &Value) -> bool {
     true
 }
 
-/// Validate against the union of the given domains' vocabularies.
-pub fn validate_concerns(
-    concerns: &[String],
-    domains: &[String],
-    over: &Overrides,
-) -> Result<(), ConfigError> {
-    let mut vocab: BTreeSet<String> = BTreeSet::new();
-    for n in domains {
-        let cat = load_practice_catalog(n, over)?;
-        vocab.extend(
-            cat["concerns"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_string),
-        );
-    }
-    let unknown: Vec<&String> = concerns.iter().filter(|c| !vocab.contains(*c)).collect();
-    let shown = |v: &[&String]| {
-        format!("[{}]", v.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
-    };
-    check(
-        unknown.is_empty(),
-        format!(
-            "unknown concern(s) {}; domain {} knows [{}]",
-            shown(&unknown),
-            if domains.len() == 1 {
-                format!("'{}'", domains[0])
-            } else {
-                format!(
-                    "[{}]",
-                    domains.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")
-                )
-            },
-            vocab.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", ")
-        ),
-    )
-}
-
-/// Installed practice domains and the signals the Ask skill selects from.
+/// Installed practice domains, and whether a layer switches each on.
 pub fn domains(over: &Overrides) -> Result<Vec<Value>, ConfigError> {
     let mut out = Vec::new();
     for name in domain_names(over)? {
@@ -302,36 +288,10 @@ pub fn domains(over: &Overrides) -> Result<Vec<Value>, ConfigError> {
             "domain": name,
             "base": name == DEFAULT_DOMAIN,
             "description": text_of(&cat, "description").split_whitespace().collect::<Vec<_>>().join(" "),
-            "concerns": cat["concerns"].clone(),
             "project_opted_in": opted_in,
             "sha256": config::sha256_of(&cat),
         }));
     }
-    Ok(out)
-}
-
-/// The base domain, then any specialist named by the classification. Unknown
-/// names are refused.
-pub fn selected_domains(
-    classification: &Value,
-    over: &Overrides,
-) -> Result<Vec<String>, ConfigError> {
-    let installed = domain_names(over)?;
-    let mut extra: Vec<String> = Vec::new();
-    for name in classification.get("domains").and_then(Value::as_array).into_iter().flatten() {
-        let name = name.as_str().unwrap_or_default().to_string();
-        if !installed.contains(&name) {
-            return Err(ConfigError(format!(
-                "'{name}' is not an installed practice domain; installed: {}",
-                installed.join(", ")
-            )));
-        }
-        if name != DEFAULT_DOMAIN && !extra.contains(&name) {
-            extra.push(name);
-        }
-    }
-    let mut out = vec![DEFAULT_DOMAIN.to_string()];
-    out.append(&mut extra);
     Ok(out)
 }
 
@@ -384,13 +344,6 @@ pub(crate) fn squeeze(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// A candidate rule, with the two keys it is ordered by.
-struct Ranked {
-    priority: i64,
-    order: usize,
-    entry: Value,
-}
-
 pub(crate) fn status_of(entry: &Value) -> String {
     let s = text_of(entry, "status");
     if s.is_empty() { "attributed".into() } else { s }
@@ -413,16 +366,13 @@ pub(crate) fn phase_of(entry: &Value, tasks: &[String]) -> String {
     }
 }
 
-/// One catalog's rules under its own core cap, per phase when the Ask names
-/// several tasks.
+/// One catalog's rules for the Ask's tasks, per phase when it names several.
 struct Practice {
     domain: String,
     shipped_sha256: Value,
     effective_sha256: String,
     layers: Vec<Value>,
     selected: Vec<String>,
-    matched_concerns: Vec<String>,
-    dropped_by_budget: Vec<String>,
     heading: String,
     rendered: Vec<(String, Vec<Value>)>,
     entries: Vec<Value>,
@@ -433,62 +383,14 @@ fn practice(
     domain: &str,
     classification: &Value,
     statuses: &[String],
-    subagents: bool,
 ) -> Result<Practice, ConfigError> {
     let cat = load_practice_catalog(domain, over)?;
     let merged = effective(over, domain)?;
-    let concerns: Vec<String> = classification
-        .get("concerns")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect();
     // `attributed` and `qualified` render; candidates only in evaluation runs.
     let mut practice_statuses: BTreeSet<&str> = ["attributed", "qualified"].into();
     if statuses.iter().any(|s| s == "candidate") {
         practice_statuses.insert("candidate");
     }
-
-    let (mut core, mut situational): (Vec<Ranked>, Vec<Ranked>) = (Vec::new(), Vec::new());
-    for (order, (_, e)) in merged.iter().enumerate() {
-        if e.get("enabled") == Some(&json!(false))
-            || !practice_statuses.contains(status_of(e).as_str())
-            || !matches(e, classification)
-        {
-            continue;
-        }
-        if e.get("requires").and_then(|r| r.get("host_capability")) == Some(&json!("subagents"))
-            && !subagents
-        {
-            continue;
-        }
-        let tier = {
-            let t = text_of(e, "tier");
-            if t.is_empty() { "situational".to_string() } else { t }
-        };
-        let ranked = Ranked {
-            priority: e.get("priority").and_then(Value::as_i64).unwrap_or(100),
-            order,
-            entry: e.clone(),
-        };
-        if tier == "core" {
-            core.push(ranked);
-        } else if tier == "situational"
-            && e.get("concerns")
-                .into_iter()
-                .flat_map(|c| c.as_array().into_iter().flatten())
-                .filter_map(Value::as_str)
-                .any(|c| concerns.iter().any(|x| x == c))
-        {
-            situational.push(ranked);
-        }
-    }
-    core.sort_by_key(|r| (r.priority, r.order));
-    situational.sort_by_key(|r| (r.priority, r.order));
-
-    let cap = cat["render"]["core_cap"].as_i64().unwrap_or(5).max(0) as usize;
     let tasks: Vec<String> = classification
         .get("task")
         .and_then(Value::as_array)
@@ -498,9 +400,18 @@ fn practice(
         .filter(|t| phase_heading(t).is_some())
         .map(str::to_string)
         .collect();
-    // One group per named task, so a research rule is never weighed against an
+    let selected: Vec<Value> = merged
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| {
+            e.get("enabled") != Some(&json!(false))
+                && practice_statuses.contains(status_of(e).as_str())
+                && crate::rules::for_tasks(e, &tasks)
+        })
+        .collect();
+    // One group per named task, so a research rule reads apart from an
     // implementation one. A single task keeps one unnamed group, which renders
-    // as today's flat list.
+    // as a flat list.
     let mut groups: Vec<String> = vec![EVERY_PHASE.to_string()];
     if tasks.len() > 1 {
         groups.extend(tasks.iter().filter_map(|t| phase_heading(t)).map(str::to_string));
@@ -512,42 +423,11 @@ fn practice(
             EVERY_PHASE.to_string()
         }
     };
-    /// One phase's rules: the core tier, then the situational one.
-    type Phase = (String, (Vec<Ranked>, Vec<Ranked>));
-    let mut by_phase: Vec<Phase> =
-        groups.iter().map(|g| (g.clone(), (Vec::new(), Vec::new()))).collect();
-    for (is_core, items) in [(true, core), (false, situational)] {
-        for r in items {
-            let g = group_of(&r.entry);
-            if !by_phase.iter().any(|(k, _)| *k == g) {
-                by_phase.push((g.clone(), (Vec::new(), Vec::new())));
-            }
-            let slot = by_phase.iter_mut().find(|(k, _)| *k == g).expect("just inserted");
-            if is_core { slot.1.0.push(r) } else { slot.1.1.push(r) }
-        }
-    }
-    // The cap governs the shipped default per phase; candidates under
-    // evaluation are appended so that an evaluation arm equals the default arm
-    // plus the candidates — nothing displaced, nothing hidden.
-    let (mut selected, mut dropped, mut rendered) = (Vec::new(), Vec::new(), Vec::new());
-    for g in &groups {
-        let Some((_, (core, situational))) = by_phase.iter().find(|(k, _)| k == g) else {
-            continue;
-        };
-        let stable: Vec<&Ranked> =
-            core.iter().filter(|r| status_of(&r.entry) != "candidate").collect();
-        let candidates: Vec<&Ranked> =
-            core.iter().filter(|r| status_of(&r.entry) == "candidate").collect();
-        let mut kept: Vec<Value> = stable.iter().take(cap).map(|r| r.entry.clone()).collect();
-        kept.extend(candidates.iter().map(|r| r.entry.clone()));
-        kept.extend(situational.iter().map(|r| r.entry.clone()));
-        dropped.extend(stable.iter().skip(cap).map(|r| text_of(&r.entry, "id")));
-        if !kept.is_empty() {
-            selected.extend(kept.iter().cloned());
-            rendered.push((g.clone(), kept));
-        }
-    }
-
+    let rendered: Vec<(String, Vec<Value>)> = groups
+        .iter()
+        .map(|g| (g.clone(), selected.iter().filter(|e| group_of(e) == *g).cloned().collect()))
+        .filter(|(_, kept): &(String, Vec<Value>)| !kept.is_empty())
+        .collect();
     let catalog_layers = layers(over, &format!("practices/{domain}"))?;
     let shipped = dir()?.join("practices").join(format!("{domain}.toml"));
     // None when no synced file shipped this domain: it is the user's own.
@@ -564,20 +444,6 @@ fn practice(
         effective_sha256: config::sha256_of(&cat),
         layers: catalog_layers.iter().map(Layer::described).collect(),
         selected: selected.iter().map(|e| text_of(e, "id")).collect(),
-        matched_concerns: concerns
-            .iter()
-            .filter(|c| {
-                selected.iter().any(|e| {
-                    e.get("concerns")
-                        .into_iter()
-                        .flat_map(|x| x.as_array().into_iter().flatten())
-                        .filter_map(Value::as_str)
-                        .any(|x| x == c.as_str())
-                })
-            })
-            .cloned()
-            .collect(),
-        dropped_by_budget: dropped,
         heading: {
             let h = text_of(&cat["render"], "heading");
             if h.is_empty() { "Rules:".into() } else { h }
@@ -594,7 +460,7 @@ fn practice(
 
 /// Deterministic delta block for one Ask: one `Rules:` list, the host's route
 /// rules first under their own heading, then the base practice rules, then
-/// any specialist domain's.
+/// each pack's that a layer switches on.
 pub fn render(
     over: &Overrides,
     profile: &Value,
@@ -636,30 +502,17 @@ pub fn render(
         });
     }
 
-    // ---- practice layers: base first, then specialists, each under its own cap
-    let names = if domain == DEFAULT_DOMAIN {
-        selected_domains(classification, over)?
-    } else {
-        vec![domain.to_string()]
-    };
-    let concerns: Vec<String> = classification
-        .get("concerns")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_string)
-        .collect();
-    validate_concerns(&concerns, &names, over)?;
-    let subagents = profile.get("subagents") == Some(&json!(true));
+    // ---- practice layers: the base first, then each pack switched on
+    let names =
+        if domain == DEFAULT_DOMAIN { domains_on(over)? } else { vec![domain.to_string()] };
     let blocks: Vec<Practice> = names
         .iter()
-        .map(|n| practice(over, n, classification, statuses, subagents))
+        .map(|n| practice(over, n, classification, statuses))
         .collect::<Result<_, _>>()?;
 
     let all_entries: Vec<Value> = blocks.iter().flat_map(|b| b.entries.clone()).collect();
     let heading = blocks[0].heading.clone();
-    // One phase at a time, base rules before each specialist's, so a reader
+    // One phase at a time, base rules before each pack's, so a reader
     // sees every rule for researching together and every rule for implementing
     // together.
     let tasks: Vec<String> = classification
@@ -716,15 +569,12 @@ pub fn render(
         "text": practice_text,
         "entries": all_entries,
         "selected": blocks.iter().flat_map(|b| b.selected.clone()).collect::<Vec<_>>(),
-        "matched_concerns": blocks.iter().flat_map(|b| b.matched_concerns.clone())
-            .collect::<BTreeSet<_>>().into_iter().collect::<Vec<_>>(),
-        "dropped_by_budget": blocks.iter().flat_map(|b| b.dropped_by_budget.clone()).collect::<Vec<_>>(),
         "phases": order.iter().filter(|g| !rules_in(g).is_empty()).map(|g| json!({
             "phase": g,
             "entries": rules_in(g).iter().map(|e| text_of(e, "id")).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "domains": blocks.iter().map(|b| json!({
-            "domain": b.domain, "selected": b.selected, "dropped_by_budget": b.dropped_by_budget,
+            "domain": b.domain, "selected": b.selected,
             "shipped_sha256": b.shipped_sha256, "effective_sha256": b.effective_sha256,
         })).collect::<Vec<_>>(),
     });
@@ -907,24 +757,17 @@ mod tests {
             assert_eq!(host_catalog_names().unwrap(), ["antigravity", "claude-code", "codex"]);
             let prac = load_practice_catalog(DEFAULT_DOMAIN, &Overrides::default()).unwrap();
             assert_eq!(prac["scope"], "practice");
-            assert_eq!(prac["render"], json!({"heading": "Rules:", "core_cap": 5}));
+            assert_eq!(prac["render"], json!({"heading": "Rules:"}));
             let all: Vec<String> = entries(&prac).iter().map(|e| text_of(e, "id")).collect();
             let unique: BTreeSet<&String> = all.iter().collect();
             assert_eq!(all.len(), unique.len(), "duplicate entry ids");
-            let vocab: BTreeSet<&str> =
-                prac["concerns"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
             for e in entries(&prac) {
                 let id = text_of(e, "id");
                 assert!(!text_of(e, "principle").is_empty(), "{id}");
                 assert!(!text_of(e, "text").trim().is_empty(), "{id}");
-                let tier = text_of(e, "tier");
-                assert!(tier.is_empty() || TIERS.contains(&tier.as_str()), "{id}");
+                assert!(!text_of(e, "when").trim().is_empty(), "{id}");
+                assert!(crate::rules::FAMILIES.contains(&text_of(e, "family").as_str()), "{id}");
                 assert!(PRACTICE_STATUS.contains(&status_of(e).as_str()), "{id}");
-                for c in
-                    e.get("concerns").into_iter().flat_map(|c| c.as_array().into_iter().flatten())
-                {
-                    assert!(vocab.contains(c.as_str().unwrap_or_default()), "{id}: {c}");
-                }
                 // Directives, never principle names.
                 let text = text_of(e, "text");
                 assert!(!text.contains("SOLID") && !text.contains("YAGNI"), "{id}");
@@ -965,40 +808,15 @@ mod tests {
     }
 
     #[test]
-    fn practice_selection_is_faceted_tiered_and_budgeted() {
+    fn practice_selection_is_by_task() {
         bench(|_, _| {
-            let plain = rendered("codex", &impl_task());
-            let core: Vec<String> = selected(&plain)
-                .into_iter()
-                .filter(|i| {
-                    [
-                        "practice.kiss",
-                        "practice.yagni",
-                        "practice.testing_pyramid",
-                        "practice.boy_scout",
-                    ]
-                    .contains(&i.as_str())
-                })
-                .collect();
-            assert_eq!(core.len(), 4);
-            let cap = load_practice_catalog(DEFAULT_DOMAIN, &Overrides::default()).unwrap()["render"]["core_cap"]
-                .as_u64()
-                .unwrap() as usize;
-            assert!(selected(&plain).len() <= cap);
-            // Situational: needs a concern.
-            assert!(!selected(&plain).contains(&"practice.hyrum".to_string()));
-
-            let mut cls = impl_task();
-            cls["concerns"] = json!(["api_surface", "auth"]);
-            let with_api = rendered("codex", &cls);
-            for want in ["practice.hyrum", "practice.postel"] {
-                assert!(selected(&with_api).contains(&want.to_string()), "{want}");
+            let implementing = selected(&rendered("codex", &impl_task()));
+            for want in ["practice.kiss", "practice.yagni", "practice.testing_pyramid",
+                         "practice.boy_scout", "practice.hyrum", "practice.dry"] {
+                assert!(implementing.contains(&want.to_string()), "{want}");
             }
-            assert_eq!(with_api["practice"]["matched_concerns"], json!(["api_surface", "auth"]));
-            // Labels as traceability tags, directives applied.
-            let text = text_of(&with_api, "text");
-            assert!(text.contains("- KISS: "), "{text}");
-            assert!(text.contains("- Hyrum: "));
+            let text = text_of(&rendered("codex", &impl_task()), "text");
+            assert!(text.contains("- KISS: ") && text.contains("- Hyrum: "), "{text}");
 
             let mut planning = impl_task();
             planning["task"] = json!(["plan"]);
@@ -1007,19 +825,6 @@ mod tests {
             let out = rendered("codex", &planning);
             assert!(!selected(&out).contains(&"practice.testing_pyramid".to_string()));
             assert!(selected(&out).contains(&"practice.gall".to_string()));
-
-            let mut bad = impl_task();
-            bad["concerns"] = json!(["telepathy"]);
-            let e = render(
-                &Overrides::default(),
-                &profiles::load("codex").unwrap(),
-                "native_plan",
-                &bad,
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap_err();
-            assert!(e.0.contains("concern"), "{e}");
         });
     }
 
@@ -1089,9 +894,7 @@ mod tests {
     #[test]
     fn render_is_a_labelled_rules_list_and_entries_carry_labels() {
         bench(|_, _| {
-            let mut cls = impl_task();
-            cls["concerns"] = json!(["api_surface"]);
-            let r = rendered("codex", &cls);
+            let r = rendered("codex", &impl_task());
             let text = text_of(&r["practice"], "text");
             let lines: Vec<&str> = text.lines().collect();
             assert_eq!(lines[0], "Rules:");
@@ -1144,21 +947,13 @@ mod tests {
 
     // ---- catalog reachability and task coverage ----------------------------
 
-    const TASK_PROBE: [(&str, &[&str]); 9] = [
-        ("question", &[]),
-        ("research", &[]),
-        ("clarify", &[]),
-        ("plan", &[]),
-        ("implement", &[]),
-        ("diagnose", &["tests_only"]),
-        ("review", &[]),
-        ("operate", &["operate"]),
-        ("document", &["cli"]),
+    const TASKS: [&str; 9] = [
+        "question", "research", "clarify", "plan", "implement", "diagnose", "review", "operate",
+        "document",
     ];
 
-    fn probe(task: &str, concerns: &[&str]) -> Value {
-        json!({"task": [task], "result": "plan", "interaction": "approval_gated",
-               "horizon": "session", "effects": ["read"], "concerns": concerns})
+    fn probe(task: &str) -> Value {
+        json!({"task": [task], "result": "plan", "effects": ["read"]})
     }
 
     fn with_candidates(host: &str, capability: &str, cls: &Value) -> Value {
@@ -1220,7 +1015,7 @@ mod tests {
     fn route_probes() -> Vec<(&'static str, Value)> {
         let mut plan = impl_task();
         plan["result"] = json!("plan");
-        let mut answer = probe("question", &[]);
+        let mut answer = probe("question");
         answer["result"] = json!("answer");
         let mut objective = impl_task();
         objective["result"] = json!("continuing_objective");
@@ -1254,7 +1049,8 @@ mod tests {
 
     #[test]
     fn a_goal_prompt_with_its_host_rules_fits() {
-        // A goal shares its character budget with the brief and the rules.
+        // A goal shares its character budget with the words and the rules;
+        // the route rules alone leave room for both.
         bench(|_, _| {
             for host in ["antigravity", "claude-code", "codex"] {
                 let profile = profiles::load(host).unwrap();
@@ -1268,7 +1064,7 @@ mod tests {
                     "{}{}\n{}",
                     text_of(&cap, "prompt_prefix"),
                     "b".repeat(1500),
-                    text_of(&out, "text")
+                    text_of(&out["host"], "text")
                 );
                 let n = prompt.chars().count() as u64;
                 assert!(n <= max, "{host}: {n} of {max}");
@@ -1277,28 +1073,10 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_can_be_selected() {
-        // A situational entry with no concerns never matches, so it is dead
-        // configuration.
-        bench(|_, _| {
-            let cat = load_practice_catalog(DEFAULT_DOMAIN, &Overrides::default()).unwrap();
-            let dead: Vec<String> = entries(&cat)
-                .iter()
-                .filter(|e| {
-                    let tier = text_of(e, "tier");
-                    (tier.is_empty() || tier == "situational") && !non_empty_list(e.get("concerns"))
-                })
-                .map(|e| text_of(e, "id"))
-                .collect();
-            assert_eq!(dead, Vec::<String>::new());
-        });
-    }
-
-    #[test]
     fn every_task_selects_at_least_one_rule() {
         bench(|_, _| {
-            for (task, concerns) in TASK_PROBE {
-                let out = rendered("claude-code", &probe(task, concerns));
+            for task in TASKS {
+                let out = rendered("claude-code", &probe(task));
                 assert!(!selected(&out).is_empty(), "{task} selects no rule");
             }
         });
@@ -1313,55 +1091,40 @@ mod tests {
                 ("question", "practice.confirmation_bias"),
                 ("implement", "practice.testing_pyramid"),
             ] {
-                let concerns = TASK_PROBE.iter().find(|(t, _)| *t == task).unwrap().1;
-                let out = rendered("claude-code", &probe(task, concerns));
+                let out = rendered("claude-code", &probe(task));
                 assert!(selected(&out).contains(&rule.to_string()), "{rule} missing for {task}");
             }
         });
     }
 
-    #[test]
-    fn the_core_cap_is_not_exceeded_for_any_task() {
-        bench(|_, _| {
-            for (task, concerns) in TASK_PROBE {
-                let out = rendered("claude-code", &probe(task, concerns));
-                assert_eq!(
-                    out["practice"]["dropped_by_budget"],
-                    json!([]),
-                    "{task} drops a core rule"
-                );
-                assert!(!selected(&out).is_empty());
-            }
-        });
-    }
-
-    // ---- additive specialist domains ---------------------------------------
+    // ---- packs ------------------------------------------------------------
 
     fn second_domain() -> &'static str {
         r#"schema = "ringframe.deltas/1"
 scope = "practice"
 domain = "fixture-domain"
-description = "An invented domain used only by tests."
-render = { heading = "Rules:", core_cap = 2 }
-concerns = ["widgets", "api_surface"]
+description = "An invented pack used only by tests."
+render = { heading = "Rules:" }
 
 [[entries]]
 id = "practice.widget_first"
 label = "Widget First"
-tier = "core"
 applies_to = { task = ["implement"] }
+when = "Widgets are built."
+family = "domain"
 text = "Build the widget before the housing."
 
 [[entries]]
 id = "practice.widget_check"
 label = "Widget Check"
 applies_to = { task = ["implement"] }
-concerns = ["widgets"]
+when = "A widget is fitted."
+family = "domain"
 text = "Measure the widget after fitting it."
 "#
     }
 
-    /// A tiny specialist catalog installed beside the base one.
+    /// A tiny pack installed beside the base catalog.
     fn two_domains<T>(body: impl FnOnce(&Workspace) -> T) -> T {
         bench(|ws, _| {
             std::fs::write(
@@ -1373,10 +1136,18 @@ text = "Measure the widget after fitting it."
         })
     }
 
+    fn switched_on() -> Overrides {
+        over(json!([{"layer": "weft-project", "ringframe": {"deltas": {
+            "practices/fixture-domain": {}}}}]))
+    }
+
     #[test]
-    fn absent_domains_render_only_the_base() {
+    fn a_pack_not_switched_on_renders_only_the_base() {
         two_domains(|_| {
-            let out = rendered("claude-code", &impl_task());
+            let mut cls = impl_task();
+            // Naming it in the classification no longer selects it.
+            cls["domains"] = json!(["fixture-domain"]);
+            let out = rendered("claude-code", &cls);
             let listed: Vec<String> = out["practice"]["domains"]
                 .as_array()
                 .unwrap()
@@ -1389,18 +1160,22 @@ text = "Measure the widget after fitting it."
     }
 
     #[test]
-    fn a_specialist_domain_renders_after_the_base_under_its_own_cap() {
+    fn a_pack_switched_on_renders_after_the_base() {
         two_domains(|_| {
-            let mut cls = impl_task();
-            cls["domains"] = json!(["fixture-domain"]);
-            cls["concerns"] = json!(["widgets"]);
-            let out = rendered("claude-code", &cls);
+            let out = render(
+                &switched_on(),
+                &profiles::load("claude-code").unwrap(),
+                "native_plan",
+                &impl_task(),
+                &statuses(&QUALIFIED),
+                DEFAULT_DOMAIN,
+            )
+            .unwrap();
             let p = &out["practice"];
             let listed: Vec<String> =
                 p["domains"].as_array().unwrap().iter().map(|d| text_of(d, "domain")).collect();
             assert_eq!(listed, ["software-development", "fixture-domain"]);
             let base_ids = ids(&p["domains"][0]["selected"]);
-            // Base first, specialist after.
             assert_eq!(selected(&out)[..base_ids.len()], base_ids[..]);
             assert!(selected(&out).contains(&"practice.widget_first".to_string()));
             assert!(selected(&out).contains(&"practice.widget_check".to_string()));
@@ -1415,48 +1190,7 @@ text = "Measure the widget after fitting it."
     }
 
     #[test]
-    fn an_unknown_domain_is_refused_with_the_installed_set() {
-        two_domains(|_| {
-            let mut cls = impl_task();
-            cls["domains"] = json!(["teleportation"]);
-            let e = render(
-                &Overrides::default(),
-                &profiles::load("claude-code").unwrap(),
-                "native_plan",
-                &cls,
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap_err();
-            assert!(e.0.contains("installed"), "{e}");
-        });
-    }
-
-    #[test]
-    fn concerns_validate_against_the_union_of_selected_domains() {
-        two_domains(|_| {
-            let mut only_concern = impl_task();
-            only_concern["concerns"] = json!(["widgets"]);
-            let e = render(
-                &Overrides::default(),
-                &profiles::load("claude-code").unwrap(),
-                "native_plan",
-                &only_concern,
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap_err();
-            assert!(e.0.contains("concern"), "{e}");
-
-            let mut with_domain = only_concern.clone();
-            with_domain["domains"] = json!(["fixture-domain"]);
-            let out = rendered("claude-code", &with_domain);
-            assert!(selected(&out).contains(&"practice.widget_check".to_string()));
-        });
-    }
-
-    #[test]
-    fn domains_lists_what_is_installed_and_whether_an_override_opted_in() {
+    fn domains_lists_what_is_installed_and_whether_a_layer_switched_it_on() {
         two_domains(|_| {
             let listed = domains(&Overrides::default()).unwrap();
             let find = |name: &str| {
@@ -1470,12 +1204,8 @@ text = "Measure the widget after fitting it."
             let fixture = find("fixture-domain");
             assert_eq!(fixture["base"], false);
             assert!(!text_of(&fixture, "description").is_empty());
-            assert!(ids(&fixture["concerns"]).contains(&"widgets".to_string()));
             assert_eq!(fixture["project_opted_in"], false);
-
-            let opted = over(json!([{"layer": "weft-project", "ringframe": {"deltas": {
-                "practices/fixture-domain": {"domain": "fixture-domain"}}}}]));
-            let again = domains(&opted).unwrap();
+            let again = domains(&switched_on()).unwrap();
             let fixture = again.iter().find(|d| d["domain"] == "fixture-domain").unwrap();
             assert_eq!(fixture["project_opted_in"], true);
         });
@@ -1496,14 +1226,11 @@ text = "Measure the widget after fitting it."
             let fixture = listed.iter().find(|d| d["domain"] == "fixture-domain").expect("listed");
             assert_eq!(fixture["base"], false);
 
-            let mut cls = impl_task();
-            cls["domains"] = json!(["fixture-domain"]);
-            cls["concerns"] = json!(["widgets"]);
             let out = render(
                 &layers,
                 &profiles::load("claude-code").unwrap(),
                 "native_plan",
-                &cls,
+                &impl_task(),
                 &statuses(&QUALIFIED),
                 DEFAULT_DOMAIN,
             )
@@ -1562,9 +1289,7 @@ text = "Measure the widget after fitting it."
     }
 
     #[test]
-    fn the_core_cap_applies_per_phase_so_research_rules_survive() {
-        // Before grouping, implement's core rules outranked research's and
-        // pushed them out.
+    fn research_rules_survive_beside_implement_ones() {
         bench(|_, _| {
             let out = rendered("claude-code", &research_and_implement());
             assert!(
@@ -1575,7 +1300,6 @@ text = "Measure the widget after fitting it."
                 selected(&out).contains(&"practice.testing_pyramid".to_string()),
                 "and so must an implement rule"
             );
-            assert_eq!(out["practice"]["dropped_by_budget"], json!([]));
         });
     }
 
