@@ -1,4 +1,5 @@
-//! What weftd calls: one typed call for each thing it records or reads.
+//! The crate as a library: one typed call for each thing a caller records or
+//! reads.
 //!
 //! Every call takes the workspace, prints nothing, and returns its result or an
 //! [`Error`] carrying RingFrame's refusal code. Each one records what the CLI
@@ -69,7 +70,7 @@ impl From<SealError> for Error {
     }
 }
 
-/// Whoever acts through Weft, as the CLI records a person who names no actor.
+/// The person acting, as the CLI records one who names no actor.
 fn person() -> Value {
     json!({"kind": "human", "id": "local-user", "authority": "interactive"})
 }
@@ -149,7 +150,7 @@ pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
     })
 }
 
-/// What Weft types into a harness for an Ask, and how it has to be sent.
+/// What is typed into a harness for an Ask, and how it has to be sent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Prompt {
     pub text: String,
