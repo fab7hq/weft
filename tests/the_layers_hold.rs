@@ -160,18 +160,17 @@ fn the_client_runs_nothing_but_the_daemon() {
     assert!(broken.is_empty(), "the client started doing:\n{}", broken.join("\n"));
 }
 
-/// RingFrame shares this repository; it is not part of Weft.
+/// RingFrame shares this repository, and only weftd links it.
 ///
-/// One repository is not one product. The moment a Weft crate can call the
-/// core's Rust functions, Weft stops reading a record another program wrote
-/// and starts reporting on itself — which is the whole of what makes its
-/// claims worth anything.
+/// weftd calls the crate's API to record, and the crate stays the only writer
+/// of `.fab7/rf/`. Any other Weft crate that called it would record without
+/// the daemon, and a second client would disagree with the first.
 #[test]
-fn nothing_in_weft_reaches_into_ringframe() {
+fn only_weftd_reaches_into_ringframe() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut broken = Vec::new();
     let mut manifests = vec![("weft".to_string(), root.join("Cargo.toml"))];
-    for (crate_name, ..) in ALLOWED {
+    for (crate_name, ..) in ALLOWED.iter().filter(|(name, ..)| *name != "weftd") {
         manifests.push((
             crate_name.to_string(),
             root.join("crates").join(crate_name).join("Cargo.toml"),
@@ -184,8 +183,6 @@ fn nothing_in_weft_reaches_into_ringframe() {
             broken.push(format!("{name} depends on the ringframe crate"));
         }
     }
-    // Weft reaches RingFrame by running `ringframe`, and that is the contract
-    // the skills in `fab7` share with it.
     assert!(broken.is_empty(), "the product boundary moved:\n{}", broken.join("\n"));
 }
 

@@ -14,12 +14,11 @@ seals the decision. Three acts over one append-only ledger in `.fab7/rf/`:
 - **Seal** — record the decision that closes them, with a receipt that can be
   re-verified later.
 
-## It is not part of Weft
+## Weft links it
 
-This crate lives in Weft's repository and is not Weft's. It ships
-its own binary, invoked by name, and nothing in Weft depends on this crate —
-the skills call `ringframe`, and that string is the contract. Weft renders
-what RingFrame wrote and never writes `.fab7/rf/` itself.
+This crate lives in Weft's repository. weftd links it and calls it through
+`ringframe::api`; the `ringframe` binary is built from it too. Only this crate
+writes `.fab7/rf/`: Weft renders what it wrote and never writes there itself.
 
 ## Using it
 
