@@ -572,17 +572,17 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
 }
 
 /// RingFrame set up here, by `ringframe init`, or what it still needs; and
-/// why an Ask could not finish here. Both run `ringframe`: never on the run loop.
+/// why an Ask could not finish here. Both reach RingFrame: never on the run loop.
 fn set_up_and_gap(
     out: &dyn crate::outside::Outside,
     root: &Path,
 ) -> (Option<weft_core::workspace::Needs>, Option<String>) {
-    (crate::ringframe::set_up(out, root), workspace_gap(out, root))
+    (crate::ringframe::set_up(out, root), workspace_gap(root))
 }
 
 /// Whether an Ask could finish here at all, asked of RingFrame.
-fn workspace_gap(out: &dyn crate::outside::Outside, root: &Path) -> Option<String> {
-    match crate::ringframe::ask_preflight(out, root) {
+fn workspace_gap(root: &Path) -> Option<String> {
+    match crate::ringframe::ask_preflight(root) {
         Ok(()) => None,
         // Not installed is said elsewhere, once.
         Err(crate::ringframe::Error::NotInstalled) => None,
@@ -1120,7 +1120,7 @@ impl Session {
                 if let Some(why) = self.cannot_prove(at, pane) {
                     return Answer::No("no_receipt", why);
                 }
-                match crate::acts::send(self.outside.as_ref(), &root, &unit, &unit.harness) {
+                match crate::acts::send(&root, &unit, &unit.harness) {
                     Ok(built) => (built, pane),
                     Err(why) => return Answer::No("refused", why),
                 }
@@ -1177,10 +1177,9 @@ impl Session {
                 // and the call is answered once the debate is staged.
                 let agents = weft_core::eval_stages::agents(&debate);
                 let over = project.ringframe.clone();
-                let (tx, out) = (self.tx.clone(), self.outside.clone());
+                let tx = self.tx.clone();
                 std::thread::spawn(move || {
                     let opened = crate::ringframe::eval_open(
-                        out.as_ref(),
                         &root,
                         &unit.ask_id,
                         agents.as_ref(),
@@ -1285,7 +1284,7 @@ impl Session {
                 });
                 Answer::Later
             }
-            "wording" => match crate::ringframe::ask_copy(self.outside.as_ref(), &root, unit) {
+            "wording" => match crate::ringframe::ask_copy(&root, unit) {
                 Ok(bytes) => Answer::Ok(serde_json::json!({
                     "text": String::from_utf8_lossy(&bytes)
                 })),
@@ -1334,9 +1333,9 @@ impl Session {
             // named by the Seal, not by the Ask it closed.
             // Checking a receipt recomputes its subject: off the run loop.
             "seal" => {
-                let (tx, out, unit) = (self.tx.clone(), self.outside.clone(), unit.to_string());
+                let (tx, unit) = (self.tx.clone(), unit.to_string());
                 std::thread::spawn(move || {
-                    let answer = match crate::ringframe::seal_checked(out.as_ref(), &root, &unit) {
+                    let answer = match crate::ringframe::seal_checked(&root, &unit) {
                         Ok(v) => Answer::Ok(v),
                         Err(e) => {
                             Answer::No("refused", format!("RingFrame would not check it: {e:?}"))
@@ -2456,6 +2455,9 @@ mod tests {
         call(1, Call::Hello { client: "test".into(), protocol: PROTOCOL });
         let path = proj_dir.display().to_string();
         call(2, Call::Open { path, rows: 24, cols: 80, raw: true });
+        // A Setup's view goes to the project's clients: one is, once its Open
+        // is answered.
+        while !matches!(reader.next(), Ok(Some(Line::Result { id: 2, .. })) | Ok(None) | Err(_)) {}
         let run = |harness: &str| Call::Setup {
             act: "run".into(),
             harness: harness.into(),

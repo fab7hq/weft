@@ -139,7 +139,7 @@ impl Session {
             return Err(("no_unit", "that Ask is not on the board".into()));
         };
         let root = self.projects[at].root.clone();
-        match crate::acts::send(self.outside.as_ref(), &root, unit, &harness) {
+        match crate::acts::send(&root, unit, &harness) {
             Ok(built) => Ok(Elsewhere { to, built }),
             Err(why) => Err(("refused", why)),
         }

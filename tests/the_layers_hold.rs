@@ -39,6 +39,7 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "anyhow",
             "libc",
             "portable-pty",
+            "ringframe",
             "serde_json",
             "toml",
             "tungstenite",
@@ -48,6 +49,7 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
             "weft-term",
         ],
         "the daemon does: panes, files, processes (libc reads a hook's harness process), \
+         records through RingFrame's API, \
          listens to a harness's own stream (tungstenite frames it), and refines turns/conversations \
          with weft-sense",
     ),
