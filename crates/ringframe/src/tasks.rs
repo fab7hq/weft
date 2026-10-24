@@ -8,7 +8,7 @@
 //! two readings settle it only when they agree. RingFrame merges the rest.
 //!
 //! `eval next` says which tasks are ready and writes each one's file, with
-//! its evidence inline (`eval task` hands one to a judge Weft started); a
+//! its evidence inline (`eval task` hands them out one at a time); a
 //! judge writes its output and runs `eval submit`,
 //! which checks every citation against its source before anything counts.
 //! No model decides the order, and no model writes the report.
@@ -1446,7 +1446,7 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
     (v, text)
 }
 
-/// One task for a judge Weft started, of `role` when given: `running` with
+/// One task for a judge, of `role` when given: `running` with
 /// the task, its brief and where its answer goes; `waiting` while every
 /// ready task of the role is out, none is ready yet, or the checks are still
 /// running; `done` once every task is in. A task out past its time goes out
