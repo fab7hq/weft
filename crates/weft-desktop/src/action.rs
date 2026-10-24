@@ -209,6 +209,18 @@ pub enum SheetAct {
     ToggleSendTo,
     /// Where the open Ask goes: an agent's session, or a new agent's key.
     AskTo(String),
+    /// Open or close the Ask's ROUTE or PLAN list.
+    AskOpen(String),
+    AskRoute(String),
+    /// The plan picked, or none.
+    AskPlan(Option<String>),
+    /// A practice taken out of the Ask, or put back.
+    AskRuleOut(String),
+    AskRuleBack(String),
+    /// Show every practice, past the first few.
+    AskMore,
+    /// Show the practices taken out, to put one back.
+    AskAddRule,
     SubmitAsk,
     FollowUp {
         project: PathBuf,

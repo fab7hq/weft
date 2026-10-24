@@ -44,7 +44,8 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
         }
         BottomBarState::CloseProjectConfirm { project } => render_close_project_bar(project),
         BottomBarState::SealDisposition { project, eval, selected, reason } => {
-            render_seal_disposition_bar(project, eval, selected, reason.as_deref())
+            let client = props.clients.iter().find(|c| &c.root == project);
+            render_seal_disposition_bar(client, project, eval, selected, reason.as_deref())
         }
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
         BottomBarState::None => render_tree_bar(props, None),
@@ -109,8 +110,27 @@ fn render_staged_bar(
                 ),
             ]));
     }
-    // Its title, why, and the exact bytes Send types, when it types any.
-    let payload = (!staged.payload.is_empty()).then(|| {
+    // Its title, why, and the exact bytes Send types, when it types any, the
+    // route's command marked.
+    let typed = String::from_utf8_lossy(&staged.payload).into_owned();
+    let command = typed.split_once(' ').map(|(c, _)| c).filter(|c| c.starts_with(['/', '$']));
+    let (command, rest) = match command {
+        Some(c) => (Some(format!("{c} ")), typed[c.len() + 1..].to_string()),
+        None => (None, typed.clone()),
+    };
+    let into = (!typed.is_empty()).then(|| {
+        let name = client.root.file_name().map(|n| n.to_string_lossy().into_owned());
+        let target = match (name, pane) {
+            (Some(n), Some(p)) => format!("{n} · {}", p.harness),
+            (_, Some(p)) => p.harness.clone(),
+            _ => String::new(),
+        };
+        div()
+            .font_size(13)
+            .color(palette::MUTED)
+            .text(fill("dialog.ask.into", &[("target", &target)]))
+    });
+    let payload = (!typed.is_empty()).then(|| {
         div()
             .layer("payload")
             .self_stretch()
@@ -123,10 +143,13 @@ fn render_staged_bar(
             .style("max-height", "240px")
             .style("overflow-y", "auto")
             .color(palette::TEXT)
-            .text(String::from_utf8_lossy(&staged.payload).into_owned())
+            .children(command.map(|c| span(c).color(palette::BLUE_BORDER)))
+            .child(span(rest))
     });
     asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
-        .child(title(staged.what.clone()))
+        .child(
+            div().flex_row().gap(8).items_center().child(title(staged.what.clone())).children(into),
+        )
         .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
         .children(payload)
         .children(choice)
@@ -136,75 +159,128 @@ fn render_staged_bar(
         ]))
 }
 
+/// The Seal's one dialog (17.4, 17.5): the work it seals and the verdict it
+/// rests on, the decision, and for anything but a yes an optional reason.
 fn render_seal_disposition_bar(
+    client: Option<&ProjectClient>,
     project: &std::path::Path,
     eval: &str,
     selected: &str,
     picked_reason: Option<&str>,
 ) -> Element {
-    let reason_chip = |reason: &str| {
-        let picked = picked_reason == Some(reason);
+    let chip = |layer: String, said: String, picked: bool, act: BarAct| {
         div()
-            .layer(format!("reason {reason}"))
-            .on_click(BarAct::PickReason {
-                project: project.to_path_buf(),
-                eval: eval.to_string(),
-                disposition: selected.to_string(),
-                reason: (!picked).then(|| reason.to_string()),
-            })
-            .pad(6, 12)
-            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
-            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
-            .font_size(12)
-            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(word(&format!("seal.r.{reason}")))
-    };
-    let chip = |disposition: &str| {
-        let picked = selected == disposition;
-        div()
-            .layer(format!("disposition {disposition}"))
-            .on_click(BarAct::PickDisposition {
-                project: project.to_path_buf(),
-                eval: eval.to_string(),
-                disposition: disposition.to_string(),
-            })
+            .layer(layer)
+            .on_click(act)
             .pad(6, 12)
             .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
             .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
             .font_weight(if picked { 600 } else { 400 })
-            .font_size(12)
+            .font_size(13)
             .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(weft_core::tree::decision(disposition))
+            .text(said)
     };
-    div()
-        .layer("Seal disposition bar")
-        .self_stretch()
-        .flex_row()
-        .gap(8)
-        .pad(12, 20)
-        .items_center()
-        .bg(palette::SURFACE_ALT)
-        .style("border-top", format!("2px solid {}", palette::AMBER_BORDER))
-        .child(span("■").font_mono().color(palette::AMBER))
-        .child(div().font_weight(600).font_size(14).text(word("desktop.bar.seal_round")))
-        .child(div().flex_1())
-        .children(weft_core::tree::DISPOSITIONS.map(chip))
-        .child(div().w(12))
-        .children(weft_core::tree::reasons(selected).iter().map(|r| reason_chip(r)))
-        .child(div().w(12))
-        .child(button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar))
-        .child(button(
-            "btn Seal",
-            word("act.seal"),
-            BarAct::ConfirmSeal {
-                project: project.to_path_buf(),
-                eval: eval.to_string(),
-                disposition: selected.to_string(),
-                reason: picked_reason.map(str::to_string),
-            },
-            Tone::Primary,
-            Size::Bar,
+    let disposition = |d: &str| {
+        let act = BarAct::PickDisposition {
+            project: project.to_path_buf(),
+            eval: eval.to_string(),
+            disposition: d.to_string(),
+        };
+        chip(format!("disposition {d}"), weft_core::tree::decision(d), selected == d, act)
+    };
+    let reason = |r: &str| {
+        let picked = picked_reason == Some(r);
+        let act = BarAct::PickReason {
+            project: project.to_path_buf(),
+            eval: eval.to_string(),
+            disposition: selected.to_string(),
+            reason: (!picked).then(|| r.to_string()),
+        };
+        chip(format!("reason {r}"), word(&format!("seal.r.{r}")).to_string(), picked, act)
+    };
+    let row = |label: &str| {
+        div().flex_row().gap(10).items_center().font_size(13).child(
+            div()
+                .w(64)
+                .font_mono()
+                .font_weight(600)
+                .font_size(10)
+                .color(palette::DIM)
+                .text(word(label)),
+        )
+    };
+    // The work, by its first Ask's title and its Asks, and the Eval's verdict.
+    let unit = client.and_then(|c| c.work.of_eval(eval));
+    let title_of = |root: &str| {
+        client.and_then(|c| c.units.iter().find(|u| u.ask_id == root)).map(|u| u.title.clone())
+    };
+    let work = unit.map(|u| {
+        let t = title_of(&u.root).unwrap_or_default();
+        match u.asks.len() {
+            1 => fill("dialog.eval.work_one", &[("title", &t)]),
+            n => fill("dialog.eval.work", &[("title", &t), ("n", &n.to_string())]),
+        }
+    });
+    let judged = client.and_then(|c| c.work.record.evals.iter().find(|e| e.id == eval));
+    let verdict = judged.and_then(|e| {
+        let v = e.verdict?;
+        let agreement = e.agreement.map(|a| format!(" {a:.2}")).unwrap_or_default();
+        Some(format!(
+            "{}{agreement} · {}",
+            word(&format!("verdict.{}", v.recorded())),
+            fill("tree.eval", &[("n", &e.n.to_string())])
         ))
+    });
+    let reasons = weft_core::tree::reasons(selected);
+    let said = fill(
+        if picked_reason.is_some() { "dialog.seal.records_why" } else { "dialog.seal.records" },
+        &[
+            ("disposition", &weft_core::tree::decision(selected)),
+            ("work", work.as_deref().unwrap_or(eval)),
+        ],
+    );
+    asking_bar("Seal disposition bar", palette::BLUE_BORDER)
+        .child(
+            div()
+                .flex_row()
+                .gap(8)
+                .items_center()
+                .child(title(word("dialog.seal.title")))
+                .children(work.map(|w| div().font_size(13).color(palette::MUTED).text(w))),
+        )
+        .children(verdict.map(|v| row("dialog.seal.verdict").child(span(v))))
+        .child(row("dialog.seal.decision").children(weft_core::tree::DISPOSITIONS.map(disposition)))
+        .children((!reasons.is_empty()).then(|| {
+            row("dialog.seal.why")
+                .children(reasons.iter().map(|r| reason(r)))
+                .child(span(word("dialog.seal.optional")).font_size(12).color(palette::DIM))
+        }))
+        .child(
+            div()
+                .flex_row()
+                .gap(10)
+                .items_center()
+                .child(div().flex_1().font_size(13).color(palette::MUTED).text(said))
+                .child(button(
+                    "btn Cancel",
+                    word("act.cancel"),
+                    BarAct::Cancel,
+                    Tone::Quiet,
+                    Size::Bar,
+                ))
+                .child(button(
+                    "btn Seal",
+                    word("act.seal"),
+                    BarAct::ConfirmSeal {
+                        project: project.to_path_buf(),
+                        eval: eval.to_string(),
+                        disposition: selected.to_string(),
+                        reason: picked_reason.map(str::to_string),
+                    },
+                    Tone::Primary,
+                    Size::Bar,
+                )),
+        )
 }
 
 fn render_quit_bar() -> Element {

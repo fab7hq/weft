@@ -541,7 +541,12 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     assert_eq!(app.focus, Focus::Ask);
     app.ask.set_text("refresh token 60s before expiry");
     app.dispatch(SheetAct::SubmitAsk);
-    let (_, call) = wire.call();
+    let call = wire
+        .calls()
+        .into_iter()
+        .map(|(_, c)| c)
+        .find(|c| matches!(c, Call::Act { .. }))
+        .expect("the Ask");
     assert_eq!(
         call,
         Call::Act {
@@ -608,6 +613,87 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     });
 }
 
+/// The Ask's draft (17.1): the daemon offers the route, plan and rules for the
+/// harness and the words; the person picks a route, takes a practice out, and
+/// Ask sends what they kept.
+#[test]
+fn the_ask_sheet_offers_a_route_a_plan_and_rules_and_sends_what_was_kept() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    app.ask.set_text("show the build number");
+    let rule = |id: &str, label: &str| json!({"id": id, "label": label, "text": format!("{label} text"), "family": null, "layer": "shipped"});
+    let sheet = |route: &str| {
+        json!({
+            "routes": ["native_plan", "native_goal"], "route": route, "tasks": ["plan", "implement"],
+            "task": if route == "native_plan" { "plan" } else { "implement" },
+            "plan": {"slug": "build", "path": "plans/build/plan.md", "title": "Build"},
+            "plans": [{"slug": "build", "path": "plans/build/plan.md", "title": "Build"}],
+            "practices": [rule("practice.kiss", "KISS"), rule("practice.yagni", "YAGNI"), rule("practice.gall", "Gall"), rule("practice.knuth", "Knuth")],
+            "route_rules": [rule("route.step_loop", "Step Loop")],
+        })
+    };
+    // The sheet is read for the harness and the words, and drawn when it comes.
+    let answered = |app: &mut WeftDesktopApp, wire: &mut Wire, route: &str| {
+        app.pump();
+        let (id, query) = wire
+            .calls()
+            .into_iter()
+            .rev()
+            .find_map(|(id, c)| match c {
+                Call::Read { what, unit, .. } if what == "ask" => Some((id, unit)),
+                _ => None,
+            })
+            .expect("the sheet is read");
+        let query: Value = serde_json::from_str(&query).unwrap();
+        assert_eq!(query["words"], "show the build number");
+        wire.answer(id, sheet(route));
+        pumped(app, |a| a.ask_sheet.as_ref().is_some_and(|s| s["route"] == route));
+    };
+    answered(&mut app, &mut wire, "native_plan");
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    for said in [
+        "ROUTE",
+        "Plan",
+        "PLAN",
+        "plans/build/plan.md",
+        "ROUTE RULES",
+        "Step Loop",
+        "PRACTICES · 4",
+        "KISS",
+        "+ 1 more",
+    ] {
+        assert!(drawn.contains(said), "{said} in {drawn}");
+    }
+    app.dispatch(SheetAct::AskRoute("native_goal".into()));
+    answered(&mut app, &mut wire, "native_goal");
+    app.dispatch(SheetAct::AskRuleOut("practice.yagni".into()));
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    assert!(drawn.contains("PRACTICES · 3") && !drawn.contains("YAGNI"), "{drawn}");
+    app.dispatch(SheetAct::SubmitAsk);
+    let draft = wire.calls().into_iter().find_map(|(_, c)| match c {
+        Call::Act { act, draft, .. } if act == "ask" => draft,
+        _ => None,
+    });
+    assert_eq!(
+        draft,
+        Some(weft_core::ask::Draft {
+            route: Some("native_goal".into()),
+            task: Some("implement".into()),
+            plan: Some("plans/build/plan.md".into()),
+            rules: Some(vec![
+                "practice.kiss".into(),
+                "practice.gall".into(),
+                "practice.knuth".into()
+            ]),
+            reason: None,
+        })
+    );
+}
+
 /// WORK is a row per unit of work with one status; a unit opens as its
 /// workflow, and its Eval and Seal name it.
 #[test]
@@ -642,6 +728,10 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
         &app.bottom_bar,
         BottomBarState::SealDisposition { eval, .. } if eval == "evl_3"
     ));
+    let dialog = app.render().find_layer("Seal disposition bar").expect("the Seal").all_text();
+    for said in ["Seal this work?", "health endpoint", "DECISION", "Nothing is typed."] {
+        assert!(dialog.contains(said), "{said} in {dialog}");
+    }
     // Its one dialog sends the disposition and the reason picked there.
     let (project, eval) = (weft(), "evl_3".to_string());
     app.dispatch(BarAct::PickDisposition {
@@ -1882,8 +1972,8 @@ fn ask_on_a_project_row_opens_on_its_agents() {
     assert_eq!(*to, format!("pane:{codex}"), "the agent in front");
     app.ask.set_text("add a health endpoint");
     app.dispatch(SheetAct::SubmitAsk);
-    let (_, call) = wire.call();
-    assert!(matches!(call, Call::Act { pane: Some(p), .. } if p == codex), "{call:?}");
+    let call = wire.calls().into_iter().map(|(_, c)| c).find(|c| matches!(c, Call::Act { .. }));
+    assert!(matches!(call, Some(Call::Act { pane: Some(p), .. }) if p == codex), "{call:?}");
 }
 
 /// Remote's sheet, in the state `view` says, with what it says.
@@ -2290,7 +2380,9 @@ fn send_to_is_a_list_of_its_agents_then_a_new_one_of_each_harness() {
     assert!(list.find_layer("send to start:grok").is_some(), "{text}");
     // Picking is a choice: it closes the list, and sends nothing.
     app.dispatch(SheetAct::AskTo("start:grok".into()));
-    assert!(wire.calls().is_empty());
+    // Only the new harness's sheet is read.
+    let acts = wire.calls().into_iter().filter(|(_, c)| !matches!(c, Call::Read { .. })).count();
+    assert_eq!(acts, 0);
     assert_eq!(app.render().find_layer("send to choice").unwrap().all_text(), "grok ▾");
     app.ask.set_text("add a health endpoint");
     app.dispatch(SheetAct::SubmitAsk);

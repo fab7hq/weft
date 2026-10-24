@@ -34,6 +34,13 @@ pub struct SendTo {
 }
 
 impl SendTo {
+    /// The harness of the agent picked: a new one's, or a running one's as
+    /// its label names it (`project · harness`).
+    pub fn picked_harness(&self) -> String {
+        let label = self.label(&self.picked);
+        label.rsplit(" · ").next().unwrap_or_default().to_string()
+    }
+
     fn label(&self, key: &str) -> String {
         match key.strip_prefix("start:") {
             Some(h) => h.to_string(),

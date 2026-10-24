@@ -41,6 +41,7 @@ impl WeftDesktopApp {
             Action::Sheet(a) => self.sheet_act(a),
             Action::Pane(a) => self.pane_act(a),
         }
+        self.want_ask_sheet();
     }
 
     fn close_popovers(&mut self) {
@@ -490,6 +491,7 @@ impl WeftDesktopApp {
             running.iter().copied().find(|&p| Some(p) == front).or(running.first().copied())
         });
         self.ask = TextField::new(Shape::Area);
+        (self.ask_sheet, self.ask_choices) = (None, Default::default());
         self.active_sheet =
             Some(ActiveSheet::Ask { project, send_to: pane.map(pane_key), follow_up_unit: unit });
         self.focus = Focus::Ask;
@@ -618,6 +620,24 @@ impl WeftDesktopApp {
                     }
                 }
             }
+            SheetAct::AskOpen(which) => {
+                let c = &mut self.ask_choices;
+                c.open = (c.open.as_deref() != Some(which.as_str())).then_some(which);
+            }
+            SheetAct::AskRoute(route) => {
+                (self.ask_choices.route, self.ask_choices.open) = (Some(route), None);
+            }
+            SheetAct::AskPlan(plan) => {
+                (self.ask_choices.plan, self.ask_choices.open) = (Some(plan), None);
+            }
+            SheetAct::AskRuleOut(id) => {
+                self.ask_choices.removed.insert(id);
+            }
+            SheetAct::AskRuleBack(id) => {
+                self.ask_choices.removed.remove(&id);
+            }
+            SheetAct::AskMore => self.ask_choices.all = true,
+            SheetAct::AskAddRule => self.ask_choices.adding = !self.ask_choices.adding,
             SheetAct::FollowUp { project, unit } => self.open_ask(project, None, Some(unit)),
             SheetAct::Proceed { project, unit } => {
                 if let Some(c) = self.client_mut(&project) {
@@ -852,9 +872,10 @@ impl WeftDesktopApp {
         // The agent the sheet showed, by its pane; or a new one of a harness.
         let start = send_to.and_then(|k| k.strip_prefix("start:")).map(str::to_string);
         let pane = send_to.and_then(pane_in);
+        let chosen = self.ask_sheet.as_ref().map(|s| self.ask_choices.draft(s));
         let Some(client) = self.client_mut(project) else { return false };
         let act = if follow_up_unit.is_some() { "follow_up" } else { "ask" };
-        match client.act(act, follow_up_unit, pane, Some(draft), None, start.as_deref()) {
+        match client.ask(act, follow_up_unit, (pane, start.as_deref()), draft, chosen) {
             Ok(_) => true,
             Err(e) => {
                 self.why_not(e.to_string());

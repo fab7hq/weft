@@ -384,7 +384,7 @@ impl Remote {
                 self.send(conn, json!({"type": "ok", "req": req, "settings": supported}));
                 return Ok(true);
             }
-            Some(what @ ("rules" | "preview" | "profile")) => Call::Read {
+            Some(what @ ("rules" | "preview" | "profile" | "ask")) => Call::Read {
                 what: what.to_string(),
                 unit: m["unit"].as_str().unwrap_or_default().to_string(),
                 pane: None,

@@ -2,7 +2,7 @@
 //! an Eval's, a Seal's and a session's Details, the Eval view, Updates and
 //! Remote; the Ask docked under the panes; and the `☰` menu.
 
-mod ask;
+pub(crate) mod ask;
 mod eval;
 mod harnesses;
 mod menu;
@@ -37,6 +37,9 @@ pub struct SheetProps<'a> {
     pub bottom_bar: &'a BottomBarState,
     /// What the open Ask's field holds.
     pub ask_draft: &'a str,
+    /// What the open Ask's sheet offers, and what the person picked of it.
+    pub ask_sheet: Option<&'a serde_json::Value>,
+    pub ask_choices: &'a ask::AskChoices,
     /// The tunnel picked in Remote, not yet used.
     pub remote_pick: Option<&'a str>,
     /// The open Ask's SEND TO.

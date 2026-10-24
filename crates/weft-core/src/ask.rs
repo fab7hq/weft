@@ -23,6 +23,14 @@ pub struct Draft {
     pub reason: Option<String>,
 }
 
+/// A route as the sheet names it: `native_goal` is "Goal", `human_handoff`
+/// "Human handoff".
+pub fn route_label(id: &str) -> String {
+    let words = id.strip_prefix("native_").unwrap_or(id).replace('_', " ");
+    let mut chars = words.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
 /// A plan the project holds, as RingFrame lists it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plan {
@@ -48,6 +56,13 @@ mod tests {
 
     fn plan(slug: &str, title: &str) -> Plan {
         Plan { slug: slug.into(), path: format!("plans/{slug}/plan.md"), title: title.into() }
+    }
+
+    #[test]
+    fn a_route_reads_as_a_word() {
+        assert_eq!(route_label("native_goal"), "Goal");
+        assert_eq!(route_label("human_handoff"), "Human handoff");
+        assert_eq!(route_label(""), "");
     }
 
     #[test]

@@ -174,6 +174,7 @@ pub fn allowed(call: &Call) -> bool {
                     | "rules"
                     | "preview"
                     | "profile"
+                    | "ask"
             )
         }
         _ => false,

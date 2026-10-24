@@ -254,6 +254,10 @@ pub enum Then {
     Profile {
         host: String,
     },
+    /// What the open Ask's sheet offers, for `{"harness", "words", "route"}`.
+    AskSheet {
+        query: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -723,6 +727,7 @@ impl ProjectClient {
                         | Then::Rules { .. }
                         | Then::Preview { .. }
                         | Then::Profile { .. }
+                        | Then::AskSheet { .. }
                 ) {
                     self.read.insert(then, result);
                     return None;
@@ -731,8 +736,13 @@ impl ProjectClient {
             }
             Line::Error { id, message, .. } => {
                 let then = self.owed.remove(&id)?;
-                if matches!(then, Then::Rules { .. } | Then::Preview { .. } | Then::Profile { .. })
-                {
+                if matches!(
+                    then,
+                    Then::Rules { .. }
+                        | Then::Preview { .. }
+                        | Then::Profile { .. }
+                        | Then::AskSheet { .. }
+                ) {
                     self.refused.insert(then, message);
                     return None;
                 }
@@ -901,6 +911,29 @@ impl ProjectClient {
             eval: eval.map(str::to_string),
             start: start.map(str::to_string),
             draft: None,
+        };
+        self.tell(call, Then::Refusal)
+    }
+
+    /// Ask, or follow up, with what the person kept of the sheet's draft.
+    pub fn ask(
+        &mut self,
+        act: &str,
+        unit: Option<&str>,
+        (pane, start): (Option<u32>, Option<&str>),
+        text: &str,
+        draft: Option<weft_core::ask::Draft>,
+    ) -> Result<u64> {
+        self.last_refusal = None;
+        self.unrecorded = None;
+        let call = Call::Act {
+            act: act.to_string(),
+            unit: unit.map(str::to_string),
+            pane,
+            text: Some(text.to_string()),
+            eval: None,
+            start: start.map(str::to_string),
+            draft,
         };
         self.tell(call, Then::Refusal)
     }

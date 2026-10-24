@@ -194,6 +194,10 @@ pub struct WeftDesktopApp {
     /// agents brings each one's draft back. The open Ask's field.
     pub messages: HashMap<(PathBuf, u32), TextField>,
     pub ask: TextField,
+    /// What the open Ask's sheet offers, as the daemon last said it.
+    pub ask_sheet: Option<serde_json::Value>,
+    /// What the person picked of it.
+    pub ask_choices: crate::sheets::ask::AskChoices,
     /// Where the keyboard goes.
     pub focus: Focus,
     /// What each agent's field could show after its caret, and the draft it is for.
@@ -265,6 +269,8 @@ impl WeftDesktopApp {
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
+            ask_sheet: None,
+            ask_choices: Default::default(),
             focus: Focus::Terminal,
             suggestions: HashMap::new(),
             settling: None,
@@ -618,6 +624,7 @@ impl WeftDesktopApp {
 
     /// Take what every project's daemon link brought since; whether anything changed.
     pub fn pump(&mut self) -> bool {
+        self.want_ask_sheet();
         let (mut changed, mut moved) = (false, false);
         let mut answers = Vec::new();
         for c in &mut self.clients {
@@ -715,6 +722,31 @@ impl WeftDesktopApp {
 
     /// SEND TO for `project`, `picked` ticked: its running agents, then a new
     /// agent of each harness.
+    /// Ask the daemon what the open Ask's sheet offers for its harness, words
+    /// and route; keep its answer once it comes, and only the newest.
+    pub(crate) fn want_ask_sheet(&mut self) {
+        let Some(ActiveSheet::Ask { project, send_to, .. }) = &self.active_sheet else { return };
+        let (project, send_to) = (project.clone(), send_to.clone().unwrap_or_default());
+        let Some(c) = self.clients.iter_mut().find(|c| c.root == project) else { return };
+        let harness =
+            match (send_to.strip_prefix("start:"), crate::sheets::send_to::pane_in(&send_to)) {
+                (Some(h), _) => h.to_string(),
+                (None, Some(pane)) => match c.view(pane) {
+                    Some(p) => p.harness.clone(),
+                    None => return,
+                },
+                (None, None) => return,
+            };
+        let query = crate::sheets::ask::query(&harness, self.ask.text(), &self.ask_choices);
+        let then = crate::daemon::Then::AskSheet { query: query.clone() };
+        if let Some(sheet) = c.read.get(&then) {
+            self.ask_sheet = Some(sheet.clone());
+            c.read.retain(|t, _| !matches!(t, crate::daemon::Then::AskSheet { .. }) || *t == then);
+        } else if !c.refused.contains_key(&then) {
+            let _ = c.read("ask", &query, None, then);
+        }
+    }
+
     pub fn send_to_view(&self, project: &Path, picked: Option<&str>) -> SendTo {
         let listed = self.tree_projects().into_iter().find(|l| l.root == project);
         let agents = listed
@@ -1329,6 +1361,8 @@ impl WeftDesktopApp {
                 harnesses: &harnesses,
                 bottom_bar: &self.bottom_bar,
                 ask_draft: self.ask.text(),
+                ask_sheet: self.ask_sheet.as_ref(),
+                ask_choices: &self.ask_choices,
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
                 back: self.sheet_back.last().map(|(_, name)| name.as_str()),
