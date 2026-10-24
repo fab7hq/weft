@@ -125,6 +125,8 @@ pub struct AskDraft {
     pub plan: Option<String>,
     /// Practice rules, by id.
     pub rules: Vec<String>,
+    /// The practice rules the sheet offered, by id.
+    pub offered: Vec<String>,
     /// The work it follows: `follows` or `remediates`, and that record's id.
     pub link: Option<(String, String)>,
 }
@@ -452,6 +454,7 @@ mod tests {
             task: "implement".into(),
             plan: None,
             rules: Vec::new(),
+            offered: Vec::new(),
             link: None,
         };
         compile(&repo, &draft, None).unwrap();
@@ -465,6 +468,13 @@ mod tests {
             (&receipt["disposition"], &receipt["reason"]),
             (&Value::from("rejected"), &Value::from("not_what_i_asked"))
         );
+        // Its label row is read from the receipt.
+        let row = crate::labels::sealed("claude-code", &receipt);
+        assert_eq!(
+            (&row["seal_id"], &row["disposition"], &row["reason"]),
+            (&receipt["seal_id"], &Value::from("rejected"), &Value::from("not_what_i_asked"))
+        );
+        assert!(row["seal_id"].as_str().is_some_and(|s| s.starts_with("sel_")), "{row}");
         let _ = std::fs::remove_dir_all(repo);
     }
 

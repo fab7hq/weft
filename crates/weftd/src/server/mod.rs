@@ -596,13 +596,12 @@ fn ask_draft(
         Some(_) => chosen.plan,
         None => sheet["plan"]["path"].as_str().map(str::to_string),
     };
-    let offered = || {
-        let practices = sheet["practices"].as_array().into_iter().flatten();
-        practices.filter_map(|r| r["id"].as_str().map(str::to_string)).collect()
-    };
-    let rules = chosen.rules.unwrap_or_else(offered);
+    let practices = sheet["practices"].as_array().into_iter().flatten();
+    let offered: Vec<String> =
+        practices.filter_map(|r| r["id"].as_str().map(str::to_string)).collect();
+    let rules = chosen.rules.unwrap_or_else(|| offered.clone());
     let (route, task) = (text("route"), text("task"));
-    Ok(crate::ringframe::AskDraft { words, harness, route, task, plan, rules, link })
+    Ok(crate::ringframe::AskDraft { words, harness, route, task, plan, rules, offered, link })
 }
 
 /// RingFrame set up here, as `ringframe init` would, or what it still needs; and
@@ -1172,6 +1171,7 @@ impl Session {
                     };
                     let reason = draft.and_then(|d| d.reason.clone());
                     let (tx, disposition) = (self.tx.clone(), disposition.to_string());
+                    let (config, harness) = (self.config.clone(), unit.harness.clone());
                     std::thread::spawn(move || {
                         let sealed = crate::ringframe::seal(
                             &root,
@@ -1180,7 +1180,13 @@ impl Session {
                             reason.as_deref(),
                         );
                         let answer = match sealed {
-                            Ok(receipt) => Answer::Ok(serde_json::json!({"receipt": receipt})),
+                            Ok(receipt) => {
+                                let row = crate::labels::sealed(&harness, &receipt);
+                                if let Err(e) = crate::labels::append(&config, &root, &row) {
+                                    eprintln!("weft: the Seal's label was not kept: {e}");
+                                }
+                                Answer::Ok(serde_json::json!({"receipt": receipt}))
+                            }
                             Err(e) => ringframe_error(e),
                         };
                         let _ = tx.send(Wake::Answer { client, call_id, answer });
@@ -2397,7 +2403,13 @@ impl Session {
                 if let Some(draft) = w.compile.take() {
                     let over = self.projects[at].ringframe.clone();
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {
-                        Ok(ask_id) => w.sends = Some(ask_id),
+                        Ok(ask_id) => {
+                            let row = crate::labels::asked(&draft, &ask_id);
+                            if let Err(e) = crate::labels::append(&self.config, &root, &row) {
+                                eprintln!("weft: the Ask's label was not kept: {e}");
+                            }
+                            w.sends = Some(ask_id);
+                        }
                         Err(crate::ringframe::Error::Refused { message, .. }) => {
                             let why = format!(
                                 "RingFrame would not record it: {message}. Nothing was typed."
@@ -2431,6 +2443,7 @@ impl Session {
                 let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
                 crate::state::remove_open_project(weft_dir, &root);
                 crate::suggest::forget(&self.config, &root);
+                crate::labels::forget(&self.config, &root);
                 self.projects[at].suggest = None;
                 self.acted_in(at);
                 // Closed once the answer is sent: closing ends this client's
