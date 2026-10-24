@@ -430,8 +430,9 @@ pub struct Task {
 pub enum EvalStep {
     /// A task handed out now.
     Task(Task),
-    /// Every ready task of the role is out, or none is ready yet.
-    Waiting { remaining: usize },
+    /// Every ready task of the role is out, or none is ready yet; `checks`
+    /// still running, which the verdict waits for.
+    Waiting { remaining: usize, checks: Vec<String> },
     /// Every task is in, and the record is settled.
     Settled { verdict: String, confidence: Option<f64> },
 }
@@ -449,8 +450,10 @@ pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Ev
         });
     }
     if out["state"] == "waiting" {
+        let checks = out["checks"].as_array().into_iter().flatten();
         return Ok(EvalStep::Waiting {
             remaining: out["remaining"].as_u64().unwrap_or(0) as usize,
+            checks: checks.filter_map(Value::as_str).map(str::to_string).collect(),
         });
     }
     let t = &out["task"];

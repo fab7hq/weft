@@ -1499,7 +1499,13 @@ pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, 
     }
     Ok(match array_of(&out, "tasks").first() {
         Some(task) => json!({"state": "running", "task": task, "remaining": out["remaining"]}),
-        None => json!({"state": "waiting", "remaining": out["remaining"]}),
+        None => {
+            let mut waiting = json!({"state": "waiting", "remaining": out["remaining"]});
+            if let Some(checks) = out.get("checks") {
+                waiting["checks"] = checks.clone();
+            }
+            waiting
+        }
     })
 }
 
@@ -1604,6 +1610,12 @@ fn hand_out(
         .filter(|t| !st.accepted.contains_key(&t.id) && !st.failed.contains(&t.id))
         .collect();
     if open.is_empty() {
+        // The verdict waits for the checks, up to their time.
+        let checks = crate::checks::running(ws, eval_id);
+        if !checks.is_empty() {
+            return Ok(json!({"state": "running", "eval_id": eval_id, "tasks": [], "out": 0,
+                             "remaining": 0, "checks": checks}));
+        }
         let record = close(&ctx, &st)?;
         return Ok(json!({"state": "done", "eval_id": eval_id, "verdict": record["verdict"],
                          "confidence": record["confidence"]}));
@@ -2507,8 +2519,8 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
     // Drift as two numbers: how much of the change nothing
     // explains, and how much of what was asked is not done.
     let findings = array_of(&ctx.changes, "findings").to_vec();
-    // The checks RingFrame ran: those in, and any still running, which this
-    // record does not wait for.
+    // The checks RingFrame ran: those in, and any that did not finish in
+    // their time, which this record waited for no longer.
     let checks: Vec<Value> = crate::checks::results(&ctx.ws, eval_id)
         .map(|c| array_of(&c, "facts").to_vec())
         .unwrap_or_default();
@@ -2516,7 +2528,7 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
         let running = crate::checks::planned(&ctx.ws, eval_id);
         if !running.is_empty() {
             limitations.push(format!(
-                "the checks were still running when the Eval closed and are not in this record: {}",
+                "the checks did not finish in their time and are not in this record: {}",
                 running.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", ")
             ));
         }
@@ -4074,25 +4086,59 @@ mod tests {
     }
 
     #[test]
-    fn a_check_still_running_when_the_eval_closes_is_said_and_waited_for_by_nothing() {
+    fn a_check_that_outlives_its_time_is_said_and_waited_for_no_longer() {
         eval_bench(|ws| {
             let b = bench(ws);
             let e = &b.eval_id;
-            write(
-                &tmp(ws, e).join("checks.plan.json"),
-                json!({"commands": ["cargo test -p slow"]}).to_string().as_bytes(),
-            )
-            .unwrap();
+            let plan = tmp(ws, e).join("checks.plan.json");
+            write(&plan, json!({"commands": ["cargo test -p slow"]}).to_string().as_bytes())
+                .unwrap();
+            let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+            std::fs::File::options()
+                .write(true)
+                .open(&plan)
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
             let rec = close_all(ws, e, &[]);
             assert!(array_of(&rec, "checks").is_empty());
             assert!(
                 array_of(&rec, "limitations").iter().any(|l| {
                     let l = str_of_value(l);
-                    l.contains("still running when the Eval closed")
-                        && l.contains("`cargo test -p slow`")
+                    l.contains("did not finish in their time") && l.contains("`cargo test -p slow`")
                 }),
                 "{rec}"
             );
+        });
+    }
+
+    /// Every task in, and a check still running within its time: the Eval
+    /// says so and does not close until it is in.
+    #[test]
+    fn an_eval_whose_check_is_still_running_does_not_close() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let plan = tmp(ws, e).join("checks.plan.json");
+            write(&plan, json!({"commands": ["cargo test -p slow"]}).to_string().as_bytes())
+                .unwrap();
+            let mut last = Value::Null;
+            for _ in 0..40 {
+                last = take(ws, e, None).unwrap();
+                if last["state"] != "running" {
+                    break;
+                }
+                let t = str_of(&last["task"], "task_id");
+                crate::testing::answer_task(ws, &t);
+                submit(ws, &t).unwrap();
+            }
+            assert_eq!(last["state"], "waiting", "{last}");
+            assert_eq!(last["checks"], json!(["cargo test -p slow"]), "{last}");
+            assert!(crate::evaluate::load_record(ws, e).unwrap().is_none(), "not closed");
+            crate::checks::run(ws, e).unwrap();
+            assert_eq!(take(ws, e, None).unwrap()["state"], "done");
+            let rec = crate::evaluate::load_record(ws, e).unwrap().unwrap();
+            assert_eq!(array_of(&rec, "checks").len(), 1, "{rec}");
         });
     }
 

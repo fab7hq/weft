@@ -344,6 +344,22 @@ pub fn planned(ws: &Workspace, eval_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The checks still running within their time: none once they are in, or
+/// once the time they had (each check's limit, from when they were planned)
+/// is up.
+pub fn running(ws: &Workspace, eval_id: &str) -> Vec<String> {
+    if results(ws, eval_id).is_some() {
+        return Vec::new();
+    }
+    let plan = ws.rf_dir().join(format!("tmp/eval-{eval_id}/checks.plan.json"));
+    let commands = planned(ws, eval_id);
+    let time = std::time::Duration::from_secs(CHECK_SECONDS * commands.len() as u64);
+    let within = std::fs::metadata(plan)
+        .and_then(|m| m.modified())
+        .is_ok_and(|at| at.elapsed().unwrap_or_default() <= time);
+    if within { commands } else { Vec::new() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
