@@ -2,9 +2,10 @@
 //! DAG: **map** reads the change once, in the file tree's order, and says
 //! why each window is there; the **shuffle** gives each requirement the
 //! windows the map assigned to it and RingFrame's own evidence for it;
-//! **reduce** decides each requirement from that; **confirm** re-reads,
-//! afresh and on the strong tier, every decisive negative and every
-//! requirement whose evidence carries a finding. RingFrame merges the rest.
+//! **reduce** decides each requirement from that; **confirm** reads again,
+//! as a plain first reading of its kind in a fresh session, every decisive
+//! negative and every requirement whose evidence carries a finding: a window's
+//! two readings settle it only when they agree. RingFrame merges the rest.
 //!
 //! `eval next` says which tasks are ready and writes each one's file, with
 //! its evidence inline (`eval task` hands one to a judge Weft started); a
@@ -1187,8 +1188,7 @@ const MAP_MD: &str = "\
 
 For every window in this brief, say why that change is there, from the \
 requirements this brief lists (every requirement of the Eval, one line \
-each). When your role is `confirm`, another reading found no requirement for \
-these windows: read them afresh.
+each).
 
 Write your output file:
 
@@ -1230,15 +1230,12 @@ const REDUCE_MD: &str = "\
 # RingFrame Eval task: reduce
 
 Decide, for each requirement in this brief, whether the change meets it, \
-from the windows listed for it, each requirement on its own windows. When \
-your role is `confirm`, read each requirement afresh, and first answer each \
-thing RingFrame found.
+from the windows listed for it, each requirement on its own windows.
 
 Write your output file:
 
 ```json
-{\"findings\": [{\"finding\": \"<what RingFrame found>\", \"means\": \"<what it means here>\"}],
- \"requirements\": [
+{\"requirements\": [
    {\"id\": \"<id>\", \"vote\": \"met\", \"reason\": \"<what the evidence shows>\",
     \"citations\": [{\"window\": \"w_…\", \"quote\": \"…\"}]},
    {\"id\": \"<id>\", \"vote\": \"not_met\", \"reason\": \"…\", \"missing\": \"<what is absent>\"},
@@ -1253,9 +1250,6 @@ change doing what the requirement says.
 the windows listed for it lack. Evidence that it is not met is `not_met`, never \
 `unknown`.
 - `unknown` needs `missing`.
-- `findings` (role `confirm`): one entry for each thing this brief lists \
-RingFrame found on this requirement or its windows, before you vote; a `met` \
-has to hold despite it.
 - Each reason is about its own requirement: one sentence, at most 200 \
 characters.
 ";
@@ -1643,7 +1637,10 @@ fn hand_out(
     let ready: Vec<&Task> =
         open.iter().copied().filter(|t| !is_out(&t.id, &state) && of_role(t)).take(room).collect();
     for t in ready {
-        let (file, text) = task_file(&ctx, t, &facts);
+        // A second reading is a plain first reading of its kind: nothing in
+        // its files says what the first reading found.
+        let shown = Task { role: if t.kind == "map" { "map" } else { "reduce" }, ..t.clone() };
+        let (file, text) = task_file(&ctx, &shown, &facts);
         let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
         bytes.push(b'\n');
         // RingFrame's own record of the task; the judge reads only the brief.
@@ -1651,7 +1648,7 @@ fn hand_out(
         write(&dir.join(format!("tasks/{}.windows.txt", t.id)), text.as_bytes())?;
         write(
             &dir.join(format!("tasks/{}.brief.md", t.id)),
-            brief(t, &file, &text, &deny).as_bytes(),
+            brief(&shown, &file, &text, &deny).as_bytes(),
         )?;
         let slot = &mut state["handed"][&t.id];
         if !slot.is_array() {
@@ -2121,22 +2118,6 @@ fn check_reduce(ch: &mut Checker, out: &Value) {
     for id in wanted.iter().filter(|o| !seen.contains(*o)) {
         ch.error("requirements", format!("no vote for {id}"));
     }
-    if ch.task.role == "confirm" {
-        let owed = ch
-            .task
-            .obligations
-            .iter()
-            .map(|o| ch.ctx.findings_naming(&str_of(o, "id")).len())
-            .sum::<usize>()
-            + ch.task.windows.iter().map(|w| ch.ctx.findings_on(w).len()).sum::<usize>();
-        let answered = array_of(out, "findings")
-            .iter()
-            .filter(|f| !str_of(f, "means").trim().is_empty())
-            .count();
-        if owed > 0 && answered == 0 {
-            ch.error("findings", "answer what RingFrame found, in findings, before you vote");
-        }
-    }
     ch.templated(&votes, "reason", "id");
     ch.templated(&votes, "missing", "id");
 }
@@ -2338,6 +2319,17 @@ fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<Stri
 
 // ---- close ------------------------------------------------------------------------
 
+/// A judged window from its map's class and its second reading's: two
+/// readings settle it only when they agree; the map alone settles a window it
+/// found a reason for.
+fn window_result(map: Option<&'static str>, second: Option<&'static str>) -> (&'static str, f64) {
+    match (map, second) {
+        (Some("unexplained"), Some("unexplained")) => ("unexplained", 1.0),
+        (Some("unexplained"), _) | (None, _) => ("not_judged", 0.0),
+        (Some(class), _) => (class, 1.0),
+    }
+}
+
 fn window_class(entry: &Value) -> &'static str {
     if entry.get("elsewhere").is_some_and(|u| !u.is_null()) {
         "elsewhere"
@@ -2468,16 +2460,11 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
             ("mechanical".to_string(), 1.0)
         } else {
             let a = answers.get(&id);
-            match (
+            let (result, agreement) = window_result(
                 a.and_then(|a| a.get("map")).map(window_class),
                 a.and_then(|a| a.get("confirm")).map(window_class),
-            ) {
-                (Some("unexplained"), Some("unexplained")) => ("unexplained".into(), 1.0),
-                (Some("unexplained"), Some(other)) => (other.to_string(), 0.5),
-                (Some("unexplained"), None) => ("not_judged".into(), 0.0),
-                (Some(c), _) => (c.to_string(), 1.0),
-                (None, _) => ("not_judged".into(), 0.0),
-            }
+            );
+            (result.to_string(), agreement)
         };
         // Another unit's work is not this unit's change.
         if !matches!(result.as_str(), "mechanical" | "not_judged" | "elsewhere") {
@@ -3310,7 +3297,8 @@ mod tests {
                 array_of(&file, "found").iter().any(|f| f["kind"] == "unclaimed_rewrite"),
                 "{file}"
             );
-            // A confirm answers what RingFrame found before it votes.
+            // A second reading is a plain reading: it owes no answer to what
+            // RingFrame found.
             let mut doc = head(&t, "reduce", "confirm");
             doc["requirements"] = json!(
                 array_of(&file, "requirements")
@@ -3339,14 +3327,9 @@ mod tests {
                     })
                     .collect::<Vec<_>>()
             );
-            put(ws, &t, doc.clone());
-            let (code, r) = submit(ws, &t).unwrap();
-            assert_eq!(code, 2);
-            assert!(r["errors"].to_string().contains("answer what RingFrame found"), "{r}");
-            doc["findings"] = json!([{"finding": "commit tidy rewrote A",
-                                      "means": "the export still returns a number"}]);
             put(ws, &t, doc);
-            assert_eq!(submit(ws, &t).unwrap().0, 0);
+            let (code, r) = submit(ws, &t).unwrap();
+            assert_eq!(code, 0, "{r}");
         });
     }
 
@@ -4412,6 +4395,54 @@ mod tests {
             assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
             assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
             refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
+        });
+    }
+
+    /// A window's map and second reading settle it only when they agree.
+    #[test]
+    fn a_window_whose_two_readings_disagree_is_not_judged() {
+        let r = |m, c| {
+            let (result, agreement) = window_result(m, c);
+            (result.to_string(), agreement)
+        };
+        assert_eq!(r(Some("unexplained"), Some("unexplained")), ("unexplained".into(), 1.0));
+        assert_eq!(r(Some("unexplained"), Some("required")), ("not_judged".into(), 0.0));
+        assert_eq!(r(Some("unexplained"), Some("undoes")), ("not_judged".into(), 0.0));
+        assert_eq!(r(Some("unexplained"), None), ("not_judged".into(), 0.0));
+        assert_eq!(r(Some("required"), None), ("required".into(), 1.0));
+        assert_eq!(r(None, None), ("not_judged".into(), 0.0));
+    }
+
+    /// The second reading is a plain first reading of its kind, in a fresh
+    /// session: its brief and task file never say what the first reading found.
+    #[test]
+    fn no_confirm_brief_carries_the_first_reading() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            map_all(ws, e);
+            let mut seen = BTreeSet::new();
+            for _ in 0..30 {
+                let got = take(ws, e, None).unwrap();
+                if got["state"] != "running" {
+                    break;
+                }
+                let t = str_of(&got["task"], "task_id");
+                if got["task"]["role"] == "confirm" {
+                    let kind = str_of(&got["task"], "kind");
+                    let first = if kind == "map" { "map" } else { "reduce" };
+                    let brief = std::fs::read_to_string(str_of(&got["task"], "brief")).unwrap();
+                    assert!(brief.contains(&format!("You are the `{first}` judge")), "{brief}");
+                    for said in ["another reading", "afresh", "role `confirm`", "\"findings\""] {
+                        assert!(!brief.contains(said), "{t} says {said}");
+                    }
+                    assert_eq!(task_of(ws, &t)["role"], first);
+                    seen.insert(kind);
+                }
+                crate::testing::answer_task(ws, &t);
+                submit(ws, &t).unwrap();
+            }
+            assert!(seen.contains("map"), "a window the map left unexplained is read again");
         });
     }
 
