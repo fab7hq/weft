@@ -1183,13 +1183,31 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
     assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));
     assert_eq!(c.answer(act("decide", Some("evl_9"))), Err("no_unit".into()));
 
-    // Eval on the unit being judged sends its debate.
+    // Eval on the unit being judged: one dialog, then its debate on Send.
     c.send(act("check", None));
-    let payload = c.wait_until(|e| match e {
-        Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).into_owned()),
+    let pending = c.wait_until(|e| match e {
+        Event::Pending { id, what, .. } => Some((id, what)),
         _ => None,
     });
-    assert!(payload.contains("evl_1"), "{payload}");
+    assert_eq!(pending.1, "Eval this work?");
+    c.send(Call::Resolve { pending: pending.0, yes: true, force: false, to: None, start: None });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let read = Call::Read {
+            what: "history".into(),
+            unit: String::new(),
+            pane: Some(0),
+            lines: Some(50),
+            before: None,
+            after: None,
+        };
+        let screen = c.answer(read).map(|v| v["text"].as_str().unwrap_or_default().to_string());
+        if screen.as_deref().is_ok_and(|s| s.contains("debate evl_1")) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the debate never went: {screen:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Judged, the Seal on it names it.
     let line = |kind: &str, id: &str, data: serde_json::Value, links: serde_json::Value| {

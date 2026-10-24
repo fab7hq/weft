@@ -105,6 +105,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("dialog.ask.title", "Ask {harness}?"),
     ("dialog.ask.exact", "This is the exact prompt {harness} will receive."),
     ("dialog.ask.trimmed", "Left out to fit {harness}'s limit: {rules}."),
+    // The one dialog an Eval has: the work, and who checks it.
+    ("dialog.eval.title", "Eval this work?"),
+    ("dialog.eval.work", "{title}, and its {n} Asks."),
+    ("dialog.eval.work_one", "{title}, its one Ask."),
+    ("dialog.eval.judges", "{harness} checks it."),
     ("not_ready.title", "The agent has not said it is ready"),
     (
         "not_ready.why",

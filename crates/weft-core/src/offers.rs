@@ -105,6 +105,20 @@ pub fn asking(harness: &str, how: &Handoff, trimmed: &[String]) -> Asking {
     Asking { what: crate::words::fill("dialog.ask.title", &named), why }
 }
 
+/// Evaluating a unit of work: the dialog names the work, by its first Ask's
+/// title and how many Asks it holds, and the harness that checks it.
+pub fn evaluating(title: &str, asks: usize, judges: &str) -> Asking {
+    use crate::words::{fill, word};
+    let work = match asks {
+        1 => fill("dialog.eval.work_one", &[("title", title)]),
+        n => fill("dialog.eval.work", &[("title", title), ("n", &n.to_string())]),
+    };
+    Asking {
+        what: word("dialog.eval.title").into(),
+        why: vec![work, fill("dialog.eval.judges", &[("harness", judges)])],
+    }
+}
+
 /// A refusal code in the words the person reading it would use.
 fn said_plainly(code: &str) -> &str {
     match code {

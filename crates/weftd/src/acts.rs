@@ -27,6 +27,31 @@ pub struct Built {
     pub ask_id: Option<String>,
     /// The Ask its Send compiles, before the prompt shown is typed.
     pub compile: Option<ringframe::AskDraft>,
+    /// The Eval its Send opens, then debates.
+    pub eval: Option<Debate>,
+}
+
+/// An Eval of a unit of work, to debate in a harness once the person says
+/// yes: the unit's own gathered Eval, or one RingFrame opens then.
+#[derive(Debug, Clone)]
+pub struct Debate {
+    pub unit: Unit,
+    pub stage: weft_core::eval_stages::Stage,
+    pub open: Option<String>,
+}
+
+/// The dialog for an Eval: what it is of, and who checks it. Nothing is
+/// typed or opened until its Send.
+pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
+    Built {
+        payload: Vec::new(),
+        how: Handoff::Whole,
+        asking: weft_core::offers::evaluating(title, asks, judges),
+        confirm_first: false,
+        ask_id: None,
+        compile: None,
+        eval: Some(debate),
+    }
 }
 
 /// Send a compiled prompt. The wording is RingFrame's, read back through its
@@ -51,6 +76,7 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         confirm_first: unit.awaiting_yes(),
         ask_id: Some(unit.ask_id.clone()),
         compile: None,
+        eval: None,
     })
 }
 
@@ -75,6 +101,7 @@ pub fn skill(
         confirm_first: false,
         ask_id: None,
         compile: None,
+        eval: None,
     }
 }
 
@@ -99,6 +126,7 @@ pub fn ask(
         confirm_first: false,
         ask_id: None,
         compile: Some(draft),
+        eval: None,
     })
 }
 

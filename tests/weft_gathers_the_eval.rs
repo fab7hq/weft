@@ -1,9 +1,10 @@
-//! Eval gathers the Eval in Weft, through RingFrame's crate, then offers only
-//! the debate to a harness; an Eval already gathered is debated without
-//! opening again.
+//! Eval is one dialog, and nothing is opened before its Send: then Weft opens
+//! and gathers the Eval through RingFrame's crate and types only the debate
+//! into a harness. An Eval already gathered is debated without opening again,
+//! and a Cancel records nothing.
 //!
-//! Its own test binary because it puts a stand-in `ringframe` first on PATH
-//! and sets `HOME`, which are global: one test, one process.
+//! Its own test binary because it sets `HOME`, which is global: one test, one
+//! process.
 
 mod support;
 
@@ -15,20 +16,6 @@ use std::time::{Duration, Instant};
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
-/// A `ringframe` for what weftd still runs as a program: it answers
-/// everything, and logs every call it gets.
-fn stand_in(dir: &Path) {
-    let log = dir.join("calls.log");
-    let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\ncase \"$*\" in\n  *\"profile show\"*) printf '{{\"invocation_prefix\":\"/rf:\"}}' ;;\n  *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  *) printf '{{}}' ;;\nesac\nexit 0\n",
-        log = log.display(),
-    );
-    let path = dir.join("ringframe");
-    std::fs::write(&path, script).expect("stand-in");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-}
-
 /// The ledger's events of `kind`.
 fn events(ledger: &Path, kind: &str) -> Vec<serde_json::Value> {
     std::fs::read_to_string(ledger)
@@ -37,10 +24,6 @@ fn events(ledger: &Path, kind: &str) -> Vec<serde_json::Value> {
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .filter(|e| e["type"] == kind)
         .collect()
-}
-
-fn calls(dir: &Path) -> String {
-    std::fs::read_to_string(dir.join("calls.log")).unwrap_or_default()
 }
 
 fn wait<T>(
@@ -67,22 +50,16 @@ fn wait<T>(
 }
 
 #[test]
-fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_again() {
+fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
     let tmp = std::env::temp_dir().join(format!("weft-gathers-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
-    let (bin, root, home) = (tmp.join("bin"), tmp.join("project"), tmp.join("home"));
-    std::fs::create_dir_all(&bin).expect("bin");
-    stand_in(&bin);
+    let (root, home) = (tmp.join("project"), tmp.join("home"));
     // SAFETY: this binary holds exactly one test.
     unsafe {
         std::env::set_var("HOME", &home);
     }
     let ask = support::real_ask(&root, &home, "sh");
     let ledger = root.join(".fab7/rf/ledger.jsonl");
-    // SAFETY: as above.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
-    }
 
     let socket = protocol::private_socket("weft-gathers");
     let agent = support::agent(&support::agents_dir(&socket));
@@ -144,34 +121,91 @@ fn one_press_gathers_in_weft_and_offers_the_debate_and_the_next_does_not_gather_
     };
     let pending = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
         wait(frames, stream, |e| match e {
-            Event::Pending { payload, .. } => Some(String::from_utf8_lossy(&payload).to_string()),
+            Event::Pending { id, what, why, .. } => Some((id, what, why)),
+            _ => None,
+        })
+    };
+    let typed = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
+        wait(frames, stream, |e| match e {
+            Event::Injected { refusal, .. } => Some(refusal),
             _ => None,
         })
     };
 
-    // One press: Weft opens and gathers, then offers the debate.
-    let started = Instant::now();
+    // One press, one dialog: it names the work and who checks it, and
+    // nothing is opened yet.
     call(&mut stream, check());
-    let typed = pending(&mut frames, &stream);
-    let took = started.elapsed();
-    let log = calls(&bin);
-    assert!(!log.contains("eval open"), "Weft gathered through the crate, not the CLI:\n{log}");
+    let (pnd, what, why) = pending(&mut frames, &stream);
+    assert_eq!(what, "Eval this work?");
+    assert!(why.contains("Ship it.") && why.contains("sh"), "the work and its judge: {why}");
+    assert!(events(&ledger, "eval.opened").is_empty(), "nothing opened before Send");
+
+    // Cancel records nothing.
+    call(
+        &mut stream,
+        Call::Resolve { pending: pnd, yes: false, force: false, to: None, start: None },
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(events(&ledger, "eval.opened").is_empty(), "a Cancel opens nothing");
+
+    // Eval: Weft opens and gathers through the crate, then types the debate.
+    call(&mut stream, check());
+    let (pnd, _, _) = pending(&mut frames, &stream);
+    call(
+        &mut stream,
+        Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
+    );
+    assert_eq!(typed(&mut frames, &stream), None, "the debate is typed");
     let opened = events(&ledger, "eval.opened");
     assert_eq!(opened.len(), 1, "{opened:?}");
     let eval = opened[0]["id"].as_str().expect("an Eval id").to_string();
     let gathered = events(&ledger, "eval.gathered");
     assert_eq!(gathered[0]["data"]["host"], "weft", "{gathered:?}");
     let debate = format!("eval debate {eval}");
-    assert!(typed.contains(&debate), "only the debate goes to the harness: {typed}");
-    assert!(!typed.contains("gather"), "{typed}");
-    assert!(took < Duration::from_secs(3), "the gather held the press for {took:?}");
+    let mut history = |stream: &mut UnixStream, frames: &mut Lines<UnixStream>| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            call(
+                stream,
+                Call::Read {
+                    what: "history".into(),
+                    unit: String::new(),
+                    pane: Some(0),
+                    lines: Some(50),
+                    before: None,
+                    after: None,
+                },
+            );
+            std::thread::sleep(Duration::from_millis(100));
+            let mut text = String::new();
+            stream.set_read_timeout(Some(Duration::from_millis(200))).expect("timeout");
+            while let Ok(Some(line)) = frames.next() {
+                if let Line::Result { result, .. } = line
+                    && let Some(t) = result["text"].as_str()
+                {
+                    text = t.to_string();
+                    break;
+                }
+            }
+            if text.contains(&debate) || Instant::now() >= deadline {
+                return text;
+            }
+        }
+    };
+    let screen = history(&mut stream, &mut frames);
+    assert!(screen.contains(&debate), "only the debate goes to the harness: {screen}");
+    assert!(!screen.contains("gather"), "{screen}");
 
-    // The board has seen the gathered Eval: the next press debates it and
+    // The board has seen the gathered Eval: the next Eval debates it and
     // opens nothing.
     std::thread::sleep(Duration::from_millis(600));
     call(&mut stream, check());
-    let again = pending(&mut frames, &stream);
-    assert!(again.contains(&debate), "{again}");
+    let (pnd, _, _) = pending(&mut frames, &stream);
+    call(
+        &mut stream,
+        Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
+    );
+    assert_eq!(typed(&mut frames, &stream), None, "typed again");
     assert_eq!(events(&ledger, "eval.opened").len(), 1, "gathered once");
 
     call(&mut stream, Call::Shutdown);
