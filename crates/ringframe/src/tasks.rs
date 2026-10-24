@@ -50,7 +50,6 @@ const INDEX_TEXT: usize = 160;
 const ATTEMPTS: usize = 3;
 /// A task handed out and not submitted in this long is handed out once more.
 const TIMEOUT_SECS: i64 = 15 * 60;
-pub const DEFAULT_PARALLEL: usize = 8;
 const QUOTE_MIN: usize = 8;
 const QUOTE_MAX: usize = 300;
 /// The roles, and the tier each wants from a plugin's configuration.
@@ -1363,27 +1362,6 @@ fn now_secs() -> i64 {
         .map_or(0, |d| d.as_secs() as i64)
 }
 
-/// Record the harness that runs this Eval's tasks, as its skill names it.
-pub fn note_host(ws: &Workspace, eval_id: &str, host: &str) -> Result<(), EvalError> {
-    let path = state_path(ws, eval_id);
-    store::locked(ws, || {
-        let mut state = read_json(&path).unwrap_or_else(|| json!({"handed": {}}));
-        let hosts = state["hosts"].as_array().cloned().unwrap_or_default();
-        if !hosts.iter().any(|h| h == host) {
-            let mut hosts = hosts;
-            hosts.push(json!(host));
-            state["hosts"] = json!(hosts);
-            write(&path, &store::canonical(&state))?;
-        }
-        Ok(())
-    })
-}
-
-/// Whether this Eval runs by tasks: `eval next` has been asked for it.
-pub fn is_tasked(ws: &Workspace, eval_id: &str) -> bool {
-    state_path(ws, eval_id).exists()
-}
-
 fn write(path: &Path, bytes: &[u8]) -> Result<(), EvalError> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p)?;
@@ -1468,62 +1446,21 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
     (v, text)
 }
 
-/// The tasks that are ready, at most `parallel` out at once; `done` with the
-/// report once every task is in.
-/// `agents` are the roles of whoever runs the tasks, filling what `eval open`
-/// left unset: an Eval opened by one caller is judged on the tiers of the
-/// harness that runs its tasks.
-pub fn next(
-    ws: &Workspace,
-    eval_id: &str,
-    parallel: usize,
-    agents: Option<&Value>,
-    returned: &[String],
-) -> Result<Value, EvalError> {
-    // Its state and the ledger are read, changed and written as one: two
-    // callers at once would hand a task out twice, or settle twice.
-    store::locked(ws, || hand_out(ws, eval_id, Pick::Parallel(parallel), agents, returned))
-}
-
 /// One task for a judge Weft started, of `role` when given: `running` with
 /// the task, its brief and where its answer goes; `waiting` while every
-/// ready task of the role is out or none is ready yet; `done` once every
-/// task is in. A task out past its time goes out once more, then fails.
+/// ready task of the role is out, none is ready yet, or the checks are still
+/// running; `done` once every task is in. A task out past its time goes out
+/// once more, to a fresh session, then fails.
 pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
     if let Some(r) = role {
         need(ROLES.contains(&r), "eval.role", format!("{r} is not a role: {}", ROLES.join(", ")))?;
     }
-    let out = store::locked(ws, || hand_out(ws, eval_id, Pick::One(role), None, &[]))?;
-    if out["state"] == "done" {
-        return Ok(out);
-    }
-    Ok(match array_of(&out, "tasks").first() {
-        Some(task) => json!({"state": "running", "task": task, "remaining": out["remaining"]}),
-        None => {
-            let mut waiting = json!({"state": "waiting", "remaining": out["remaining"]});
-            if let Some(checks) = out.get("checks") {
-                waiting["checks"] = checks.clone();
-            }
-            waiting
-        }
-    })
+    // Its state and the ledger are read, changed and written as one: two
+    // judges at once would be handed one task, or settle twice.
+    store::locked(ws, || hand_out(ws, eval_id, role))
 }
 
-/// How many tasks a call hands out: up to a parallel limit for a
-/// coordinator, or one, of a role, for a judge Weft started.
-#[derive(Clone, Copy)]
-enum Pick<'a> {
-    Parallel(usize),
-    One(Option<&'a str>),
-}
-
-fn hand_out(
-    ws: &Workspace,
-    eval_id: &str,
-    pick: Pick,
-    agents: Option<&Value>,
-    returned: &[String],
-) -> Result<Value, EvalError> {
+fn hand_out(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
     if crate::evaluate::load_record(ws, eval_id)?.is_some() {
         return Ok(json!({"state": "done", "eval_id": eval_id}));
     }
@@ -1532,75 +1469,23 @@ fn hand_out(
         "eval.voided",
         format!("{eval_id} was voided"),
     )?;
-    let mut ctx = Ctx::load(ws, eval_id)?;
-    // What a harness running the tasks gave, kept for the rest of the Eval:
-    // the tiers its tasks run on, and what the record says each role ran on.
+    let ctx = Ctx::load(ws, eval_id)?;
     let state_file = state_path(ws, eval_id);
-    let given = agents.map(current_roles);
-    if let Some(g) = &given {
-        let mut state = read_json(&state_file).unwrap_or_else(|| json!({"handed": {}}));
-        state["agents"] = g.clone();
-        write(&state_file, &store::canonical(&state))?;
-    }
-    let agents = given.or_else(|| read_json(&state_file).map(|s| s["agents"].clone()));
-    if let Some(given) = agents.as_ref().and_then(Value::as_object) {
-        let mut merged = ctx.brief["agents"].as_object().cloned().unwrap_or_default();
-        for (role, keys) in given {
-            let slot = merged.entry(role.clone()).or_insert_with(|| json!({}));
-            for (k, v) in keys.as_object().into_iter().flatten() {
-                if slot.get(k).is_none() {
-                    slot[k] = v.clone();
-                }
-            }
-        }
-        ctx.brief["agents"] = Value::Object(merged);
-    }
     let mut st = status(&ctx)?;
     let mut state = read_json(&state_file).unwrap_or_else(|| json!({"handed": {}}));
     let now = now_secs();
-    let count_of =
-        |state: &Value, key: &str, id: &str| state[key][id].as_array().map_or(0, Vec::len);
-    // A sub-agent that has finished gives its task back, whatever it replied:
-    // one with no submission counts as back now, not when its lease ends.
-    // Each hand-out is given back once: a return and the next hand-out can
-    // fall in the same second, so they are counted, not timed.
-    for id in returned {
-        if count_of(&state, "returned", id) < count_of(&state, "handed", id)
-            && !st.accepted.contains_key(id)
-            && !st.failed.contains(id)
-        {
-            let slot = &mut state["returned"][id];
-            if !slot.is_array() {
-                *slot = json!([]);
-            }
-            slot.as_array_mut().expect("an array").push(json!(now));
-        }
-    }
-    let last_of = |state: &Value, key: &str, id: &str| {
-        state[key][id].as_array().and_then(|h| h.last()).and_then(Value::as_i64)
-    };
-    let is_back = |id: &str, state: &Value| {
-        let handed = count_of(state, "handed", id);
-        handed > 0 && count_of(state, "returned", id) >= handed
-    };
     let is_out = |id: &str, state: &Value| {
-        last_of(state, "handed", id).is_some_and(|l| now - l <= TIMEOUT_SECS) && !is_back(id, state)
+        let last = state["handed"][id].as_array().and_then(|h| h.last()).and_then(Value::as_i64);
+        last.is_some_and(|l| now - l <= TIMEOUT_SECS)
     };
-    // A task back, or out past its time, goes out once more, then is
-    // recorded failed.
-    let tasks = plan(&ctx, &st);
-    for t in &tasks {
+    // A task out past its time goes out once more, then is recorded failed.
+    for t in &plan(&ctx, &st) {
         if st.accepted.contains_key(&t.id) || st.failed.contains(&t.id) {
             continue;
         }
         let handed = state["handed"][&t.id].as_array().map_or(0, Vec::len);
         if handed >= 2 && !is_out(&t.id, &state) {
-            let why = if is_back(&t.id, &state) {
-                "handed out twice; its judge finished without an accepted submission"
-            } else {
-                "not submitted in time, twice"
-            };
-            record(&ctx, t, "failed", 0, &[json!(why)], &[], None)?;
+            record(&ctx, t, "failed", 0, &[json!("not submitted in time, twice")], &[], None)?;
             st.failed.insert(t.id.clone());
         }
     }
@@ -1613,17 +1498,15 @@ fn hand_out(
         // The verdict waits for the checks, up to their time.
         let checks = crate::checks::running(ws, eval_id);
         if !checks.is_empty() {
-            return Ok(json!({"state": "running", "eval_id": eval_id, "tasks": [], "out": 0,
-                             "remaining": 0, "checks": checks}));
+            return Ok(json!({"state": "waiting", "remaining": 0, "checks": checks}));
         }
         let record = close(&ctx, &st)?;
         return Ok(json!({"state": "done", "eval_id": eval_id, "verdict": record["verdict"],
                          "confidence": record["confidence"]}));
     }
-    let out_now = open.iter().filter(|t| is_out(&t.id, &state)).count();
-    let room = match pick {
-        Pick::Parallel(parallel) => parallel.max(1).saturating_sub(out_now),
-        Pick::One(_) => 1,
+    let Some(t) = open.iter().find(|t| !is_out(&t.id, &state) && role.is_none_or(|r| t.role == r))
+    else {
+        return Ok(json!({"state": "waiting", "remaining": open.len()}));
     };
     let facts: Vec<Value> = ctx
         .facts()
@@ -1642,51 +1525,37 @@ fn hand_out(
     // makes the folders a path needs.
     std::fs::create_dir_all(dir.join("out"))?;
     std::fs::create_dir_all(dir.join("tasks/scratch"))?;
-    let deny = deny_of(&ctx.brief);
-    let agents = &ctx.brief["agents"];
-    let mut handed_out = Vec::new();
-    let of_role = |t: &Task| !matches!(pick, Pick::One(Some(r)) if t.role != r);
-    let ready: Vec<&Task> =
-        open.iter().copied().filter(|t| !is_out(&t.id, &state) && of_role(t)).take(room).collect();
-    for t in ready {
-        // A second reading is a plain first reading of its kind: nothing in
-        // its files says what the first reading found.
-        let shown = Task { role: if t.kind == "map" { "map" } else { "reduce" }, ..t.clone() };
-        let (file, text) = task_file(&ctx, &shown, &facts);
-        let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
-        bytes.push(b'\n');
-        // RingFrame's own record of the task; the judge reads only the brief.
-        write(&dir.join(format!("tasks/{}.json", t.id)), &bytes)?;
-        write(&dir.join(format!("tasks/{}.windows.txt", t.id)), text.as_bytes())?;
-        write(
-            &dir.join(format!("tasks/{}.brief.md", t.id)),
-            brief(&shown, &file, &text, &deny).as_bytes(),
-        )?;
-        let slot = &mut state["handed"][&t.id];
-        if !slot.is_array() {
-            *slot = json!([]);
-        }
-        slot.as_array_mut().expect("an array").push(json!(now));
-        let rel =
-            dir.strip_prefix(&ws.root).unwrap_or(&dir).join(format!("tasks/{}.brief.md", t.id));
-        let mut item = json!({
-            "task_id": t.id, "kind": t.kind, "role": t.role, "agent": agent_name(t.role),
-            "prompt": format!("Do RingFrame Eval task {}: read {} to its end and do what it says. \
-                               Send no message until you are done, then reply with one line.",
-                              t.id, rel.display()),
-            "brief": dir.join(format!("tasks/{}.brief.md", t.id)).to_string_lossy(),
-            "answer": dir.join("out").join(format!("{}.json", t.id)).to_string_lossy(),
-        });
-        for k in ["model", "effort"] {
-            if let Some(v) = agents[t.role].get(k) {
-                item[k] = v.clone();
-            }
-        }
-        handed_out.push(item);
+    // A second reading is a plain first reading of its kind: nothing in its
+    // files says what the first reading found.
+    let shown = Task { role: if t.kind == "map" { "map" } else { "reduce" }, ..(*t).clone() };
+    let (file, text) = task_file(&ctx, &shown, &facts);
+    let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
+    bytes.push(b'\n');
+    // RingFrame's own record of the task; the judge reads only the brief.
+    let brief_path = dir.join(format!("tasks/{}.brief.md", t.id));
+    write(&dir.join(format!("tasks/{}.json", t.id)), &bytes)?;
+    write(&dir.join(format!("tasks/{}.windows.txt", t.id)), text.as_bytes())?;
+    write(&brief_path, brief(&shown, &file, &text, &deny_of(&ctx.brief)).as_bytes())?;
+    let slot = &mut state["handed"][&t.id];
+    if !slot.is_array() {
+        *slot = json!([]);
     }
+    slot.as_array_mut().expect("an array").push(json!(now));
     write(&state_file, &store::canonical(&state))?;
-    Ok(json!({"state": "running", "eval_id": eval_id, "tasks": handed_out,
-              "out": out_now, "remaining": open.len()}))
+    let answer = dir.join("out").join(format!("{}.json", t.id));
+    let mut task = json!({
+        "task_id": t.id, "kind": t.kind, "role": t.role,
+        "prompt": format!("Judge task {}: read {}; answer with ringframe eval submit --task {} \
+                           --file {}.", t.id, brief_path.display(), t.id, answer.display()),
+        "brief": brief_path.to_string_lossy(),
+        "answer": answer.to_string_lossy(),
+    });
+    for k in ["model", "effort"] {
+        if let Some(v) = ctx.brief["agents"][t.role].get(k) {
+            task[k] = v.clone();
+        }
+    }
+    Ok(json!({"state": "running", "task": task, "remaining": open.len()}))
 }
 
 // ---- reads and lookups ------------------------------------------------------------
@@ -2583,21 +2452,16 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
         "the verdict is a judgement by sub-agents over bounded evidence; agreement is its confidence, nothing here is certain"
             .to_string(),
     );
-    // Who judged, from what RingFrame knows: the harness each `eval next`
-    // named, and the model and effort each role was asked to run on.
-    let hosts: Vec<String> = read_json(&state_path(&ctx.ws, eval_id))
-        .map(|s| array_of(&s, "hosts").iter().map(str_of_value).collect())
-        .unwrap_or_default();
+    // Who judged, from what RingFrame knows: the model and effort each role
+    // was asked to run on.
     let agents = &ctx.brief["agents"];
     let mut judges: Vec<Value> = Vec::new();
     for doc in st.accepted.values() {
         let role = str_of(&doc["judge"], "role");
-        for host in if hosts.is_empty() { vec![String::new()] } else { hosts.clone() } {
-            let judge = json!({"angle": role, "host": host, "model": agents[&role]["model"],
-                               "effort": agents[&role]["effort"]});
-            if !judges.contains(&judge) {
-                judges.push(judge);
-            }
+        let judge = json!({"angle": role, "host": "", "model": agents[&role]["model"],
+                           "effort": agents[&role]["effort"]});
+        if !judges.contains(&judge) {
+            judges.push(judge);
         }
     }
     let asks: Vec<Value> =
@@ -2867,6 +2731,10 @@ mod tests {
     /// A plan, a goal naming Phase 1 of it, and work: one file per step and
     /// one change no step asks for.
     fn bench_with(ws: &Workspace, uptime: &str) -> Bench {
+        bench_opened(ws, uptime, Open::default())
+    }
+
+    fn bench_opened(ws: &Workspace, uptime: &str, open: Open) -> Bench {
         commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
         confirm_ask_as(
             ws,
@@ -2887,7 +2755,7 @@ mod tests {
             ],
             "work",
         );
-        let out = open_eval(ws, Open::default()).unwrap();
+        let out = open_eval(ws, open).unwrap();
         Bench { eval_id: str_of(&out, "eval_id") }
     }
 
@@ -2917,6 +2785,23 @@ mod tests {
             .unwrap()
     }
 
+    /// Every ready task, taken one at a time: `{"state": "running", "tasks":
+    /// [...]}`, or what `take` said when none was ready.
+    fn ready(ws: &Workspace, e: &str) -> Value {
+        let mut tasks = Vec::new();
+        loop {
+            let got = take(ws, e, None).unwrap();
+            if got["state"] != "running" {
+                return if tasks.is_empty() {
+                    got
+                } else {
+                    json!({"state": "running", "tasks": tasks})
+                };
+            }
+            tasks.push(got["task"].clone());
+        }
+    }
+
     fn ids(v: &Value) -> Vec<String> {
         array_of(v, "tasks").iter().map(|t| str_of(t, "task_id")).collect()
     }
@@ -2929,7 +2814,7 @@ mod tests {
     fn map_all(ws: &Workspace, e: &str) {
         let tele = window_for(ws, e, "src/telemetry.js");
         let notes = window_for(ws, e, "docs/notes.md");
-        for t in ids(&next(ws, e, 8, None, &[]).unwrap()) {
+        for t in ids(&ready(ws, e)) {
             let file = task_of(ws, &t);
             let entries: Vec<Value> = array_of(&file, "windows")
                 .iter()
@@ -2996,7 +2881,7 @@ mod tests {
                 window_for(ws, e, "docs/notes.md"),
                 window_for(ws, e, "src/telemetry.js"),
             );
-            let m1 = ids(&next(ws, e, 8, None, &[]).unwrap())[0].clone();
+            let m1 = ids(&ready(ws, e))[0].clone();
             let listed: Vec<String> = array_of(&task_of(ws, &m1), "elsewhere")
                 .iter()
                 .map(|x| str_of(x, "ask_id"))
@@ -3022,7 +2907,7 @@ mod tests {
             put(ws, &m1, answer(&beacon));
             assert_eq!(submit(ws, &m1).unwrap().0, 0);
 
-            let r1 = ids(&next(ws, e, 8, None, &[]).unwrap())[0].clone();
+            let r1 = ids(&ready(ws, e))[0].clone();
             let mut doc = head(&r1, "reduce", "reduce");
             doc["requirements"] = json!([
                 vote(S1, "met", &up, "export const uptime_seconds", "the server exports it"),
@@ -3031,7 +2916,7 @@ mod tests {
             put(ws, &r1, doc);
             assert_eq!(submit(ws, &r1).unwrap().0, 0);
             loop {
-                let got = next(ws, e, 8, None, &[]).unwrap();
+                let got = ready(ws, e);
                 if got["state"] == "done" {
                     assert_ne!(got["verdict"], "drifted", "another unit's work is not drift");
                     break;
@@ -3071,14 +2956,14 @@ mod tests {
             let b = bench(ws);
             let e = &b.eval_id;
             // The map first: the change, once, with every requirement listed.
-            let first = next(ws, e, 8, None, &[]).unwrap();
+            let first = ready(ws, e);
             assert_eq!(ids(&first), [task_id(e, "m1")]);
             let prompt = str_of(&array_of(&first, "tasks")[0], "prompt");
             let m1_id = task_id(e, "m1");
             assert!(
                 prompt.contains(".brief.md")
                     && prompt.contains(&m1_id)
-                    && prompt.contains("reply with one line"),
+                    && prompt.contains("eval submit --task"),
                 "{prompt}"
             );
             let m1 = task_id(e, "m1");
@@ -3148,7 +3033,7 @@ mod tests {
             assert_eq!(submit(ws, &m1).unwrap().0, 0);
 
             // Reduce: each requirement from the windows the map gave it.
-            let second = next(ws, e, 8, None, &[]).unwrap();
+            let second = ready(ws, e);
             assert_eq!(ids(&second), [task_id(e, "r1")]);
             let r1 = task_id(e, "r1");
             let file = task_of(ws, &r1);
@@ -3165,7 +3050,7 @@ mod tests {
             assert_eq!(submit(ws, &r1).unwrap().0, 0);
 
             // Confirm: the lone negative, and the unexplained window.
-            let third = next(ws, e, 8, None, &[]).unwrap();
+            let third = ready(ws, e);
             let got = ids(&third);
             assert!(got.contains(&task_id(e, "cw1")), "{got:?}");
             let cr: Vec<String> = got.iter().filter(|t| t.contains("~cr")).cloned().collect();
@@ -3210,11 +3095,7 @@ mod tests {
             put(ws, &cw, doc);
             assert_eq!(submit(ws, &cw).unwrap().0, 0);
 
-            // The old close refuses an Eval that runs by tasks.
-            let e2 = crate::evaluate::close_eval(ws, e, &json!({}), &[], None, None).unwrap_err();
-            assert!(e2.to_string().contains("eval.use_next"));
-
-            let done = next(ws, e, 8, None, &[]).unwrap();
+            let done = ready(ws, e);
             assert_eq!(done["state"], "done");
             assert_eq!(done["verdict"], "drifted");
             let rec = crate::evaluate::load_record(ws, e).unwrap().unwrap();
@@ -3242,7 +3123,7 @@ mod tests {
             );
             assert!(md.contains("Commission") && md.contains(S2), "{md}");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            assert_eq!(next(ws, e, 8, None, &[]).unwrap()["state"], "done");
+            assert_eq!(ready(ws, e)["state"], "done");
         });
     }
 
@@ -3285,7 +3166,7 @@ mod tests {
             let e = &b.eval_id;
             map_all(ws, e);
             let r1 = task_id(e, "r1");
-            assert_eq!(ids(&next(ws, e, 8, None, &[]).unwrap()), std::slice::from_ref(&r1));
+            assert_eq!(ids(&ready(ws, e)), std::slice::from_ref(&r1));
             let up = window_for(ws, e, "src/uptime.js");
             let notes = window_for(ws, e, "docs/notes.md");
             let mut doc = head(&r1, "reduce", "reduce");
@@ -3295,7 +3176,7 @@ mod tests {
             ]);
             put(ws, &r1, doc);
             assert_eq!(submit(ws, &r1).unwrap().0, 0);
-            let confirms = ids(&next(ws, e, 8, None, &[]).unwrap());
+            let confirms = ids(&ready(ws, e));
             let confirming = |req: &str| {
                 confirms.iter().find(|t| {
                     t.contains("~cr")
@@ -3414,8 +3295,7 @@ mod tests {
             let dest = window_for(ws, e, "src/tally.rs");
             assert!(ctx.windows[&lib].contains("~ moved"), "{}", ctx.windows[&lib]);
             assert_eq!(st.moved.get(&lib), Some(&dest), "{:?}", st.moved);
-            let first = next(ws, e, 8, None, &[]).unwrap();
-            assert_eq!(array_of(&first, "tasks")[0]["agent"], "rf-map");
+            let first = ready(ws, e);
             for t in ids(&first) {
                 let handed: Vec<String> =
                     array_of(&task_of(ws, &t), "windows").iter().map(|w| str_of(w, "id")).collect();
@@ -3435,13 +3315,14 @@ mod tests {
             let line = t.lines().find(|l| l.starts_with('+') && l.len() > 12).unwrap_or("+");
             line[1..].chars().take(24).collect()
         };
-        let mut returned = out_already.to_vec();
+        let mut pending = out_already.to_vec();
         for _ in 0..10 {
-            let out = next(ws, e, 8, None, &std::mem::take(&mut returned)).unwrap();
+            let out = ready(ws, e);
             if out["state"] == "done" {
                 return crate::evaluate::load_record(ws, e).unwrap().unwrap();
             }
-            for t in ids(&out) {
+            pending.extend(ids(&out));
+            for t in std::mem::take(&mut pending) {
                 let file = task_of(ws, &t);
                 let (kind, role) = (str_of(&file, "kind"), str_of(&file, "role"));
                 let mut doc = head(&t, &kind, &role);
@@ -3550,7 +3431,7 @@ mod tests {
                 "beacon v2",
             );
             let second = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
-            let out = next(ws, &second, 8, None, &[]).unwrap();
+            let out = ready(ws, &second);
             let handed: Vec<String> = ids(&out)
                 .iter()
                 .flat_map(|t| {
@@ -3624,15 +3505,15 @@ mod tests {
     }
 
     /// A judge writes only its answers: RingFrame fills in the task, its kind
-    /// and role, and takes who judged from the harness the skill named and
-    /// the model the role was asked to run on, never from the judge's word.
+    /// and role, and takes who judged from the model the role was asked to
+    /// run on, never from the judge's word.
     #[test]
     fn a_judge_writes_only_its_answers_and_the_record_names_who_judged_from_facts() {
         eval_bench(|ws| {
-            let e = &bench(ws).eval_id;
-            note_host(ws, e, "codex").unwrap();
             let agents = json!({"map": {"model": "gpt-6-luna", "effort": "medium"}});
-            let first = next(ws, e, 8, Some(&agents), &[]).unwrap();
+            let open = Open { agents: Some(agents), ..Default::default() };
+            let e = &bench_opened(ws, UPTIME, open).eval_id;
+            let first = ready(ws, e);
             let m1 = task_id(e, "m1");
             let file = task_of(ws, &m1);
             let windows: Vec<Value> = array_of(&file, "windows")
@@ -3658,9 +3539,7 @@ mod tests {
             let rec = close_all(ws, e, &[]);
             let judges = array_of(&rec, "judges");
             assert!(
-                judges.iter().any(|j| j["angle"] == "map"
-                    && j["host"] == "codex"
-                    && j["model"] == "gpt-6-luna"),
+                judges.iter().any(|j| j["angle"] == "map" && j["model"] == "gpt-6-luna"),
                 "{judges:?}"
             );
             assert!(judges.iter().all(|j| j["model"] != "haiku"), "{judges:?}");
@@ -3675,7 +3554,7 @@ mod tests {
     fn a_window_that_undoes_a_step_is_its_evidence_and_it_is_read_again() {
         eval_bench(|ws| {
             let e = &bench(ws).eval_id;
-            let first = next(ws, e, 8, None, &[]).unwrap();
+            let first = ready(ws, e);
             let m1 = ids(&first)[0].clone();
             let up = window_for(ws, e, "src/uptime.js");
             let notes = window_for(ws, e, "docs/notes.md");
@@ -3696,7 +3575,7 @@ mod tests {
             put(ws, &m1, doc);
             assert_eq!(submit(ws, &m1).unwrap().0, 0);
             let r1 = task_id(e, "r1");
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let s2 = array_of(&task_of(ws, &r1), "requirements")
                 .iter()
                 .find(|r| r["id"] == S2)
@@ -3713,7 +3592,7 @@ mod tests {
             ]);
             put(ws, &r1, doc);
             assert_eq!(submit(ws, &r1).unwrap().0, 0);
-            let confirmed: Vec<String> = ids(&next(ws, e, 8, None, &[]).unwrap())
+            let confirmed: Vec<String> = ids(&ready(ws, e))
                 .iter()
                 .filter(|t| t.contains("~cr"))
                 .flat_map(|t| {
@@ -3759,10 +3638,10 @@ mod tests {
     #[test]
     fn a_roles_effort_is_in_its_task_file_and_its_instructions() {
         eval_bench(|ws| {
-            let b = bench(ws);
-            let e = &b.eval_id;
             let agents = json!({"map": {"model": "m", "effort": "high"}});
-            let first = next(ws, e, 8, Some(&agents), &[]).unwrap();
+            let open = Open { agents: Some(agents), ..Default::default() };
+            let e = &bench_opened(ws, UPTIME, open).eval_id;
+            let first = ready(ws, e);
             assert_eq!(first["tasks"][0]["effort"], "high");
             assert_eq!(task_of(ws, &task_id(e, "m1"))["effort"], "high");
             let m1 = task_id(e, "m1");
@@ -3770,17 +3649,6 @@ mod tests {
                 std::fs::read_to_string(tmp(ws, e).join(format!("tasks/{m1}.brief.md"))).unwrap();
             assert!(md.contains("Your effort: `high`"), "{md}");
             assert!(md.contains("within your effort's budget") && md.contains("up to 15"), "{md}");
-        });
-    }
-
-    #[test]
-    fn the_roles_of_whoever_runs_the_tasks_fill_what_the_open_left_unset() {
-        eval_bench(|ws| {
-            let b = bench(ws);
-            let mine = json!({"map": {"model": "strong", "effort": "high"}});
-            let first = next(ws, &b.eval_id, 8, Some(&mine), &[]).unwrap();
-            assert_eq!(first["tasks"][0]["model"], "strong");
-            assert_eq!(first["tasks"][0]["effort"], "high");
         });
     }
 
@@ -3800,7 +3668,7 @@ mod tests {
                 commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
                 let out = open_eval(ws, Open { deny: deny.clone(), ..Default::default() }).unwrap();
                 let e = str_of(&out, "eval_id");
-                next(ws, &e, 8, None, &[]).unwrap();
+                ready(ws, &e);
                 assert!(tmp(ws, &e).join("tasks/scratch").is_dir(), "judges have a scratch folder");
                 let m1 = task_id(&e, "m1");
                 md = std::fs::read_to_string(tmp(ws, &e).join(format!("tasks/{m1}.brief.md")))
@@ -3843,7 +3711,7 @@ mod tests {
             let e = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
             map_all(ws, &e);
             let r1 = task_id(&e, "r1");
-            next(ws, &e, 8, None, &[]).unwrap();
+            ready(ws, &e);
             let planted = tmp(ws, &e).join("tasks/scratch/proof.txt");
             write(&planted, b"uptime_seconds is exported and tested\n").unwrap();
             let rel = planted.strip_prefix(&ws.root).unwrap().to_string_lossy().to_string();
@@ -3874,7 +3742,7 @@ mod tests {
             let b = bench(ws);
             let e = &b.eval_id;
             map_all(ws, e);
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let r1 = task_id(e, "r1");
             let mut doc = head(&r1, "reduce", "reduce");
             doc["requirements"] = json!([
@@ -3894,7 +3762,7 @@ mod tests {
         eval_bench(|ws| {
             let b = bench(ws);
             let e = &b.eval_id;
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let m1 = task_id(e, "m1");
             let up = window_for(ws, e, "src/uptime.js");
             let mut doc = head(&m1, "map", "map");
@@ -3974,7 +3842,7 @@ mod tests {
             };
             let (a, b) = (windows_in("src/a_big.js"), windows_in("src/b_big.js"));
             assert!(a.len() > 1 && b.len() > 1, "each file is several windows");
-            let maps = ids(&next(ws, e, 8, None, &[]).unwrap());
+            let maps = ids(&ready(ws, e));
             assert!(maps.len() >= 2, "{maps:?}");
             let leaf = |t: &str| -> BTreeSet<String> {
                 array_of(&task_of(ws, t), "windows").iter().map(|w| str_of(w, "id")).collect()
@@ -4002,8 +3870,7 @@ mod tests {
                 put(ws, t, doc);
                 assert_eq!(submit(ws, t).unwrap().0, 0, "{t}");
             }
-            let reduces: Vec<Value> =
-                ids(&next(ws, e, 8, None, &[]).unwrap()).iter().map(|t| task_of(ws, t)).collect();
+            let reduces: Vec<Value> = ids(&ready(ws, e)).iter().map(|t| task_of(ws, t)).collect();
             let parts: Vec<String> = reduces
                 .iter()
                 .flat_map(|f| array_of(f, "requirements").to_vec())
@@ -4071,7 +3938,7 @@ mod tests {
             assert_eq!(warned.len(), 1, "only the warning on a line the change added: {warned:?}");
             assert_eq!(warned[0]["windows"], json!([uptime]));
             map_all(ws, &e);
-            let reduces = ids(&next(ws, &e, 8, None, &[]).unwrap());
+            let reduces = ids(&ready(ws, &e));
             assert!(
                 array_of(&task_of(ws, &reduces[0]), "facts").iter().any(|f| f["by"] == "ringframe"),
                 "a judge that votes has the check among its facts"
@@ -4154,7 +4021,7 @@ mod tests {
             let e = &b.eval_id;
             let tele = window_for(ws, e, "src/telemetry.js");
             let m1 = task_id(e, "m1");
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let entries: Vec<Value> = array_of(&task_of(ws, &m1), "windows")
                 .iter()
                 .map(|w| {
@@ -4211,7 +4078,7 @@ mod tests {
                 };
                 let mut asked = Vec::new();
                 for _ in 0..10 {
-                    let out = next(ws, e, 8, None, &[]).unwrap();
+                    let out = ready(ws, e);
                     if out["state"] == "done" {
                         break;
                     }
@@ -4276,7 +4143,7 @@ mod tests {
         eval_bench(|ws| {
             let b = bench(ws);
             let e = &b.eval_id;
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let m1 = task_id(e, "m1");
             put(ws, &m1, json!({"not": "a task output"}));
             assert_eq!(submit(ws, &m1).unwrap().0, 2);
@@ -4289,87 +4156,18 @@ mod tests {
     }
 
     #[test]
-    fn a_task_whose_judge_finished_without_submitting_goes_out_again_at_once_then_fails() {
-        eval_bench(|ws| {
-            let b = bench(ws);
-            let e = &b.eval_id;
-            let t = task_id(e, "m1");
-            assert_eq!(ids(&next(ws, e, 8, None, &[]).unwrap()), std::slice::from_ref(&t));
-            assert!(ids(&next(ws, e, 8, None, &[]).unwrap()).is_empty(), "out, so not again");
-            let back = std::slice::from_ref(&t);
-            assert_eq!(ids(&next(ws, e, 8, None, back).unwrap()), back, "back: out again now");
-            let after = next(ws, e, 8, None, back).unwrap();
-            assert!(!ids(&after).contains(&t), "back a second time: failed");
-            let ctx = Ctx::load(ws, e).unwrap();
-            assert!(status(&ctx).unwrap().failed.contains(&t));
-            let failed = store::events(ws)
-                .unwrap()
-                .into_iter()
-                .rfind(|ev| ev["type"] == "eval.task" && ev["data"]["task_id"] == t)
-                .unwrap();
-            assert!(
-                failed["data"].to_string().contains("finished without an accepted"),
-                "{failed}"
-            );
-        });
-    }
-
-    /// Its return and its second hand-out happen in the same second: the
-    /// task is out again, not back, until its second judge returns it.
-    #[test]
-    fn a_task_handed_out_again_is_out_until_it_is_returned_again() {
-        eval_bench(|ws| {
-            let b = bench(ws);
-            let e = &b.eval_id;
-            let t = task_id(e, "m1");
-            next(ws, e, 8, None, &[]).unwrap();
-            let back = std::slice::from_ref(&t);
-            assert_eq!(ids(&next(ws, e, 8, None, back).unwrap()), back, "out again");
-            let after = next(ws, e, 8, None, &[]).unwrap();
-            assert!(ids(&after).is_empty(), "still out, so not again: {after}");
-            assert_eq!(after["out"], 1, "{after}");
-            let ctx = Ctx::load(ws, e).unwrap();
-            assert!(!status(&ctx).unwrap().failed.contains(&t), "its second judge is running");
-            let more = next(ws, e, 8, None, &[t.clone(), t.clone()]).unwrap();
-            let returns = read_json(&state_path(ws, e)).unwrap()["returned"][&t].clone();
-            assert_eq!(returns.as_array().map(Vec::len), Some(2), "one return per hand-out");
-            assert!(!ids(&more).contains(&t), "back a second time: failed");
-            assert!(status(&Ctx::load(ws, e).unwrap()).unwrap().failed.contains(&t));
-        });
-    }
-
-    #[test]
-    fn a_judge_that_finished_with_its_task_accepted_changes_nothing() {
-        eval_bench(|ws| {
-            let b = bench(ws);
-            let e = &b.eval_id;
-            map_all(ws, e);
-            let t = task_id(e, "m1");
-            let round = next(ws, e, 8, None, std::slice::from_ref(&t)).unwrap();
-            assert!(!ids(&round).contains(&t));
-            let st = status(&Ctx::load(ws, e).unwrap()).unwrap();
-            assert!(st.accepted.contains_key(&t) && !st.failed.contains(&t));
-            assert!(read_json(&state_path(ws, e)).unwrap()["returned"].get(&t).is_none());
-        });
-    }
-
-    #[test]
     fn a_task_not_submitted_in_time_goes_out_once_more_then_fails() {
         eval_bench(|ws| {
             let b = bench(ws);
             let e = &b.eval_id;
-            next(ws, e, 8, None, &[]).unwrap();
+            ready(ws, e);
             let t = task_id(e, "m1");
             let path = state_path(ws, e);
             let old = now_secs() - TIMEOUT_SECS - 1;
             write(&path, json!({"handed": {&t: [old]}}).to_string().as_bytes()).unwrap();
-            assert_eq!(
-                ids(&next(ws, e, 8, None, &[]).unwrap()),
-                std::slice::from_ref(&t),
-                "once more"
-            );
+            assert_eq!(ids(&ready(ws, e)), std::slice::from_ref(&t), "once more");
             write(&path, json!({"handed": {&t: [old, old]}}).to_string().as_bytes()).unwrap();
-            let after = next(ws, e, 8, None, &[]).unwrap();
+            let after = ready(ws, e);
             assert!(!ids(&after).contains(&t), "failed, not handed out a third time");
             let ctx = Ctx::load(ws, e).unwrap();
             assert!(status(&ctx).unwrap().failed.contains(&t));
@@ -4389,7 +4187,7 @@ mod tests {
                 for _ in 0..8 {
                     s.spawn(|| {
                         while std::time::Instant::now() < until {
-                            let out = next(ws, e, 8, None, &[]).unwrap();
+                            let out = ready(ws, e);
                             if out["state"] == "done" {
                                 return;
                             }

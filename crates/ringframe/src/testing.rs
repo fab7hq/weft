@@ -189,54 +189,6 @@ fn confirm_ask_with(
     out
 }
 
-pub fn judge(angle: &str) -> Value {
-    json!({"host": "claude-code", "model": "claude-sonnet-5", "angle": angle,
-           "independence": "sub_agent"})
-}
-
-pub fn intent_doc(brief_sha: &str, items: Value) -> Value {
-    json!({"schema": "ringframe.eval-intent/1", "brief_sha256": brief_sha,
-           "judge": judge("intent"), "items": items})
-}
-
-/// The work commit of `two_asks_and_work`.
-pub const CHANGED: [&str; 3] = ["docs/notes.md", "src/uptime.js", "tests/uptime.test.js"];
-
-/// Every changed path classified (`required` unless the caller says
-/// otherwise), as the CLI demands of every judge.
-///
-/// A judge that ran a command by default, because an uncited `yes` is not
-/// decisive and these fixtures are about aggregation rather than about
-/// citation. Pass an empty `commands_run` to make one that cites nothing.
-pub fn judgement(brief_sha: &str, angle: &str, votes: &[(&str, &str)]) -> Value {
-    judgement_over(brief_sha, angle, votes, &[], &CHANGED)
-}
-
-pub fn judgement_over(
-    brief_sha: &str,
-    angle: &str,
-    votes: &[(&str, &str)],
-    drift: &[(&str, &str)],
-    paths: &[&str],
-) -> Value {
-    let mut full: std::collections::BTreeMap<&str, &str> =
-        paths.iter().map(|p| (*p, "required")).collect();
-    for (p, c) in drift {
-        full.insert(p, c);
-    }
-    json!({
-        "schema": "ringframe.eval-judgement/1", "brief_sha256": brief_sha,
-        "judge": judge(angle),
-        "votes": votes.iter().map(|(k, v)| json!({
-            "item": k, "vote": v, "reason": format!("{angle} says {v} on {k}")
-        })).collect::<Vec<_>>(),
-        "drift": full.iter().map(|(p, c)| json!({
-            "path": p, "finding": format!("{p} seen"), "classification": c
-        })).collect::<Vec<_>>(),
-        "commands_run": ["npm test"],
-    })
-}
-
 /// Base commit → Ask A confirmed → Ask B confirmed → work commit touching
 /// `src/`, `tests/` and `docs/`.
 pub fn two_asks_and_work(ws: &Workspace) -> (String, String, String) {
@@ -261,14 +213,37 @@ pub struct Opened {
     #[allow(dead_code)]
     pub sha: String,
     pub out: Value,
-    pub brief_sha: String,
+}
+
+/// `opened`, with one Ask that asks for something the change does: its
+/// requirement can be met.
+pub fn opened_with_requirement(ws: &Workspace) -> Opened {
+    let a = confirm_ask_as(
+        ws,
+        "Add uptime endpoint",
+        b"add the uptime export\n",
+        b"/goal Add the uptime export to src/uptime.js with a test.\n",
+        "native_goal",
+    );
+    let b = confirm_ask(ws, "Skip the cache", b"skip the cache\n", b"Skip the cache.\n");
+    let sha = commit(
+        &ws.root,
+        &[
+            ("src/uptime.js", Some("export const uptime = () => 1;\n")),
+            ("tests/uptime.test.js", Some("test('uptime', () => uptime());\n")),
+            ("docs/notes.md", Some("The server reports its uptime.\n")),
+        ],
+        "work",
+    );
+    let out = crate::evaluate::open_eval(ws, crate::evaluate::Open::default()).unwrap();
+    let id = |v: &Value| v["ask_id"].as_str().unwrap().to_string();
+    Opened { a: id(&a), b: id(&b), sha, out }
 }
 
 pub fn opened(ws: &Workspace) -> Opened {
     let (a, b, sha) = two_asks_and_work(ws);
     let out = crate::evaluate::open_eval(ws, crate::evaluate::Open::default()).unwrap();
-    let brief_sha = out["brief"]["sha256"].as_str().unwrap().to_string();
-    Opened { a, b, sha, out, brief_sha }
+    Opened { a, b, sha, out }
 }
 
 /// A config home, a repository, and a workspace: what every Eval test needs.
@@ -278,6 +253,55 @@ pub fn eval_bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
         let ws = ws_for(repo.path());
         body(&ws)
     })
+}
+
+/// An Eval's tasks answered one at a time until it settles: `fine`, by
+/// `answer_task`; otherwise every window is unexplained and every requirement
+/// not met. Returns the record.
+pub fn settled(ws: &Workspace, eval_id: &str, fine: bool) -> Value {
+    for _ in 0..40 {
+        let got = crate::tasks::take(ws, eval_id, None).unwrap();
+        if got["state"] == "done" {
+            return crate::evaluate::load_record(ws, eval_id).unwrap().unwrap();
+        }
+        let task = got["task"]["task_id"].as_str().expect("a task").to_string();
+        if fine {
+            answer_task(ws, &task);
+        } else {
+            answer_task_wrong(ws, &task);
+        }
+        let (code, out) = crate::tasks::submit(ws, &task).unwrap();
+        assert_eq!(code, 0, "{out}");
+    }
+    panic!("the Eval did not settle");
+}
+
+/// A judge that finds nothing done: every window unexplained, quoting its
+/// first added line, and every requirement not met.
+pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
+    let eval_id = task_id.split_once('~').expect("a task id").0;
+    let dir = ws.rf_dir().join("tmp").join(format!("eval-{eval_id}"));
+    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
+    let file: Value =
+        serde_json::from_str(&read(&dir.join(format!("tasks/{task_id}.json")))).unwrap();
+    let windows = read(Path::new(file["windows_file"].as_str().unwrap()));
+    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+    let doc = if file["kind"] == "map" {
+        let listed = list("windows");
+        let ids: Vec<&str> = listed.iter().map(|w| w["id"].as_str().unwrap()).collect();
+        let quotable = ids.iter().find(|w| quote_in(&windows, w).is_some()).copied();
+        json!({"windows": ids.iter().map(|id| match quote_in(&windows, id) {
+            Some(quote) => json!({"window": id, "unexplained": format!("no request asks for {id}"), "quote": quote}),
+            // Nothing to quote: it goes with a window that has.
+            None => json!({"window": id, "follows_from": quotable.unwrap_or(id)}),
+        }).collect::<Vec<_>>()})
+    } else {
+        json!({"requirements": list("requirements").iter().map(|r| {
+            json!({"id": r["id"], "vote": "not_met", "reason": format!("{} is not done", r["id"]),
+                   "missing": "a change that does it"})
+        }).collect::<Vec<_>>()})
+    };
+    std::fs::write(file["output"].as_str().unwrap(), doc.to_string()).unwrap();
 }
 
 /// A judge that finds everything done: every window serves every
@@ -311,14 +335,18 @@ pub fn answer_task(ws: &Workspace, task_id: &str) {
                 .map(|r| {
                     let id = r["id"].as_str().unwrap();
                     // A rule of the prompt that no change touches.
-                    let Some(w) = r["windows"][0].as_str() else {
+                    let cited = r["windows"].as_array().into_iter().flatten().find_map(|w| {
+                        let w = w.as_str()?;
+                        quote_in(&windows, w).map(|q| (w.to_string(), q))
+                    });
+                    let Some((w, quote)) = cited else {
                         return json!({"id": id, "vote": "unknown",
                                       "reason": "no window bears on it",
                                       "missing": "a change that shows it"});
                     };
                     json!({"id": id, "vote": "met",
                            "reason": format!("{id} is done ({})", text("role")),
-                           "citations": [{"window": w, "quote": quote_in(&windows, w)}]})
+                           "citations": [{"window": w, "quote": quote}]})
                 })
                 .collect::<Vec<_>>()
         );
@@ -330,14 +358,14 @@ pub fn answer_task(ws: &Workspace, task_id: &str) {
 }
 
 /// The start of the first added line of window `w` in a task's windows text.
-fn quote_in(windows: &str, w: &str) -> String {
+/// The first added line of a window long enough to quote.
+fn quote_in(windows: &str, w: &str) -> Option<String> {
     let head = format!("=== {w} ");
     windows
         .lines()
         .skip_while(|l| !l.starts_with(&head))
         .skip(1)
         .take_while(|l| !l.starts_with("=== "))
-        .find(|l| l.starts_with('+') && l.len() > 12)
+        .find(|l| l.starts_with('+') && l.len() > 8)
         .map(|l| l[1..].chars().take(24).collect())
-        .expect("an added line to quote")
 }

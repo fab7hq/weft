@@ -106,28 +106,11 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             false,
             &["--repo"],
         ),
-        ("eval", Some("close")) => s(
-            &["--eval", "--intent", "--judgement", "--agents"],
-            NONE,
-            &["--eval", "--intent", "--judgement"],
-            false,
-            &["--judgement"],
-        ),
-        ("eval", Some("context")) => {
-            s(&["--eval", "--map", "--host"], NONE, &["--eval", "--map", "--host"], false, NONE)
-        }
         ("eval", Some("list")) => s(NONE, NONE, NONE, true, NONE),
         ("eval", Some("show")) => s(&["--eval"], &["--summary"], &["--eval"], false, NONE),
         ("eval", Some("window")) => {
             s(&["--eval", "--window", "--task"], NONE, &["--eval", "--window"], false, NONE)
         }
-        ("eval", Some("next")) => s(
-            &["--eval", "--parallel", "--agents", "--agents-from", "--returned", "--host"],
-            NONE,
-            &["--eval"],
-            false,
-            &["--returned"],
-        ),
         ("eval", Some("task")) => s(&["--eval", "--role"], NONE, &["--eval"], false, NONE),
         ("eval", Some("submit")) => s(&["--task", "--file"], NONE, &["--task"], false, NONE),
         ("eval", Some("commits")) => s(&["--eval"], NONE, &["--eval"], false, NONE),
@@ -179,7 +162,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 36] = [
+const SURFACE: [(&str, Option<&str>); 33] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -194,10 +177,7 @@ const SURFACE: [(&str, Option<&str>); 36] = [
     ("ask", Some("list")),
     ("ask", Some("preflight")),
     ("eval", Some("open")),
-    ("eval", Some("context")),
-    ("eval", Some("close")),
     ("eval", Some("list")),
-    ("eval", Some("next")),
     ("eval", Some("task")),
     ("eval", Some("submit")),
     ("eval", Some("show")),
@@ -250,10 +230,6 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("eval", Some("open")) => {
             "write the facts-only brief over every open Ask, or --ask one's unit of work"
         }
-        ("eval", Some("context")) => {
-            "publish the change map (--map @file) for an open Eval, so a debate in any harness reads it"
-        }
-        ("eval", Some("close")) => "aggregate the intent and the judgements into a verdict",
         ("eval", Some("list")) => "every Eval, opened, completed or voided",
         ("eval", Some("show")) => {
             "the report of a completed Eval, eval.md, verbatim; --summary: its head, what each \
@@ -261,10 +237,6 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         }
         ("eval", Some("window")) => {
             "one window of an Eval's change, as a judge reads it; --task records the read"
-        }
-        ("eval", Some("next")) => {
-            "the Eval's tasks that are ready (--parallel at most out at once); --returned names each \
-             task whose judge has finished; closes it when all are in"
         }
         ("eval", Some("task")) => {
             "one ready task for a judge, of --role when given: its brief and where its answer goes"
@@ -713,14 +685,6 @@ fn dispatch(
             return (ws, $e)
         };
     }
-    macro_rules! json_try {
-        ($flag:expr) => {
-            match json_arg(ns.one($flag).unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e)),
-            }
-        };
-    }
 
     match (ns.cmd.as_str(), sub) {
         ("init", None) => {
@@ -806,53 +770,6 @@ fn dispatch(
                 Err(e) => (ws, from_ask_error(e)),
             }
         }
-        ("eval", Some("context")) => {
-            let raw = ns.one("--map").unwrap_or_default();
-            let map = match raw.strip_prefix('@') {
-                Some(path) => match std::fs::read(path) {
-                    Ok(b) => b,
-                    Err(e) => bail!(Outcome::UsageDetail(format!("{path}: {e}"))),
-                },
-                None => raw.as_bytes().to_vec(),
-            };
-            let out = evaluate::gather(
-                &ws,
-                ns.one("--eval").unwrap_or_default(),
-                &map,
-                ns.one("--host").unwrap_or_default(),
-                Some(&actor),
-            );
-            match out {
-                Ok(v) => (ws, Outcome::Ok(0, v)),
-                Err(e) => (ws, from_ask_error(e)),
-            }
-        }
-        ("eval", Some("close")) => {
-            let intent = json_try!("--intent");
-            let mut judgements = Vec::new();
-            for raw in ns.all("--judgement") {
-                match json_arg(&raw) {
-                    Ok(v) => judgements.push(v),
-                    Err(e) => bail!(Outcome::UsageDetail(e)),
-                }
-            }
-            let agents = match ns.one("--agents").map(json_arg).transpose() {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e)),
-            };
-            let out = evaluate::close_eval(
-                &ws,
-                ns.one("--eval").unwrap_or_default(),
-                &intent,
-                &judgements,
-                agents.as_ref(),
-                Some(&actor),
-            );
-            match out {
-                Ok(v) => (ws, Outcome::Ok(0, v)),
-                Err(e) => (ws, from_ask_error(e)),
-            }
-        }
         ("eval", Some("show")) => {
             let eval = ns.one("--eval").unwrap_or_default();
             match evaluate::show_eval(&ws, eval) {
@@ -874,28 +791,6 @@ fn dispatch(
             });
             match text {
                 Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
-                Err(e) => (ws, from_ask_error(e)),
-            }
-        }
-        ("eval", Some("next")) => {
-            let parallel = match ns.one("--parallel").map(str::parse::<usize>).transpose() {
-                Ok(p) => p.unwrap_or(crate::tasks::DEFAULT_PARALLEL),
-                Err(_) => bail!(Outcome::UsageDetail("--parallel is a number".into())),
-            };
-            let agents = match agents_arg(ns) {
-                Ok(v) => v,
-                Err(e) => bail!(Outcome::UsageDetail(e)),
-            };
-            let eval = ns.one("--eval").unwrap_or_default();
-            let returned: Vec<String> =
-                ns.all("--returned").iter().map(|s| s.to_string()).collect();
-            if let Some(host) = ns.one("--host")
-                && let Err(e) = crate::tasks::note_host(&ws, eval, host)
-            {
-                return (ws, from_ask_error(e));
-            }
-            match crate::tasks::next(&ws, eval, parallel, agents.as_ref(), &returned) {
-                Ok(v) => (ws, Outcome::Ok(0, v)),
                 Err(e) => (ws, from_ask_error(e)),
             }
         }
@@ -1180,7 +1075,7 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{commit, eval_bench, intent_doc, two_asks_and_work, with_config_home};
+    use crate::testing::{commit, eval_bench, two_asks_and_work, with_config_home};
 
     struct Cli {
         root: PathBuf,
@@ -1754,10 +1649,10 @@ mod tests {
             let (code, opened, _) = c.go(&["eval", "open"]);
             assert_eq!(code, 0, "{opened}");
             let eval_id = opened["eval_id"].as_str().unwrap().to_string();
-            let (code, next, _) = c.go(&["eval", "next", "--eval", &eval_id, "--parallel", "4"]);
+            let (code, next, _) = c.go(&["eval", "task", "--eval", &eval_id]);
             assert_eq!(code, 0, "{next}");
             assert_eq!(next["state"], "running");
-            let task = next["tasks"][0]["task_id"].as_str().unwrap().to_string();
+            let task = next["task"]["task_id"].as_str().unwrap().to_string();
             assert!(task.ends_with("~m1"), "{task}");
             // A judge's lookups.
             let ev: Value = serde_json::from_slice(
@@ -1806,17 +1701,6 @@ mod tests {
                 "an earlier name is its role now"
             );
             let eval_id = out["eval_id"].as_str().unwrap().to_string();
-            let map = ws.root.join("map.md");
-            std::fs::write(&map, "## src/uptime.js\nAdds uptime().\n").unwrap();
-            let at = format!("@{}", map.to_string_lossy());
-            let context = ["eval", "context", "--eval", &eval_id, "--map", &at, "--host", "codex"];
-            let (code, gathered, _) = c.go(&context);
-            assert_eq!(code, 0);
-            assert!(gathered["context_map"].as_str().unwrap().ends_with("context.md"));
-            let (code, again, _) = c.go(&context);
-            assert_ne!(code, 0);
-            assert_eq!(again["error"], "eval.already_gathered");
-            std::fs::remove_file(&map).unwrap();
             let brief: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/brief.json"))).unwrap(),
             )
@@ -1831,61 +1715,29 @@ mod tests {
                 [a.as_str(), b.as_str()]
             );
             assert_eq!(brief["subject"]["ref"], sha);
-            let brief_sha = out["brief"]["sha256"].as_str().unwrap().to_string();
-
-            // The intent and judgements are written inside the repository,
-            // which is what pytest's shared tmp_path did. It matters: they
-            // dirty the tree, so the Seal's subject is the worktree rather
-            // than a commit, and a later change stops matching it.
-            let dir = c.root.clone();
-            let items = json!([{"id": "i1", "text": "Expose an uptime endpoint", "ask_id": a, "status": "active"}]);
-            let intent_path = dir.join("intent.json");
-            std::fs::write(&intent_path, intent_doc(&brief_sha, items).to_string()).unwrap();
-            let intent_arg = format!("@{}", intent_path.display());
-            let mut judgement_args: Vec<String> = Vec::new();
-            for (n, ang) in ["coverage", "drift", "adversary"].iter().enumerate() {
-                let f = dir.join(format!("j{n}.json"));
-                let j = crate::testing::judgement_over(
-                    &brief_sha,
-                    ang,
-                    &[("i1", "yes")],
-                    &[("docs/notes.md", "unexplained")],
-                    &crate::testing::CHANGED,
-                );
-                std::fs::write(&f, j.to_string()).unwrap();
-                judgement_args.push("--judgement".into());
-                judgement_args.push(format!("@{}", f.display()));
+            // Judged task by task, as a judge Weft started would: nothing
+            // done. The answers are written inside the repository, as a judge
+            // may: they dirty the tree, so the Seal's subject is the worktree
+            // rather than a commit, and a later change stops matching it.
+            loop {
+                let (code, got, _) = c.go(&["eval", "task", "--eval", &eval_id]);
+                assert_eq!(code, 0, "{got}");
+                if got["state"] == "done" {
+                    break;
+                }
+                let task = got["task"]["task_id"].as_str().unwrap().to_string();
+                crate::testing::answer_task_wrong(ws, &task);
+                let answer = c.root.join(format!("{}.json", task.replace('~', "-")));
+                std::fs::rename(got["task"]["answer"].as_str().unwrap(), &answer).unwrap();
+                let answer = answer.to_string_lossy().to_string();
+                let (code, out, _) = c.go(&["eval", "submit", "--task", &task, "--file", &answer]);
+                assert_eq!(code, 0, "{out}");
             }
-            let base: Vec<&str> =
-                vec!["eval", "close", "--eval", &eval_id, "--intent", &intent_arg];
-            let two: Vec<&str> = base
-                .iter()
-                .copied()
-                .chain(judgement_args[..4].iter().map(String::as_str))
-                .collect();
-            let (code, out, _) = c.go(&two);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "eval.too_few_judges");
-
-            let all: Vec<&str> = base
-                .iter()
-                .copied()
-                .chain(judgement_args.iter().map(String::as_str))
-                .chain(["--agents", r#"{"drift":{"effort":"high"}}"#])
-                .collect();
-            let (code, rec, _) = c.go(&all);
-            assert_eq!(code, 0);
             let record: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/record.json"))).unwrap(),
             )
             .unwrap();
-            assert_eq!(record["agents"], json!({"drift": {"effort": "high"}}));
-            assert_eq!(rec["verdict"], "drifted");
-            assert_eq!(rec["confidence"], 1.0);
-            assert_eq!(rec["drift"]["commission"][0]["path"], "docs/notes.md");
-            let (code, out, _) = c.go(&all);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "ledger.immutable");
+            assert_eq!(record["verdict"], "drifted");
 
             let (_, listed, _) = c.go(&["eval", "list", "--json"]);
             assert_eq!(
@@ -1991,10 +1843,15 @@ mod tests {
         assert!(whole.out.contains("usage: ringframe"), "{}", whole.out);
         assert!(whole.out.contains("ask compile"));
         assert!(whole.out.contains("Exit codes: 0 ok, 1 usage"));
-        let one = super::run(&["eval".to_string(), "close".into(), "--help".into()], &mut none);
+        // Eval runs only by tasks Weft hands its judges: nothing of eval/1 or
+        // of a coordinator is left.
+        for gone in ["eval close", "eval context", "eval next", "--parallel", "--returned"] {
+            assert!(!whole.out.contains(gone), "{gone}: {}", whole.out);
+        }
+        let one = super::run(&["eval".to_string(), "task".into(), "--help".into()], &mut none);
         assert_eq!(one.code, 0);
-        assert!(one.out.contains("usage: ringframe eval close"), "{}", one.out);
-        assert!(one.out.contains("--judgement VALUE (required) (repeatable)"), "{}", one.out);
+        assert!(one.out.contains("usage: ringframe eval task"), "{}", one.out);
+        assert!(one.out.contains("--eval VALUE (required)"), "{}", one.out);
         let compile =
             super::run(&["ask".to_string(), "compile".into(), "--help".into()], &mut none);
         for said in [
@@ -2758,7 +2615,7 @@ mod the_marketplace_contract {
     /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
     /// Taken from `fab7/products/ringframe/`, and checked against it below
     /// when that tree happens to be beside this one.
-    const CALLED: [(&str, Option<&str>); 20] = [
+    const CALLED: [(&str, Option<&str>); 19] = [
         ("init", None),
         ("profile", Some("show")),
         ("deltas", Some("domains")),
@@ -2774,7 +2631,6 @@ mod the_marketplace_contract {
         ("ask", Some("delivery")),
         ("ask", Some("list")),
         ("eval", Some("open")),
-        ("eval", Some("close")),
         ("eval", Some("list")),
         ("eval", Some("show")),
         ("seal", Some("create")),

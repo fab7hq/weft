@@ -709,12 +709,11 @@ mod tests {
         for _ in 0..40 {
             let tasks: Vec<String> = match via {
                 Via::Cli => {
-                    let out = cli(ws, &["eval", "next", "--eval", eval_id, "--parallel", "8"]);
+                    let out = cli(ws, &["eval", "task", "--eval", eval_id]);
                     if out["state"] == "done" {
                         return;
                     }
-                    let tasks = out["tasks"].as_array().cloned().unwrap_or_default();
-                    tasks.iter().map(|t| t["task_id"].as_str().unwrap().to_string()).collect()
+                    vec![out["task"]["task_id"].as_str().expect("a task").to_string()]
                 }
                 Via::Api => match eval_task(ws, eval_id, None).unwrap() {
                     EvalStep::Settled { verdict, .. } => {

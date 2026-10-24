@@ -1744,9 +1744,6 @@ mod open_tests {
                 gathered["data"]["context_map"]["path"],
                 format!("evals/{id}/evidence.json")
             );
-            let again =
-                crate::evaluate::gather(ws, &id, b"## a map\n", "claude-code", None).unwrap_err();
-            refused(again, "eval.already_gathered");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
         eval_bench(|ws| {

@@ -87,13 +87,6 @@ fn eval_open(data: &Value) -> Value {
     out
 }
 
-fn eval_close(data: &Value) -> Value {
-    let mut out =
-        pick(data, &["eval_id", "verdict", "confidence", "items", "drift", "delta", "limitations"]);
-    out["basis"] = pick(&data["basis"], &["unrecorded_prompts"]);
-    out
-}
-
 fn seal_view(data: &Value) -> Value {
     let mut out = pick(data, &["seal_id", "disposition", "asks", "limitations"]);
     out["eval"] = if data["eval"].is_null() {
@@ -181,12 +174,9 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
             }
         }
         ("eval", Some("open")) => eval_open(d),
-        ("eval", Some("context")) => pick(d, &["eval_id", "context_map"]),
-        ("eval", Some("close")) => eval_close(d),
         ("eval", Some("show")) => d.clone(),
         ("eval", Some("window")) => d.clone(),
         ("eval", Some("commits")) => d.clone(),
-        ("eval", Some("next")) => d.clone(),
         ("eval", Some("task")) => d.clone(),
         ("eval", Some("submit")) => pick(d, &["task_id", "state", "attempt", "errors", "left"]),
         ("eval", Some("void")) => pick(d, &["eval_id", "state", "reason"]),

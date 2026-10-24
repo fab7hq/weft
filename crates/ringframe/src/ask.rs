@@ -1686,17 +1686,11 @@ mod tests {
         });
     }
 
-    /// An Eval over the bench's two open Asks, opened and closed.
+    /// An Eval over the bench's two open Asks, opened and settled.
     fn completed_eval(ws: &Workspace) -> String {
         let o = crate::testing::opened(ws);
         let eval_id = str_of(&o.out, "eval_id");
-        let items = json!([{"id": "i1", "text": "Fix it", "ask_id": o.a, "status": "active"}]);
-        let js: Vec<Value> = ["coverage", "drift", "adversary"]
-            .iter()
-            .map(|a| crate::testing::judgement(&o.brief_sha, a, &[("i1", "no")]))
-            .collect();
-        let intent = crate::testing::intent_doc(&o.brief_sha, items);
-        crate::evaluate::close_eval(ws, &eval_id, &intent, &js, None, None).unwrap();
+        crate::testing::settled(ws, &eval_id, false);
         eval_id
     }
 
