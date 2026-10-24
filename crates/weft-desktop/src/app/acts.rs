@@ -319,8 +319,12 @@ impl WeftDesktopApp {
         });
         match eval {
             Some(eval) => {
-                self.bottom_bar =
-                    BottomBarState::SealDisposition { project, eval, selected: "accepted".into() }
+                self.bottom_bar = BottomBarState::SealDisposition {
+                    project,
+                    eval,
+                    selected: "accepted".into(),
+                    reason: None,
+                }
             }
             None => self.why_not(words::word("why.no_eval")),
         }
@@ -393,13 +397,24 @@ impl WeftDesktopApp {
                 }
             }
             BarAct::PickDisposition { project, eval, disposition } => {
-                self.bottom_bar =
-                    BottomBarState::SealDisposition { project, eval, selected: disposition };
+                self.bottom_bar = BottomBarState::SealDisposition {
+                    project,
+                    eval,
+                    selected: disposition,
+                    reason: None,
+                };
             }
-            BarAct::ConfirmSeal { project, eval, disposition } => {
+            BarAct::PickReason { project, eval, disposition, reason } => {
+                self.bottom_bar = BottomBarState::SealDisposition {
+                    project,
+                    eval,
+                    selected: disposition,
+                    reason,
+                };
+            }
+            BarAct::ConfirmSeal { project, eval, disposition, reason } => {
                 if let Some(c) = self.client_mut(&project) {
-                    let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
-                    let _ = c.act("seal", None, pane, Some(&disposition), Some(&eval), None);
+                    let _ = c.seal(&eval, &disposition, reason.as_deref());
                 }
                 self.bottom_bar = BottomBarState::None;
                 self.active_sheet = None;

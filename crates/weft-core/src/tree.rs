@@ -374,6 +374,20 @@ pub fn decision(recorded: &str) -> String {
     }
 }
 
+/// The dispositions a Seal offers, accepted first: the default.
+pub const DISPOSITIONS: [&str; 4] = ["accepted", "deferred", "rejected", "abandoned"];
+
+/// Why a Seal is not a yes, from a fixed list for each disposition. Accepted
+/// takes none. Each one's words are `seal.r.<reason>`.
+pub fn reasons(disposition: &str) -> &'static [&'static str] {
+    match disposition {
+        "rejected" => &["wrong_approach", "broke_something", "not_what_i_asked"],
+        "deferred" => &["finish_later", "waiting_on_something"],
+        "abandoned" => &["not_needed", "superseded"],
+        _ => &[],
+    }
+}
+
 /// What an agent row says after its title: its turn, `ended`, or when it
 /// was last active.
 pub fn state_word(a: &Agent, clock: &str) -> String {

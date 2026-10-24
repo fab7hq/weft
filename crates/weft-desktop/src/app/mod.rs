@@ -144,7 +144,7 @@ pub enum BottomBarState {
     AllowDevice { device_id: String, device_name: String, login: Option<String> },
     RemoveDeviceConfirm { device_id: String, device_name: String },
     CloseProjectConfirm { project: PathBuf },
-    SealDisposition { project: PathBuf, eval: String, selected: String },
+    SealDisposition { project: PathBuf, eval: String, selected: String, reason: Option<String> },
 }
 
 /// Top-level Weft Desktop GPUI application.

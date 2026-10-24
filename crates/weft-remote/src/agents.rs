@@ -651,14 +651,16 @@ impl Project {
             }
             None => None,
         };
+        // A Seal's text is its disposition, and its draft the reason picked.
+        let draft = serde_json::from_value(m["draft"].clone()).ok();
         Ok(Call::Act {
             act: daemon.into(),
             unit: unit.map(|i| self.units[i].ask_id.clone()),
             pane: pane.filter(|_| asking && start.is_none()),
-            text: text.filter(|_| asking),
+            text: text.filter(|_| asking || act == Act::Seal),
             eval,
             start,
-            draft: None,
+            draft,
         })
     }
 
@@ -967,7 +969,17 @@ mod tests {
             act(&p, json!({"act": "seal", "project": "weft", "unit": "ask_1"})),
             Ok(sealed.clone())
         );
-        assert_eq!(act(&p, json!({"act": "seal", "project": "weft", "eval": "evl_1"})), Ok(sealed));
+        assert_eq!(
+            act(&p, json!({"act": "seal", "project": "weft", "eval": "evl_1"})),
+            Ok(sealed.clone())
+        );
+        // The Seal's dialog sends the disposition and the reason picked.
+        let picked = json!({"act": "seal", "project": "weft", "unit": "ask_1", "text": "rejected",
+                            "draft": {"reason": "not_what_i_asked"}});
+        let reason =
+            weft_core::ask::Draft { reason: Some("not_what_i_asked".into()), ..Default::default() };
+        let Call::Act { text, draft, .. } = act(&p, picked).unwrap() else { panic!("an act") };
+        assert_eq!((text.as_deref(), draft), (Some("rejected"), Some(reason)));
     }
 
     #[test]

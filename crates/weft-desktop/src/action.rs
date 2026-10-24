@@ -140,10 +140,17 @@ pub enum BarAct {
         eval: String,
         disposition: String,
     },
+    PickReason {
+        project: PathBuf,
+        eval: String,
+        disposition: String,
+        reason: Option<String>,
+    },
     ConfirmSeal {
         project: PathBuf,
         eval: String,
         disposition: String,
+        reason: Option<String>,
     },
     LeaveRunningAndQuit,
     StopAgentsAndQuit,

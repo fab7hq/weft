@@ -624,6 +624,33 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
         &app.bottom_bar,
         BottomBarState::SealDisposition { eval, .. } if eval == "evl_3"
     ));
+    // Its one dialog sends the disposition and the reason picked there.
+    let (project, eval) = (weft(), "evl_3".to_string());
+    app.dispatch(BarAct::PickDisposition {
+        project: project.clone(),
+        eval: eval.clone(),
+        disposition: "rejected".into(),
+    });
+    assert!(app.render().find_layer("reason not_what_i_asked").is_some(), "a reject's reasons");
+    app.dispatch(BarAct::PickReason {
+        project: project.clone(),
+        eval: eval.clone(),
+        disposition: "rejected".into(),
+        reason: Some("not_what_i_asked".into()),
+    });
+    app.dispatch(BarAct::ConfirmSeal {
+        project,
+        eval,
+        disposition: "rejected".into(),
+        reason: Some("not_what_i_asked".into()),
+    });
+    let sealed = wire.calls().into_iter().rev().find_map(|(_, c)| match c {
+        Call::Act { act, text, draft, .. } if act == "seal" => Some((text, draft)),
+        _ => None,
+    });
+    let (text, draft) = sealed.expect("a Seal");
+    assert_eq!(text.as_deref(), Some("rejected"));
+    assert_eq!(draft.and_then(|d| d.reason).as_deref(), Some("not_what_i_asked"));
     app.bottom_bar = BottomBarState::None;
     app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
     app.dispatch(BarAct::Eval);

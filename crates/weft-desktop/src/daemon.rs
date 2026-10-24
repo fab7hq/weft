@@ -905,6 +905,24 @@ impl ProjectClient {
         self.tell(call, Then::Refusal)
     }
 
+    /// Seal the work an Eval judged, as decided in the Seal's dialog.
+    pub fn seal(&mut self, eval: &str, disposition: &str, reason: Option<&str>) -> Result<u64> {
+        self.last_refusal = None;
+        let call = Call::Act {
+            act: "seal".into(),
+            unit: None,
+            pane: None,
+            text: Some(disposition.to_string()),
+            eval: Some(eval.to_string()),
+            start: None,
+            draft: Some(weft_core::ask::Draft {
+                reason: reason.map(str::to_string),
+                ..Default::default()
+            }),
+        };
+        self.tell(call, Then::Refusal)
+    }
+
     pub fn confirm_ask(&mut self, unit: &str) -> Result<u64> {
         self.tell(Call::ConfirmAsk { unit: unit.to_string() }, Then::Refusal)
     }

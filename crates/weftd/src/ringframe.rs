@@ -317,6 +317,24 @@ pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
         .ok_or(Error::Refused { code: 4, message: "the profile names no invocation prefix".into() })
 }
 
+/// Seal the open work as the person decided, on the Eval named, and say
+/// the receipt. Nothing is typed into a harness.
+pub fn seal(
+    project: &Path,
+    disposition: &str,
+    eval_id: Option<&str>,
+    reason: Option<&str>,
+) -> Result<Value, Error> {
+    let req = api::SealCreate { disposition, eval_id, reason, note: None };
+    let sealed = api::seal_create(&workspace(project)?, req).map_err(|e| match e {
+        api::Error::SealRefused(codes) => {
+            Error::Refused { code: REFUSED_BY_A_RULE, message: codes.join(", ") }
+        }
+        other => refused(other),
+    })?;
+    Ok(sealed.receipt)
+}
+
 /// Everything RingFrame says about a receipt when it re-verifies it.
 pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
     Ok(api::seal_check(&workspace(project)?, seal_id).map_err(refused)?.report)
@@ -440,6 +458,49 @@ mod tests {
             .collect();
         assert_eq!(labels, ["Step Loop", "Done Check"]);
         let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// A Seal from Weft is RingFrame's record: its receipt carries the
+    /// disposition and the reason the person picked, and a reason that is
+    /// not one of the disposition's is refused.
+    #[test]
+    fn a_seal_carries_its_disposition_and_reason() {
+        fixture_home();
+        let repo = folder("seal", true);
+        assert_eq!(set_up(&repo), None);
+        let draft = AskDraft {
+            words: "Fix the login bug.".into(),
+            harness: "claude-code".into(),
+            route: "native_plan".into(),
+            task: "implement".into(),
+            plan: None,
+            rules: Vec::new(),
+            link: None,
+        };
+        compile(&repo, &draft, None).unwrap();
+        let wrong = seal(&repo, "rejected", None, Some("finish_later"));
+        assert!(
+            matches!(&wrong, Err(Error::Refused { message, .. }) if message.contains("finish_later")),
+            "{wrong:?}"
+        );
+        let receipt = seal(&repo, "rejected", None, Some("not_what_i_asked")).unwrap();
+        assert_eq!(
+            (&receipt["disposition"], &receipt["reason"]),
+            (&Value::from("rejected"), &Value::from("not_what_i_asked"))
+        );
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// The reasons Weft offers are RingFrame's, each with its words.
+    #[test]
+    fn the_seal_reasons_offered_are_ringframes() {
+        for d in weft_core::tree::DISPOSITIONS {
+            assert_eq!(weft_core::tree::reasons(d), ringframe::seal::reasons(d), "{d}");
+            for r in weft_core::tree::reasons(d) {
+                let key = format!("seal.r.{r}");
+                assert!(weft_core::words::WORDS.iter().any(|(k, _)| *k == key), "{key}");
+            }
+        }
     }
 
     /// Preflight, Eval open, the prompt and a Seal check are the crate's calls:

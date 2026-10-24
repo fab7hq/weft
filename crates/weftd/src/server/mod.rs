@@ -1017,7 +1017,7 @@ impl Session {
 
     /// One of RingFrame's three acts. The daemon works out what to type and
     /// where it goes; a client only names the act.
-    fn act(&mut self, client: u64, at: usize, act: &str, on: On) -> Answer {
+    fn act(&mut self, (client, call_id): (u64, u64), at: usize, act: &str, on: On) -> Answer {
         let act = match act {
             "eval" => "check",
             "seal" => "decide",
@@ -1158,11 +1158,12 @@ impl Session {
                 // which of its stages runs next, and on what.
                 let project = &self.projects[at];
                 if act == "decide" {
-                    // The disposition the person picked goes on to the Seal,
-                    // which asks them to confirm it; none, and the Seal asks.
-                    let picked = match text {
-                        None => None,
-                        Some(d @ ("accepted" | "rejected" | "deferred" | "abandoned")) => Some(d),
+                    // The Seal's dialog is the client's: its Seal sends the
+                    // disposition and reason picked there, accepted unless
+                    // another was. RingFrame records it; nothing is typed.
+                    let disposition = match text {
+                        None => "accepted",
+                        Some(d @ ("accepted" | "rejected" | "deferred" | "abandoned")) => d,
                         Some(other) => {
                             return Answer::No(
                                 "no_disposition",
@@ -1172,14 +1173,22 @@ impl Session {
                             );
                         }
                     };
-                    let into = project.routing.get("seal").unwrap_or(&unit.harness).to_string();
-                    // `seal create --eval <id>` closes exactly that Eval's Asks.
-                    let args = [picked.map(str::to_string), eval.map(|e| format!("--eval {e}"))]
-                        .into_iter()
-                        .flatten()
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    return self.dispatch(client, at, &unit, "seal", into, args);
+                    let reason = draft.and_then(|d| d.reason.clone());
+                    let (tx, disposition) = (self.tx.clone(), disposition.to_string());
+                    std::thread::spawn(move || {
+                        let sealed = crate::ringframe::seal(
+                            &root,
+                            &disposition,
+                            eval.as_deref(),
+                            reason.as_deref(),
+                        );
+                        let answer = match sealed {
+                            Ok(receipt) => Answer::Ok(serde_json::json!({"receipt": receipt})),
+                            Err(e) => ringframe_error(e),
+                        };
+                        let _ = tx.send(Wake::Answer { client, call_id, answer });
+                    });
+                    return Answer::Later;
                 }
                 let debate = weft_core::eval_stages::resolve(
                     project.routing.eval_stages.as_ref(),
@@ -1291,43 +1300,6 @@ impl Session {
         );
         (waiting.payload, waiting.how) = (built.payload, built.how);
         self.type_it(at, waiting, force);
-    }
-
-    /// Stage a RingFrame skill for a unit in a free agent of the harness it
-    /// goes to, started when there is none.
-    fn dispatch(
-        &mut self,
-        client: u64,
-        at: usize,
-        unit: &crate::ledger::Unit,
-        skill: &str,
-        into: String,
-        args: String,
-    ) -> Answer {
-        let root = self.projects[at].root.clone();
-        let (pane, fresh) = match self.free_pane_of(at, &into) {
-            Some(pane) => (pane, false),
-            None => match self.start_for(client, at, &into) {
-                Some(pane) => (pane, true),
-                None => {
-                    return Answer::No("no_pane", format!("Weft could not start {into}"));
-                }
-            },
-        };
-        let project = &mut self.projects[at];
-        let mut built = crate::acts::skill(
-            &root,
-            skill,
-            &into,
-            &unit.harness,
-            &args,
-            project.ringframe.as_deref(),
-            &mut project.prefixes,
-        );
-        if fresh {
-            built.asking.why.push(format!("No {into} agent here was free, so Weft started one."));
-        }
-        self.stage(at, pane, built)
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them; and
@@ -2300,7 +2272,7 @@ impl Session {
                     start: start.as_deref(),
                     draft: draft.as_ref(),
                 };
-                return Ok(self.act(client, at, &act, on));
+                return Ok(self.act((client, call_id), at, &act, on));
             }
             Call::ConfirmAsk { unit } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };

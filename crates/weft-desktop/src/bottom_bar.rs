@@ -43,8 +43,8 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
             render_remove_device_bar(device_id, device_name)
         }
         BottomBarState::CloseProjectConfirm { project } => render_close_project_bar(project),
-        BottomBarState::SealDisposition { project, eval, selected } => {
-            render_seal_disposition_bar(project, eval, selected)
+        BottomBarState::SealDisposition { project, eval, selected, reason } => {
+            render_seal_disposition_bar(project, eval, selected, reason.as_deref())
         }
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
         BottomBarState::None => render_tree_bar(props, None),
@@ -123,7 +123,29 @@ fn render_staged_bar(
         ]))
 }
 
-fn render_seal_disposition_bar(project: &std::path::Path, eval: &str, selected: &str) -> Element {
+fn render_seal_disposition_bar(
+    project: &std::path::Path,
+    eval: &str,
+    selected: &str,
+    picked_reason: Option<&str>,
+) -> Element {
+    let reason_chip = |reason: &str| {
+        let picked = picked_reason == Some(reason);
+        div()
+            .layer(format!("reason {reason}"))
+            .on_click(BarAct::PickReason {
+                project: project.to_path_buf(),
+                eval: eval.to_string(),
+                disposition: selected.to_string(),
+                reason: (!picked).then(|| reason.to_string()),
+            })
+            .pad(6, 12)
+            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
+            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
+            .font_size(12)
+            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
+            .text(word(&format!("seal.r.{reason}")))
+    };
     let chip = |disposition: &str| {
         let picked = selected == disposition;
         div()
@@ -153,7 +175,9 @@ fn render_seal_disposition_bar(project: &std::path::Path, eval: &str, selected: 
         .child(span("■").font_mono().color(palette::AMBER))
         .child(div().font_weight(600).font_size(14).text(word("desktop.bar.seal_round")))
         .child(div().flex_1())
-        .children(["accepted", "deferred", "rejected", "abandoned"].map(chip))
+        .children(weft_core::tree::DISPOSITIONS.map(chip))
+        .child(div().w(12))
+        .children(weft_core::tree::reasons(selected).iter().map(|r| reason_chip(r)))
         .child(div().w(12))
         .child(button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar))
         .child(button(
@@ -163,6 +187,7 @@ fn render_seal_disposition_bar(project: &std::path::Path, eval: &str, selected: 
                 project: project.to_path_buf(),
                 eval: eval.to_string(),
                 disposition: selected.to_string(),
+                reason: picked_reason.map(str::to_string),
             },
             Tone::Primary,
             Size::Bar,
