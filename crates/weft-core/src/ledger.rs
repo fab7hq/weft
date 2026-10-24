@@ -148,9 +148,6 @@ pub struct Unit {
     pub delivery_mode: String,
     pub cancelled: bool,
     pub confirmed: bool,
-    /// The confirmation surface was shown and gave no answer. Not a refusal:
-    /// the Ask is still open, and still the person's to say yes to.
-    pub unanswered: bool,
     pub sent: Sent,
     /// Where the prompt was observed arriving, when a hook saw it. The work
     /// goes on in that session, which may not be the one it was asked in.
@@ -226,9 +223,6 @@ impl Unit {
             return "asked, still being composed";
         }
         match self.sent {
-            // An Ask nobody answered is not an Ask nobody wants. It says what
-            // is missing — a yes — rather than that nothing has happened.
-            Sent::NotSent if self.unanswered => "waiting for your yes",
             Sent::NotSent => "not sent yet",
             Sent::ReadyToSend => "ready to send",
             Sent::Unconfirmed => "sent, unconfirmed",
@@ -236,12 +230,6 @@ impl Unit {
             Sent::Arrived { exact: true } => "sent · word for word",
             Sent::Arrived { exact: false } => "sent, reworded",
         }
-    }
-
-    /// Compiled, asked about, and never answered. The candidate is on disk and
-    /// the only thing missing is the person saying yes.
-    pub fn awaiting_yes(&self) -> bool {
-        self.unanswered && !self.confirmed && !self.cancelled && self.sent == Sent::NotSent
     }
 
     /// Not sealed and not cancelled: what `OPEN` counts.
@@ -350,11 +338,6 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     units.push(unit);
                 } else {
                     units[at] = unit;
-                }
-            }
-            "ask.unanswered" => {
-                if let Some(u) = index.get(&id).and_then(|i| units.get_mut(*i)) {
-                    u.unanswered = true;
                 }
             }
             "ask.confirmed" => {
@@ -934,53 +917,21 @@ mod tests {
         assert_eq!(project(&observed_first)[0].sent, Sent::Arrived { exact: true });
     }
 
+    /// An older record's "no answer came" is not waited on: Weft's own dialog
+    /// is the only confirmation, and the Ask reads as not sent.
     #[test]
-    fn an_ask_nobody_answered_still_needs_you() {
-        // Codex's chooser returns the same empty result whether it was
-        // dismissed or timed out, so RingFrame records that no answer came
-        // rather than a refusal. The candidate is on disk and the only thing
-        // missing is the person's yes.
-        let units = project(&[
-            compiled("ask_1", "health endpoint", "codex", "human_handoff"),
-            ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
-        ]);
-        let u = &units[0];
-        assert!(u.unanswered && !u.cancelled && !u.confirmed);
-        assert!(u.awaiting_yes(), "still the person's to say yes to");
-        assert_eq!(crate::board::next_step(u), Some(Next::Confirm), "and it is waiting on them");
-        assert_eq!(u.status(), "waiting for your yes");
-    }
-
-    #[test]
-    fn saying_yes_afterwards_makes_it_ready_to_send() {
+    fn an_unanswered_ask_in_an_older_record_is_not_sent_yet() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
             ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
-            ev("ask.confirmed", "ask_1", json!({"confirmation": {"observed_by": "skill"}})),
         ]);
-        assert!(!units[0].awaiting_yes(), "answered now");
-        assert_eq!(units[0].sent, Sent::ReadyToSend);
-        assert_eq!(units[0].status(), "ready to send");
-    }
-
-    #[test]
-    fn a_cancelled_ask_is_not_waiting_for_anything() {
-        // Unanswered is not a softer cancel: an actual no still ends it, and
-        // an Ask cancelled after going unanswered stays ended.
-        let units = project(&[
+        assert_eq!(units[0].status(), "not sent yet");
+        assert_eq!(crate::board::next_step(&units[0]), None);
+        let cancelled = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
             ev("ask.unanswered", "ask_1", json!({"unanswered": {"observed_by": "skill"}})),
             ev("ask.cancelled", "ask_1", json!({"cancellation": {"observed_by": "skill"}})),
         ]);
-        assert!(!units[0].awaiting_yes());
-        assert_eq!(crate::board::next_step(&units[0]), None);
-        assert_eq!(units[0].status(), "cancelled");
-    }
-
-    #[test]
-    fn a_record_with_no_unanswered_event_reads_as_it_always_did() {
-        let units = project(&[compiled("ask_1", "t", "codex", "human_handoff")]);
-        assert!(!units[0].unanswered && !units[0].awaiting_yes());
-        assert_eq!(units[0].status(), "not sent yet");
+        assert_eq!(cancelled[0].status(), "cancelled");
     }
 }

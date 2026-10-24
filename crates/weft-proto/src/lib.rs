@@ -107,10 +107,6 @@ pub enum Call {
         /// What the person chose in the sheet or dialog before Send.
         draft: Option<weft_core::ask::Draft>,
     },
-    /// Record the person's yes for an Ask whose chooser never got one.
-    ConfirmAsk {
-        unit: String,
-    },
     /// The exact wording, or the judgements, as RingFrame recorded them; or
     /// `what: "history"`, a pane's last `lines` of scrollback and screen as
     /// text (remote.md D7), where `unit` is empty.
@@ -451,7 +447,6 @@ impl Call {
                 json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval,
                        "start": start, "draft": draft}),
             ),
-            Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit, pane, lines, before, after } => (
                 "read",
                 json!({"what": what, "unit": unit, "pane": pane, "lines": lines,
@@ -528,7 +523,6 @@ impl Call {
                 start: s("start"),
                 draft: p.get("draft").and_then(|d| serde_json::from_value(d.clone()).ok()),
             },
-            "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read {
                 what: s("what")?,
                 unit: s("unit").unwrap_or_default(),
@@ -1068,7 +1062,6 @@ mod tests {
                 start: None,
                 draft: None,
             },
-            Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read {
                 what: "judges".into(),
                 unit: "ask_1".into(),

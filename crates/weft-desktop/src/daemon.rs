@@ -923,10 +923,6 @@ impl ProjectClient {
         self.tell(call, Then::Refusal)
     }
 
-    pub fn confirm_ask(&mut self, unit: &str) -> Result<u64> {
-        self.tell(Call::ConfirmAsk { unit: unit.to_string() }, Then::Refusal)
-    }
-
     /// Read `what` of `unit` (or of `pane`), once: asked again only after the
     /// last one is answered.
     pub fn read(&mut self, what: &str, unit: &str, pane: Option<u32>, then: Then) -> Result<()> {

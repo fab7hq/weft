@@ -54,13 +54,6 @@ pub struct Asking {
 /// Sending a compiled prompt back to the harness it was compiled in.
 pub fn sending(unit: &crate::ledger::Unit, how: &Handoff) -> Asking {
     let mut why = vec!["This is the exact wording. Weft will not change it.".to_string()];
-    if unit.awaiting_yes() {
-        why.push(format!(
-            "{} asked you about this and never got an answer, so it is still waiting. \
-             Sending it records your yes first.",
-            unit.harness
-        ));
-    }
     // Say what the extra step is for, before it happens. It is still one
     // confirmation and the same bytes.
     if let Some(said) = say_handoff(how, &unit.harness) {
@@ -321,10 +314,7 @@ pub fn work_detail(
             lines,
         },
         session,
-        proceed: matches!(
-            crate::board::next_step(unit),
-            Some(crate::board::Next::Send | crate::board::Next::Confirm)
-        ),
+        proceed: matches!(crate::board::next_step(unit), Some(crate::board::Next::Send)),
         follows: crate::board::follow_up_of(unit).to_string(),
     }
 }

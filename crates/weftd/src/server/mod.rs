@@ -143,9 +143,6 @@ struct Waiting {
     why: String,
     payload: Vec<u8>,
     how: weft_core::inject::Handoff,
-    /// The Ask whose yes has to be recorded before anything is typed, when the
-    /// harness's own chooser never got one.
-    confirm: Option<String>,
     /// The Ask whose prompt this sends: delivered only when its pane reports
     /// receiving it.
     sends: Option<String>,
@@ -2254,7 +2251,6 @@ impl Session {
                     why,
                     payload: bytes,
                     how,
-                    confirm: None,
                     sends: None,
                     compile: None,
                     eval: None,
@@ -2273,16 +2269,6 @@ impl Session {
                     draft: draft.as_ref(),
                 };
                 return Ok(self.act((client, call_id), at, &act, on));
-            }
-            Call::ConfirmAsk { unit } => {
-                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                let root = self.projects[at].root.clone();
-                return Ok(
-                    match crate::ringframe::ask_confirm(self.outside.as_ref(), &root, &unit) {
-                        Ok(()) => Answer::nothing(),
-                        Err(e) => Answer::No("refused", format!("{e:?}")),
-                    },
-                );
             }
             Call::Read { what, unit, pane, lines, before, after } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
@@ -2403,10 +2389,6 @@ impl Session {
                     return Ok(Answer::nothing());
                 }
                 let root = self.projects[at].root.clone();
-                if let Err(why) = recorded_first(self.outside.as_ref(), &root, w.confirm.as_deref())
-                {
-                    return Ok(Answer::No("not_recorded", why));
-                }
                 if let Some(debate) = w.eval.take() {
                     return Ok(self.evaluate((client, call_id), at, w, debate, force));
                 }
@@ -2463,27 +2445,6 @@ impl Session {
             }
         }
         Ok(Answer::nothing())
-    }
-}
-
-#[cfg(test)]
-mod confirming {
-    use super::*;
-
-    #[test]
-    fn nothing_is_typed_until_the_yes_is_on_record() {
-        // The order matters. An Ask that was already confirmed has nothing to
-        // write; one RingFrame will not confirm stops the send, and says so.
-        let nowhere = Path::new("/tmp");
-        let world = crate::outside::Fixed::new().answers(
-            "ringframe",
-            &["ask", "confirm"],
-            2,
-            "no such Ask",
-        );
-        assert_eq!(recorded_first(&world, nowhere, None), Ok(()), "nothing to record");
-        let refused = recorded_first(&world, nowhere, Some("ask_nothing_here")).unwrap_err();
-        assert!(refused.contains("Nothing was typed"), "{refused}");
     }
 }
 

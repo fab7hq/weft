@@ -622,7 +622,6 @@ impl WeftDesktopApp {
             SheetAct::Proceed { project, unit } => {
                 if let Some(c) = self.client_mut(&project) {
                     let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
-                    let _ = c.confirm_ask(&unit);
                     let _ = c.act("proceed", Some(&unit), pane, None, None, None);
                 }
                 self.active_sheet = None;

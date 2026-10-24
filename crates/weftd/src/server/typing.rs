@@ -20,21 +20,6 @@ pub(super) struct Starting {
     screen: (std::time::Instant, String),
 }
 
-/// The person's yes, on record before anything is typed.
-///
-/// The order is the point: if the record cannot be written there is no
-/// confirmed Ask, and typing the prompt anyway would be a send with nothing
-/// behind it. An Ask that was already confirmed has nothing to write.
-pub(super) fn recorded_first(
-    out: &dyn crate::outside::Outside,
-    root: &Path,
-    confirm: Option<&str>,
-) -> Result<(), String> {
-    let Some(ask_id) = confirm else { return Ok(()) };
-    crate::ringframe::ask_confirm(out, root, ask_id)
-        .map_err(|e| format!("RingFrame would not record your yes: {e:?}. Nothing was typed."))
-}
-
 /// How long after Enter a pane that reports nothing at all, neither the
 /// prompt it received nor its turn's end, is waited for before Weft says it
 /// cannot tell whether the Ask arrived (amended 2026-10-10).
@@ -380,7 +365,6 @@ impl Session {
             why,
             payload: built.payload,
             how: built.how,
-            confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
             sends: built.ask_id.clone(),
             compile: built.compile,
             eval: built.eval,

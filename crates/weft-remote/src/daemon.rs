@@ -130,7 +130,7 @@ impl Project {
 /// The calls `weft remote` may make (remote.md §4), and its own handshake
 /// and view; `agent.start` with the command line the daemon's harness file
 /// gives; `project.dismiss`. Never `agent.close`, `stage`, `setup`,
-/// `project.turbo`, `shutdown`, `unit.confirm`, `update` or `service.login`;
+/// `project.turbo`, `shutdown`, `update` or `service.login`;
 /// `force: true` only as protocol.rs allows it. The machine's settings, read
 /// and changed as the desktop does (weft-after-desktop ADR-0003 D6).
 pub fn allowed(call: &Call) -> bool {
@@ -213,7 +213,6 @@ mod tests {
             Call::Setup { act: "run".into(), harness: String::new(), path: String::new() },
             Call::Turbo { on: true },
             Call::Shutdown,
-            Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read {
                 what: "ledger".into(),
                 unit: "ask_1".into(),

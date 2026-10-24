@@ -48,8 +48,6 @@ pub enum Act {
 /// this many things underneath, and the unit decides which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Next {
-    /// The chooser was shown and never answered; show it again.
-    Confirm,
     /// Confirmed and never submitted; put the prompt in front of the agent.
     Send,
     /// Submitted, and nothing has judged it.
@@ -73,9 +71,6 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
     }
     if unit.check.is_some() {
         return Some(Next::Seal);
-    }
-    if unit.awaiting_yes() {
-        return Some(Next::Confirm);
     }
     match unit.sent {
         Sent::ReadyToSend => Some(Next::Send),
@@ -224,7 +219,7 @@ impl Board<'_> {
     pub fn missing_agent(&self, act: Act) -> Option<String> {
         let u = self.selected_unit()?;
         let name = match (act, next_step(u)) {
-            (Act::Proceed, Some(Next::Send | Next::Confirm)) => u.harness.clone(),
+            (Act::Proceed, Some(Next::Send)) => u.harness.clone(),
             (Act::Eval | Act::Seal, _) => self.deciding_harness(act)?,
             _ => return None,
         };
@@ -296,7 +291,7 @@ impl Board<'_> {
                 Some(u) => {
                     let about = |key| Some(Why::about(key, u));
                     match next_step(u) {
-                        Some(Next::Send | Next::Confirm) => self
+                        Some(Next::Send) => self
                             .pane_for(&u.harness)
                             .is_none()
                             .then(|| Why::about("why.no_pane", u)),
@@ -572,11 +567,6 @@ mod tests {
     fn one_verb_carries_a_unit_the_whole_way() {
         // The ladder the detail view walks, and the only thing Proceed
         // has to know. Each step is where the previous one leaves the unit.
-        let mut u = unit("codex", Sent::NotSent);
-        u.confirmed = false;
-        u.unanswered = true;
-        assert_eq!(next_step(&u), Some(Next::Confirm));
-
         let u = unit("codex", Sent::ReadyToSend);
         assert_eq!(next_step(&u), Some(Next::Send));
 
