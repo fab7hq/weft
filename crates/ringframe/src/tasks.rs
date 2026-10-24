@@ -7,7 +7,8 @@
 //! requirement whose evidence carries a finding. RingFrame merges the rest.
 //!
 //! `eval next` says which tasks are ready and writes each one's file, with
-//! its evidence inline; a judge writes its output and runs `eval submit`,
+//! its evidence inline (`eval task` hands one to a judge Weft started); a
+//! judge writes its output and runs `eval submit`,
 //! which checks every citation against its source before anything counts.
 //! No model decides the order, and no model writes the report.
 //!
@@ -1167,8 +1168,8 @@ Do your task yourself: never hand it, or a part of it, to another agent. Write \
 your output file yourself, not with a script: RingFrame checks every quote \
 against its source and refuses text repeated across items.
 
-When your output is written, run `ringframe eval submit --task <task id>`. If it \
-refuses, fix exactly what it names and submit again. Send no message before \
+When your output is written, run `ringframe eval submit --task <task id> --file \
+<your output file>`. If it refuses, fix exactly what it names and submit again. Send no message before \
 then: your only message, and your last, is one line: `<task id> accepted` or \
 `<task id> failed: <reason>`. Nothing else.
 
@@ -1487,13 +1488,39 @@ pub fn next(
 ) -> Result<Value, EvalError> {
     // Its state and the ledger are read, changed and written as one: two
     // callers at once would hand a task out twice, or settle twice.
-    store::locked(ws, || hand_out(ws, eval_id, parallel, agents, returned))
+    store::locked(ws, || hand_out(ws, eval_id, Pick::Parallel(parallel), agents, returned))
+}
+
+/// One task for a judge Weft started, of `role` when given: `running` with
+/// the task, its brief and where its answer goes; `waiting` while every
+/// ready task of the role is out or none is ready yet; `done` once every
+/// task is in. A task out past its time goes out once more, then fails.
+pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
+    if let Some(r) = role {
+        need(ROLES.contains(&r), "eval.role", format!("{r} is not a role: {}", ROLES.join(", ")))?;
+    }
+    let out = store::locked(ws, || hand_out(ws, eval_id, Pick::One(role), None, &[]))?;
+    if out["state"] == "done" {
+        return Ok(out);
+    }
+    Ok(match array_of(&out, "tasks").first() {
+        Some(task) => json!({"state": "running", "task": task, "remaining": out["remaining"]}),
+        None => json!({"state": "waiting", "remaining": out["remaining"]}),
+    })
+}
+
+/// How many tasks a call hands out: up to a parallel limit for a
+/// coordinator, or one, of a role, for a judge Weft started.
+#[derive(Clone, Copy)]
+enum Pick<'a> {
+    Parallel(usize),
+    One(Option<&'a str>),
 }
 
 fn hand_out(
     ws: &Workspace,
     eval_id: &str,
-    parallel: usize,
+    pick: Pick,
     agents: Option<&Value>,
     returned: &[String],
 ) -> Result<Value, EvalError> {
@@ -1588,7 +1615,10 @@ fn hand_out(
                          "confidence": record["confidence"]}));
     }
     let out_now = open.iter().filter(|t| is_out(&t.id, &state)).count();
-    let room = parallel.max(1).saturating_sub(out_now);
+    let room = match pick {
+        Pick::Parallel(parallel) => parallel.max(1).saturating_sub(out_now),
+        Pick::One(_) => 1,
+    };
     let facts: Vec<Value> = ctx
         .facts()
         .iter()
@@ -1609,8 +1639,9 @@ fn hand_out(
     let deny = deny_of(&ctx.brief);
     let agents = &ctx.brief["agents"];
     let mut handed_out = Vec::new();
+    let of_role = |t: &Task| !matches!(pick, Pick::One(Some(r)) if t.role != r);
     let ready: Vec<&Task> =
-        open.iter().copied().filter(|t| !is_out(&t.id, &state)).take(room).collect();
+        open.iter().copied().filter(|t| !is_out(&t.id, &state) && of_role(t)).take(room).collect();
     for t in ready {
         let (file, text) = task_file(&ctx, t, &facts);
         let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
@@ -1634,6 +1665,8 @@ fn hand_out(
             "prompt": format!("Do RingFrame Eval task {}: read {} to its end and do what it says. \
                                Send no message until you are done, then reply with one line.",
                               t.id, rel.display()),
+            "brief": dir.join(format!("tasks/{}.brief.md", t.id)).to_string_lossy(),
+            "answer": dir.join("out").join(format!("{}.json", t.id)).to_string_lossy(),
         });
         for k in ["model", "effort"] {
             if let Some(v) = agents[t.role].get(k) {
@@ -2149,10 +2182,19 @@ fn record(
 pub fn submit(ws: &Workspace, task: &str) -> Result<(i32, Value), EvalError> {
     // Whether it is in yet, and recording it, are one step: a task is
     // recorded once.
-    store::locked(ws, || check_and_record(ws, task))
+    store::locked(ws, || check_and_record(ws, task, None))
 }
 
-fn check_and_record(ws: &Workspace, task: &str) -> Result<(i32, Value), EvalError> {
+/// `submit`, with the answer read from `file`.
+pub fn submit_from(ws: &Workspace, task: &str, file: &Path) -> Result<(i32, Value), EvalError> {
+    store::locked(ws, || check_and_record(ws, task, Some(file)))
+}
+
+fn check_and_record(
+    ws: &Workspace,
+    task: &str,
+    file: Option<&Path>,
+) -> Result<(i32, Value), EvalError> {
     let Some(eval_id) = eval_of(task) else {
         return Err(ledger("eval.task_unknown", format!("{task} is not a task id")));
     };
@@ -2164,7 +2206,10 @@ fn check_and_record(ws: &Workspace, task: &str) -> Result<(i32, Value), EvalErro
     if st.accepted.contains_key(task) || st.failed.contains(task) {
         return Err(ledger("eval.task_done", format!("{task} is already in")));
     }
-    let path = tmp(ws, eval_id).join("out").join(format!("{task}.json"));
+    let path = match file {
+        Some(f) => f.to_path_buf(),
+        None => tmp(ws, eval_id).join("out").join(format!("{task}.json")),
+    };
     let bytes = std::fs::read(&path).map_err(|_| {
         ledger("eval.no_output", format!("write your output to {} first", path.display()))
     })?;
@@ -4344,5 +4389,76 @@ mod tests {
 
     fn refused(e: EvalError, code: &str) {
         assert!(e.to_string().contains(code), "{e}");
+    }
+
+    /// A judge Weft started takes one task per call: the next one ready of
+    /// the role it asks for, with where its brief is and where its answer goes.
+    #[test]
+    fn a_judge_takes_one_task_per_call() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let m1 = task_id(e, "m1");
+            let got = take(ws, e, Some("map")).unwrap();
+            assert_eq!(got["state"], "running", "{got}");
+            let t = &got["task"];
+            assert_eq!((str_of(t, "task_id"), str_of(t, "role")), (m1.clone(), "map".into()));
+            let brief = PathBuf::from(str_of(t, "brief"));
+            assert_eq!(brief, tmp(ws, e).join(format!("tasks/{m1}.brief.md")));
+            assert!(brief.exists());
+            assert_eq!(PathBuf::from(str_of(t, "answer")), out_path(ws, &m1));
+            let handed = read_json(&state_path(ws, e)).unwrap()["handed"].clone();
+            assert_eq!(handed.as_object().map(|h| h.len()), Some(1), "{handed}");
+            assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
+            assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
+            refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
+        });
+    }
+
+    /// Answered from files of the judges' own, task by task, the Eval settles.
+    #[test]
+    fn an_eval_settles_one_task_at_a_time_from_answer_files() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let elsewhere = ws.root.join("answers");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            for _ in 0..40 {
+                let got = take(ws, e, None).unwrap();
+                if got["state"] == "done" {
+                    assert!(crate::evaluate::load_record(ws, e).unwrap().is_some());
+                    return;
+                }
+                assert_eq!(got["state"], "running", "{got}");
+                let t = str_of(&got["task"], "task_id");
+                crate::testing::answer_task(ws, &t);
+                let file = elsewhere.join(format!("{t}.json"));
+                std::fs::rename(out_path(ws, &t), &file).unwrap();
+                let (code, said) = submit_from(ws, &t, &file).unwrap();
+                assert_eq!(code, 0, "{said}");
+            }
+            panic!("the Eval did not settle");
+        });
+    }
+
+    /// Submitting with a file runs today's checks on that file.
+    #[test]
+    fn a_submitted_file_is_checked_as_the_output_is() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let m1 = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            let file = ws.root.join("answer.json");
+            write(&file, json!({"not": "a task output"}).to_string().as_bytes()).unwrap();
+            let (code, said) = submit_from(ws, &m1, &file).unwrap();
+            assert_eq!(code, 2, "{said}");
+            put(ws, &m1, json!({"not": "a task output"}));
+            let (_, today) = submit(ws, &m1).unwrap();
+            assert_eq!(said["errors"], today["errors"]);
+            refused(
+                submit_from(ws, &m1, &ws.root.join("missing.json")).unwrap_err(),
+                "eval.no_output",
+            );
+        });
     }
 }

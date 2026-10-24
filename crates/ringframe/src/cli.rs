@@ -128,7 +128,8 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
             false,
             &["--returned"],
         ),
-        ("eval", Some("submit")) => s(&["--task"], NONE, &["--task"], false, NONE),
+        ("eval", Some("task")) => s(&["--eval", "--role"], NONE, &["--eval"], false, NONE),
+        ("eval", Some("submit")) => s(&["--task", "--file"], NONE, &["--task"], false, NONE),
         ("eval", Some("commits")) => s(&["--eval"], NONE, &["--eval"], false, NONE),
         ("eval", Some("checks")) => s(&["--eval"], NONE, &["--eval"], false, NONE),
         ("eval", Some("grep")) => {
@@ -178,7 +179,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 35] = [
+const SURFACE: [(&str, Option<&str>); 36] = [
     ("init", None),
     ("sync", None),
     ("profile", Some("show")),
@@ -197,6 +198,7 @@ const SURFACE: [(&str, Option<&str>); 35] = [
     ("eval", Some("close")),
     ("eval", Some("list")),
     ("eval", Some("next")),
+    ("eval", Some("task")),
     ("eval", Some("submit")),
     ("eval", Some("show")),
     ("eval", Some("window")),
@@ -264,8 +266,12 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
             "the Eval's tasks that are ready (--parallel at most out at once); --returned names each \
              task whose judge has finished; closes it when all are in"
         }
+        ("eval", Some("task")) => {
+            "one ready task for a judge, of --role when given: its brief and where its answer goes"
+        }
         ("eval", Some("submit")) => {
-            "check a task's output, every citation against its source; accepted, refused or failed"
+            "check a task's output (--file, or its output path), every citation against its \
+             source; accepted, refused or failed"
         }
         ("eval", Some("commits")) => "each repository's commits over the Eval's change",
         ("eval", Some("checks")) => "run the Eval's checks once (eval open starts it)",
@@ -893,8 +899,19 @@ fn dispatch(
                 Err(e) => (ws, from_ask_error(e)),
             }
         }
+        ("eval", Some("task")) => {
+            match crate::tasks::take(&ws, ns.one("--eval").unwrap_or_default(), ns.one("--role")) {
+                Ok(v) => (ws, Outcome::Ok(0, v)),
+                Err(e) => (ws, from_ask_error(e)),
+            }
+        }
         ("eval", Some("submit")) => {
-            match crate::tasks::submit(&ws, ns.one("--task").unwrap_or_default()) {
+            let task = ns.one("--task").unwrap_or_default();
+            let out = match ns.one("--file") {
+                Some(file) => crate::tasks::submit_from(&ws, task, Path::new(file)),
+                None => crate::tasks::submit(&ws, task),
+            };
+            match out {
                 Ok((code, v)) => (ws, Outcome::Ok(code, v)),
                 Err(e) => (ws, from_ask_error(e)),
             }
@@ -1700,6 +1717,32 @@ mod tests {
             let (_, listed, _) = c.go(&["eval", "list", "--minimal"]);
             assert_eq!(listed["evals"][0]["state"], "voided");
             assert_eq!(listed["evals"][0]["voided"]["reason"], "opened by mistake");
+        });
+    }
+
+    #[test]
+    fn a_judge_takes_one_task_and_submits_its_answer_file_over_the_cli() {
+        eval_bench(|ws| {
+            let c = Cli { root: ws.root.clone() };
+            two_asks_and_work(ws);
+            let (_, opened, _) = c.go(&["eval", "open"]);
+            let eval_id = opened["eval_id"].as_str().unwrap().to_string();
+            let (code, got, _) = c.go(&["eval", "task", "--eval", &eval_id, "--role", "map"]);
+            assert_eq!((code, got["state"].clone()), (0, json!("running")), "{got}");
+            let task = got["task"]["task_id"].as_str().unwrap().to_string();
+            assert!(Path::new(got["task"]["brief"].as_str().unwrap()).exists());
+            assert!(got["task"]["answer"].as_str().unwrap().ends_with(&format!("out/{task}.json")));
+            let file = ws.root.join("answer.json");
+            let submit = |c: &Cli| {
+                c.go(&["eval", "submit", "--task", &task, "--file", file.to_str().unwrap()])
+            };
+            let (code, out, _) = submit(&c);
+            assert_eq!((code, out["error"].clone()), (2, json!("eval.no_output")), "{out}");
+            std::fs::write(&file, "{}").unwrap();
+            let (code, out, _) = submit(&c);
+            assert_eq!((code, out["state"].clone()), (2, json!("refused")), "{out}");
+            let (code, out, _) = c.go(&["eval", "task", "--eval", &eval_id, "--role", "judge"]);
+            assert_eq!((code, out["error"].clone()), (2, json!("eval.role")), "{out}");
         });
     }
 

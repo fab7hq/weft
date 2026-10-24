@@ -187,6 +187,7 @@ fn action_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         ("eval", Some("window")) => d.clone(),
         ("eval", Some("commits")) => d.clone(),
         ("eval", Some("next")) => d.clone(),
+        ("eval", Some("task")) => d.clone(),
         ("eval", Some("submit")) => pick(d, &["task_id", "state", "attempt", "errors", "left"]),
         ("eval", Some("void")) => pick(d, &["eval_id", "state", "reason"]),
         ("seal", Some("create")) => seal_view(d),
