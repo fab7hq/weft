@@ -2191,6 +2191,11 @@ fn check_and_record(
     let Some(eval_id) = eval_of(task) else {
         return Err(ledger("eval.task_unknown", format!("{task} is not a task id")));
     };
+    need(
+        !crate::evaluate::voided(ws)?.contains_key(eval_id),
+        "eval.voided",
+        format!("{eval_id} was voided"),
+    )?;
     let ctx = Ctx::load(ws, eval_id)?;
     let st = status(&ctx)?;
     let Some(t) = plan(&ctx, &st).into_iter().find(|t| t.id == task) else {
@@ -4441,6 +4446,26 @@ mod tests {
             assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
             assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
             refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
+        });
+    }
+
+    /// Stop: a voided Eval hands out nothing more and refuses what its
+    /// judges still submit.
+    #[test]
+    fn a_voided_eval_refuses_submit() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let t = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            crate::testing::answer_task(ws, &t);
+            crate::evaluate::void_eval(ws, e, "stopped", None).unwrap();
+            refused(submit(ws, &t).unwrap_err(), "eval.voided");
+            refused(take(ws, e, None).unwrap_err(), "eval.voided");
+            let recorded = store::events(ws)
+                .unwrap()
+                .into_iter()
+                .any(|ev| ev["type"] == "eval.task" && ev["data"]["task_id"] == t);
+            assert!(!recorded, "nothing of a voided Eval is recorded");
         });
     }
 
