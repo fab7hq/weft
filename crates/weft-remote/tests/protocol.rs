@@ -345,14 +345,9 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
             json!({"type": "settings", "project": "work", "what": what, "unit": unit, "req": req}),
         );
         let answer = d.answer(req);
-        // Whatever RingFrame on this machine says, or that it is missing:
-        // never refused before the daemon.
-        assert!(
-            answer["type"] == "ok"
-                || ["no_ringframe", "refused"]
-                    .contains(&answer["code"].as_str().unwrap_or_default()),
-            "{what}: {answer}"
-        );
+        // Whatever RingFrame on this machine says: never refused before the
+        // daemon.
+        assert!(answer["type"] == "ok" || answer["code"] == "refused", "{what}: {answer}");
     }
     // Every harness this Weft supports, each with how it stands as the
     // machine last said it: answered by the remote from what it holds.

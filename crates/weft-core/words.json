@@ -486,7 +486,6 @@
   "why.judging": "{title} is not judged yet: Eval goes on with it.",
   "why.no_eval": "No Eval of this work yet: Eval starts one.",
   "why.no_pane": "No {harness} pane is open, so there is nowhere to send this.",
-  "why.no_ringframe": "RingFrame is not installed.",
   "why.no_room": "No room for another pane here.",
   "why.not_set_up": "{harness} is not set up for RingFrame.",
   "why.nothing_asked": "Nothing has been asked for yet.",

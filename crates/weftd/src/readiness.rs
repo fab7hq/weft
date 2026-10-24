@@ -10,16 +10,13 @@ pub use weft_core::readiness::*;
 
 use crate::outside::Outside;
 
-/// Ask one harness. `cli` is the global check, made once by the caller.
-pub fn check(out: &dyn Outside, h: &Harness, cli: bool) -> Readiness {
-    look(out, h, cli).0
+/// Ask one harness.
+pub fn check(out: &dyn Outside, h: &Harness) -> Readiness {
+    look(out, h).0
 }
 
 /// Its readiness, and the `rf` version it has installed, from one listing.
-pub fn look(out: &dyn Outside, h: &Harness, cli: bool) -> (Readiness, Option<String>) {
-    if !cli {
-        return (Readiness::Missing(Gap::Cli), None);
-    }
+pub fn look(out: &dyn Outside, h: &Harness) -> (Readiness, Option<String>) {
     let Some(listing) = ask(out, h) else { return (Readiness::Unknown, None) };
     let state = read(h, &listing);
     if let Some(version) = weft_core::sync::installed(h, &listing) {
@@ -107,11 +104,6 @@ mod tests {
     }
 
     #[test]
-    fn no_cli_is_the_first_gap_and_nothing_else_is_asked() {
-        assert_eq!(check(&Fixed::new(), &absent(), false), Readiness::Missing(Gap::Cli));
-    }
-
-    #[test]
     fn a_harness_that_will_not_answer_is_unknown_rather_than_missing() {
         // `read` never sees the output, because there was none. The distinction
         // matters: Missing can be fixed by installing, Unknown cannot.
@@ -119,7 +111,7 @@ mod tests {
             read(&absent(), &json!("not a listing at all")),
             Readiness::Missing(Gap::Marketplace)
         );
-        assert_eq!(check(&Fixed::new(), &absent(), true), Readiness::Unknown);
+        assert_eq!(check(&Fixed::new(), &absent()), Readiness::Unknown);
     }
 
     /// A listing that gives no version (Antigravity's imports, or only
@@ -137,32 +129,28 @@ mod tests {
                     w.file(p, t)
                 })
         };
-        assert_eq!(look(&world(&[]), &h, true), (Readiness::Ready, None), "no manifest named");
+        assert_eq!(look(&world(&[]), &h), (Readiness::Ready, None), "no manifest named");
 
         h.manifest = Some("plugins/cache/fab7/rf/*/.loom-plugin/plugin.json".into());
         let old = ("plugins/cache/fab7/rf/aaa/.loom-plugin/plugin.json", r#"{"version": "0.1.2"}"#);
         let new = ("plugins/cache/fab7/rf/bbb/.loom-plugin/plugin.json", r#"{"version": "0.1.3"}"#);
-        assert_eq!(look(&world(&[old, new]), &h, true).1.as_deref(), Some("0.1.3"));
+        assert_eq!(look(&world(&[old, new]), &h).1.as_deref(), Some("0.1.3"));
         let unversioned =
             ("plugins/cache/fab7/rf/ccc/.loom-plugin/plugin.json", r#"{"name": "rf"}"#);
         assert_eq!(
-            look(&world(&[unversioned]), &h, true),
+            look(&world(&[unversioned]), &h),
             (Readiness::Ready, Some(UNVERSIONED.into())),
             "a plugin from before it carried a version"
         );
         assert!(weft_core::sync::older(UNVERSIONED, "0.1.3"), "so it is behind any release");
         assert_eq!(
-            look(&world(&[]), &h, true),
+            look(&world(&[]), &h),
             (Readiness::Missing(Gap::Plugin), None),
             "the listing proves the marketplace, and no plugin is there"
         );
 
         let listed = r#"{"installed": [{"id": "rf@fab7", "enabled": true, "version": "0.1.1"}]}"#;
         let both = Fixed::new().answers("nowhere", &["list"], 0, listed).file(new.0, new.1);
-        assert_eq!(
-            look(&both, &h, true).1.as_deref(),
-            Some("0.1.1"),
-            "the listing's own comes first"
-        );
+        assert_eq!(look(&both, &h).1.as_deref(), Some("0.1.1"), "the listing's own comes first");
     }
 }

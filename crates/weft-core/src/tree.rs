@@ -221,7 +221,6 @@ impl Why {
     pub fn not_ready(state: Readiness, harness: &str) -> Option<Self> {
         let (key, named) = match state {
             Readiness::Ready => return None,
-            Readiness::Missing(Gap::Cli) => ("why.no_ringframe", false),
             Readiness::Missing(Gap::Marketplace | Gap::Plugin) => ("why.not_set_up", true),
             Readiness::Unknown => ("why.cannot_ask", true),
         };
@@ -673,7 +672,7 @@ mod tests {
     /// remote.md §6: the names on the wire, folded content left out.
     #[test]
     fn the_wire_names_the_fields_as_the_protocol_does() {
-        let t = build(&weft(), &|_| Readiness::Missing(Gap::Cli), AS_DRAWN);
+        let t = build(&weft(), &|_| Readiness::Unknown, AS_DRAWN);
         let v = serde_json::to_value(&t).unwrap();
         assert_eq!(v["project"], "weft");
         assert_eq!((v["open"].clone(), v["needs"].clone()), (3.into(), 1.into()));
@@ -683,13 +682,14 @@ mod tests {
             v["agents"]["rows"][1],
             serde_json::json!({"session": "k1", "harness": "claude", "state": "running",
                 "turn": "waiting", "title": "k1 title", "at": 1129, "asks": 0,
-                "ask": {"key": "why.no_ringframe"}})
+                "ask": {"key": "why.cannot_ask", "harness": "claude"}})
         );
         assert_eq!(
             v["work"]["units"][1],
             serde_json::json!({"unit": "ask_3", "title": "health endpoint", "harness": "codex",
                 "status": {"state": "judged", "verdict": "drifted", "agreement": 0.75},
-                "asks": 1, "eval": {"key": "why.no_ringframe"}, "seal": {"key": "why.no_ringframe"}})
+                "asks": 1, "eval": {"key": "why.cannot_ask", "harness": "codex"},
+                "seal": {"key": "why.cannot_ask", "harness": "codex"}})
         );
         assert_eq!(v["work"]["earlier"], 11);
         assert!(v.get("harnesses").is_none());

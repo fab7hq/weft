@@ -87,6 +87,86 @@ pub fn workspace(root: &Path) -> Result<Workspace, Error> {
     })
 }
 
+fn workspace_error(e: crate::workspace::WorkspaceError) -> Error {
+    Error::Refused { code: e.code, detail: e.detail }
+}
+
+/// Set the project up, as `ringframe init` does; refused outside Git. One set
+/// up already stays as it is.
+pub fn init(ws: &Workspace) -> Result<(), Error> {
+    crate::workspace::require_git(ws).map_err(workspace_error)?;
+    ws.ensure()
+        .map_err(|e| Error::Refused { code: "workspace.io".into(), detail: e.to_string() })?;
+    Ok(())
+}
+
+/// What `host`'s profile says, with its digest and the plans this project
+/// holds, as `profile show` prints it.
+pub fn profile(ws: &Workspace, host: &str) -> Result<Value, Error> {
+    let mut out =
+        crate::profiles::for_host(&json!({"name": host, "version": ""})).map_err(config_error)?;
+    let name = out["host"].as_str().unwrap_or("unknown").to_string();
+    out["sha256"] = json!(crate::profiles::sha256(&name).map_err(config_error)?);
+    out["plans"] = json!(crate::workspace::plans(ws));
+    Ok(out)
+}
+
+/// Every practice domain, every catalog with its entries, and what Eval judges
+/// must not do, through these layers: `deltas domains` and `deltas list`.
+pub fn catalogs(overrides: &Overrides) -> Result<Value, Error> {
+    let domains = crate::deltas::domains(overrides).map_err(config_error)?;
+    let listed = crate::deltas::list(overrides).map_err(config_error)?;
+    let deny = overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec()));
+    Ok(json!({"domains": domains, "catalogs": listed,
+              "judges": tasks::judges(deny.as_ref())}))
+}
+
+/// What `sync --check` says: the configuration installed against the latest.
+pub fn config_check() -> Result<Value, Error> {
+    crate::workspace::check_config().map_err(workspace_error)
+}
+
+/// Install the latest configuration, as `sync` does.
+pub fn config_sync() -> Result<Value, Error> {
+    crate::workspace::install_config(None).map_err(workspace_error)
+}
+
+// ---- What a harness was seen doing ------------------------------------------------
+
+/// Who saw it, in which harness and session.
+pub struct Seen<'a> {
+    pub by: &'a str,
+    pub host: &'a str,
+    pub session: &'a str,
+}
+
+/// A prompt seen submitted: what the harness received, then its other records
+/// of the same submission. Says whose submission it is, if any Ask's.
+pub fn observe_prompt(
+    ws: &Workspace,
+    seen: &Seen<'_>,
+    layers: &[String],
+    host_version: Option<&str>,
+) -> Result<Value, Error> {
+    crate::workspace::require_initialized(ws).map_err(workspace_error)?;
+    let (by, host, session) = (seen.by, seen.host, seen.session);
+    Ok(crate::observe::layered(ws, by, host, session, layers, host_version)?)
+}
+
+/// A tool call seen, and how it ended; the harness's profile says which
+/// tools RingFrame makes something of.
+pub fn observe_tool(
+    ws: &Workspace,
+    seen: &Seen<'_>,
+    tool: &str,
+    outcome: &str,
+    command: Option<&str>,
+) -> Result<Value, Error> {
+    crate::workspace::require_initialized(ws).map_err(workspace_error)?;
+    let (by, host, session) = (seen.by, seen.host, seen.session);
+    Ok(crate::observe::tool(ws, by, host, session, tool, outcome, command)?)
+}
+
 // ---- Ask --------------------------------------------------------------------------
 
 /// Refuses a workspace no Ask could finish: no Git, or RingFrame never set up.
@@ -338,28 +418,29 @@ pub struct Task {
     pub role: String,
     /// What to tell the judge.
     pub prompt: String,
+    /// The brief the judge reads.
+    pub brief: PathBuf,
+    /// Where the judge writes its answer.
+    pub answer: PathBuf,
     pub model: Option<String>,
     pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalStep {
-    /// Tasks handed out now; `out` are still with their judges.
-    Running { tasks: Vec<Task>, out: usize, remaining: usize },
+    /// A task handed out now.
+    Task(Task),
+    /// Every ready task of the role is out, or none is ready yet.
+    Waiting { remaining: usize },
     /// Every task is in, and the record is settled.
     Settled { verdict: String, confidence: Option<f64> },
 }
 
-/// The tasks ready now, at most `parallel` out at once. `returned` are tasks
-/// whose judge finished: one with no accepted answer goes out once more, then
-/// fails. Once every task is in, the Eval settles.
-pub fn eval_task(
-    ws: &Workspace,
-    eval_id: &str,
-    parallel: usize,
-    returned: &[String],
-) -> Result<EvalStep, Error> {
-    let out = tasks::next(ws, eval_id, parallel, None, returned)?;
+/// One ready task for a judge, of `role` (`map`, `reduce` or `confirm`)
+/// when given. A task out past its time goes out once more, then fails.
+/// Once every task is in, the Eval settles.
+pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<EvalStep, Error> {
+    let out = tasks::take(ws, eval_id, role)?;
     if out["state"] == "done" {
         let record = evaluate::load_record(ws, eval_id)?.unwrap_or_default();
         return Ok(EvalStep::Settled {
@@ -367,22 +448,23 @@ pub fn eval_task(
             confidence: record["confidence"].as_f64(),
         });
     }
-    let text = |t: &Value, key: &str| t[key].as_str().map(str::to_string);
-    let tasks = out["tasks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|t| Task {
-            task_id: str_of(t, "task_id"),
-            kind: str_of(t, "kind"),
-            role: str_of(t, "role"),
-            prompt: str_of(t, "prompt"),
-            model: text(t, "model"),
-            effort: text(t, "effort"),
-        })
-        .collect();
-    let count = |key: &str| out[key].as_u64().unwrap_or(0) as usize;
-    Ok(EvalStep::Running { tasks, out: count("out"), remaining: count("remaining") })
+    if out["state"] == "waiting" {
+        return Ok(EvalStep::Waiting {
+            remaining: out["remaining"].as_u64().unwrap_or(0) as usize,
+        });
+    }
+    let t = &out["task"];
+    let text = |key: &str| t[key].as_str().map(str::to_string);
+    Ok(EvalStep::Task(Task {
+        task_id: str_of(t, "task_id"),
+        kind: str_of(t, "kind"),
+        role: str_of(t, "role"),
+        prompt: str_of(t, "prompt"),
+        brief: PathBuf::from(str_of(t, "brief")),
+        answer: PathBuf::from(str_of(t, "answer")),
+        model: text("model"),
+        effort: text("effort"),
+    }))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,9 +490,9 @@ pub struct Submitted {
     pub unjudged: Vec<String>,
 }
 
-/// Check the answer a judge wrote where its task said, and record it.
-pub fn eval_submit(ws: &Workspace, task_id: &str) -> Result<Submitted, Error> {
-    let (code, out) = tasks::submit(ws, task_id)?;
+/// Check the answer a judge wrote, and record it.
+pub fn eval_submit(ws: &Workspace, task_id: &str, answer: &Path) -> Result<Submitted, Error> {
+    let (code, out) = tasks::submit_from(ws, task_id, answer)?;
     let outcome = match code {
         0 => Outcome::Accepted,
         2 => Outcome::Refused,
@@ -599,7 +681,7 @@ mod tests {
 
     /// Hand out, answer and submit every task until the Eval settles.
     fn judged(ws: &Workspace, via: Via, eval_id: &str) {
-        for _ in 0..10 {
+        for _ in 0..40 {
             let tasks: Vec<String> = match via {
                 Via::Cli => {
                     let out = cli(ws, &["eval", "next", "--eval", eval_id, "--parallel", "8"]);
@@ -609,14 +691,13 @@ mod tests {
                     let tasks = out["tasks"].as_array().cloned().unwrap_or_default();
                     tasks.iter().map(|t| t["task_id"].as_str().unwrap().to_string()).collect()
                 }
-                Via::Api => match eval_task(ws, eval_id, 8, &[]).unwrap() {
+                Via::Api => match eval_task(ws, eval_id, None).unwrap() {
                     EvalStep::Settled { verdict, .. } => {
                         assert!(!verdict.is_empty());
                         return;
                     }
-                    EvalStep::Running { tasks, .. } => {
-                        tasks.into_iter().map(|t| t.task_id).collect()
-                    }
+                    EvalStep::Task(t) => vec![t.task_id],
+                    EvalStep::Waiting { .. } => panic!("nothing is out, so a task is ready"),
                 },
             };
             for t in tasks {
@@ -625,7 +706,10 @@ mod tests {
                     Via::Cli => {
                         assert_eq!(cli(ws, &["eval", "submit", "--task", &t])["state"], "accepted")
                     }
-                    Via::Api => assert_eq!(eval_submit(ws, &t).unwrap().outcome, Outcome::Accepted),
+                    Via::Api => {
+                        let answer = ws.rf_dir().join(format!("tmp/eval-{eval_id}/out/{t}.json"));
+                        assert_eq!(eval_submit(ws, &t, &answer).unwrap().outcome, Outcome::Accepted)
+                    }
                 }
             }
         }
@@ -846,7 +930,11 @@ mod tests {
             let code = |e: Error| e.code().to_string();
             assert_eq!(code(eval_void(&ws, "evl_none", "").unwrap_err()), "eval.void_reason");
             assert_eq!(code(eval_void(&ws, "evl_none", "why").unwrap_err()), "eval.missing");
-            assert_eq!(code(eval_submit(&ws, "nothing").unwrap_err()), "eval.task_unknown");
+            let nowhere = ws.root.join("nothing.json");
+            assert_eq!(
+                code(eval_submit(&ws, "nothing", &nowhere).unwrap_err()),
+                "eval.task_unknown"
+            );
             let bad = SealCreate { disposition: "merged", eval_id: None, reason: None, note: None };
             assert_eq!(code(seal_create(&ws, bad).unwrap_err()), "seal.disposition");
             let none =
@@ -892,6 +980,87 @@ mod tests {
 
             let shared = rules_share(ws, "own.1", &layers).unwrap_err();
             assert_eq!(shared.code(), "rules.incomplete");
+        });
+    }
+
+    #[test]
+    fn init_sets_a_repository_up_and_refuses_a_folder_with_no_git() {
+        crate::testing::with_config_home(|_| {
+            let dir = repo();
+            let ws = workspace(dir.path()).unwrap();
+            assert!(!ws.exists());
+            init(&ws).unwrap();
+            assert!(ws.exists());
+            init(&ws).unwrap();
+            let bare = crate::testing::tmp_dir();
+            let refused = init(&workspace(bare.path()).unwrap()).unwrap_err();
+            assert_eq!(refused.code(), "workspace.no_git");
+        });
+    }
+
+    #[test]
+    fn the_profile_and_the_catalogs_say_what_the_cli_says() {
+        eval_bench(|ws| {
+            let said = |args: &[&str]| cli(ws, args);
+            assert_eq!(
+                profile(ws, "claude-code").unwrap(),
+                said(&["profile", "show", "--host", "claude-code", "--json"])
+            );
+            assert_eq!(
+                profile(ws, "loom").unwrap(),
+                said(&["profile", "show", "--host", "loom", "--json"])
+            );
+            let got = catalogs(&Overrides::default()).unwrap();
+            let listed = said(&["deltas", "list", "--json"]);
+            assert_eq!(got["domains"], said(&["deltas", "domains", "--json"])["domains"]);
+            assert_eq!(
+                (&got["catalogs"], &got["judges"]),
+                (&listed["catalogs"], &listed["judges"])
+            );
+            assert_eq!(catalogs(&Overrides::default()).unwrap(), got);
+        });
+    }
+
+    /// A prompt and a tool seen, through the CLI with the prompt on stdin, or
+    /// through this API.
+    fn observed(ws: &Workspace, via: Via) -> String {
+        let ask_id = compiled(ws, via);
+        let typed = prompt(ws, &ask_id, None).unwrap().text;
+        let seen = Seen { by: "weft", host: "claude-code", session: "s1" };
+        let head =
+            ["observe", "prompt", "--by", "weft", "--host", "claude-code", "--session", "s1"];
+        let tool = ["observe", "tool", "--by", "weft", "--host", "claude-code", "--session", "s1"];
+        let tool = [&tool[..], &["--tool", "Bash", "--outcome", "succeeded", "--command", "ls"]];
+        match via {
+            Via::Cli => {
+                let root = ws.root.to_string_lossy().to_string();
+                let argv: Vec<String> = ["--workspace", root.as_str()]
+                    .iter()
+                    .chain(&head)
+                    .map(|s| s.to_string())
+                    .collect();
+                let run = crate::cli::run(&argv, &mut || typed.clone());
+                assert_eq!(run.code, 0, "{}", run.err);
+                cli(ws, &tool.concat());
+            }
+            Via::Api => {
+                let said = observe_prompt(ws, &seen, &[typed], None).unwrap();
+                assert_eq!(said["submission"]["ask_id"], json!(ask_id), "{said}");
+                observe_tool(ws, &seen, "Bash", "succeeded", Some("ls")).unwrap();
+            }
+        }
+        ask_id
+    }
+
+    #[test]
+    fn a_prompt_and_a_tool_observed_record_what_the_cli_recorded() {
+        eval_bench(|_| {
+            let ((cw, _), (aw, _)) = both(observed);
+            assert_same_events(&cw, &aw);
+            let bare = workspace(repo().path()).unwrap();
+            let seen = Seen { by: "weft", host: "claude-code", session: "s1" };
+            let refused = observe_prompt(&bare, &seen, &["hi".into()], None).unwrap_err();
+            assert_eq!(refused.code(), "workspace.uninitialized");
         });
     }
 

@@ -87,14 +87,10 @@ pub fn agents_dir(socket: &Path) -> PathBuf {
     socket.with_extension("agents")
 }
 
-/// A real RingFrame record at `root`, as the daemon finds one: a Git
-/// repository, RingFrame's test configuration in `home`, and an Ask for the
-/// harness `host`, compiled and confirmed, followed by a commit of work.
-/// `HOME` must already be `home`. Returns the Ask's id.
-pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
-    use ringframe::api;
+/// A Git repository at `root` with one empty commit, and how to run Git in it.
+pub fn git_repo(root: &Path) -> impl Fn(&[&str]) + '_ {
     std::fs::create_dir_all(root).unwrap();
-    let git = |args: &[&str]| {
+    let git = move |args: &[&str]| {
         let ok = std::process::Command::new("/usr/bin/git")
             .arg("-C")
             .arg(root)
@@ -106,6 +102,16 @@ pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
     };
     git(&["init", "-q"]);
     git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+    git
+}
+
+/// A real RingFrame record at `root`, as the daemon finds one: a Git
+/// repository, RingFrame's test configuration in `home`, and an Ask for the
+/// harness `host`, compiled and confirmed, followed by a commit of work.
+/// `HOME` must already be `home`. Returns the Ask's id.
+pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
+    use ringframe::api;
+    let git = git_repo(root);
     assert_eq!(std::env::var_os("HOME").as_deref(), Some(home.as_os_str()));
     let config =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ringframe/tests/fixtures/config");

@@ -1,6 +1,6 @@
 //! A send is proven by what the harness received: after
 //! Enter, weftd waits for the pane's next forwarded prompt and takes
-//! `ringframe observe prompt`'s verdict on it. The Ask's prompt is delivered
+//! RingFrame's verdict on it. The Ask's prompt is delivered
 //! and observed; anything else is not, and the pane's notice says so; nothing
 //! in 10 s is "cannot tell", with no retry. Weft never records a submission
 //! of its own (`ask submitted`), and does not send to a harness whose file
@@ -9,11 +9,13 @@
 //! The harnesses are made up: `loom`, whose hooks report the line its
 //! composer took, through the real `weft signal`; `weave`, the same under
 //! another name, which takes a prompt with its own command in front; and
-//! `mute`, whose `[signal]` names no prompt. Its own test binary because it puts a
-//! stand-in `ringframe` first on PATH.
+//! `mute`, whose `[signal]` names no prompt. Its own test binary because it sets
+//! `HOME` for RingFrame's configuration.
 
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+mod support;
+
 use std::sync::Once;
 use std::time::{Duration, Instant};
 
@@ -68,41 +70,50 @@ fn profile(host: &str, prefix: &str) -> String {
     )
 }
 
-/// A `ringframe` that logs every call into the workspace it is given.
-/// `observe prompt` answers as RingFrame does: the Ask's submission when what
-/// arrived is its prompt, none otherwise. The wording comes from the crate,
-/// which reads its host profiles from this binary's own `HOME`: `weave` takes
-/// a prompt with its own command in front.
-fn stand_in() -> PathBuf {
+/// RingFrame's test configuration in this binary's own `HOME`, with a
+/// profile for each made-up harness: `weave` takes a prompt with its own
+/// command in front.
+fn config_home() -> PathBuf {
     static ONCE: Once = Once::new();
-    let bin = std::env::temp_dir().join(format!("weft-proven-bin-{}", std::process::id()));
+    let home = std::env::temp_dir().join(format!("weft-proven-home-{}", std::process::id()));
     ONCE.call_once(|| {
-        std::fs::create_dir_all(&bin).unwrap();
-        let script = format!(
-            "#!/bin/sh\nws=$2\nprintf '%s\\n' \"$*\" >> \"$ws/calls.log\"\ncase \"$*\" in\n  \
-             *\"observe prompt\"*) got=$(cat)\n    \
-               if [ \"$got\" = '{WORDING}' ] || [ \"$got\" = '/weave {WORDING}' ]; then \
-                 printf '{{\"recorded\":true,\"submission\":{{\"ask_id\":\"ask_1\"}}}}'; \
-               else printf '{{\"recorded\":true,\"submission\":null}}'; fi ;;\n  \
-             *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  \
-             *) printf '{{}}' ;;\nesac\nexit 0\n"
-        );
-        let path = bin.join("ringframe");
-        std::fs::write(&path, script).unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let profiles = bin.join("home/.fab7/rf/config/harnesses");
-        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: set once, before any daemon in this binary runs.
+        unsafe { std::env::set_var("HOME", &home) };
+        let config =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ringframe/tests/fixtures/config");
+        ringframe::workspace::install_config(Some(&config)).unwrap();
+        let profiles = home.join(".fab7/rf/config/harnesses");
         for (host, prefix) in [("weave", "/weave "), ("spool", ""), ("unknown", "")] {
             std::fs::write(profiles.join(format!("{host}.toml")), profile(host, prefix)).unwrap();
         }
-        // SAFETY: set once, before any daemon in this binary runs a program.
-        unsafe {
-            std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
-            std::env::set_var("HOME", bin.join("home"));
-        }
     });
-    bin
+    home
+}
+
+/// One Ask for `harness`, compiled and confirmed from `WORDING`.
+fn compiled(root: &Path, harness: &str) -> String {
+    use ringframe::api;
+    let ws = api::workspace(root).unwrap();
+    api::init(&ws).unwrap();
+    let request = api::Compile {
+        source: WORDING,
+        harness: api::Harness { name: harness, version: None, session_ref: None },
+        capability: "native_plan",
+        classification: api::Classification {
+            task: vec!["plan".into()],
+            result: "plan".into(),
+            effects: vec!["read".into()],
+        },
+        plan: None,
+        practices: Vec::new(),
+        classified_by: api::Chooser::Person,
+        selected_by: api::Chooser::Person,
+        links: Vec::new(),
+        overrides: &ringframe::config::Overrides::default(),
+        via: "weft",
+    };
+    api::compile(&ws, request).unwrap().ask_id
 }
 
 /// A made-up agent. Each line its composer takes it reports through its
@@ -115,7 +126,8 @@ fn stand_in() -> PathBuf {
 /// own, as an agent whose hooks run in its harness's shared server, and the
 /// test sends them; `quiet` says nothing until its first prompt, as Codex;
 /// `deaf` never shows what it is given, so a paste never lands. Every line
-/// also goes to `<dir>/took`.
+/// also goes to `<dir>/took`; an empty one, such as a pasted prompt's last
+/// newline, is no prompt, as in a composer.
 fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
@@ -131,6 +143,7 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
          [ {mode} = deaf ] && stty -echo\n\
          printf '> '\n\
          while IFS= read -r line; do\n\
+           [ -n \"$line\" ] || continue\n\
            printf '%s\\n' \"$line\" >> '{d}/took'\n\
            case {mode} in mangle) line=${{line#??}} ;; esac\n\
            case {mode} in\n\
@@ -189,6 +202,8 @@ struct Bench {
     /// Where a `weave` agent, started for a send, writes what it took.
     weave: PathBuf,
     socket: PathBuf,
+    /// The Ask that is sent.
+    ask: String,
     stream: UnixStream,
     lines: Lines<UnixStream>,
     id: u64,
@@ -200,37 +215,15 @@ impl Bench {
     /// that knows `loom` and `mute`, and that harness's agent, `mode`, in a
     /// pane that has said it is ready.
     fn new(name: &str, harness: &str, mode: &str) -> Bench {
-        stand_in();
+        config_home();
         let tmp = tempfile::tempdir().unwrap();
         let (root, home) = (tmp.path().join("project"), tmp.path().join("home"));
-        std::fs::create_dir_all(root.join(".fab7/rf")).unwrap();
         let files = home.join(".fab7/weft/harnesses");
         std::fs::create_dir_all(&files).unwrap();
         std::fs::write(files.join("loom.toml"), LOOM).unwrap();
         std::fs::write(files.join("mute.toml"), MUTE).unwrap();
-        let event = |kind: &str, time: &str, data: serde_json::Value| {
-            serde_json::json!({"schema": "ringframe.ledger/1", "event_id": format!("evt_{kind}"),
-                "type": kind, "time": time, "id": "ask_1", "actor": {"kind": "human", "id": "me"},
-                "links": [], "data": data})
-        };
-        let ledger = [
-            event(
-                "ask.compiled",
-                "2026-10-10T10:00:00Z",
-                serde_json::json!({
-                    "title": "Ship it", "selected_capability": "native_plan",
-                    "delivery_mode": "human_handoff", "host": {"name": harness},
-                    "source": {}, "prompt": {"path": "asks/ask_1/prompt.txt"},
-                    "delivery": {"prefix_bytes": 0},
-                    "source_verified": "exact", "limitations": [],
-                    "classification": {}, "route_explanation": {}}),
-            ),
-            event("ask.confirmed", "2026-10-10T10:00:01Z", serde_json::json!({})),
-        ];
-        let text: String = ledger.iter().map(|e| format!("{e}\n")).collect();
-        std::fs::write(root.join(".fab7/rf/ledger.jsonl"), text).unwrap();
-        std::fs::create_dir_all(root.join(".fab7/rf/asks/ask_1")).unwrap();
-        std::fs::write(root.join(".fab7/rf/asks/ask_1/prompt.txt"), WORDING).unwrap();
+        let _ = support::git_repo(&root);
+        let ask = compiled(&root, harness);
 
         let dir = tmp.path().join("agent");
         let spec = agent(&dir, &home, harness, mode);
@@ -270,6 +263,7 @@ impl Bench {
             server,
             spooled,
             socket,
+            ask,
             stream,
             lines,
             id: 0,
@@ -336,7 +330,7 @@ impl Bench {
     fn send_to(&mut self, to: Option<u32>, start: Option<&str>) -> Result<Option<String>, String> {
         let act = self.call(Call::Act {
             act: "send".into(),
-            unit: Some("ask_1".into()),
+            unit: Some(self.ask.clone()),
             pane: None,
             text: None,
             eval: None,
@@ -394,6 +388,17 @@ impl Bench {
         std::fs::read_to_string(self.weave.join("took")).unwrap_or_default()
     }
 
+    /// Send, and what the person is told: the notice that came with the
+    /// typed one, in whichever order the two came.
+    fn typed_and_told(&mut self, within: Duration) -> Option<String> {
+        let first = self.send().expect("typed");
+        let second = self.notice(within).expect("both came");
+        let mut both = [first, second];
+        both.sort();
+        assert_eq!(both[0], None, "one is typed: {both:?}");
+        both[1].clone()
+    }
+
     /// The next `injected` within `within`, if one comes.
     fn notice(&mut self, within: Duration) -> Option<Option<String>> {
         let deadline = Instant::now() + within;
@@ -442,8 +447,25 @@ impl Bench {
         }
     }
 
+    /// What RingFrame recorded, a line each: `observe prompt` for every
+    /// prompt it was handed, `ask submitted` for a submission someone
+    /// attested rather than RingFrame observed.
     fn calls(&self) -> String {
-        std::fs::read_to_string(self.root.join("calls.log")).unwrap_or_default()
+        let mut said = String::new();
+        let sessions = self.root.join(".fab7/rf/sessions");
+        for host in std::fs::read_dir(&sessions).into_iter().flatten().flatten() {
+            for session in std::fs::read_dir(host.path()).into_iter().flatten().flatten() {
+                let prompts = std::fs::read_to_string(session.path().join("prompts.jsonl"));
+                said += &"observe prompt\n".repeat(prompts.unwrap_or_default().lines().count());
+            }
+        }
+        let ws = ringframe::api::workspace(&self.root).unwrap();
+        for e in ringframe::api::events(&ws).unwrap_or_default() {
+            if e["type"] == "ask.submission" && e["data"]["state"] == "attributed" {
+                said += "ask submitted\n";
+            }
+        }
+        said
     }
 
     fn took(&self) -> String {
@@ -484,7 +506,7 @@ fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
     let mut b = Bench::new("weft-proven-deaf", "loom", "deaf");
     b.call(Call::Act {
         act: "send".into(),
-        unit: Some("ask_1".into()),
+        unit: Some(b.ask.clone()),
         pane: None,
         text: None,
         eval: None,
@@ -529,9 +551,7 @@ fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
 #[test]
 fn another_prompt_arriving_is_not_the_ask_and_the_person_is_told() {
     let mut b = Bench::new("weft-proven-mangle", "loom", "mangle");
-    assert_eq!(b.send(), Ok(None), "typed");
-    let said = b.notice(Duration::from_secs(5)).expect("the person is told");
-    assert_eq!(said.as_deref(), Some("NotTheAsk"));
+    assert_eq!(b.typed_and_told(Duration::from_secs(5)), Some("NotTheAsk".into()));
     assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
     assert_eq!(b.took(), format!("{WORDING}\n"), "no retry, no keys pressed");
 }
@@ -543,9 +563,7 @@ fn another_prompt_arriving_is_not_the_ask_and_the_person_is_told() {
 fn a_turn_that_ends_with_nothing_received_is_cannot_tell_and_no_retry() {
     let mut b = Bench::new("weft-proven-silent", "loom", "silent");
     let sent = Instant::now();
-    assert_eq!(b.send(), Ok(None), "typed");
-    let said = b.notice(Duration::from_secs(8)).expect("the person is told");
-    assert_eq!(said.as_deref(), Some("NoReceipt"));
+    assert_eq!(b.typed_and_told(Duration::from_secs(8)), Some("NoReceipt".into()));
     assert!(sent.elapsed() < Duration::from_secs(8), "at the turn's end: {:?}", sent.elapsed());
     assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
     assert!(!b.calls().contains("observe prompt"), "{}", b.calls());

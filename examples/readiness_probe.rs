@@ -10,15 +10,13 @@ use weft::readiness;
 
 fn main() {
     let machine = weft::outside::Machine;
-    let cli = weft::ringframe::installed(&machine);
-    println!("ringframe CLI installed: {cli}");
     let folder = std::env::args()
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(|| weft::routing::file().with_file_name("harnesses"));
     for h in weft::harness::installed(&folder).0.iter() {
         let found = h.on_path();
-        let (state, version) = readiness::look(&machine, h, cli);
+        let (state, version) = readiness::look(&machine, h);
         println!(
             "\n{:<12} on PATH {:<5} config {}\n             {:?} · rf {}{}",
             h.name,

@@ -15,7 +15,6 @@ use weft_core::inject::{self, Handoff};
 use weft_core::ledger::Unit;
 use weft_core::offers::Asking;
 
-use crate::outside::Shared;
 use crate::ringframe;
 
 /// A prompt ready to be put in front of a person.
@@ -107,29 +106,17 @@ fn typed(command: &str, over: Option<&str>, words: &str) -> Vec<u8> {
 
 /// The skill prefix RingFrame uses for each harness, asked once and kept: a
 /// property of the machine, not of the moment.
+#[derive(Default)]
 pub struct Prefixes {
     prefixes: HashMap<String, String>,
-    out: Shared,
-}
-
-impl Default for Prefixes {
-    fn default() -> Self {
-        Prefixes::asking(crate::outside::machine())
-    }
 }
 
 impl Prefixes {
-    /// Kept answers, asked of `out` the first time each is needed.
-    pub fn asking(out: Shared) -> Self {
-        Prefixes { prefixes: HashMap::new(), out }
-    }
-
     fn prefix(&mut self, root: &Path, harness: &str) -> String {
         self.prefixes
             .entry(harness.to_string())
             .or_insert_with(|| {
-                ringframe::invocation_prefix(self.out.as_ref(), root, harness)
-                    .unwrap_or_else(|_| "/rf:".into())
+                ringframe::invocation_prefix(root, harness).unwrap_or_else(|_| "/rf:".into())
             })
             .clone()
     }

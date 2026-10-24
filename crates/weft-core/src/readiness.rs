@@ -15,8 +15,6 @@ use crate::harness::{MARKETPLACE, PLUGIN};
 /// useless without the one before it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gap {
-    /// The CLI that owns the record is not installed at all.
-    Cli,
     /// The harness has never been told where the plugin is published.
     Marketplace,
     /// The marketplace is there; the plugin is not installed, or is disabled.
@@ -38,8 +36,7 @@ impl Readiness {
         self == Readiness::Ready
     }
 
-    /// Whether offering to set this up would make sense. There is nothing to
-    /// offer for a missing CLI, which is not Weft's to install.
+    /// Whether offering to set this up would make sense.
     pub fn can_be_set_up(self) -> bool {
         matches!(self, Readiness::Missing(Gap::Marketplace | Gap::Plugin))
     }
@@ -48,7 +45,6 @@ impl Readiness {
     pub fn of_word(word: Option<&str>) -> Self {
         match word {
             Some("ready") => Readiness::Ready,
-            Some("no_cli") => Readiness::Missing(Gap::Cli),
             Some("no_marketplace") => Readiness::Missing(Gap::Marketplace),
             Some("no_plugin") => Readiness::Missing(Gap::Plugin),
             _ => Readiness::Unknown,
@@ -59,7 +55,6 @@ impl Readiness {
     pub fn say(self, harness: &str) -> Option<String> {
         match self {
             Readiness::Ready => None,
-            Readiness::Missing(Gap::Cli) => Some("RingFrame is not installed.".into()),
             Readiness::Missing(Gap::Marketplace | Gap::Plugin) => {
                 Some(format!("{harness} is not set up for RingFrame."))
             }
@@ -349,10 +344,6 @@ mod tests {
             Readiness::Missing(Gap::Plugin).say("codex").as_deref(),
             Some("codex is not set up for RingFrame.")
         );
-        assert_eq!(
-            Readiness::Missing(Gap::Cli).say("codex").as_deref(),
-            Some("RingFrame is not installed.")
-        );
         assert!(Readiness::Unknown.say("codex").unwrap().contains("could not ask"));
     }
 
@@ -360,7 +351,6 @@ mod tests {
     fn only_what_weft_may_install_is_offered() {
         assert!(Readiness::Missing(Gap::Plugin).can_be_set_up());
         assert!(Readiness::Missing(Gap::Marketplace).can_be_set_up());
-        assert!(!Readiness::Missing(Gap::Cli).can_be_set_up(), "not Weft's to install");
         assert!(!Readiness::Unknown.can_be_set_up(), "nothing to offer for an unanswered question");
         assert!(!Readiness::Ready.can_be_set_up());
     }

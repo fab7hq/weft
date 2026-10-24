@@ -1,5 +1,5 @@
 //! Everything the daemon asks of the machine it runs on: the programs it runs
-//! (a harness's plugin listing, the `ringframe` CLI, a setup step), whether a
+//! (a harness's plugin listing, a setup step), whether a
 //! harness's program is here, what the latest release is, and whether a
 //! program the person pointed at starts.
 //!
@@ -24,9 +24,11 @@ pub trait Outside: Send + Sync {
     /// Whether a harness's program is on this machine: on `PATH`, or where
     /// the person said it is (an absolute path).
     fn on_path(&self, program: &str) -> bool;
-    /// What `ringframe sync --check` says of the latest release, or why it
+    /// What RingFrame says of its latest configuration release, or why it
     /// could not tell; `fresh` asks again rather than reading a kept answer.
     fn release(&self, fresh: bool) -> Result<serde_json::Value, String>;
+    /// Install RingFrame's latest configuration, or say why it was not.
+    fn sync(&self) -> Result<(), String>;
     /// The latest Weft release, by version, or nothing when it cannot be
     /// reached; kept like `release`.
     fn weft_release(&self, fresh: bool) -> Option<String>;
@@ -100,6 +102,10 @@ impl Outside for Machine {
         crate::onboarding::check(fresh)
     }
 
+    fn sync(&self) -> Result<(), String> {
+        ringframe::api::config_sync().map(|_| ()).map_err(|e| e.to_string())
+    }
+
     fn weft_release(&self, fresh: bool) -> Option<String> {
         crate::onboarding::weft_latest(fresh)
     }
@@ -154,6 +160,8 @@ impl Outside for Machine {
 pub struct Fixed {
     programs: BTreeMap<String, Vec<(Vec<String>, i32, String)>>,
     release: Result<serde_json::Value, String>,
+    /// What syncing RingFrame's configuration says.
+    sync: Result<(), String>,
     /// The latest Weft release.
     weft: Option<String>,
     files: Vec<(std::path::PathBuf, String)>,
@@ -168,6 +176,7 @@ impl Default for Fixed {
         Fixed {
             programs: BTreeMap::new(),
             release: Err("no release check in this world".into()),
+            sync: Err("no sync in this world".into()),
             weft: None,
             files: Vec::new(),
             remote_runs: Arc::default(),
@@ -202,6 +211,11 @@ impl Fixed {
 
     pub fn with_release(mut self, release: Result<serde_json::Value, String>) -> Self {
         self.release = release;
+        self
+    }
+
+    pub fn with_sync(mut self, sync: Result<(), String>) -> Self {
+        self.sync = sync;
         self
     }
 
@@ -266,6 +280,10 @@ impl Outside for Fixed {
 
     fn release(&self, _fresh: bool) -> Result<serde_json::Value, String> {
         self.release.clone()
+    }
+
+    fn sync(&self) -> Result<(), String> {
+        self.sync.clone()
     }
 
     fn weft_release(&self, _fresh: bool) -> Option<String> {

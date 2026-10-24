@@ -112,6 +112,18 @@ impl World {
     }
 }
 
+/// RingFrame's test configuration, in a home of this test's own: nextest runs
+/// each test in a process of its own.
+fn fixture_home(name: &str) {
+    let home = std::env::temp_dir().join(format!("weft-config-home-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    // SAFETY: set before the daemon starts, in this test's own process.
+    unsafe { std::env::set_var("HOME", &home) };
+    let config =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/ringframe/tests/fixtures/config");
+    ringframe::workspace::install_config(Some(&config)).unwrap();
+}
+
 impl Drop for World {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.root);
@@ -207,32 +219,23 @@ fn what_weft_would_not_read_is_refused_and_nothing_is_written() {
 
 /// A RingFrame setting is RingFrame's to read: a change it would refuse is
 /// refused with its words, and one it reads is written and reaches the
-/// `--override` every `/rf:` command carries.
+/// layers every RingFrame call is given.
 #[test]
 fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
-    let refusing = weft::outside::Fixed::new().answers(
-        "ringframe",
-        &["deltas", "list", "--override"],
-        2,
-        r#"{"error":"config","message":"practice entry mine.plain incomplete"}"#,
-    );
-    let w = World::in_world("rf-no", "", refusing);
+    fixture_home("rf-check");
+    let w = World::new("rf-no", "");
     let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
-    let rule = json!([{"id": "mine.plain", "enabled": true}]);
     let key = ["ringframe", "deltas", "practices/software-development", "entries"];
-    let why = one.set("project", &key, Some(rule.clone())).unwrap_err();
+    let incomplete = json!([{"id": "mine.plain", "text": "Keep it plain."}]);
+    let why = one.set("project", &key, Some(incomplete)).unwrap_err();
     assert!(why.contains("mine.plain incomplete"), "{why}");
     assert_eq!(w.text(), "", "nothing written");
     one.answer(Call::Shutdown).ok();
 
-    let reading = weft::outside::Fixed::new().answers(
-        "ringframe",
-        &["deltas", "list", "--override"],
-        0,
-        "{}",
-    );
-    let w = World::in_world("rf-yes", "", reading);
+    let w = World::new("rf-yes", "");
     let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
+    let rule = json!([{"id": "mine.plain", "text": "Keep it plain.",
+                       "applies_to": {"task": ["implement"]}}]);
     let got = one.set("project", &key, Some(rule.clone())).unwrap();
     let layers = &got["effective"]["ringframe"];
     assert_eq!(layers[0]["layer"], "weft-project");
@@ -244,12 +247,8 @@ fn a_ringframe_setting_is_checked_by_ringframe_before_it_is_written() {
 /// `[ringframe.deltas."<host>"]`; the harness files fab7 ships are never touched.
 #[test]
 fn a_route_rule_is_written_to_config_and_no_harness_file_changes() {
-    let reading = weft::outside::Fixed::new().answers(
-        "ringframe",
-        &["deltas", "list", "--override"],
-        0,
-        "{}",
-    );
+    fixture_home("route-rule");
+    let reading = weft::outside::Fixed::new();
     let w = World::in_world("route-rule", "", reading);
     let harness = w.root.join("harnesses/codex.toml");
     std::fs::create_dir_all(harness.parent().unwrap()).unwrap();
@@ -273,15 +272,10 @@ fn a_route_rule_is_written_to_config_and_no_harness_file_changes() {
 /// rule with its source, and the Rules block a route would get.
 #[test]
 fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
-    let world = weft::outside::Fixed::new()
-        .answers("ringframe", &["deltas", "domains"], 0, r#"{"domains":[{"domain":"autonomous-trading","base":false}]}"#)
-        .answers("ringframe", &["deltas", "list"], 0, r#"{"catalogs":[{"catalog":"practices/software-development","entries":[{"id":"practice.kiss","source":"weft"}]}],"judges":{"deny":["Push."],"from":"default"}}"#)
-        .answers("ringframe", &["deltas", "render", "--host", "claude-code", "--capability", "native_plan"], 0, r#"{"text":"Rules:\n- KISS: keep it plain\n","practice":{"entries":[{"id":"practice.kiss","tier":"core"},{"id":"practice.gall","tier":"situational"}],"dropped_by_budget":["practice.dry","practice.solid"]}}"#)
-        .answers("ringframe", &["profile", "show", "--host", "codex"], 0, r#"{"host":"codex","paste_fold_chars":1001}"#);
-    let w = World::in_world(
+    fixture_home("rules");
+    let w = World::new(
         "rules",
         "[ringframe.deltas.\"practices/software-development\"]\nentries = [{ id = \"practice.kiss\", enabled = false }]\n",
-        world,
     );
     let (mut one, _) = Client::open(&w.socket, &w.root.join("one"));
     let read = |c: &mut Client, what: &str, unit: &str| {
@@ -295,16 +289,25 @@ fn the_ringframe_tab_reads_rules_and_a_preview_through_the_daemon() {
         })
     };
     let rules = read(&mut one, "rules", "machine").unwrap();
-    assert_eq!(rules["domains"][0]["domain"], "autonomous-trading");
-    assert_eq!(rules["catalogs"][0]["entries"][0]["source"], "weft");
-    assert_eq!(rules["judges"]["deny"][0], "Push.", "what judges must not do, RingFrame's own");
+    assert!(rules["domains"].as_array().is_some_and(|d| !d.is_empty()), "{rules}");
+    let practices = rules["catalogs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["catalog"] == "practices/software-development")
+        .expect("the base practices");
+    let kiss = practices["entries"].as_array().unwrap().iter().find(|e| e["id"] == "practice.kiss");
+    assert_eq!(kiss.unwrap()["enabled"], false, "turned off by Weft's layer: {kiss:?}");
+    assert!(rules["judges"]["deny"].is_array(), "what judges must not do, RingFrame's own");
     let preview = read(&mut one, "preview", "claude-code|native_plan|implement").unwrap();
-    assert_eq!(preview["text"], "Rules:\n- KISS: keep it plain\n");
-    assert_eq!((preview["kept"].as_u64(), preview["left_out"].as_u64()), (Some(1), Some(2)));
+    let text = preview["text"].as_str().unwrap();
+    assert!(text.starts_with("Rules:\n") && text.contains("For this route:"), "{text}");
+    assert!(!text.contains("KISS"), "a rule turned off is not offered: {text}");
+    assert_eq!(preview["left_out"].as_u64(), Some(0));
     assert!(
         read(&mut one, "preview", "claude-code").is_err(),
         "a preview names a host, a route and a task"
     );
-    assert_eq!(read(&mut one, "profile", "codex").unwrap()["paste_fold_chars"], 1001);
+    assert_eq!(read(&mut one, "profile", "codex").unwrap()["host"], "codex");
     one.answer(Call::Shutdown).ok();
 }

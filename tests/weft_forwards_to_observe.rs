@@ -1,8 +1,8 @@
-//! weft signal → weftd → `ringframe observe`, end to end: a
-//! harness's hooks run the real `weft signal` inside a pane, and weftd passes
-//! a typed prompt byte for byte and a shell tool's outcome to a stand-in
-//! `ringframe`, and nothing else. Its own test binary because it puts the
-//! stand-in first on PATH.
+//! weft signal → weftd → RingFrame's observe calls, end to end: a harness's
+//! hooks run the real `weft signal` inside a pane, and weftd passes a typed
+//! prompt byte for byte and a shell tool's outcome to RingFrame, and nothing
+//! else. Its own test binary because it sets `HOME` for RingFrame's
+//! configuration.
 
 mod support;
 
@@ -11,23 +11,6 @@ use std::time::{Duration, Instant};
 
 use weft::protocol::{self, Call, Line, Lines, PROTOCOL};
 use weft::server;
-
-/// A `ringframe` that logs each call's arguments, and what `observe prompt`
-/// read on stdin, and says the profile names `Bash` as its shell tool.
-fn stand_in(bin: &Path, log: &Path) {
-    let script = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}/calls'\ncase \"$*\" in\n  \
-         *\"observe prompt\"*) cat >> '{log}/stdin' ;;\n  \
-         *\"profile show\"*) printf '{{\"observe\":{{\"shell_tool\":\"Bash\"}}}}' ;;\n  \
-         *) printf '{{}}' ;;\nesac\nexit 0\n",
-        log = log.display()
-    );
-    std::fs::create_dir_all(bin).unwrap();
-    let path = bin.join("ringframe");
-    std::fs::write(&path, script).unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
 
 /// An agent whose hooks fire as a harness's would: each runs `weft signal`
 /// with a payload, from inside the pane.
@@ -60,12 +43,10 @@ fn agent(dir: &Path, home: &Path, root: &Path) -> String {
 #[test]
 fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
     let tmp = tempfile::tempdir().unwrap();
-    let (bin, log, home) =
-        (tmp.path().join("bin"), tmp.path().join("log"), tmp.path().join("home"));
-    std::fs::create_dir_all(&log).unwrap();
-    stand_in(&bin, &log);
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
     // SAFETY: this binary holds exactly one test.
-    unsafe { std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display())) };
+    unsafe { std::env::set_var("HOME", &home) };
     let harnesses = home.join(".fab7/weft/harnesses");
     std::fs::create_dir_all(&harnesses).unwrap();
     std::fs::write(
@@ -74,7 +55,8 @@ fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
     )
     .unwrap();
     let root = tmp.path().join("project");
-    std::fs::create_dir_all(root.join(".fab7/rf")).unwrap();
+    // A real record: Git, RingFrame's test configuration, and an Ask.
+    support::real_ask(&root, &home, "sh");
     let elsewhere = tmp.path().join("no-record");
     std::fs::create_dir_all(&elsewhere).unwrap();
 
@@ -149,35 +131,39 @@ fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
     );
     call(3, Call::StartAgent { harness: "claude-code".into(), spec, session: None });
 
-    let calls = || std::fs::read_to_string(log.join("calls")).unwrap_or_default();
+    let session = |s: &str| root.join(".fab7/rf/sessions/claude-code").join(s);
+    let prompts = || std::fs::read_to_string(session("s1").join("prompts.jsonl"));
+    let facts = || -> Vec<serde_json::Value> {
+        let ws = ringframe::api::workspace(&root).unwrap();
+        let events = ringframe::api::events(&ws).unwrap();
+        events.into_iter().filter(|e| e["type"] == "tool.fact").collect()
+    };
     let deadline = Instant::now() + Duration::from_secs(10);
-    while calls().lines().filter(|l| l.contains(" observe ")).count() < 2 {
+    while prompts().is_err() || facts().is_empty() {
         if Instant::now() >= deadline {
-            panic!("the calls never came: {}", calls());
+            panic!("RingFrame never recorded them: {:?} {:?}", prompts(), facts());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(300));
-    let root = root.display().to_string();
-    let observed: Vec<String> =
-        calls().lines().filter(|l| l.contains(" observe ")).map(str::to_string).collect();
+    let seen: Vec<serde_json::Value> =
+        prompts().unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["prompt"], "/rf:ask fix the login bug\n  exactly", "byte for byte");
+    assert_eq!(seen[0]["observed_by"], "weft");
+    let facts = facts();
+    assert_eq!(facts.len(), 1, "Write and Stop are not forwarded: {facts:?}");
     assert_eq!(
-        observed,
-        [
-            format!("--workspace {root} observe prompt --by weft --host claude-code --session s1"),
-            format!(
-                "--workspace {root} observe tool --by weft --host claude-code --session s1 \
-                 --tool Bash --outcome failed --command npm test"
-            ),
-        ],
-        "in the order the hooks fired; Write and Stop are not forwarded"
+        (&facts[0]["data"]["outcome"], &facts[0]["data"]["command"]),
+        (&serde_json::json!("failed"), &serde_json::json!("npm test"))
     );
-    assert_eq!(
-        std::fs::read_to_string(log.join("stdin")).unwrap(),
-        "/rf:ask fix the login bug\n  exactly",
-        "byte for byte"
-    );
-    assert!(!calls().contains("elsewhere") && !calls().contains("SECRET"), "{}", calls());
-    assert!(!calls().contains("--session --json"), "{}", calls());
+    assert!(!elsewhere.join(".fab7").exists(), "no record made elsewhere");
+    assert!(!session("--json").exists(), "a session that is not an id is never passed on");
+    let everything = std::process::Command::new("/usr/bin/grep")
+        .args(["-r", "SECRET"])
+        .arg(root.join(".fab7/rf"))
+        .output()
+        .unwrap();
+    assert!(everything.stdout.is_empty(), "{}", String::from_utf8_lossy(&everything.stdout));
     call(4, Call::Shutdown);
 }

@@ -88,9 +88,9 @@ impl Session {
         else {
             return self.change_config(at, &scope, &key, value.as_ref());
         };
-        let (tx, out) = (self.tx.clone(), self.outside.clone());
+        let tx = self.tx.clone();
         std::thread::spawn(move || {
-            let wake = match crate::ringframe::reads_overrides(out.as_ref(), &root, &layers) {
+            let wake = match crate::ringframe::reads_overrides(&layers) {
                 Ok(()) => Wake::ConfigChecked { client, call_id, project: at, scope, key, value },
                 Err(e) => {
                     Wake::Answer { client, call_id, answer: Answer::No("config", refusal(e)) }
@@ -201,17 +201,6 @@ fn checked_edit(
 
 /// What RingFrame said when it would not read the settings, in its words.
 fn refusal(e: crate::ringframe::Error) -> String {
-    match e {
-        crate::ringframe::Error::NotInstalled => {
-            "RingFrame is not installed, so its settings cannot be checked: nothing was changed"
-                .into()
-        }
-        crate::ringframe::Error::Refused { message, .. } => {
-            let said = serde_json::from_str::<serde_json::Value>(&message)
-                .ok()
-                .and_then(|v| v["message"].as_str().map(str::to_string))
-                .unwrap_or(message);
-            format!("RingFrame would not read it ({said}): nothing was changed")
-        }
-    }
+    let crate::ringframe::Error::Refused { message, .. } = e;
+    format!("RingFrame would not read it ({message}): nothing was changed")
 }

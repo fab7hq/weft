@@ -391,35 +391,25 @@ impl Signal {
     }
 }
 
-/// One call to `ringframe observe`: its arguments after
-/// `--workspace <project>`, and what it reads on stdin.
+/// What weftd hands RingFrame for one signal: a prompt as the harness
+/// received it, then its other records of the same submission; or a tool and
+/// how it ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Forward {
-    pub args: Vec<String>,
-    pub input: Option<String>,
+pub enum Forward {
+    Prompt { layers: Vec<String> },
+    Tool { tool: String, outcome: String, command: Option<String> },
 }
 
 /// What weftd passes RingFrame for this signal, if anything: a forwarded
-/// prompt, byte for byte, or with the harness's other records of it, a JSON
-/// list after `--layers`; a forwarded tool only when the harness's profile's
-/// `[observe]` (as `ringframe profile show` gives it) names it as its
+/// prompt, byte for byte, with the harness's other records of it; a forwarded
+/// tool only when the harness's profile's `[observe]` names it as its
 /// `delivery_tool` or `shell_tool`. Turn states are never forwarded.
 pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
-    let head = |what: &str| -> Vec<String> {
-        ["observe", what, "--by", "weft", "--host", &sent.harness, "--session", &sent.session]
-            .map(str::to_string)
-            .to_vec()
-    };
     match sent.forward.as_deref()? {
-        "prompt" if sent.also.is_empty() => {
-            Some(Forward { args: head("prompt"), input: Some(sent.prompt.clone()?) })
-        }
         "prompt" => {
             let mut layers = vec![sent.prompt.clone()?];
             layers.extend(sent.also.iter().map(|r| r.text.clone()));
-            let mut args = head("prompt");
-            args.push("--layers".into());
-            Some(Forward { args, input: Some(serde_json::to_string(&layers).ok()?) })
+            Some(Forward::Prompt { layers })
         }
         "tool" => {
             let tool = sent.tool.as_deref()?;
@@ -427,12 +417,11 @@ pub fn forward(sent: &Sent, observe: &Value) -> Option<Forward> {
             if !named("delivery_tool") && !named("shell_tool") {
                 return None;
             }
-            let mut args = head("tool");
-            args.extend(["--tool".into(), tool.into(), "--outcome".into(), sent.outcome.clone()?]);
-            if let Some(command) = &sent.command {
-                args.extend(["--command".into(), command.clone()]);
-            }
-            Some(Forward { args, input: None })
+            Some(Forward::Tool {
+                tool: tool.into(),
+                outcome: sent.outcome.clone()?,
+                command: sent.command.clone(),
+            })
         }
         _ => None,
     }
@@ -647,11 +636,7 @@ mod tests {
         let payload = json!({"session_id": "s1", "cwd": "/w", "prompt": typed});
         let sent = s.sent("claude-code", "UserPromptSubmit", &payload).unwrap();
         let f = forward(&sent, &json!(null)).expect("a prompt goes");
-        assert_eq!(
-            f.args,
-            ["observe", "prompt", "--by", "weft", "--host", "claude-code", "--session", "s1"]
-        );
-        assert_eq!(f.input.as_deref(), Some(typed));
+        assert_eq!(f, Forward::Prompt { layers: vec![typed.to_string()] });
         let stopped = s.sent("claude-code", "Stop", &payload).unwrap();
         assert_eq!(forward(&stopped, &json!(null)), None, "a turn state is never forwarded");
     }
@@ -665,14 +650,15 @@ mod tests {
                                  "tool_input": {"command": "npm test"}});
             s.sent("claude-code", hook, &payload).unwrap()
         };
+        let tool = |tool: &str, outcome: &str, command: Option<&str>| Forward::Tool {
+            tool: tool.into(),
+            outcome: outcome.into(),
+            command: command.map(str::to_string),
+        };
         let shell = forward(&ran("Bash", "PostToolUseFailure"), &observe).expect("the shell tool");
-        assert_eq!(
-            shell.args[8..],
-            ["--tool", "Bash", "--outcome", "failed", "--command", "npm test"].map(String::from)
-        );
-        assert_eq!(shell.input, None);
+        assert_eq!(shell, tool("Bash", "failed", Some("npm test")));
         let plan = forward(&ran("EnterPlanMode", "PostToolUse"), &observe).expect("delivery");
-        assert_eq!(plan.args[8..12], ["--tool", "EnterPlanMode", "--outcome", "succeeded"]);
+        assert_eq!(plan, tool("EnterPlanMode", "succeeded", Some("npm test")));
         assert_eq!(forward(&ran("Write", "PostToolUse"), &observe), None, "another tool");
         assert_eq!(forward(&ran("Bash", "PostToolUse"), &json!({})), None, "a profile naming none");
     }
@@ -972,16 +958,16 @@ mod tests {
             ..Sent::default()
         };
         let one = forward(&sent(vec![]), &Value::Null).expect("a prompt");
-        assert!(!one.args.contains(&"--layers".to_string()));
-        assert_eq!(one.input.as_deref(), Some("Goal set: ship it"), "its bytes, as before");
+        assert_eq!(one, Forward::Prompt { layers: vec!["Goal set: ship it".into()] });
         let two = forward(
             &sent(vec![Received { text: "ship it".into(), key: Some("/r:9".into()) }]),
             &Value::Null,
         )
         .expect("a prompt");
-        assert_eq!(two.args.last().map(String::as_str), Some("--layers"));
-        let layers: Vec<String> = serde_json::from_str(two.input.as_deref().unwrap()).unwrap();
-        assert_eq!(layers, ["Goal set: ship it", "ship it"]);
+        assert_eq!(
+            two,
+            Forward::Prompt { layers: vec!["Goal set: ship it".into(), "ship it".into()] }
+        );
     }
 
     #[test]

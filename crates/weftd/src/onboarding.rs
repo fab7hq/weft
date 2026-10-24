@@ -24,7 +24,7 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 static CHECKED: std::sync::Mutex<Option<(Instant, Result<serde_json::Value, String>)>> =
     std::sync::Mutex::new(None);
 
-/// What `ringframe sync --check` says of the latest release, or why it could
+/// What RingFrame says of its latest configuration release, or why it could
 /// not tell, kept for [`CHECK_EVERY`]; `fresh` asks again, as the daemon's own
 /// job and a configuration sync do.
 pub fn check(fresh: bool) -> Result<serde_json::Value, String> {
@@ -70,20 +70,11 @@ fn ask_weft_release() -> Option<String> {
 }
 
 fn ask_check() -> Result<serde_json::Value, String> {
-    let out = Command::new("ringframe")
-        .args(["sync", "--check"])
-        .output()
-        .map_err(|e| format!("ringframe would not run: {e}"))?;
-    let said: Option<serde_json::Value> = serde_json::from_slice(&out.stdout).ok();
-    match said {
-        Some(v) if out.status.success() => Ok(v),
-        // RingFrame says why, in its own words: the reason is the person's to read.
-        Some(v) => Err(v["detail"].as_str().unwrap_or("it did not say why").to_string()),
-        None => {
-            let err = String::from_utf8_lossy(&out.stderr);
-            Err(err.lines().last().unwrap_or("it did not say why").trim().to_string())
-        }
-    }
+    // RingFrame says why, in its own words: the reason is the person's to read.
+    ringframe::api::config_check().map_err(|e| match e {
+        ringframe::api::Error::Refused { detail, .. } => detail,
+        other => other.to_string(),
+    })
 }
 
 /// What the machine says of Weft's own releases: the latest, and whether a
@@ -111,9 +102,8 @@ pub fn look(
     harnesses: &Harnesses,
     check: &Result<serde_json::Value, String>,
     weft: &WeftCheck,
-    cli: bool,
 ) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
-    look_as_they_answer(out, harnesses, check, weft, cli, |_| {})
+    look_as_they_answer(out, harnesses, check, weft, |_| {})
 }
 
 /// The view before anything has answered: every harness found on this machine
@@ -135,7 +125,6 @@ pub fn look_as_they_answer(
     harnesses: &Harnesses,
     check: &Result<serde_json::Value, String>,
     weft: &WeftCheck,
-    cli: bool,
     mut shown: impl FnMut(&View),
 ) -> (View, Vec<(String, weft_core::readiness::Readiness)>) {
     let known = check.as_ref().ok();
@@ -178,7 +167,7 @@ pub fn look_as_they_answer(
         for (at, h) in harnesses.iter().enumerate().filter(|(at, _)| found[*at]) {
             let tx = tx.clone();
             scope.spawn(move || {
-                let answer = crate::readiness::look(out, h, cli);
+                let answer = crate::readiness::look(out, h);
                 // The program's own version, as its `--version` says it.
                 let version = out
                     .run(&h.program, &["--version"], None)
@@ -256,11 +245,10 @@ pub fn save(config: &Path, name: &str, key: &str, value: serde_json::Value) -> R
 pub fn run(
     out: &dyn Outside,
     h: &Harness,
-    cli: bool,
     latest: Option<&str>,
     show: impl FnMut(State),
 ) -> Option<State> {
-    let (state, have) = crate::readiness::look(out, h, cli);
+    let (state, have) = crate::readiness::look(out, h);
     proceed(out, steps(h, state, have.as_deref(), latest), show)
 }
 
@@ -352,7 +340,6 @@ mod tests {
             &harnesses,
             &Ok(serde_json::json!({})),
             &WeftCheck::default(),
-            true,
             |v| {
                 seen.push(v.rows.iter().filter(|r| r.state == State::Checking).count());
             },
@@ -402,7 +389,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("weft-setup-version-{}", std::process::id()));
         let harnesses = Harnesses(vec![stub(&dir)]);
         let (view, _) =
-            look(&Machine, &harnesses, &Ok(serde_json::json!({})), &WeftCheck::default(), true);
+            look(&Machine, &harnesses, &Ok(serde_json::json!({})), &WeftCheck::default());
         assert_eq!(view.rows[0].version.as_deref(), Some("3.2.1"), "{:?}", view.rows);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -413,28 +400,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let h = stub(&dir);
         let harnesses = Harnesses(vec![h.clone()]);
-        let (v, _) =
-            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), true);
+        let (v, _) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::NotSetUp);
         let mut seen = Vec::new();
-        assert_eq!(run(&Machine, &h, true, None, |s| seen.push(s)), None, "no step failed");
+        assert_eq!(run(&Machine, &h, None, |s| seen.push(s)), None, "no step failed");
         assert_eq!(seen, [State::Running(format!("{} install", h.program))]);
-        let (v, states) =
-            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), true);
+        let (v, states) = look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::Ready { version: None });
         assert_eq!(states, [("stub".to_string(), weft_core::readiness::Readiness::Ready)]);
-        let (v, _) =
-            look(&Machine, &harnesses, &Err("offline".into()), &WeftCheck::default(), false);
-        assert_eq!(v.rows[0].state, State::NoCli, "RingFrame missing is Weft's installer's");
         let mut gone = h.clone();
         gone.program = dir.join("nothing-here").display().to_string();
-        let (v, _) = look(
-            &Machine,
-            &Harnesses(vec![gone]),
-            &Err("offline".into()),
-            &WeftCheck::default(),
-            true,
-        );
+        let (v, _) =
+            look(&Machine, &Harnesses(vec![gone]), &Err("offline".into()), &WeftCheck::default());
         assert_eq!(v.rows[0].state, State::NotFound);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -458,7 +435,7 @@ mod tests {
         let out = Fixed::new().shared();
         let look = |latest: Option<&str>, waiting: bool| {
             let weft = WeftCheck { latest: latest.map(str::to_string), waiting };
-            look(out.as_ref(), &Harnesses::default(), &Ok(serde_json::json!({})), &weft, true).0
+            look(out.as_ref(), &Harnesses::default(), &Ok(serde_json::json!({})), &weft).0
         };
         let now = env!("CARGO_PKG_VERSION");
         let behind = look(Some("99.0.0"), false);

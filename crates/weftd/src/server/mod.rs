@@ -571,21 +571,16 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
     })
 }
 
-/// RingFrame set up here, by `ringframe init`, or what it still needs; and
+/// RingFrame set up here, as `ringframe init` would, or what it still needs; and
 /// why an Ask could not finish here. Both reach RingFrame: never on the run loop.
-fn set_up_and_gap(
-    out: &dyn crate::outside::Outside,
-    root: &Path,
-) -> (Option<weft_core::workspace::Needs>, Option<String>) {
-    (crate::ringframe::set_up(out, root), workspace_gap(root))
+fn set_up_and_gap(root: &Path) -> (Option<weft_core::workspace::Needs>, Option<String>) {
+    (crate::ringframe::set_up(root), workspace_gap(root))
 }
 
 /// Whether an Ask could finish here at all, asked of RingFrame.
 fn workspace_gap(root: &Path) -> Option<String> {
     match crate::ringframe::ask_preflight(root) {
         Ok(()) => None,
-        // Not installed is said elsewhere, once.
-        Err(crate::ringframe::Error::NotInstalled) => None,
         Err(crate::ringframe::Error::Refused { message, .. }) => {
             Some(weft_core::offers::first_line(&message).to_string())
         }
@@ -599,25 +594,8 @@ fn eval_refused(e: crate::ringframe::Error) -> Answer {
 
 /// What a client is told when RingFrame would not answer.
 fn ringframe_error(e: crate::ringframe::Error) -> Answer {
-    match e {
-        crate::ringframe::Error::NotInstalled => {
-            Answer::No("no_ringframe", "the ringframe CLI is not installed".into())
-        }
-        crate::ringframe::Error::Refused { message, .. } => Answer::No("refused", message),
-    }
-}
-
-/// What a client is told when RingFrame would not answer a Settings read:
-/// its own reason, when it gave one as JSON, in place of the JSON.
-fn read_refused(e: crate::ringframe::Error) -> Answer {
-    match e {
-        crate::ringframe::Error::Refused { message, .. } => {
-            let said: Option<serde_json::Value> = serde_json::from_str(&message).ok();
-            let why = said.as_ref().and_then(|v| v["detail"].as_str()).unwrap_or(&message);
-            Answer::No("refused", why.to_string())
-        }
-        e => ringframe_error(e),
-    }
+    let crate::ringframe::Error::Refused { message, .. } = e;
+    Answer::No("refused", message)
 }
 
 /// Readiness as a client reads it: one word per harness.
@@ -629,7 +607,6 @@ fn readiness_json(states: &HashMap<String, weft_core::readiness::Readiness>) -> 
             .map(|(k, v)| {
                 let word = match v {
                     Readiness::Ready => "ready",
-                    Readiness::Missing(Gap::Cli) => "no_cli",
                     Readiness::Missing(Gap::Marketplace) => "no_marketplace",
                     Readiness::Missing(Gap::Plugin) => "no_plugin",
                     Readiness::Unknown => "unknown",
@@ -811,7 +788,7 @@ impl Session {
             projects: Vec::new(),
             socket: socket.to_path_buf(),
             receipts,
-            forwarders: crate::forward::Forwarders::new(outside.clone()),
+            forwarders: crate::forward::Forwarders::default(),
             forwarded: Default::default(),
             streams: Default::default(),
             streamed: Default::default(),
@@ -1256,24 +1233,22 @@ impl Session {
                 } else {
                     config.ringframe_override(&root)
                 };
-                let (tx, out, what, unit) =
-                    (self.tx.clone(), self.outside.clone(), what.to_string(), unit.to_string());
+                let (tx, what, unit) = (self.tx.clone(), what.to_string(), unit.to_string());
                 std::thread::spawn(move || {
                     let answer = if what == "rules" {
-                        crate::ringframe::rules(out.as_ref(), &root, layers.as_deref())
-                            .map_or_else(read_refused, Answer::Ok)
+                        crate::ringframe::rules(layers.as_deref())
+                            .map_or_else(ringframe_error, Answer::Ok)
                     } else if what == "profile" {
-                        crate::ringframe::profile(out.as_ref(), &root, layers.as_deref(), &unit)
-                            .map_or_else(read_refused, Answer::Ok)
+                        crate::ringframe::profile(&root, &unit)
+                            .map_or_else(ringframe_error, Answer::Ok)
                     } else {
                         match unit.split('|').collect::<Vec<_>>()[..] {
                             [host, capability, task] => crate::ringframe::preview(
-                                out.as_ref(),
                                 &root,
                                 layers.as_deref(),
                                 (host, capability, task),
                             )
-                            .map_or_else(read_refused, Answer::Ok),
+                            .map_or_else(ringframe_error, Answer::Ok),
                             _ => Answer::No(
                                 "bad_request",
                                 "a preview names a host, a route and a task".into(),
@@ -1389,7 +1364,6 @@ impl Session {
             if act == "look" {
                 show(&pending(out, &harnesses));
             }
-            let cli = crate::ringframe::installed(out);
             // Opening the view asks both releases again, at once: Weft's and
             // RingFrame's; the other acts read the kept answers.
             let fresh = act == "look";
@@ -1467,19 +1441,16 @@ impl Session {
                         }
                     } else {
                         // Weft is the person's to update, as they installed it.
-                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        let (base, _) = look(out, &harnesses, &check, &weft);
                         let sync_it = (act == "all" && base.configuration_behind)
                             || (act == "run" && harness == "ringframe");
                         if sync_it {
-                            let sync = vec![weft_core::sync::Step::new("ringframe", &["sync"])];
-                            if let Some(weft_core::onboarding::State::Failed { step, said }) =
-                                proceed(out, sync, |_| {})
-                            {
-                                note = Some(format!("{step} failed: {said}"));
+                            if let Err(said) = out.sync() {
+                                note = Some(format!("ringframe sync failed: {said}"));
                             }
                             check = out.release(true);
                         }
-                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        let (base, _) = look(out, &harnesses, &check, &weft);
                         if act == "all" && base.sense_behind {
                             if !path.is_empty() {
                                 if let Err(e) = crate::versions::hot_reload_sense(
@@ -1506,7 +1477,7 @@ impl Session {
                                 }
                             }
                         }
-                        let (base, _) = look(out, &harnesses, &check, &weft, cli);
+                        let (base, _) = look(out, &harnesses, &check, &weft);
                         let todo: Vec<String> = base
                             .rows
                             .iter()
@@ -1516,7 +1487,7 @@ impl Session {
                         for name in todo {
                             let h = harnesses.find(&name).cloned().expect("a row is a harness");
                             let latest = base.plugin.clone();
-                            if let Some(state) = run(out, &h, cli, latest.as_deref(), |state| {
+                            if let Some(state) = run(out, &h, latest.as_deref(), |state| {
                                 show(&with(base.clone(), &name, state));
                             }) {
                                 failed = Some((name, state));
@@ -1529,7 +1500,7 @@ impl Session {
             }
             // Looked at again, whatever was done: the tick is the harness's
             // answer now, never a command's exit code.
-            let (mut v, states) = look_as_they_answer(out, &harnesses, &check, &weft, cli, |v| {
+            let (mut v, states) = look_as_they_answer(out, &harnesses, &check, &weft, |v| {
                 let mut v = v.clone();
                 v.note = note.clone();
                 show(&v);
@@ -1565,13 +1536,6 @@ impl Session {
         let out = self.outside.clone();
         std::thread::spawn(move || {
             let out = out.as_ref();
-            let cli = crate::ringframe::installed(out);
-            // No CLI is no profile either; that is the gap to name.
-            if !cli {
-                let state = Readiness::Missing(weft_core::readiness::Gap::Cli);
-                let _ = tx.send(Wake::Readiness { project: at, harness: name, state });
-                return;
-            }
             let Some(h) = found.as_ref() else {
                 let _ = tx.send(Wake::Readiness {
                     project: at,
@@ -1582,13 +1546,13 @@ impl Session {
             };
             // A harness that is starting up can fail to answer once; ask again
             // before settling on "could not tell".
-            let mut state = crate::readiness::check(out, h, cli);
+            let mut state = crate::readiness::check(out, h);
             for _ in 0..2 {
                 if state != Readiness::Unknown {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_secs(2));
-                state = crate::readiness::check(out, h, cli);
+                state = crate::readiness::check(out, h);
             }
             let _ = tx.send(Wake::Readiness { project: at, harness: name, state });
         });
@@ -1732,9 +1696,9 @@ impl Session {
     fn ask_set_up(&mut self, at: usize) {
         let p = &mut self.projects[at];
         p.asking = true;
-        let (tx, out, root) = (self.tx.clone(), self.outside.clone(), p.root.clone());
+        let (tx, root) = (self.tx.clone(), p.root.clone());
         std::thread::spawn(move || {
-            let (setup, gap) = set_up_and_gap(out.as_ref(), &root);
+            let (setup, gap) = set_up_and_gap(&root);
             let _ = tx.send(Wake::Workspace { project: at, setup, gap });
         });
     }
@@ -1971,7 +1935,7 @@ impl Session {
                     },
                     starting: Vec::new(),
                     due: Vec::new(),
-                    prefixes: crate::acts::Prefixes::asking(self.outside.clone()),
+                    prefixes: crate::acts::Prefixes::default(),
                     turns: crate::turns::Turns::default(),
                     harnesses,
                     unread,
@@ -2112,10 +2076,9 @@ impl Session {
                 // here and whether an Ask could finish here; the window is
                 // answered with the rest once it has said.
                 self.projects[at].asking = true;
-                let (tx, out) = (self.tx.clone(), self.outside.clone());
-                let root = self.projects[at].root.clone();
+                let (tx, root) = (self.tx.clone(), self.projects[at].root.clone());
                 std::thread::spawn(move || {
-                    let (setup, gap) = set_up_and_gap(out.as_ref(), &root);
+                    let (setup, gap) = set_up_and_gap(&root);
                     let project = at;
                     let _ = tx.send(Wake::Opened { client, call_id, project, raw, setup, gap });
                 });
@@ -2434,7 +2397,7 @@ mod tests {
         let (sock, cfg) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
         std::fs::write(&cfg, "").unwrap();
         let world = crate::outside::Fixed::new()
-            .answers("ringframe", &["sync"], 1, "the sync ran")
+            .with_sync(Err("the sync ran".into()))
             .with_release(Err("no release in this world".into()))
             .shared();
         let harnesses = weft_core::harness::fixture::harnesses();

@@ -162,7 +162,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.readings", "Readings"),
     ("eval_view.changes", "Changes ({n})"),
     // Why an act cannot run.
-    ("why.no_ringframe", "RingFrame is not installed."),
     ("why.not_set_up", "{harness} is not set up for RingFrame."),
     ("why.cannot_ask", "Weft could not ask {harness} whether it is set up."),
     ("why.start_an_agent", "Start an agent first: + on a project."),

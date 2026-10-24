@@ -1,8 +1,8 @@
-//! A slow RingFrame holds up only what waits on it: while `ringframe init`
-//! runs, and while the crate's preflight, Eval open and Seal check wait on a
-//! slow Git, the daemon goes on answering every other call.
+//! A slow RingFrame holds up only what waits on it: while the crate's set-up,
+//! preflight, Eval open and Seal check wait on a slow Git, the daemon goes on
+//! answering every other call.
 //!
-//! Its own test binary because it puts stand-ins first on PATH and sets
+//! Its own test binary because it puts a stand-in first on PATH and sets
 //! `HOME`, which are global: one test, one process.
 
 mod support;
@@ -15,29 +15,19 @@ use std::time::{Duration, Instant};
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
-/// How long each stand-in takes over what it is slow at.
+/// How long the stand-in takes over what it is slow at.
 const SLOW: &str = "2";
 
-/// A `ringframe` that takes its time over `init`, then answers as RingFrame
-/// does; and a `git` that takes its time over `rev-parse --show-prefix`,
-/// which the crate's preflight, Eval open and Seal check each ask.
-fn stand_ins(dir: &Path) {
-    let ringframe = format!(
-        "#!/bin/sh\ncase \"$*\" in\n  \
-         *\" init\") sleep {SLOW}; mkdir -p \"$2/.fab7/rf\" ;;\n  \
-         *\"profile show\"*) printf '{{\"invocation_prefix\":\"/rf:\"}}' ;;\n  \
-         *\"profile list\"*) printf '{{\"profiles\":[]}}' ;;\n  \
-         *) printf '{{}}' ;;\nesac\nexit 0\n",
-    );
+/// A `git` that takes its time over `rev-parse --show-prefix`, which the
+/// crate's preflight, Eval open and Seal check each ask.
+fn stand_in(dir: &Path) {
     let git = format!(
         "#!/bin/sh\ncase \"$*\" in *--show-prefix*) sleep {SLOW} ;; esac\nexec /usr/bin/git \"$@\"\n"
     );
     use std::os::unix::fs::PermissionsExt;
-    for (name, script) in [("ringframe", ringframe), ("git", git)] {
-        let path = dir.join(name);
-        std::fs::write(&path, script).expect("stand-in");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
+    let path = dir.join("git");
+    std::fs::write(&path, git).expect("stand-in");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 }
 
 struct Client {
@@ -121,7 +111,8 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
         std::env::set_var("HOME", &home);
     }
     let ask = support::real_ask(&root, &home, "sh");
-    stand_ins(&bin);
+    let _ = support::git_repo(&fresh);
+    stand_in(&bin);
     // SAFETY: as above.
     unsafe {
         std::env::set_var("PATH", format!("{}:/usr/bin:/bin", bin.display()));
@@ -141,7 +132,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     };
     let quick = Duration::from_millis(500);
 
-    // Opening a project RingFrame is not set up in: `init`, then `ask preflight`.
+    // Opening a project RingFrame is not set up in: its set-up, then preflight.
     let opening = open(&mut a, &fresh);
     std::thread::sleep(Duration::from_millis(300));
     let took = probe(&socket);

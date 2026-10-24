@@ -33,9 +33,6 @@ pub enum State {
     Unknown,
     /// It is being asked what it has, and has not answered yet.
     Checking,
-    /// The `ringframe` CLI is missing: Weft's installer put it there, so it
-    /// is a reinstall of Weft, not a step here.
-    NoCli,
     /// A step is running: its command line.
     Running(String),
     /// A step failed: its command line and the last lines it printed.
@@ -47,7 +44,7 @@ impl State {
         match self {
             State::Ready { .. } => "✓",
             State::Behind { .. } => "↑",
-            State::NotFound | State::NotSetUp | State::CannotInstall | State::NoCli => "✗",
+            State::NotFound | State::NotSetUp | State::CannotInstall => "✗",
             State::Unknown => "?",
             State::Running(_) | State::Checking => "…",
             State::Failed { .. } => "!",
@@ -65,7 +62,6 @@ impl State {
             State::CannotInstall => "Set up by hand",
             State::Unknown => "Unknown",
             State::Checking => "Checking",
-            State::NoCli => "No RingFrame",
             State::Running(_) => "Setting up",
             State::Failed { .. } => "Failed",
         }
@@ -81,7 +77,6 @@ impl State {
             State::CannotInstall => "Weft cannot do this one: its setup page says how".into(),
             State::Unknown => "would not say whether it is set up".into(),
             State::Checking => "checking".into(),
-            State::NoCli => "RingFrame is missing: run Weft's installer again".into(),
             State::Running(line) => format!("running: {line}"),
             State::Failed { step, .. } => format!("failed: {step}"),
         }
@@ -322,7 +317,6 @@ pub fn row(h: &Harness, found: Option<(Readiness, Option<String>)>, latest: Opti
             }
         }
         Some((Readiness::Ready, version)) => State::Ready { version },
-        Some((Readiness::Missing(Gap::Cli), _)) => State::NoCli,
         Some((Readiness::Unknown, _)) => State::Unknown,
         Some((r @ Readiness::Missing(_), _)) if steps(h, r, None, None).is_empty() => {
             State::CannotInstall
@@ -471,10 +465,6 @@ mod tests {
         assert_eq!(
             (r.state.words().as_str(), r.state.next()),
             ("plugin 0.1.2 → 0.1.3", Some(Next::Update))
-        );
-        assert_eq!(
-            row(&claude, Some((Readiness::Missing(Gap::Cli), None)), None).state,
-            State::NoCli
         );
         let mut bare = claude.clone();
         bare.install_plugin = None;
