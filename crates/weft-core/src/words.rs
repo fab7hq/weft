@@ -677,7 +677,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("panes.n", "{n} PANES"),
     ("panes.focused", "· FOCUSED:"),
     ("desktop.message.placeholder", "Message {project} · {harness}…"),
-    ("desktop.bar.will_type", "Weft will type  {command}."),
     ("desktop.bar.seal_round", "Seal this Eval round"),
     ("desktop.quit.title", "Quit Weft?"),
     (

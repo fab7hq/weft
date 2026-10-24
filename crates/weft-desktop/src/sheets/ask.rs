@@ -13,6 +13,15 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
     let title = if follow_up_unit.is_some() { word("act.follow_up") } else { word("ask.title") };
 
     let targets = props.send_to.map(|v| send_to::render(v, |key| SheetAct::AskTo(key).into()));
+    let eyebrow = follow_up_unit.and_then(|unit| eyebrow(props, unit)).map(|said| {
+        div()
+            .layer("eyebrow")
+            .font_mono()
+            .font_weight(600)
+            .font_size(11)
+            .color(palette::DIM)
+            .text(said)
+    });
 
     div()
         .layer("sheet Ask")
@@ -24,6 +33,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         .items_start()
         .bg(palette::SURFACE_ALT)
         .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
+        .children(eyebrow)
         .child(div().font_weight(600).font_size(15).text(title))
         .child(
             textarea_el(Focus::Ask)
@@ -64,4 +74,14 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 ))
                 .child(button("btn Ask", act, SheetAct::SubmitAsk, Tone::Primary, Size::Sheet)),
         )
+}
+
+/// A follow-up's eyebrow: `FOLLOW UP · <the work's title> · <the id it carries>`.
+fn eyebrow(props: &SheetProps, unit: &str) -> Option<String> {
+    let crate::app::ActiveSheet::Ask { project, .. } = props.sheet else { return None };
+    let client = props.clients.iter().find(|c| &c.root == project)?;
+    let work = client.work.of_ask(unit)?;
+    let title = client.units.iter().find(|u| u.ask_id == work.root).map(|u| u.title.as_str())?;
+    let said = format!("{} · {title} · {}", word("act.follow_up"), work.follows);
+    Some(said.to_uppercase())
 }

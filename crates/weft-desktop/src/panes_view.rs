@@ -280,34 +280,39 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
     let mut container =
         div().layer("workspace").flex_1().self_stretch().flex_col().style("min-height", "0");
 
+    // With no pane open, the docked Ask still shows: it can start the agent
+    // it goes to.
     if props.panes.groups.is_empty() {
-        return container.child(
-            div()
-                .layer("empty panes")
-                .flex_1()
-                .self_stretch()
-                .style("position", "relative")
-                .bg(palette::TERMINAL_BG)
-                .child(hairline_grid())
-                .child(
-                    div()
-                        .style("position", "absolute")
-                        .style("inset", "0")
-                        .flex_col()
-                        .gap(16)
-                        .items_center()
-                        .justify_center()
-                        // Weft's banner, as the web draws it.
-                        .child(img_el("weft-banner").layer("woven mark").w(189).h(60))
-                        .child(
-                            div()
-                                .layer("woven said")
-                                .font_size(13)
-                                .color(palette::MUTED)
-                                .text(words::word("workspace.empty")),
-                        ),
-                ),
-        );
+        let dock = props.dock.clone();
+        return container
+            .child(
+                div()
+                    .layer("empty panes")
+                    .flex_1()
+                    .self_stretch()
+                    .style("position", "relative")
+                    .bg(palette::TERMINAL_BG)
+                    .child(hairline_grid())
+                    .child(
+                        div()
+                            .style("position", "absolute")
+                            .style("inset", "0")
+                            .flex_col()
+                            .gap(16)
+                            .items_center()
+                            .justify_center()
+                            // Weft's banner, as the web draws it.
+                            .child(img_el("weft-banner").layer("woven mark").w(189).h(60))
+                            .child(
+                                div()
+                                    .layer("woven said")
+                                    .font_size(13)
+                                    .color(palette::MUTED)
+                                    .text(words::word("workspace.empty")),
+                            ),
+                    ),
+            )
+            .children(dock);
     }
 
     let split = props.panes.groups.len() > 1;

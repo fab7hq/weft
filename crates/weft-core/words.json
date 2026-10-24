@@ -26,7 +26,6 @@
   "desktop.allow.holding": "Only allow a device you are holding.",
   "desktop.allow.refuse": "Refuse",
   "desktop.bar.seal_round": "Seal this Eval round",
-  "desktop.bar.will_type": "Weft will type  {command}.",
   "desktop.close.ask": "Close {project}?",
   "desktop.close.what": "Its agents keep running. Weft stops showing it here.",
   "desktop.close.yes": "Close it",

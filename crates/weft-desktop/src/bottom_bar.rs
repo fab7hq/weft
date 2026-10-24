@@ -109,13 +109,26 @@ fn render_staged_bar(
                 ),
             ]));
     }
-    let summary = match pane {
-        Some(p) => fill("bar.will_type", &[("command", &staged.what), ("harness", &p.harness)]),
-        None => fill("desktop.bar.will_type", &[("command", &staged.what)]),
-    };
+    // Its title, why, and the exact bytes Send types, when it types any.
+    let payload = (!staged.payload.is_empty()).then(|| {
+        div()
+            .layer("payload")
+            .self_stretch()
+            .pad(10, 12)
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .font_mono()
+            .font_size(12)
+            .style("white-space", "pre-wrap")
+            .style("max-height", "240px")
+            .style("overflow-y", "auto")
+            .color(palette::TEXT)
+            .text(String::from_utf8_lossy(&staged.payload).into_owned())
+    });
     asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
         .child(title(staged.what.clone()))
-        .child(note(summary, palette::MUTED))
+        .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
+        .children(payload)
         .children(choice)
         .child(bar_acts(vec![
             cancel,

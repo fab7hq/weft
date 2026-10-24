@@ -559,14 +559,26 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     wire.event(Event::Pending {
         id: "p1".into(),
         pane,
-        what: "/rf:ask".into(),
-        why: "ask".into(),
-        payload: Vec::new(),
+        what: "Ask Codex?".into(),
+        why: "This is the exact prompt Codex will receive.".into(),
+        payload: b"Refresh the token.\n\nRules:\n- KISS: keep it plain".to_vec(),
         sends: None,
     });
     pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
     let bar = app.render();
     assert!(bar.find_layer("btn Send").is_some());
+    // The dialog shows its title, why and the exact payload, never a
+    // "Weft will type <title>".
+    let said = bar.find_layer("Cancel / Send bar").unwrap().all_text();
+    for line in [
+        "Ask Codex?",
+        "the exact prompt Codex will receive",
+        "Refresh the token.",
+        "- KISS: keep it plain",
+    ] {
+        assert!(said.contains(line), "{line} in {said}");
+    }
+    assert!(!said.contains("Weft will type"), "{said}");
     app.dispatch(BarAct::Resolve { project: weft(), pending: "p1".into(), answer: Answer::Yes });
     let (_, call) = wire.call();
     assert_eq!(
@@ -617,6 +629,12 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     }
     assert!(sheet.find_layer("step 3").is_some(), "Ask, Eval, not sealed");
     assert!(dom.find_layer("tree bar").unwrap().all_text().contains("selected: health endpoint"));
+
+    // A follow-up's Ask names the work it follows and the id it carries.
+    app.dispatch(SheetAct::FollowUp { project: weft(), unit: "ask_3".into() });
+    let sheet = app.render().find_layer("sheet Ask").expect("the Ask").all_text();
+    assert!(sheet.contains("FOLLOW UP · HEALTH ENDPOINT · "), "the eyebrow: {sheet}");
+    app.active_sheet = None;
 
     // Seal decides on the unit's Eval; Eval names the unit.
     app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
