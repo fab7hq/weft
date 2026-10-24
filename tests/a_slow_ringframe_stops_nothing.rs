@@ -188,6 +188,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
         text: None,
         eval: None,
         start: None,
+        draft: None,
     });
     std::thread::sleep(Duration::from_millis(300));
     let took = probe(&socket);

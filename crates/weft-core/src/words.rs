@@ -101,7 +101,10 @@ pub const WORDS: &[(&str, &str)] = &[
     // Beside the agent a prompt was written in, in SEND TO.
     ("send.wrote_it", "wrote it"),
     ("bar.will_type", "Weft will type  {command}  into {harness}."),
-    ("ask.which_approach", "The agent will ask you which approach to take, in its own pane."),
+    // The one dialog an Ask has: it shows the exact prompt.
+    ("dialog.ask.title", "Ask {harness}?"),
+    ("dialog.ask.exact", "This is the exact prompt {harness} will receive."),
+    ("dialog.ask.trimmed", "Left out to fit {harness}'s limit: {rules}."),
     ("not_ready.title", "The agent has not said it is ready"),
     (
         "not_ready.why",

@@ -92,15 +92,17 @@ pub fn running(skill: &str, command: &str, into: &str, worked_in: &str) -> Askin
     }
 }
 
-/// Asking for something new.
-pub fn asking(command: &str, harness: &str) -> Asking {
-    Asking {
-        what: format!("Ready to ask {harness}"),
-        why: vec![
-            crate::words::fill("bar.will_type", &[("command", command), ("harness", harness)]),
-            crate::words::word("ask.which_approach").into(),
-        ],
+/// Asking for something new: the dialog that shows the exact prompt, and
+/// the practice rules left out to fit the harness's limit.
+pub fn asking(harness: &str, how: &Handoff, trimmed: &[String]) -> Asking {
+    let named = [("harness", harness)];
+    let mut why = vec![crate::words::fill("dialog.ask.exact", &named)];
+    if !trimmed.is_empty() {
+        let rules = trimmed.join(", ");
+        why.push(crate::words::fill("dialog.ask.trimmed", &[named[0], ("rules", &rules)]));
     }
+    why.extend(say_handoff(how, harness));
+    Asking { what: crate::words::fill("dialog.ask.title", &named), why }
 }
 
 /// A refusal code in the words the person reading it would use.

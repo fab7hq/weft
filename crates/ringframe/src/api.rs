@@ -245,25 +245,42 @@ pub struct Compiled {
     pub trimmed: Vec<String>,
 }
 
-pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
+fn compile_request<'a>(req: &'a Compile<'a>) -> crate::compile::Request<'a> {
     let c = &req.classification;
-    let out = crate::compile::compile(
-        ws,
-        crate::compile::Request {
-            source: req.source.as_bytes(),
-            host: json!({"name": req.harness.name, "version": req.harness.version,
-                         "session_ref": req.harness.session_ref}),
-            capability: req.capability,
-            classification: json!({"task": c.task, "result": c.result, "effects": c.effects}),
-            plan: req.plan,
-            practices: req.practices,
-            classified_by: req.classified_by.recorded(),
-            selected_by: req.selected_by.recorded(),
-            links: req.links.iter().map(|l| json!({"rel": l.rel, "id": l.id})).collect(),
-            overrides: req.overrides,
-            via: req.via,
-        },
-    )?;
+    crate::compile::Request {
+        source: req.source.as_bytes(),
+        host: json!({"name": req.harness.name, "version": req.harness.version,
+                     "session_ref": req.harness.session_ref}),
+        capability: req.capability,
+        classification: json!({"task": c.task, "result": c.result, "effects": c.effects}),
+        plan: req.plan,
+        practices: req.practices.clone(),
+        classified_by: req.classified_by.recorded(),
+        selected_by: req.selected_by.recorded(),
+        links: req.links.iter().map(|l| json!({"rel": l.rel, "id": l.id})).collect(),
+        overrides: req.overrides,
+        via: req.via,
+    }
+}
+
+/// What a send would type, before it is sent: nothing is recorded.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Composed {
+    /// Exactly what is typed: the route's command, then the prompt.
+    pub text: String,
+    /// Practice rules dropped to fit the harness's limit, lowest score first.
+    pub trimmed: Vec<String>,
+    /// How the harness takes it, as the Ask will record it.
+    pub delivery: Value,
+}
+
+pub fn compose(ws: &Workspace, req: &Compile<'_>) -> Result<Composed, Error> {
+    let out = crate::compile::compose(ws, &compile_request(req))?;
+    Ok(Composed { text: out.typed, trimmed: out.trimmed, delivery: out.delivery })
+}
+
+pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
+    let out = crate::compile::compile(ws, compile_request(&req))?;
     Ok(Compiled {
         ask_id: str_of(&out, "ask_id"),
         prompt: str_of(&out, "prompt"),
@@ -276,6 +293,11 @@ pub fn compile(ws: &Workspace, req: Compile<'_>) -> Result<Compiled, Error> {
             .map(str::to_string)
             .collect(),
     })
+}
+
+/// The kinds of work an Ask can name, in the order their rules are shown.
+pub fn tasks() -> Vec<&'static str> {
+    crate::deltas::PHASES.iter().map(|(task, _)| *task).collect()
 }
 
 /// A rule an Ask can carry.
@@ -983,6 +1005,28 @@ mod tests {
 
             let shared = rules_share(ws, "own.1", &layers).unwrap_err();
             assert_eq!(shared.code(), "rules.incomplete");
+        });
+    }
+
+    #[test]
+    fn compose_shows_the_exact_prompt_compile_then_records() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            let mut req = request(WORDS, &over);
+            req.practices = vec!["practice.kiss".into()];
+            let before = events(ws).unwrap().len();
+            let shown = compose(ws, &req).unwrap();
+            assert_eq!(events(ws).unwrap().len(), before, "composing records nothing");
+            assert!(shown.text.starts_with(&format!("/goal {WORDS}\n")), "{}", shown.text);
+            assert!(shown.text.contains("- KISS:"), "{}", shown.text);
+            let compiled = compile(ws, req).unwrap();
+            let sent = prompt(ws, &compiled.ask_id, None).unwrap();
+            assert_eq!((sent.text, sent.delivery), (shown.text.clone(), shown.delivery));
+            assert!(shown.trimmed.is_empty());
+            let mut bad = request(WORDS, &over);
+            bad.practices = vec!["practice.none".into()];
+            assert_eq!(compose(ws, &bad).unwrap_err().code(), "ask.practice_unknown");
         });
     }
 

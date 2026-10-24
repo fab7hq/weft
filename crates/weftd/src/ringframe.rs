@@ -116,6 +116,109 @@ pub fn observe_tools(project: &Path, host: &str) -> Option<Value> {
     Some(v.get("observe").cloned().unwrap_or(Value::Null))
 }
 
+/// An Ask as the person sent it from Weft's sheet: their words as written,
+/// and what they chose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskDraft {
+    pub words: String,
+    pub harness: String,
+    pub route: String,
+    pub task: String,
+    pub plan: Option<String>,
+    /// Practice rules, by id.
+    pub rules: Vec<String>,
+    /// The work it follows: `follows` or `remediates`, and that record's id.
+    pub link: Option<(String, String)>,
+}
+
+impl AskDraft {
+    fn request<'a>(&'a self, overrides: &'a Overrides) -> api::Compile<'a> {
+        let result = if self.task == "plan" { "plan" } else { "workspace_change" };
+        api::Compile {
+            source: &self.words,
+            harness: api::Harness { name: &self.harness, version: None, session_ref: None },
+            capability: &self.route,
+            classification: api::Classification {
+                task: vec![self.task.clone()],
+                result: result.into(),
+                effects: vec!["read".into(), "write".into()],
+            },
+            plan: self.plan.as_deref(),
+            practices: self.rules.clone(),
+            classified_by: api::Chooser::Person,
+            selected_by: api::Chooser::Person,
+            links: self.link.iter().map(|(rel, id)| api::Link { rel, id }).collect(),
+            overrides,
+            via: "weft",
+        }
+    }
+}
+
+/// What Send would type for this Ask, recording nothing.
+pub fn compose(project: &Path, d: &AskDraft, layers: Option<&str>) -> Result<api::Composed, Error> {
+    let overrides = overrides(layers)?;
+    api::compose(&workspace(project)?, &d.request(&overrides)).map_err(refused)
+}
+
+/// Compile the Ask, confirmed by the person's Send in Weft, and say its id.
+pub fn compile(project: &Path, d: &AskDraft, layers: Option<&str>) -> Result<String, Error> {
+    let overrides = overrides(layers)?;
+    let compiled = api::compile(&workspace(project)?, d.request(&overrides)).map_err(refused)?;
+    Ok(compiled.ask_id)
+}
+
+/// What the Ask sheet offers for `harness` and these words: every route of
+/// its profile, its default first; the kinds of work; the plan the words are
+/// most about, of the plans held here; and, for the route and task given or
+/// their defaults, the practice rules to choose from and the route's rules.
+pub fn sheet(
+    project: &Path,
+    layers: Option<&str>,
+    (harness, words): (&str, &str),
+    (route, task): (Option<&str>, Option<&str>),
+) -> Result<Value, Error> {
+    let ws = workspace(project)?;
+    let profile = api::profile(&ws, harness).map_err(refused)?;
+    let routes: Vec<&str> = profile["capabilities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["id"].as_str())
+        .collect();
+    let route = route.or(routes.first().copied()).unwrap_or_default();
+    let task = task.unwrap_or(if route.contains("plan") { "plan" } else { "implement" });
+    // A plan folder with no plan.md has no path, and is no plan to work.
+    let plans: Vec<weft_core::ask::Plan> = profile["plans"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| {
+            let slug = p["slug"].as_str()?.to_string();
+            let title = p["title"].as_str().unwrap_or(&slug).to_string();
+            Some(weft_core::ask::Plan { path: p["path"].as_str()?.into(), title, slug })
+        })
+        .collect();
+    let plan = weft_core::ask::plan_for(words, &plans).cloned();
+    let result = if task == "plan" { "plan" } else { "workspace_change" };
+    let classification = api::Classification {
+        task: vec![task.into()],
+        result: result.into(),
+        effects: vec!["read".into(), "write".into()],
+    };
+    let rules =
+        api::rules(&ws, harness, route, &classification, &overrides(layers)?).map_err(refused)?;
+    let rule = |r: &api::Rule| {
+        serde_json::json!({"id": r.id, "label": r.label, "text": r.text, "family": r.family,
+                           "layer": r.layer})
+    };
+    Ok(serde_json::json!({
+        "routes": routes, "route": route, "tasks": api::tasks(), "task": task,
+        "plan": plan, "plans": plans,
+        "practices": rules.practices.iter().map(rule).collect::<Vec<_>>(),
+        "route_rules": rules.route.iter().map(rule).collect::<Vec<_>>(),
+    }))
+}
+
 /// Whether this workspace could finish an Ask at all, asked of RingFrame.
 ///
 /// `ask compile` has always refused a workspace with no Git repository or no
@@ -309,6 +412,33 @@ mod tests {
         let listed = rules(None).unwrap();
         assert!(listed["catalogs"].as_array().is_some_and(|c| !c.is_empty()), "{listed}");
         assert!(matches!(reads_overrides("not json"), Err(Error::Refused { code: 2, .. })));
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// The Ask sheet: the profile's routes, its first the default; the plan
+    /// the words name; and the rules for the route and task.
+    #[test]
+    fn the_ask_sheet_offers_routes_a_plan_line_and_rules() {
+        fixture_home();
+        let repo = folder("sheet", true);
+        std::fs::create_dir_all(repo.join("plans/uptime")).unwrap();
+        std::fs::write(repo.join("plans/uptime/plan.md"), "# Uptime endpoint\n").unwrap();
+        let said = sheet(&repo, None, ("claude-code", "add the uptime endpoint"), (None, None));
+        let said = said.unwrap();
+        assert_eq!(said["routes"][0], said["route"], "the first route is the default");
+        assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
+        assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
+        let goal = sheet(&repo, None, ("claude-code", "fix it"), (Some("native_goal"), None));
+        let goal = goal.unwrap();
+        assert_eq!((&goal["route"], &goal["task"]), (&"native_goal".into(), &"implement".into()));
+        assert_eq!(goal["plan"], Value::Null, "no plan named");
+        let labels: Vec<&str> = goal["route_rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["label"].as_str())
+            .collect();
+        assert_eq!(labels, ["Step Loop", "Done Check"]);
         let _ = std::fs::remove_dir_all(repo);
     }
 

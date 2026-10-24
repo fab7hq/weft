@@ -550,7 +550,8 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
             pane: Some(pane),
             text: Some("refresh token 60s before expiry".into()),
             eval: None,
-            start: None
+            start: None,
+            draft: None,
         }
     );
     // Nothing waits on the person until the daemon stages it.

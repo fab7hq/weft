@@ -382,6 +382,7 @@ impl Session {
             how: built.how,
             confirm: built.confirm_first.then(|| built.ask_id.clone()).flatten(),
             sends: built.ask_id.clone(),
+            compile: built.compile,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))

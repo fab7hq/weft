@@ -335,6 +335,7 @@ impl Bench {
             text: None,
             eval: None,
             start: None,
+            draft: None,
         });
         let deadline = Instant::now() + Duration::from_secs(5);
         let pending = loop {
@@ -511,6 +512,7 @@ fn a_send_that_waits_on_its_pane_leaves_the_daemon_answering() {
         text: None,
         eval: None,
         start: None,
+        draft: None,
     });
     let pending = b.wait(Duration::from_secs(5), |e| match e {
         Event::Pending { id, .. } => Some(id),
@@ -686,6 +688,7 @@ fn an_ask_into_a_new_agent_starts_it_and_stages_the_ask_there() {
         text: Some("Ship the docs.".into()),
         eval: None,
         start: Some("weave".into()),
+        draft: None,
     });
     let started = b.wait(Duration::from_secs(5), |e| match e {
         Event::Added { pane, harness, .. } if harness == "weave" => Some(pane),

@@ -71,9 +71,26 @@ fn plan_line(
     }
 }
 
-/// Compile and confirm. Returns the Ask's id, the prompt as stored and the
-/// practice rules dropped to fit the host's limit.
-pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
+/// The prompt a request makes, before anything is recorded.
+pub struct Composed {
+    profile: Value,
+    cap: Value,
+    classification: Value,
+    route: Vec<Value>,
+    practices: Vec<Value>,
+    /// Practice rules dropped to fit the host's limit, lowest score first.
+    pub trimmed: Vec<String>,
+    /// `prompt.txt`: the words, then the practices, then the route rules.
+    pub prompt: String,
+    /// What is typed: the route's command, then the prompt.
+    pub typed: String,
+    /// How the host takes it, as the Ask records it.
+    pub delivery: Value,
+}
+
+/// Compose what `compile` would record, and record nothing: what the person
+/// sees in the dialog before they send it.
+pub fn compose(ws: &Workspace, req: &Request<'_>) -> Result<Composed, AskError> {
     workspace::require_git(ws)?;
     let source = req.source;
     if source.iter().all(u8::is_ascii_whitespace) || std::str::from_utf8(source).is_err() {
@@ -136,8 +153,31 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
             ),
         ));
     }
-    let prompt = compose(&practices).into_bytes();
-    let typed = [prefix.as_bytes(), &prompt].concat();
+    let prompt = compose(&practices);
+    let typed = format!("{prefix}{prompt}");
+    let delivery = delivery_block(&profile, &cap, typed.as_bytes());
+    Ok(Composed {
+        profile,
+        cap,
+        classification,
+        route,
+        practices,
+        trimmed,
+        prompt,
+        typed,
+        delivery,
+    })
+}
+
+/// Compile and confirm. Returns the Ask's id, the prompt as stored and the
+/// practice rules dropped to fit the host's limit.
+pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
+    let Composed {
+        profile, cap, classification, route, practices, trimmed, prompt, delivery, ..
+    } = compose(ws, &req)?;
+    let (source, prompt) = (req.source, prompt.into_bytes());
+    let words = String::from_utf8_lossy(source);
+    let host_name = str_of(&req.host, "name");
 
     let ask_id = ids::new_id("ask");
     let reference = |role: &str, file: &str, bytes: &[u8]| {
@@ -150,7 +190,8 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
     if str_of(&profile, "profile_id") == "unknown" {
         limitations.push("qualification gap: no profile for this host".into());
     }
-    let (baselines, unreadable) = crate::evidence::baselines(ws, &[&words, &compose(&practices)]);
+    let composed = String::from_utf8_lossy(&prompt);
+    let (baselines, unreadable) = crate::evidence::baselines(ws, &[&words, &composed]);
     limitations.extend(unreadable);
     let ids_of = |list: &[Value]| list.iter().map(|e| str_of(e, "id")).collect::<Vec<_>>();
     let data = json!({
@@ -173,7 +214,7 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         "source": source_ref, "prompt": prompt_ref,
         "source_verified": "exact", "limitations": limitations,
         "delivery_mode": cap["delivery_mode"],
-        "delivery": delivery_block(&profile, &cap, &typed),
+        "delivery": delivery,
         "compiler": {
             "source": "verbatim", "plan": req.plan, "practices": ids_of(&practices),
             "trimmed": trimmed, "route": ids_of(&route),

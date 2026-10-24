@@ -43,6 +43,8 @@ struct On<'a> {
     eval: Option<&'a str>,
     /// A harness to start a new agent of, to ask in instead of `pane`.
     start: Option<&'a str>,
+    /// What the person chose in the sheet before Send.
+    draft: Option<&'a weft_core::ask::Draft>,
 }
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
 
@@ -147,6 +149,8 @@ struct Waiting {
     /// The Ask whose prompt this sends: delivered only when its pane reports
     /// receiving it.
     sends: Option<String>,
+    /// The Ask Send compiles first, when this shows one not yet recorded.
+    compile: Option<crate::ringframe::AskDraft>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -571,6 +575,35 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
     })
 }
 
+/// The Ask the person drafted, with what they left unchosen at its default:
+/// the harness's first route, the task that route is for, the plan their
+/// words are most about, and every practice rule offered. A draft that was
+/// sent says its plan, or that there is none.
+fn ask_draft(
+    root: &Path,
+    over: Option<&str>,
+    (harness, words): (String, String),
+    draft: Option<&weft_core::ask::Draft>,
+    link: Option<(String, String)>,
+) -> Result<crate::ringframe::AskDraft, String> {
+    let chosen = draft.cloned().unwrap_or_default();
+    let picked = (chosen.route.as_deref(), chosen.task.as_deref());
+    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked)
+        .map_err(|crate::ringframe::Error::Refused { message, .. }| message)?;
+    let text = |key: &str| sheet[key].as_str().unwrap_or_default().to_string();
+    let plan = match draft {
+        Some(_) => chosen.plan,
+        None => sheet["plan"]["path"].as_str().map(str::to_string),
+    };
+    let offered = || {
+        let practices = sheet["practices"].as_array().into_iter().flatten();
+        practices.filter_map(|r| r["id"].as_str().map(str::to_string)).collect()
+    };
+    let rules = chosen.rules.unwrap_or_else(offered);
+    let (route, task) = (text("route"), text("task"));
+    Ok(crate::ringframe::AskDraft { words, harness, route, task, plan, rules, link })
+}
+
 /// RingFrame set up here, as `ringframe init` would, or what it still needs; and
 /// why an Ask could not finish here. Both reach RingFrame: never on the run loop.
 fn set_up_and_gap(root: &Path) -> (Option<weft_core::workspace::Needs>, Option<String>) {
@@ -989,7 +1022,7 @@ impl Session {
             "proceed" => "send",
             other => other,
         };
-        let On { unit: unit_id, pane, text, eval, start } = on;
+        let On { unit: unit_id, pane, text, eval, start, draft } = on;
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
         // Eval and Seal act on one unit of work, named by any of its Asks,
@@ -1061,20 +1094,33 @@ impl Session {
                 else {
                     return Answer::No("no_pane", format!("there is no pane {pane} here"));
                 };
-                let mut text = text.unwrap_or_default().to_string();
-                // A follow-up is an Ask about this work: it carries one id, and
-                // RingFrame's Ask reads what that id points at.
-                if act == "follow_up" {
+                // Sent only where what arrives can be proven.
+                if let Some(why) = self.cannot_prove(at, pane) {
+                    return Answer::No("no_receipt", why);
+                }
+                // A follow-up is an Ask about this work: RingFrame links it to
+                // the work's newest Eval, else its newest composed Ask.
+                let link = if act == "follow_up" {
                     let Some(unit) = &unit else {
                         return Answer::No("no_unit", "that Ask is not on the board".into());
                     };
                     let to = follows.as_deref().unwrap_or(weft_core::board::follow_up_of(unit));
-                    text = format!("[follow-up {to}] {text}");
+                    Some(("follows".to_string(), to.to_string()))
+                } else {
+                    None
+                };
+                let project = &self.projects[at];
+                let over = project.ringframe.clone();
+                let title = project.harnesses.find(&harness).map_or(&harness, |h| &h.title).clone();
+                let words = text.unwrap_or_default().to_string();
+                let draft = match ask_draft(&root, over.as_deref(), (harness, words), draft, link) {
+                    Ok(draft) => draft,
+                    Err(why) => return Answer::No("refused", why),
+                };
+                match crate::acts::ask(&root, draft, over.as_deref(), &title) {
+                    Ok(built) => (built, pane),
+                    Err(why) => return Answer::No("refused", why),
                 }
-                let project = &mut self.projects[at];
-                let over = project.ringframe.as_deref();
-                let built = crate::acts::ask(&root, &harness, &text, over, &mut project.prefixes);
-                (built, pane)
             }
             "send" => {
                 let Some(unit) = unit else {
@@ -1255,6 +1301,30 @@ impl Session {
                             ),
                         }
                     };
+                    let _ = tx.send(Wake::Answer { client, call_id, answer });
+                });
+                Answer::Later
+            }
+            // What the Ask sheet offers: `unit` is `{"harness", "words"}`, and
+            // the `route` and `task` picked so far, when any.
+            "ask" => {
+                let asked: serde_json::Value = serde_json::from_str(unit).unwrap_or_default();
+                let text = |key: &str| asked[key].as_str().map(str::to_string);
+                let Some(harness) = text("harness") else {
+                    return Answer::No("bad_request", "the Ask sheet names a harness".into());
+                };
+                let over = self.projects[at].ringframe.clone();
+                let tx = self.tx.clone();
+                let (words, picked) =
+                    (text("words").unwrap_or_default(), (text("route"), text("task")));
+                std::thread::spawn(move || {
+                    let answer = crate::ringframe::sheet(
+                        &root,
+                        over.as_deref(),
+                        (&harness, &words),
+                        (picked.0.as_deref(), picked.1.as_deref()),
+                    )
+                    .map_or_else(ringframe_error, Answer::Ok);
                     let _ = tx.send(Wake::Answer { client, call_id, answer });
                 });
                 Answer::Later
@@ -2147,11 +2217,12 @@ impl Session {
                     how,
                     confirm: None,
                     sends: None,
+                    compile: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
             }
-            Call::Act { act, unit, pane, text, eval, start } => {
+            Call::Act { act, unit, pane, text, eval, start, draft } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let on = On {
                     unit: unit.as_deref(),
@@ -2159,6 +2230,7 @@ impl Session {
                     text: text.as_deref(),
                     eval: eval.as_deref(),
                     start: start.as_deref(),
+                    draft: draft.as_ref(),
                 };
                 return Ok(self.act(client, call_id, at, &act, on));
             }
@@ -2294,6 +2366,20 @@ impl Session {
                 if let Err(why) = recorded_first(self.outside.as_ref(), &root, w.confirm.as_deref())
                 {
                     return Ok(Answer::No("not_recorded", why));
+                }
+                // Send is the confirmation: the Ask is compiled as it was
+                // shown, and its prompt is what is typed.
+                if let Some(draft) = w.compile.take() {
+                    let over = self.projects[at].ringframe.clone();
+                    match crate::ringframe::compile(&root, &draft, over.as_deref()) {
+                        Ok(ask_id) => w.sends = Some(ask_id),
+                        Err(crate::ringframe::Error::Refused { message, .. }) => {
+                            let why = format!(
+                                "RingFrame would not record it: {message}. Nothing was typed."
+                            );
+                            return Ok(Answer::No("not_recorded", why));
+                        }
+                    }
                 }
                 if let Some(into) = into {
                     let pane = match into.to {

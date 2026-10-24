@@ -104,6 +104,8 @@ pub enum Call {
         /// An Ask or follow-up into a new agent of this harness, started for
         /// it, rather than into `pane`.
         start: Option<String>,
+        /// What the person chose in the sheet or dialog before Send.
+        draft: Option<weft_core::ask::Draft>,
     },
     /// Record the person's yes for an Ask whose chooser never got one.
     ConfirmAsk {
@@ -444,10 +446,10 @@ impl Call {
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),
                        "what": what, "why": why}),
             ),
-            Call::Act { act, unit, pane, text, eval, start } => (
+            Call::Act { act, unit, pane, text, eval, start, draft } => (
                 "act",
                 json!({"act": act, "unit": unit, "pane": pane, "text": text, "eval": eval,
-                       "start": start}),
+                       "start": start, "draft": draft}),
             ),
             Call::ConfirmAsk { unit } => ("unit.confirm", json!({"unit": unit})),
             Call::Read { what, unit, pane, lines, before, after } => (
@@ -524,6 +526,7 @@ impl Call {
                 text: s("text"),
                 eval: s("eval"),
                 start: s("start"),
+                draft: p.get("draft").and_then(|d| serde_json::from_value(d.clone()).ok()),
             },
             "unit.confirm" => Call::ConfirmAsk { unit: s("unit")? },
             "read" => Call::Read {
@@ -1036,6 +1039,7 @@ mod tests {
                 text: None,
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "ask".into(),
@@ -1044,6 +1048,7 @@ mod tests {
                 text: Some("do it".into()),
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "ask".into(),
@@ -1052,6 +1057,7 @@ mod tests {
                 text: Some("do it".into()),
                 eval: None,
                 start: Some("codex".into()),
+                draft: None,
             },
             Call::Act {
                 act: "decide".into(),
@@ -1060,6 +1066,7 @@ mod tests {
                 text: None,
                 eval: Some("evl_1".into()),
                 start: None,
+                draft: None,
             },
             Call::ConfirmAsk { unit: "ask_1".into() },
             Call::Read {

@@ -231,7 +231,7 @@ fn cosine(a: &[f32], b: &[f32]) -> f64 {
 }
 
 /// Okapi BM25 over a fixed set of documents.
-struct Bm25 {
+pub(crate) struct Bm25 {
     docs: Vec<Vec<String>>,
     avg: f64,
     /// How many documents hold each word.
@@ -242,7 +242,7 @@ impl Bm25 {
     const K1: f64 = 1.2;
     const B: f64 = 0.75;
 
-    fn new(docs: Vec<Vec<String>>) -> Self {
+    pub(crate) fn new(docs: Vec<Vec<String>>) -> Self {
         let total: usize = docs.iter().map(Vec::len).sum();
         let avg = if docs.is_empty() { 0.0 } else { total as f64 / docs.len() as f64 };
         let mut df = std::collections::HashMap::new();
@@ -258,7 +258,7 @@ impl Bm25 {
         Bm25 { docs, avg, df }
     }
 
-    fn score(&self, doc: usize, query: &[String]) -> f64 {
+    pub(crate) fn score(&self, doc: usize, query: &[String]) -> f64 {
         let d = &self.docs[doc];
         if d.is_empty() {
             return 0.0;
@@ -313,7 +313,7 @@ fn secret(word: &str) -> bool {
 }
 
 /// The lower-case words of a text, for matching.
-fn words(text: &str) -> Vec<String> {
+pub(crate) fn words(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|w| !w.is_empty())
         .map(str::to_lowercase)

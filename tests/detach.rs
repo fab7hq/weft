@@ -594,6 +594,7 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
         text: None,
         eval: None,
         start: None,
+        draft: None,
     };
     let pending_pane = |c: &mut Client| {
         c.wait_until(|e| match e {
@@ -707,6 +708,7 @@ fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
         text: None,
         eval: None,
         start: None,
+        draft: None,
     });
     let id = a.wait_until(|e| match e {
         Event::Pending { id, .. } => Some(id),
@@ -780,6 +782,7 @@ fn an_agent_started_for_an_eval_resumes_nobodys_session() {
         text: None,
         eval: None,
         start: None,
+        draft: None,
     });
     c.wait_for_added();
 
@@ -1174,6 +1177,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         text: None,
         eval: eval.map(str::to_string),
         start: None,
+        draft: None,
     };
     assert_eq!(c.answer(act("decide", None)), Err("no_unit".into()));
     assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));
@@ -1223,6 +1227,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         text: Some(text.into()),
         eval: Some("evl_1".into()),
         start: None,
+        draft: None,
     };
     assert_eq!(c.answer(seal_as("maybe")), Err("no_disposition".into()));
     c.send(seal_as("deferred"));

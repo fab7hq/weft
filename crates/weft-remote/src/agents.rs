@@ -658,6 +658,7 @@ impl Project {
             text: text.filter(|_| asking),
             eval,
             start,
+            draft: None,
         })
     }
 
@@ -907,6 +908,7 @@ mod tests {
             text: text.map(str::to_string),
             eval: None,
             start: None,
+            draft: None,
         }
     }
 
@@ -959,6 +961,7 @@ mod tests {
             text: None,
             eval: Some("evl_1".into()),
             start: None,
+            draft: None,
         };
         assert_eq!(
             act(&p, json!({"act": "seal", "project": "weft", "unit": "ask_1"})),

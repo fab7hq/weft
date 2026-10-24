@@ -1,6 +1,6 @@
 //! Building what one of RingFrame's three acts would type.
 //!
-//! This is the daemon's, because it reads files and runs the CLI. What to
+//! This is the daemon's, because it reads files and calls RingFrame. What to
 //! *say* about it is a rule and lives in [`weft_core::offers`]; which harness
 //! it goes to is a rule and lives in [`weft_core::board`]. Here is only the
 //! fetching.
@@ -25,6 +25,8 @@ pub struct Built {
     /// Whether the person's yes still has to be recorded with RingFrame.
     pub confirm_first: bool,
     pub ask_id: Option<String>,
+    /// The Ask its Send compiles, before the prompt shown is typed.
+    pub compile: Option<ringframe::AskDraft>,
 }
 
 /// Send a compiled prompt. The wording is RingFrame's, read back through its
@@ -48,6 +50,7 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         how,
         confirm_first: unit.awaiting_yes(),
         ask_id: Some(unit.ask_id.clone()),
+        compile: None,
     })
 }
 
@@ -71,26 +74,32 @@ pub fn skill(
         payload,
         confirm_first: false,
         ask_id: None,
+        compile: None,
     }
 }
 
-/// Ask for something new, in the harness the person is asking in.
+/// Ask for something new: the exact prompt Send will type into the harness
+/// `title` names, composed by RingFrame and recorded only on Send.
 pub fn ask(
     root: &Path,
-    harness: &str,
-    text: &str,
+    draft: ringframe::AskDraft,
     over: Option<&str>,
-    prefixes: &mut Prefixes,
-) -> Built {
-    let command = ringframe::skill_command(&prefixes.prefix(root, harness), "ask");
-    let payload = typed(&command, over, text);
-    Built {
-        how: how(&command),
-        asking: weft_core::offers::asking(&command, harness),
-        payload,
+    title: &str,
+) -> Result<Built, String> {
+    let composed = ringframe::compose(root, &draft, over).map_err(|e| {
+        let ringframe::Error::Refused { message, .. } = e;
+        message
+    })?;
+    let delivery = serde_json::json!({"delivery": composed.delivery});
+    let how = Handoff::choose(&weft_core::ledger::delivery_of(&delivery));
+    Ok(Built {
+        asking: weft_core::offers::asking(title, &how, &composed.trimmed),
+        payload: composed.text.into_bytes(),
+        how,
         confirm_first: false,
         ask_id: None,
-    }
+        compile: Some(draft),
+    })
 }
 
 /// The skill, then RingFrame's overrides when there are any, then its words.
@@ -176,33 +185,6 @@ mod tests {
                 text(skill(root, "seal", harness, harness, "", Some(over), &mut prefixes)),
                 format!("{prefix}seal --override '{over}' ")
             );
-            assert_eq!(
-                text(ask(root, harness, "[follow-up evl_1] fix it", Some(over), &mut prefixes)),
-                format!("{prefix}ask --override '{over}' [follow-up evl_1] fix it")
-            );
-            assert_eq!(
-                text(ask(root, harness, "fix it", None, &mut prefixes)),
-                format!("{prefix}ask fix it"),
-                "no overrides: nothing typed"
-            );
-        }
-    }
-
-    /// A command Weft composed is typed whatever the prompt's length, on a
-    /// made-up harness whose prefix is a slash command and one whose is not.
-    #[test]
-    fn a_command_is_typed_for_a_short_prompt_and_a_long_one() {
-        let mut prefixes = Prefixes::default();
-        prefixes.prefixes.insert("loom".into(), "/rf:".into());
-        prefixes.prefixes.insert("weave".into(), "$rf:".into());
-        let root = Path::new("/nowhere");
-        let long = "x".repeat(3500);
-        for text in ["fix it", long.as_str()] {
-            let built = ask(root, "loom", text, None, &mut prefixes);
-            assert_eq!(built.how, Handoff::TypeCommand { command: "/rf:ask".into(), at: 8 });
-            assert_eq!(built.how.body(&built.payload), text.as_bytes());
-            let built = ask(root, "weave", text, None, &mut prefixes);
-            assert_eq!(built.how, Handoff::Whole, "not a slash command: pasted whole");
         }
     }
 }

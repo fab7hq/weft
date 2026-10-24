@@ -242,6 +242,7 @@ mod tests {
                 text: Some("hi".into()),
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "check".into(),
@@ -250,6 +251,7 @@ mod tests {
                 text: None,
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "decide".into(),
@@ -258,6 +260,7 @@ mod tests {
                 text: None,
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "send".into(),
@@ -266,6 +269,7 @@ mod tests {
                 text: None,
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Act {
                 act: "follow_up".into(),
@@ -274,6 +278,7 @@ mod tests {
                 text: Some("more".into()),
                 eval: None,
                 start: None,
+                draft: None,
             },
             Call::Resolve {
                 pending: "pnd_1".into(),

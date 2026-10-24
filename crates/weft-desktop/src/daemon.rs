@@ -900,6 +900,7 @@ impl ProjectClient {
             text: text.map(str::to_string),
             eval: eval.map(str::to_string),
             start: start.map(str::to_string),
+            draft: None,
         };
         self.tell(call, Then::Refusal)
     }
