@@ -286,7 +286,9 @@ pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
         serde_json::from_str(&read(&dir.join(format!("tasks/{task_id}.json")))).unwrap();
     let windows = read(Path::new(file["windows_file"].as_str().unwrap()));
     let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-    let doc = if file["kind"] == "map" {
+    let doc = if file["kind"] == "requirements" {
+        listed_requirements(&file)
+    } else if file["kind"] == "map" {
         let listed = list("windows");
         let ids: Vec<&str> = listed.iter().map(|w| w["id"].as_str().unwrap()).collect();
         let quotable = ids.iter().find(|w| quote_in(&windows, w).is_some()).copied();
@@ -321,7 +323,9 @@ pub fn answer_task(ws: &Workspace, task_id: &str) {
     };
     let requirements = ids("requirements", "id");
     let mut doc = json!({});
-    if text("kind") == "map" {
+    if text("kind") == "requirements" {
+        doc = listed_requirements(&file);
+    } else if text("kind") == "map" {
         doc["windows"] = json!(
             ids("windows", "id")
                 .iter()
@@ -358,6 +362,17 @@ pub fn answer_task(ws: &Workspace, task_id: &str) {
 }
 
 /// The start of the first added line of window `w` in a task's windows text.
+/// A requirements task's answer: one requirement for each Ask it lists,
+/// quoting the person's words.
+fn listed_requirements(file: &Value) -> Value {
+    let asks = file["asks"].as_array().cloned().unwrap_or_default();
+    json!({"requirements": asks.iter().map(|a| {
+        let words: String = a["text"].as_str().unwrap_or_default().trim().chars().take(300).collect();
+        json!({"ask": a["id"], "kind": "local", "text": format!("what {} asked for", a["id"]),
+               "quote": words})
+    }).collect::<Vec<_>>()})
+}
+
 /// The first added line of a window long enough to quote.
 fn quote_in(windows: &str, w: &str) -> Option<String> {
     let head = format!("=== {w} ");

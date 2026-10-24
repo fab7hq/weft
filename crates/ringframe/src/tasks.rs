@@ -167,8 +167,12 @@ struct Ctx {
     brief: Value,
     evidence: Value,
     windows: BTreeMap<String, String>,
-    /// The Eval's view of the change DAG (`changes.json`).
+    /// The Eval's view of the change DAG (`changes.json`), with the
+    /// requirements task's list in place of the Asks' sentences once it is in.
     changes: Value,
+    /// The Asks whose own sentences RingFrame sorted into requirements: the
+    /// requirements task lists theirs from the person's words.
+    sentence_asks: Vec<String>,
 }
 
 fn tmp(ws: &Workspace, eval_id: &str) -> PathBuf {
@@ -214,7 +218,29 @@ impl Ctx {
         {
             list.extend(array_of(&c, "findings").iter().cloned());
         }
-        Ok(Ctx { ws: ws.clone(), eval_id: eval_id.to_string(), brief, evidence, windows, changes })
+        let mut sentence_asks: Vec<String> = Vec::new();
+        for r in array_of(&changes, "requirements").iter().filter(|r| is_sentence(&str_of(r, "id")))
+        {
+            let ask = str_of(r, "ask");
+            if !sentence_asks.contains(&ask) {
+                sentence_asks.push(ask);
+            }
+        }
+        if let (Some(listed), Some(list)) =
+            (listed_requirements(ws, eval_id)?, changes["requirements"].as_array_mut())
+        {
+            list.retain(|r| !is_sentence(&str_of(r, "id")));
+            list.extend(listed);
+        }
+        Ok(Ctx {
+            ws: ws.clone(),
+            eval_id: eval_id.to_string(),
+            brief,
+            evidence,
+            windows,
+            changes,
+            sentence_asks,
+        })
     }
 
     /// What the judges may cite as a fact: the commands the working agent
@@ -301,6 +327,47 @@ impl Ctx {
     fn window_bytes(&self, id: &str) -> usize {
         self.windows.get(id).map_or(0, String::len)
     }
+}
+
+/// An Ask's own sentence as RingFrame sorted it into a requirement:
+/// `<ask>/s<n>`.
+fn is_sentence(id: &str) -> bool {
+    id.rsplit_once('/').is_some_and(|(ask, n)| {
+        ask.starts_with("ask_")
+            && n.strip_prefix('s')
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// What the person said, as they said it: the Ask's source, without the
+/// rules RingFrame compiled after it.
+fn ask_words(ws: &Workspace, ask: &str) -> String {
+    std::fs::read_to_string(ws.rf_dir().join(format!("asks/{ask}/source.txt"))).unwrap_or_default()
+}
+
+/// The requirements task's list, once it is accepted, as requirements:
+/// `<ask>/f<n>`, beside the exact ones (plan steps, named paths). They have no
+/// DAG links, so their evidence is what the map ties to them.
+fn listed_requirements(ws: &Workspace, eval_id: &str) -> Result<Option<Vec<Value>>, EvalError> {
+    let q1 = task_id(eval_id, "q1");
+    let Some(e) = outcomes(ws, eval_id)?
+        .into_iter()
+        .find(|e| e["data"]["task_id"] == q1 && e["data"]["outcome"] == "accepted")
+    else {
+        return Ok(None);
+    };
+    let doc =
+        read_json(&ws.rf_dir().join(str_of(&e["data"]["artifact"], "path"))).unwrap_or(Value::Null);
+    let mut n: BTreeMap<String, usize> = BTreeMap::new();
+    let mut out = Vec::new();
+    for r in array_of(&doc, "requirements") {
+        let ask = str_of(r, "ask");
+        let k = n.entry(ask.clone()).or_default();
+        out.push(json!({"id": format!("{ask}/f{k}"), "kind": r["kind"], "ask": ask, "part": ask,
+                        "text": r["text"], "done_when": "", "paths": [], "claims": []}));
+        *k += 1;
+    }
+    Ok(Some(out))
 }
 
 /// Every `eval.task` event of this Eval, in order.
@@ -955,7 +1022,30 @@ fn votes_of(st: &Status, tasks: &[Task]) -> BTreeMap<String, Vec<Value>> {
 /// Every task the Eval needs, given what is in so far. A later stage appears
 /// only once the earlier one is all in, so the plan is the same every time it
 /// is computed from the same record.
+/// Every task the Eval needs, given what is in so far: first, alone, the
+/// requirements task when an Ask's own words hold requirements; then the
+/// judging.
 fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
+    let mut tasks = Vec::new();
+    if !ctx.sentence_asks.is_empty() {
+        let q1 = task_id(&ctx.eval_id, "q1");
+        let open = !st.accepted.contains_key(&q1) && !st.failed.contains(&q1);
+        tasks.push(Task {
+            id: q1,
+            kind: "requirements",
+            role: "requirements",
+            obligations: Vec::new(),
+            windows: Vec::new(),
+        });
+        if open {
+            return tasks;
+        }
+    }
+    tasks.extend(judging(ctx, st));
+    tasks
+}
+
+fn judging(ctx: &Ctx, st: &Status) -> Vec<Task> {
     let e = &ctx.eval_id;
     let done = |id: &str| st.accepted.contains_key(id) || st.failed.contains(id);
     let index: Vec<Value> = ctx
@@ -1225,6 +1315,44 @@ empty when none does.
 entry what the window does about it.
 ";
 
+const REQUIREMENTS_MD: &str = "\
+# RingFrame Eval task: requirements
+
+List what each Ask below requires of the change it asked for, from the \
+person's own words. RingFrame already holds the exact requirements: the plan \
+steps an Ask names, with their Done-when rows, and the paths it names. List \
+the rest, one requirement per thing asked, each with a quote of the words it \
+comes from.
+
+Write your output file:
+
+```json
+{\"requirements\": [
+   {\"ask\": \"ask_…\", \"kind\": \"local\", \"text\": \"<what the change must do>\", \"quote\": \"…\"},
+   {\"ask\": \"ask_…\", \"kind\": \"cross\", \"text\": \"<a rule all of the change must keep>\", \"quote\": \"…\"},
+   {\"ask\": \"ask_…\", \"kind\": \"process\", \"text\": \"<how the work is to be done>\", \"quote\": \"…\"}]}
+```
+
+- `kind`: `local` for something the change must do or contain; `cross` for a \
+rule every part of the change must keep; `process` for how the work is done or \
+reported (commits, notes, the order of the work), which the change itself \
+cannot show.
+- `quote`: 8 to 300 characters copied exactly from that Ask: the words this \
+requirement comes from.
+- `text`: the requirement in one sentence, at most 200 characters.
+- Leave out words that only name what to build (the plan or its phase): its \
+steps are already requirements.
+
+Do your task yourself: never hand it, or a part of it, to another agent. Write \
+your output file yourself, not with a script: RingFrame checks every quote \
+against its Ask.
+
+When your output is written, run `ringframe eval submit --task <task id> --file \
+<your output file>`. If it refuses, fix exactly what it names and submit again. \
+Send no message before then: your only message, and your last, is one line: \
+`<task id> accepted` or `<task id> failed: <reason>`. Nothing else.
+";
+
 const REDUCE_MD: &str = "\
 # RingFrame Eval task: reduce
 
@@ -1254,14 +1382,17 @@ characters.
 ";
 
 fn instructions(kind: &str, deny: &[String]) -> String {
-    let body = if kind == "reduce" { REDUCE_MD } else { MAP_MD };
     let rules = if deny.is_empty() {
         String::new()
     } else {
         let items: String = deny.iter().map(|r| format!("- {r}\n")).collect();
         format!("\nYou must not:\n{items}")
     };
-    format!("{body}\n{COMMON}{rules}")
+    match kind {
+        "requirements" => format!("{REQUIREMENTS_MD}{rules}"),
+        "reduce" => format!("{REDUCE_MD}\n{COMMON}{rules}"),
+        _ => format!("{MAP_MD}\n{COMMON}{rules}"),
+    }
 }
 
 /// Everything a judge needs, in one file and in reading order: the task,
@@ -1289,6 +1420,14 @@ fn brief(t: &Task, file: &Value, windows: &str, deny: &[String]) -> String {
     let rules = rules.split_once('\n').map_or(rules.as_str(), |(_, rest)| rest);
     b.push_str("## What to do\n");
     b.push_str(rules);
+    if t.kind == "requirements" {
+        b.push_str("\n## Asks\n\n");
+        for a in array_of(file, "asks") {
+            let _ = writeln!(b, "=== {}\n{}\n", str_of(a, "id"), str_of(a, "text").trim_end());
+        }
+        b.push_str("=== end of brief ===\n");
+        return b;
+    }
     b.push_str("\n## Requirements\n\n");
     for r in array_of(file, "requirements") {
         let _ = write!(b, "- `{}` ({}): {}", str_of(r, "id"), str_of(r, "kind"), str_of(r, "text"));
@@ -1420,6 +1559,14 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
         }
     }
     match t.kind {
+        "requirements" => {
+            let asks: Vec<Value> = ctx
+                .sentence_asks
+                .iter()
+                .map(|a| json!({"id": a, "text": ask_words(&ctx.ws, a)}))
+                .collect();
+            v["asks"] = json!(asks);
+        }
         "map" => {
             v["requirements"] = json!(t.obligations);
             // Other units' open Asks: work in this change that is theirs.
@@ -1453,7 +1600,11 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
 /// once more, to a fresh session, then fails.
 pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
     if let Some(r) = role {
-        need(ROLES.contains(&r), "eval.role", format!("{r} is not a role: {}", ROLES.join(", ")))?;
+        need(
+            ROLES.contains(&r) || r == "requirements",
+            "eval.role",
+            format!("{r} is not a role: {}, requirements", ROLES.join(", ")),
+        )?;
     }
     // Its state and the ledger are read, changed and written as one: two
     // judges at once would be handed one task, or settle twice.
@@ -1935,6 +2086,43 @@ fn check_map(ch: &mut Checker, out: &Value) {
     ch.templated(&entries, "unexplained", "window");
 }
 
+/// The requirements task: each entry names an Ask the task lists, a kind
+/// and its text, and quotes the person's words exactly.
+fn check_requirements(ch: &mut Checker, out: &Value) {
+    let entries = array_of(out, "requirements");
+    if entries.is_empty() {
+        ch.error("requirements", "list the Asks' requirements, at least one");
+    }
+    for (i, r) in entries.iter().enumerate() {
+        let at = format!("requirements[{i}]");
+        let ask = str_of(r, "ask");
+        let listed = ch.ctx.sentence_asks.contains(&ask);
+        if !listed {
+            ch.error(&format!("{at}.ask"), format!("{ask:?} is not an Ask this task lists"));
+        }
+        if !matches!(r["kind"].as_str(), Some("local" | "cross" | "process")) {
+            ch.error(&format!("{at}.kind"), "kind is local, cross or process");
+        }
+        let text = str_of(r, "text");
+        if text.trim().is_empty() || text.chars().count() > 200 {
+            ch.error(
+                &format!("{at}.text"),
+                "the requirement in one sentence, at most 200 characters",
+            );
+        }
+        let quote = str_of(r, "quote");
+        let n = quote.trim().chars().count();
+        let found = (QUOTE_MIN..=QUOTE_MAX).contains(&n)
+            && squash(&ask_words(&ch.ctx.ws, &ask)).contains(&squash(&quote));
+        if listed && !found {
+            ch.error(
+                &format!("{at}.quote"),
+                "8 to 300 characters copied exactly from that Ask's words",
+            );
+        }
+    }
+}
+
 fn check_reduce(ch: &mut Checker, out: &Value) {
     let wanted: Vec<String> = ch.task.obligations.iter().map(|o| str_of(o, "id")).collect();
     let parts: BTreeSet<String> = ch
@@ -2106,6 +2294,7 @@ fn check_and_record(
             let out = Value::Object(out);
             match t.kind {
                 "reduce" => check_reduce(&mut ch, &out),
+                "requirements" => check_requirements(&mut ch, &out),
                 _ => check_map(&mut ch, &out),
             }
             bytes = store::canonical(&out);
@@ -2152,6 +2341,10 @@ fn check_and_record(
 /// None when an error is not about one entry (the output's shape, a confirm's
 /// findings) or nothing is left.
 fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<String>)> {
+    // A list in part is not the Asks' requirements: the Eval keeps RingFrame's.
+    if t.kind == "requirements" {
+        return None;
+    }
     let (list, key) =
         if t.kind == "reduce" { ("requirements", "id") } else { ("windows", "window") };
     let entries = array_of(out, list);
@@ -2756,7 +2949,47 @@ mod tests {
             "work",
         );
         let out = open_eval(ws, open).unwrap();
-        Bench { eval_id: str_of(&out, "eval_id") }
+        let eval_id = str_of(&out, "eval_id");
+        frontier_as_ringframe(ws, &eval_id);
+        Bench { eval_id }
+    }
+
+    /// The requirements task answered with RingFrame's own sentence
+    /// requirements, each quoting the person's words, so a test about the rest
+    /// of the Eval starts at its map with the requirements it always had.
+    fn frontier_as_ringframe(ws: &Workspace, e: &str) {
+        let got = take(ws, e, Some("requirements")).unwrap();
+        if got["state"] != "running" {
+            return;
+        }
+        let q1 = str_of(&got["task"], "task_id");
+        let ctx = Ctx::load(ws, e).unwrap();
+        let entries: Vec<Value> = ctx
+            .requirements()
+            .iter()
+            .filter(|r| is_sentence(&str_of(r, "id")))
+            .map(|r| {
+                let words = ask_words(ws, &str_of(r, "ask"));
+                json!({"ask": r["ask"], "kind": r["kind"], "text": r["text"],
+                       "quote": words.trim().chars().take(QUOTE_MAX).collect::<String>()})
+            })
+            .collect();
+        put(ws, &q1, json!({"requirements": entries}));
+        assert_eq!(submit(ws, &q1).unwrap().0, 0);
+    }
+
+    /// The bench without its requirements task answered.
+    fn bench_unlisted(ws: &Workspace) -> Bench {
+        commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
+        confirm_ask_as(
+            ws,
+            "Build it",
+            b"build phase 1 and keep the notes plain\n",
+            b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+            "native_goal",
+        );
+        commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
+        Bench { eval_id: str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id") }
     }
 
     fn bench(ws: &Workspace) -> Bench {
@@ -2876,6 +3109,7 @@ mod tests {
                 open_eval(ws, Open { ask: Some(&str_of(&a, "ask_id")), ..Default::default() })
                     .unwrap();
             let e = &str_of(&opened, "eval_id");
+            frontier_as_ringframe(ws, e);
             let (up, notes, tele) = (
                 window_for(ws, e, "src/uptime.js"),
                 window_for(ws, e, "docs/notes.md"),
@@ -3115,7 +3349,7 @@ mod tests {
             assert!(rec["drift"]["commission"].as_f64().unwrap() > 0.0, "{}", rec["drift"]);
             let roles: BTreeSet<&str> =
                 array_of(&rec, "judges").iter().map(|j| j["angle"].as_str().unwrap()).collect();
-            assert_eq!(roles, BTreeSet::from(["map", "reduce", "confirm"]));
+            assert_eq!(roles, BTreeSet::from(["requirements", "map", "reduce", "confirm"]));
             let md = crate::evaluate::show_eval(ws, e).unwrap();
             assert!(
                 md.contains("## Unexplained changes") && md.contains("## Fabricated citations"),
@@ -3431,6 +3665,7 @@ mod tests {
                 "beacon v2",
             );
             let second = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            frontier_as_ringframe(ws, &second);
             let out = ready(ws, &second);
             let handed: Vec<String> = ids(&out)
                 .iter()
@@ -4240,7 +4475,9 @@ mod tests {
             assert!(brief.exists());
             assert_eq!(PathBuf::from(str_of(t, "answer")), out_path(ws, &m1));
             let handed = read_json(&state_path(ws, e)).unwrap()["handed"].clone();
-            assert_eq!(handed.as_object().map(|h| h.len()), Some(1), "{handed}");
+            let maps: Vec<&String> =
+                handed.as_object().unwrap().keys().filter(|k| !k.ends_with("~q1")).collect();
+            assert_eq!(maps, [&m1], "{handed}");
             assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
             assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
             refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
@@ -4264,6 +4501,111 @@ mod tests {
                 .into_iter()
                 .any(|ev| ev["type"] == "eval.task" && ev["data"]["task_id"] == t);
             assert!(!recorded, "nothing of a voided Eval is recorded");
+        });
+    }
+
+    /// A requirements task reads the person's words and comes before the
+    /// maps, alone.
+    #[test]
+    fn the_requirements_task_reads_the_persons_words_first_and_alone() {
+        eval_bench(|ws| {
+            let e = &bench_unlisted(ws).eval_id;
+            let got = take(ws, e, None).unwrap();
+            assert_eq!(
+                (str_of(&got["task"], "role"), str_of(&got["task"], "kind")),
+                ("requirements".into(), "requirements".into()),
+                "{got}"
+            );
+            let brief = std::fs::read_to_string(str_of(&got["task"], "brief")).unwrap();
+            assert!(brief.contains("build phase 1 and keep the notes plain"), "{brief}");
+            assert!(!brief.contains("Keep the README"), "the prompt is not the person's words");
+            assert_eq!(take(ws, e, None).unwrap()["state"], "waiting", "the maps wait for it");
+        });
+    }
+
+    /// Each requirement quotes the Ask it comes from; a quote not in the
+    /// person's words is refused.
+    #[test]
+    fn an_unquoted_requirement_is_refused() {
+        /// A fresh bench's requirements task, answered with `doc` for its Ask.
+        fn submitted(doc: impl Fn(&str) -> Value) -> (i32, Value) {
+            eval_bench(|ws| {
+                let e = &bench_unlisted(ws).eval_id;
+                let q1 = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+                let ask = str_of(Ctx::load(ws, e).unwrap().requirements()[0], "ask");
+                put(ws, &q1, doc(&ask));
+                submit(ws, &q1).unwrap()
+            })
+        }
+        let answer = |quote: &str, ask: &str, kind: &str| {
+            json!({"requirements": [{"ask": ask, "kind": kind, "text": "the notes stay plain",
+                                     "quote": quote}]})
+        };
+        let refused_at = |(code, out): (i32, Value), at: &str| {
+            assert_eq!(code, 2, "{out}");
+            assert!(array_of(&out, "errors").iter().any(|x| x["at"] == at), "{at}: {out}");
+        };
+        refused_at(
+            submitted(|a| answer("Keep the README short and plain", a, "cross")),
+            "requirements[0].quote",
+        );
+        refused_at(
+            submitted(|_| answer("keep the notes plain", "ask_other", "cross")),
+            "requirements[0].ask",
+        );
+        refused_at(
+            submitted(|a| answer("keep the notes plain", a, "style")),
+            "requirements[0].kind",
+        );
+        refused_at(submitted(|_| json!({"requirements": []})), "requirements");
+        assert_eq!(submitted(|a| answer("keep the notes plain", a, "cross")).0, 0);
+    }
+
+    /// Accepted, its requirements take the place of the sentences RingFrame
+    /// sorted from the compiled prompt: no rule line becomes a requirement.
+    #[test]
+    fn no_rule_line_becomes_a_requirement() {
+        eval_bench(|ws| {
+            let e = &bench_unlisted(ws).eval_id;
+            let before: Vec<String> =
+                Ctx::load(ws, e).unwrap().requirements().iter().map(|r| str_of(r, "id")).collect();
+            assert!(before.iter().any(|id| is_sentence(id)), "the prompt's sentence: {before:?}");
+            let q1 = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            let ask = str_of(Ctx::load(ws, e).unwrap().requirements()[0], "ask");
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [{"ask": ask, "kind": "cross",
+                                                  "text": "the notes stay plain",
+                                                  "quote": "keep the notes plain"}]}),
+            );
+            assert_eq!(submit(ws, &q1).unwrap().0, 0);
+            let ctx = Ctx::load(ws, e).unwrap();
+            let after: Vec<String> = ctx.requirements().iter().map(|r| str_of(r, "id")).collect();
+            assert!(!after.iter().any(|id| is_sentence(id)), "{after:?}");
+            assert!(
+                after.contains(&format!("{ask}/f0")) && after.contains(&S1.to_string()),
+                "{after:?}"
+            );
+            let map = take(ws, e, None).unwrap();
+            assert_eq!(str_of(&map["task"], "role"), "map", "{map}");
+        });
+    }
+
+    /// A requirements task that fails leaves RingFrame's own requirements.
+    #[test]
+    fn a_failed_requirements_task_leaves_ringframes_own() {
+        eval_bench(|ws| {
+            let e = &bench_unlisted(ws).eval_id;
+            let q1 = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            for _ in 0..3 {
+                put(ws, &q1, json!({"requirements": []}));
+                submit(ws, &q1).unwrap();
+            }
+            let ctx = Ctx::load(ws, e).unwrap();
+            assert!(status(&ctx).unwrap().failed.contains(&q1));
+            assert!(ctx.requirements().iter().any(|r| is_sentence(&str_of(r, "id"))));
+            assert_eq!(str_of(&take(ws, e, None).unwrap()["task"], "role"), "map");
         });
     }
 
