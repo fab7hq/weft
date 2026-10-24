@@ -2090,8 +2090,11 @@ fn check_map(ch: &mut Checker, out: &Value) {
 /// and its text, and quotes the person's words exactly.
 fn check_requirements(ch: &mut Checker, out: &Value) {
     let entries = array_of(out, "requirements");
-    if entries.is_empty() {
-        ch.error("requirements", "list the Asks' requirements, at least one");
+    if !entries.iter().any(|r| matches!(r["kind"].as_str(), Some("local" | "cross"))) {
+        ch.error(
+            "requirements",
+            "list at least one local or cross requirement: the change is judged against them",
+        );
     }
     for (i, r) in entries.iter().enumerate() {
         let at = format!("requirements[{i}]");
@@ -4558,6 +4561,9 @@ mod tests {
             "requirements[0].kind",
         );
         refused_at(submitted(|_| json!({"requirements": []})), "requirements");
+        // Only how the work is done: the map would have nothing to tie the
+        // change to, and every window would read as unexplained.
+        refused_at(submitted(|a| answer("keep the notes plain", a, "process")), "requirements");
         assert_eq!(submitted(|a| answer("keep the notes plain", a, "cross")).0, 0);
     }
 
