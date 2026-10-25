@@ -12,18 +12,19 @@ use crate::words::{fill, word};
 #[serde(rename_all = "snake_case")]
 pub enum Offer {
     KeepRule,
-    Commit,
     FollowUp,
     Undo,
 }
 
 /// What sealed work offers, by what was decided: accepted work may keep a
-/// rule and be committed; rejected work may be followed up or undone.
-/// Parked and dropped work offer nothing.
-pub fn offers(disposition: &str) -> &'static [Offer] {
+/// rule; rejected work may be followed up, or undone when its first Ask
+/// recorded the commit it started from. Parked and dropped work offer
+/// nothing.
+pub fn offers(disposition: &str, has_base_commit: bool) -> &'static [Offer] {
     match disposition {
-        "accepted" => &[Offer::KeepRule, Offer::Commit],
-        "rejected" => &[Offer::FollowUp, Offer::Undo],
+        "accepted" => &[Offer::KeepRule],
+        "rejected" if has_base_commit => &[Offer::FollowUp, Offer::Undo],
+        "rejected" => &[Offer::FollowUp],
         _ => &[],
     }
 }
@@ -83,19 +84,6 @@ pub fn settled(text: &str) -> Option<Drafted> {
     })
 }
 
-/// The words Commit types.
-pub fn commit_request() -> String {
-    word("dialog.commit.request").into()
-}
-
-/// The dialog before Commit types: what happens, in a sentence.
-pub fn committing(harness: &str, title: &str) -> Asking {
-    Asking {
-        what: word("dialog.commit.title").into(),
-        why: vec![fill("dialog.commit.why", &[("harness", harness), ("title", title)])],
-    }
-}
-
 /// The words Undo types: the work back as it was at the commit its first
 /// Ask was sent on.
 pub fn undo_request(title: &str, base_commit: &str) -> String {
@@ -138,11 +126,12 @@ mod tests {
     use crate::work::{Status, UnitOfWork};
 
     #[test]
-    fn accepted_work_keeps_a_rule_or_commits_and_rejected_work_follows_up_or_undoes() {
-        assert_eq!(offers("accepted"), [Offer::KeepRule, Offer::Commit]);
-        assert_eq!(offers("rejected"), [Offer::FollowUp, Offer::Undo]);
-        assert!(offers("deferred").is_empty());
-        assert!(offers("abandoned").is_empty());
+    fn accepted_work_keeps_a_rule_and_rejected_work_follows_up_or_undoes_to_its_commit() {
+        assert_eq!(offers("accepted", true), [Offer::KeepRule]);
+        assert_eq!(offers("rejected", true), [Offer::FollowUp, Offer::Undo]);
+        assert_eq!(offers("rejected", false), [Offer::FollowUp], "no commit, no Undo");
+        assert!(offers("deferred", true).is_empty());
+        assert!(offers("abandoned", true).is_empty());
     }
 
     #[test]
@@ -198,19 +187,19 @@ mod tests {
     }
 
     #[test]
-    fn commit_and_undo_type_plain_sentences_and_undo_names_the_commit() {
-        assert_eq!(commit_request(), "commit these changes");
+    fn undo_names_the_commit_keeps_history_and_asks_before_discarding_other_changes() {
         let undo = undo_request("health endpoint", "4f2a9c1");
         assert!(undo.contains("\"health endpoint\"") && undo.contains("commit 4f2a9c1"), "{undo}");
-        let commit = committing("codex", "health endpoint");
-        assert_eq!(commit.what, "Commit this work?");
-        assert_eq!(
-            commit.why,
-            ["codex commits the changes of health endpoint and writes the message."]
-        );
+        assert!(undo.contains("Don't rewrite Git history"), "{undo}");
+        assert!(undo.contains("ask me before you discard any change"), "{undo}");
         let undo = undoing("codex", "health endpoint");
         assert_eq!(undo.what, "Undo this work?");
         assert!(!undo.why[0].contains("commit "), "no commit id is shown: {:?}", undo.why);
+        assert!(
+            undo.why[0].ends_with("and asks before discarding anything else."),
+            "{:?}",
+            undo.why
+        );
     }
 
     #[test]

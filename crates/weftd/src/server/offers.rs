@@ -1,4 +1,4 @@
-//! What sealed work offers: keep a rule, commit, follow up, undo. Each has
+//! What sealed work offers: keep a rule, follow up, undo. Each has
 //! one dialog; what an offer types goes into the work's own agent, where the
 //! person can watch it, and Weft runs no Git itself.
 
@@ -49,17 +49,8 @@ impl Session {
                 Answer::nothing()
             }
             "keep_rule" => self.keep_rule((client, call_id), at, &sealed, draft),
-            "commit" => self.commit(at, &sealed),
             _ => self.undo(at, &sealed),
         }
-    }
-
-    /// Commit's dialog: the work's agent commits and writes the message.
-    fn commit(&mut self, at: usize, sealed: &Sealed) -> Answer {
-        let (harness, title) = (self.title_of(at, &sealed.newest().harness), &sealed.root().title);
-        let asking = weft_core::after_seal::committing(&harness, title);
-        let go = weft_proto::Go { word: "offer.commit".into(), warn: false };
-        self.stage_typing(at, sealed, weft_core::after_seal::commit_request(), asking, go)
     }
 
     /// Undo's dialog: the work's agent puts the files back as they were at

@@ -1,8 +1,8 @@
 //! What sealed work offers types what its dialog shows, into the work's own
-//! agent, and nothing before Send: Commit on accepted work types "commit
-//! these changes"; Undo on rejected work names the commit its first Ask was
-//! sent on; Follow up on rejected work starts from what its Eval found and
-//! remediates that Eval. An offer for the other decision is refused.
+//! agent, and nothing before Send: Undo on rejected work names the commit
+//! its first Ask was sent on; Follow up on rejected work starts from what its
+//! Eval found and remediates that Eval. An offer for the other decision is
+//! refused, and there is no Commit.
 //!
 //! Its own test binary because it sets `HOME` for RingFrame's configuration.
 
@@ -252,16 +252,9 @@ fn each_offer_types_what_its_dialog_shows() {
         "{done}"
     );
 
-    // Each offer is for one decision.
-    assert_eq!(c.answer(offer("commit", &rejected, None, None)), Err("not_offered".into()));
+    // Each offer is for one decision, and the person commits for themselves.
     assert_eq!(c.answer(offer("undo", &accepted, None, None)), Err("not_offered".into()));
-
-    // Commit: its dialog says what happens in a sentence, shows nothing
-    // typed, and names its yes; that yes types the request.
-    let (pending, what, payload, warn) = c.dialog("commit", &accepted);
-    assert_eq!((what.as_str(), payload.as_str(), warn), ("Commit this work?", "", false));
-    c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
-    typed(&dir, pane, "commit these changes");
+    assert_eq!(c.answer(offer("commit", &accepted, None, None)), Err("unknown_act".into()));
 
     // Undo: the commit the work's first Ask was sent on is typed, never
     // shown; its yes is amber.
@@ -269,7 +262,8 @@ fn each_offer_types_what_its_dialog_shows() {
     assert_eq!((what.as_str(), payload.as_str()), ("Undo this work?", ""));
     assert!(warn, "Undo's yes is amber");
     c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
-    typed(&dir, pane, &format!("commit {base}"));
+    let said = typed(&dir, pane, &format!("commit {base}"));
+    assert!(said.contains("ask me before you discard any change"), "{said}");
 
     // Follow up: the sheet's words are what the Eval found, and the Ask
     // remediates that Eval.

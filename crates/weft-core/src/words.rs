@@ -133,7 +133,6 @@ pub const WORDS: &[(&str, &str)] = &[
     // What sealed work offers, each with its own dialog.
     ("offer.after_seal", "AFTER THE SEAL"),
     ("offer.keep_rule", "Keep a rule"),
-    ("offer.commit", "Commit"),
     ("offer.follow_up", "Follow up"),
     ("offer.undo", "Undo"),
     (
@@ -168,14 +167,15 @@ pub const WORDS: &[(&str, &str)] = &[
         "{harness} ended without writing a rule. Write it yourself, or Cancel.",
     ),
     ("dialog.keep_rule.placeholder", "The rule, in one line"),
-    ("dialog.commit.title", "Commit this work?"),
-    ("dialog.commit.why", "{harness} commits the changes of {title} and writes the message."),
-    ("dialog.commit.request", "commit these changes"),
     ("dialog.undo.title", "Undo this work?"),
-    ("dialog.undo.why", "{harness} puts your files back as they were before {title} started."),
+    (
+        "dialog.undo.why",
+        "{harness} puts your files back as they were before {title} started, and asks before discarding anything else.",
+    ),
     (
         "dialog.undo.request",
-        "Restore the work to how it was before \"{title}\" was asked: the state at commit {commit}.",
+        "Undo \"{title}\": put the code back as it was at commit {commit}, where this work started. \
+         Don't rewrite Git history, and ask me before you discard any change this work didn't make.",
     ),
     // A project's export of each Seal (17.19).
     ("export.section", "RECORD EACH SEAL IN GIT"),

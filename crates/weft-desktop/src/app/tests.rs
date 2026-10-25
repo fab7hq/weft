@@ -823,17 +823,17 @@ fn acted(wire: &mut Wire) -> Call {
     }
 }
 
-/// Sealed work offers what its decision allows: accepted work, Commit and
-/// Keep a rule. Keep a rule is one dialog: opening it has the agent draft one,
-/// the draft fills it, and Save keeps the rule as edited, for the team when
-/// asked. Commit asks the daemon, whose dialog follows.
+/// Sealed work offers what its decision allows: accepted work, Keep a rule
+/// alone. Keep a rule is one dialog: opening it has the agent draft one, the
+/// draft fills it, and Save keeps the rule as edited, for the team when
+/// asked.
 #[test]
-fn accepted_work_offers_commit_and_keep_a_rule() {
+fn accepted_work_offers_keep_a_rule() {
     use weft_core::after_seal::{Drafted, Offer};
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
     let unit = app.render().find_layer("sheet Unit").expect("the unit").all_text();
-    for said in ["AFTER THE SEAL", "Commit", "Keep a rule"] {
+    for said in ["AFTER THE SEAL", "Keep a rule"] {
         assert!(unit.contains(said), "{said} in {unit}");
     }
     assert!(!unit.contains("Undo"), "accepted work is not undone: {unit}");
@@ -872,10 +872,6 @@ fn accepted_work_offers_commit_and_keep_a_rule() {
     );
     assert!(draft.share);
     assert_eq!(app.bottom_bar, BottomBarState::None, "Save closes it");
-
-    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::Commit });
-    let call = acted(&mut wire);
-    assert!(matches!(&call, Call::Act { act, .. } if act == "commit"), "{call:?}");
 }
 
 /// The rule can always be written by hand: when no draft will come, the
@@ -918,6 +914,7 @@ fn a_rule_is_kept_by_hand_when_no_draft_comes() {
 
 /// A project's Git note of each Seal is off until its own settings turn it
 /// on; turning it on asks once, showing what a note holds; off asks nothing.
+    assert!(!unit.contains("Commit"), "the person commits for themselves: {unit}");
 #[test]
 fn a_projects_git_note_is_turned_on_in_one_dialog() {
     let (_tmp, mut app, mut wire) = wired_app();

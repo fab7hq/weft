@@ -493,7 +493,8 @@ pub fn unit_detail(
         seal: why.1,
         offers: match &u.status {
             crate::work::Status::Sealed { decision } => {
-                crate::after_seal::offers(decision).to_vec()
+                let base = root.is_some_and(|r| r.base_commit.is_some());
+                crate::after_seal::offers(decision, base).to_vec()
             }
             _ => Vec::new(),
         },
@@ -964,8 +965,8 @@ mod tests {
             })
         );
         use crate::after_seal::Offer;
-        assert_eq!(d.offers, [Offer::KeepRule, Offer::Commit], "accepted work offers these");
-        assert_eq!(serde_json::to_value(&d).unwrap()["offers"], json!(["keep_rule", "commit"]));
+        assert_eq!(d.offers, [Offer::KeepRule], "accepted work offers this");
+        assert_eq!(serde_json::to_value(&d).unwrap()["offers"], json!(["keep_rule"]));
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["steps"][1]["step"], "eval");
         assert_eq!(v["status"], json!({"state": "sealed", "decision": "accepted"}));

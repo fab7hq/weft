@@ -1068,7 +1068,7 @@ impl Session {
         if act == "stop" {
             return self.stage_stop(at, eval);
         }
-        if matches!(act, "draft_rule" | "drop_draft" | "keep_rule" | "commit" | "undo") {
+        if matches!(act, "draft_rule" | "drop_draft" | "keep_rule" | "undo") {
             return self.offer((client, call_id), at, act, (unit_id, draft));
         }
         let root = self.projects[at].root.clone();

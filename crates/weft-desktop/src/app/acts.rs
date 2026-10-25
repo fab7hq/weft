@@ -495,8 +495,8 @@ impl WeftDesktopApp {
     }
 
     /// What sealed work offers. Follow up reads what its Eval found first;
-    /// Keep a rule opens its dialog and has the agent draft one; Commit and
-    /// Undo ask the daemon, whose one dialog follows.
+    /// Keep a rule opens its dialog and has the agent draft one; Undo asks
+    /// the daemon, whose one dialog follows.
     fn offer(&mut self, project: PathBuf, unit: String, offer: weft_core::after_seal::Offer) {
         use weft_core::after_seal::Offer;
         let (harness, title) = self
@@ -524,9 +524,6 @@ impl WeftDesktopApp {
                     draft,
                     failed,
                 };
-            }
-            Offer::Commit => {
-                let _ = c.act("commit", Some(&unit), None, None, None, None);
             }
             Offer::Undo => {
                 let _ = c.act("undo", Some(&unit), None, None, None, None);

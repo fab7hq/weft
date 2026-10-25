@@ -670,7 +670,7 @@ impl Project {
         if m["act"] == "stop" {
             return stop(m);
         }
-        if let Some(offer @ ("draft_rule" | "drop_draft" | "keep_rule" | "commit" | "undo")) =
+        if let Some(offer @ ("draft_rule" | "drop_draft" | "keep_rule" | "undo")) =
             m["act"].as_str()
         {
             return self.offer(offer, m);
@@ -1078,7 +1078,7 @@ mod tests {
         p.units[0].sealed = Some("rejected".into());
         p.units[0].seal_id = Some("sel_1".into());
         p.work = work_of(&p.units, &events);
-        for offer in ["draft_rule", "drop_draft", "keep_rule", "commit", "undo"] {
+        for offer in ["draft_rule", "drop_draft", "keep_rule", "undo"] {
             let m = json!({"act": offer, "unit": "ask_1", "draft": {"share": true}});
             let Ok(Call::Act { act: a, unit, pane, text, draft, .. }) = act(&p, m) else {
                 panic!("{offer} was refused");
@@ -1089,7 +1089,8 @@ mod tests {
             );
             assert!(draft.is_some_and(|d| d.share), "{offer} carries its draft");
         }
-        assert!(act(&p, json!({"act": "commit", "unit": "ask_9"})).is_err(), "no such work");
+        assert!(act(&p, json!({"act": "undo", "unit": "ask_9"})).is_err(), "no such work");
+        assert!(act(&p, json!({"act": "commit", "unit": "ask_1"})).is_err(), "no Commit");
 
         let found = |q: &str| -> Vec<String> {
             p.done(Some(q), None)["rows"]
