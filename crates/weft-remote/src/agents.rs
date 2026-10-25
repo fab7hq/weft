@@ -596,6 +596,36 @@ impl Project {
         Ok(v)
     }
 
+    /// What sealed work offers, on the unit a device names: the daemon
+    /// says whether this work offers it.
+    fn offer(&self, offer: &str, m: &Value) -> Result<Call, Refusal> {
+        let id =
+            m["unit"].as_str().ok_or(("bad_request", "an offer names its unit".to_string()))?;
+        let unit = self.unit(id).ok_or(("no_unit", format!("{id} is not on the board")))?;
+        Ok(Call::Act {
+            act: offer.into(),
+            unit: Some(unit.ask_id.clone()),
+            pane: None,
+            text: None,
+            eval: None,
+            start: None,
+            draft: serde_json::from_value(m["draft"].clone()).ok(),
+        })
+    }
+
+    /// Done: every sealed unit, parked first, narrowed by `q`, a page at a
+    /// time.
+    pub fn done(&self, q: Option<&str>, after: Option<&str>) -> Value {
+        let found: Vec<Value> = weft_core::done::done(&self.work, &self.units)
+            .iter()
+            .filter(|d| q.is_none_or(|q| weft_core::done::matches(d, q)))
+            .map(|d| serde_json::to_value(d).unwrap_or_default())
+            .collect();
+        let total = found.len();
+        let (rows, next) = page(&found, after, |r| r["unit"].as_str().unwrap_or_default());
+        json!({"total": total, "rows": rows, "next": next})
+    }
+
     /// The sealed units WORK folds, a page at a time, newest first.
     pub fn sealed(&self, after: Option<&str>) -> Value {
         let all = self.rows_of(None);
@@ -639,6 +669,9 @@ impl Project {
     pub fn act(&self, m: &Value, pane: Option<u32>) -> Result<Call, Refusal> {
         if m["act"] == "stop" {
             return stop(m);
+        }
+        if let Some(offer @ ("draft_rule" | "keep_rule" | "commit" | "undo")) = m["act"].as_str() {
+            return self.offer(offer, m);
         }
         let (act, daemon) = match m["act"].as_str() {
             Some("ask") => (Act::Ask, "ask"),
@@ -1026,6 +1059,53 @@ mod tests {
             start: None,
             draft: None,
         }
+    }
+
+    /// What sealed work offers goes to the daemon as its own act on the
+    /// unit, with the draft the device sent; Done is every sealed unit,
+    /// searched by its words.
+    #[test]
+    fn offers_on_sealed_work_go_to_the_daemon_and_done_is_searched() {
+        let mut p = opened();
+        let mut events = judged_events(&["ask_1"]);
+        events.push(json!({"type": "seal.created", "id": "sel_1", "time": "2026-10-08T10:06:00Z",
+            "actor": {"kind": "human", "id": "local-user"},
+            "links": [{"rel": "seals", "id": "ask_1"}, {"rel": "seals", "id": "evl_1"}],
+            "data": {"basis": {"asks": ["ask_1"]}, "disposition": "rejected",
+                     "reason": "broke_something"}}));
+        p.units[0].sealed = Some("rejected".into());
+        p.units[0].seal_id = Some("sel_1".into());
+        p.work = work_of(&p.units, &events);
+        for offer in ["draft_rule", "keep_rule", "commit", "undo"] {
+            let m = json!({"act": offer, "unit": "ask_1", "draft": {"share": true}});
+            let Ok(Call::Act { act: a, unit, pane, text, draft, .. }) = act(&p, m) else {
+                panic!("{offer} was refused");
+            };
+            assert_eq!(
+                (a.as_str(), unit.as_deref(), pane, text),
+                (offer, Some("ask_1"), None, None)
+            );
+            assert!(draft.is_some_and(|d| d.share), "{offer} carries its draft");
+        }
+        assert!(act(&p, json!({"act": "commit", "unit": "ask_9"})).is_err(), "no such work");
+
+        let found = |q: &str| -> Vec<String> {
+            p.done(Some(q), None)["rows"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|d| {
+                    format!(
+                        "{} · {}",
+                        d["title"].as_str().unwrap(),
+                        d["reason"].as_str().unwrap_or("")
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(found("broke"), ["fix login · broke something"]);
+        assert!(found("accepted").is_empty());
+        assert_eq!(p.done(None, None)["total"], 1);
     }
 
     /// `opened`, with Eval 1 judged over ask_1, and ask_2 a work of its own.

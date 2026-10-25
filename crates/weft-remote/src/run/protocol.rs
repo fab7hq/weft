@@ -134,6 +134,7 @@ impl Remote {
                         return;
                     }
                     Carries::Settings => ok["settings"] = v,
+                    Carries::Remedy => ok["remedy"] = v,
                     Carries::Suggestion => {
                         if v.get("text").is_some() {
                             ok["text"] = v["text"].clone();
@@ -561,7 +562,7 @@ impl Remote {
         // What the device reads of a project it names, answered at once from
         // what this process holds: no read reaches weftd for a page.
         let local = match what {
-            Some("eval" | "work" | "session" | "sealed" | "sessions") => {
+            Some("eval" | "work" | "session" | "sealed" | "sessions" | "done") => {
                 let at = self.project_named(m)?;
                 let agents = &self.projects[at].as_ref().expect("an open project").agents;
                 let id = |k: &str| m[k].as_str().ok_or(("bad_request", format!("no {k}")));
@@ -570,6 +571,7 @@ impl Remote {
                     Some("work") => json!({"work": agents.work(id("unit")?)?}),
                     Some("session") => json!({"session": agents.session(id("session")?)?}),
                     Some("sealed") => json!({"sealed": agents.sealed(after)}),
+                    Some("done") => json!({"done": agents.done(m["q"].as_str(), after)}),
                     _ => json!({"sessions": agents.sessions(m["q"].as_str(), after, now_millis())}),
                 })
             }
@@ -602,6 +604,20 @@ impl Remote {
                 let of = Gather::Seal { id: id.into(), after: after.map(str::to_string) };
                 (at, of, vec![(Part::Seal, "seal", id.to_string())])
             }
+            // A follow-up's words for rejected work, from what its Eval found.
+            Some("remedy") => {
+                let at = self.project_named(m)?;
+                let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
+                let call = Call::Read {
+                    what: "remedy".into(),
+                    unit: id.into(),
+                    pane: None,
+                    lines: None,
+                    before: None,
+                    after: None,
+                };
+                return self.ask(at, call, conn, req, Carries::Remedy);
+            }
             Some("eval_view") => {
                 let at = self.project_named(m)?;
                 let id = m["eval"].as_str().ok_or(("bad_request", "no eval".to_string()))?;
@@ -610,8 +626,8 @@ impl Remote {
             _ => {
                 return Err((
                     "not_allowed",
-                    "a device reads history, detail, work, eval, seal, session, sealed, sessions \
-                     or eval_view"
+                    "a device reads history, detail, work, eval, seal, session, sealed, sessions, \
+                     done, remedy or eval_view"
                         .into(),
                 ));
             }
