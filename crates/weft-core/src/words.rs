@@ -123,7 +123,11 @@ pub const WORDS: &[(&str, &str)] = &[
     ("dialog.eval.nothing_typed", "Nothing is typed into the agent's pane."),
     ("dialog.stop_eval.title", "Stop this Eval?"),
     ("dialog.stop_eval.why", "The judges of {title} stop, and the Eval is voided."),
-    ("dialog.mark.why", "Weft keeps this mark on this machine. The judges' record stays as it is."),
+    ("dialog.mark.title", "Not what you meant?"),
+    (
+        "dialog.mark.why",
+        "Weft remembers your answer on this machine to learn what you mean. What the judges found stays as it is.",
+    ),
     // The one dialog a Seal has: the decision, and why when it is not a yes.
     ("dialog.seal.title", "Seal this work?"),
     ("dialog.seal.verdict", "VERDICT"),
@@ -202,7 +206,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.findings", "Findings"),
     ("eval_view.unexplained", "Unexplained changes"),
     ("eval_view.split", "The judges split"),
-    ("eval_view.asked_for", "I asked for this"),
     ("eval_view.not_meant", "Not what I meant"),
     ("eval_view.checks", "Checks RingFrame ran"),
     ("eval_view.running", "`{check}`: running"),

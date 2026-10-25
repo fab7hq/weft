@@ -125,13 +125,13 @@ pub fn stopping(title: &str) -> Asking {
     }
 }
 
-/// Marking one item of a closed Eval, `asked_for` or `not_meant`: the item,
-/// and that the judges' record stays as it is.
-pub fn marking(mark: &str, item: &str) -> Asking {
+/// Saying a sentence of the Ask is not what the person meant: the sentence,
+/// and that what the judges found stays as it is.
+pub fn not_meant(sentence: &str) -> Asking {
     use crate::words::word;
     Asking {
-        what: word(&format!("eval_view.{mark}")).into(),
-        why: vec![item.to_string(), word("dialog.mark.why").into()],
+        what: word("dialog.mark.title").into(),
+        why: vec![sentence.to_string(), word("dialog.mark.why").into()],
     }
 }
 

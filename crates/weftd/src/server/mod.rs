@@ -1269,15 +1269,15 @@ impl Session {
         self.stage(at, NO_PANE, built)
     }
 
-    /// Put the dialog that marks `item` of a closed Eval in front of everyone
-    /// watching: what it may be marked is the Eval view's to say.
+    /// Put the dialog that says a sentence of a closed Eval's Ask is not what
+    /// the person meant in front of everyone watching. A change takes no mark.
     fn stage_mark(&mut self, at: usize, eval: Option<&str>, item: Option<&str>) -> Answer {
         let (Some(eval), Some(item)) = (eval, item) else {
-            return Answer::No("bad_request", "a mark names its Eval and its item".into());
+            return Answer::No("bad_request", "a mark names its Eval and its sentence".into());
         };
         let root = self.projects[at].root.clone();
         let view = crate::record::eval_view(&root, eval);
-        let Some((mark, line)) = view.as_ref().and_then(|v| v.mark(item)) else {
+        let Some(sentence) = view.as_ref().and_then(|v| v.not_meant(item)) else {
             return Answer::No("not_markable", format!("{item} of {eval} takes no mark"));
         };
         self.projects[at].ledger.refresh();
@@ -1288,10 +1288,9 @@ impl Session {
         let kept = crate::labels::Mark {
             harness: harness.map_or(String::new(), |u| u.harness.clone()),
             eval_id: eval.to_string(),
-            mark,
-            item: item.to_string(),
+            requirement: item.to_string(),
         };
-        let built = crate::acts::mark(weft_core::offers::marking(mark, &line), kept);
+        let built = crate::acts::mark(weft_core::offers::not_meant(&sentence), kept);
         self.stage(at, NO_PANE, built)
     }
 

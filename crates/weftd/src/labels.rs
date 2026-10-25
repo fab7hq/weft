@@ -66,23 +66,20 @@ pub fn asked(draft: &crate::ringframe::AskDraft, ask_id: &str) -> Value {
     })
 }
 
-/// A mark on one item of a closed Eval: `asked_for` on a window,
-/// `not_meant` on a requirement.
+/// A sentence of the Ask a closed Eval checked, which the person said is not
+/// what they meant.
 #[derive(Debug, Clone)]
 pub struct Mark {
     pub harness: String,
     pub eval_id: String,
-    pub mark: &'static str,
-    pub item: String,
+    pub requirement: String,
 }
 
 /// A mark the person put on a closed Eval.
 pub fn marked(m: &Mark) -> Value {
-    let item = Some(m.item.as_str());
-    let (window, requirement) = if m.mark == "asked_for" { (item, None) } else { (None, item) };
     json!({
         "schema": SCHEMA, "kind": "mark", "at": now_ms(), "harness": m.harness,
-        "eval_id": m.eval_id, "window": window, "requirement": requirement, "mark": m.mark,
+        "eval_id": m.eval_id, "requirement": m.requirement, "mark": "not_meant",
     })
 }
 
@@ -122,18 +119,16 @@ mod tests {
         let receipt = json!({"seal_id": "sel_1", "eval": {"eval_id": "evl_1"},
                              "disposition": "rejected", "reason": "wrong_approach"});
         append(&config, root, &sealed("codex", &receipt)).unwrap();
-        let mark = |mark, item: &str| Mark {
+        let mark = Mark {
             harness: "codex".into(),
             eval_id: "evl_1".into(),
-            mark,
-            item: item.into(),
+            requirement: "ask_1/f0".into(),
         };
-        append(&config, root, &marked(&mark("asked_for", "w_1"))).unwrap();
-        append(&config, root, &marked(&mark("not_meant", "ask_1/f0"))).unwrap();
+        append(&config, root, &marked(&mark)).unwrap();
         let path = file(&config, root);
         let text = std::fs::read_to_string(&path).unwrap();
         let rows: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(rows.len(), 4, "one row each");
+        assert_eq!(rows.len(), 3, "one row each");
         assert_eq!((&rows[0]["schema"], &rows[0]["kind"]), (&json!(SCHEMA), &json!("ask")));
         assert_eq!(rows[0]["intent"], "Fix the login bug.");
         assert_eq!(
@@ -147,13 +142,9 @@ mod tests {
             (&rows[1]["kind"], &rows[1]["eval_id"], &rows[1]["disposition"], &rows[1]["reason"]),
             (&json!("seal"), &json!("evl_1"), &json!("rejected"), &json!("wrong_approach"))
         );
-        let mark = |r: &Value| {
-            (r["kind"].clone(), r["window"].clone(), r["requirement"].clone(), r["mark"].clone())
-        };
-        assert_eq!(mark(&rows[2]), (json!("mark"), json!("w_1"), Value::Null, json!("asked_for")));
         assert_eq!(
-            mark(&rows[3]),
-            (json!("mark"), Value::Null, json!("ask_1/f0"), json!("not_meant"))
+            (&rows[2]["kind"], &rows[2]["requirement"], &rows[2]["mark"]),
+            (&json!("mark"), &json!("ask_1/f0"), &json!("not_meant"))
         );
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!((mode(&path), mode(&dir(&config))), (0o600, 0o700));

@@ -1,7 +1,7 @@
-//! A mark on a closed Eval is one dialog: "I asked for this" on a change the
-//! judges left unexplained or split on, "Not what I meant" on a requirement.
-//! Its Mark appends one `mark` row to the project's label stream; Cancel keeps
-//! none, and the judges' record is never rewritten.
+//! "Not what I meant" on a sentence of a closed Eval's Ask is one dialog that
+//! shows the sentence; its yes appends one `mark` row to the project's label
+//! stream, Cancel keeps none, and the judges' record is never rewritten. A
+//! change takes no mark: the person is never asked about a file.
 //!
 //! The Eval is a real one RingFrame closed on a planted change, put on disk
 //! as RingFrame left it.
@@ -160,15 +160,17 @@ fn a_mark_shows_its_item_and_mark_appends_one_label_row() {
     let open = c.call(Call::Open { rows: 24, cols: 80, path, raw: true });
     let _ = c.wait(open, |e| matches!(e, Event::Agents { .. }).then_some(()));
 
-    // The split change: its dialog names it. Cancel keeps nothing.
-    let (pending, what, why) = c.mark(SPLIT).expect("a split change's dialog");
-    assert_eq!(what, "I asked for this");
-    assert!(why.starts_with("src/jobs.js  L"), "{why}");
+    // A sentence of the Ask: its dialog shows the sentence alone. Cancel
+    // keeps nothing.
+    let sentence = format!("{ASK}/f0");
+    let (pending, what, why) = c.mark(&sentence).expect("a sentence's dialog");
+    assert_eq!(what, "Not what you meant?");
+    assert!(why.starts_with("The change must satisfy the done condition"), "{why}");
     c.answer(pending, false);
     assert!(labels(&config).is_empty(), "a Cancel keeps no label");
 
-    // Mark appends one row.
-    let (pending, _, _) = c.mark(SPLIT).unwrap();
+    // Its yes appends one row.
+    let (pending, _, _) = c.mark(&sentence).unwrap();
     c.answer(pending, true);
     let rows = labels(&config);
     assert_eq!(rows.len(), 1, "{rows:?}");
@@ -177,25 +179,15 @@ fn a_mark_shows_its_item_and_mark_appends_one_label_row() {
         (&json!("weft.label/1"), &json!("mark"), &json!("codex"), &json!(EVAL))
     );
     assert_eq!(
-        (&rows[0]["window"], &rows[0]["requirement"], &rows[0]["mark"]),
-        (&json!(SPLIT), &Value::Null, &json!("asked_for"))
+        (&rows[0]["requirement"], &rows[0]["mark"]),
+        (&json!(sentence), &json!("not_meant"))
     );
 
-    // A requirement: "Not what I meant".
-    let (pending, what, why) = c.mark(&format!("{ASK}/f0")).expect("a requirement's dialog");
-    assert_eq!(what, "Not what I meant");
-    assert!(why.starts_with("f0  The change must satisfy"), "{why}");
-    c.answer(pending, true);
-    let rows = labels(&config);
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    assert_eq!(
-        (&rows[1]["window"], &rows[1]["requirement"], &rows[1]["mark"]),
-        (&Value::Null, &json!(format!("{ASK}/f0")), &json!("not_meant"))
-    );
-
-    // A change the judges settled takes no mark.
-    let refused = c.mark(REQUIRED);
-    assert!(refused.is_err(), "{refused:?}");
+    // A change takes no mark, whatever the judges found.
+    for change in [SPLIT, REQUIRED] {
+        let refused = c.mark(change);
+        assert!(refused.is_err(), "{change}: {refused:?}");
+    }
     assert_eq!(std::fs::read(&record).unwrap(), judged, "the judges' record is as it was");
     c.call(Call::Shutdown);
 }
