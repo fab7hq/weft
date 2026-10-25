@@ -5,6 +5,7 @@
 //! time, so a second client asks the same question and gets the same
 //! sentence.
 
+use crate::eval_view::EvalView;
 use crate::ledger::{Sent, Unit};
 use crate::readiness::Readiness;
 use crate::routing::Routing;
@@ -80,6 +81,28 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
         Sent::TakenByAgent | Sent::Arrived { .. } | Sent::Unconfirmed => Some(Next::Eval),
         _ => None,
     }
+}
+
+/// What a closed Eval asks of the person.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notice {
+    /// Aligned, nothing found, its checks passed and no change split: a
+    /// Seal is all it waits for.
+    ReadyToSeal,
+    NeedsYou,
+}
+
+/// `None` while the Eval runs. Only RingFrame's verdict and the checks make
+/// it ready to seal; anything else needs the person.
+pub fn notice(view: &EvalView) -> Option<Notice> {
+    if !view.closed {
+        return None;
+    }
+    let ready = view.verdict.as_deref() == Some("aligned")
+        && view.findings.is_empty()
+        && view.checks_passed
+        && view.split.is_empty();
+    Some(if ready { Notice::ReadyToSeal } else { Notice::NeedsYou })
 }
 
 /// The act the bar puts forward for a unit, highlighted and never pressed:
@@ -592,6 +615,34 @@ mod tests {
         let mut u = unit("codex", Sent::ReadyToSend);
         u.cancelled = true;
         assert_eq!(next_step(&u), None);
+    }
+
+    fn ready_eval() -> crate::eval_view::EvalView {
+        crate::eval_view::EvalView {
+            closed: true,
+            verdict: Some("aligned".into()),
+            checks_passed: true,
+            ..Default::default()
+        }
+    }
+
+    /// Only RingFrame's verdict and the checks make an Eval ready to seal;
+    /// anything else needs the person.
+    #[test]
+    fn ready_to_seal_is_aligned_with_nothing_found_checks_passed_and_nothing_split() {
+        assert_eq!(notice(&ready_eval()), Some(Notice::ReadyToSeal));
+        let needs = [
+            crate::eval_view::EvalView { verdict: Some("drifted".into()), ..ready_eval() },
+            crate::eval_view::EvalView { verdict: Some("incomplete".into()), ..ready_eval() },
+            crate::eval_view::EvalView { findings: vec!["scaffolding: x".into()], ..ready_eval() },
+            crate::eval_view::EvalView { checks_passed: false, ..ready_eval() },
+            crate::eval_view::EvalView { split: vec!["w_t".into()], ..ready_eval() },
+        ];
+        for view in needs {
+            assert_eq!(notice(&view), Some(Notice::NeedsYou), "{view:?}");
+        }
+        let running = crate::eval_view::EvalView { closed: false, ..ready_eval() };
+        assert_eq!(notice(&running), None, "nothing to tell while it runs");
     }
 
     #[test]

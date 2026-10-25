@@ -44,6 +44,9 @@ pub struct EvalView {
     /// The checks still running: the verdict waits for them.
     #[serde(default)]
     pub checks_running: Vec<String>,
+    /// Every check RingFrame ran succeeded, and none ran out of time.
+    #[serde(default)]
+    pub checks_passed: bool,
     pub limitations: Vec<String>,
 }
 
@@ -218,6 +221,17 @@ fn first_sentence(text: &str) -> String {
     let plain = text.replace("**", "");
     let end = plain.find(". ").map_or(plain.len(), |i| i + 1);
     plain[..end].trim().to_string()
+}
+
+/// How a record begins the limitation it writes for checks it stopped
+/// waiting for.
+const UNFINISHED_CHECKS: &str = "the checks did not finish in their time";
+
+/// Every check in the record succeeded, and none ran out of time before it
+/// closed.
+fn checks_passed(record: &Value) -> bool {
+    list(record, "checks").iter().all(|c| s(c, "outcome") == "succeeded")
+        && !strs(record, "limitations").iter().any(|l| l.starts_with(UNFINISHED_CHECKS))
 }
 
 /// A finding as one line, and the steps it names.
@@ -593,6 +607,7 @@ impl EvalView {
                 })
                 .unwrap_or_default(),
             checks_running: if record.is_some() { Vec::new() } else { src.checks_running.to_vec() },
+            checks_passed: record.is_some_and(checks_passed),
             limitations: record.map(|r| strs(r, "limitations")).unwrap_or_default(),
         }
     }
@@ -1189,6 +1204,25 @@ mod tests {
             ["let mut unrecorded = None;"],
             "a cited quote is kept on its change"
         );
+    }
+
+    #[test]
+    fn checks_passed_when_every_check_succeeded_and_none_ran_out_of_time() {
+        let closed = |checks: Value, limitations: Value| {
+            let record = json!({"verdict": "aligned", "items": [], "windows": [],
+                                "checks": checks, "limitations": limitations});
+            built(Some(&record), &[], &[], &[]).checks_passed
+        };
+        let ok = json!({"command": "cargo test", "outcome": "succeeded", "seconds": 1});
+        let failed = json!({"command": "cargo clippy", "outcome": "failed", "seconds": 1});
+        assert!(closed(json!([ok]), json!([])));
+        assert!(closed(json!([]), json!([])), "nothing to run, nothing failed");
+        assert!(!closed(json!([ok, failed]), json!([])));
+        assert!(!closed(
+            json!([]),
+            json!(["the checks did not finish in their time and are not in this record: `cargo test`"])
+        ));
+        assert!(!built(None, &[], &[], &[]).checks_passed, "not while it runs");
     }
 
     #[test]
