@@ -109,6 +109,20 @@ pub struct Eval {
     pub model_typed: bool,
     /// Each judge's effort when none is set.
     pub default: JudgeEfforts,
+    /// How a judge session is started with its model and effort
+    /// (`[eval.launch]`). Without it, a judge starts as any agent does.
+    #[serde(default)]
+    pub launch: Option<Launch>,
+}
+
+/// The words that follow the program for a judge given a model or an effort,
+/// `{model}` and `{effort}` standing for each.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Launch {
+    #[serde(default)]
+    pub model: Vec<String>,
+    #[serde(default)]
+    pub effort: Vec<String>,
 }
 
 /// What a judge's effort changes: the model's own reasoning (and how far the
@@ -222,6 +236,22 @@ impl Harness {
     /// The command line that starts it fresh: the program and its `args`.
     pub fn spec(&self) -> String {
         std::iter::once(&self.program).chain(&self.args).cloned().collect::<Vec<_>>().join(" ")
+    }
+
+    /// The command line that starts an Eval judge on this model and effort:
+    /// the one that starts it fresh, then `[eval.launch]`'s words for each
+    /// that is given and is one word.
+    pub fn judge_spec(&self, model: Option<&str>, effort: Option<&str>) -> String {
+        let launch = self.eval.as_ref().and_then(|e| e.launch.clone()).unwrap_or_default();
+        let mut words = vec![self.spec()];
+        for (value, flags, name) in
+            [(model, &launch.model, "{model}"), (effort, &launch.effort, "{effort}")]
+        {
+            if let Some(value) = value.filter(|v| crate::sessions::is_id(v)) {
+                words.extend(flags.iter().map(|w| w.replace(name, value)));
+            }
+        }
+        words.join(" ")
     }
 
     /// The words after the program for one of its commands: its `args`, then
@@ -600,13 +630,43 @@ mod tests {
         );
         let codex = eval("codex").expect("codex's [eval]");
         assert!(codex.models.is_empty() && codex.model_typed, "any model is typed");
-        assert_eq!(eval("grok").expect("grok's [eval]").effort, EffortReaches::Lookups);
+        assert_eq!(eval("grok").expect("grok's [eval]").effort, EffortReaches::Model);
 
         let mut p = file("codex");
         p.as_object_mut().unwrap().remove("eval");
         assert_eq!(Harness::of("codex", &p).expect("still a harness").eval, None);
         p["eval"] = serde_json::json!({"efforts": ["low"], "effort": "sometimes"});
         assert_eq!(Harness::of("codex", &p).expect("still a harness").eval, None, "unread");
+    }
+
+    /// A judge starts as its harness's own command line with `[eval.launch]`'s
+    /// words for the model and effort it was given; one not given, or not a
+    /// single word, leaves its words out.
+    #[test]
+    fn a_judge_starts_with_its_model_and_effort_from_eval_launch() {
+        let judge = |name: &str, model: Option<&str>, effort: Option<&str>| {
+            Harness::of(name, &file(name)).expect("a harness").judge_spec(model, effort)
+        };
+        assert_eq!(
+            judge("claude-code", Some("opus"), Some("high")),
+            "claude --model opus --effort high"
+        );
+        assert_eq!(
+            judge("codex", Some("gpt-6.1-sol"), Some("low")),
+            "codex -m gpt-6.1-sol -c model_reasoning_effort=low"
+        );
+        assert_eq!(
+            judge("antigravity", None, Some("medium")),
+            "agy --effort medium",
+            "no model: the session's"
+        );
+        assert_eq!(judge("grok", Some("grok-4.7"), None), "grok -m grok-4.7");
+        assert_eq!(judge("grok", Some("two words"), Some("")), "grok", "neither is a word");
+
+        let mut p = file("codex");
+        p["eval"].as_object_mut().unwrap().remove("launch");
+        let plain = Harness::of("codex", &p).expect("a harness");
+        assert_eq!(plain.judge_spec(Some("m"), Some("low")), "codex", "no launch words");
     }
 
     /// A made-up harness, from its file alone, is read and offered.
