@@ -527,8 +527,9 @@ pub fn eval_return(ws: &Workspace, task_id: &str) -> Result<(), Error> {
     Ok(tasks::hand_back(ws, task_id)?)
 }
 
-/// Weft started again, and the judges' sessions went with it: every task of
-/// the Eval still out goes out again at the next `eval_task`. Returns them.
+/// The judges' sessions are gone, as when the program that ran them started
+/// again: every task of the Eval still out goes out again at the next
+/// `eval_task`. Returns them.
 pub fn eval_return_out(ws: &Workspace, eval_id: &str) -> Result<Vec<String>, Error> {
     Ok(tasks::hand_back_out(ws, eval_id)?)
 }

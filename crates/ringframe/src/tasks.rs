@@ -1728,7 +1728,8 @@ pub fn hand_back(ws: &Workspace, task: &str) -> Result<(), EvalError> {
 }
 
 /// Every task of an Eval out to a judge, handed back: the sessions they
-/// went to are gone (Weft started again). Returns them.
+/// went to are gone, as when the program that ran them started again.
+/// Returns them.
 pub fn hand_back_out(ws: &Workspace, eval_id: &str) -> Result<Vec<String>, EvalError> {
     store::locked(ws, || {
         let path = state_path(ws, eval_id);
@@ -4505,7 +4506,11 @@ mod tests {
             crate::testing::answer_task(ws, &answered);
             assert_eq!(submit(ws, &answered).unwrap().0, 0);
             let out = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
-            assert_eq!(hand_back_out(ws, e).unwrap(), [out.clone()], "only the task out");
+            assert_eq!(
+                hand_back_out(ws, e).unwrap(),
+                std::slice::from_ref(&out),
+                "only the task out"
+            );
             let again = take(ws, e, None).unwrap();
             assert_eq!(str_of(&again["task"], "task_id"), out, "out again at once");
             assert!(hand_back_out(ws, "evl_none").unwrap().is_empty(), "nothing out");
