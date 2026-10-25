@@ -478,6 +478,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(repo);
     }
 
+    /// An Eval Weft opens completes with no coordinator skill: each task is
+    /// taken through the crate one at a time, answered in a file and
+    /// submitted with it, until the Eval settles.
+    #[test]
+    fn an_eval_weft_opens_completes_task_by_task_through_the_crate() {
+        fixture_home();
+        let repo = folder("eval-tasks", true);
+        assert_eq!(set_up(&repo), None);
+        let draft = AskDraft {
+            words: "Add the uptime export to src/uptime.js with a test.".into(),
+            harness: "claude-code".into(),
+            route: "native_direct".into(),
+            task: "implement".into(),
+            plan: None,
+            rules: Vec::new(),
+            offered: Vec::new(),
+            link: None,
+        };
+        let ask = compile(&repo, &draft, None).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("src/uptime.js"),
+            "export const uptime = () => process.uptime();\n",
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "git {args:?}");
+        };
+        git(&["add", "src"]);
+        git(&["commit", "-q", "-m", "work"]);
+        let eval_id = eval_open(&repo, &ask, None, None).unwrap();
+        let ws = workspace(&repo).unwrap();
+        let mut kinds = std::collections::BTreeSet::new();
+        for _ in 0..20 {
+            match api::eval_task(&ws, &eval_id, None).unwrap() {
+                api::EvalStep::Settled { verdict, .. } => {
+                    assert!(!verdict.is_empty());
+                    assert!(kinds.contains("requirements") && kinds.contains("map"), "{kinds:?}");
+                    let _ = std::fs::remove_dir_all(repo);
+                    return;
+                }
+                api::EvalStep::Waiting { .. } => panic!("nothing is out, so a task is ready"),
+                api::EvalStep::Task(t) => {
+                    kinds.insert(t.kind.clone());
+                    let file = t.brief.to_string_lossy().replace(".brief.md", ".json");
+                    let file: Value =
+                        serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+                    std::fs::write(&t.answer, answer(&t.kind, &file).to_string()).unwrap();
+                    let said = api::eval_submit(&ws, &t.task_id, &t.answer).unwrap();
+                    assert_eq!(said.outcome, api::Outcome::Accepted, "{:?}", said.errors);
+                }
+            }
+        }
+        panic!("the Eval did not settle");
+    }
+
+    /// A judge's answer to a task file: the requirements quoting the Ask's
+    /// words; every window serving the first requirement; every requirement
+    /// unknown, with what would settle it.
+    fn answer(kind: &str, file: &Value) -> Value {
+        let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+        match kind {
+            "requirements" => serde_json::json!({"requirements": list("asks").iter().map(|a| {
+                serde_json::json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
+                                   "quote": a["text"].as_str().unwrap().trim()})
+            }).collect::<Vec<_>>()}),
+            "map" => {
+                let first = list("requirements")[0]["id"].clone();
+                serde_json::json!({"windows": list("windows").iter().map(|w| {
+                    serde_json::json!({"window": w["id"], "serves": [first]})
+                }).collect::<Vec<_>>()})
+            }
+            _ => serde_json::json!({"requirements": list("requirements").iter().map(|r| {
+                serde_json::json!({"id": r["id"], "vote": "unknown",
+                                   "reason": format!("{} is not shown either way", r["id"]),
+                                   "missing": format!("a test showing {}", r["id"])})
+            }).collect::<Vec<_>>()}),
+        }
+    }
+
     /// The reasons Weft offers are RingFrame's, each with its words.
     #[test]
     fn the_seal_reasons_offered_are_ringframes() {
