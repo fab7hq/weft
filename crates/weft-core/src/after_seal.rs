@@ -109,6 +109,18 @@ pub fn undoing(harness: &str) -> Asking {
     }
 }
 
+/// What a follow-up on this work links to: rejected work's newest Eval, as
+/// the one it remediates; any other work's newest Eval or Ask, as the one it
+/// follows.
+pub fn follow_up_link(unit: &crate::work::UnitOfWork) -> (&'static str, &str) {
+    let rejected =
+        matches!(&unit.status, crate::work::Status::Sealed { decision } if decision == "rejected");
+    match unit.evals.last() {
+        Some(eval) if rejected => ("remediates", eval),
+        _ => ("follows", &unit.follows),
+    }
+}
+
 /// A follow-up's words, written for the person to change: what the Eval
 /// found, one line each.
 pub fn remedy_words(findings: &[String]) -> String {
@@ -122,6 +134,7 @@ pub fn remedy_words(findings: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::work::{Status, UnitOfWork};
 
     #[test]
     fn accepted_work_keeps_a_rule_or_commits_and_rejected_work_follows_up_or_undoes() {
@@ -177,6 +190,28 @@ mod tests {
         assert_eq!(committing("codex").what, "Commit this work?");
         assert_eq!(undoing("codex").what, "Undo this work?");
         assert!(drafting("codex").why[0].contains("codex"));
+    }
+
+    #[test]
+    fn a_follow_up_on_rejected_work_remediates_its_eval_and_any_other_follows() {
+        let unit = |status: Status| UnitOfWork {
+            root: "ask_1".into(),
+            asks: vec!["ask_1".into()],
+            open: Vec::new(),
+            evals: vec!["evl_1".into(), "evl_2".into()],
+            seals: vec!["sel_1".into()],
+            status,
+            at: String::new(),
+            route: None,
+            follows: "evl_2".into(),
+        };
+        let sealed = |d: &str| Status::Sealed { decision: d.into() };
+        assert_eq!(follow_up_link(&unit(sealed("rejected"))), ("remediates", "evl_2"));
+        assert_eq!(follow_up_link(&unit(sealed("accepted"))), ("follows", "evl_2"));
+        assert_eq!(follow_up_link(&unit(Status::Asked)), ("follows", "evl_2"));
+        let unjudged =
+            UnitOfWork { evals: Vec::new(), follows: "ask_1".into(), ..unit(sealed("rejected")) };
+        assert_eq!(follow_up_link(&unjudged), ("follows", "ask_1"), "nothing to remedy");
     }
 
     #[test]

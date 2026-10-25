@@ -1068,7 +1068,7 @@ impl Session {
         if act == "stop" {
             return self.stage_stop(at, eval);
         }
-        if matches!(act, "draft_rule" | "keep_rule") {
+        if matches!(act, "draft_rule" | "keep_rule" | "commit" | "undo") {
             return self.offer((client, call_id), at, act, (unit_id, draft));
         }
         let root = self.projects[at].root.clone();
@@ -1116,8 +1116,12 @@ impl Session {
             _ => unit_id,
         };
         // A follow-up carries the unit's newest Eval, else its newest composed
-        // Ask, so RingFrame links it into that unit.
-        let follows = mine.map(|u| u.follows.clone());
+        // Ask, so RingFrame links it into that unit; on rejected work, it
+        // remediates that Eval.
+        let follows = mine.map(|u| {
+            let (rel, to) = weft_core::after_seal::follow_up_link(u);
+            (rel.to_string(), to.to_string())
+        });
         let unit = unit_id.and_then(|id| units.iter().find(|u| u.ask_id == id).cloned());
         let built = match act {
             "ask" | "follow_up" => {
@@ -1152,8 +1156,9 @@ impl Session {
                     let Some(unit) = &unit else {
                         return Answer::No("no_unit", "that Ask is not on the board".into());
                     };
-                    let to = follows.as_deref().unwrap_or(weft_core::board::follow_up_of(unit));
-                    Some(("follows".to_string(), to.to_string()))
+                    let of_unit =
+                        || ("follows".into(), weft_core::board::follow_up_of(unit).into());
+                    Some(follows.unwrap_or_else(of_unit))
                 } else {
                     None
                 };
@@ -1406,6 +1411,9 @@ impl Session {
             },
             // What the person asked, as RingFrame recorded it: for an Ask whose
             // prompt is not composed yet, it is all there is to show.
+            // `unit` is an Ask of rejected work: a follow-up's words, from
+            // what its Eval found.
+            "remedy" => self.remedy(at, unit),
             "source" => {
                 let safe =
                     !unit.is_empty() && unit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');

@@ -37,14 +37,99 @@ impl Session {
         act: &str,
         (unit, draft): (Option<&str>, Option<&weft_core::ask::Draft>),
     ) -> Answer {
-        let sealed = match self.sealed(at, unit, "accepted") {
+        let decided = if act == "undo" { "rejected" } else { "accepted" };
+        let sealed = match self.sealed(at, unit, decided) {
             Ok(sealed) => sealed,
             Err(no) => return no,
         };
         match act {
             "draft_rule" => self.draft_rule(at, &sealed),
-            _ => self.keep_rule((client, call_id), at, &sealed, draft),
+            "keep_rule" => self.keep_rule((client, call_id), at, &sealed, draft),
+            "commit" => self.commit(at, &sealed),
+            _ => self.undo(at, &sealed),
         }
+    }
+
+    /// Commit's dialog: the words typed into the work's agent, which writes
+    /// the commit itself.
+    fn commit(&mut self, at: usize, sealed: &Sealed) -> Answer {
+        let harness = self.title_of(at, &sealed.newest().harness);
+        let typed = weft_core::after_seal::commit_request();
+        self.stage_typing(
+            at,
+            sealed,
+            typed,
+            weft_core::after_seal::committing(&harness),
+            (None, None),
+        )
+    }
+
+    /// Undo's dialog: the work back as it was at the commit its first Ask
+    /// was sent on, typed into its agent; Send in amber.
+    fn undo(&mut self, at: usize, sealed: &Sealed) -> Answer {
+        let Some(base) = sealed.root().base_commit.clone() else {
+            let why = "RingFrame recorded no commit for this work's first Ask".to_string();
+            return Answer::No("no_commit", why);
+        };
+        let harness = self.title_of(at, &sealed.newest().harness);
+        let typed = weft_core::after_seal::undo_request(&sealed.root().title, &base);
+        let go = weft_proto::Go { word: "act.send".into(), warn: true };
+        self.stage_typing(
+            at,
+            sealed,
+            typed,
+            weft_core::after_seal::undoing(&harness),
+            (Some(go), None),
+        )
+    }
+
+    /// A dialog whose Send types `typed` into the work's agent, with its own
+    /// yes button and the draft it asks for, when it has them.
+    fn stage_typing(
+        &mut self,
+        at: usize,
+        sealed: &Sealed,
+        typed: String,
+        asking: weft_core::offers::Asking,
+        (go, drafts): (Option<weft_proto::Go>, Option<crate::acts::Drafting>),
+    ) -> Answer {
+        let pane = match self.pane_of(at, sealed.newest()) {
+            Ok(pane) => pane,
+            Err(no) => return no,
+        };
+        let built = crate::acts::Built {
+            payload: typed.into_bytes(),
+            how: weft_core::inject::Handoff::Whole,
+            asking,
+            ask_id: None,
+            compile: None,
+            eval: None,
+            stop: None,
+            go,
+            drafts,
+        };
+        self.stage(at, pane, built)
+    }
+
+    /// A follow-up's words for rejected work: what its Eval found, with that
+    /// Eval, its number and the work's title for the sheet to name.
+    pub(super) fn remedy(&self, at: usize, ask: &str) -> Answer {
+        let sealed = match self.sealed(at, Some(ask), "rejected") {
+            Ok(sealed) => sealed,
+            Err(no) => return no,
+        };
+        let ("remediates", eval) = weft_core::after_seal::follow_up_link(&sealed.unit) else {
+            return Answer::No("not_offered", "no Eval judged this work".into());
+        };
+        let root = &self.projects[at].root;
+        let found = crate::record::eval_view(root, eval).map(|v| v.findings).unwrap_or_default();
+        let n = self.projects[at].ledger.record().evals.iter().find(|e| e.id == eval).map(|e| e.n);
+        Answer::Ok(serde_json::json!({
+            "words": weft_core::after_seal::remedy_words(&found),
+            "eval": eval,
+            "n": n,
+            "title": sealed.root().title,
+        }))
     }
 
     /// The work an Ask is in, when it was sealed as `decided`.
@@ -95,17 +180,14 @@ impl Session {
     /// Dialog one of Keep a rule: the request that has the work's agent
     /// draft one, from what was asked and the follow-ups.
     fn draft_rule(&mut self, at: usize, sealed: &Sealed) -> Answer {
-        let pane = match self.pane_of(at, sealed.newest()) {
-            Ok(pane) => pane,
-            Err(no) => return no,
-        };
         let root = self.projects[at].root.clone();
         let words = |u: &weft_core::ledger::Unit| {
             let path = root.join(".fab7/rf/asks").join(&u.ask_id).join("source.txt");
             std::fs::read_to_string(path).unwrap_or_else(|_| u.title.clone())
         };
-        let seal = sealed.unit.seals.last().cloned().unwrap_or_default();
-        let path = drafts_dir(&self.config).join(format!("{seal}.txt"));
+        // Named by the dialog about to be staged: the daemon's own id, never
+        // one read from the project's files.
+        let path = drafts_dir(&self.config).join(format!("pnd_{}.txt", self.next_pending));
         let _ = std::fs::create_dir_all(drafts_dir(&self.config));
         let _ = std::fs::remove_file(&path);
         let follow_ups: Vec<String> = sealed.asks[1..].iter().map(words).collect();
@@ -116,18 +198,9 @@ impl Session {
             &path.to_string_lossy(),
         );
         let harness = sealed.newest().harness.clone();
-        let built = crate::acts::Built {
-            payload: request.into_bytes(),
-            how: weft_core::inject::Handoff::Whole,
-            asking: weft_core::after_seal::drafting(&self.title_of(at, &harness)),
-            ask_id: None,
-            compile: None,
-            eval: None,
-            stop: None,
-            go: None,
-            drafts: Some(crate::acts::Drafting { path, unit: sealed.unit.root.clone(), harness }),
-        };
-        self.stage(at, pane, built)
+        let asking = weft_core::after_seal::drafting(&self.title_of(at, &harness));
+        let drafts = crate::acts::Drafting { path, unit: sealed.unit.root.clone(), harness };
+        self.stage_typing(at, sealed, request, asking, (None, Some(drafts)))
     }
 
     /// Each draft an agent has written is read once, taken, and told to
