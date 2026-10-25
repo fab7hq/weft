@@ -46,7 +46,13 @@ impl AskChoices {
             .filter(|id| !self.removed.contains(*id))
             .map(str::to_string)
             .collect();
-        Draft { route: text("route"), task: text("task"), plan, rules: Some(rules), reason: None }
+        Draft {
+            route: text("route"),
+            task: text("task"),
+            plan,
+            rules: Some(rules),
+            ..Default::default()
+        }
     }
 }
 

@@ -1,0 +1,192 @@
+//! What a Seal offers after it, and what each offer would type.
+//!
+//! A Seal records a decision and does nothing more. What follows is offered,
+//! never done: each offer has its own dialog showing the exact words typed
+//! into the work's agent. Weft runs no Git itself.
+
+use crate::offers::Asking;
+use crate::words::{fill, word};
+
+/// An offer on sealed work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Offer {
+    KeepRule,
+    Commit,
+    FollowUp,
+    Undo,
+}
+
+/// What sealed work offers, by what was decided: accepted work may keep a
+/// rule and be committed; rejected work may be followed up or undone.
+/// Parked and dropped work offer nothing.
+pub fn offers(disposition: &str) -> &'static [Offer] {
+    match disposition {
+        "accepted" => &[Offer::KeepRule, Offer::Commit],
+        "rejected" => &[Offer::FollowUp, Offer::Undo],
+        _ => &[],
+    }
+}
+
+/// The words typed into the work's agent so it drafts one rule from what was
+/// asked and the follow-ups, into the file at `path` that Weft reads back.
+pub fn rule_request(title: &str, asked: &str, follow_ups: &[String], path: &str) -> String {
+    let follow_ups = match follow_ups {
+        [] => "- none".to_string(),
+        some => some.iter().map(|f| format!("- {}", f.trim())).collect::<Vec<_>>().join("\n"),
+    };
+    fill(
+        "dialog.rule_draft.request",
+        &[("title", title), ("path", path), ("asked", asked.trim()), ("follow_ups", &follow_ups)],
+    )
+}
+
+/// The dialog before the draft is asked for.
+pub fn drafting(harness: &str) -> Asking {
+    Asking {
+        what: word("dialog.rule_draft.title").into(),
+        why: vec![fill("dialog.rule_draft.why", &[("harness", harness)])],
+    }
+}
+
+/// A rule as the agent drafted it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Drafted {
+    pub name: String,
+    pub rule: String,
+    pub when: String,
+    pub family: String,
+}
+
+/// The draft read from the agent's file: `key: value` lines, any order, any
+/// case. A rule is needed; its name, when left out, is its first words.
+pub fn drafted(text: &str) -> Option<Drafted> {
+    let mut d = Drafted::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim().trim_matches(|c| c == '`' || c == '"').trim().to_string();
+        match key.trim().trim_start_matches(['-', '*', ' ']).to_lowercase().as_str() {
+            "name" => d.name = value,
+            "rule" => d.rule = value,
+            "when" => d.when = value,
+            "family" => d.family = value.to_lowercase(),
+            _ => {}
+        }
+    }
+    if d.rule.is_empty() {
+        return None;
+    }
+    if d.name.is_empty() {
+        d.name = d.rule.split_whitespace().take(3).collect::<Vec<_>>().join(" ");
+    }
+    Some(d)
+}
+
+/// The words Commit types.
+pub fn commit_request() -> String {
+    word("dialog.commit.request").into()
+}
+
+/// The dialog before Commit types.
+pub fn committing(harness: &str) -> Asking {
+    Asking {
+        what: word("dialog.commit.title").into(),
+        why: vec![fill("dialog.commit.why", &[("harness", harness)])],
+    }
+}
+
+/// The words Undo types: the work back as it was at the commit its first
+/// Ask was sent on.
+pub fn undo_request(title: &str, base_commit: &str) -> String {
+    fill("dialog.undo.request", &[("title", title), ("commit", base_commit)])
+}
+
+/// The dialog before Undo types.
+pub fn undoing(harness: &str) -> Asking {
+    Asking {
+        what: word("dialog.undo.title").into(),
+        why: vec![fill("dialog.undo.why", &[("harness", harness)])],
+    }
+}
+
+/// A follow-up's words, written for the person to change: what the Eval
+/// found, one line each.
+pub fn remedy_words(findings: &[String]) -> String {
+    if findings.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<String> = findings.iter().map(|f| format!("- {}", f.trim())).collect();
+    format!("{}\n{}", word("follow_up.from_findings"), lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepted_work_keeps_a_rule_or_commits_and_rejected_work_follows_up_or_undoes() {
+        assert_eq!(offers("accepted"), [Offer::KeepRule, Offer::Commit]);
+        assert_eq!(offers("rejected"), [Offer::FollowUp, Offer::Undo]);
+        assert!(offers("deferred").is_empty());
+        assert!(offers("abandoned").is_empty());
+    }
+
+    #[test]
+    fn the_draft_request_names_the_file_and_quotes_what_was_asked_and_each_follow_up() {
+        let said = rule_request(
+            "health endpoint",
+            "Add a health endpoint\n",
+            &["Return 503 while the database is down".into()],
+            "/w/drafts/sel_1.txt",
+        );
+        assert!(said.contains("\"health endpoint\""), "{said}");
+        assert!(said.contains("Write it to /w/drafts/sel_1.txt"), "{said}");
+        assert!(said.contains("What I asked: Add a health endpoint\n"), "{said}");
+        assert!(
+            said.ends_with("My follow-ups:\n- Return 503 while the database is down"),
+            "{said}"
+        );
+        for key in ["name:", "rule:", "when:", "family:"] {
+            assert!(said.contains(key), "{key} in {said}");
+        }
+        let none = rule_request("t", "a", &[], "/p");
+        assert!(none.ends_with("My follow-ups:\n- none"), "{none}");
+    }
+
+    #[test]
+    fn a_draft_is_read_from_its_lines_and_needs_a_rule() {
+        let d = drafted(
+            "Here it is:\nName: Degraded health\nrule: `Health checks answer 503 when a dependency is down.`\n\
+             when: The work changes a health endpoint.\nfamily: Domain\n",
+        )
+        .expect("a draft");
+        assert_eq!(d.name, "Degraded health");
+        assert_eq!(d.rule, "Health checks answer 503 when a dependency is down.");
+        assert_eq!(d.when, "The work changes a health endpoint.");
+        assert_eq!(d.family, "domain");
+        let bare = drafted("rule: Keep diffs small for fixes.").expect("a rule alone");
+        assert_eq!(bare.name, "Keep diffs small");
+        assert_eq!(drafted("name: x\nwhen: y\n"), None, "no rule, no draft");
+    }
+
+    #[test]
+    fn commit_and_undo_type_plain_sentences_and_undo_names_the_commit() {
+        assert_eq!(commit_request(), "commit these changes");
+        let undo = undo_request("health endpoint", "4f2a9c1");
+        assert!(undo.contains("\"health endpoint\"") && undo.contains("commit 4f2a9c1"), "{undo}");
+        assert_eq!(committing("codex").what, "Commit this work?");
+        assert_eq!(undoing("codex").what, "Undo this work?");
+        assert!(drafting("codex").why[0].contains("codex"));
+    }
+
+    #[test]
+    fn a_follow_up_starts_from_what_the_eval_found() {
+        let words =
+            remedy_words(&["not met: Return 503".into(), "unexplained change: a.rs".into()]);
+        assert_eq!(
+            words,
+            "Fix what the last Eval found:\n- not met: Return 503\n- unexplained change: a.rs"
+        );
+        assert_eq!(remedy_words(&[]), "");
+    }
+}

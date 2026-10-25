@@ -31,6 +31,17 @@ pub struct Built {
     pub stop: Option<String>,
     /// Its yes button, when not Send.
     pub go: Option<weft_proto::Go>,
+    /// The draft its Send asks an agent for, to read back once written.
+    pub drafts: Option<Drafting>,
+}
+
+/// A rule a sealed unit's agent was asked to draft: the file it writes, the
+/// unit's first Ask and the agent's harness.
+#[derive(Debug, Clone)]
+pub struct Drafting {
+    pub path: std::path::PathBuf,
+    pub unit: String,
+    pub harness: String,
 }
 
 /// An Eval of a unit of work, for judges in a harness once the person says
@@ -54,6 +65,7 @@ pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
         eval: Some(debate),
         stop: None,
         go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+        drafts: None,
     }
 }
 
@@ -68,6 +80,7 @@ pub fn stop(eval_id: &str, title: &str) -> Built {
         eval: None,
         stop: Some(eval_id.to_string()),
         go: Some(weft_proto::Go { word: "dialog.stop_eval.go".into(), warn: true }),
+        drafts: None,
     }
 }
 
@@ -95,6 +108,7 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         eval: None,
         stop: None,
         go: None,
+        drafts: None,
     })
 }
 
@@ -121,6 +135,7 @@ pub fn ask(
         eval: None,
         stop: None,
         go: None,
+        drafts: None,
     })
 }
 

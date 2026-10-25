@@ -27,6 +27,7 @@ mod agents;
 mod config;
 mod judges;
 mod login;
+mod offers;
 mod remote;
 mod screens;
 mod typing;
@@ -160,6 +161,8 @@ struct Waiting {
     stop: Option<String>,
     /// Its yes button, when not Send.
     go: Option<weft_proto::Go>,
+    /// The draft its Send asks an agent for.
+    drafts: Option<crate::acts::Drafting>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -200,6 +203,8 @@ struct Project {
     due: Vec<typing::Due>,
     /// The judges of each Eval opened here.
     benches: Vec<judges::Bench>,
+    /// Rules agents here were asked to draft, read back once written.
+    drafting: Vec<crate::acts::Drafting>,
     /// The sessions judges ran here, which are no agent of the person's:
     /// `.fab7/weft/judges.json`.
     judged: std::collections::HashSet<String>,
@@ -360,6 +365,13 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
+    /// A rule was kept, or refused: `config.toml` is read again, and the
+    /// client answered.
+    Kept {
+        client: u64,
+        call_id: u64,
+        answer: Answer,
+    },
     /// A project's suggestion entries were read: all of them (`source` none),
     /// or again from one source. `built`: built again, so not kept yet.
     Suggested {
@@ -930,6 +942,7 @@ impl Session {
                 }
                 Wake::Tick => {
                     self.follow_the_record();
+                    self.read_drafts();
                     self.update_when_idle();
                 }
                 Wake::Suggested { root, source, entries, built } => {
@@ -968,6 +981,10 @@ impl Session {
                 }
                 Wake::Workspace { project, setup, gap } => self.set_up(project, setup, gap),
                 Wake::Answer { client, call_id, answer } => {
+                    self.clients.send_to(client, &answer.line(call_id))
+                }
+                Wake::Kept { client, call_id, answer } => {
+                    self.reread_config();
                     self.clients.send_to(client, &answer.line(call_id))
                 }
                 Wake::ConfigChecked { client, call_id, project, scope, key, value } => {
@@ -1050,6 +1067,9 @@ impl Session {
         let On { unit: unit_id, pane, text, eval, start, draft } = on;
         if act == "stop" {
             return self.stage_stop(at, eval);
+        }
+        if matches!(act, "draft_rule" | "keep_rule") {
+            return self.offer((client, call_id), at, act, (unit_id, draft));
         }
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
@@ -2062,6 +2082,7 @@ impl Session {
                     starting: Vec::new(),
                     due: Vec::new(),
                     benches: Vec::new(),
+                    drafting: Vec::new(),
                     judged,
                     unseated,
                     turns: crate::turns::Turns::default(),
@@ -2281,6 +2302,7 @@ impl Session {
                     eval: None,
                     stop: None,
                     go: None,
+                    drafts: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -2424,6 +2446,9 @@ impl Session {
                 }
                 // Send is the confirmation: the Ask is compiled as it was
                 // shown, and its prompt is what is typed.
+                if let Some(drafting) = w.drafts.take() {
+                    self.projects[at].drafting.push(drafting);
+                }
                 if let Some(draft) = w.compile.take() {
                     let over = self.projects[at].ringframe.clone();
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {

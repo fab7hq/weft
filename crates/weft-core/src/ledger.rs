@@ -175,6 +175,12 @@ pub struct Unit {
     /// Ask, or an Eval of the work it follows. None starts a work of its own.
     #[serde(default)]
     pub follows: Option<String>,
+    /// The commit its prompt was compiled on, as RingFrame recorded it.
+    #[serde(default)]
+    pub base_commit: Option<String>,
+    /// The kinds of work it was asked as: `implement`, `plan`, ….
+    #[serde(default)]
+    pub tasks: Vec<String>,
 }
 
 impl Unit {
@@ -332,6 +338,12 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                     delivery_mode: mode,
                     sent,
                     follows: follows(e).or(requested),
+                    base_commit: s(&data, &["base_commit"]).map(str::to_string),
+                    tasks: data
+                        .pointer("/classification/task")
+                        .and_then(Value::as_array)
+                        .map(|t| t.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default(),
                     ..Default::default()
                 };
                 if at == units.len() {
@@ -530,6 +542,17 @@ mod tests {
             linked(compiled("ask_2", "Logout", "codex", "human_handoff"), "follows", "ask_1"),
         ]);
         assert_eq!(compiled_after[0].follows.as_deref(), Some("ask_1"));
+    }
+
+    #[test]
+    fn a_compiled_ask_keeps_the_commit_it_was_asked_on_and_its_tasks() {
+        let mut e = compiled("ask_1", "fix login", "codex", "native_goal");
+        e["data"]["base_commit"] = json!("4f2a9c1");
+        e["data"]["classification"] = json!({"task": ["implement", "test"]});
+        let units = project(&[e, compiled("ask_2", "plain", "codex", "native_goal")]);
+        assert_eq!(units[0].base_commit.as_deref(), Some("4f2a9c1"));
+        assert_eq!(units[0].tasks, ["implement", "test"]);
+        assert_eq!((units[1].base_commit.as_deref(), units[1].tasks.len()), (None, 0));
     }
 
     fn compiled(id: &str, title: &str, host: &str, mode: &str) -> Value {

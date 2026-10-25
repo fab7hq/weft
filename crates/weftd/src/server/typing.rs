@@ -379,6 +379,7 @@ impl Session {
             eval: built.eval,
             stop: built.stop,
             go: built.go,
+            drafts: built.drafts,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))

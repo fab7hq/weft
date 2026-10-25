@@ -366,6 +366,9 @@ pub struct ProjectClient {
     /// This project's settings, as the daemon last told them (`config`).
     pub config: Option<serde_json::Value>,
     pub update: Option<String>,
+    /// The rule a sealed unit's agent last drafted: its unit, harness and
+    /// draft, for the Keep dialog.
+    pub drafted: Option<(String, String, weft_core::after_seal::Drafted)>,
     pub reopened_since: Option<i64>,
     pub harnesses: Harnesses,
     pub unread: Vec<String>,
@@ -440,6 +443,7 @@ impl ProjectClient {
             start_at_login: false,
             config: None,
             update: None,
+            drafted: None,
             reopened_since: None,
             harnesses: Default::default(),
             unread: Vec::new(),
@@ -804,6 +808,7 @@ impl ProjectClient {
             | Event::RemoteAct { .. }
             | Event::Signal(_) => {}
             Event::Remote { view } => self.remote = Some(view),
+            Event::Drafted { unit, harness, rule } => self.drafted = Some((unit, harness, rule)),
             Event::Added { pane, harness, spec, turbo } => {
                 if self.view(pane).is_none() {
                     self.panes.push(PaneView::new(pane, harness, spec));

@@ -28,6 +28,7 @@ weft-core = { path = "crates/weft-core", features = ["fixtures"] }
 ringframe = { path = "crates/ringframe" }
 sha2 = "0.10"
 tempfile = "3"
+toml = "1.1.6"
 weft-term = { path = "crates/weft-term" }
 
 # No debug info in dev and test builds. On macOS debug info keeps every object

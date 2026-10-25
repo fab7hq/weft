@@ -167,7 +167,7 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
         task: Some("implement".into()),
         plan: Some("plans/uptime/plan.md".into()),
         rules: Some(vec!["practice.kiss".into()]),
-        reason: None,
+        ..Default::default()
     };
     let ask = |c: &mut Client| {
         let id = c.call(Call::Act {

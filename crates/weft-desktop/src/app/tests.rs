@@ -713,7 +713,7 @@ fn the_ask_sheet_offers_a_route_a_plan_and_rules_and_sends_what_was_kept() {
                 "practice.gall".into(),
                 "practice.knuth".into()
             ]),
-            reason: None,
+            ..Default::default()
         })
     );
 }
