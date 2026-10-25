@@ -493,7 +493,8 @@ pub fn unit_detail(
         seal: why.1,
         offers: match &u.status {
             crate::work::Status::Sealed { decision } => {
-                let base = root.is_some_and(|r| r.base_commit.is_some());
+                let base = root.and_then(|r| r.base_commit.as_deref());
+                let base = base.is_some_and(crate::after_seal::is_commit_id);
                 crate::after_seal::offers(decision, base).to_vec()
             }
             _ => Vec::new(),

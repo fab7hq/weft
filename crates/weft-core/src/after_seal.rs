@@ -36,6 +36,12 @@ pub struct Commit {
     pub start: bool,
 }
 
+/// Whether `id` is a commit id, as Git writes one: 7 to 64 hex digits. Only
+/// such an id reaches a Git command line, never one that reads as an option.
+pub fn is_commit_id(id: &str) -> bool {
+    (7..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// The `git log` format `commits` reads.
 pub const LOG_FORMAT: &str = "%H%x1f%h%x1f%ct%x1f%s";
 
@@ -109,6 +115,14 @@ mod tests {
         assert!(undo.contains("\"health endpoint\"") && undo.contains("commit 7ab3d10."), "{undo}");
         assert!(undo.contains("Don't rewrite Git history"), "{undo}");
         assert!(undo.contains("ask me before you discard any change"), "{undo}");
+    }
+
+    #[test]
+    fn only_a_commit_id_reaches_git() {
+        assert!(is_commit_id("4f2a9c1") && is_commit_id(&"a".repeat(40)));
+        for not in ["", "4f2a9c", "--output=/tmp/x", "HEAD", "4f2a9c1 ", &"a".repeat(65)] {
+            assert!(!is_commit_id(not), "{not:?}");
+        }
     }
 
     #[test]

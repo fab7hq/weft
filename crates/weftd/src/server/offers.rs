@@ -92,7 +92,8 @@ impl Session {
         at: usize,
         sealed: &Sealed,
     ) -> Result<Vec<weft_core::after_seal::Commit>, Answer> {
-        let Some(base) = sealed.root().base_commit.as_deref() else {
+        let base = sealed.root().base_commit.as_deref();
+        let Some(base) = base.filter(|b| weft_core::after_seal::is_commit_id(b)) else {
             let why = "RingFrame recorded no commit for this work's first Ask".to_string();
             return Err(Answer::No("no_commit", why));
         };
