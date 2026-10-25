@@ -592,6 +592,20 @@ impl EvalView {
     pub fn step(&self, id: &str) -> Option<&Step> {
         self.groups.iter().flat_map(|g| &g.steps).find(|s| s.id == id)
     }
+
+    /// The mark the person may put on an item of a closed Eval, and the
+    /// item's line: `asked_for` on a change nothing explains or the judges
+    /// split on, `not_meant` on a requirement.
+    pub fn mark(&self, item: &str) -> Option<(&'static str, String)> {
+        if !self.closed {
+            return None;
+        }
+        let odd = |c: &&Change| matches!(c.result.as_str(), "unexplained" | "split");
+        if let Some(c) = self.change(item).filter(odd) {
+            return Some(("asked_for", change_row(c, 0, true).text));
+        }
+        self.step(item).map(|s| ("not_meant", format!("{}  {}", s.label, s.text)))
+    }
 }
 
 // ---- rows ---------------------------------------------------------------------
@@ -847,6 +861,8 @@ pub struct Payload {
     pub by_file: Vec<Row>,
     pub steps: BTreeMap<String, Vec<Row>>,
     pub changes: BTreeMap<String, Vec<Line>>,
+    /// The mark each item of a closed Eval may take, by window or step id.
+    pub marks: BTreeMap<String, &'static str>,
 }
 
 /// One line of a change, with its number on the side it is on.
@@ -878,6 +894,13 @@ pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
             .map(|s| (s.id.clone(), step_rows(view, &s.id)))
             .collect(),
         changes,
+        marks: view
+            .changes
+            .iter()
+            .map(|c| &c.window)
+            .chain(view.groups.iter().flat_map(|g| &g.steps).map(|s| &s.id))
+            .filter_map(|id| Some((id.clone(), view.mark(id)?.0)))
+            .collect(),
     }
 }
 
@@ -1211,6 +1234,30 @@ mod tests {
         assert_eq!(main[at + 1], format!("  src/jobs.js  {}", c.lines.as_deref().unwrap()));
         assert_eq!(main[at + 2], format!("    {}", c.readings[0]));
         assert_eq!(main[at + 3], format!("    {}", c.readings[1]));
+    }
+
+    #[test]
+    fn a_closed_eval_offers_a_mark_on_an_odd_change_and_on_each_requirement() {
+        let v = split_eval();
+        let (mark, line) = v.mark("w_3ae3752a6a3b").expect("the split change");
+        assert_eq!(mark, "asked_for");
+        assert!(line.starts_with("src/jobs.js  L"), "{line}");
+        let (mark, line) = v.mark("ask_01M37RDYJCHWWSD12A5DGEYE08/f0").expect("a requirement");
+        assert_eq!(
+            (mark, line.as_str()),
+            (
+                "not_meant",
+                "f0  The change must satisfy the done condition for every step in the account erasure plan."
+            )
+        );
+        assert_eq!(v.mark("w_65bbe3bb595a"), None, "a change the judges settled");
+        let p = payload(&v, &BTreeMap::new());
+        assert_eq!(p.marks["w_3ae3752a6a3b"], "asked_for");
+        assert_eq!(p.marks["ask_01M37RDYJCHWWSD12A5DGEYE08/f0"], "not_meant");
+        assert_eq!(p.marks.len(), 2, "{:?}", p.marks);
+        let open = built(None, &[map_output()], &["evl_1~m1"], &["evl_1~m1"]);
+        assert_eq!(open.mark("w_t"), None, "nothing is marked while the judges work");
+        assert!(payload(&open, &BTreeMap::new()).marks.is_empty());
     }
 
     #[test]

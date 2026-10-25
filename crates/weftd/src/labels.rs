@@ -2,10 +2,11 @@
 //! `~/.fab7/weft/labels/<project key>.jsonl`, readable only by them.
 //!
 //! One row for each choice the person made in a dialog: an Ask they sent,
-//! with the route, plan and rules they kept, removed or added; a Seal, with
-//! its disposition and reason. RingFrame's ledger stays the record of the
-//! work; this is what Weft learns the person's defaults from. It goes when its
-//! project is dismissed, and nothing in it is sent anywhere.
+//! with the route, plan and rules they kept, removed or added; a mark on an
+//! Eval's item; a Seal, with its disposition and reason. RingFrame's ledger
+//! stays the record of the work; this is what Weft learns the person's
+//! defaults from. It goes when its project is dismissed, and nothing in it is
+//! sent anywhere.
 
 use std::path::{Path, PathBuf};
 
@@ -65,6 +66,26 @@ pub fn asked(draft: &crate::ringframe::AskDraft, ask_id: &str) -> Value {
     })
 }
 
+/// A mark on one item of a closed Eval: `asked_for` on a window,
+/// `not_meant` on a requirement.
+#[derive(Debug, Clone)]
+pub struct Mark {
+    pub harness: String,
+    pub eval_id: String,
+    pub mark: &'static str,
+    pub item: String,
+}
+
+/// A mark the person put on a closed Eval.
+pub fn marked(m: &Mark) -> Value {
+    let item = Some(m.item.as_str());
+    let (window, requirement) = if m.mark == "asked_for" { (item, None) } else { (None, item) };
+    json!({
+        "schema": SCHEMA, "kind": "mark", "at": now_ms(), "harness": m.harness,
+        "eval_id": m.eval_id, "window": window, "requirement": requirement, "mark": m.mark,
+    })
+}
+
 /// A Seal the person made, from its receipt.
 pub fn sealed(harness: &str, receipt: &Value) -> Value {
     json!({
@@ -94,17 +115,25 @@ mod tests {
     }
 
     #[test]
-    fn an_ask_and_a_seal_each_append_one_private_row_and_dismissing_deletes_them() {
+    fn an_ask_a_mark_and_a_seal_each_append_one_private_row_and_dismissing_deletes_them() {
         let tmp = tempfile::tempdir().unwrap();
         let (config, root) = (tmp.path().join("weft/config.toml"), Path::new("/work/project"));
         append(&config, root, &asked(&draft(), "ask_1")).unwrap();
         let receipt = json!({"seal_id": "sel_1", "eval": {"eval_id": "evl_1"},
                              "disposition": "rejected", "reason": "wrong_approach"});
         append(&config, root, &sealed("codex", &receipt)).unwrap();
+        let mark = |mark, item: &str| Mark {
+            harness: "codex".into(),
+            eval_id: "evl_1".into(),
+            mark,
+            item: item.into(),
+        };
+        append(&config, root, &marked(&mark("asked_for", "w_1"))).unwrap();
+        append(&config, root, &marked(&mark("not_meant", "ask_1/f0"))).unwrap();
         let path = file(&config, root);
         let text = std::fs::read_to_string(&path).unwrap();
         let rows: Vec<Value> = text.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-        assert_eq!(rows.len(), 2, "one row each");
+        assert_eq!(rows.len(), 4, "one row each");
         assert_eq!((&rows[0]["schema"], &rows[0]["kind"]), (&json!(SCHEMA), &json!("ask")));
         assert_eq!(rows[0]["intent"], "Fix the login bug.");
         assert_eq!(
@@ -117,6 +146,14 @@ mod tests {
         assert_eq!(
             (&rows[1]["kind"], &rows[1]["eval_id"], &rows[1]["disposition"], &rows[1]["reason"]),
             (&json!("seal"), &json!("evl_1"), &json!("rejected"), &json!("wrong_approach"))
+        );
+        let mark = |r: &Value| {
+            (r["kind"].clone(), r["window"].clone(), r["requirement"].clone(), r["mark"].clone())
+        };
+        assert_eq!(mark(&rows[2]), (json!("mark"), json!("w_1"), Value::Null, json!("asked_for")));
+        assert_eq!(
+            mark(&rows[3]),
+            (json!("mark"), Value::Null, json!("ask_1/f0"), json!("not_meant"))
         );
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!((mode(&path), mode(&dir(&config))), (0o600, 0o700));

@@ -125,6 +125,16 @@ pub fn stopping(title: &str) -> Asking {
     }
 }
 
+/// Marking one item of a closed Eval, `asked_for` or `not_meant`: the item,
+/// and that the judges' record stays as it is.
+pub fn marking(mark: &str, item: &str) -> Asking {
+    use crate::words::word;
+    Asking {
+        what: word(&format!("eval_view.{mark}")).into(),
+        why: vec![item.to_string(), word("dialog.mark.why").into()],
+    }
+}
+
 /// A refusal code in the words the person reading it would use.
 fn said_plainly(code: &str) -> &str {
     match code {

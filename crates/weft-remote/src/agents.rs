@@ -69,6 +69,24 @@ pub struct Project {
     reopened: Option<i64>,
 }
 
+/// A mark on an item of a closed Eval: weftd says what the item may be
+/// marked, and shows its dialog.
+fn mark(m: &Value) -> Result<Call, Refusal> {
+    let word = |k: &str| m[k].as_str().filter(|s| !s.is_empty()).map(str::to_string);
+    let (Some(eval), Some(item)) = (word("eval"), word("text")) else {
+        return Err(("bad_request", "a mark names its Eval and its item".into()));
+    };
+    Ok(Call::Act {
+        act: "mark".into(),
+        unit: None,
+        pane: None,
+        text: Some(item),
+        eval: Some(eval),
+        start: None,
+        draft: None,
+    })
+}
+
 impl Project {
     /// From what `project.open` answered for `path`.
     pub fn opened(path: &Path, answer: &Value) -> Self {
@@ -589,6 +607,9 @@ impl Project {
     /// and Seal on a unit of work (`unit`, or Seal's `eval`). When the act
     /// cannot run, the refusal's code is the why-not's `words` key.
     pub fn act(&self, m: &Value, pane: Option<u32>) -> Result<Call, Refusal> {
+        if m["act"] == "mark" {
+            return mark(m);
+        }
         let (act, daemon) = match m["act"].as_str() {
             Some("ask") => (Act::Ask, "ask"),
             Some("follow_up") => (Act::FollowUp, "follow_up"),
@@ -598,7 +619,7 @@ impl Project {
             _ => {
                 return Err((
                     "not_allowed",
-                    "the acts are ask, eval, seal, proceed and follow_up".into(),
+                    "the acts are ask, eval, seal, proceed, follow_up and mark".into(),
                 ));
             }
         };
@@ -980,6 +1001,19 @@ mod tests {
             weft_core::ask::Draft { reason: Some("not_what_i_asked".into()), ..Default::default() };
         let Call::Act { text, draft, .. } = act(&p, picked).unwrap() else { panic!("an act") };
         assert_eq!((text.as_deref(), draft), (Some("rejected"), Some(reason)));
+        // A mark names its Eval and its item; weftd shows its dialog.
+        let marked = json!({"act": "mark", "project": "weft", "eval": "evl_1", "text": "w_1"});
+        let mark = Call::Act {
+            act: "mark".into(),
+            unit: None,
+            pane: None,
+            text: Some("w_1".into()),
+            eval: Some("evl_1".into()),
+            start: None,
+            draft: None,
+        };
+        assert_eq!(act(&p, marked), Ok(mark));
+        assert_eq!(act(&p, json!({"act": "mark", "text": "w_1"})).unwrap_err().0, "bad_request");
     }
 
     #[test]

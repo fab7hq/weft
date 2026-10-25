@@ -158,6 +158,8 @@ struct Waiting {
     eval: Option<crate::acts::Debate>,
     /// The Eval Stop voids.
     stop: Option<String>,
+    /// The mark Mark keeps.
+    mark: Option<crate::labels::Mark>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -1046,6 +1048,9 @@ impl Session {
         if act == "stop" {
             return self.stage_stop(at, eval);
         }
+        if act == "mark" {
+            return self.stage_mark(at, eval, text);
+        }
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
         // Eval and Seal act on one unit of work, named by any of its Asks,
@@ -1258,6 +1263,32 @@ impl Session {
             );
         };
         let built = crate::acts::eval(debate, title, asks, &judges);
+        self.stage(at, NO_PANE, built)
+    }
+
+    /// Put the dialog that marks `item` of a closed Eval in front of everyone
+    /// watching: what it may be marked is the Eval view's to say.
+    fn stage_mark(&mut self, at: usize, eval: Option<&str>, item: Option<&str>) -> Answer {
+        let (Some(eval), Some(item)) = (eval, item) else {
+            return Answer::No("bad_request", "a mark names its Eval and its item".into());
+        };
+        let root = self.projects[at].root.clone();
+        let view = crate::record::eval_view(&root, eval);
+        let Some((mark, line)) = view.as_ref().and_then(|v| v.mark(item)) else {
+            return Answer::No("not_markable", format!("{item} of {eval} takes no mark"));
+        };
+        self.projects[at].ledger.refresh();
+        let record = self.projects[at].ledger.record();
+        let units = self.projects[at].ledger.units();
+        let ask = record.evals.iter().find(|e| e.id == eval).and_then(|e| e.asks.first());
+        let harness = ask.and_then(|a| units.iter().find(|u| &u.ask_id == a));
+        let kept = crate::labels::Mark {
+            harness: harness.map_or(String::new(), |u| u.harness.clone()),
+            eval_id: eval.to_string(),
+            mark,
+            item: item.to_string(),
+        };
+        let built = crate::acts::mark(weft_core::offers::marking(mark, &line), kept);
         self.stage(at, NO_PANE, built)
     }
 
@@ -2266,6 +2297,7 @@ impl Session {
                     compile: None,
                     eval: None,
                     stop: None,
+                    mark: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -2406,6 +2438,13 @@ impl Session {
                 }
                 if let Some(eval_id) = w.stop.take() {
                     return Ok(self.stop_eval((client, call_id), at, eval_id));
+                }
+                if let Some(mark) = w.mark.take() {
+                    let row = crate::labels::marked(&mark);
+                    return Ok(match crate::labels::append(&self.config, &root, &row) {
+                        Ok(()) => Answer::Ok(serde_json::json!({"mark": row})),
+                        Err(e) => Answer::No("not_kept", format!("the mark was not kept: {e}")),
+                    });
                 }
                 // Send is the confirmation: the Ask is compiled as it was
                 // shown, and its prompt is what is typed.
