@@ -84,7 +84,8 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
 }
 
 /// What a closed Eval asks of the person.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Notice {
     /// Aligned, nothing found, its checks passed and no change split: a
     /// Seal is all it waits for.

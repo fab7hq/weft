@@ -3,7 +3,7 @@
 //! same for as long as its pane lives, and its turn as the daemon reported
 //! it. Nothing here works out NEEDS YOU: `waiting` is the daemon's word.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use serde_json::{Value, json};
@@ -67,6 +67,8 @@ pub struct Project {
     /// Reopened after weftd ended uncleanly, at this time,
     /// until someone acts in it.
     reopened: Option<i64>,
+    /// The closed Evals already told of, or closed before it opened.
+    told: HashSet<String>,
 }
 
 /// Stop a running Eval: weftd shows its one dialog.
@@ -120,6 +122,10 @@ impl Project {
             standing: Value::Null,
             turbo: answer["turbo"].as_bool().unwrap_or(false),
             reopened: answer["reopened"].as_i64(),
+            told: answer["records"]
+                .as_object()
+                .map(|r| r.keys().cloned().collect())
+                .unwrap_or_default(),
         };
         p.stamp(now());
         p
@@ -168,6 +174,27 @@ impl Project {
         }
         self.stamp(now());
         true
+    }
+
+    /// The Evals closed since last asked, each once, with what each asks of
+    /// the person.
+    pub fn finished(&mut self) -> Vec<crate::push::Finished> {
+        let Some(records) = self.records.as_object() else { return Vec::new() };
+        let mut out = Vec::new();
+        for (eval, record) in records {
+            let Ok(notice) = serde_json::from_value(record["notice"].clone()) else { continue };
+            let Some(unit) = self.work.of_eval(eval) else { continue };
+            if !self.told.insert(eval.clone()) {
+                continue;
+            }
+            out.push(crate::push::Finished {
+                notice,
+                unit: unit.root.clone(),
+                eval: eval.clone(),
+                title: self.root_of(unit).title,
+            });
+        }
+        out
     }
 
     /// Whether this project has a pane with this number.
@@ -800,6 +827,49 @@ mod tests {
             json!({"type": "eval.completed", "id": "evl_1", "time": "2026-10-08T10:05:00Z",
                    "data": {"basis": {"asks": asks}, "verdict": "aligned", "confidence": 1.0}}),
         ]
+    }
+
+    fn closing(id: &str, asks: &[&str]) -> Vec<Value> {
+        vec![
+            json!({"type": "eval.opened", "id": id, "time": "2026-10-08T10:00:00Z",
+                   "data": {"basis": {"asks": asks}}}),
+            json!({"type": "eval.completed", "id": id, "time": "2026-10-08T10:05:00Z",
+                   "data": {"basis": {"asks": asks}, "verdict": "aligned", "confidence": 1.0}}),
+        ]
+    }
+
+    /// An Eval that closes while the project is open is told once, with
+    /// what it asks of the person; one closed before it opened is not.
+    #[test]
+    fn an_eval_closing_is_told_once_and_one_closed_before_is_not() {
+        use crate::push::Finished;
+        use weft_core::board::Notice;
+        let units = [unit("ask_1", "fix login"), unit("ask_2", "old work")];
+        let before = closing("evl_0", &["ask_2"]);
+        let answer = json!({
+            "panes": [], "units": units, "readiness": {},
+            "work": work_of(&units, &before),
+            "records": {"evl_0": {"notice": "needs_you"}},
+        });
+        let mut p = Project::opened(Path::new("/work/weft"), &answer);
+        assert_eq!(p.finished(), [], "closed before it opened");
+        let events = [before, closing("evl_1", &["ask_1"])].concat();
+        p.heard(&Event::Units {
+            units: units.to_vec(),
+            records: json!({"evl_0": {"notice": "needs_you"},
+                            "evl_1": {"notice": "ready_to_seal"}}),
+            work: work_of(&units, &events),
+        });
+        assert_eq!(
+            p.finished(),
+            [Finished {
+                notice: Notice::ReadyToSeal,
+                unit: "ask_1".into(),
+                eval: "evl_1".into(),
+                title: "fix login".into(),
+            }]
+        );
+        assert_eq!(p.finished(), [], "told once");
     }
 
     /// Once an agent's turn has ended, its row puts forward the next act for

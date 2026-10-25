@@ -570,15 +570,40 @@ impl Remote {
             let Some(open) = self.projects[at].as_ref() else { continue };
             let (_, title) = open.agents.harness(pane).unwrap_or_default();
             let payload = crate::push::payload(&agent, title, &open.agents.name, count);
-            for d in self.devices.list.iter() {
-                if let Some(subscription) = &d.push {
-                    let _ = self.pusher.send(crate::push::Job {
-                        device: d.id.clone(),
-                        subscription: subscription.clone(),
-                        agent: agent.clone(),
-                        payload: payload.clone(),
-                    });
-                }
+            self.push_to_devices(&agent, &payload);
+        }
+        self.push_finished(away, count);
+    }
+
+    /// Each Eval that closed since, once: pushed while the person is away,
+    /// and let go while they are here.
+    fn push_finished(&mut self, away: bool, count: usize) {
+        let mut due = Vec::new();
+        for open in self.projects.iter_mut().flatten() {
+            for done in open.agents.finished() {
+                due.push((
+                    done.eval.clone(),
+                    crate::push::eval_payload(&done, &open.agents.name, count),
+                ));
+            }
+        }
+        if away {
+            for (eval, payload) in due {
+                self.push_to_devices(&eval, &payload);
+            }
+        }
+    }
+
+    /// One push to every device with pushes on.
+    fn push_to_devices(&self, topic: &str, payload: &Value) {
+        for d in self.devices.list.iter() {
+            if let Some(subscription) = &d.push {
+                let _ = self.pusher.send(crate::push::Job {
+                    device: d.id.clone(),
+                    subscription: subscription.clone(),
+                    topic: topic.to_string(),
+                    payload: payload.clone(),
+                });
             }
         }
     }

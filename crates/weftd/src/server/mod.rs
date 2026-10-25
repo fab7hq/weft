@@ -1943,13 +1943,17 @@ impl Session {
     fn board_of(&mut self, at: usize) -> Out {
         let units = self.projects[at].ledger.units();
         let root = self.projects[at].root.clone();
+        // Each open Eval's record says whether it is ready to seal.
+        let notices = crate::record::notices(&root, &units);
         let records = units
             .iter()
             .filter_map(|u| u.check.as_ref())
             .filter_map(|c| {
-                crate::record::read(&root, &c.eval_id)
-                    .and_then(|r| serde_json::to_value(r).ok())
-                    .map(|v| (c.eval_id.clone(), v))
+                let mut v = serde_json::to_value(crate::record::read(&root, &c.eval_id)?).ok()?;
+                if let Some(n) = notices.get(&c.eval_id) {
+                    v["notice"] = serde_json::to_value(n).ok()?;
+                }
+                Some((c.eval_id.clone(), v))
             })
             .collect::<serde_json::Map<_, _>>();
         let work = weft_core::work::work(&units, &self.projects[at].ledger.record());

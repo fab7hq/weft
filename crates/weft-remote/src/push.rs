@@ -117,7 +117,9 @@ impl Rules {
 pub struct Job {
     pub device: String,
     pub subscription: Value,
-    pub agent: String,
+    /// A newer push with the same topic replaces an older one: the agent's
+    /// id, or the Eval's.
+    pub topic: String,
     pub payload: Value,
 }
 
@@ -182,8 +184,7 @@ pub fn request(
     let headers = request.headers_mut();
     headers.insert("authorization", vapid.parse().ok()?);
     headers.insert("urgency", "high".parse().ok()?);
-    // A newer push for the same agent replaces an older one.
-    headers.insert("topic", job.agent.parse().ok()?);
+    headers.insert("topic", job.topic.parse().ok()?);
     Some(request)
 }
 
@@ -192,6 +193,27 @@ pub fn request(
 pub fn payload(agent: &str, harness: &str, project: &str, count: usize) -> Value {
     json!({"agent": agent, "title": format!("{harness} in {project}"),
            "body": "needs your input", "count": count})
+}
+
+/// An Eval that closed, and what it asks of the person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Finished {
+    pub notice: weft_core::board::Notice,
+    /// The unit of work it judged, by its root Ask.
+    pub unit: String,
+    pub eval: String,
+    pub title: String,
+}
+
+/// What a push says of an Eval that closed: "Ready to seal" opens the Seal
+/// dialog and "Needs you" the Eval, as its tag says.
+pub fn eval_payload(done: &Finished, project: &str, count: usize) -> Value {
+    let (opens, said) = match done.notice {
+        weft_core::board::Notice::ReadyToSeal => ("seal", "Ready to seal"),
+        weft_core::board::Notice::NeedsYou => ("eval", "Needs you"),
+    };
+    json!({"tag": format!("{opens}:{}:{}", done.unit, done.eval),
+           "title": format!("{said}: {}", done.title), "body": project, "count": count})
 }
 
 #[cfg(test)]
@@ -225,6 +247,29 @@ mod tests {
             Signature::from_slice(&Base64UrlUnpadded::decode_vec(signature).unwrap()).unwrap();
         point.verify(format!("{head}.{claims}").as_bytes(), &signature).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// "Ready to seal" opens the Seal dialog, "Needs you" the Eval: the tag
+    /// says which, and of what.
+    #[test]
+    fn an_eval_push_says_ready_to_seal_or_needs_you_and_what_it_opens() {
+        use weft_core::board::Notice;
+        let done = |notice| Finished {
+            notice,
+            unit: "ask_1".into(),
+            eval: "evl_1".into(),
+            title: "fix login".into(),
+        };
+        assert_eq!(
+            eval_payload(&done(Notice::ReadyToSeal), "weft", 2),
+            json!({"tag": "seal:ask_1:evl_1", "title": "Ready to seal: fix login",
+                   "body": "weft", "count": 2})
+        );
+        assert_eq!(
+            eval_payload(&done(Notice::NeedsYou), "weft", 0),
+            json!({"tag": "eval:ask_1:evl_1", "title": "Needs you: fix login",
+                   "body": "weft", "count": 0})
+        );
     }
 
     #[test]
