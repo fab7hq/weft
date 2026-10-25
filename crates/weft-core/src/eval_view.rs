@@ -264,6 +264,20 @@ fn readings_of(votes: &[Value], role_of: impl Fn(&Value) -> String) -> Vec<Readi
         .collect()
 }
 
+/// What a judge did, as a person reads it: gathered the changes, compared
+/// them to the tasks, double-checked, or broke a tie (`again`: a second
+/// double-check is the tie-break).
+fn did(role: &str, again: bool) -> String {
+    let key = match role {
+        "map" => "eval_view.role.gathered",
+        "reduce" => "eval_view.role.compared",
+        "confirm" if !again => "eval_view.role.double_checked",
+        "confirm" | "third" => "eval_view.role.tie_break",
+        other => return other.to_string(),
+    };
+    word(key).into()
+}
+
 /// Whether two readings decide a requirement both ways.
 fn disagree(readings: &[Reading]) -> bool {
     let votes: BTreeSet<&str> = readings
@@ -344,6 +358,7 @@ impl Change {
             None => class_of(map).into(),
         };
         for (role, e) in readings {
+            let role = did(role, false);
             let q = s(e, "quote");
             if !q.is_empty() && !self.quotes.contains(&q) {
                 self.quotes.push(q);
@@ -884,13 +899,13 @@ pub fn step_rows(view: &EvalView, id: &str) -> Vec<Row> {
     }
     if !st.readings.is_empty() {
         out.push(Row::text(RowKind::Heading, 0, heading("eval_view.readings")));
+        let mut checked = false;
         for r in &st.readings {
             let said = if r.reason.is_empty() { &r.missing } else { &r.reason };
-            let mut row = Row::text(
-                RowKind::Text,
-                1,
-                format!("{}: {}  {said}", r.role, r.vote.replace('_', " ")),
-            );
+            let who = did(&r.role, r.role == "confirm" && checked);
+            checked |= r.role == "confirm";
+            let mut row =
+                Row::text(RowKind::Text, 1, format!("{who}: {}  {said}", r.vote.replace('_', " ")));
             if !r.counted && view.closed {
                 row.aside = "not counted".into();
             }
@@ -1166,7 +1181,7 @@ mod tests {
             ["src/log.rs", "w_a", "src/server.rs", "w_b", "src/telemetry.rs", "L1"]
         );
         let step: Vec<String> = step_rows(&v, S7).iter().map(|r| r.text.clone()).collect();
-        assert!(step.contains(&"confirm: not met  reverted".to_string()), "{step:?}");
+        assert!(step.contains(&"Double-checked: not met  reverted".to_string()), "{step:?}");
         assert!(step.contains(&"missing: the refusal is not kept".to_string()), "{step:?}");
         assert_eq!(step.last().unwrap(), "src/server.rs  w_b");
         assert_eq!(
@@ -1206,6 +1221,23 @@ mod tests {
     }
 
     #[test]
+    fn each_answer_is_named_by_what_its_judge_did_and_a_third_breaks_the_tie() {
+        let vote = |role: &str, v: &str| json!({"role": role, "vote": v, "counted": true, "reason": v, "citations": []});
+        let record = json!({"verdict": "drifted", "items": [{"id": S7, "result": "not_met", "votes": [
+            vote("reduce", "met"), vote("confirm", "not_met"), vote("confirm", "not_met")]}], "windows": []});
+        let v = built(Some(&record), &[], &[], &[]);
+        let said: Vec<String> = step_rows(&v, S7).into_iter().map(|r| r.text).collect();
+        for line in [
+            "Compared: met  met",
+            "Double-checked: not met  not_met",
+            "Tie-break: not met  not_met",
+        ] {
+            assert!(said.contains(&line.to_string()), "{line} in {said:?}");
+        }
+        assert!(!said.iter().any(|l| l.contains("reduce") || l.contains("confirm:")), "{said:?}");
+    }
+
+    #[test]
     fn a_running_eval_is_a_picture_of_its_progress_in_plain_words() {
         let reduce = json!({"kind": "reduce", "judge": {"role": "reduce"}, "requirements": []});
         let v = built_with_checks(
@@ -1222,10 +1254,10 @@ mod tests {
         assert_eq!(
             said,
             [
-                ("Reading the changes", "3 changes read", Light::Done),
-                ("Checking what you asked", "under way", Light::Now),
-                ("A second look", "next", Light::Next),
-                ("Running your tests", "cargo test · running", Light::Running),
+                ("Gather changes", "3 changes gathered", Light::Done),
+                ("Compare to your tasks", "under way", Light::Now),
+                ("Double-check", "next", Light::Next),
+                ("Run your tests", "cargo test · running", Light::Running),
             ]
         );
         assert_eq!(payload(&v, &BTreeMap::new()).progress, Some(p));
@@ -1319,8 +1351,8 @@ mod tests {
         assert_eq!(
             c.readings,
             [
-                "map: unexplained: Adds a usage-reporting function that posts project data to an external collector; no account-erasure requirement asks for usage reporting.",
-                "confirm: required · f0",
+                "Gathered: unexplained: Adds a usage-reporting function that posts project data to an external collector; no account-erasure requirement asks for usage reporting.",
+                "Double-checked: required · f0",
             ]
         );
         let main: Vec<String> = rows(&v, Mode::Steps, &BTreeSet::new())
@@ -1371,8 +1403,8 @@ mod tests {
         assert_eq!(s7.state.words(), "split");
         assert_eq!(v.step(S8).unwrap().state, State::Unsettled, "no two readings to split");
         let step: Vec<String> = step_rows(&v, S7).iter().map(|r| r.text.clone()).collect();
-        assert!(step.contains(&"reduce: met  told".to_string()), "{step:?}");
-        assert!(step.contains(&"confirm: not met  dropped".to_string()), "{step:?}");
+        assert!(step.contains(&"Compared: met  told".to_string()), "{step:?}");
+        assert!(step.contains(&"Double-checked: not met  dropped".to_string()), "{step:?}");
         let group = &rows(&v, Mode::Steps, &BTreeSet::new())
             .into_iter()
             .find(|r| r.kind == RowKind::Group)

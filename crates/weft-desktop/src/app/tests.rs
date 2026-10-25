@@ -1815,9 +1815,9 @@ fn a_running_eval_is_a_picture_with_its_judges_and_a_stop() {
     for said in [
         "Checking your work",
         "50%",
-        "Reading the changes",
-        "Checking what you asked",
-        "Running your tests",
+        "Gather changes",
+        "Compare to your tasks",
+        "Run your tests",
         "cargo test · running",
     ] {
         assert!(text.contains(said), "{said} in {text}");
