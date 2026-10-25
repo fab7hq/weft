@@ -687,8 +687,9 @@ fn map_answers(st: &Status) -> BTreeMap<String, BTreeMap<String, Value>> {
             slot.entry(role.clone()).or_insert_with(|| r.clone());
         }
     }
-    for doc in st.accepted.values().filter(|o| o["kind"] == "map") {
-        let role = str_of(&doc["judge"], "role");
+    for (id, doc) in st.accepted.iter().filter(|(_, o)| o["kind"] == "map") {
+        let third = id.rsplit('~').next().is_some_and(|l| l.starts_with("cwt"));
+        let role = if third { "third".to_string() } else { str_of(&doc["judge"], "role") };
         for w in array_of(doc, "windows") {
             out.entry(str_of(w, "window")).or_default().insert(role.clone(), w.clone());
         }
@@ -1173,10 +1174,53 @@ fn judging(ctx: &Ctx, st: &Status) -> Vec<Task> {
         .map(|w| str_of(w, "id"))
         .filter(|w| answers.get(w).is_some_and(needs_window_confirm))
         .collect();
+    let batches = window_batches(ctx, unexplained);
+    let seconds: Vec<Task> = batches
+        .into_iter()
+        .enumerate()
+        .map(|(k, windows)| Task {
+            id: task_id(e, &format!("cw{}", k + 1)),
+            kind: "map",
+            role: "confirm",
+            obligations: index.clone(),
+            windows,
+        })
+        .collect();
+    // A window whose second reading contradicts the map is read a third
+    // time, by a fresh judge, once every second reading is in: the majority
+    // settles it (`window_result`), as for a requirement.
+    let thirds: Vec<String> = if seconds.iter().all(|t| done(&t.id)) {
+        let split = |a: &BTreeMap<String, Value>| {
+            a.get("confirm").is_some_and(|c| window_class(c) != "unexplained")
+        };
+        seconds
+            .iter()
+            .flat_map(|t| &t.windows)
+            .filter(|w| answers.get(*w).is_some_and(|a| needs_window_confirm(a) && split(a)))
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    tasks.extend(seconds);
+    for (k, windows) in window_batches(ctx, thirds).into_iter().enumerate() {
+        tasks.push(Task {
+            id: task_id(e, &format!("cwt{}", k + 1)),
+            kind: "map",
+            role: "confirm",
+            obligations: index.clone(),
+            windows,
+        });
+    }
+    tasks
+}
+
+/// Windows packed into batches of at most `CONFIRM_BYTES`.
+fn window_batches(ctx: &Ctx, windows: Vec<String>) -> Vec<Vec<String>> {
     let mut cur: Vec<String> = Vec::new();
     let mut bytes = 0;
     let mut batches: Vec<Vec<String>> = Vec::new();
-    for w in unexplained {
+    for w in windows {
         let b = ctx.window_bytes(&w);
         if !cur.is_empty() && bytes + b > CONFIRM_BYTES {
             batches.push(std::mem::take(&mut cur));
@@ -1188,16 +1232,7 @@ fn judging(ctx: &Ctx, st: &Status) -> Vec<Task> {
     if !cur.is_empty() {
         batches.push(cur);
     }
-    for (k, windows) in batches.into_iter().enumerate() {
-        tasks.push(Task {
-            id: task_id(e, &format!("cw{}", k + 1)),
-            kind: "map",
-            role: "confirm",
-            obligations: index.clone(),
-            windows,
-        });
-    }
-    tasks
+    batches
 }
 
 /// A window the map called unexplained is read again, unless an earlier Eval's
@@ -2458,14 +2493,20 @@ fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<Stri
 
 // ---- close ------------------------------------------------------------------------
 
-/// A judged window from its map's class and its second reading's: two
-/// readings settle it only when they agree; the map alone settles a window it
-/// found a reason for.
-fn window_result(map: Option<&'static str>, second: Option<&'static str>) -> (&'static str, f64) {
-    match (map, second) {
-        (Some("unexplained"), Some("unexplained")) => ("unexplained", 1.0),
-        (Some("unexplained"), _) | (None, _) => ("not_judged", 0.0),
-        (Some(class), _) => (class, 1.0),
+/// A judged window from its map's class and its later readings': two
+/// readings settle it when they agree, and when they split a third decides;
+/// the map alone settles a window it found a reason for.
+fn window_result(
+    map: Option<&'static str>,
+    second: Option<&'static str>,
+    third: Option<&'static str>,
+) -> (&'static str, f64) {
+    match (map, second, third) {
+        (Some("unexplained"), Some("unexplained"), _) => ("unexplained", 1.0),
+        (Some("unexplained"), Some(_), Some("unexplained")) => ("unexplained", 0.67),
+        (Some("unexplained"), Some(class), Some(_)) => (class, 0.67),
+        (Some("unexplained"), _, _) | (None, _, _) => ("not_judged", 0.0),
+        (Some(class), _, _) => (class, 1.0),
     }
 }
 
@@ -2602,6 +2643,7 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
             let (result, agreement) = window_result(
                 a.and_then(|a| a.get("map")).map(window_class),
                 a.and_then(|a| a.get("confirm")).map(window_class),
+                a.and_then(|a| a.get("third")).map(window_class),
             );
             (result.to_string(), agreement)
         };
@@ -4720,11 +4762,51 @@ mod tests {
         });
     }
 
-    /// A window's map and second reading settle it only when they agree.
+    /// A window whose second reading contradicts the map is read a third
+    /// time, by a fresh judge, once every second reading is in; the majority
+    /// settles it, so no change is left for the person to judge.
     #[test]
-    fn a_window_whose_two_readings_disagree_is_not_judged() {
+    fn a_window_the_two_readings_split_on_is_read_a_third_time_and_the_majority_settles_it() {
+        for (third_with_the_map, want) in [(true, "unexplained"), (false, "required")] {
+            eval_bench(|ws| {
+                let b = bench(ws);
+                let e = &b.eval_id;
+                map_all(ws, e);
+                let mut seen = Vec::new();
+                loop {
+                    let got = take(ws, e, None).unwrap();
+                    if got["state"] != "running" {
+                        assert_eq!(got["state"], "done", "{got}");
+                        break;
+                    }
+                    let task = str_of(&got["task"], "task_id");
+                    let local = task.rsplit('~').next().unwrap().to_string();
+                    if local.starts_with("cwt") && third_with_the_map {
+                        crate::testing::answer_task_wrong(ws, &task);
+                    } else {
+                        crate::testing::answer_task(ws, &task);
+                    }
+                    assert_eq!(submit(ws, &task).unwrap().0, 0, "{task}");
+                    seen.push(local);
+                }
+                assert!(seen.contains(&"cw1".to_string()), "{seen:?}");
+                assert!(seen.contains(&"cwt1".to_string()), "a third reading: {seen:?}");
+                let rec = crate::evaluate::load_record(ws, e).unwrap().unwrap();
+                let tele = window_for(ws, e, "src/telemetry.js");
+                let w = array_of(&rec, "windows").iter().find(|w| w["id"] == json!(tele)).unwrap();
+                assert_eq!(w["result"], want, "{w}");
+                assert_eq!(w["agreement"], json!(0.67), "{w}");
+                assert!(w["readings"].get("third").is_some(), "every reading is kept: {w}");
+            });
+        }
+    }
+
+    /// A window's map and second reading settle it when they agree; when they
+    /// split, the third decides, and until it is in nothing does.
+    #[test]
+    fn a_window_whose_two_readings_disagree_waits_for_a_third() {
         let r = |m, c| {
-            let (result, agreement) = window_result(m, c);
+            let (result, agreement) = window_result(m, c, None);
             (result.to_string(), agreement)
         };
         assert_eq!(r(Some("unexplained"), Some("unexplained")), ("unexplained".into(), 1.0));
@@ -4733,6 +4815,12 @@ mod tests {
         assert_eq!(r(Some("unexplained"), None), ("not_judged".into(), 0.0));
         assert_eq!(r(Some("required"), None), ("required".into(), 1.0));
         assert_eq!(r(None, None), ("not_judged".into(), 0.0));
+        let third = |c, t| {
+            let (result, agreement) = window_result(Some("unexplained"), Some(c), Some(t));
+            (result.to_string(), agreement)
+        };
+        assert_eq!(third("required", "unexplained"), ("unexplained".into(), 0.67));
+        assert_eq!(third("required", "consequence"), ("required".into(), 0.67));
     }
 
     /// The second reading is a plain first reading of its kind, in a fresh
