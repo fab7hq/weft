@@ -1,10 +1,10 @@
-//! Which harness takes an Eval's debate, and which model and effort each role
-//! runs on. The gather is Weft's own: it runs
-//! `ringframe eval open`, which reads the change with Git and records the Eval
-//! as gathered, so no harness is asked to map it. Weft types the
-//! debate into `/rf:eval`; it calls no model and checks no model name — the
-//! harness owns its catalogue. Weft ships no tiers: a role `config.toml` sets
-//! nothing for is not typed, and the plugin's own tiers apply.
+//! Which harness an Eval's judges run in, which model and effort each role
+//! runs on, and how many judges run at once. The gather is Weft's own: it
+//! opens the Eval through RingFrame's crate, which reads the change with Git
+//! and records it as gathered. Each judge is a session of that harness Weft
+//! starts; Weft calls no model and checks no model name — the harness owns
+//! its catalogue. Weft ships no tiers: a role `config.toml` sets nothing for
+//! is given RingFrame's own.
 
 use serde_json::{Map, Value, json};
 
@@ -29,7 +29,12 @@ pub fn role_now(name: &str) -> &str {
 pub struct Stage {
     pub harness: String,
     pub roles: Vec<(String, Option<String>, Option<String>)>,
+    /// How many judges run at once.
+    pub judges: usize,
 }
+
+/// How many judges run at once when the debate does not say.
+pub const JUDGES: usize = 8;
 
 /// The debate for this project: its harness is `[eval.debate] harness`, else
 /// `routing.eval`, else `fallback`; each role is what `[eval.debate]` sets.
@@ -55,23 +60,8 @@ pub fn resolve(stages: Option<&Value>, eval: Option<&str>, fallback: &str) -> St
             (model.is_some() || effort.is_some()).then(|| (role.to_string(), model, effort))
         })
         .collect();
-    Stage { harness, roles }
-}
-
-/// `role=model/effort` for each role that has a setting, a side left empty
-/// when only the other is set.
-fn words(stage: &Stage) -> Vec<String> {
-    stage
-        .roles
-        .iter()
-        .map(|(role, model, effort)| {
-            format!(
-                "{role}={}/{}",
-                model.as_deref().unwrap_or_default(),
-                effort.as_deref().unwrap_or_default()
-            )
-        })
-        .collect()
+    let judges = route.and_then(|r| r.get("judges")).and_then(Value::as_u64);
+    Stage { harness, roles, judges: judges.map_or(JUDGES, |n| n as usize) }
 }
 
 /// The roles as `ringframe eval open --agents` takes them, when any is set.
@@ -88,12 +78,6 @@ pub fn agents(stage: &Stage) -> Option<Value> {
         out.insert(role.clone(), Value::Object(keys));
     }
     (!out.is_empty()).then_some(Value::Object(out))
-}
-
-/// Where Eval types, and what follows `/rf:eval `, for a gathered Eval.
-pub fn debate_send(stage: &Stage, eval_id: &str) -> (String, String) {
-    let args = [vec!["debate".to_string(), eval_id.to_string()], words(stage)].concat();
-    (stage.harness.clone(), args.join(" "))
 }
 
 #[cfg(test)]
@@ -113,6 +97,14 @@ mod tests {
     }
 
     #[test]
+    fn eight_judges_run_at_once_unless_the_debate_says() {
+        assert_eq!(resolve(None, None, "codex").judges, JUDGES);
+        assert_eq!(JUDGES, 8);
+        let three = json!({"debate": {"judges": 3}});
+        assert_eq!(resolve(Some(&three), None, "codex").judges, 3);
+    }
+
+    #[test]
     fn a_role_runs_on_what_the_debate_sets_and_nothing_else() {
         let stages = json!({"debate": {"confirm": {"effort": "xhigh"}, "map": {"model": "m"}}});
         let d = resolve(Some(&stages), Some("codex"), "codex");
@@ -127,27 +119,6 @@ mod tests {
             agents(&resolve(None, None, "codex")),
             None,
             "nothing set: the plugin's tiers apply"
-        );
-    }
-
-    #[test]
-    fn the_debate_is_typed_with_its_eval_and_its_roles() {
-        let stages = json!({"debate": {"harness": "claude-code",
-            "reduce": {"model": "claude-sonnet-5", "effort": "medium"},
-            "map": {"effort": "low"},
-            "confirm": {"model": "claude-opus-5-5", "effort": "high"}}});
-        let d = resolve(Some(&stages), None, "codex");
-        assert_eq!(
-            debate_send(&d, "evl_1"),
-            (
-                "claude-code".into(),
-                "debate evl_1 map=/low reduce=claude-sonnet-5/medium confirm=claude-opus-5-5/high"
-                    .into()
-            )
-        );
-        assert_eq!(
-            debate_send(&resolve(None, None, "codex"), "evl_2"),
-            ("codex".into(), "debate evl_2".into())
         );
     }
 

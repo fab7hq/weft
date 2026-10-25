@@ -429,6 +429,13 @@ impl Config {
                 if let Some(h) = harness(value, &path, known, self) {
                     kept.insert(key.clone(), Value::from(h));
                 }
+            } else if key == "judges" {
+                match value.as_u64().filter(|n| *n >= 1) {
+                    Some(n) => {
+                        kept.insert(key.clone(), Value::from(n));
+                    }
+                    None => self.ignored.push(path),
+                }
             } else if !roles.contains(&key.as_str()) || !value.is_object() {
                 self.ignored.push(path);
             } else {
@@ -797,6 +804,22 @@ routing = { ask = "claude-code" }
         assert_eq!(c.ignored, ["eval.debate.context", "eval.gather"]);
         let r = c.routing(Path::new(HERE));
         assert_eq!(r.eval_stages, Some(json!({"debate": {"map": {"effort": "high"}}})));
+    }
+
+    /// How many judges an Eval runs at once is the debate's `judges`, a whole
+    /// number of one or more; anything else is reported and left out.
+    #[test]
+    fn the_debate_says_how_many_judges_run_at_once() {
+        let r = at("[eval.debate]\njudges = 3\n");
+        assert_eq!(r.eval_stages, Some(json!({"debate": {"judges": 3}})));
+        let c = read_(
+            "[eval.debate]\njudges = 0\n\n[projects.\"/work/thing\".eval.debate]\njudges = \"four\"\n",
+        );
+        assert_eq!(
+            c.ignored,
+            ["eval.debate.judges", "projects.\"/work/thing\".eval.debate.judges"]
+        );
+        assert_eq!(c.routing(Path::new(HERE)).eval_stages, None);
     }
 
     #[test]

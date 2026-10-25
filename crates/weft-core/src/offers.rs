@@ -108,7 +108,20 @@ pub fn evaluating(title: &str, asks: usize, judges: &str) -> Asking {
     };
     Asking {
         what: word("dialog.eval.title").into(),
-        why: vec![work, fill("dialog.eval.judges", &[("harness", judges)])],
+        why: vec![
+            work,
+            fill("dialog.eval.judges", &[("harness", judges)]),
+            word("dialog.eval.nothing_typed").into(),
+        ],
+    }
+}
+
+/// Stopping a running Eval: its judges stop, and it is voided.
+pub fn stopping(title: &str) -> Asking {
+    use crate::words::{fill, word};
+    Asking {
+        what: word("dialog.stop_eval.title").into(),
+        why: vec![fill("dialog.stop_eval.why", &[("title", title)])],
     }
 }
 

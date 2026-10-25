@@ -120,6 +120,9 @@ pub const WORDS: &[(&str, &str)] = &[
     ("dialog.eval.work", "{title} · {n} Asks"),
     ("dialog.eval.work_one", "{title} · 1 Ask"),
     ("dialog.eval.judges", "{harness} checks the change against what you asked."),
+    ("dialog.eval.nothing_typed", "Nothing is typed into the agent's pane."),
+    ("dialog.stop_eval.title", "Stop this Eval?"),
+    ("dialog.stop_eval.why", "The judges of {title} stop, and the Eval is voided."),
     // The one dialog a Seal has: the decision, and why when it is not a yes.
     ("dialog.seal.title", "Seal this work?"),
     ("dialog.seal.verdict", "VERDICT"),
