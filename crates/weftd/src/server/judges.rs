@@ -1,7 +1,9 @@
 //! An Eval's judges: harness sessions Weft starts in background panes, in the
 //! project's folder, each handed one task at a time until the Eval settles.
 //! RingFrame is asked off the run loop, one step at a time; the run loop
-//! starts the panes, types into them and closes them.
+//! starts the panes, types into them and closes them. The Evals being judged
+//! are kept beside the judges' sessions, so a Weft started again judges them
+//! on.
 
 use std::time::{Duration, Instant};
 
@@ -41,6 +43,9 @@ pub(super) struct Bench {
     stepping: bool,
     again: bool,
     looked: Instant,
+    /// Seated again after Weft started again: the tasks still out went with
+    /// the old judges, and are handed back first.
+    reclaim: bool,
 }
 
 /// One judge pane.
@@ -116,20 +121,22 @@ struct Look {
     judges: usize,
     seats: Vec<SeatLook>,
     seen: HashMap<String, Launch>,
+    reclaim: bool,
 }
 
 impl Bench {
-    pub(super) fn new(eval_id: String, stage: &weft_core::eval_stages::Stage, client: u64) -> Self {
+    pub(super) fn new(eval_id: String, harness: String, judges: usize, client: u64) -> Self {
         Bench {
             eval_id,
-            harness: stage.harness.clone(),
-            judges: stage.judges,
+            harness,
+            judges,
             client,
             seats: Vec::new(),
             seen: HashMap::new(),
             stepping: false,
             again: false,
             looked: Instant::now(),
+            reclaim: false,
         }
     }
 
@@ -153,6 +160,7 @@ impl Bench {
             judges: self.judges,
             seats,
             seen: self.seen.clone(),
+            reclaim: self.reclaim,
         }
     }
 
@@ -179,8 +187,11 @@ fn step(look: &Look) -> Vec<Did> {
 }
 
 fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
-    use crate::ringframe::{eval_return, eval_task, eval_task_in};
+    use crate::ringframe::{eval_return, eval_return_out, eval_task, eval_task_in};
     let root = &look.root;
+    if look.reclaim {
+        eval_return_out(root, &look.eval_id)?;
+    }
     let mut did = Vec::new();
     let mut idle: Vec<&SeatLook> = Vec::new();
     let mut open = 0;
@@ -263,8 +274,23 @@ impl Session {
         if benches.iter().any(|b| b.eval_id == eval_id) {
             return;
         }
-        benches.push(Bench::new(eval_id.to_string(), stage, client));
+        benches.push(Bench::new(eval_id.to_string(), stage.harness.clone(), stage.judges, client));
+        keep(&self.projects[at]);
         self.step_judges(at, eval_id);
+    }
+
+    /// The project opened in a Weft started again: the Evals the last one
+    /// was judging here get judges again.
+    pub(super) fn resume_judges(&mut self, at: usize, client: u64) {
+        for (eval_id, harness) in std::mem::take(&mut self.projects[at].unseated) {
+            let p = &self.projects[at];
+            let stages = p.routing.eval_stages.as_ref();
+            let judges = weft_core::eval_stages::resolve(stages, Some(&harness), &harness).judges;
+            let bench =
+                Bench { reclaim: true, ..Bench::new(eval_id.clone(), harness, judges, client) };
+            self.projects[at].benches.push(bench);
+            self.step_judges(at, &eval_id);
+        }
     }
 
     /// Ask RingFrame what the judges of this Eval do next, off the run loop;
@@ -281,6 +307,7 @@ impl Session {
         }
         (bench.stepping, bench.again, bench.looked) = (true, false, Instant::now());
         let look = bench.look(&root);
+        bench.reclaim = false;
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let did = step(&look);
@@ -321,6 +348,7 @@ impl Session {
                 Did::Start { task } => self.start_judge(at, i, task),
                 Did::Done => {
                     let bench = self.projects[at].benches.remove(i);
+                    keep(&self.projects[at]);
                     for s in bench.seats {
                         self.close(at, s.pane);
                     }
@@ -354,6 +382,9 @@ impl Session {
                 if let Some(slot) = self.projects[at].slot(pane) {
                     slot.judge = Some(eval_id);
                 }
+                // Each window lists it under its Eval from now on.
+                let panes = self.pane_infos(at);
+                self.clients.broadcast(at, &Out::Panes { panes });
                 Seat { pane, launch, ran_map, gone: false, held: Some(Held::new(task)) }
             }
             // No pane: a seat for no pane, so the task is handed back.
@@ -471,12 +502,38 @@ fn judges_file(root: &Path) -> PathBuf {
     root.join(".fab7").join("weft").join("judges.json")
 }
 
+fn judges_read(root: &Path) -> serde_json::Value {
+    let text = std::fs::read_to_string(judges_file(root)).unwrap_or_default();
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
 /// The sessions judges ran in this project.
 pub(super) fn sessions(root: &Path) -> std::collections::HashSet<String> {
-    let text = std::fs::read_to_string(judges_file(root)).unwrap_or_default();
-    let read: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+    let read = judges_read(root);
     let listed = read["sessions"].as_array().into_iter().flatten();
     listed.filter_map(|s| s.as_str()).map(str::to_string).collect()
+}
+
+/// The Evals Weft was judging in this project, each with its judges'
+/// harness.
+pub(super) fn benched(root: &Path) -> Vec<(String, String)> {
+    let read = judges_read(root);
+    let listed = read["evals"].as_object().into_iter().flatten();
+    listed.filter_map(|(e, h)| Some((e.clone(), h.as_str()?.to_string()))).collect()
+}
+
+/// Keep the sessions judges ran here, and the Evals being judged.
+fn keep(p: &Project) {
+    let mut sessions: Vec<&String> = p.judged.iter().collect();
+    sessions.sort();
+    let evals: serde_json::Map<String, serde_json::Value> =
+        p.benches.iter().map(|b| (b.eval_id.clone(), b.harness.clone().into())).collect();
+    let mut text =
+        serde_json::to_string_pretty(&serde_json::json!({"sessions": sessions, "evals": evals}))
+            .unwrap_or_default();
+    text.push('\n');
+    // `write_map` made the folder, with its `.gitignore`.
+    write_whole(&judges_file(&p.root), text);
 }
 
 impl Session {
@@ -488,13 +545,7 @@ impl Session {
         if !judge || !p.judged.insert(session.to_string()) {
             return;
         }
-        let mut listed: Vec<&String> = p.judged.iter().collect();
-        listed.sort();
-        let mut text = serde_json::to_string_pretty(&serde_json::json!({"sessions": listed}))
-            .unwrap_or_default();
-        text.push('\n');
-        // `write_map` made the folder, with its `.gitignore`.
-        write_whole(&judges_file(&p.root), text);
+        keep(p);
     }
 }
 

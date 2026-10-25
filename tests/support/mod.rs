@@ -8,6 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use serde_json::{Value, json};
 use weft::protocol::{Event, Line};
 use weft_core::signal::Sent;
 
@@ -187,4 +188,58 @@ pub fn stub_harness(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
     let (read, unread) = weft_core::harness::Harnesses::read(vec![(name.to_string(), file)]);
     assert!(unread.is_empty(), "the stub harness file reads");
     read
+}
+
+/// The task lines typed into a judge, in order: each task, and where its
+/// answer goes.
+pub fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
+    typed
+        .match_indices("Judge task ")
+        .filter_map(|(i, _)| {
+            let rest = &typed[i + "Judge task ".len()..];
+            let (task, rest) = rest.split_once(": read ")?;
+            let (brief, rest) = rest.split_once("; answer with ringframe eval submit --task ")?;
+            let (_, rest) = rest.split_once(" --file ")?;
+            let end = rest.find(".json")? + ".json".len();
+            Some((task.to_string(), brief.into(), rest[..end].into()))
+        })
+        .collect()
+}
+
+/// What a task asks for, by its id: the person's requirements, a reading of
+/// windows (a map, or a window's second reading), or of requirements.
+pub fn kind_of(task: &str) -> &'static str {
+    match task.rsplit('~').next().unwrap_or_default() {
+        l if l.starts_with('q') => "requirements",
+        l if l.starts_with('m') || l.starts_with("cw") => "map",
+        _ => "reduce",
+    }
+}
+
+pub fn is_confirm(task: &str) -> bool {
+    task.rsplit('~').next().is_some_and(|l| l.starts_with('c'))
+}
+
+/// A judge's answer to its task file: the requirements quoting the Ask's
+/// words; every window serving the first requirement; every requirement
+/// unknown, with what would settle it.
+pub fn answer(kind: &str, file: &Value) -> Value {
+    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+    match kind {
+        "requirements" => json!({"requirements": list("asks").iter().map(|a| {
+            json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
+                   "quote": a["text"].as_str().unwrap().trim()})
+        }).collect::<Vec<_>>()}),
+        "map" => {
+            let first = list("requirements")[0]["id"].clone();
+            json!({"windows": list("windows").iter().map(|w| {
+                json!({"window": w["id"], "serves": [first]})
+            }).collect::<Vec<_>>()})
+        }
+        _ => json!({"requirements": list("requirements").iter().map(|r| {
+            json!({"id": r["id"], "vote": "unknown",
+                   "reason": format!("{} is not shown either way", r["id"]),
+                   "missing": format!("a test showing {}", r["id"])})
+        }).collect::<Vec<_>>()}),
+    }
 }

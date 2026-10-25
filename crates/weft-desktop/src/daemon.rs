@@ -30,6 +30,8 @@ pub struct PaneView {
     pub spec: String,
     pub running: bool,
     pub turbo: bool,
+    /// The Eval it judges, for a judge pane: shown under that Eval.
+    pub judge: Option<String>,
     pub turn: Option<Turn>,
     term: weft_term::Term,
     /// The number of the last chunk the terminal holds: a chunk numbered no
@@ -45,6 +47,7 @@ impl PaneView {
         let mut v = Self::new(p.pane, p.harness, p.spec);
         v.running = p.running;
         v.turbo = p.turbo;
+        v.judge = p.judge;
         v
     }
 
@@ -55,6 +58,7 @@ impl PaneView {
             spec,
             running: true,
             turbo: false,
+            judge: None,
             turn: None,
             term: Self::terminal(24, 80),
             seq: 0,
@@ -181,6 +185,7 @@ impl PaneView {
             spec: self.spec.clone(),
             running: self.running,
             turbo: self.turbo,
+            judge: self.judge.clone(),
         }
     }
 }
@@ -627,6 +632,11 @@ impl ProjectClient {
         self.panes.iter_mut().find(|p| p.id == id)
     }
 
+    /// The judge panes of an Eval, listed under it.
+    pub fn judges(&self, eval: &str) -> Vec<&PaneView> {
+        self.panes.iter().filter(|p| p.judge.as_deref() == Some(eval)).collect()
+    }
+
     pub fn pane_infos(&self) -> Vec<PaneInfo> {
         self.panes.iter().map(PaneView::info).collect()
     }
@@ -760,6 +770,7 @@ impl ProjectClient {
                             let mut v = kept.swap_remove(i);
                             v.running = info.running;
                             v.turbo = info.turbo;
+                            v.judge = info.judge;
                             v
                         }
                         None => PaneView::of(info),

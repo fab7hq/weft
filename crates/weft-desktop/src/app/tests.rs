@@ -510,6 +510,29 @@ fn a_restored_split_keeps_each_agent_in_its_own_pane() {
 }
 
 #[test]
+fn a_judge_pane_is_listed_under_its_eval_and_never_as_an_agent() {
+    let tmp = home_with(WeftState { open_projects: vec![weft()], ..Default::default() });
+    let mut app = WeftDesktopApp::new(tmp.path().to_path_buf(), "studio");
+    let mut client = ProjectClient::disconnected(weft(), "weft");
+    client.notify = true;
+    let judge = |id, eval: &str| {
+        let mut p = PaneView::new(id, "codex".into(), "codex -m gpt-6".into());
+        (p.judge, p.turn) = (Some(eval.into()), Some(Turn::Waiting));
+        p
+    };
+    client.panes =
+        vec![PaneView::new(0, "sh".into(), "sh".into()), judge(1, "evl_1"), judge(2, "evl_2")];
+    app.integrate_connected_client(client);
+    let tabs: Vec<u32> =
+        app.state.panes.groups.iter().flat_map(|g| &g.tabs).map(|t| t.pane).collect();
+    assert_eq!(tabs, [0], "a judge opens no tab of its own");
+    let under = |eval| app.clients[0].judges(eval).iter().map(|p| p.id).collect::<Vec<_>>();
+    assert_eq!((under("evl_1"), under("evl_2")), (vec![1], vec![2]));
+    app.notice_waiting();
+    assert!(app.notices.is_empty(), "a judge waiting is not the person's agent waiting");
+}
+
+#[test]
 fn four_panes_each_tell_the_daemon_their_own_size_once() {
     let (_tmp, mut app, mut wire) = wired_app();
     let sizes = [(1, 22, 97), (2, 22, 69), (3, 17, 97), (4, 17, 69)];

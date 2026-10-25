@@ -33,6 +33,7 @@ impl Session {
                 spec: s.map.spec.clone(),
                 running: s.pane.running(),
                 turbo: s.turbo,
+                judge: s.judge.clone(),
             })
             .collect()
     }

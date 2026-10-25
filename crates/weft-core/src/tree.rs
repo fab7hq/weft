@@ -413,6 +413,7 @@ mod tests {
             spec: harness.into(),
             running: true,
             turbo: false,
+            judge: None,
         }
     }
 

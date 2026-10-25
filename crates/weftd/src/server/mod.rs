@@ -203,6 +203,9 @@ struct Project {
     /// The sessions judges ran here, which are no agent of the person's:
     /// `.fab7/weft/judges.json`.
     judged: std::collections::HashSet<String>,
+    /// The Evals the last Weft was judging here, with their judges'
+    /// harness: seated again when a window opens the project.
+    unseated: Vec<(String, String)>,
     /// The harnesses Weft has a file for, read when the project opened, and
     /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
@@ -2057,6 +2060,7 @@ impl Session {
                 // Where the person said a harness's program is, when not on PATH.
                 let harnesses = harnesses.with_programs(|n| config.program(n).map(str::to_string));
                 let judged = judges::sessions(&root);
+                let unseated = judges::benched(&root);
                 self.projects.push(Project {
                     opened: crate::turns::now_millis(),
                     routing: config.routing(&root),
@@ -2084,6 +2088,7 @@ impl Session {
                     due: Vec::new(),
                     benches: Vec::new(),
                     judged,
+                    unseated,
                     turns: crate::turns::Turns::default(),
                     harnesses,
                     unread,
@@ -2219,6 +2224,7 @@ impl Session {
                 // Read now, so a call the window makes before its answer
                 // sees the record.
                 self.projects[at].ledger.refresh();
+                self.resume_judges(at, client);
                 self.clients.opening.insert(client);
                 // RingFrame is asked, off the run loop, whether it is set up
                 // here and whether an Ask could finish here; the window is

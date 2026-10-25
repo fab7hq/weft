@@ -18,11 +18,11 @@ mod support;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ringframe::api;
-use serde_json::{Value, json};
+use serde_json::Value;
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
 
@@ -116,60 +116,6 @@ fn events(root: &Path, kind: &str) -> Vec<Value> {
         .filter_map(|l| serde_json::from_str::<Value>(l).ok())
         .filter(|e| e["type"] == kind)
         .collect()
-}
-
-/// The task lines typed into a judge, in order: each task, and where its
-/// answer goes.
-fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
-    typed
-        .match_indices("Judge task ")
-        .filter_map(|(i, _)| {
-            let rest = &typed[i + "Judge task ".len()..];
-            let (task, rest) = rest.split_once(": read ")?;
-            let (brief, rest) = rest.split_once("; answer with ringframe eval submit --task ")?;
-            let (_, rest) = rest.split_once(" --file ")?;
-            let end = rest.find(".json")? + ".json".len();
-            Some((task.to_string(), brief.into(), rest[..end].into()))
-        })
-        .collect()
-}
-
-/// What a task asks for, by its id: the person's requirements, a reading of
-/// windows (a map, or a window's second reading), or of requirements.
-fn kind_of(task: &str) -> &'static str {
-    match task.rsplit('~').next().unwrap_or_default() {
-        l if l.starts_with('q') => "requirements",
-        l if l.starts_with('m') || l.starts_with("cw") => "map",
-        _ => "reduce",
-    }
-}
-
-fn is_confirm(task: &str) -> bool {
-    task.rsplit('~').next().is_some_and(|l| l.starts_with('c'))
-}
-
-/// A judge's answer to its task file: the requirements quoting the Ask's
-/// words; every window serving the first requirement; every requirement
-/// unknown, with what would settle it.
-fn answer(kind: &str, file: &Value) -> Value {
-    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-    match kind {
-        "requirements" => json!({"requirements": list("asks").iter().map(|a| {
-            json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
-                   "quote": a["text"].as_str().unwrap().trim()})
-        }).collect::<Vec<_>>()}),
-        "map" => {
-            let first = list("requirements")[0]["id"].clone();
-            json!({"windows": list("windows").iter().map(|w| {
-                json!({"window": w["id"], "serves": [first]})
-            }).collect::<Vec<_>>()})
-        }
-        _ => json!({"requirements": list("requirements").iter().map(|r| {
-            json!({"id": r["id"], "vote": "unknown",
-                   "reason": format!("{} is not shown either way", r["id"]),
-                   "missing": format!("a test showing {}", r["id"])})
-        }).collect::<Vec<_>>()}),
-    }
 }
 
 /// One judge pane, as the test has played it.
@@ -298,7 +244,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                     "pane {pane} alive {} tasks {:?} typed {} lines",
                     alive.contains(pane),
                     j.tasks,
-                    task_lines(&typed).len()
+                    support::task_lines(&typed).len()
                 );
             }
             for e in events(&root, "eval.task") {
@@ -340,10 +286,12 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
             }
             let typed =
                 std::fs::read_to_string(dir.join(format!("typed-{pane}"))).unwrap_or_default();
-            for (task, _, out) in task_lines(&typed).into_iter().skip(j.tasks.len()) {
-                if is_confirm(&task) {
+            for (task, _, out) in support::task_lines(&typed).into_iter().skip(j.tasks.len()) {
+                if support::is_confirm(&task) {
                     assert!(
-                        !j.tasks.iter().any(|t| kind_of(t) == "map" && !is_confirm(t)),
+                        !j.tasks
+                            .iter()
+                            .any(|t| support::kind_of(t) == "map" && !support::is_confirm(t)),
                         "the confirm {task} went to pane {pane}, which ran a map: {:?}",
                         j.tasks
                     );
@@ -383,8 +331,8 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                         state,
                     )
                 };
-                let kind = kind_of(&task);
-                let first_map = kind == "map" && !is_confirm(&task);
+                let kind = support::kind_of(&task);
+                let first_map = kind == "map" && !support::is_confirm(&task);
                 // The first map's first answer is refused; its judge is
                 // given the task again.
                 if first_map && refused.is_none() {
@@ -406,7 +354,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                 let file = out.to_string_lossy().replace("/out/", "/tasks/");
                 let file: Value =
                     serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
-                std::fs::write(&out, answer(kind, &file).to_string()).unwrap();
+                std::fs::write(&out, support::answer(kind, &file).to_string()).unwrap();
                 let said = api::eval_submit(&ws, &task, &out).expect("submitted");
                 assert_eq!(said.outcome, api::Outcome::Accepted, "{task}: {:?}", said.errors);
                 // Only the turn's end: each signal is a connection of its own,
@@ -427,7 +375,8 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
     let exited = exited.expect("a judge exited");
     let held = judges.values().filter(|j| j.tasks.contains(&exited)).count();
     assert_eq!(held, 2, "the task of the judge that exited went to another");
-    let confirms = judges.values().flat_map(|j| &j.tasks).filter(|t| is_confirm(t)).count();
+    let confirms =
+        judges.values().flat_map(|j| &j.tasks).filter(|t| support::is_confirm(t)).count();
     assert!(confirms > 0, "a second reading ran");
 
     // No judge is an agent; the work's own agent is.

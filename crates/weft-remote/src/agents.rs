@@ -141,6 +141,7 @@ impl Project {
                     spec: spec.clone(),
                     running: true,
                     turbo: *turbo,
+                    judge: None,
                 });
             }
             Event::Exited { pane } => match self.panes.iter_mut().find(|p| p.pane == *pane) {
@@ -233,7 +234,7 @@ impl Project {
         }
     }
 
-    /// This project's rows of the `agents` message.
+    /// This project's rows of the `agents` message; a judge's names its Eval.
     pub fn rows(&self) -> Vec<Value> {
         (0..self.panes.len())
             .map(|i| {
@@ -248,6 +249,7 @@ impl Project {
                     "running": p.running,
                     "since": self.since.get(&p.pane).map_or(0, |(_, at)| *at),
                     "next": self.next_act(i),
+                    "judge": p.judge,
                 })
             })
             .collect()
@@ -883,6 +885,24 @@ mod tests {
             false,
             "a device tells an agent that ended from a turn that did"
         );
+    }
+
+    #[test]
+    fn a_judge_pane_names_the_eval_it_judges() {
+        let mut p = opened();
+        let judge = PaneInfo {
+            pane: 5,
+            harness: "claude".into(),
+            spec: "claude --model opus".into(),
+            running: true,
+            turbo: false,
+            judge: Some("evl_1".into()),
+        };
+        let mut panes = p.panes.clone();
+        panes.push(judge);
+        assert!(p.heard(&Event::Panes { panes }));
+        let rows = p.rows();
+        assert_eq!((&rows[0]["judge"], &rows[1]["judge"]), (&Value::Null, &json!("evl_1")));
     }
 
     #[test]

@@ -579,7 +579,8 @@ impl WeftDesktopApp {
     }
 
     /// Put a connected project in place of the one it connects, and open a
-    /// tab for each running agent no pane shows yet.
+    /// tab for each running agent no pane shows yet; a judge shows under its
+    /// Eval.
     pub fn integrate_connected_client(&mut self, mut client: ProjectClient) {
         let p = weft_core::state::normalize_project_path(&client.root);
         client.root = p.clone();
@@ -589,7 +590,8 @@ impl WeftDesktopApp {
             return;
         };
         self.not_opened.remove(&p);
-        let running: Vec<u32> = client.panes.iter().filter(|v| v.running).map(|v| v.id).collect();
+        let running: Vec<u32> =
+            client.panes.iter().filter(|v| v.running && v.judge.is_none()).map(|v| v.id).collect();
         self.clients[pos] = client;
         // An agent already in some pane stays where it is: one agent in two
         // panes would be sized by both.
@@ -1030,7 +1032,8 @@ impl WeftDesktopApp {
         let front = self.active_tab().map(|t| (t.project, t.pane));
         let mut now = HashSet::new();
         for c in &self.clients {
-            for p in c.panes.iter().filter(|p| weft_core::turns::is_asking(p.turn)) {
+            let asking = |p: &&PaneView| p.judge.is_none() && weft_core::turns::is_asking(p.turn);
+            for p in c.panes.iter().filter(asking) {
                 let key = (c.root.clone(), p.id);
                 if !self.waiting.contains(&key) && front.as_ref() != Some(&key) && c.notify {
                     self.notices.push(Notice {

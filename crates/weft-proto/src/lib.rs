@@ -751,7 +751,7 @@ pub fn panes_json(panes: &[PaneInfo]) -> Value {
             .iter()
             .map(|p| {
                 json!({"pane": p.pane, "harness": p.harness, "spec": p.spec, "running": p.running,
-                       "turbo": p.turbo})
+                       "turbo": p.turbo, "judge": p.judge})
             })
             .collect(),
     )
@@ -767,6 +767,7 @@ pub fn panes_of(v: &Value) -> Option<Vec<PaneInfo>> {
                 spec: p.get("spec")?.as_str()?.to_string(),
                 running: p.get("running")?.as_bool()?,
                 turbo: p.get("turbo").and_then(Value::as_bool).unwrap_or(false),
+                judge: p.get("judge").and_then(Value::as_str).map(str::to_string),
             })
         })
         .collect()
@@ -1128,13 +1129,24 @@ mod tests {
     fn every_event_survives_the_wire() {
         for event in [
             Event::Panes {
-                panes: vec![PaneInfo {
-                    pane: 0,
-                    harness: "codex".into(),
-                    spec: "codex resume 01a0".into(),
-                    running: true,
-                    turbo: true,
-                }],
+                panes: vec![
+                    PaneInfo {
+                        pane: 0,
+                        harness: "codex".into(),
+                        spec: "codex resume 01a0".into(),
+                        running: true,
+                        turbo: true,
+                        judge: None,
+                    },
+                    PaneInfo {
+                        pane: 1,
+                        harness: "codex".into(),
+                        spec: "codex -m gpt-6".into(),
+                        running: true,
+                        turbo: false,
+                        judge: Some("evl_1".into()),
+                    },
+                ],
             },
             Event::Output { pane: 0, seq: 7, bytes: vec![0x1b, b'[', b'2', b'J', 0xfe] },
             Event::Screen {

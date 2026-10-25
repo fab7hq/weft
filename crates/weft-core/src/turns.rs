@@ -491,6 +491,7 @@ mod tests {
             spec: String::new(),
             running,
             turbo: false,
+            judge: None,
         };
         let panes = [pane("codex", true), pane("claude-code", true), pane("codex", false)];
         let states = [Some(Turn::Waiting), Some(Turn::TurnEnded), Some(Turn::Waiting)];

@@ -1727,6 +1727,33 @@ pub fn hand_back(ws: &Workspace, task: &str) -> Result<(), EvalError> {
     })
 }
 
+/// Every task of an Eval out to a judge, handed back: the sessions they
+/// went to are gone (Weft started again). Returns them.
+pub fn hand_back_out(ws: &Workspace, eval_id: &str) -> Result<Vec<String>, EvalError> {
+    store::locked(ws, || {
+        let path = state_path(ws, eval_id);
+        let Some(mut state) = read_json(&path) else { return Ok(Vec::new()) };
+        let done: BTreeSet<String> = outcomes(ws, eval_id)?
+            .iter()
+            .filter(|e| matches!(e["data"]["outcome"].as_str(), Some("accepted" | "failed")))
+            .map(|e| str_of(&e["data"], "task_id"))
+            .collect();
+        let now = now_secs();
+        let mut back = Vec::new();
+        for (task, handed) in state["handed"].as_object_mut().into_iter().flatten() {
+            let Some(last) = handed.as_array_mut().and_then(|h| h.last_mut()) else { continue };
+            if last.as_i64().is_some_and(|l| now - l <= TIMEOUT_SECS) && !done.contains(task) {
+                *last = json!(now - TIMEOUT_SECS - 1);
+                back.push(task.clone());
+            }
+        }
+        if !back.is_empty() {
+            write(&path, &store::canonical(&state))?;
+        }
+        Ok(back)
+    })
+}
+
 /// Whether a task's answer is in: accepted, or recorded failed.
 pub fn is_in(ws: &Workspace, task: &str) -> Result<bool, EvalError> {
     let Some(eval_id) = eval_of(task) else {
@@ -4466,6 +4493,22 @@ mod tests {
             assert_eq!(submit(ws, &next).unwrap().0, 0);
             assert!(is_in(ws, &next).unwrap(), "accepted is in");
             refused(hand_back(ws, "nothing").unwrap_err(), "eval.task_unknown");
+        });
+    }
+
+    #[test]
+    fn every_task_out_goes_back_when_its_judges_are_gone() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let answered = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            crate::testing::answer_task(ws, &answered);
+            assert_eq!(submit(ws, &answered).unwrap().0, 0);
+            let out = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            assert_eq!(hand_back_out(ws, e).unwrap(), [out.clone()], "only the task out");
+            let again = take(ws, e, None).unwrap();
+            assert_eq!(str_of(&again["task"], "task_id"), out, "out again at once");
+            assert!(hand_back_out(ws, "evl_none").unwrap().is_empty(), "nothing out");
         });
     }
 

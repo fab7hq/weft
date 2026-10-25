@@ -123,6 +123,9 @@ pub struct PaneInfo {
     pub running: bool,
     /// Started in turbo mode: its harness's turbo flags were added.
     pub turbo: bool,
+    /// The Eval it judges, for a judge Weft started: listed under that Eval,
+    /// never as an agent.
+    pub judge: Option<String>,
 }
 
 /// Everything an availability decision reads. Borrowed: the shell owns this
@@ -334,6 +337,7 @@ mod tests {
             spec: harness.into(),
             running: true,
             turbo: false,
+            judge: None,
         }
     }
 

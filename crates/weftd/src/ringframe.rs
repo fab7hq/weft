@@ -299,6 +299,12 @@ pub fn eval_return(project: &Path, task_id: &str) -> Result<(), Error> {
     api::eval_return(&workspace(project)?, task_id).map_err(refused)
 }
 
+/// Weft started again without the judges it ran: every task of the Eval
+/// still out goes out again.
+pub fn eval_return_out(project: &Path, eval_id: &str) -> Result<Vec<String>, Error> {
+    api::eval_return_out(&workspace(project)?, eval_id).map_err(refused)
+}
+
 /// Stop an Eval: RingFrame hands out nothing more and refuses what its judges
 /// still submit.
 pub fn eval_void(project: &Path, eval_id: &str, reason: &str) -> Result<(), Error> {
