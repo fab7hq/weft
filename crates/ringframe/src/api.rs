@@ -515,6 +515,18 @@ pub struct Submitted {
     pub unjudged: Vec<String>,
 }
 
+/// Whether a task's answer is in: accepted, or recorded failed.
+pub fn eval_task_in(ws: &Workspace, task_id: &str) -> Result<bool, Error> {
+    Ok(tasks::is_in(ws, task_id)?)
+}
+
+/// A judge's session ended without its task's answer: the task goes out
+/// again at the next `eval_task`, once; handed back again, it is recorded
+/// failed.
+pub fn eval_return(ws: &Workspace, task_id: &str) -> Result<(), Error> {
+    Ok(tasks::hand_back(ws, task_id)?)
+}
+
 /// Check the answer a judge wrote, and record it.
 pub fn eval_submit(ws: &Workspace, task_id: &str, answer: &Path) -> Result<Submitted, Error> {
     let (code, out) = tasks::submit_from(ws, task_id, answer)?;

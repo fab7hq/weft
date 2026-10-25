@@ -1709,6 +1709,35 @@ fn hand_out(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, 
     Ok(json!({"state": "running", "task": task, "remaining": open.len()}))
 }
 
+/// A task whose judge's session ended without its answer: no longer out, so
+/// the next `take` hands it out again, or, handed out twice already, records
+/// it failed.
+pub fn hand_back(ws: &Workspace, task: &str) -> Result<(), EvalError> {
+    let Some(eval_id) = eval_of(task) else {
+        return Err(ledger("eval.task_unknown", format!("{task} is not a task id")));
+    };
+    store::locked(ws, || {
+        let path = state_path(ws, eval_id);
+        let mut state = read_json(&path).unwrap_or_else(|| json!({"handed": {}}));
+        if let Some(last) = state["handed"][task].as_array_mut().and_then(|h| h.last_mut()) {
+            *last = json!(now_secs() - TIMEOUT_SECS - 1);
+            write(&path, &store::canonical(&state))?;
+        }
+        Ok(())
+    })
+}
+
+/// Whether a task's answer is in: accepted, or recorded failed.
+pub fn is_in(ws: &Workspace, task: &str) -> Result<bool, EvalError> {
+    let Some(eval_id) = eval_of(task) else {
+        return Err(ledger("eval.task_unknown", format!("{task} is not a task id")));
+    };
+    Ok(outcomes(ws, eval_id)?.iter().any(|e| {
+        e["data"]["task_id"] == task
+            && matches!(e["data"]["outcome"].as_str(), Some("accepted" | "failed"))
+    }))
+}
+
 // ---- reads and lookups ------------------------------------------------------------
 
 /// A window read on behalf of a task, so a citation of it can be believed.
@@ -4409,6 +4438,34 @@ mod tests {
             assert!(!ids(&after).contains(&t), "failed, not handed out a third time");
             let ctx = Ctx::load(ws, e).unwrap();
             assert!(status(&ctx).unwrap().failed.contains(&t));
+        });
+    }
+
+    /// A task whose judge's session ended goes out again at once, counted as
+    /// a hand-out: handed back a second time, it is recorded failed. Its
+    /// answer is in once it is accepted or failed, and not before.
+    #[test]
+    fn a_task_handed_back_goes_out_once_more_then_fails() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let t = str_of(&take(ws, e, Some("map")).unwrap()["task"], "task_id");
+            assert!(!is_in(ws, &t).unwrap(), "out, not in");
+            hand_back(ws, &t).unwrap();
+            let again = take(ws, e, Some("map")).unwrap();
+            assert_eq!(str_of(&again["task"], "task_id"), t, "once more, at once");
+            hand_back(ws, &t).unwrap();
+            let after = take(ws, e, Some("map")).unwrap();
+            assert_ne!(str_of(&after["task"], "task_id"), t, "not a third time");
+            assert!(is_in(ws, &t).unwrap(), "failed is in");
+            let ctx = Ctx::load(ws, e).unwrap();
+            assert!(status(&ctx).unwrap().failed.contains(&t));
+
+            let next = str_of(&take(ws, e, None).unwrap()["task"], "task_id");
+            crate::testing::answer_task(ws, &next);
+            assert_eq!(submit(ws, &next).unwrap().0, 0);
+            assert!(is_in(ws, &next).unwrap(), "accepted is in");
+            refused(hand_back(ws, "nothing").unwrap_err(), "eval.task_unknown");
         });
     }
 
