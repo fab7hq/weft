@@ -145,6 +145,8 @@ pub fn svg_el(svg: String) -> Element {
 pub fn asset(name: &str) -> Option<&'static [u8]> {
     match name {
         "weft-banner" => Some(include_bytes!("../../../assets/weft-banner-dark.svg")),
+        // A short arc that sweeps round a running Eval's ring.
+        "weft-sweep" => Some(include_bytes!("../../../assets/weft-sweep.svg")),
         _ => None,
     }
 }

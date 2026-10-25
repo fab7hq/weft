@@ -271,7 +271,7 @@
   "eval_view.test_running": "{check} · running",
   "eval_view.under_way": "under way",
   "eval_view.unexplained": "Unexplained changes",
-  "eval_view.watch": "open one to watch",
+  "eval_view.watch": "open to watch",
   "menu": "Menu",
   "not_ready.asking": "the agent is asking you something",
   "not_ready.title": "The agent has not said it is ready",

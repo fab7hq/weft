@@ -266,7 +266,7 @@ pub fn run_interactive(mut app: WeftDesktopApp) -> Result<()> {
     });
 
     let answering = Arc::clone(&shared);
-    gpui_platform::application().run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(Pictures).run(move |cx: &mut App| {
         crate::fonts::load(cx);
         // A notice the person opens brings its agent in front.
         cx.on_system_notification_response(move |response, cx| {
@@ -809,6 +809,9 @@ impl GpuiDesktopView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         if el.tag == "img" {
+            if el.styles.iter().any(|(k, v)| k == "animation" && v == "spin") {
+                return spinning(el, path);
+            }
             return picture(el);
         }
         let mut text_style = parent_text;
@@ -1440,6 +1443,38 @@ fn picture(el: &Element) -> AnyElement {
         picture = picture.h(px(h));
     }
     picture.into_any_element()
+}
+
+/// One of Weft's own pictures turning round its centre, as a spinner does:
+/// drawn in the accent, from the asset source.
+fn spinning(el: &Element, path: &str) -> AnyElement {
+    let named = |k: &str| el.attrs.iter().chain(&el.styles).find(|(n, _)| n == k).map(|(_, v)| v);
+    let Some(src) = named("src") else { return gpui_div().into_any_element() };
+    let side = named("width").and_then(|v| parse_px(v)).unwrap_or(16.0);
+    let turn = Animation::new(Duration::from_millis(2400)).repeat();
+    ::gpui::svg()
+        .path(SharedString::from(src.clone()))
+        .size(px(side))
+        .text_color(parse_color(palette::BLUE_BORDER))
+        .with_animation(
+            ElementId::Name(SharedString::from(format!("spin:{path}"))),
+            turn,
+            |s, t| s.with_transformation(::gpui::Transformation::rotate(::gpui::percentage(t))),
+        )
+        .into_any_element()
+}
+
+/// Weft's own pictures, for the elements that draw from a path.
+struct Pictures;
+
+impl ::gpui::AssetSource for Pictures {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        Ok(crate::gpui::asset(path).map(std::borrow::Cow::Borrowed))
+    }
+
+    fn list(&self, _path: &str) -> anyhow::Result<Vec<SharedString>> {
+        Ok(Vec::new())
+    }
 }
 
 /// `50%` as a fraction.

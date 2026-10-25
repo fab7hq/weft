@@ -215,7 +215,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.done", "done"),
     ("eval_view.test_running", "{check} · running"),
     ("eval_view.judges", "Judges"),
-    ("eval_view.watch", "open one to watch"),
+    ("eval_view.watch", "open to watch"),
     ("eval_view.checks", "Checks RingFrame ran"),
     ("eval_view.running", "`{check}`: running"),
     ("eval_view.limitations", "Limitations"),

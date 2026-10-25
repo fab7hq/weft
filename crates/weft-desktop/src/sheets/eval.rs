@@ -11,7 +11,7 @@ use super::SheetProps;
 use crate::action::{SheetAct, TreeAct};
 use crate::daemon::PaneView;
 use crate::daemon::Then;
-use crate::gpui::{Element, div, palette, span, svg_el};
+use crate::gpui::{Element, div, img_el, palette, span, svg_el};
 use crate::ui::{
     Size, Tone, button, close_button, list_row, mark_colour, note, row_list, section_label, sheet,
     sheet_body, sheet_foot, sheet_head, verdict_colour,
@@ -552,7 +552,22 @@ fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> 
         .flex_row()
         .gap(16)
         .items_center()
-        .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
+        .child(
+            div()
+                .style("position", "relative")
+                .style("width", "132px")
+                .style("height", "132px")
+                .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
+                .child(
+                    div().style("position", "absolute").style("top", "0").style("left", "0").child(
+                        img_el("weft-sweep")
+                            .layer("progress sweep")
+                            .style("animation", "spin")
+                            .style("width", "132px")
+                            .style("height", "132px"),
+                    ),
+                ),
+        )
         .child(
             div()
                 .flex_col()

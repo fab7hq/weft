@@ -1823,6 +1823,9 @@ fn a_running_eval_is_a_picture_with_its_judges_and_a_stop() {
         assert!(text.contains(said), "{said} in {text}");
     }
     assert!(sheet.find_layer("progress ring").is_some(), "a picture, not a status line");
+    let sweep = sheet.find_layer("progress sweep").expect("an arc sweeping round the ring");
+    assert!(sweep.styles.iter().any(|(k, v)| k == "animation" && v == "spin"), "{sweep:?}");
+    assert!(crate::gpui::asset("weft-sweep").is_some(), "the arc is one of Weft's pictures");
     assert!(!text.contains("map 1 of 1"), "no inner words: {text}");
     let card = sheet.find_layer("judge 9").expect("its judge, under it");
     assert!(card.all_text().contains("codex"), "{:?}", card.all_text());
