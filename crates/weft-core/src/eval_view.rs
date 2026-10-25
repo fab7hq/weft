@@ -1220,7 +1220,9 @@ mod tests {
         assert!(!closed(json!([ok, failed]), json!([])));
         assert!(!closed(
             json!([]),
-            json!(["the checks did not finish in their time and are not in this record: `cargo test`"])
+            json!([
+                "the checks did not finish in their time and are not in this record: `cargo test`"
+            ])
         ));
         assert!(!built(None, &[], &[], &[]).checks_passed, "not while it runs");
     }
