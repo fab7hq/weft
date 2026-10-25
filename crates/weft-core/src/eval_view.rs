@@ -30,6 +30,9 @@ pub struct EvalView {
     pub findings: Vec<String>,
     /// The changes nothing explains, by window id.
     pub unexplained: Vec<String>,
+    /// The changes whose two readings disagree, by window id: not judged.
+    #[serde(default)]
+    pub split: Vec<String>,
     pub groups: Vec<Group>,
     /// Every change, in file order.
     pub changes: Vec<Change>,
@@ -77,6 +80,8 @@ pub enum State {
     NotMet,
     /// Judged, and the readings did not settle it.
     Unsettled,
+    /// Two readings disagree: not judged.
+    Split,
     /// Nothing read yet.
     Judging,
     /// A reading is in and the Eval has not closed: not yet its result.
@@ -89,7 +94,7 @@ impl State {
         match self {
             State::Met => "✓",
             State::NotMet => "✗",
-            State::Unsettled => "?",
+            State::Unsettled | State::Split => "?",
             State::Judging | State::Read(_) => "…",
         }
     }
@@ -99,6 +104,7 @@ impl State {
             State::Met => word("eval.met").into(),
             State::NotMet => word("eval.not_met").into(),
             State::Unsettled => word("eval.unsettled").into(),
+            State::Split => word("eval.split").into(),
             State::Judging => word("eval.judging").into(),
             State::Read(v) => fill("eval.so_far", &[("state", &v.replace('_', " "))]),
         }
@@ -121,8 +127,8 @@ pub struct Reading {
 pub struct Change {
     pub window: String,
     pub path: String,
-    /// `required`, `consequence`, `unexplained`, `undoes`, `mechanical`,
-    /// `not_judged`, or `judging` while it runs.
+    /// `required`, `consequence`, `unexplained`, `undoes`, `elsewhere`,
+    /// `mechanical`, `not_judged`, `split`, or `judging` while it runs.
     pub result: String,
     /// The steps it serves, or undoes.
     pub serves: Vec<String>,
@@ -133,6 +139,9 @@ pub struct Change {
     /// The lines it holds, `L88–L97`, when its text is on disk.
     #[serde(default)]
     pub lines: Option<String>,
+    /// What each judge read it as, one line each: `map: unexplained: why`.
+    #[serde(default)]
+    pub readings: Vec<String>,
 }
 
 /// RingFrame's files for one Eval, as they are on disk now.
@@ -220,13 +229,111 @@ fn readings_of(votes: &[Value], role_of: impl Fn(&Value) -> String) -> Vec<Readi
         .collect()
 }
 
+/// Whether two readings decide a requirement both ways.
+fn disagree(readings: &[Reading]) -> bool {
+    let votes: BTreeSet<&str> = readings
+        .iter()
+        .filter_map(|r| match r.vote.as_str() {
+            "met" | "part_met" => Some("met"),
+            "not_met" => Some("not_met"),
+            _ => None,
+        })
+        .collect();
+    votes.len() > 1
+}
+
+/// An Ask's own sentence, `<ask>/s<n>`.
+fn is_sentence(id: &str) -> bool {
+    id.rsplit_once('/').is_some_and(|(ask, n)| {
+        ask.starts_with("ask_")
+            && n.strip_prefix('s')
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// What the Eval judges against, as RingFrame does: `changes.json`'s
+/// requirements, with the Asks' sentences replaced by the list a judge made
+/// of them (`<ask>/f<n>`) once that list is accepted.
+fn requirements(changes: &Value, outputs: &[Value]) -> Vec<Value> {
+    let mut all = list(changes, "requirements").to_vec();
+    let Some(listed) = outputs.iter().find(|o| s(o, "kind") == "requirements") else {
+        return all;
+    };
+    all.retain(|r| !is_sentence(&s(r, "id")));
+    let mut n: BTreeMap<String, usize> = BTreeMap::new();
+    for r in list(listed, "requirements") {
+        let ask = s(r, "ask");
+        let k = n.entry(ask.clone()).or_default();
+        all.push(serde_json::json!({"id": format!("{ask}/f{k}"), "kind": r["kind"], "ask": ask,
+                                    "part": ask, "text": r["text"], "done_when": ""}));
+        *k += 1;
+    }
+    all
+}
+
+/// What one reading makes of a change, as RingFrame classes it.
+fn class_of(entry: &Value) -> &'static str {
+    let set = |k: &str| entry.get(k).is_some_and(|v| !v.is_null());
+    if set("elsewhere") {
+        "elsewhere"
+    } else if set("unexplained") {
+        "unexplained"
+    } else if !strs(entry, "undoes").is_empty() {
+        "undoes"
+    } else if set("follows_from") {
+        "consequence"
+    } else {
+        "required"
+    }
+}
+
+impl Change {
+    /// Take in the judges' readings of this change, the map's first: the map
+    /// says what it serves and why nothing explains it; a second reading that
+    /// disagrees with it splits it. `settled` is the record's result.
+    fn read(
+        &mut self,
+        readings: &[(String, Value)],
+        settled: Option<String>,
+        labels: &BTreeMap<String, String>,
+    ) {
+        let Some((_, map)) = readings.first() else { return };
+        self.serves = strs(map, "serves").into_iter().chain(strs(map, "undoes")).collect();
+        self.why = map.get("unexplained").and_then(Value::as_str).unwrap_or_default().to_string();
+        let classes: BTreeSet<&str> = readings.iter().map(|(_, e)| class_of(e)).collect();
+        let split = classes.len() > 1;
+        self.result = match settled {
+            Some(r) if r == "not_judged" && split => "split".into(),
+            Some(r) => r,
+            None if split => "split".into(),
+            None => class_of(map).into(),
+        };
+        for (role, e) in readings {
+            let q = s(e, "quote");
+            if !q.is_empty() && !self.quotes.contains(&q) {
+                self.quotes.push(q);
+            }
+            let class = class_of(e);
+            let names: Vec<String> = strs(e, "serves")
+                .into_iter()
+                .chain(strs(e, "undoes"))
+                .map(|r| labels.get(&r).cloned().unwrap_or(r))
+                .collect();
+            self.readings.push(match class {
+                "unexplained" => format!("{role}: unexplained: {}", s(e, "unexplained")),
+                _ if names.is_empty() => format!("{role}: {class}"),
+                _ => format!("{role}: {class} · {}", names.join(", ")),
+            });
+        }
+    }
+}
+
 impl EvalView {
     pub fn build(src: Sources<'_>) -> EvalView {
         let record = src.record;
-        let requirements: Vec<&Value> = list(src.changes, "requirements")
-            .iter()
-            .filter(|r| matches!(s(r, "kind").as_str(), "local" | "cross"))
-            .collect();
+        let all = requirements(src.changes, src.outputs);
+        let requirements: Vec<&Value> =
+            all.iter().filter(|r| matches!(s(r, "kind").as_str(), "local" | "cross")).collect();
         let titles: BTreeMap<String, String> =
             list(src.brief, "asks").iter().map(|a| (s(a, "ask_id"), s(a, "title"))).collect();
 
@@ -238,8 +345,7 @@ impl EvalView {
             let part = s(r, "part");
             let (key, title) = if s(r, "kind") == "cross" {
                 ("cross".to_string(), "Rules across the work".to_string())
-            } else if !part.is_empty() {
-                let (doc, section) = part.split_once('#').unwrap_or(("", part.as_str()));
+            } else if let Some((doc, section)) = part.split_once('#') {
                 (part.clone(), format!("{section} · {}", doc.trim_start_matches("../")))
             } else {
                 let ask = s(r, "ask");
@@ -267,70 +373,57 @@ impl EvalView {
             }
         }
 
-        // Every change, with what the map said of it.
+        // Every change, with what the judges said of it: the record's
+        // readings once it is written, else the map outputs in so far.
+        let mut said: BTreeMap<String, Vec<(String, Value)>> = BTreeMap::new();
+        let mut settled: BTreeMap<String, String> = BTreeMap::new();
+        if let Some(rec) = record {
+            for w in list(rec, "windows") {
+                let id = s(w, "id");
+                settled.insert(id.clone(), s(w, "result"));
+                let readings = w["readings"].as_object().into_iter().flatten();
+                said.insert(id, readings.map(|(r, e)| (r.clone(), e.clone())).collect());
+            }
+        } else {
+            for o in src.outputs.iter().filter(|o| s(o, "kind") == "map") {
+                let role = s(&o["judge"], "role");
+                for entry in list(o, "windows") {
+                    said.entry(s(entry, "window")).or_default().push((role.clone(), entry.clone()));
+                }
+            }
+        }
+        for readings in said.values_mut() {
+            readings.sort_by_key(|(role, _)| role != "map");
+        }
         let mut changes: Vec<Change> = list(src.evidence, "windows")
             .iter()
-            .map(|w| Change {
-                window: s(w, "id"),
-                path: s(w, "path"),
-                result: if s(w, "class") == "mechanical" {
-                    "mechanical".into()
-                } else {
-                    "judging".into()
-                },
-                serves: Vec::new(),
-                why: String::new(),
-                quotes: Vec::new(),
-                lines: src.windows["windows"][s(w, "id")]
-                    .as_str()
-                    .and_then(|text| range(&numbered(text, &[]))),
+            .map(|w| {
+                let id = s(w, "id");
+                let mut c = Change {
+                    window: id.clone(),
+                    path: s(w, "path"),
+                    result: if s(w, "class") == "mechanical" {
+                        "mechanical".into()
+                    } else {
+                        "judging".into()
+                    },
+                    serves: Vec::new(),
+                    why: String::new(),
+                    quotes: Vec::new(),
+                    lines: src.windows["windows"][&id]
+                        .as_str()
+                        .and_then(|text| range(&numbered(text, &[]))),
+                    readings: Vec::new(),
+                };
+                if let Some(readings) = said.get(&id) {
+                    c.read(readings, settled.get(&id).cloned(), &labels);
+                }
+                c
             })
             .collect();
         changes.sort_by(|a, b| a.path.cmp(&b.path).then(a.window.cmp(&b.window)));
         let at: BTreeMap<String, usize> =
             changes.iter().enumerate().map(|(i, c)| (c.window.clone(), i)).collect();
-        let mut read = |id: &str, entry: &Value, final_result: Option<String>| {
-            let Some(c) = at.get(id).map(|i| &mut changes[*i]) else { return };
-            let serves: Vec<String> =
-                strs(entry, "serves").into_iter().chain(strs(entry, "undoes")).collect();
-            if !serves.is_empty() {
-                c.serves = serves;
-            }
-            if let Some(why) = entry.get("unexplained").and_then(Value::as_str) {
-                c.why = why.to_string();
-            }
-            let q = s(entry, "quote");
-            if !q.is_empty() && !c.quotes.contains(&q) {
-                c.quotes.push(q);
-            }
-            c.result = final_result.unwrap_or_else(|| {
-                if entry.get("unexplained").is_some_and(|u| !u.is_null()) {
-                    "unexplained".into()
-                } else if !strs(entry, "undoes").is_empty() {
-                    "undoes".into()
-                } else if entry.get("follows_from").is_some_and(|f| !f.is_null()) {
-                    "consequence".into()
-                } else {
-                    "required".into()
-                }
-            });
-        };
-        if let Some(rec) = record {
-            for w in list(rec, "windows") {
-                let id = s(w, "id");
-                let readings = &w["readings"];
-                read(&id, &readings["map"], Some(s(w, "result")));
-                if readings.get("confirm").is_some() {
-                    read(&id, &readings["confirm"], Some(s(w, "result")));
-                }
-            }
-        } else {
-            for o in src.outputs.iter().filter(|o| s(o, "kind") == "map") {
-                for entry in list(o, "windows") {
-                    read(&s(entry, "window"), entry, None);
-                }
-            }
-        }
 
         // Each step's state and readings: the record's once it is written,
         // else what is in so far.
@@ -351,12 +444,13 @@ impl EvalView {
         for g in &mut groups {
             for step in &mut g.steps {
                 if let Some(item) = items.get(&step.id) {
+                    step.readings = readings_of(list(item, "votes"), |v| s(v, "role"));
                     step.state = match s(item, "result").as_str() {
                         "met" => State::Met,
                         "not_met" => State::NotMet,
+                        _ if disagree(&step.readings) => State::Split,
                         _ => State::Unsettled,
                     };
-                    step.readings = readings_of(list(item, "votes"), |v| s(v, "role"));
                 } else if record.is_some() {
                     step.state = State::Unsettled;
                 } else if let Some(votes) = live.get(&step.id) {
@@ -394,7 +488,8 @@ impl EvalView {
         let stage = |id: &str| match id.split('~').nth(1).map(|l| l.chars().next()) {
             Some(Some('m')) => "map",
             Some(Some('r')) => "reduce",
-            _ => "confirm",
+            Some(Some('c')) => "confirm",
+            _ => "",
         };
         let progress = if record.is_some() {
             Vec::new()
@@ -421,6 +516,11 @@ impl EvalView {
             unexplained: changes
                 .iter()
                 .filter(|c| c.result == "unexplained")
+                .map(|c| c.window.clone())
+                .collect(),
+            split: changes
+                .iter()
+                .filter(|c| c.result == "split")
                 .map(|c| c.window.clone())
                 .collect(),
             groups,
@@ -576,6 +676,13 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
                     .map(|c| change_row(c, 1, true)),
             );
         }
+        if !view.split.is_empty() {
+            out.push(Row::text(RowKind::Heading, 0, heading("eval_view.split")));
+            for c in view.split.iter().filter_map(|w| view.change(w)) {
+                out.push(change_row(c, 1, true));
+                out.extend(c.readings.iter().map(|r| Row::text(RowKind::Text, 2, r.clone())));
+            }
+        }
         for g in &view.groups {
             let key = format!("g:{}", g.key);
             let open = !folded.contains(&key);
@@ -583,6 +690,7 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
             let tally: Vec<String> = [
                 (count(|s| *s == State::Met), word("eval.met")),
                 (count(|s| *s == State::NotMet), word("eval.not_met")),
+                (count(|s| *s == State::Split), word("eval.split")),
                 (count(|s| *s == State::Unsettled), word("eval.unsettled")),
                 (count(|s| matches!(s, State::Judging | State::Read(_))), word("eval.judging")),
             ]
@@ -630,6 +738,7 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
             let key = format!("f:{path}");
             let open = !folded.contains(&key);
             let odd = cs.iter().filter(|c| c.result == "unexplained").count();
+            let split = cs.iter().filter(|c| c.result == "split").count();
             out.push(Row {
                 kind: RowKind::Group,
                 key,
@@ -637,10 +746,11 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
                 mark: if open { "▾" } else { "▸" }.into(),
                 text: path.to_string(),
                 aside: format!(
-                    "{} change{}{}",
+                    "{} change{}{}{}",
                     cs.len(),
                     if cs.len() == 1 { "" } else { "s" },
-                    if odd > 0 { format!(" · {odd} unexplained") } else { String::new() }
+                    if odd > 0 { format!(" · {odd} unexplained") } else { String::new() },
+                    if split > 0 { format!(" · {split} split") } else { String::new() }
                 ),
                 state: None,
             });
@@ -999,6 +1109,115 @@ mod tests {
             v.change("w_a").and_then(|c| c.lines.as_deref()),
             None,
             "its text is not on disk"
+        );
+    }
+
+    /// A closed Eval RingFrame wrote on a real change: its map called the
+    /// planted collector call unexplained and its second reading did not.
+    fn split_eval() -> EvalView {
+        let read = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let record = read(include_str!("../tests/fixtures/eval-split/record.json"));
+        let outputs = read(include_str!("../tests/fixtures/eval-split/outputs.json"));
+        EvalView::build(Sources {
+            eval_id: "evl_01M5R4X3GVVV0Z2CD1F32EZ99W",
+            changes: &read(include_str!("../tests/fixtures/eval-split/changes.json")),
+            evidence: &read(include_str!("../tests/fixtures/eval-split/evidence.json")),
+            brief: &read(include_str!("../tests/fixtures/eval-split/brief.json")),
+            windows: &read(include_str!("../tests/fixtures/eval-split/windows.json")),
+            record: Some(&record),
+            outputs: outputs.as_array().unwrap(),
+            planned: &[],
+            done: &[],
+        })
+    }
+
+    #[test]
+    fn a_split_window_shows_both_readings_and_keeps_the_verdict_from_aligned() {
+        let v = split_eval();
+        assert_eq!(v.verdict.as_deref(), Some("incomplete"));
+        assert_eq!(v.split, ["w_3ae3752a6a3b"]);
+        assert!(v.unexplained.is_empty(), "{:?}", v.unexplained);
+        let c = v.change("w_3ae3752a6a3b").unwrap();
+        assert_eq!(c.result, "split");
+        assert_eq!(
+            c.readings,
+            [
+                "map: unexplained: Adds a usage-reporting function that posts project data to an external collector; no account-erasure requirement asks for usage reporting.",
+                "confirm: required · f0",
+            ]
+        );
+        let main: Vec<String> = rows(&v, Mode::Steps, &BTreeSet::new())
+            .iter()
+            .map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.text))
+            .collect();
+        let at = main.iter().position(|t| t == "THE JUDGES SPLIT").expect("a split section");
+        assert_eq!(main[at + 1], format!("  src/jobs.js  {}", c.lines.as_deref().unwrap()));
+        assert_eq!(main[at + 2], format!("    {}", c.readings[0]));
+        assert_eq!(main[at + 3], format!("    {}", c.readings[1]));
+    }
+
+    #[test]
+    fn the_requirements_a_judge_listed_take_the_place_of_the_asks_sentences() {
+        let v = split_eval();
+        let f0 = v.step("ask_01M37RDYJCHWWSD12A5DGEYE08/f0").expect("the listed requirement");
+        assert_eq!(f0.state, State::Met);
+        assert_eq!(f0.label, "f0");
+        assert!(
+            !f0.changes.contains(&"w_3ae3752a6a3b".to_string()),
+            "only the map's word ties a change"
+        );
+        assert!(
+            v.step("ask_01M37RDYJCHWWSD12A5DGEYE08/s0").is_none(),
+            "a sentence the list replaced"
+        );
+        assert_eq!(
+            v.groups.iter().map(|g| g.title.as_str()).collect::<Vec<_>>(),
+            ["Ask: Build account erasure"]
+        );
+    }
+
+    #[test]
+    fn a_requirement_whose_readings_disagree_is_split_and_shows_both() {
+        let record = json!({"verdict": "incomplete", "confidence": 0.0, "drift": {},
+            "items": [
+                {"id": S7, "result": "unsettled", "votes": [
+                    {"role": "reduce", "vote": "met", "counted": false, "reason": "told", "citations": []},
+                    {"role": "confirm", "vote": "not_met", "counted": false, "reason": "dropped", "citations": []}]},
+                {"id": S8, "result": "unsettled", "votes": [
+                    {"role": "reduce", "vote": "unknown", "counted": false, "reason": "no evidence", "citations": []}]}],
+            "windows": []});
+        let v = built(Some(&record), &[], &[], &[]);
+        let s7 = v.step(S7).unwrap();
+        assert_eq!(s7.state, State::Split);
+        assert_eq!(s7.state.words(), "split");
+        assert_eq!(v.step(S8).unwrap().state, State::Unsettled, "no two readings to split");
+        let step: Vec<String> = step_rows(&v, S7).iter().map(|r| r.text.clone()).collect();
+        assert!(step.contains(&"reduce: met  told".to_string()), "{step:?}");
+        assert!(step.contains(&"confirm: not met  dropped".to_string()), "{step:?}");
+        let group = &rows(&v, Mode::Steps, &BTreeSet::new())
+            .into_iter()
+            .find(|r| r.kind == RowKind::Group)
+            .unwrap();
+        assert_eq!(group.aside, "1 split · 1 unsettled");
+    }
+
+    #[test]
+    fn while_it_runs_a_second_reading_that_disagrees_splits_the_window() {
+        let confirm = json!({"kind": "map", "judge": {"role": "confirm"},
+            "windows": [{"window": "w_t", "serves": [S7]}]});
+        let v = built(
+            None,
+            &[map_output(), confirm],
+            &["evl_1~q1", "evl_1~m1", "evl_1~cw1"],
+            &["evl_1~q1", "evl_1~m1", "evl_1~cw1"],
+        );
+        assert_eq!(v.change("w_t").unwrap().result, "split");
+        assert_eq!(v.split, ["w_t"]);
+        assert_eq!(v.step(S7).unwrap().changes, ["w_b"]);
+        assert_eq!(
+            v.header(),
+            "judging · map 1 of 1 · reduce — · confirm 1 of 1",
+            "q1 is no stage"
         );
     }
 

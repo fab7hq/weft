@@ -1753,6 +1753,7 @@ fn an_eval_view() -> weft_core::eval_view::EvalView {
             why: String::new(),
             quotes: vec!["log::debug!".into()],
             lines: Some("L88–L97".into()),
+            readings: Vec::new(),
         }],
         checks: vec!["cargo test passed".into()],
         ..Default::default()
