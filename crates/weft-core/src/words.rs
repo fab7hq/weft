@@ -171,11 +171,23 @@ pub const WORDS: &[(&str, &str)] = &[
     // A project's export of each Seal (17.19).
     ("export.section", "RECORD EACH SEAL IN GIT"),
     ("export.git_note", "Git note"),
-    ("export.git_note_what", "What was asked, the verdict and your decision, attached to the commit you sealed"),
-    ("export.foot", "Kept inside this repository's Git (refs/notes/ringframe), not as a file in your project, and no commit changes. It stays on this machine unless you push it. Off unless you turn it on, for this project only."),
+    (
+        "export.git_note_what",
+        "What was asked, the verdict and your decision, attached to the commit you sealed",
+    ),
+    (
+        "export.foot",
+        "Kept inside this repository's Git (refs/notes/ringframe), not as a file in your project, and no commit changes. It stays on this machine unless you push it. Off unless you turn it on, for this project only.",
+    ),
     ("dialog.export.title", "Record Seals as Git notes?"),
-    ("dialog.export.why", "From now on, each Seal of committed work in {project} adds a note to that commit. You see it with git log --notes=ringframe; your team sees it only if you push refs/notes. A note holds:"),
-    ("dialog.export.sample", "RingFrame Seal <its id>\nAsk: <the work's title>\nVerdict: <the verdict>, judged by <harness>\nDecision: <your decision>\nReason: <your reason, when you gave one>\nBy: <you>\nAt: <when>"),
+    (
+        "dialog.export.why",
+        "From now on, each Seal of committed work in {project} adds a note to that commit. You see it with git log --notes=ringframe; your team sees it only if you push refs/notes. A note holds:",
+    ),
+    (
+        "dialog.export.sample",
+        "RingFrame Seal <its id>\nAsk: <the work's title>\nVerdict: <the verdict>, judged by <harness>\nDecision: <your decision>\nReason: <your reason, when you gave one>\nBy: <you>\nAt: <when>",
+    ),
     ("dialog.export.go", "Turn on"),
     ("follow_up.from_findings", "Fix what the last Eval found:"),
     ("follow_up.from_eval", "from what Eval {n} found"),
