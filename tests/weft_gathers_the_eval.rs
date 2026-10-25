@@ -1,7 +1,7 @@
 //! Eval is one dialog, and nothing is opened before its Send: then Weft opens
-//! and gathers the Eval through RingFrame's crate and types only the debate
-//! into a harness. An Eval already gathered is debated without opening again,
-//! and a Cancel records nothing.
+//! and gathers the Eval through RingFrame's crate, starts its judges, and
+//! types nothing into the agent's pane. An Eval already gathered is judged
+//! without opening again, and a Cancel records nothing.
 //!
 //! Its own test binary because it sets `HOME`, which is global: one test, one
 //! process.
@@ -63,9 +63,11 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
 
     let socket = protocol::private_socket("weft-gathers");
     let agent = support::agent(&support::agents_dir(&socket));
+    let harnesses = support::stub_harness(&socket.with_extension("judges"), "sh");
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
+        let config = listening.with_extension("no-config.toml");
+        let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut stream = loop {
@@ -100,7 +102,7 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
         Call::StartAgent { harness: "sh".into(), spec: agent.clone(), session: None },
     );
     wait(&mut frames, &stream, |e| matches!(e, Event::Added { .. }).then_some(()));
-    // The agent says it is ready, as its hook would: a free agent to debate in.
+    // The agent says it is ready, as its hook would: one nothing is typed into.
     support::pane_says(&socket, &support::agents_dir(&socket), &root, "sh", 0, "s1", "ready");
     wait(&mut frames, &stream, |e| match e {
         Event::Agents { panes, .. }
@@ -125,9 +127,9 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
             _ => None,
         })
     };
-    let typed = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
+    let judge = |frames: &mut Lines<UnixStream>, stream: &UnixStream| {
         wait(frames, stream, |e| match e {
-            Event::Injected { refusal, .. } => Some(refusal),
+            Event::Added { pane, .. } if pane != 0 => Some(pane),
             _ => None,
         })
     };
@@ -137,7 +139,8 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
     call(&mut stream, check());
     let (pnd, what, why) = pending(&mut frames, &stream);
     assert_eq!(what, "Eval this work?");
-    assert!(why.contains("Ship it.") && why.contains("sh"), "the work and its judge: {why}");
+    assert!(why.contains("Ship it.") && why.contains("Stub"), "the work and its judge: {why}");
+    assert!(why.contains("Nothing is typed into the agent's pane."), "{why}");
     assert!(events(&ledger, "eval.opened").is_empty(), "nothing opened before Send");
 
     // Cancel records nothing.
@@ -148,20 +151,19 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(events(&ledger, "eval.opened").is_empty(), "a Cancel opens nothing");
 
-    // Eval: Weft opens and gathers through the crate, then types the debate.
+    // Eval: Weft opens and gathers through the crate, then starts a judge.
     call(&mut stream, check());
     let (pnd, _, _) = pending(&mut frames, &stream);
     call(
         &mut stream,
         Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
     );
-    assert_eq!(typed(&mut frames, &stream), None, "the debate is typed");
+    let first = judge(&mut frames, &stream);
     let opened = events(&ledger, "eval.opened");
     assert_eq!(opened.len(), 1, "{opened:?}");
     let eval = opened[0]["id"].as_str().expect("an Eval id").to_string();
     let gathered = events(&ledger, "eval.gathered");
     assert_eq!(gathered[0]["data"]["host"], "weft", "{gathered:?}");
-    let debate = format!("eval debate {eval}");
     let mut history = |stream: &mut UnixStream, frames: &mut Lines<UnixStream>| {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -187,17 +189,17 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
                     break;
                 }
             }
-            if text.contains(&debate) || Instant::now() >= deadline {
+            if !text.is_empty() || Instant::now() >= deadline {
                 return text;
             }
         }
     };
     let screen = history(&mut stream, &mut frames);
-    assert!(screen.contains(&debate), "only the debate goes to the harness: {screen}");
-    assert!(!screen.contains("gather"), "{screen}");
+    assert!(!screen.contains(&eval) && !screen.contains("/rf:"), "nothing is typed: {screen}");
+    assert!(first > 0, "the judge is a pane of its own");
 
-    // The board has seen the gathered Eval: the next Eval debates it and
-    // opens nothing.
+    // The board has seen the gathered Eval: the next Eval is the same one,
+    // and opens nothing.
     std::thread::sleep(Duration::from_millis(600));
     call(&mut stream, check());
     let (pnd, _, _) = pending(&mut frames, &stream);
@@ -205,7 +207,7 @@ fn an_eval_is_one_dialog_and_is_opened_by_its_send_once() {
         &mut stream,
         Call::Resolve { pending: pnd, yes: true, force: false, to: None, start: None },
     );
-    assert_eq!(typed(&mut frames, &stream), None, "typed again");
+    std::thread::sleep(Duration::from_millis(600));
     assert_eq!(events(&ledger, "eval.opened").len(), 1, "gathered once");
 
     call(&mut stream, Call::Shutdown);

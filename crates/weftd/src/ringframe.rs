@@ -273,6 +273,32 @@ pub fn eval_open(
     }
 }
 
+/// One ready task of an open Eval for a judge, of `role` when given; or that
+/// none is ready, or that the Eval has settled.
+pub fn eval_task(
+    project: &Path,
+    eval_id: &str,
+    role: Option<&str>,
+) -> Result<api::EvalStep, Error> {
+    api::eval_task(&workspace(project)?, eval_id, role).map_err(refused)
+}
+
+/// Whether a task's answer is in: accepted, or recorded failed.
+pub fn eval_task_in(project: &Path, task_id: &str) -> Result<bool, Error> {
+    api::eval_task_in(&workspace(project)?, task_id).map_err(refused)
+}
+
+/// A judge's session ended without its task's answer: the task goes out again.
+pub fn eval_return(project: &Path, task_id: &str) -> Result<(), Error> {
+    api::eval_return(&workspace(project)?, task_id).map_err(refused)
+}
+
+/// Stop an Eval: RingFrame hands out nothing more and refuses what its judges
+/// still submit.
+pub fn eval_void(project: &Path, eval_id: &str, reason: &str) -> Result<(), Error> {
+    api::eval_void(&workspace(project)?, eval_id, reason).map_err(refused)
+}
+
 pub fn ask_copy(project: &Path, ask_id: &str) -> Result<Vec<u8>, Error> {
     let prompt = api::prompt(&workspace(project)?, ask_id, None).map_err(refused)?;
     Ok(prompt.text.into_bytes())
@@ -284,16 +310,6 @@ pub fn ask_for_host(project: &Path, ask_id: &str, host: &str) -> Result<Value, E
     let prompt = api::prompt(&workspace(project)?, ask_id, Some(host)).map_err(refused)?;
     Ok(serde_json::json!({"ask_id": ask_id, "host": host, "prompt": prompt.text,
                           "delivery": prompt.delivery}))
-}
-
-/// How this harness's skills are invoked. Read from the profile rather than
-/// assumed, because RingFrame owns the answer and it differs by host.
-pub fn invocation_prefix(project: &Path, host: &str) -> Result<String, Error> {
-    profile(project, host)?
-        .get("invocation_prefix")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or(Error::Refused { code: 4, message: "the profile names no invocation prefix".into() })
 }
 
 /// Seal the open work as the person decided, on the Eval named, and say
@@ -319,36 +335,9 @@ pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
     Ok(api::seal_check(&workspace(project)?, seal_id).map_err(refused)?.report)
 }
 
-/// What Weft types to start each step. The intent is appended for `ask`.
-/// The invocation, with the space that closes it.
-///
-/// A harness offers completions while a skill token is still being typed, and
-/// the first Enter after a bare token is taken by that chooser rather than
-/// submitting: `$rf:eval` sat in a harness's composer, unsent, and Weft had no way
-/// to tell. The trailing space ends the token, so Enter means send. Weft never
-/// presses Enter twice to find out.
-pub fn skill_command(prefix: &str, skill: &str) -> String {
-    format!("{prefix}{skill} ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_skill_command_is_the_profiles_prefix_and_the_verb() {
-        assert_eq!(skill_command("/rf:", "eval"), "/rf:eval ");
-        assert_eq!(skill_command("$rf:", "ask"), "$rf:ask ");
-    }
-
-    #[test]
-    fn a_bare_invocation_ends_with_the_space_that_closes_it() {
-        // Found against Codex: the first Enter after a bare `$rf:eval` was
-        // taken by the completion chooser, and the prompt sat there unsent.
-        for skill in ["eval", "seal"] {
-            assert!(skill_command("$rf:", skill).ends_with(' '), "{skill}");
-        }
-    }
 
     /// A scratch folder, with Git and one commit when `git` says so.
     fn folder(name: &str, git: bool) -> std::path::PathBuf {
@@ -402,8 +391,7 @@ mod tests {
     fn the_profile_and_the_rules_are_read_through_the_crate() {
         fixture_home();
         let repo = folder("profile", true);
-        assert_eq!(invocation_prefix(&repo, "codex"), Ok("$rf:".into()));
-        assert_eq!(invocation_prefix(&repo, "claude-code"), Ok("/rf:".into()));
+        assert_eq!(profile(&repo, "codex").unwrap()["invocation_prefix"], "$rf:");
         let observe = observe_tools(&repo, "claude-code").expect("claude-code's [observe]");
         assert!(observe.get("shell_tool").is_some(), "{observe}");
         let listed = rules(None).unwrap();

@@ -110,6 +110,17 @@ pub fn git_repo(root: &Path) -> impl Fn(&[&str]) + '_ {
 /// harness `host`, compiled and confirmed, followed by a commit of work.
 /// `HOME` must already be `home`. Returns the Ask's id.
 pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
+    real_ask_of(root, home, host, "Ship it.", &[("work.txt", "the work\n".into())])
+}
+
+/// The same, for the words `source` and a commit of these files.
+pub fn real_ask_of(
+    root: &Path,
+    home: &Path,
+    host: &str,
+    source: &str,
+    files: &[(&str, String)],
+) -> String {
     use ringframe::api;
     let git = git_repo(root);
     assert_eq!(std::env::var_os("HOME").as_deref(), Some(home.as_os_str()));
@@ -122,7 +133,7 @@ pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
     let compiled = api::compile(
         &ws,
         api::Compile {
-            source: "Ship it.",
+            source,
             harness: api::Harness { name: host, version: None, session_ref: None },
             capability: "human_handoff",
             classification: api::Classification {
@@ -140,8 +151,40 @@ pub fn real_ask(root: &Path, home: &Path, host: &str) -> String {
         },
     )
     .unwrap();
-    std::fs::write(root.join("work.txt"), "the work\n").unwrap();
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
     git(&["add", "-A"]);
     git(&["commit", "-q", "-m", "work"]);
     compiled.ask_id
+}
+
+/// A harness `name` whose sessions are a script in `dir`: it writes the pane
+/// variables weftd gave it, its process id and its arguments to
+/// `<dir>/pane-<id>`, then behaves as `cat`, keeping what it is typed in
+/// `<dir>/typed-<id>`. A judge of it starts with
+/// `--model` and `--effort`, as its `[eval.launch]` says.
+pub fn stub_harness(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
+    std::fs::create_dir_all(dir).expect("agent dir");
+    let path = dir.join("judge.sh");
+    let script = "#!/bin/sh\n\
+        d=$(dirname \"$0\")\n\
+        printf 'WEFT_PANE=%s\\nWEFT_PANE_TOKEN=%s\\nWEFT_SOCKET=%s\\nPID=%s\\nARGS=%s\\n' \
+        \"$WEFT_PANE\" \"$WEFT_PANE_TOKEN\" \"$WEFT_SOCKET\" \"$$\" \"$*\" > \"$d/pane-$WEFT_PANE.tmp\"\n\
+        mv \"$d/pane-$WEFT_PANE.tmp\" \"$d/pane-$WEFT_PANE\"\n\
+        exec tee \"$d/typed-$WEFT_PANE\"\n";
+    std::fs::write(&path, script).expect("judge script");
+    let file = format!(
+        "title = \"Stub\"\nprogram = \"/bin/sh\"\nargs = [\"{}\"]\nresume = [\"--resume\"]\n\
+         [config]\ndefault = \".stub\"\n[plugin]\nlist = [\"list\"]\n\
+         [eval]\nefforts = [\"low\", \"high\"]\neffort = \"model\"\n\
+         default = {{ map = \"low\", reduce = \"low\", confirm = \"low\" }}\n\
+         [eval.launch]\nmodel = [\"--model\", \"{{model}}\"]\neffort = [\"--effort\", \"{{effort}}\"]\n",
+        path.display()
+    );
+    let (read, unread) = weft_core::harness::Harnesses::read(vec![(name.to_string(), file)]);
+    assert!(unread.is_empty(), "the stub harness file reads");
+    read
 }

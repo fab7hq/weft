@@ -13,18 +13,6 @@ fn settled(seq: u64, read: u64, quiet: std::time::Duration) -> bool {
 }
 
 impl Session {
-    /// The first of this harness's agents that is free for new work: one
-    /// whose latest event is `ready` or `turn_ended` (turn-state.md §4).
-    pub(super) fn free_pane_of(&mut self, at: usize, harness: &str) -> Option<u32> {
-        let states = self.agents_of(at).0;
-        self.projects[at]
-            .panes
-            .iter()
-            .zip(states)
-            .find(|(s, state)| s.map.harness == harness && crate::turns::may_type(*state).is_ok())
-            .map(|(s, _)| s.map.pane)
-    }
-
     /// Start a pane of this harness for an act, on its own command: never
     /// another pane's, which may be resuming someone else's session.
     pub(super) fn start_for(&mut self, client: u64, at: usize, harness: &str) -> Option<u32> {
@@ -92,7 +80,12 @@ impl Session {
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
         let alive =
             |proc: &weft_core::sessions::Process| !p.gone.contains(&(proc.pid, proc.start.clone()));
-        let index = weft_core::sessions::index(&heard, &map, &p.ledger.units(), &alive);
+        // A judge's session is no agent of the person's.
+        let theirs: Vec<_> =
+            heard.iter().filter(|h| !p.judged.contains(&h.session.id)).cloned().collect();
+        let agents: Vec<_> =
+            p.panes.iter().filter(|s| s.judge.is_none()).map(|s| s.map.clone()).collect();
+        let index = weft_core::sessions::index(&theirs, &agents, &p.ledger.units(), &alive);
         let raw_states = crate::turns::pane_states(&map, &sessions);
         let states = raw_states
             .into_iter()
@@ -334,6 +327,7 @@ impl Session {
                     sense_settled_seq: 0,
                     sensed_surface: None,
                     typer: None,
+                    judge: None,
                 });
                 self.write_map(project);
                 self.listen(project, &harness_name);
@@ -442,6 +436,18 @@ impl Session {
             }
             self.tell_agents(at);
         }
+        // A judge's prompts and tools are no evidence of the person's work.
+        let judge = at.zip(sent.pane).is_some_and(|(at, pane)| {
+            self.projects[at].panes.iter().any(|s| s.map.pane == pane && s.judge.is_some())
+        });
+        if judge {
+            if let (Some(at), Some(pane)) = (at, sent.pane)
+                && matches!(sent.state.as_deref(), Some("turn_ended" | "ended"))
+            {
+                self.judge_turn_ended(at, pane);
+            }
+            return;
+        }
         // A turn ended: what the person sent in it is in its transcript now.
         if let Some(at) = at
             && matches!(sent.state.as_deref(), Some("turn_ended" | "ended"))
@@ -471,6 +477,7 @@ impl Session {
             }
             self.write_map(at);
         }
+        self.judge_session(at, pane, session);
     }
 
     /// Open a harness's own stream, once, when its harness file names one
@@ -552,6 +559,7 @@ impl Session {
         // A send into the pane that holds it was waiting for this turn's end.
         if ended && let Some(pane) = held_pane {
             self.received_nothing(at, pane);
+            self.judge_turn_ended(at, pane);
         }
     }
 }

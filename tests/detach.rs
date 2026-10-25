@@ -564,8 +564,10 @@ fn a_staged_prompt_reaches_every_client_and_is_answered_once() {
 /// Delegation goes to an agent of the act's harness that is free — its latest
 /// event `ready` or `turn_ended` (turn-state.md §4) — and when none is, the
 /// daemon starts one of that harness.
+/// An Eval types into no agent's pane, so its dialog names none and starts
+/// none, whether an agent of its harness is free or busy.
 #[test]
-fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
+fn an_eval_names_no_pane_and_starts_no_agent() {
     let socket = protocol::private_socket("weft-delegate");
     let root = project("delegate");
     ask_on_record(&root, "sh");
@@ -598,30 +600,25 @@ fn an_eval_goes_to_a_free_agent_of_its_harness_or_starts_one() {
     };
     let pending_pane = |c: &mut Client| {
         c.wait_until(|e| match e {
-            Event::Pending { pane, why, .. } => Some((pane, why)),
+            Event::Pending { pane, .. } => Some(pane),
             _ => None,
         })
     };
-
-    // Free: it goes to the agent that is there.
     // Sent rather than answered: the Pending event comes before the answer.
     c.send(check());
-    let (pane, why) = pending_pane(&mut c);
-    assert_eq!(pane, 0);
-    assert!(!why.contains("started one"), "{why}");
-
-    // Working, as its hook reports it: a new agent of that harness.
+    assert_eq!(pending_pane(&mut c), u32::MAX, "free: no pane");
     agent_says(&socket, &root, "sh", 0, "s1", "working");
     c.wait_for_state(Some(Turn::Working));
     c.send(check());
-    assert_eq!(c.wait_for_added(), (1, "sh".to_string()));
-    let (pane, why) = pending_pane(&mut c);
-    assert_eq!(pane, 1);
-    assert!(why.contains("No sh agent here was free, so Weft started one."), "{why}");
+    assert_eq!(pending_pane(&mut c), u32::MAX, "busy: no pane");
 
     let mut stop = Client::attach(&socket, &root);
     let panes = stop.hello();
-    assert_eq!(panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(), [&program, &program]);
+    assert_eq!(
+        panes.iter().map(|p| p.spec.as_str()).collect::<Vec<_>>(),
+        [&program],
+        "none started"
+    );
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }
@@ -670,127 +667,6 @@ fn gathered_on_record(root: &Path) {
         ev("eval.gathered", 2, serde_json::json!({"eval_id": "evl_1", "host": "weft"}))
     )
     .expect("gathered");
-}
-
-/// A send into an agent Weft just started waits for it to say `ready`, and
-/// the daemon does not stop while it waits: another window is answered and
-/// every other pane's output keeps arriving.
-#[test]
-fn a_send_waiting_for_a_fresh_agent_stops_nothing_else() {
-    let root = project("fresh-wait");
-    ask_on_record(&root, "cat-agent");
-    gathered_on_record(&root);
-    let socket = protocol::private_socket("weft-fresh-wait");
-    let listening = socket.clone();
-    let program = agent(&socket);
-    let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", &program)]);
-    std::thread::spawn(move || {
-        let _ = server::Session::serve_with(
-            &listening,
-            &listening.with_extension("no-config.toml"),
-            Some(harnesses),
-        );
-    });
-
-    let mut a = Client::attach(&socket, &root);
-    a.send(Call::StartAgent { harness: "cat-agent".into(), spec: program, session: None });
-    a.wait_for_added();
-    agent_says(&socket, &root, "cat-agent", 0, "busy", "ready");
-    a.wait_for_state(Some(Turn::Ready));
-    agent_says(&socket, &root, "cat-agent", 0, "busy", "working");
-    a.wait_for_state(Some(Turn::Working));
-    // Nothing is free, so the daemon starts an agent for the Eval, which will
-    // never say it is ready.
-    a.send(Call::Act {
-        act: "check".into(),
-        unit: Some("ask_1".into()),
-        pane: None,
-        text: None,
-        eval: None,
-        start: None,
-        draft: None,
-    });
-    let id = a.wait_until(|e| match e {
-        Event::Pending { id, .. } => Some(id),
-        _ => None,
-    });
-    a.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
-    a.wait_for_resolved();
-
-    let began = Instant::now();
-    let mut b = Client::attach(&socket, &root);
-    assert!(began.elapsed() < Duration::from_secs(2), "another window waited on the send");
-    b.send(Call::Input { pane: 0, bytes: b"still-moving\n".to_vec() });
-    assert!(b.wait_for("still-moving", 2).contains("still-moving"), "output stopped arriving");
-    // And once the new agent says it is ready, the send goes.
-    agent_says(&socket, &root, "cat-agent", 1, "fresh", "ready");
-    assert_eq!(b.wait_for_refusal(), None, "typed once it said it was ready");
-
-    b.send(Call::Shutdown);
-    std::fs::remove_dir_all(&root).ok();
-}
-
-/// An agent Weft starts for an Eval runs its harness's own command, never
-/// another pane's: that one may be resuming someone else's session.
-#[test]
-fn an_agent_started_for_an_eval_resumes_nobodys_session() {
-    let root = project("own-command");
-    ask_on_record(&root, "cat-agent");
-    gathered_on_record(&root);
-    let socket = protocol::private_socket("weft-own-command");
-    let listening = socket.clone();
-    let program = agent(&socket);
-    let harnesses = weft::harness_table::Harnesses(vec![harness_running("cat-agent", &program)]);
-    std::thread::spawn(move || {
-        let _ = server::Session::serve_with(
-            &listening,
-            &listening.with_extension("no-config.toml"),
-            Some(harnesses),
-        );
-    });
-    let mut c = Client::attach(&socket, &root);
-    // Their session is on record (run in a terminal), so it can be resumed.
-    support::signal(
-        &socket,
-        weft_core::signal::Sent {
-            harness: "cat-agent".into(),
-            hook: "Hook".into(),
-            session: "theirs".into(),
-            workspace: Some(root.to_string_lossy().into_owned()),
-            state: Some("turn_ended".into()),
-            ..Default::default()
-        },
-    );
-    c.wait_until(|e| match e {
-        Event::Agents { sessions, .. } if sessions.iter().any(|s| s.id == "theirs") => Some(()),
-        _ => None,
-    });
-    let theirs = harness_running("cat-agent", &program).resume_spec("theirs").expect("resume");
-    let resumed = Call::StartAgent {
-        harness: "cat-agent".into(),
-        spec: format!("{program} -"),
-        session: Some("theirs".into()),
-    };
-    c.send(resumed);
-    c.wait_for_added();
-    agent_says(&socket, &root, "cat-agent", 0, "theirs", "working");
-    c.wait_for_state(Some(Turn::Working));
-    c.send(Call::Act {
-        act: "check".into(),
-        unit: Some("ask_1".into()),
-        pane: None,
-        text: None,
-        eval: None,
-        start: None,
-        draft: None,
-    });
-    c.wait_for_added();
-
-    let mut look = Client::attach(&socket, &root);
-    let specs: Vec<String> = look.hello().into_iter().map(|p| p.spec).collect();
-    assert_eq!(specs, [theirs, program], "the harness's own command");
-    look.send(Call::Shutdown);
-    std::fs::remove_dir_all(&root).ok();
 }
 
 /// Weft's own pane map: which pane runs which session, decided once, kept by
@@ -1183,7 +1059,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
     assert_eq!(c.answer(act("decide", Some("evl_1"))), Err("judging".into()));
     assert_eq!(c.answer(act("decide", Some("evl_9"))), Err("no_unit".into()));
 
-    // Eval on the unit being judged: one dialog, then its debate on Send.
+    // Eval on the unit being judged: one dialog, and nothing typed on Send.
     c.send(act("check", None));
     let pending = c.wait_until(|e| match e {
         Event::Pending { id, what, .. } => Some((id, what)),
@@ -1191,23 +1067,17 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
     });
     assert_eq!(pending.1, "Eval this work?");
     c.send(Call::Resolve { pending: pending.0, yes: true, force: false, to: None, start: None });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let read = Call::Read {
-            what: "history".into(),
-            unit: String::new(),
-            pane: Some(0),
-            lines: Some(50),
-            before: None,
-            after: None,
-        };
-        let screen = c.answer(read).map(|v| v["text"].as_str().unwrap_or_default().to_string());
-        if screen.as_deref().is_ok_and(|s| s.contains("debate evl_1")) {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the debate never went: {screen:?}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    std::thread::sleep(Duration::from_millis(600));
+    let read = Call::Read {
+        what: "history".into(),
+        unit: String::new(),
+        pane: Some(0),
+        lines: Some(50),
+        before: None,
+        after: None,
+    };
+    let screen = c.answer(read).map(|v| v["text"].as_str().unwrap_or_default().to_string());
+    assert!(screen.as_deref().is_ok_and(|s| !s.contains("evl_1")), "typed: {screen:?}");
 
     // Judged, the Seal on it names it.
     let line = |kind: &str, id: &str, data: serde_json::Value, links: serde_json::Value| {

@@ -120,9 +120,11 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
 
     let socket = protocol::private_socket("weft-slow-rf");
     let agent = support::agent(&support::agents_dir(&socket));
+    let harnesses = support::stub_harness(&socket.with_extension("judges"), "sh");
     let listening = socket.clone();
     std::thread::spawn(move || {
-        let _ = server::Session::serve(&listening, &listening.with_extension("no-config.toml"));
+        let config = listening.with_extension("no-config.toml");
+        let _ = server::Session::serve_with(&listening, &config, Some(harnesses));
     });
     let mut a = Client::connect(&socket);
     let hello = a.call(Call::Hello { client: "test".into(), protocol: PROTOCOL });
@@ -169,7 +171,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
         a.seen
     );
 
-    // Eval: opened, then the debate is staged.
+    // Eval: its dialog is staged.
     a.call(Call::StartAgent { harness: "sh".into(), spec: agent, session: None });
     a.wait(|e| matches!(e, Event::Added { .. }).then_some(()));
     support::pane_says(&socket, &support::agents_dir(&socket), &root, "sh", 0, "s1", "ready");
@@ -194,7 +196,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
     let took = probe(&socket);
     assert!(took < quick, "a hello waited {took:?} on eval open");
     let staged = a.answer(check, Duration::from_secs(10));
-    assert!(staged["pending"].is_string(), "the debate staged: {staged}");
+    assert!(staged["pending"].is_string(), "the Eval staged: {staged}");
 
     // A receipt's check.
     let ws = ringframe::api::workspace(&root).expect("workspace");

@@ -1,4 +1,5 @@
-//! Building what one of RingFrame's three acts would type.
+//! Building what one of RingFrame's three acts would type, and the dialogs
+//! that type nothing.
 //!
 //! This is the daemon's, because it reads files and calls RingFrame. What to
 //! *say* about it is a rule and lives in [`weft_core::offers`]; which harness
@@ -8,10 +9,9 @@
 //! A client asks for an act by name. It never assembles bytes — the moment two
 //! clients do that, they disagree.
 
-use std::collections::HashMap;
 use std::path::Path;
 
-use weft_core::inject::{self, Handoff};
+use weft_core::inject::Handoff;
 use weft_core::ledger::Unit;
 use weft_core::offers::Asking;
 
@@ -25,11 +25,13 @@ pub struct Built {
     pub ask_id: Option<String>,
     /// The Ask its Send compiles, before the prompt shown is typed.
     pub compile: Option<ringframe::AskDraft>,
-    /// The Eval its Send opens, then debates.
+    /// The Eval its Send opens, then hands to judges.
     pub eval: Option<Debate>,
+    /// The Eval its Stop voids.
+    pub stop: Option<String>,
 }
 
-/// An Eval of a unit of work, to debate in a harness once the person says
+/// An Eval of a unit of work, for judges in a harness once the person says
 /// yes: the unit's own gathered Eval, or one RingFrame opens then.
 #[derive(Debug, Clone)]
 pub struct Debate {
@@ -48,6 +50,20 @@ pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
         ask_id: None,
         compile: None,
         eval: Some(debate),
+        stop: None,
+    }
+}
+
+/// The dialog that stops a running Eval: nothing is typed; Stop voids it.
+pub fn stop(eval_id: &str, title: &str) -> Built {
+    Built {
+        payload: Vec::new(),
+        how: Handoff::Whole,
+        asking: weft_core::offers::stopping(title),
+        ask_id: None,
+        compile: None,
+        eval: None,
+        stop: Some(eval_id.to_string()),
     }
 }
 
@@ -73,31 +89,8 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         ask_id: Some(unit.ask_id.clone()),
         compile: None,
         eval: None,
+        stop: None,
     })
-}
-
-/// Run Check or Decide in the harness this project routes it to.
-/// A skill with nothing more than its words: `/rf:eval gather context=…`, or
-/// `/rf:seal ` and nothing after it.
-pub fn skill(
-    root: &Path,
-    skill: &str,
-    into: &str,
-    worked_in: &str,
-    args: &str,
-    over: Option<&str>,
-    prefixes: &mut Prefixes,
-) -> Built {
-    let command = ringframe::skill_command(&prefixes.prefix(root, into), skill);
-    let payload = typed(&command, over, args);
-    Built {
-        how: how(&command),
-        asking: weft_core::offers::running(skill, &command, into, worked_in),
-        payload,
-        ask_id: None,
-        compile: None,
-        eval: None,
-    }
 }
 
 /// Ask for something new: the exact prompt Send will type into the harness
@@ -121,92 +114,6 @@ pub fn ask(
         ask_id: None,
         compile: Some(draft),
         eval: None,
+        stop: None,
     })
-}
-
-/// The skill, then RingFrame's overrides when there are any, then its words.
-/// The overrides are one single-quoted shell word, which the skill passes on
-/// unchanged to every `ringframe` command it runs.
-fn typed(command: &str, over: Option<&str>, words: &str) -> Vec<u8> {
-    match over {
-        Some(over) => format!("{command}--override '{over}' {words}"),
-        None => format!("{command}{words}"),
-    }
-    .into_bytes()
-}
-
-/// The skill prefix RingFrame uses for each harness, asked once and kept: a
-/// property of the machine, not of the moment.
-#[derive(Default)]
-pub struct Prefixes {
-    prefixes: HashMap<String, String>,
-}
-
-impl Prefixes {
-    fn prefix(&mut self, root: &Path, harness: &str) -> String {
-        self.prefixes
-            .entry(harness.to_string())
-            .or_insert_with(|| {
-                ringframe::invocation_prefix(root, harness).unwrap_or_else(|_| "/rf:".into())
-            })
-            .clone()
-    }
-}
-
-/// How a prompt Weft composed has to be typed. Its command is the skill
-/// invocation, which on a harness whose prefix is `/rf:` is a real slash
-/// command, and is then typed whatever the prompt's length.
-fn how(command: &str) -> Handoff {
-    match inject::leading_command(command.as_bytes()) {
-        Some(command) => Handoff::TypeCommand { at: command.len() + 1, command },
-        None => Handoff::Whole,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn eval_carries_its_words_after_the_skill_on_either_harness() {
-        let mut prefixes = Prefixes::default();
-        prefixes.prefixes.insert("claude-code".into(), "/rf:".into());
-        prefixes.prefixes.insert("codex".into(), "$rf:".into());
-        let root = Path::new("/nowhere");
-        let sent = |into: &str, args: &str, prefixes: &mut Prefixes| {
-            String::from_utf8(
-                skill(root, "eval", into, "claude-code", args, None, prefixes).payload,
-            )
-            .unwrap()
-        };
-        assert_eq!(
-            sent("codex", "gather context=gpt-6-luna/low", &mut prefixes),
-            "$rf:eval gather context=gpt-6-luna/low"
-        );
-        assert_eq!(
-            sent("claude-code", "debate evl_1 drift=/high", &mut prefixes),
-            "/rf:eval debate evl_1 drift=/high"
-        );
-        assert_eq!(sent("claude-code", "", &mut prefixes), "/rf:eval ");
-    }
-
-    #[test]
-    fn every_rf_command_carries_the_override_right_after_the_skill() {
-        let mut prefixes = Prefixes::default();
-        prefixes.prefixes.insert("claude-code".into(), "/rf:".into());
-        prefixes.prefixes.insert("codex".into(), "$rf:".into());
-        let root = Path::new("/nowhere");
-        let over = r#"[{"layer":"weft","ringframe":{"deltas":{}}}]"#;
-        let text = |b: Built| String::from_utf8(b.payload).unwrap();
-        for (harness, prefix) in [("claude-code", "/rf:"), ("codex", "$rf:")] {
-            assert_eq!(
-                text(skill(root, "eval", harness, harness, "gather", Some(over), &mut prefixes)),
-                format!("{prefix}eval --override '{over}' gather")
-            );
-            assert_eq!(
-                text(skill(root, "seal", harness, harness, "", Some(over), &mut prefixes)),
-                format!("{prefix}seal --override '{over}' ")
-            );
-        }
-    }
 }

@@ -25,6 +25,7 @@ use crate::turns::Turn;
 
 mod agents;
 mod config;
+mod judges;
 mod login;
 mod remote;
 mod screens;
@@ -47,6 +48,9 @@ struct On<'a> {
     draft: Option<&'a weft_core::ask::Draft>,
 }
 use weft_proto::{self, Call, Event as Out, Line, Lines, PROTOCOL, PaneInfo};
+
+/// The pane a dialog that types nothing names: no pane.
+const NO_PANE: u32 = u32::MAX;
 
 /// The most lines of a pane's history one `read` answers.
 const HISTORY_MAX: usize = 2_000;
@@ -104,6 +108,8 @@ struct Slot {
     /// Types this pane's sends one after another, off the run loop: made at
     /// its first send, ended with the pane.
     typer: Option<Sender<typing::Job>>,
+    /// The Eval it judges, for a judge pane Weft started.
+    judge: Option<String>,
 }
 
 impl Slot {
@@ -148,8 +154,10 @@ struct Waiting {
     sends: Option<String>,
     /// The Ask Send compiles first, when this shows one not yet recorded.
     compile: Option<crate::ringframe::AskDraft>,
-    /// The Eval Send opens, then debates.
+    /// The Eval Send opens, then hands to judges.
     eval: Option<crate::acts::Debate>,
+    /// The Eval Stop voids.
+    stop: Option<String>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -188,7 +196,11 @@ struct Project {
     /// Sends of an Ask typed and submitted, each waiting for what its pane
     /// reports it received.
     due: Vec<typing::Due>,
-    prefixes: crate::acts::Prefixes,
+    /// The judges of each Eval opened here.
+    benches: Vec<judges::Bench>,
+    /// The sessions judges ran here, which are no agent of the person's:
+    /// `.fab7/weft/judges.json`.
+    judged: std::collections::HashSet<String>,
     /// The harnesses Weft has a file for, read when the project opened, and
     /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
@@ -410,15 +422,19 @@ enum Wake {
         gap: Option<String>,
     },
     /// RingFrame opened a unit's Eval on the person's yes, or would not: its
-    /// debate is typed now.
+    /// judges start now.
     EvalOpened {
         client: u64,
         call_id: u64,
         project: usize,
-        waiting: Box<Waiting>,
         debate: Box<crate::acts::Debate>,
-        force: bool,
         opened: Result<String, crate::ringframe::Error>,
+    },
+    /// What the judges of an Eval do next, as RingFrame's answers decided.
+    Judged {
+        project: usize,
+        eval_id: String,
+        did: Vec<judges::Did>,
     },
     /// A hook, from `weft signal`.
     Signal(Box<weft_core::signal::Sent>),
@@ -899,7 +915,13 @@ impl Session {
                     self.sense_what_settled();
                 }
                 Wake::Exited { project, pane } => {
-                    self.clients.broadcast(project, &Out::Exited { pane })
+                    self.clients.broadcast(project, &Out::Exited { pane });
+                    self.judge_exited(project, pane);
+                }
+                Wake::Judged { project, eval_id, did } => {
+                    if !self.projects[project].closed {
+                        self.judged(project, &eval_id, did);
+                    }
                 }
                 Wake::Tick => {
                     self.follow_the_record();
@@ -957,13 +979,13 @@ impl Session {
                     };
                     self.clients.send_to(client, &answer.line(call_id));
                 }
-                Wake::EvalOpened { client, call_id, project, waiting, debate, force, opened } => {
+                Wake::EvalOpened { client, call_id, project, debate, opened } => {
                     if self.projects[project].closed {
                         continue;
                     }
                     let answer = match opened {
                         Ok(eval_id) => {
-                            self.debate(project, *waiting, &debate, &eval_id, force);
+                            self.seat_judges(project, client, &eval_id, &debate.stage);
                             Answer::nothing()
                         }
                         Err(e) => eval_refused(e),
@@ -1021,6 +1043,9 @@ impl Session {
             other => other,
         };
         let On { unit: unit_id, pane, text, eval, start, draft } = on;
+        if act == "stop" {
+            return self.stage_stop(at, eval);
+        }
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
         // Eval and Seal act on one unit of work, named by any of its Asks,
@@ -1208,7 +1233,7 @@ impl Session {
                 let (title, asks) =
                     mine.map_or((unit.title.clone(), 1), |u| (root_of(u).title, u.asks.len()));
                 let debate = crate::acts::Debate { unit, stage: debate, open };
-                return self.stage_eval(client, at, debate, &title, asks);
+                return self.stage_eval(at, debate, &title, asks);
             }
             other => return Answer::No("unknown_act", format!("there is no act {other}")),
         };
@@ -1216,44 +1241,36 @@ impl Session {
         self.stage(at, pane, built)
     }
 
-    /// Put an Eval's one dialog in front of everyone watching, for the free
-    /// agent of the harness that debates it, started when there is none.
+    /// Put an Eval's one dialog in front of everyone watching. It types into
+    /// no pane: its judges are sessions of their own.
     fn stage_eval(
         &mut self,
-        client: u64,
         at: usize,
         debate: crate::acts::Debate,
         title: &str,
         asks: usize,
     ) -> Answer {
         let into = debate.stage.harness.clone();
-        let (pane, fresh) = match self.free_pane_of(at, &into) {
-            Some(pane) => (pane, false),
-            None => match self.start_for(client, at, &into) {
-                Some(pane) => (pane, true),
-                None => return Answer::No("no_pane", format!("Weft could not start {into}")),
-            },
+        let Some(judges) = self.projects[at].harnesses.find(&into).map(|h| h.title.clone()) else {
+            return Answer::No(
+                "no_harness",
+                format!("Weft has no harness file for {into}, so no judge can start"),
+            );
         };
-        let judges = self.projects[at].harnesses.find(&into).map_or(&into, |h| &h.title).clone();
-        let mut built = crate::acts::eval(debate, title, asks, &judges);
-        if fresh {
-            built.asking.why.push(format!("No {into} agent here was free, so Weft started one."));
-        }
-        self.stage(at, pane, built)
+        let built = crate::acts::eval(debate, title, asks, &judges);
+        self.stage(at, NO_PANE, built)
     }
 
     /// The person said yes to an Eval: open it through RingFrame, off the run
-    /// loop, then type its debate; one already gathered is debated at once.
+    /// loop, then start its judges; one already gathered is judged at once.
     fn evaluate(
         &mut self,
         (client, call_id): (u64, u64),
         at: usize,
-        waiting: Waiting,
         debate: crate::acts::Debate,
-        force: bool,
     ) -> Answer {
         if let Some(eval_id) = debate.open.clone() {
-            self.debate(at, waiting, &debate, &eval_id, force);
+            self.seat_judges(at, client, &eval_id, &debate.stage);
             return Answer::nothing();
         }
         let project = &self.projects[at];
@@ -1266,43 +1283,28 @@ impl Session {
                 stage.as_ref(),
                 over.as_deref(),
             );
-            let (waiting, debate) = (Box::new(waiting), Box::new(debate));
-            let _ = tx.send(Wake::EvalOpened {
-                client,
-                call_id,
-                project: at,
-                waiting,
-                debate,
-                force,
-                opened,
-            });
+            let debate = Box::new(debate);
+            let _ = tx.send(Wake::EvalOpened { client, call_id, project: at, debate, opened });
         });
         Answer::Later
     }
 
-    /// Type an open Eval's debate into the agent the person said yes for.
-    fn debate(
-        &mut self,
-        at: usize,
-        mut waiting: Waiting,
-        debate: &crate::acts::Debate,
-        eval_id: &str,
-        force: bool,
-    ) {
-        let (into, args) = weft_core::eval_stages::debate_send(&debate.stage, eval_id);
-        let root = self.projects[at].root.clone();
-        let project = &mut self.projects[at];
-        let built = crate::acts::skill(
-            &root,
-            "eval",
-            &into,
-            &debate.unit.harness,
-            &args,
-            project.ringframe.as_deref(),
-            &mut project.prefixes,
-        );
-        (waiting.payload, waiting.how) = (built.payload, built.how);
-        self.type_it(at, waiting, force);
+    /// The person said Stop: RingFrame voids the Eval, off the run loop, and
+    /// then its judges' panes close.
+    fn stop_eval(&mut self, (client, call_id): (u64, u64), at: usize, eval_id: String) -> Answer {
+        let (root, tx) = (self.projects[at].root.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let answer = match crate::ringframe::eval_void(&root, &eval_id, "stopped in Weft") {
+                Ok(()) => {
+                    let did = vec![judges::Did::Done];
+                    let _ = tx.send(Wake::Judged { project: at, eval_id, did });
+                    Answer::nothing()
+                }
+                Err(e) => ringframe_error(e),
+            };
+            let _ = tx.send(Wake::Answer { client, call_id, answer });
+        });
+        Answer::Later
     }
 
     /// The exact wording, or an Eval record, as RingFrame wrote them; and
@@ -1769,6 +1771,7 @@ impl Session {
             self.recheck(at);
             self.type_what_started(at);
             self.nothing_received(at);
+            self.look_at_judges(at);
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
@@ -2022,6 +2025,7 @@ impl Session {
                 let config = crate::routing::read_at(&self.config, &harnesses);
                 // Where the person said a harness's program is, when not on PATH.
                 let harnesses = harnesses.with_programs(|n| config.program(n).map(str::to_string));
+                let judged = judges::sessions(&root);
                 self.projects.push(Project {
                     opened: crate::turns::now_millis(),
                     routing: config.routing(&root),
@@ -2047,7 +2051,8 @@ impl Session {
                     },
                     starting: Vec::new(),
                     due: Vec::new(),
-                    prefixes: crate::acts::Prefixes::default(),
+                    benches: Vec::new(),
+                    judged,
                     turns: crate::turns::Turns::default(),
                     harnesses,
                     unread,
@@ -2260,6 +2265,7 @@ impl Session {
                     sends: None,
                     compile: None,
                     eval: None,
+                    stop: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -2396,7 +2402,10 @@ impl Session {
                 }
                 let root = self.projects[at].root.clone();
                 if let Some(debate) = w.eval.take() {
-                    return Ok(self.evaluate((client, call_id), at, w, debate, force));
+                    return Ok(self.evaluate((client, call_id), at, debate));
+                }
+                if let Some(eval_id) = w.stop.take() {
+                    return Ok(self.stop_eval((client, call_id), at, eval_id));
                 }
                 // Send is the confirmation: the Ask is compiled as it was
                 // shown, and its prompt is what is typed.

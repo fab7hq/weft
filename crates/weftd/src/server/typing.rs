@@ -35,18 +35,18 @@ pub(super) struct Due {
 
 /// One send for a pane's worker to type.
 pub(super) struct Job {
-    typist: crate::pane::Typist,
-    payload: Vec<u8>,
-    how: weft_core::inject::Handoff,
-    project: usize,
-    pane: u32,
-    sends: Option<String>,
+    pub(super) typist: crate::pane::Typist,
+    pub(super) payload: Vec<u8>,
+    pub(super) how: weft_core::inject::Handoff,
+    pub(super) project: usize,
+    pub(super) pane: u32,
+    pub(super) sends: Option<String>,
 }
 
 /// A pane's worker: it types each send in turn and says how each went.
 /// Typing waits on the agent (a paste landing, a mode entered), seconds at
 /// worst, so it never runs on the run loop. It ends with its pane.
-fn typer(tx: Sender<Wake>) -> Sender<Job> {
+pub(super) fn typer(tx: Sender<Wake>) -> Sender<Job> {
     let (jobs, rx) = channel::<Job>();
     std::thread::spawn(move || {
         for j in rx {
@@ -227,6 +227,14 @@ impl Session {
             Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
             Ok(_) => None,
         };
+        // A judge's line is the judges' own, and no one is told of it.
+        if self
+            .projects
+            .get(project)
+            .is_some_and(|p| p.panes.iter().any(|s| s.map.pane == pane && s.judge.is_some()))
+        {
+            return;
+        }
         if refusal.is_some()
             && let Some(ask) = sends
             && let Some(p) = self.projects.get_mut(project)
@@ -368,6 +376,7 @@ impl Session {
             sends: built.ask_id.clone(),
             compile: built.compile,
             eval: built.eval,
+            stop: built.stop,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))
