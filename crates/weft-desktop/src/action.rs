@@ -105,8 +105,10 @@ pub enum TreeAct {
         project: PathBuf,
         eval: String,
     },
-    /// The sealed units WORK folds: listed, or folded again.
-    ToggleSealed(PathBuf),
+    /// Done in the tree's place: every sealed unit of this project.
+    OpenDone(PathBuf),
+    /// Back from Done to the tree.
+    LeaveDone,
     SelectSeal {
         project: PathBuf,
         seal: String,

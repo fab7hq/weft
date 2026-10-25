@@ -69,10 +69,15 @@ pub struct TreeProps<'a> {
     pub clients: &'a [crate::daemon::ProjectClient],
     /// The project whose row's ⋯ is open.
     pub project_menu: Option<&'a Path>,
+    /// Done in the tree's place: its project and rows, when open.
+    pub done: Option<(PathBuf, Vec<weft_core::done::Done>)>,
 }
 
 /// Render the `380px` left `Tree` panel.
 pub fn render_tree(props: &TreeProps) -> Element {
+    if let Some((root, rows)) = &props.done {
+        return render_done(root, rows, props);
+    }
     let mut tree_el = div()
         .layer("tree")
         .w(340)
@@ -269,7 +274,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                 props.selection == Some(&TreeSelection::SealedEarlier { project: root.clone() });
             tree_el = tree_el.child(
                 row("row sealed earlier", 36, 32, selected)
-                    .on_click(TreeAct::ToggleSealed(root.to_path_buf()))
+                    .on_click(TreeAct::OpenDone(root.to_path_buf()))
                     .child(div().font_size(12).color(palette::BLUE_BORDER).text(format!(
                         "{} ›",
                         words::fill(
@@ -342,7 +347,80 @@ pub fn render_plus_popover(root: &Path, harnesses: &Harnesses, turbo: bool) -> E
     pop
 }
 
+/// Done (17.18): every sealed unit of a project in the tree's place, parked
+/// first, narrowed by the search; a row opens its unit on the right.
+fn render_done(root: &Path, rows: &[weft_core::done::Done], props: &TreeProps) -> Element {
+    let name = crate::daemon::ProjectClient::name_of(root);
+    let mut el = div()
+        .layer("sidebar Done")
+        .w(340)
+        .shrink_0()
+        .self_stretch()
+        .flex_col()
+        .items_start()
+        .style("min-height", "0")
+        .style("overflow-y", "auto")
+        .style("overflow-x", "hidden")
+        .border_right(palette::LINE)
+        .child(
+            row("done head", 40, 16, false)
+                .child(
+                    span(format!("‹ {name}"))
+                        .layer("done back")
+                        .on_click(TreeAct::LeaveDone)
+                        .font_size(13)
+                        .color(palette::BLUE_BORDER),
+                )
+                .child(span(words::word("done.title")).font_weight(600).color(palette::TEXT)),
+        )
+        .child(search_box(props.search_query, props.searching, words::word("done.search")));
+    for (parked, key) in [(true, "done.parked"), (false, "done.sealed")] {
+        let mine: Vec<&weft_core::done::Done> =
+            rows.iter().filter(|d| d.parked == parked).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        el = el.child(render_section_header(key, words::word(key)));
+        for d in mine {
+            let selected = props.selection
+                == Some(&TreeSelection::Work { project: root.to_path_buf(), unit: d.unit.clone() });
+            el = el.child(render_done_row(root, d, selected));
+        }
+    }
+    el
+}
+
+fn render_done_row(root: &Path, d: &weft_core::done::Done, selected: bool) -> Element {
+    let said = [Some(d.decision.as_str()), d.reason.as_deref(), d.verdict.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
+    row(format!("row done {}", d.title), 44, 32, selected)
+        .on_click(TreeAct::SelectWork { project: root.to_path_buf(), unit: d.unit.clone() })
+        .child(
+            div()
+                .flex_1()
+                .style("min-width", "0")
+                .flex_col()
+                .gap(2)
+                .child(
+                    line(format!("{} · {}", d.title, d.harness)).font_size(13).color(palette::TEXT),
+                )
+                .child(line(said).font_mono().font_size(11).color(if d.parked {
+                    palette::AMBER
+                } else {
+                    palette::MUTED
+                })),
+        )
+}
+
 fn render_search_box(query: &str, searching: bool) -> Element {
+    search_box(query, searching, words::word("tree.search_placeholder"))
+}
+
+/// The search field at the top of the sidebar, saying `placeholder` while empty.
+fn search_box(query: &str, searching: bool, placeholder: &str) -> Element {
     let active = !query.trim().is_empty() || searching;
     let mut box_el = div()
         .layer("search")
@@ -364,7 +442,7 @@ fn render_search_box(query: &str, searching: bool) -> Element {
                 .flex_1()
                 .style("white-space", "nowrap")
                 .style("overflow", "hidden")
-                .placeholder(words::word("tree.search_placeholder"))
+                .placeholder(placeholder)
                 .text(query.to_string())
                 .font_size(13)
                 .color(palette::TEXT),

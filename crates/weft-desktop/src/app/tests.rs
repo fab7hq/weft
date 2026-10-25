@@ -809,6 +809,33 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     );
 }
 
+/// "n sealed earlier ›" turns the sidebar into Done: every sealed unit, the
+/// search narrowing it by its words, a row opening its unit on the right, and
+/// ‹ going back to the tree.
+#[test]
+fn sealed_work_is_found_in_done_in_the_sidebar() {
+    let (_tmp, mut app) = sample_app(false);
+    app.dispatch(TreeAct::OpenDone(weft()));
+    let side = |app: &mut WeftDesktopApp| {
+        app.render().find_layer("sidebar Done").map(|l| l.all_text()).unwrap_or_default()
+    };
+    let shown = side(&mut app);
+    for said in ["‹ weft", "Done", "SEALED", "build number", "accepted · aligned"] {
+        assert!(shown.contains(said), "{said} in {shown}");
+    }
+    assert!(!shown.contains("health endpoint"), "open work is not done: {shown}");
+    app.search.set_text("rejected");
+    assert!(!side(&mut app).contains("build number"), "narrowed by its decision");
+    app.search.set_text("aligned");
+    assert!(side(&mut app).contains("build number"), "found by its verdict");
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
+    assert!(matches!(&app.active_sheet, Some(ActiveSheet::Unit { unit, .. }) if unit == "ask_4"));
+    assert!(side(&mut app).contains("build number"), "Done stays in the sidebar");
+    app.dispatch(TreeAct::LeaveDone);
+    assert!(app.render().find_layer("sidebar Done").is_none(), "back to the tree");
+    assert!(app.search.text().is_empty());
+}
+
 /// A step row opens its stage, and the stage leads back to its unit; so
 /// does the Eval view opened from it.
 #[test]

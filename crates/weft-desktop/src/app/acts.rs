@@ -212,11 +212,14 @@ impl WeftDesktopApp {
                 self.select_work_of(&project, |w| w.of_eval(&eval));
                 self.open_from_sheet(ActiveSheet::EvalDetail { project, eval });
             }
-            TreeAct::ToggleSealed(p) => {
-                if !self.unfolded_sealed.remove(&p) {
-                    self.unfolded_sealed.insert(p.clone());
-                }
-                self.selection = Some(TreeSelection::SealedEarlier { project: p });
+            TreeAct::OpenDone(p) => {
+                self.search.set_text("");
+                self.selection = Some(TreeSelection::SealedEarlier { project: p.clone() });
+                self.done_of = Some(p);
+            }
+            TreeAct::LeaveDone => {
+                self.search.set_text("");
+                self.done_of = None;
             }
             TreeAct::SelectSeal { project, seal } => {
                 // Whether its receipt still holds is RingFrame's to check, each time it is opened.

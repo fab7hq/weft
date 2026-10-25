@@ -35,6 +35,12 @@ pub const WORDS: &[(&str, &str)] = &[
     ("tree.eval", "Eval {n}"),
     ("tree.judging", "not judged yet"),
     ("tree.sealed_earlier", "{n} sealed earlier"),
+    // Done: every sealed unit of a project, in the sidebar.
+    ("done.title", "Done"),
+    ("done.search", "Title, verdict, decision or reason"),
+    ("done.parked", "PARKED"),
+    ("done.sealed", "SEALED"),
+    ("done.none", "Nothing sealed matches {q}."),
     ("work.asking", "asking"),
     ("work.asked", "asked"),
     ("work.eval_open", "eval open"),

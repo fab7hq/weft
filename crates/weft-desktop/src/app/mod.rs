@@ -178,7 +178,8 @@ pub struct WeftDesktopApp {
     pub plus_popover_project: Option<PathBuf>,
     pub menu_open: bool,
     pub layout_menu_pane: Option<usize>,
-    pub unfolded_sealed: HashSet<PathBuf>,
+    /// The project whose Done list stands in the tree's place.
+    pub done_of: Option<PathBuf>,
     pub unfolded_earlier: HashSet<PathBuf>,
     /// The Details a stage was opened from, the nearest last, each with its
     /// name: what `‹` goes back to.
@@ -260,7 +261,7 @@ impl WeftDesktopApp {
             plus_popover_project: None,
             menu_open: false,
             layout_menu_pane: None,
-            unfolded_sealed: HashSet::new(),
+            done_of: None,
             unfolded_earlier: HashSet::new(),
             sheet_back: Vec::new(),
             why_not_since: None,
@@ -487,6 +488,19 @@ impl WeftDesktopApp {
 
     /// What the preview asks for: `<host>|<route>|<task>`, the host the
     /// first harness Weft has until one is picked.
+    /// Done's rows, when it stands in the tree's place: the project's sealed
+    /// units, narrowed by the search.
+    fn done_rows(&self) -> Option<(PathBuf, Vec<weft_core::done::Done>)> {
+        let root = self.done_of.as_ref()?;
+        let c = self.client(root)?;
+        let q = self.search.text();
+        let rows = weft_core::done::done(&c.work, &c.units)
+            .into_iter()
+            .filter(|d| weft_core::done::matches(d, q))
+            .collect();
+        Some((root.clone(), rows))
+    }
+
     pub(crate) fn preview_unit(&self) -> String {
         let mut picked = self.preview.clone();
         if picked[0].is_empty() {
@@ -1176,7 +1190,7 @@ impl WeftDesktopApp {
             let root = &client.root;
             let folded = |_: usize, fold: Fold| match fold {
                 Fold::Project => self.state.folded_projects.iter().any(|f| f == root),
-                Fold::Sealed => !self.unfolded_sealed.contains(root),
+                Fold::Sealed => true,
             };
             let open = |_: usize, _: Fold| false;
             let rows = tree::rows(std::slice::from_ref(&facts), &folded).into_iter().next();
@@ -1345,6 +1359,7 @@ impl WeftDesktopApp {
                 unfolded_earlier: &self.unfolded_earlier,
                 clients: &self.clients,
                 project_menu: self.project_menu.as_deref(),
+                done: self.done_rows(),
             }));
         }
 
