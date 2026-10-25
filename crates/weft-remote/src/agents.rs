@@ -69,6 +69,22 @@ pub struct Project {
     reopened: Option<i64>,
 }
 
+/// Stop a running Eval: weftd shows its one dialog.
+fn stop(m: &Value) -> Result<Call, Refusal> {
+    let Some(eval) = m["eval"].as_str().filter(|e| !e.is_empty()) else {
+        return Err(("bad_request", "Stop names the Eval it stops".into()));
+    };
+    Ok(Call::Act {
+        act: "stop".into(),
+        unit: None,
+        pane: None,
+        text: None,
+        eval: Some(eval.to_string()),
+        start: None,
+        draft: None,
+    })
+}
+
 impl Project {
     /// From what `project.open` answered for `path`.
     pub fn opened(path: &Path, answer: &Value) -> Self {
@@ -591,6 +607,9 @@ impl Project {
     /// and Seal on a unit of work (`unit`, or Seal's `eval`). When the act
     /// cannot run, the refusal's code is the why-not's `words` key.
     pub fn act(&self, m: &Value, pane: Option<u32>) -> Result<Call, Refusal> {
+        if m["act"] == "stop" {
+            return stop(m);
+        }
         let (act, daemon) = match m["act"].as_str() {
             Some("ask") => (Act::Ask, "ask"),
             Some("follow_up") => (Act::FollowUp, "follow_up"),
@@ -600,7 +619,7 @@ impl Project {
             _ => {
                 return Err((
                     "not_allowed",
-                    "the acts are ask, eval, seal, proceed and follow_up".into(),
+                    "the acts are ask, eval, seal, proceed, follow_up and stop".into(),
                 ));
             }
         };
@@ -1000,6 +1019,18 @@ mod tests {
             weft_core::ask::Draft { reason: Some("not_what_i_asked".into()), ..Default::default() };
         let Call::Act { text, draft, .. } = act(&p, picked).unwrap() else { panic!("an act") };
         assert_eq!((text.as_deref(), draft), (Some("rejected"), Some(reason)));
+        // Stop names the running Eval; weftd shows its one dialog.
+        let stop = Call::Act {
+            act: "stop".into(),
+            unit: None,
+            pane: None,
+            text: None,
+            eval: Some("evl_1".into()),
+            start: None,
+            draft: None,
+        };
+        assert_eq!(act(&p, json!({"act": "stop", "project": "weft", "eval": "evl_1"})), Ok(stop));
+        assert_eq!(act(&p, json!({"act": "stop"})).unwrap_err().0, "bad_request");
     }
 
     #[test]

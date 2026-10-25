@@ -2,14 +2,16 @@
 
 use std::path::Path;
 
-use weft_core::eval_view::{self, EvalView, Mode, Row, RowKind, State};
+use weft_core::eval_view::{self, EvalView, Light, Lit, Mode, Progress, Row, RowKind, State};
 use weft_core::record::Record;
+use weft_core::turns::Turn;
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
 use crate::action::{SheetAct, TreeAct};
+use crate::daemon::PaneView;
 use crate::daemon::Then;
-use crate::gpui::{Element, div, palette, span};
+use crate::gpui::{Element, div, palette, span, svg_el};
 use crate::ui::{
     Size, Tone, button, close_button, list_row, mark_colour, note, row_list, section_label, sheet,
     sheet_body, sheet_foot, sheet_head, verdict_colour,
@@ -291,6 +293,11 @@ pub(super) fn render_view(
             let said = if judged { "desktop.eval.no_record" } else { "desktop.eval.not_judged" };
             body = body.child(div().pad(18, 20).child(note(word(said), palette::MUTED)))
         }
+        (Some(v), None) if v.running().is_some() => {
+            let p = v.running().expect("it runs");
+            let judges = client.map(|c| c.judges(eval_id)).unwrap_or_default();
+            body = body.child(running(project, v, &p, &judges));
+        }
         (Some(v), None) => {
             let header = v.header();
             let parts: Vec<&str> = header.split(" · ").collect();
@@ -498,10 +505,127 @@ pub(super) fn render_view(
             }
         }
     }
+    let runs = at.is_empty() && view.as_ref().is_some_and(|v| v.running().is_some());
+    let stop = runs.then(|| {
+        let act = SheetAct::StopEval { project: project.to_path_buf(), eval: eval_id.to_string() };
+        let said = word("dialog.stop_eval.go");
+        button(format!("btn {said}"), said, act, Tone::Warn, Size::Sheet)
+    });
+    let hint = (!runs).then(|| note(word("web.eval.click"), palette::DIM));
     sheet(
         "sheet EvalView",
         head,
         body,
-        sheet_foot(vec![note(word("web.eval.click"), palette::DIM).flex_1()], vec![close_button()]),
+        sheet_foot(
+            vec![div().flex_1().children(hint)],
+            stop.into_iter().chain([close_button()]).collect(),
+        ),
     )
+}
+
+/// The ring a running Eval fills as its checking comes in, as SVG.
+fn ring_svg(percent: u8) -> String {
+    let around = (2.0 * std::f64::consts::PI * 56.0).round();
+    let filled = (f64::from(percent.min(100)) / 100.0 * around).round();
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="132" height="132" viewBox="0 0 132 132"><circle cx="66" cy="66" r="56" fill="none" stroke="{line}" stroke-width="10"/><circle cx="66" cy="66" r="56" fill="none" stroke="{teal}" stroke-width="10" stroke-linecap="round" stroke-dasharray="{filled} {around}" transform="rotate(-90 66 66)"/></svg>"#,
+        line = palette::LINE,
+        teal = palette::TEAL,
+    )
+}
+
+/// A running Eval as a picture (17.6): the ring, each stage lit in turn and
+/// the one under way breathing, and its judges as cards that open their pane.
+fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> Element {
+    let reading = (!judges.is_empty())
+        .then(|| fill("eval_view.reading", &[("n", &judges.len().to_string())]));
+    let head = div()
+        .flex_col()
+        .gap(4)
+        .child(div().font_weight(600).font_size(20).text(word("eval_view.checking")))
+        .child(note(
+            [v.title.clone()].into_iter().chain(reading).collect::<Vec<_>>().join(" · "),
+            palette::MUTED,
+        ));
+    let ring = div()
+        .layer("progress ring")
+        .flex_row()
+        .gap(16)
+        .items_center()
+        .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
+        .child(
+            div()
+                .flex_col()
+                .child(div().font_weight(700).font_size(28).text(format!("{}%", p.percent)))
+                .child(note(word("eval_view.checked"), palette::DIM)),
+        );
+    let stage = |s: &Lit| {
+        let (mark, colour) = match s.light {
+            Light::Done => ("✓", palette::TEAL),
+            Light::Now => ("◉", palette::TEAL),
+            Light::Next => ("○", palette::DIM),
+            Light::Running => ("◌", palette::AMBER),
+        };
+        let mut node = div().font_size(16).color(colour).text(mark);
+        if matches!(s.light, Light::Now | Light::Running) {
+            node = node.style("animation", "pulse");
+        }
+        let name = div()
+            .font_size(14)
+            .color(if s.light == Light::Next { palette::MUTED } else { palette::TEXT })
+            .text(s.name.clone());
+        let said = if s.light == Light::Running { palette::AMBER } else { palette::MUTED };
+        div()
+            .layer(format!("stage {}", s.name))
+            .flex_row()
+            .gap(12)
+            .items_center()
+            .child(node)
+            .child(div().flex_col().child(name).child(note(s.note.clone(), said)))
+    };
+    let stages = div().flex_col().gap(14).children(p.stages.iter().map(stage));
+    let judge = |j: &&PaneView| {
+        let act = SheetAct::WatchJudge { project: project.to_path_buf(), pane: j.id };
+        let turn = j.turn.map_or(word("turn.ready"), Turn::words);
+        div()
+            .layer(format!("judge {}", j.id))
+            .on_click(act)
+            .flex_col()
+            .gap(4)
+            .pad(10, 12)
+            .style("width", "190px")
+            .bg(palette::SURFACE)
+            .border(palette::LINE)
+            .child(div().font_weight(600).font_size(14).text(j.harness.clone()))
+            .child(
+                div()
+                    .flex_row()
+                    .gap(6)
+                    .child(span("● ● ●").color(palette::TEAL).style("animation", "pulse"))
+                    .child(note(turn, palette::MUTED)),
+            )
+    };
+    let mut out = div()
+        .self_stretch()
+        .flex_col()
+        .gap(22)
+        .style("padding", "20px 28px")
+        .child(head)
+        .child(div().flex_row().gap(40).items_center().child(ring).child(stages));
+    if !judges.is_empty() {
+        out = out
+            .child(section_label(format!(
+                "{} · {}",
+                word("eval_view.judges"),
+                word("eval_view.watch")
+            )))
+            .child(
+                div()
+                    .flex_row()
+                    .gap(12)
+                    .style("flex-wrap", "wrap")
+                    .children(judges.iter().map(judge)),
+            );
+    }
+    out
 }

@@ -1786,6 +1786,68 @@ fn an_eval_view() -> weft_core::eval_view::EvalView {
 }
 
 #[test]
+fn a_running_eval_is_a_picture_with_its_judges_and_a_stop() {
+    use weft_core::eval_view::{EvalView, Stage};
+    let (_tmp, mut app, mut wire) = wired_app();
+    let stage = |name: &str, done, planned| Stage { name: name.into(), done, planned };
+    let running = EvalView {
+        eval_id: "evl_3".into(),
+        title: "Build account erasure".into(),
+        progress: vec![stage("map", 1, 1), stage("reduce", 0, 1), stage("confirm", 0, 0)],
+        checks_running: vec!["cargo test".into()],
+        ..an_eval_view()
+    };
+    let running = EvalView { closed: false, verdict: None, ..running };
+    let mut judge = PaneView::new(9, "codex".into(), "codex -m gpt-6".into());
+    (judge.judge, judge.turn) = (Some("evl_3".into()), Some(Turn::Working));
+    app.clients[0].panes.push(judge);
+    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
+    let (id, _) = wire
+        .calls()
+        .into_iter()
+        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
+        .expect("read");
+    wire.answer(id, serde_json::to_value(&running).unwrap());
+    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
+
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let text = sheet.all_text();
+    for said in [
+        "Checking your work",
+        "50%",
+        "Reading the changes",
+        "Checking what you asked",
+        "Running your tests",
+        "cargo test · running",
+    ] {
+        assert!(text.contains(said), "{said} in {text}");
+    }
+    assert!(sheet.find_layer("progress ring").is_some(), "a picture, not a status line");
+    assert!(!text.contains("map 1 of 1"), "no inner words: {text}");
+    let card = sheet.find_layer("judge 9").expect("its judge, under it");
+    assert!(card.all_text().contains("codex"), "{:?}", card.all_text());
+    app.dispatch(SheetAct::WatchJudge { project: weft(), pane: 9 });
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(9), "a judge opens to be watched");
+
+    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
+    if let Some((id, _)) = wire
+        .calls()
+        .into_iter()
+        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
+    {
+        wire.answer(id, serde_json::to_value(&running).unwrap());
+        pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
+    }
+    let stop = app.render().find_layer("btn Stop Eval").expect("Stop Eval").clone();
+    assert_eq!(stop.all_text(), "Stop Eval");
+    app.dispatch(SheetAct::StopEval { project: weft(), eval: "evl_3".into() });
+    let asked = wire.calls().into_iter().any(|(_, c)| {
+        matches!(c, Call::Act { ref act, ref eval, .. } if act == "stop" && eval.as_deref() == Some("evl_3"))
+    });
+    assert!(asked, "Stop asks the daemon for its one dialog");
+}
+
+#[test]
 fn the_eval_view_is_read_through_the_daemon_and_opened_level_by_level() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });

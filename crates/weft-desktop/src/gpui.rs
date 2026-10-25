@@ -132,6 +132,14 @@ pub fn img_el(name: &str) -> Element {
     el
 }
 
+/// A picture drawn from SVG text made for it, such as a progress ring.
+pub fn svg_el(svg: String) -> Element {
+    let mut el = div();
+    el.tag = "img";
+    el.attrs.push(("svg".into(), svg));
+    el
+}
+
 /// The bytes of one of Weft's own pictures, an SVG: its banner, the woven mark
 /// and its name, drawn for a dark background.
 pub fn asset(name: &str) -> Option<&'static [u8]> {

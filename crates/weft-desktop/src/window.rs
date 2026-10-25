@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ::gpui::{
-    AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId, EntityInputHandler,
-    FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point, Render, Rgba,
-    ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
+    Animation, AnimationExt, AnyElement, App, Bounds, ClipboardItem, Context, Div, ElementId,
+    EntityInputHandler, FocusHandle, Focusable, FontWeight, IntoElement, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Pixels, Point,
+    Render, Rgba, ScrollHandle, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
     SystemNotification, UTF16Selection, Window, WindowBounds as GpuiWindowBounds, WindowOptions,
     div as gpui_div, point, prelude::*, px, relative, rgba, size,
 };
@@ -1030,6 +1030,15 @@ impl GpuiDesktopView {
             return stateful.into_any_element();
         }
 
+        // Under way: it breathes, so a running Eval moves while it runs.
+        if el.styles.iter().any(|(k, v)| k == "animation" && v == "pulse") {
+            let pulse = Animation::new(Duration::from_millis(1600))
+                .repeat()
+                .with_easing(::gpui::pulsating_between(0.35, 1.0));
+            let id = ElementId::Name(SharedString::from(format!("pulse:{path}")));
+            return d.with_animation(id, pulse, |d, t| d.opacity(t)).into_any_element();
+        }
+
         d.into_any_element()
     }
 
@@ -1096,6 +1105,7 @@ fn text_lines(t: &str, pre: bool, nowrap: bool) -> Option<Vec<(String, bool)>> {
 pub(crate) const STYLES: &[&str] = &[
     "align-items",
     "align-self",
+    "animation",
     "background",
     "border",
     "border-bottom",
@@ -1144,6 +1154,8 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
         // The text's own, taken before the box is built.
         "color" | "font-size" | "font-weight" | "font-family" | "line-height" | "white-space"
         | "text-overflow" | "align-self" | "z-index" => d,
+        // Drawn once the box is built: it pulses.
+        "animation" => d,
         "text-align" => match v {
             "center" => d.text_center(),
             "right" => d.text_right(),
@@ -1412,8 +1424,12 @@ impl Render for GpuiDesktopView {
 /// One of Weft's own pictures, drawn from its SVG at the size its styles give.
 fn picture(el: &Element) -> AnyElement {
     let named = |k: &str| el.attrs.iter().chain(&el.styles).find(|(n, _)| n == k).map(|(_, v)| v);
-    let Some(bytes) = named("src").and_then(|n| crate::gpui::asset(n)) else {
-        return gpui_div().into_any_element();
+    let bytes = match named("svg") {
+        Some(svg) => svg.as_bytes(),
+        None => match named("src").and_then(|n| crate::gpui::asset(n)) {
+            Some(bytes) => bytes,
+            None => return gpui_div().into_any_element(),
+        },
     };
     let image = Arc::new(::gpui::Image::from_bytes(::gpui::ImageFormat::Svg, bytes.to_vec()));
     let mut picture = ::gpui::img(image).flex_none();

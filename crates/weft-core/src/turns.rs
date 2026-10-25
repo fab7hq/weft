@@ -30,6 +30,18 @@ pub enum Turn {
 }
 
 impl Turn {
+    /// The turn as every client says it.
+    pub fn words(self) -> &'static str {
+        crate::words::word(match self {
+            Turn::Ready => "turn.ready",
+            Turn::Working => "turn.working",
+            Turn::Waiting => "turn.waiting",
+            Turn::TurnEnded | Turn::Ended => "turn.turn_ended",
+        })
+    }
+}
+
+impl Turn {
     pub fn recorded(text: &str) -> Option<Self> {
         match text {
             "ready" => Some(Turn::Ready),
@@ -305,6 +317,14 @@ pub fn millis(text: &str) -> Option<i64> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_turn_is_said_in_the_words_every_client_shows() {
+        assert_eq!(Turn::Waiting.words(), "needs you");
+        assert_eq!(Turn::Working.words(), "working");
+        assert_eq!(Turn::Ended.words(), Turn::TurnEnded.words());
+    }
+
     use super::*;
     use crate::ledger::project;
     use serde_json::json;

@@ -254,6 +254,16 @@ pub enum SheetAct {
     EvalOpen(String),
     /// Back one level of the Eval view; from its top, to the Eval's Details.
     EvalBack,
+    /// A judge of a running Eval, in front to be watched.
+    WatchJudge {
+        project: PathBuf,
+        pane: u32,
+    },
+    /// Stop a running Eval, in the daemon's one dialog.
+    StopEval {
+        project: PathBuf,
+        eval: String,
+    },
     /// Back to the Details this one was opened from.
     Back,
     Resume {

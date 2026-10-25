@@ -18,6 +18,9 @@ use crate::words::{fill, word};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct EvalView {
     pub eval_id: String,
+    /// The work it is of, by its first Ask's title.
+    #[serde(default)]
+    pub title: String,
     /// The record is written: every state below is final.
     pub closed: bool,
     pub verdict: Option<String>,
@@ -49,6 +52,33 @@ pub struct Stage {
     pub name: String,
     pub done: usize,
     pub planned: usize,
+}
+
+/// A running Eval's progress, drawn as a picture.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Progress {
+    /// How much of the checking is in, of what is planned so far.
+    pub percent: u8,
+    pub stages: Vec<Lit>,
+}
+
+/// One stage of the checking, in plain words, and how far along it is.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Lit {
+    pub name: String,
+    pub note: String,
+    pub light: Light,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Light {
+    Done,
+    /// Under way.
+    Now,
+    Next,
+    /// Tests, running beside the judges.
+    Running,
 }
 
 /// One part of what was asked: a plan section, an Ask's own sentences, or the
@@ -490,8 +520,9 @@ impl EvalView {
             }
         }
 
+        // The requirements task reads what was asked, before the changes.
         let stage = |id: &str| match id.split('~').nth(1).map(|l| l.chars().next()) {
-            Some(Some('m')) => "map",
+            Some(Some('q' | 'm')) => "map",
             Some(Some('r')) => "reduce",
             Some(Some('c')) => "confirm",
             _ => "",
@@ -511,6 +542,7 @@ impl EvalView {
         let drift = record.map(|r| &r["drift"]);
         EvalView {
             eval_id: src.eval_id.to_string(),
+            title: list(src.brief, "asks").first().map(|a| s(a, "title")).unwrap_or_default(),
             closed: record.is_some(),
             verdict: record.map(|r| s(r, "verdict")).filter(|v| !v.is_empty()),
             confidence: record.and_then(|r| r["confidence"].as_f64()),
@@ -583,6 +615,49 @@ impl EvalView {
             };
             format!("judging · {}{checks}", stages.join(" · "))
         }
+    }
+
+    /// While it runs, its progress as a picture: how much is checked, and
+    /// each stage in plain words. None once it has closed.
+    pub fn running(&self) -> Option<Progress> {
+        if self.closed {
+            return None;
+        }
+        let (done, planned) =
+            self.progress.iter().fold((0, 0), |(d, p), s| (d + s.done, p + s.planned));
+        let percent = (done * 100).checked_div(planned).unwrap_or(0) as u8;
+        let names = ["eval_view.stage.read", "eval_view.stage.check", "eval_view.stage.again"];
+        let mut stages: Vec<Lit> = self
+            .progress
+            .iter()
+            .zip(names)
+            .enumerate()
+            .map(|(i, (s, name))| {
+                let (light, note) = if s.planned > 0 && s.done == s.planned {
+                    let n = self.changes.len().to_string();
+                    let note = if i == 0 {
+                        fill("eval_view.read_n", &[("n", &n)])
+                    } else {
+                        word("eval_view.done").into()
+                    };
+                    (Light::Done, note)
+                } else if s.planned > 0 {
+                    (Light::Now, word("eval_view.under_way").into())
+                } else {
+                    (Light::Next, word("eval_view.next").into())
+                };
+                Lit { name: word(name).into(), note, light }
+            })
+            .collect();
+        if let Some(check) = self.checks_running.first() {
+            let note = fill("eval_view.test_running", &[("check", check)]);
+            stages.push(Lit {
+                name: word("eval_view.stage.tests").into(),
+                note,
+                light: Light::Running,
+            });
+        }
+        Some(Progress { percent, stages })
     }
 
     pub fn change(&self, window: &str) -> Option<&Change> {
@@ -841,12 +916,15 @@ pub fn step_rows(view: &EvalView, id: &str) -> Vec<Row> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Payload {
     pub eval_id: String,
+    pub title: String,
     pub closed: bool,
     pub header: String,
     pub by_step: Vec<Row>,
     pub by_file: Vec<Row>,
     pub steps: BTreeMap<String, Vec<Row>>,
     pub changes: BTreeMap<String, Vec<Line>>,
+    /// While it runs, its progress as a picture.
+    pub progress: Option<Progress>,
 }
 
 /// One line of a change, with its number on the side it is on.
@@ -867,6 +945,7 @@ pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
         .collect();
     Payload {
         eval_id: view.eval_id.clone(),
+        title: view.title.clone(),
         closed: view.closed,
         header: view.header(),
         by_step: rows(view, Mode::Steps, &open),
@@ -878,6 +957,7 @@ pub fn payload(view: &EvalView, hunks: &BTreeMap<String, String>) -> Payload {
             .map(|s| (s.id.clone(), step_rows(view, &s.id)))
             .collect(),
         changes,
+        progress: view.running(),
     }
 }
 
@@ -1126,6 +1206,46 @@ mod tests {
     }
 
     #[test]
+    fn a_running_eval_is_a_picture_of_its_progress_in_plain_words() {
+        let reduce = json!({"kind": "reduce", "judge": {"role": "reduce"}, "requirements": []});
+        let v = built_with_checks(
+            None,
+            &[map_output(), reduce],
+            &["evl_1~q1", "evl_1~m1", "evl_1~r1", "evl_1~r2"],
+            &["evl_1~q1", "evl_1~m1", "evl_1~r1"],
+            &["cargo test".to_string()],
+        );
+        let p = v.running().expect("it runs");
+        assert_eq!(p.percent, 75, "3 of 4 tasks in");
+        let said: Vec<(&str, &str, Light)> =
+            p.stages.iter().map(|s| (s.name.as_str(), s.note.as_str(), s.light)).collect();
+        assert_eq!(
+            said,
+            [
+                ("Reading the changes", "3 changes read", Light::Done),
+                ("Checking what you asked", "under way", Light::Now),
+                ("A second look", "next", Light::Next),
+                ("Running your tests", "cargo test · running", Light::Running),
+            ]
+        );
+        assert_eq!(payload(&v, &BTreeMap::new()).progress, Some(p));
+        let quiet = built(None, &[], &["evl_1~q1"], &[]);
+        let first = &quiet.running().unwrap().stages[0];
+        assert_eq!(
+            (first.light, first.note.as_str()),
+            (Light::Now, "under way"),
+            "reading what was asked"
+        );
+        assert_eq!(quiet.running().unwrap().stages.len(), 3, "no tests running, no tests stage");
+        let record = json!({"verdict": "aligned", "items": [], "windows": []});
+        assert_eq!(
+            built(Some(&record), &[], &[], &[]).running(),
+            None,
+            "a closed Eval runs no more"
+        );
+    }
+
+    #[test]
     fn a_device_gets_every_level_of_the_view_at_once() {
         let v = built(None, &[map_output()], &["evl_1~m1", "evl_1~r1"], &["evl_1~m1"]);
         let hunks: BTreeMap<String, String> =
@@ -1216,6 +1336,8 @@ mod tests {
     #[test]
     fn the_requirements_a_judge_listed_take_the_place_of_the_asks_sentences() {
         let v = split_eval();
+        assert_eq!(v.title, "Account erasure plan", "named by its first Ask");
+        assert_eq!(payload(&v, &BTreeMap::new()).title, v.title);
         let f0 = v.step("ask_01M37RDYJCHWWSD12A5DGEYE08/f0").expect("the listed requirement");
         assert_eq!(f0.state, State::Met);
         assert_eq!(f0.label, "f0");
@@ -1273,8 +1395,8 @@ mod tests {
         assert_eq!(v.step(S7).unwrap().changes, ["w_b"]);
         assert_eq!(
             v.header(),
-            "judging · map 1 of 1 · reduce — · confirm 1 of 1",
-            "q1 is no stage"
+            "judging · map 2 of 2 · reduce — · confirm 1 of 1",
+            "reading what was asked counts with reading the changes"
         );
     }
 

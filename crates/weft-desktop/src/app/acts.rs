@@ -695,6 +695,17 @@ impl WeftDesktopApp {
                 }
                 _ => {}
             },
+            SheetAct::WatchJudge { project, pane } => {
+                self.active_sheet = None;
+                self.bring_to_front(project, pane);
+            }
+            SheetAct::StopEval { project, eval } => {
+                if let Some(c) = self.client_mut(&project)
+                    && let Err(e) = c.act("stop", None, None, None, Some(&eval), None)
+                {
+                    self.why_not(e.to_string());
+                }
+            }
             SheetAct::Resume { project, harness, session } => {
                 if self.start_agent_in_project(&project, &harness, Some(&session)) {
                     self.active_sheet = None;

@@ -168,6 +168,7 @@ fn a_client_attaching_after_a_stage_sees_it_and_can_answer_it() {
             why: "the exact wording".into(),
             payload: b"echo staged-earlier".to_vec(),
             sends: None,
+            go: None,
         })
     );
 
