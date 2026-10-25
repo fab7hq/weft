@@ -592,12 +592,6 @@ impl EvalView {
     pub fn step(&self, id: &str) -> Option<&Step> {
         self.groups.iter().flat_map(|g| &g.steps).find(|s| s.id == id)
     }
-
-    /// A sentence of the Ask a closed Eval checked, as the person may say it
-    /// is not what they meant: its words alone. A change takes no mark.
-    pub fn not_meant(&self, step: &str) -> Option<String> {
-        self.step(step).filter(|_| self.closed).map(|s| s.text.clone())
-    }
 }
 
 // ---- rows ---------------------------------------------------------------------
@@ -1217,21 +1211,6 @@ mod tests {
         assert_eq!(main[at + 1], format!("  src/jobs.js  {}", c.lines.as_deref().unwrap()));
         assert_eq!(main[at + 2], format!("    {}", c.readings[0]));
         assert_eq!(main[at + 3], format!("    {}", c.readings[1]));
-    }
-
-    #[test]
-    fn only_a_sentence_of_the_ask_takes_not_what_i_meant_named_by_its_words() {
-        let v = split_eval();
-        assert_eq!(
-            v.not_meant("ask_01M37RDYJCHWWSD12A5DGEYE08/f0").as_deref(),
-            Some(
-                "The change must satisfy the done condition for every step in the account erasure plan."
-            ),
-            "the sentence alone, with no label"
-        );
-        assert_eq!(v.not_meant("w_3ae3752a6a3b"), None, "a change takes no mark");
-        let open = built(None, &[map_output()], &["evl_1~m1"], &["evl_1~m1"]);
-        assert_eq!(open.not_meant(S7), None, "nothing is marked while the judges work");
     }
 
     #[test]

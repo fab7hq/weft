@@ -29,8 +29,6 @@ pub struct Built {
     pub eval: Option<Debate>,
     /// The Eval its Stop voids.
     pub stop: Option<String>,
-    /// The mark its Mark keeps.
-    pub mark: Option<crate::labels::Mark>,
 }
 
 /// An Eval of a unit of work, for judges in a harness once the person says
@@ -53,7 +51,6 @@ pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
         compile: None,
         eval: Some(debate),
         stop: None,
-        mark: None,
     }
 }
 
@@ -67,22 +64,6 @@ pub fn stop(eval_id: &str, title: &str) -> Built {
         compile: None,
         eval: None,
         stop: Some(eval_id.to_string()),
-        mark: None,
-    }
-}
-
-/// The dialog that marks one item of a closed Eval: nothing is typed; Mark
-/// appends its row to the label stream.
-pub fn mark(asking: weft_core::offers::Asking, mark: crate::labels::Mark) -> Built {
-    Built {
-        payload: Vec::new(),
-        how: Handoff::Whole,
-        asking,
-        ask_id: None,
-        compile: None,
-        eval: None,
-        stop: None,
-        mark: Some(mark),
     }
 }
 
@@ -109,7 +90,6 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         compile: None,
         eval: None,
         stop: None,
-        mark: None,
     })
 }
 
@@ -135,6 +115,5 @@ pub fn ask(
         compile: Some(draft),
         eval: None,
         stop: None,
-        mark: None,
     })
 }

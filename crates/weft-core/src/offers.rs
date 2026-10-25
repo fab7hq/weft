@@ -125,16 +125,6 @@ pub fn stopping(title: &str) -> Asking {
     }
 }
 
-/// Saying a sentence of the Ask is not what the person meant: the sentence,
-/// and that what the judges found stays as it is.
-pub fn not_meant(sentence: &str) -> Asking {
-    use crate::words::word;
-    Asking {
-        what: word("dialog.mark.title").into(),
-        why: vec![sentence.to_string(), word("dialog.mark.why").into()],
-    }
-}
-
 /// A refusal code in the words the person reading it would use.
 fn said_plainly(code: &str) -> &str {
     match code {
