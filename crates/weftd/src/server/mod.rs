@@ -161,8 +161,8 @@ struct Waiting {
     stop: Option<String>,
     /// Its yes button, when not Send.
     go: Option<weft_proto::Go>,
-    /// The draft its Send asks an agent for.
-    drafts: Option<crate::acts::Drafting>,
+    /// What it types stays out of the dialog.
+    hidden: bool,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -2182,7 +2182,7 @@ impl Session {
                         w.pane,
                         &w.what,
                         &w.why,
-                        &w.payload,
+                        if w.hidden { &[] } else { &w.payload },
                         w.sends.as_deref(),
                         w.go.as_ref(),
                     )
@@ -2330,7 +2330,7 @@ impl Session {
                     eval: None,
                     stop: None,
                     go: None,
-                    drafts: None,
+                    hidden: false,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));
@@ -2474,9 +2474,6 @@ impl Session {
                 }
                 // Send is the confirmation: the Ask is compiled as it was
                 // shown, and its prompt is what is typed.
-                if let Some(drafting) = w.drafts.take() {
-                    self.projects[at].drafting.push(drafting);
-                }
                 if let Some(draft) = w.compile.take() {
                     let over = self.projects[at].ringframe.clone();
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {

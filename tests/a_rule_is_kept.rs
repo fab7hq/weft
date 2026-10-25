@@ -1,9 +1,8 @@
-//! After an accepted Seal, a rule is kept in two dialogs. The first is
-//! Weft's: its Send types the draft request into the work's agent, which
-//! writes the draft to the file the request names, and every client is told
-//! the draft. The second is the client's: its Save keeps the rule, as the
-//! person edited it, in their own layer, or with Share with team in the
-//! project's `.fab7/rules.toml`, through RingFrame.
+//! After an accepted Seal, a rule is kept in one dialog, the client's.
+//! Opening it types the draft request into the work's agent, which writes
+//! the draft to the file the request names, and every client is told the
+//! draft. Save keeps the rule, as the person edited it, in their own layer,
+//! or for the team in the project's `.fab7/rules.toml`, through RingFrame.
 //!
 //! The test is the agent's model: it reads the request it was typed and
 //! writes the draft where the request says.
@@ -178,25 +177,17 @@ fn a_kept_rule_lands_in_the_layer_chosen() {
     }
     support::pane_says(&socket, &dir, &root, "sh", pane, "work-1", "ready");
 
-    // Dialog one: Weft's, showing the exact request; its Send types it.
-    c.call(act("draft_rule", &ask, None));
-    let (pending, what, payload) = c.wait(|l| match l {
-        Line::Event(Event::Pending { id, what, payload, .. }) => {
-            Some((id.clone(), what.clone(), String::from_utf8_lossy(payload).into_owned()))
-        }
-        _ => None,
-    });
-    assert_eq!(what, "Draft a rule?");
-    assert!(payload.contains("What I asked: Add a health endpoint."), "{payload}");
-    assert!(payload.contains("- Return 503 while the database is down."), "{payload}");
-    c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+    // Keep a rule is one dialog, the client's: opening it has the work's
+    // agent write the draft at once, with no dialog of Weft's before.
+    c.answer(act("draft_rule", &ask, None)).expect("drafting");
 
     // The agent reads what it was typed and writes its draft where it says.
     let typed_file = dir.join(format!("typed-{pane}"));
     let deadline = Instant::now() + Duration::from_secs(10);
     let typed = loop {
         let typed = std::fs::read_to_string(&typed_file).unwrap_or_default();
-        if typed.contains("My follow-ups:") {
+        if typed.contains("- Return 503 while the database is down.") {
+            assert!(typed.contains("What I asked: Add a health endpoint."), "{typed}");
             break typed;
         }
         assert!(Instant::now() < deadline, "nothing was typed: {typed:?}");

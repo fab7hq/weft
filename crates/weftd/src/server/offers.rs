@@ -1,5 +1,5 @@
-//! What sealed work offers: keeping a rule from it. Each offer has its own
-//! dialog; what an offer types goes into the work's own agent, where the
+//! What sealed work offers: keep a rule, commit, follow up, undo. Each has
+//! one dialog; what an offer types goes into the work's own agent, where the
 //! person can watch it, and Weft runs no Git itself.
 
 use weft_core::after_seal::Drafted;
@@ -50,48 +50,36 @@ impl Session {
         }
     }
 
-    /// Commit's dialog: the words typed into the work's agent, which writes
-    /// the commit itself.
+    /// Commit's dialog: the work's agent commits and writes the message.
     fn commit(&mut self, at: usize, sealed: &Sealed) -> Answer {
-        let harness = self.title_of(at, &sealed.newest().harness);
-        let typed = weft_core::after_seal::commit_request();
-        self.stage_typing(
-            at,
-            sealed,
-            typed,
-            weft_core::after_seal::committing(&harness),
-            (None, None),
-        )
+        let (harness, title) = (self.title_of(at, &sealed.newest().harness), &sealed.root().title);
+        let asking = weft_core::after_seal::committing(&harness, title);
+        let go = weft_proto::Go { word: "offer.commit".into(), warn: false };
+        self.stage_typing(at, sealed, weft_core::after_seal::commit_request(), asking, go)
     }
 
-    /// Undo's dialog: the work back as it was at the commit its first Ask
-    /// was sent on, typed into its agent; Send in amber.
+    /// Undo's dialog: the work's agent puts the files back as they were at
+    /// the commit its first Ask was sent on; its yes in amber.
     fn undo(&mut self, at: usize, sealed: &Sealed) -> Answer {
         let Some(base) = sealed.root().base_commit.clone() else {
             let why = "RingFrame recorded no commit for this work's first Ask".to_string();
             return Answer::No("no_commit", why);
         };
-        let harness = self.title_of(at, &sealed.newest().harness);
-        let typed = weft_core::after_seal::undo_request(&sealed.root().title, &base);
-        let go = weft_proto::Go { word: "act.send".into(), warn: true };
-        self.stage_typing(
-            at,
-            sealed,
-            typed,
-            weft_core::after_seal::undoing(&harness),
-            (Some(go), None),
-        )
+        let (harness, title) = (self.title_of(at, &sealed.newest().harness), &sealed.root().title);
+        let typed = weft_core::after_seal::undo_request(title, &base);
+        let go = weft_proto::Go { word: "offer.undo".into(), warn: true };
+        self.stage_typing(at, sealed, typed, weft_core::after_seal::undoing(&harness, title), go)
     }
 
-    /// A dialog whose Send types `typed` into the work's agent, with its own
-    /// yes button and the draft it asks for, when it has them.
+    /// A dialog that says what happens and names its yes, which types
+    /// `typed` into the work's agent; what is typed is not shown.
     fn stage_typing(
         &mut self,
         at: usize,
         sealed: &Sealed,
         typed: String,
         asking: weft_core::offers::Asking,
-        (go, drafts): (Option<weft_proto::Go>, Option<crate::acts::Drafting>),
+        go: weft_proto::Go,
     ) -> Answer {
         let pane = match self.pane_of(at, sealed.newest()) {
             Ok(pane) => pane,
@@ -105,8 +93,8 @@ impl Session {
             compile: None,
             eval: None,
             stop: None,
-            go,
-            drafts,
+            go: Some(go),
+            hidden: true,
         };
         self.stage(at, pane, built)
     }
@@ -180,14 +168,19 @@ impl Session {
     /// Dialog one of Keep a rule: the request that has the work's agent
     /// draft one, from what was asked and the follow-ups.
     fn draft_rule(&mut self, at: usize, sealed: &Sealed) -> Answer {
+        let pane = match self.pane_of(at, sealed.newest()) {
+            Ok(pane) => pane,
+            Err(no) => return no,
+        };
         let root = self.projects[at].root.clone();
         let words = |u: &weft_core::ledger::Unit| {
             let path = root.join(".fab7/rf/asks").join(&u.ask_id).join("source.txt");
             std::fs::read_to_string(path).unwrap_or_else(|_| u.title.clone())
         };
-        // Named by the dialog about to be staged: the daemon's own id, never
-        // one read from the project's files.
-        let path = drafts_dir(&self.config).join(format!("pnd_{}.txt", self.next_pending));
+        // Named by the daemon's own count, never by an id read from the
+        // project's files.
+        self.next_pending += 1;
+        let path = drafts_dir(&self.config).join(format!("draft_{}.txt", self.next_pending));
         let _ = std::fs::create_dir_all(drafts_dir(&self.config));
         let _ = std::fs::remove_file(&path);
         let follow_ups: Vec<String> = sealed.asks[1..].iter().map(words).collect();
@@ -198,9 +191,26 @@ impl Session {
             &path.to_string_lossy(),
         );
         let harness = sealed.newest().harness.clone();
-        let asking = weft_core::after_seal::drafting(&self.title_of(at, &harness));
-        let drafts = crate::acts::Drafting { path, unit: sealed.unit.root.clone(), harness };
-        self.stage_typing(at, sealed, request, asking, (None, Some(drafts)))
+        let unit = sealed.unit.root.clone();
+        self.projects[at].drafting.push(crate::acts::Drafting { path, unit, harness });
+        // The Keep dialog is the one confirmation: its opening has the agent
+        // write the draft, and only its Save keeps anything.
+        let typing = Waiting {
+            id: String::new(),
+            pane,
+            what: String::new(),
+            why: String::new(),
+            payload: request.into_bytes(),
+            how: weft_core::inject::Handoff::Whole,
+            sends: None,
+            compile: None,
+            eval: None,
+            stop: None,
+            go: None,
+            hidden: true,
+        };
+        self.type_it(at, typing, false);
+        Answer::nothing()
     }
 
     /// Each draft an agent has written is read once, taken, and told to

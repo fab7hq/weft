@@ -1,8 +1,8 @@
 //! What a Seal offers after it, and what each offer would type.
 //!
 //! A Seal records a decision and does nothing more. What follows is offered,
-//! never done: each offer has its own dialog showing the exact words typed
-//! into the work's agent. Weft runs no Git itself.
+//! never done: each offer has its own dialog, which says in a sentence what
+//! the work's agent will do. Weft runs no Git itself.
 
 use crate::offers::Asking;
 use crate::words::{fill, word};
@@ -39,14 +39,6 @@ pub fn rule_request(title: &str, asked: &str, follow_ups: &[String], path: &str)
         "dialog.rule_draft.request",
         &[("title", title), ("path", path), ("asked", asked.trim()), ("follow_ups", &follow_ups)],
     )
-}
-
-/// The dialog before the draft is asked for.
-pub fn drafting(harness: &str) -> Asking {
-    Asking {
-        what: word("dialog.rule_draft.title").into(),
-        why: vec![fill("dialog.rule_draft.why", &[("harness", harness)])],
-    }
 }
 
 /// A rule as the agent drafted it.
@@ -87,11 +79,11 @@ pub fn commit_request() -> String {
     word("dialog.commit.request").into()
 }
 
-/// The dialog before Commit types.
-pub fn committing(harness: &str) -> Asking {
+/// The dialog before Commit types: what happens, in a sentence.
+pub fn committing(harness: &str, title: &str) -> Asking {
     Asking {
         what: word("dialog.commit.title").into(),
-        why: vec![fill("dialog.commit.why", &[("harness", harness)])],
+        why: vec![fill("dialog.commit.why", &[("harness", harness), ("title", title)])],
     }
 }
 
@@ -101,11 +93,11 @@ pub fn undo_request(title: &str, base_commit: &str) -> String {
     fill("dialog.undo.request", &[("title", title), ("commit", base_commit)])
 }
 
-/// The dialog before Undo types.
-pub fn undoing(harness: &str) -> Asking {
+/// The dialog before Undo types: what happens, in a sentence.
+pub fn undoing(harness: &str, title: &str) -> Asking {
     Asking {
         what: word("dialog.undo.title").into(),
-        why: vec![fill("dialog.undo.why", &[("harness", harness)])],
+        why: vec![fill("dialog.undo.why", &[("harness", harness), ("title", title)])],
     }
 }
 
@@ -187,9 +179,15 @@ mod tests {
         assert_eq!(commit_request(), "commit these changes");
         let undo = undo_request("health endpoint", "4f2a9c1");
         assert!(undo.contains("\"health endpoint\"") && undo.contains("commit 4f2a9c1"), "{undo}");
-        assert_eq!(committing("codex").what, "Commit this work?");
-        assert_eq!(undoing("codex").what, "Undo this work?");
-        assert!(drafting("codex").why[0].contains("codex"));
+        let commit = committing("codex", "health endpoint");
+        assert_eq!(commit.what, "Commit this work?");
+        assert_eq!(
+            commit.why,
+            ["codex commits the changes of health endpoint and writes the message."]
+        );
+        let undo = undoing("codex", "health endpoint");
+        assert_eq!(undo.what, "Undo this work?");
+        assert!(!undo.why[0].contains("commit "), "no commit id is shown: {:?}", undo.why);
     }
 
     #[test]

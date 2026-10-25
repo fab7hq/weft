@@ -358,12 +358,13 @@ impl Session {
         let id = format!("pnd_{}", self.next_pending);
         self.next_pending += 1;
         let (what, why) = (built.asking.what, built.asking.why.join("\n"));
+        let shown = if built.hidden { Vec::new() } else { built.payload.clone() };
         let message = Out::Pending {
             id: id.clone(),
             pane,
             what: what.clone(),
             why: why.clone(),
-            payload: built.payload.clone(),
+            payload: shown,
             sends: built.ask_id.clone(),
             go: built.go.clone(),
         };
@@ -379,7 +380,7 @@ impl Session {
             eval: built.eval,
             stop: built.stop,
             go: built.go,
-            drafts: built.drafts,
+            hidden: built.hidden,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))

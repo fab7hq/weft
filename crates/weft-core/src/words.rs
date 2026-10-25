@@ -135,17 +135,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("offer.keep_rule", "Keep a rule"),
     ("offer.commit", "Commit"),
     ("offer.follow_up", "Follow up"),
-    ("offer.undo", "Undo the work"),
-    ("offer.asks_first", "Each asks first. Nothing is typed until you say Send."),
-    (
-        "offer.rejected",
-        "Follow up starts from what Eval {n} found. Undo asks {harness} to put the work back as it was before this Ask.",
-    ),
-    ("dialog.rule_draft.title", "Draft a rule?"),
-    (
-        "dialog.rule_draft.why",
-        "This is exactly what {harness} will receive. You edit the rule it drafts before anything is kept.",
-    ),
+    ("offer.undo", "Undo"),
     (
         "dialog.rule_draft.request",
         "Draft one rule for my future work, from what I asked in \"{title}\" and my follow-ups below. \
@@ -159,29 +149,20 @@ pub const WORDS: &[(&str, &str)] = &[
          My follow-ups:\n\
          {follow_ups}",
     ),
-    ("dialog.keep_rule.title", "Keep this rule?"),
-    ("dialog.keep_rule.drafted", "drafted by {harness}"),
-    ("dialog.keep_rule.rule", "RULE"),
-    ("dialog.keep_rule.when", "WHEN IT MATTERS"),
-    ("dialog.keep_rule.whose", "KEEP IT"),
-    ("dialog.keep_rule.mine", "Mine"),
-    ("dialog.keep_rule.team", "Share with team"),
+    ("dialog.keep_rule.title", "Keep a rule"),
     (
-        "dialog.keep_rule.why",
-        "Mine: offered on your next Asks, on this machine. Share with team: added to .fab7/rules.toml here, for you to commit.",
+        "dialog.keep_rule.writing",
+        "{harness} is writing one rule from your follow-ups on {title}, for your next Asks.",
     ),
+    ("dialog.keep_rule.why", "Change it as you like. It is offered on your next Asks."),
+    ("dialog.keep_rule.mine", "Just me"),
+    ("dialog.keep_rule.team", "My team too"),
     ("dialog.keep_rule.go", "Save"),
     ("dialog.commit.title", "Commit this work?"),
-    (
-        "dialog.commit.why",
-        "This is exactly what {harness} will receive. It writes the commit message; you can watch it in its pane and stop it.",
-    ),
+    ("dialog.commit.why", "{harness} commits the changes of {title} and writes the message."),
     ("dialog.commit.request", "commit these changes"),
     ("dialog.undo.title", "Undo this work?"),
-    (
-        "dialog.undo.why",
-        "This is exactly what {harness} will receive. Weft runs no Git itself; you can watch {harness} in its pane and stop it.",
-    ),
+    ("dialog.undo.why", "{harness} puts your files back as they were before {title} started."),
     (
         "dialog.undo.request",
         "Restore the work to how it was before \"{title}\" was asked: the state at commit {commit}.",

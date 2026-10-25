@@ -66,7 +66,7 @@ impl Client {
         })
     }
 
-    /// An offer's dialog: its id, title, payload and whether its yes warns.
+    /// An offer's dialog: its id, title, what it shows typed, and whether its yes warns.
     fn dialog(&mut self, act: &str, unit: &str) -> (String, String, String, bool) {
         self.call(offer(act, unit, None, None));
         self.wait(|l| match l {
@@ -256,21 +256,18 @@ fn each_offer_types_what_its_dialog_shows() {
     assert_eq!(c.answer(offer("commit", &rejected, None, None)), Err("not_offered".into()));
     assert_eq!(c.answer(offer("undo", &accepted, None, None)), Err("not_offered".into()));
 
-    // Commit: its dialog shows the words, and Send types them.
+    // Commit: its dialog says what happens in a sentence, shows nothing
+    // typed, and names its yes; that yes types the request.
     let (pending, what, payload, warn) = c.dialog("commit", &accepted);
-    assert_eq!(
-        (what.as_str(), payload.as_str(), warn),
-        ("Commit this work?", "commit these changes", false)
-    );
+    assert_eq!((what.as_str(), payload.as_str(), warn), ("Commit this work?", "", false));
     c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
     typed(&dir, pane, "commit these changes");
 
-    // Undo: the commit the work's first Ask was sent on, Send in amber.
+    // Undo: the commit the work's first Ask was sent on is typed, never
+    // shown; its yes is amber.
     let (pending, what, payload, warn) = c.dialog("undo", &rejected);
-    assert_eq!(what, "Undo this work?");
-    assert!(payload.contains(&format!("commit {base}")), "{payload}");
-    assert!(payload.contains("\"Add a health endpoint.\""), "{payload}");
-    assert!(warn, "Undo's Send is amber");
+    assert_eq!((what.as_str(), payload.as_str()), ("Undo this work?", ""));
+    assert!(warn, "Undo's yes is amber");
     c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
     typed(&dir, pane, &format!("commit {base}"));
 
