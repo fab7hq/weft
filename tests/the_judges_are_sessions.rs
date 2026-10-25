@@ -261,6 +261,21 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
         .iter()
         .any(|l| matches!(l, Line::Result { id, .. } if *id == hello));
     assert!(answered && began.elapsed() < Duration::from_secs(3), "another window waited");
+    let opened = other.call(Call::Open {
+        rows: 24,
+        cols: 80,
+        path: root.to_string_lossy().into_owned(),
+        raw: false,
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    'other: while Instant::now() < deadline {
+        for line in other.pump(Duration::from_millis(100)) {
+            if matches!(line, Line::Result { id, .. } if id == opened) {
+                break 'other;
+            }
+        }
+    }
+    let mut watched = false;
     c.call(Call::Input { pane: work, bytes: b"still-moving\n".to_vec() });
     let moved = c.pump(Duration::from_secs(1)).iter().any(|l| {
         matches!(l, Line::Event(Event::Output { pane, bytes, .. })
@@ -333,6 +348,29 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                         j.tasks
                     );
                 }
+                // A judge's pane can be opened and watched: another window
+                // reads its screen while it works.
+                if !watched {
+                    let read = other.call(Call::Read {
+                        what: "history".into(),
+                        unit: String::new(),
+                        pane: Some(pane),
+                        lines: Some(50),
+                        before: None,
+                        after: None,
+                    });
+                    let screen =
+                        other.pump(Duration::from_millis(500)).into_iter().find_map(|l| match l {
+                            Line::Result { id, result } if id == read => {
+                                result["text"].as_str().map(str::to_string)
+                            }
+                            _ => None,
+                        });
+                    let screen = screen.expect("the judge's screen");
+                    assert!(screen.contains(&format!("Judge task {task}")), "{screen}");
+                    eprintln!("watched judge pane {pane}: its screen shows \"Judge task {task}\"");
+                    watched = true;
+                }
                 j.tasks.push(task.clone());
                 let says = |state: &str| {
                     support::pane_says(
@@ -381,6 +419,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
         }
     };
 
+    assert!(watched, "a judge's pane was watched");
     assert_eq!(most, 2, "two judges at once, and no more");
     let refused = refused.expect("an answer was refused");
     let again = judges.values().find(|j| j.tasks.iter().filter(|t| **t == refused).count() == 2);
