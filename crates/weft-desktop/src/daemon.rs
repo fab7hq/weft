@@ -199,6 +199,8 @@ pub struct Staged {
     pub why: String,
     pub payload: Vec<u8>,
     pub sends: Option<String>,
+    /// Its yes button, when not Send.
+    pub go: Option<weft_proto::Go>,
 }
 
 /// What a call's answer is for, kept until the answer comes.
@@ -585,10 +587,10 @@ impl ProjectClient {
             self.routing = Routing::opened(r);
         }
         for p in opened.get("pendings").and_then(|v| v.as_array()).into_iter().flatten() {
-            if let Some(Event::Pending { id, pane, what, why, payload, sends }) =
+            if let Some(Event::Pending { id, pane, what, why, payload, sends, go }) =
                 weft_proto::pending_of(p)
             {
-                self.waiting.push(Staged { id, pane, what, why, payload, sends });
+                self.waiting.push(Staged { id, pane, what, why, payload, sends, go });
             }
         }
         for screen in opened.get("screens").and_then(|v| v.as_array()).into_iter().flatten() {
@@ -821,8 +823,8 @@ impl ProjectClient {
                 self.work = work;
                 self.boards += 1;
             }
-            Event::Pending { id, pane, what, why, payload, sends } => {
-                self.waiting.push(Staged { id, pane, what, why, payload, sends });
+            Event::Pending { id, pane, what, why, payload, sends, go } => {
+                self.waiting.push(Staged { id, pane, what, why, payload, sends, go });
             }
             Event::Resolved { id, .. } => self.waiting.retain(|w| w.id != id),
             Event::Injected { refusal, unrecorded, .. } => {

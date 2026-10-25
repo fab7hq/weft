@@ -155,10 +155,17 @@ fn render_staged_bar(
         .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
         .children(payload)
         .children(choice)
-        .child(bar_acts(vec![
-            cancel,
-            button("btn Send", word("act.send"), resolve(Answer::Yes), Tone::Primary, Size::Sheet),
-        ]))
+        .child(bar_acts(vec![cancel, yes_button(staged.go.as_ref(), resolve(Answer::Yes))]))
+}
+
+/// A dialog's yes: Send, or the button it names, amber when it stops
+/// something.
+fn yes_button(go: Option<&weft_proto::Go>, yes: BarAct) -> Element {
+    let (said, tone) = match go {
+        Some(g) => (word(&g.word), if g.warn { Tone::Warn } else { Tone::Primary }),
+        None => (word("act.send"), Tone::Primary),
+    };
+    button(format!("btn {said}"), said, yes, tone, Size::Sheet)
 }
 
 /// The Seal's one dialog (17.4, 17.5): the work it seals and the verdict it

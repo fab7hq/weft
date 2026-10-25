@@ -29,6 +29,8 @@ pub struct Built {
     pub eval: Option<Debate>,
     /// The Eval its Stop voids.
     pub stop: Option<String>,
+    /// Its yes button, when not Send.
+    pub go: Option<weft_proto::Go>,
 }
 
 /// An Eval of a unit of work, for judges in a harness once the person says
@@ -51,6 +53,7 @@ pub fn eval(debate: Debate, title: &str, asks: usize, judges: &str) -> Built {
         compile: None,
         eval: Some(debate),
         stop: None,
+        go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
     }
 }
 
@@ -64,6 +67,7 @@ pub fn stop(eval_id: &str, title: &str) -> Built {
         compile: None,
         eval: None,
         stop: Some(eval_id.to_string()),
+        go: Some(weft_proto::Go { word: "dialog.stop_eval.go".into(), warn: true }),
     }
 }
 
@@ -90,6 +94,7 @@ pub fn send(root: &Path, unit: &Unit, into: &str) -> Result<Built, String> {
         compile: None,
         eval: None,
         stop: None,
+        go: None,
     })
 }
 
@@ -115,5 +120,20 @@ pub fn ask(
         compile: Some(draft),
         eval: None,
         stop: None,
+        go: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_says_stop_eval_in_amber_and_types_nothing() {
+        let built = stop("evl_1", "Build account erasure");
+        let go = built.go.expect("its own button");
+        assert_eq!((weft_core::words::word(&go.word), go.warn), ("Stop Eval", true));
+        assert!(built.payload.is_empty());
+        assert_eq!(built.stop.as_deref(), Some("evl_1"));
+    }
 }

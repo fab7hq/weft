@@ -724,11 +724,13 @@ impl Remote {
     /// A pending, as devices are sent it: `text` is exactly what will be
     /// typed.
     pub(super) fn pending_added(&mut self, at: usize, event: Event) {
-        let Event::Pending { id, pane, what, why, payload, sends } = event else { return };
-        // `sends`: the Ask whose prompt this is, which can go to another agent.
+        let Event::Pending { id, pane, what, why, payload, sends, go } = event else { return };
+        // `sends`: the Ask whose prompt this is, which can go to another agent;
+        // `go`: its yes button's words key, and whether it stops something.
+        let go = go.map(|g| json!({"word": g.word, "warn": g.warn}));
         let message = json!({"type": "pending", "id": id, "agent": self.agent_id(at, pane),
                              "what": what, "why": why,
-                             "text": String::from_utf8_lossy(&payload), "sends": sends});
+                             "text": String::from_utf8_lossy(&payload), "sends": sends, "go": go});
         self.to_devices(&message);
         self.pendings.insert(id, (at, message));
     }

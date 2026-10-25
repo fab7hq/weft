@@ -197,6 +197,14 @@ pub enum Call {
     Shutdown,
 }
 
+/// A dialog's yes button: the words key it says, and whether it stops
+/// something (amber).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Go {
+    pub word: String,
+    pub warn: bool,
+}
+
 /// Something that happened. Unsolicited, to every client of that project.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -249,6 +257,8 @@ pub enum Event {
         /// The Ask whose prompt this sends, when it sends one: it can go to
         /// another agent, or a new one (`pending.resolve`'s `to`, `start`).
         sends: Option<String>,
+        /// Its yes button, when not Send.
+        go: Option<Go>,
     },
     /// It was answered. Once.
     Resolved {
@@ -598,9 +608,10 @@ impl Event {
             Event::Units { units, records, work } => {
                 ("units", json!({"units": units, "records": records, "work": work}))
             }
-            Event::Pending { id, pane, what, why, payload, sends } => {
-                ("pending.added", pending_json(id, *pane, what, why, payload, sends.as_deref()))
-            }
+            Event::Pending { id, pane, what, why, payload, sends, go } => (
+                "pending.added",
+                pending_json(id, *pane, what, why, payload, sends.as_deref(), go.as_ref()),
+            ),
             Event::Resolved { id, yes } => ("pending.resolved", json!({"id": id, "yes": yes})),
             Event::Injected { pane, refusal, unrecorded } => {
                 ("injected", json!({"pane": pane, "refusal": refusal, "unrecorded": unrecorded}))
@@ -661,6 +672,12 @@ impl Event {
                 why: s("why")?,
                 payload: un_b64(p.get("payload")?.as_str()?)?,
                 sends: s("sends"),
+                go: p.get("go").filter(|g| !g.is_null()).and_then(|g| {
+                    Some(Go {
+                        word: g.get("word")?.as_str()?.to_string(),
+                        warn: g.get("warn").and_then(Value::as_bool).unwrap_or(false),
+                    })
+                }),
             },
             "pending.resolved" => Event::Resolved { id: s("id")?, yes: p.get("yes")?.as_bool()? },
             "presence" => Event::Presence { at: p.get("at")?.as_i64()? },
@@ -734,9 +751,11 @@ pub fn pending_json(
     why: &str,
     payload: &[u8],
     sends: Option<&str>,
+    go: Option<&Go>,
 ) -> Value {
+    let go = go.map(|g| json!({"word": g.word, "warn": g.warn}));
     json!({"id": id, "pane": pane, "what": what, "why": why, "payload": b64(payload),
-           "sends": sends})
+           "sends": sends, "go": go})
 }
 
 /// Reads one back, as the event it would have been.
@@ -1190,6 +1209,16 @@ mod tests {
                 why: "the exact wording".into(),
                 payload: b"/plan ship it".to_vec(),
                 sends: Some("ask_1".into()),
+                go: None,
+            },
+            Event::Pending {
+                id: "pnd_2".into(),
+                pane: u32::MAX,
+                what: "Stop this Eval?".into(),
+                why: "The judges stop.".into(),
+                payload: Vec::new(),
+                sends: None,
+                go: Some(Go { word: "dialog.stop_eval.go".into(), warn: true }),
             },
             Event::Resolved { id: "pnd_1".into(), yes: true },
             Event::Presence { at: 1_790_000_000_000 },
@@ -1276,7 +1305,9 @@ mod tests {
 
     #[test]
     fn a_pending_listed_on_opening_reads_as_the_event_it_was() {
-        let listed = pending_json("pnd_3", 1, "Ready to send", "why", b"/plan \x1b", None);
+        let go = Go { word: "act.eval".into(), warn: false };
+        let listed =
+            pending_json("pnd_3", 1, "Ready to send", "why", b"/plan \x1b", None, Some(&go));
         let event = Event::Pending {
             id: "pnd_3".into(),
             pane: 1,
@@ -1284,6 +1315,7 @@ mod tests {
             why: "why".into(),
             payload: b"/plan \x1b".to_vec(),
             sends: None,
+            go: Some(go),
         };
         assert_eq!(pending_of(&listed), Some(event));
     }

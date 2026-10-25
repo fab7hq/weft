@@ -591,6 +591,7 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
         why: "This is the exact prompt Codex will receive.".into(),
         payload: b"Refresh the token.\n\nRules:\n- KISS: keep it plain".to_vec(),
         sends: None,
+        go: None,
     });
     pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
     let bar = app.render();
@@ -871,6 +872,7 @@ fn what_is_kept_for_a_gone_agent_or_a_closed_project_goes() {
         why: String::new(),
         payload: Vec::new(),
         sends: None,
+        go: None,
     };
     app.clients[0].waiting = vec![staged("pending_1")];
     let elsewhere = PathBuf::from("/work/closed");
@@ -2357,6 +2359,26 @@ fn remotes_start_at_login_button_turns_it_on_as_the_daemon_has_it() {
 }
 
 #[test]
+fn a_dialog_that_stops_an_eval_says_stop_eval_in_amber() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    wire.event(Event::Pending {
+        id: "p1".into(),
+        pane: u32::MAX,
+        what: words::word("dialog.stop_eval.title").into(),
+        why: "The judges of Build account erasure stop, and the Eval is voided.".into(),
+        payload: Vec::new(),
+        sends: None,
+        go: Some(weft_proto::Go { word: "dialog.stop_eval.go".into(), warn: true }),
+    });
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    let dom = app.render();
+    let go = dom.find_layer("btn Stop Eval").expect("its own button");
+    assert_eq!(go.all_text(), "Stop Eval");
+    assert!(go.styles.iter().any(|(k, v)| k == "color" && v == palette::AMBER), "amber: {go:?}");
+    assert!(dom.find_layer("btn Send").is_none(), "no Send on a dialog that types nothing");
+}
+
+#[test]
 fn a_device_asking_shows_over_a_staged_send() {
     let (_tmp, mut app, mut wire) = wired_app();
     let pane = start(&mut app, &mut wire, "claude");
@@ -2367,6 +2389,7 @@ fn a_device_asking_shows_over_a_staged_send() {
         why: String::new(),
         payload: b"x".to_vec(),
         sends: None,
+        go: None,
     });
     pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
     app.bottom_bar = BottomBarState::AllowDevice {
@@ -2430,6 +2453,7 @@ fn a_staged_send_goes_where_staged_or_where_sent_to() {
             why: String::new(),
             payload: b"x".to_vec(),
             sends: None,
+            go: None,
         })
     };
     stage(&mut wire, "p1");

@@ -158,6 +158,8 @@ struct Waiting {
     eval: Option<crate::acts::Debate>,
     /// The Eval Stop voids.
     stop: Option<String>,
+    /// Its yes button, when not Send.
+    go: Option<weft_proto::Go>,
 }
 
 /// One project's panes. Panes are numbered within it, so a client counts from
@@ -2129,6 +2131,7 @@ impl Session {
                         &w.why,
                         &w.payload,
                         w.sends.as_deref(),
+                        w.go.as_ref(),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -2260,6 +2263,7 @@ impl Session {
                     why: why.clone(),
                     payload: bytes.clone(),
                     sends: None,
+                    go: None,
                 };
                 self.projects[at].waiting.push(Waiting {
                     id: id.clone(),
@@ -2272,6 +2276,7 @@ impl Session {
                     compile: None,
                     eval: None,
                     stop: None,
+                    go: None,
                 });
                 self.clients.broadcast(at, &message);
                 return Ok(Answer::Ok(serde_json::json!({"pending": id})));

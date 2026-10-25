@@ -236,6 +236,7 @@
   "dialog.seal.title": "Seal this work?",
   "dialog.seal.verdict": "VERDICT",
   "dialog.seal.why": "WHY",
+  "dialog.stop_eval.go": "Stop Eval",
   "dialog.stop_eval.title": "Stop this Eval?",
   "dialog.stop_eval.why": "The judges of {title} stop, and the Eval is voided.",
   "eval.judge": "JUDGE",

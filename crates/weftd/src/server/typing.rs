@@ -365,6 +365,7 @@ impl Session {
             why: why.clone(),
             payload: built.payload.clone(),
             sends: built.ask_id.clone(),
+            go: built.go.clone(),
         };
         self.projects[at].waiting.push(Waiting {
             id: id.clone(),
@@ -377,6 +378,7 @@ impl Session {
             compile: built.compile,
             eval: built.eval,
             stop: built.stop,
+            go: built.go,
         });
         self.clients.broadcast(at, &message);
         Answer::Ok(serde_json::json!({"pending": id}))
