@@ -38,6 +38,7 @@ fn field(app: &mut WeftDesktopApp, which: Focus) -> Option<&mut TextField> {
         Focus::Message => Some(app.message_field()),
         Focus::Ask => app.ask_draft_mut(),
         Focus::Setting => app.setting_field_mut(),
+        Focus::Keep => app.keep_field_mut(),
         Focus::Terminal => None,
     }
 }
@@ -550,6 +551,7 @@ impl GpuiDesktopView {
                 Focus::Message => guard.app.dispatch(crate::action::PaneAct::SendMessage),
                 Focus::Ask => guard.app.dispatch(SheetAct::SubmitAsk),
                 Focus::Setting => guard.app.dispatch(SheetAct::CommitSetting),
+                Focus::Keep => guard.app.dispatch(crate::action::BarAct::SaveRule),
                 _ => {}
             },
             // Tab takes the suggestion shown in the message field; Escape drops

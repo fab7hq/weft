@@ -809,6 +809,100 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     );
 }
 
+/// The last act the desktop asked of the daemon, past any reads.
+fn acted(wire: &mut Wire) -> Call {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some((_, call)) =
+            wire.calls().into_iter().rev().find(|(_, c)| matches!(c, Call::Act { .. }))
+        {
+            return call;
+        }
+        assert!(Instant::now() < deadline, "no act was asked");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Sealed work offers what its decision allows: accepted work, Commit and
+/// Keep a rule. Keep a rule is one dialog: opening it has the agent draft one,
+/// the draft fills it, and Save keeps the rule as edited, for the team when
+/// asked. Commit asks the daemon, whose dialog follows.
+#[test]
+fn accepted_work_offers_commit_and_keep_a_rule() {
+    use weft_core::after_seal::{Drafted, Offer};
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
+    let unit = app.render().find_layer("sheet Unit").expect("the unit").all_text();
+    for said in ["AFTER THE SEAL", "Commit", "Keep a rule"] {
+        assert!(unit.contains(said), "{said} in {unit}");
+    }
+    assert!(!unit.contains("Undo"), "accepted work is not undone: {unit}");
+
+    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
+    let call = acted(&mut wire);
+    assert!(
+        matches!(&call, Call::Act { act, unit, .. } if act == "draft_rule" && unit.as_deref() == Some("ask_4")),
+        "{call:?}"
+    );
+    let writing = app.render().find_layer("Keep a rule bar").expect("its dialog").all_text();
+    assert!(writing.contains("is writing one rule"), "{writing}");
+
+    let rule = Drafted {
+        name: "Degraded health".into(),
+        rule: "Answer 503 when a dependency is down.".into(),
+        when: "A health endpoint changes.".into(),
+        family: "domain".into(),
+    };
+    wire.event(Event::Drafted {
+        unit: "ask_4".into(),
+        harness: "codex".into(),
+        rule: rule.clone(),
+    });
+    pumped(&mut app, |a| a.keep.text() == rule.rule);
+    app.keep.set_text("Answer 503 and name what is down.");
+    app.dispatch(BarAct::KeepShare(true));
+    app.dispatch(BarAct::SaveRule);
+    let call = acted(&mut wire);
+    let Call::Act { act, unit, draft, .. } = call else { panic!("{call:?}") };
+    assert_eq!((act.as_str(), unit.as_deref()), ("keep_rule", Some("ask_4")));
+    let draft = draft.expect("the rule kept");
+    assert_eq!(
+        draft.rule.as_deref().map(|r| r.rule.as_str()),
+        Some("Answer 503 and name what is down.")
+    );
+    assert!(draft.share);
+    assert_eq!(app.bottom_bar, BottomBarState::None, "Save closes it");
+
+    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::Commit });
+    let call = acted(&mut wire);
+    assert!(matches!(&call, Call::Act { act, .. } if act == "commit"), "{call:?}");
+}
+
+/// A project's Git note of each Seal is off until its own settings turn it
+/// on; turning it on asks once, showing what a note holds; off asks nothing.
+#[test]
+fn a_projects_git_note_is_turned_on_in_one_dialog() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.active_sheet = Some(ActiveSheet::ProjectSettings { project: weft() });
+    let sheet = app.render().find_layer("sheet Project settings").expect("its settings").all_text();
+    assert!(sheet.contains("RECORD EACH SEAL IN GIT") && sheet.contains("Git note"), "{sheet}");
+    app.dispatch(SheetAct::GitNote { project: weft(), on: true });
+    let bar = app.render().find_layer("Git note bar").expect("its one dialog").all_text();
+    assert!(bar.contains("Record Seals as Git notes?") && bar.contains("Decision:"), "{bar}");
+    app.dispatch(BarAct::TurnOnGitNote);
+    let set = |call: Call| match call {
+        Call::ConfigSet { scope, key, value } => Some((scope, key, value)),
+        _ => None,
+    };
+    let key = vec!["export".to_string(), "git_note".to_string()];
+    let calls: Vec<_> = wire.calls().into_iter().filter_map(|(_, c)| set(c)).collect();
+    assert_eq!(calls, [("project".to_string(), key.clone(), Some(json!(true)))]);
+    assert_eq!(app.bottom_bar, BottomBarState::None);
+    app.dispatch(SheetAct::GitNote { project: weft(), on: false });
+    let calls: Vec<_> = wire.calls().into_iter().filter_map(|(_, c)| set(c)).collect();
+    assert_eq!(calls, [("project".to_string(), key, None)], "off asks nothing");
+}
+
 /// "n sealed earlier ›" turns the sidebar into Done: every sealed unit, the
 /// search narrowing it by its words, a row opening its unit on the right, and
 /// ‹ going back to the tree.

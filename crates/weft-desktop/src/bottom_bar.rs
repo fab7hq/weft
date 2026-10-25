@@ -47,6 +47,10 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
             let client = props.clients.iter().find(|c| &c.root == project);
             render_seal_disposition_bar(client, project, eval, selected, reason.as_deref())
         }
+        BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
+        BottomBarState::KeepRule { harness, title, share, draft, .. } => {
+            render_keep_bar(harness, title, *share, draft.is_some())
+        }
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
         BottomBarState::None => render_tree_bar(props, None),
     }
@@ -170,6 +174,107 @@ fn yes_button(go: Option<&weft_proto::Go>, yes: BarAct) -> Element {
 
 /// The Seal's one dialog (17.4, 17.5): the work it seals and the verdict it
 /// rests on, the decision, and for anything but a yes an optional reason.
+/// Turning a project's Git note on (17.19): what a note holds, and Turn on.
+fn render_git_note_bar(project: &std::path::Path) -> Element {
+    let name = project.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    asking_bar("Git note bar", palette::BLUE_BORDER)
+        .child(title(word("dialog.export.title")))
+        .child(note(fill("dialog.export.why", &[("project", &name)]), palette::MUTED))
+        .child(
+            div()
+                .layer("sample")
+                .self_stretch()
+                .pad(10, 12)
+                .bg(palette::SURFACE)
+                .border(palette::LINE)
+                .font_mono()
+                .font_size(12)
+                .style("white-space", "pre-wrap")
+                .text(word("dialog.export.sample")),
+        )
+        .child(bar_acts(vec![
+            button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar),
+            button(
+                "btn Turn on",
+                word("dialog.export.go"),
+                BarAct::TurnOnGitNote,
+                Tone::Primary,
+                Size::Bar,
+            ),
+        ]))
+}
+
+/// Keep a rule (17.14, 17.15): the agent writing, then the rule to change,
+/// Just me or My team too, and Save.
+fn render_keep_bar(harness: &str, work: &str, share: bool, drafted: bool) -> Element {
+    let chip = |layer: &str, said: &str, picked: bool, act: BarAct| {
+        div()
+            .layer(layer)
+            .on_click(act)
+            .pad(6, 12)
+            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
+            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
+            .font_weight(if picked { 600 } else { 400 })
+            .font_size(13)
+            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
+            .text(said.to_string())
+    };
+    let why = if drafted {
+        word("dialog.keep_rule.why").to_string()
+    } else {
+        fill("dialog.keep_rule.writing", &[("harness", harness), ("title", work)])
+    };
+    let rule = if drafted {
+        crate::gpui::textarea_el(crate::action::Focus::Keep)
+            .layer("rule")
+            .self_stretch()
+            .pad(8, 12)
+            .bg(palette::SURFACE)
+            .border(palette::BLUE_BORDER)
+            .font_size(14)
+            .color(palette::TEXT)
+    } else {
+        div().layer("writing").self_stretch().h(36).bg(palette::SURFACE).border(palette::LINE)
+    };
+    asking_bar("Keep a rule bar", palette::BLUE_BORDER)
+        .child(title(word("dialog.keep_rule.title")))
+        .child(note(why, palette::MUTED))
+        .child(rule)
+        .child(
+            div()
+                .flex_row()
+                .gap(10)
+                .items_center()
+                .child(chip(
+                    "keep mine",
+                    word("dialog.keep_rule.mine"),
+                    !share,
+                    BarAct::KeepShare(false),
+                ))
+                .child(chip(
+                    "keep team",
+                    word("dialog.keep_rule.team"),
+                    share,
+                    BarAct::KeepShare(true),
+                ))
+                .child(div().flex_1())
+                .child(button(
+                    "btn Cancel",
+                    word("act.cancel"),
+                    BarAct::Cancel,
+                    Tone::Quiet,
+                    Size::Bar,
+                ))
+                .child(button(
+                    "btn Save",
+                    word("dialog.keep_rule.go"),
+                    BarAct::SaveRule,
+                    Tone::Primary,
+                    Size::Bar,
+                )),
+        )
+}
+
 fn render_seal_disposition_bar(
     client: Option<&ProjectClient>,
     project: &std::path::Path,

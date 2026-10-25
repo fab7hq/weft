@@ -8,7 +8,7 @@ use serde_json::Value;
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
-use super::settings::{Entry, choices, control, entries, now, shown};
+use super::settings::{Entry, choices, control, entries, now, shown, switch};
 use crate::action::SheetAct;
 use crate::gpui::{Element, div, palette};
 use crate::ui::{close_button, note, row_list, sheet, sheet_body, sheet_foot, sheet_head};
@@ -67,6 +67,20 @@ pub(super) fn render(props: &SheetProps, project: &Path) -> Element {
         }
         body = body.child(list);
     }
+    // A Seal's Git note: this project's only, off unless turned on (17.19).
+    let on = now(props, Some(project), &["export", "git_note"]) == Value::Bool(true);
+    let act = SheetAct::GitNote { project: project.to_path_buf(), on: !on };
+    let blue = (palette::SELECTED_BG, palette::BLUE_BORDER, palette::BLUE_BORDER);
+    body = body
+        .child(crate::ui::section_label(word("export.section")))
+        .child(row_list(vec![switch(
+            "Git note",
+            act,
+            word("export.git_note"),
+            word("export.git_note_what"),
+            super::menu::badge("setting badge", on, blue),
+        )]))
+        .child(note(word("export.foot"), palette::DIM));
     let key = crate::keys::hint_here(crate::keys::Shortcut::Settings);
     body = body.child(note(fill("desktop.project.foot", &[("key", &key)]), palette::DIM));
     sheet(

@@ -27,6 +27,8 @@ pub enum Focus {
     Ask,
     /// A setting typed in Settings (a role's model).
     Setting,
+    /// The rule being kept, in Keep a rule's dialog.
+    Keep,
 }
 
 /// The top bar, `☰` and the window itself.
@@ -132,6 +134,12 @@ pub enum BarAct {
     Eval,
     Seal,
     Cancel,
+    /// Keep a rule for the team too, or just for the person.
+    KeepShare(bool),
+    /// Keep a rule's Save: the rule as edited.
+    SaveRule,
+    /// The Git note dialog's Turn on.
+    TurnOnGitNote,
     Resolve {
         project: PathBuf,
         pending: String,
@@ -171,6 +179,17 @@ pub enum BarAct {
 /// The sheets that take the workspace's place, and the docked Ask.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SheetAct {
+    /// A project's Git note of each Seal: on asks first; off does not.
+    GitNote {
+        project: PathBuf,
+        on: bool,
+    },
+    /// What sealed work offers, on its unit.
+    Offer {
+        project: PathBuf,
+        unit: String,
+        offer: weft_core::after_seal::Offer,
+    },
     Close,
     /// Settings shows another of its tabs.
     SettingsTab(SettingsTab),

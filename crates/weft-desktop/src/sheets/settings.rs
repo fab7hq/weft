@@ -187,7 +187,13 @@ fn general(props: &SheetProps) -> Element {
 }
 
 /// One switch: its name and what it does, and its badge; the row turns it.
-fn switch(name: &str, act: impl Into<Action>, label: &str, what: &str, badge: Element) -> Element {
+pub(super) fn switch(
+    name: &str,
+    act: impl Into<Action>,
+    label: &str,
+    what: &str,
+    badge: Element,
+) -> Element {
     div()
         .layer(format!("setting {name}"))
         .on_click(act)

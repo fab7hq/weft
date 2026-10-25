@@ -139,12 +139,41 @@ pub enum ActiveSheet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BottomBarState {
     None,
-    WhyNot { sentence: String },
+    WhyNot {
+        sentence: String,
+    },
     QuitConfirm,
-    AllowDevice { device_id: String, device_name: String, login: Option<String> },
-    RemoveDeviceConfirm { device_id: String, device_name: String },
-    CloseProjectConfirm { project: PathBuf },
-    SealDisposition { project: PathBuf, eval: String, selected: String, reason: Option<String> },
+    AllowDevice {
+        device_id: String,
+        device_name: String,
+        login: Option<String>,
+    },
+    RemoveDeviceConfirm {
+        device_id: String,
+        device_name: String,
+    },
+    CloseProjectConfirm {
+        project: PathBuf,
+    },
+    SealDisposition {
+        project: PathBuf,
+        eval: String,
+        selected: String,
+        reason: Option<String>,
+    },
+    /// Turning a project's Git note on: what a note holds, and Turn on.
+    GitNoteConfirm {
+        project: PathBuf,
+    },
+    /// Keep a rule's one dialog: the agent writing, then its draft to change.
+    KeepRule {
+        project: PathBuf,
+        unit: String,
+        harness: String,
+        title: String,
+        share: bool,
+        draft: Option<weft_core::after_seal::Drafted>,
+    },
 }
 
 /// Top-level Weft Desktop GPUI application.
@@ -195,6 +224,8 @@ pub struct WeftDesktopApp {
     /// agents brings each one's draft back. The open Ask's field.
     pub messages: HashMap<(PathBuf, u32), TextField>,
     pub ask: TextField,
+    /// The rule being kept, in Keep a rule's dialog.
+    pub keep: TextField,
     /// What the open Ask's sheet offers, as the daemon last said it.
     pub ask_sheet: Option<serde_json::Value>,
     /// What the person picked of it.
@@ -270,6 +301,7 @@ impl WeftDesktopApp {
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
+            keep: TextField::new(Shape::Area),
             ask_sheet: None,
             ask_choices: Default::default(),
             focus: Focus::Terminal,
@@ -588,6 +620,26 @@ impl WeftDesktopApp {
     }
 
     /// The setting field, while one is being typed.
+    pub fn keep_field_mut(&mut self) -> Option<&mut TextField> {
+        matches!(self.bottom_bar, BottomBarState::KeepRule { draft: Some(_), .. })
+            .then_some(&mut self.keep)
+    }
+
+    /// The draft an agent wrote fills Keep a rule's dialog, once.
+    fn take_draft(&mut self) {
+        let BottomBarState::KeepRule { project, unit, draft: draft @ None, .. } =
+            &mut self.bottom_bar
+        else {
+            return;
+        };
+        let got = self.clients.iter().find(|c| &c.root == project).and_then(|c| c.drafted.as_ref());
+        if let Some((_, _, rule)) = got.filter(|(u, _, _)| u == unit) {
+            self.keep.set_text(&rule.rule);
+            *draft = Some(rule.clone());
+            self.focus = Focus::Keep;
+        }
+    }
+
     pub fn setting_field_mut(&mut self) -> Option<&mut TextField> {
         self.setting_editing.is_some().then_some(&mut self.setting_field)
     }
@@ -652,6 +704,7 @@ impl WeftDesktopApp {
         for (root, a) in answers {
             self.take_answer(&root, a);
         }
+        self.take_draft();
         // An agent's turn or record moved: what it said may have too, and
         // an Eval still being judged.
         if moved {
@@ -857,6 +910,14 @@ impl WeftDesktopApp {
                     });
                     let _ = self.save_state();
                 }
+            }
+            // A follow-up on rejected work starts from what its Eval found.
+            (Then::Remedy { unit }, Ok(v)) => {
+                self.open_follow_up(
+                    root.to_path_buf(),
+                    unit,
+                    v["words"].as_str().unwrap_or_default(),
+                );
             }
             (Then::Conversation { pane }, Ok(v)) => {
                 self.take_conversation(root, pane, false, &v["conversation"]);

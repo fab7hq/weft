@@ -377,6 +377,18 @@ impl WeftDesktopApp {
                 _ => self.why_not_for(Act::Seal),
             },
             BarAct::Cancel => self.bottom_bar = BottomBarState::None,
+            BarAct::KeepShare(on) => {
+                if let BottomBarState::KeepRule { share, .. } = &mut self.bottom_bar {
+                    *share = on;
+                }
+            }
+            BarAct::SaveRule => self.save_rule(),
+            BarAct::TurnOnGitNote => {
+                if let BottomBarState::GitNoteConfirm { project } = self.bottom_bar.clone() {
+                    self.git_note(&project, Some(serde_json::json!(true)));
+                }
+                self.bottom_bar = BottomBarState::None;
+            }
             BarAct::Resolve { project, pending, answer } => {
                 let (yes, force) = (answer != Answer::No, answer == Answer::Anyway);
                 // Where the person sent it, when not where it was staged.
@@ -472,6 +484,85 @@ impl WeftDesktopApp {
             (None, Some(unit)) => self.seal_work(project, unit),
             (None, None) => self.why_not(words::word("why.no_eval")),
         }
+    }
+
+    /// What sealed work offers. Follow up reads what its Eval found first;
+    /// Keep a rule opens its dialog and has the agent draft one; Commit and
+    /// Undo ask the daemon, whose one dialog follows.
+    fn offer(&mut self, project: PathBuf, unit: String, offer: weft_core::after_seal::Offer) {
+        use weft_core::after_seal::Offer;
+        let (harness, title) = self
+            .client(&project)
+            .and_then(|c| c.units.iter().find(|u| u.ask_id == unit))
+            .map(|u| (u.harness.clone(), u.title.clone()))
+            .unwrap_or_default();
+        let Some(c) = self.client_mut(&project) else { return };
+        match offer {
+            Offer::FollowUp => {
+                let _ = c.read("remedy", &unit, None, Then::Remedy { unit: unit.clone() });
+            }
+            Offer::KeepRule => {
+                c.drafted = None;
+                let _ = c.act("draft_rule", Some(&unit), None, None, None, None);
+                self.keep.set_text("");
+                self.bottom_bar = BottomBarState::KeepRule {
+                    project,
+                    unit,
+                    harness,
+                    title,
+                    share: false,
+                    draft: None,
+                };
+            }
+            Offer::Commit => {
+                let _ = c.act("commit", Some(&unit), None, None, None, None);
+            }
+            Offer::Undo => {
+                let _ = c.act("undo", Some(&unit), None, None, None, None);
+            }
+        }
+    }
+
+    /// Keep a rule's Save: the draft as edited. Nothing is kept before the
+    /// draft has come or with the rule emptied; the bar says why.
+    fn save_rule(&mut self) {
+        let BottomBarState::KeepRule { project, unit, harness, title, share, draft } =
+            self.bottom_bar.clone()
+        else {
+            return;
+        };
+        let text = self.keep.text().trim().to_string();
+        let Some(draft) = draft else {
+            let sentence = words::fill(
+                "dialog.keep_rule.writing",
+                &[("harness", &harness), ("title", &title)],
+            );
+            self.bottom_bar = BottomBarState::WhyNot { sentence };
+            return;
+        };
+        if text.is_empty() {
+            self.bottom_bar =
+                BottomBarState::WhyNot { sentence: words::word("dialog.keep_rule.empty").into() };
+            return;
+        }
+        if let Some(c) = self.client_mut(&project) {
+            let _ =
+                c.keep_rule(&unit, weft_core::after_seal::Drafted { rule: text, ..draft }, share);
+        }
+        self.bottom_bar = BottomBarState::None;
+    }
+
+    /// A project's own Git note setting, set or taken out.
+    fn git_note(&mut self, project: &Path, value: Option<serde_json::Value>) {
+        if let Some(c) = self.client_mut(project) {
+            let _ = c.set_config("project", &["export", "git_note"], value);
+        }
+    }
+
+    /// A follow-up's Ask, its words already written.
+    pub(crate) fn open_follow_up(&mut self, project: PathBuf, unit: String, words: &str) {
+        self.open_ask(project, None, Some(unit));
+        self.ask.set_text(words);
     }
 
     fn open_ask(&mut self, project: PathBuf, session: Option<String>, unit: Option<String>) {
@@ -642,6 +733,11 @@ impl WeftDesktopApp {
             SheetAct::AskMore => self.ask_choices.all = true,
             SheetAct::AskAddRule => self.ask_choices.adding = !self.ask_choices.adding,
             SheetAct::FollowUp { project, unit } => self.open_ask(project, None, Some(unit)),
+            SheetAct::Offer { project, unit, offer } => self.offer(project, unit, offer),
+            SheetAct::GitNote { project, on: true } => {
+                self.bottom_bar = BottomBarState::GitNoteConfirm { project }
+            }
+            SheetAct::GitNote { project, on: false } => self.git_note(&project, None),
             SheetAct::Proceed { project, unit } => {
                 if let Some(c) = self.client_mut(&project) {
                     let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);

@@ -265,6 +265,10 @@ pub enum Then {
     AskSheet {
         query: String,
     },
+    /// A follow-up's words for rejected work, from what its Eval found.
+    Remedy {
+        unit: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -952,6 +956,28 @@ impl ProjectClient {
             eval: None,
             start: start.map(str::to_string),
             draft,
+        };
+        self.tell(call, Then::Refusal)
+    }
+
+    /// Keep a rule: the agent's draft as the person edited it, for the team
+    /// too when `share`.
+    pub fn keep_rule(
+        &mut self,
+        unit: &str,
+        rule: weft_core::after_seal::Drafted,
+        share: bool,
+    ) -> Result<u64> {
+        let draft =
+            weft_core::ask::Draft { rule: Some(Box::new(rule)), share, ..Default::default() };
+        let call = Call::Act {
+            act: "keep_rule".into(),
+            unit: Some(unit.to_string()),
+            pane: None,
+            text: None,
+            eval: None,
+            start: None,
+            draft: Some(draft),
         };
         self.tell(call, Then::Refusal)
     }

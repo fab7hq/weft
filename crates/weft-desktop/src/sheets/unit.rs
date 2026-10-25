@@ -113,9 +113,12 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
                         ),
                     )
                 }
-                Step::Seal { seal, decision, aside, .. } => (
+                Step::Seal { seal, decision, reason, aside, .. } => (
                     word("act.seal").into(),
-                    div().font_size(14).text(decision.clone()),
+                    div().font_size(14).text(match reason {
+                        Some(r) => format!("{decision} · {r}"),
+                        None => decision.clone(),
+                    }),
                     Some(aside.clone()),
                     Some(TreeAct::SelectSeal { project: at.clone(), seal: seal.clone() }),
                     Some(chevron()),
@@ -201,7 +204,30 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
             Size::Sheet,
         ),
     ];
+    // Sealed, it offers what its decision allows instead (17.11, 17.12).
+    let left = if d.offers.is_empty() { left } else { offers(project, &d.unit, &d.offers) };
     sheet("sheet Unit", head, body, sheet_foot(left, vec![close_button()]))
+}
+
+/// What sealed work offers: the first put forward.
+fn offers(project: &Path, unit: &str, offers: &[weft_core::after_seal::Offer]) -> Vec<Element> {
+    let label = div()
+        .font_mono()
+        .font_weight(600)
+        .font_size(10)
+        .color(palette::DIM)
+        .text(word("offer.after_seal"));
+    let said = |o: &weft_core::after_seal::Offer| {
+        let key = serde_json::to_value(o).ok().and_then(|v| v.as_str().map(str::to_string));
+        word(&format!("offer.{}", key.unwrap_or_default())).to_string()
+    };
+    let buttons = offers.iter().enumerate().map(|(i, o)| {
+        let act =
+            SheetAct::Offer { project: project.to_path_buf(), unit: unit.to_string(), offer: *o };
+        let tone = if i == 0 { Tone::Primary } else { Tone::Plain };
+        button(format!("btn {}", said(o)), said(o), act, tone, Size::Sheet)
+    });
+    std::iter::once(label).chain(buttons).collect()
 }
 
 fn chevron() -> Element {
