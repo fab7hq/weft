@@ -152,13 +152,22 @@ pub const WORDS: &[(&str, &str)] = &[
     ("dialog.keep_rule.title", "Keep a rule"),
     (
         "dialog.keep_rule.writing",
-        "{harness} is writing one rule from your follow-ups on {title}, for your next Asks.",
+        "{harness} is writing one rule from your follow-ups on {title}. You can write it yourself instead.",
     ),
     ("dialog.keep_rule.why", "Change it as you like. It is offered on your next Asks."),
     ("dialog.keep_rule.mine", "Just me"),
     ("dialog.keep_rule.team", "My team too"),
     ("dialog.keep_rule.go", "Save"),
     ("dialog.keep_rule.empty", "Write the rule first: it is empty."),
+    (
+        "dialog.keep_rule.not_typed",
+        "{harness} was busy, so nothing was typed. Write the rule yourself, or Cancel.",
+    ),
+    (
+        "dialog.keep_rule.no_draft",
+        "{harness} ended without writing a rule. Write it yourself, or Cancel.",
+    ),
+    ("dialog.keep_rule.placeholder", "The rule, in one line"),
     ("dialog.commit.title", "Commit this work?"),
     ("dialog.commit.why", "{harness} commits the changes of {title} and writes the message."),
     ("dialog.commit.request", "commit these changes"),

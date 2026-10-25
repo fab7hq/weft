@@ -160,6 +160,7 @@ pub fn allowed(call: &Call) -> bool {
                     | "check"
                     | "decide"
                     | "draft_rule"
+                    | "drop_draft"
                     | "keep_rule"
                     | "commit"
                     | "undo"

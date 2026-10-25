@@ -37,12 +37,23 @@ pub struct Built {
 }
 
 /// A rule a sealed unit's agent was asked to draft: the file it writes, the
-/// unit's first Ask and the agent's harness.
+/// unit's first Ask, the agent's harness and pane, and how far it has got.
 #[derive(Debug, Clone)]
 pub struct Drafting {
     pub path: std::path::PathBuf,
     pub unit: String,
     pub harness: String,
+    pub pane: u32,
+    pub stage: DraftStage,
+}
+
+/// How far a draft request has got: being typed, typed, or the agent's
+/// turn on it begun. Its turn ending after that settles it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftStage {
+    Typing,
+    Typed,
+    Working,
 }
 
 /// An Eval of a unit of work, for judges in a harness once the person says

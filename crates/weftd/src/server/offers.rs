@@ -44,6 +44,10 @@ impl Session {
         };
         match act {
             "draft_rule" => self.draft_rule(at, &sealed),
+            "drop_draft" => {
+                self.drop_drafts(at, &sealed.unit.root);
+                Answer::nothing()
+            }
             "keep_rule" => self.keep_rule((client, call_id), at, &sealed, draft),
             "commit" => self.commit(at, &sealed),
             _ => self.undo(at, &sealed),
@@ -165,34 +169,32 @@ impl Session {
         self.projects[at].harnesses.find(harness).map_or(harness, |h| &h.title).to_string()
     }
 
-    /// Dialog one of Keep a rule: the request that has the work's agent
-    /// draft one, from what was asked and the follow-ups.
+    /// Keep a rule's opening: the request that has the work's agent draft
+    /// one, from what was asked and the follow-ups, typed at once.
     fn draft_rule(&mut self, at: usize, sealed: &Sealed) -> Answer {
         let pane = match self.pane_of(at, sealed.newest()) {
             Ok(pane) => pane,
             Err(no) => return no,
         };
         let root = self.projects[at].root.clone();
-        let words = |u: &weft_core::ledger::Unit| {
-            let path = root.join(".fab7/rf/asks").join(&u.ask_id).join("source.txt");
-            std::fs::read_to_string(path).unwrap_or_else(|_| u.title.clone())
-        };
         // Named by the daemon's own count, never by an id read from the
         // project's files.
         self.next_pending += 1;
         let path = drafts_dir(&self.config).join(format!("draft_{}.txt", self.next_pending));
         let _ = std::fs::create_dir_all(drafts_dir(&self.config));
         let _ = std::fs::remove_file(&path);
-        let follow_ups: Vec<String> = sealed.asks[1..].iter().map(words).collect();
+        let follow_ups: Vec<String> = sealed.asks[1..].iter().map(|u| words_of(&root, u)).collect();
         let request = weft_core::after_seal::rule_request(
             &sealed.root().title,
-            &words(sealed.root()),
+            &words_of(&root, sealed.root()),
             &follow_ups,
             &path.to_string_lossy(),
         );
-        let harness = sealed.newest().harness.clone();
-        let unit = sealed.unit.root.clone();
-        self.projects[at].drafting.push(crate::acts::Drafting { path, unit, harness });
+        let (harness, unit) = (sealed.newest().harness.clone(), sealed.unit.root.clone());
+        // A request asked again takes the place of the one before.
+        self.drop_drafts(at, &unit);
+        let stage = crate::acts::DraftStage::Typing;
+        self.projects[at].drafting.push(crate::acts::Drafting { path, unit, harness, pane, stage });
         // The Keep dialog is the one confirmation: its opening has the agent
         // write the draft, and only its Save keeps anything.
         let typing = Waiting {
@@ -213,29 +215,78 @@ impl Session {
         Answer::nothing()
     }
 
-    /// Each draft an agent has written is read once, taken, and told to
-    /// every client of its project.
-    pub(super) fn read_drafts(&mut self) {
-        for at in 0..self.projects.len() {
-            let mut told = Vec::new();
-            self.projects[at].drafting.retain(|d| {
-                let read = std::fs::read_to_string(&d.path).ok();
-                match read.as_deref().and_then(weft_core::after_seal::drafted) {
-                    Some(rule) => {
-                        let _ = std::fs::remove_file(&d.path);
-                        told.push(Out::Drafted {
-                            unit: d.unit.clone(),
-                            harness: d.harness.clone(),
-                            rule,
-                        });
-                        false
-                    }
-                    None => true,
-                }
-            });
-            for t in told {
-                self.clients.broadcast(at, &t);
+    /// Stop waiting for a unit's draft: the person cancelled, kept a rule, or
+    /// asked again.
+    fn drop_drafts(&mut self, at: usize, unit: &str) {
+        self.projects[at].drafting.retain(|d| {
+            let mine = d.unit == unit;
+            if mine {
+                let _ = std::fs::remove_file(&d.path);
             }
+            !mine
+        });
+    }
+
+    /// The request typed into `pane`, or refused there: a refused one will
+    /// bring no draft, and its dialog is told.
+    pub(super) fn draft_typed(&mut self, at: usize, pane: u32, typed: bool) {
+        use crate::acts::DraftStage;
+        let mut refused = Vec::new();
+        self.projects[at].drafting.retain_mut(|d| {
+            if d.pane != pane || d.stage != DraftStage::Typing {
+                return true;
+            }
+            if typed {
+                d.stage = DraftStage::Typed;
+                return true;
+            }
+            let _ = std::fs::remove_file(&d.path);
+            refused.push(Out::NotDrafted {
+                unit: d.unit.clone(),
+                harness: d.harness.clone(),
+                why: "not_typed".into(),
+            });
+            false
+        });
+        for r in refused {
+            self.clients.broadcast(at, &r);
+        }
+    }
+
+    /// Each draft is told once: as soon as its four lines are written, or
+    /// when the agent's turn on it is over, with what it wrote, or that it
+    /// wrote nothing. The turn is the pane's, as its hooks and Sense read it.
+    pub(super) fn read_drafts(&mut self) {
+        use crate::acts::DraftStage;
+        for at in 0..self.projects.len() {
+            let drafting = std::mem::take(&mut self.projects[at].drafting);
+            let mut waiting = Vec::new();
+            for mut d in drafting {
+                let text = std::fs::read_to_string(&d.path).unwrap_or_default();
+                let turn = self.pane_state(at, d.pane);
+                if d.stage == DraftStage::Typed && turn == Some(Turn::Working) {
+                    d.stage = DraftStage::Working;
+                }
+                let over = d.stage == DraftStage::Working
+                    && !matches!(turn, Some(Turn::Working | Turn::Waiting));
+                let told = match weft_core::after_seal::drafted(&text) {
+                    Some(rule) => Some(Some(rule)),
+                    None if over => Some(weft_core::after_seal::settled(&text)),
+                    None => None,
+                };
+                let Some(rule) = told else {
+                    waiting.push(d);
+                    continue;
+                };
+                let _ = std::fs::remove_file(&d.path);
+                let (unit, harness) = (d.unit, d.harness);
+                let said = match rule {
+                    Some(rule) => Out::Drafted { unit, harness, rule },
+                    None => Out::NotDrafted { unit, harness, why: "no_draft".into() },
+                };
+                self.clients.broadcast(at, &said);
+            }
+            self.projects[at].drafting.extend(waiting);
         }
     }
 
@@ -259,17 +310,34 @@ impl Session {
             none if none.is_empty() => vec!["implement".to_string()],
             some => some.clone(),
         };
+        // Kept: a draft still coming is no longer wanted.
+        self.drop_drafts(at, &sealed.unit.root);
         let (config, known) = (self.config.clone(), self.projects[at].harnesses.clone());
         let (root, tx) = (self.projects[at].root.clone(), self.tx.clone());
+        // The work's words: the rule's example intents.
+        let intent: Vec<String> = sealed.asks.iter().map(|u| words_of(&root, u)).collect();
+        let harness = sealed.newest().harness.clone();
         std::thread::spawn(move || {
             let answer = match keep(&config, &known, &root, (rule, tasks), share) {
-                Ok((id, layer)) => Answer::Ok(serde_json::json!({"id": id, "layer": layer})),
+                Ok((id, layer)) => {
+                    let row = crate::labels::kept(&harness, &id, layer, intent.join("\n").trim());
+                    if let Err(e) = crate::labels::append(&config, &root, &row) {
+                        eprintln!("weft: the kept rule's label was not kept: {e}");
+                    }
+                    Answer::Ok(serde_json::json!({"id": id, "layer": layer}))
+                }
                 Err(why) => Answer::No("refused", why),
             };
             let _ = tx.send(Wake::Kept { client, call_id, answer });
         });
         Answer::Later
     }
+}
+
+/// What the person asked in an Ask, as RingFrame kept it, else its title.
+fn words_of(root: &Path, u: &weft_core::ledger::Unit) -> String {
+    let path = root.join(".fab7/rf/asks").join(&u.ask_id).join("source.txt");
+    std::fs::read_to_string(path).unwrap_or_else(|_| u.title.clone())
 }
 
 /// Where agents write their drafts: beside Weft's `config.toml`.
@@ -280,8 +348,11 @@ fn drafts_dir(config: &Path) -> PathBuf {
 /// The person's rule as RingFrame reads one: its id, label and text, when it
 /// matters and its family when the draft said, for the work's tasks.
 fn entry(id: &str, rule: &Drafted, tasks: &[String]) -> serde_json::Value {
+    // A rule the person wrote themselves is named by its first words.
+    let named = weft_core::after_seal::settled(&rule.rule).map(|d| d.name).unwrap_or_default();
+    let label = if rule.name.trim().is_empty() { named } else { rule.name.trim().to_string() };
     let mut e = serde_json::json!({
-        "id": id, "label": rule.name.trim(), "text": rule.rule.trim(),
+        "id": id, "label": label, "text": rule.rule.trim(),
         "applies_to": {"task": tasks},
     });
     for (key, value) in [("when", &rule.when), ("family", &rule.family)] {

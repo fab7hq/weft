@@ -173,6 +173,8 @@ pub enum BottomBarState {
         title: String,
         share: bool,
         draft: Option<weft_core::after_seal::Drafted>,
+        /// Why no draft will come: `not_typed` or `no_draft`.
+        failed: Option<String>,
     },
 }
 
@@ -620,23 +622,33 @@ impl WeftDesktopApp {
     }
 
     /// The setting field, while one is being typed.
+    /// Keep a rule's field, which takes typing from the start: the agent's
+    /// draft fills it when it comes, unless the person wrote first.
     pub fn keep_field_mut(&mut self) -> Option<&mut TextField> {
-        matches!(self.bottom_bar, BottomBarState::KeepRule { draft: Some(_), .. })
-            .then_some(&mut self.keep)
+        matches!(self.bottom_bar, BottomBarState::KeepRule { .. }).then_some(&mut self.keep)
     }
 
-    /// The draft an agent wrote fills Keep a rule's dialog, once.
+    /// The draft an agent wrote fills Keep a rule's dialog, once, unless the
+    /// person wrote their own; or the dialog is told none will come.
     fn take_draft(&mut self) {
-        let BottomBarState::KeepRule { project, unit, draft: draft @ None, .. } =
-            &mut self.bottom_bar
+        let BottomBarState::KeepRule { project, unit, draft, failed, .. } = &mut self.bottom_bar
         else {
             return;
         };
-        let got = self.clients.iter().find(|c| &c.root == project).and_then(|c| c.drafted.as_ref());
-        if let Some((_, _, rule)) = got.filter(|(u, _, _)| u == unit) {
-            self.keep.set_text(&rule.rule);
+        let Some(c) = self.clients.iter().find(|c| &c.root == project) else { return };
+        if draft.is_none()
+            && let Some((_, _, rule)) = c.drafted.as_ref().filter(|(u, _, _)| u == unit)
+        {
+            if self.keep.text().trim().is_empty() {
+                self.keep.set_text(&rule.rule);
+            }
             *draft = Some(rule.clone());
             self.focus = Focus::Keep;
+        }
+        if failed.is_none()
+            && let Some((_, why)) = c.not_drafted.as_ref().filter(|(u, _)| u == unit)
+        {
+            *failed = Some(why.clone());
         }
     }
 

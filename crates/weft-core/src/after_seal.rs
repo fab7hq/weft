@@ -74,6 +74,15 @@ pub fn drafted(text: &str) -> Option<Drafted> {
     Some(d)
 }
 
+/// The draft once the agent's turn is over: its four lines when it wrote
+/// them, else its first line as the rule, so what it wrote is never lost.
+pub fn settled(text: &str) -> Option<Drafted> {
+    drafted(text).or_else(|| {
+        let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+        drafted(&format!("rule: {line}"))
+    })
+}
+
 /// The words Commit types.
 pub fn commit_request() -> String {
     word("dialog.commit.request").into()
@@ -172,6 +181,20 @@ mod tests {
         let bare = drafted("rule: Keep diffs small for fixes.").expect("a rule alone");
         assert_eq!(bare.name, "Keep diffs small");
         assert_eq!(drafted("name: x\nwhen: y\n"), None, "no rule, no draft");
+    }
+
+    #[test]
+    fn once_the_agents_turn_is_over_any_line_it_wrote_is_its_rule() {
+        let lines =
+            settled("name: Small diffs\nrule: Keep fixes small.\n").expect("the four lines");
+        assert_eq!(
+            (lines.name.as_str(), lines.rule.as_str()),
+            ("Small diffs", "Keep fixes small.")
+        );
+        let plain = settled("\n  Keep fixes to the lines they need.  \nmore\n").expect("a line");
+        assert_eq!(plain.rule, "Keep fixes to the lines they need.");
+        assert_eq!(plain.name, "Keep fixes to");
+        assert_eq!(settled("  \n\n"), None, "nothing written");
     }
 
     #[test]

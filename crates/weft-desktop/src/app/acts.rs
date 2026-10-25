@@ -376,7 +376,15 @@ impl WeftDesktopApp {
                 Some(TreeSelection::Work { project, unit }) => self.seal_work(project, unit),
                 _ => self.why_not_for(Act::Seal),
             },
-            BarAct::Cancel => self.bottom_bar = BottomBarState::None,
+            BarAct::Cancel => {
+                // Keep a rule cancelled: the draft still coming is not wanted.
+                if let BottomBarState::KeepRule { project, unit, .. } = &self.bottom_bar
+                    && let Some(c) = self.clients.iter_mut().find(|c| &c.root == project)
+                {
+                    let _ = c.act("drop_draft", Some(unit), None, None, None, None);
+                }
+                self.bottom_bar = BottomBarState::None
+            }
             BarAct::KeepShare(on) => {
                 if let BottomBarState::KeepRule { share, .. } = &mut self.bottom_bar {
                     *share = on;
@@ -502,16 +510,19 @@ impl WeftDesktopApp {
                 let _ = c.read("remedy", &unit, None, Then::Remedy { unit: unit.clone() });
             }
             Offer::KeepRule => {
-                c.drafted = None;
+                (c.drafted, c.not_drafted) = (None, None);
                 let _ = c.act("draft_rule", Some(&unit), None, None, None, None);
                 self.keep.set_text("");
+                self.focus = Focus::Keep;
+                let (share, draft, failed) = (false, None, None);
                 self.bottom_bar = BottomBarState::KeepRule {
                     project,
                     unit,
                     harness,
                     title,
-                    share: false,
-                    draft: None,
+                    share,
+                    draft,
+                    failed,
                 };
             }
             Offer::Commit => {
@@ -523,31 +534,23 @@ impl WeftDesktopApp {
         }
     }
 
-    /// Keep a rule's Save: the draft as edited. Nothing is kept before the
-    /// draft has come or with the rule emptied; the bar says why.
+    /// Keep a rule's Save: the draft as edited, or the person's own rule;
+    /// nothing with the rule emptied, and the bar says why.
     fn save_rule(&mut self) {
-        let BottomBarState::KeepRule { project, unit, harness, title, share, draft } =
-            self.bottom_bar.clone()
+        let BottomBarState::KeepRule { project, unit, share, draft, .. } = self.bottom_bar.clone()
         else {
             return;
         };
         let text = self.keep.text().trim().to_string();
-        let Some(draft) = draft else {
-            let sentence = words::fill(
-                "dialog.keep_rule.writing",
-                &[("harness", &harness), ("title", &title)],
-            );
-            self.bottom_bar = BottomBarState::WhyNot { sentence };
-            return;
-        };
         if text.is_empty() {
             self.bottom_bar =
                 BottomBarState::WhyNot { sentence: words::word("dialog.keep_rule.empty").into() };
             return;
         }
+        // The agent's draft as edited, or the person's own words alone.
+        let rule = weft_core::after_seal::Drafted { rule: text, ..draft.unwrap_or_default() };
         if let Some(c) = self.client_mut(&project) {
-            let _ =
-                c.keep_rule(&unit, weft_core::after_seal::Drafted { rule: text, ..draft }, share);
+            let _ = c.keep_rule(&unit, rule, share);
         }
         self.bottom_bar = BottomBarState::None;
     }

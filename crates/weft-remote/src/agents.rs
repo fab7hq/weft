@@ -670,7 +670,9 @@ impl Project {
         if m["act"] == "stop" {
             return stop(m);
         }
-        if let Some(offer @ ("draft_rule" | "keep_rule" | "commit" | "undo")) = m["act"].as_str() {
+        if let Some(offer @ ("draft_rule" | "drop_draft" | "keep_rule" | "commit" | "undo")) =
+            m["act"].as_str()
+        {
             return self.offer(offer, m);
         }
         let (act, daemon) = match m["act"].as_str() {
@@ -1076,7 +1078,7 @@ mod tests {
         p.units[0].sealed = Some("rejected".into());
         p.units[0].seal_id = Some("sel_1".into());
         p.work = work_of(&p.units, &events);
-        for offer in ["draft_rule", "keep_rule", "commit", "undo"] {
+        for offer in ["draft_rule", "drop_draft", "keep_rule", "commit", "undo"] {
             let m = json!({"act": offer, "unit": "ask_1", "draft": {"share": true}});
             let Ok(Call::Act { act: a, unit, pane, text, draft, .. }) = act(&p, m) else {
                 panic!("{offer} was refused");

@@ -488,6 +488,14 @@ impl Remote {
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
             Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
             Heard::Event(at, pending @ Event::Pending { .. }) => self.pending_added(at, pending),
+            // No draft will come for a unit: its Keep dialog says so.
+            Heard::Event(at, Event::NotDrafted { unit, harness, why }) => {
+                if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {
+                    let project = open.agents.name.clone();
+                    self.to_devices(&json!({"type": "not_drafted", "project": project,
+                        "unit": unit, "harness": harness, "why": why}));
+                }
+            }
             // The rule a sealed unit's agent drafted, for the Keep dialog.
             Heard::Event(at, Event::Drafted { unit, harness, rule }) => {
                 if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {

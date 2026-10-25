@@ -75,6 +75,15 @@ pub fn sealed(harness: &str, receipt: &Value) -> Value {
     })
 }
 
+/// A rule the person kept, with the work it was kept from: its words are the
+/// rule's example intents, which Sense matches new Asks against.
+pub fn kept(harness: &str, rule_id: &str, layer: &str, intent: &str) -> Value {
+    json!({
+        "schema": SCHEMA, "kind": "rule", "at": now_ms(), "harness": harness,
+        "rule_id": rule_id, "layer": layer, "intent": intent,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +126,14 @@ mod tests {
         assert_eq!(
             (&rows[1]["kind"], &rows[1]["eval_id"], &rows[1]["disposition"], &rows[1]["reason"]),
             (&json!("seal"), &json!("evl_1"), &json!("rejected"), &json!("wrong_approach"))
+        );
+        append(&config, root, &kept("codex", "own.1", "weft", "Add a health endpoint.")).unwrap();
+        let rule: Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().lines().last().unwrap())
+                .unwrap();
+        assert_eq!(
+            (&rule["kind"], &rule["rule_id"], &rule["layer"], &rule["intent"]),
+            (&json!("rule"), &json!("own.1"), &json!("weft"), &json!("Add a health endpoint."))
         );
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!((mode(&path), mode(&dir(&config))), (0o600, 0o700));

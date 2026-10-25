@@ -48,8 +48,8 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
             render_seal_disposition_bar(client, project, eval, selected, reason.as_deref())
         }
         BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
-        BottomBarState::KeepRule { harness, title, share, draft, .. } => {
-            render_keep_bar(harness, title, *share, draft.is_some())
+        BottomBarState::KeepRule { harness, title, share, draft, failed, .. } => {
+            render_keep_bar(harness, title, *share, (draft.is_some(), failed.as_deref()))
         }
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
         BottomBarState::None => render_tree_bar(props, None),
@@ -206,7 +206,12 @@ fn render_git_note_bar(project: &std::path::Path) -> Element {
 
 /// Keep a rule (17.14, 17.15): the agent writing, then the rule to change,
 /// Just me or My team too, and Save.
-fn render_keep_bar(harness: &str, work: &str, share: bool, drafted: bool) -> Element {
+fn render_keep_bar(
+    harness: &str,
+    work: &str,
+    share: bool,
+    (drafted, failed): (bool, Option<&str>),
+) -> Element {
     let chip = |layer: &str, said: &str, picked: bool, act: BarAct| {
         div()
             .layer(layer)
@@ -219,23 +224,22 @@ fn render_keep_bar(harness: &str, work: &str, share: bool, drafted: bool) -> Ele
             .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
             .text(said.to_string())
     };
-    let why = if drafted {
-        word("dialog.keep_rule.why").to_string()
-    } else {
-        fill("dialog.keep_rule.writing", &[("harness", harness), ("title", work)])
+    let named = [("harness", harness), ("title", work)];
+    let why = match (drafted, failed) {
+        (true, _) => word("dialog.keep_rule.why").to_string(),
+        (false, Some(why)) => fill(&format!("dialog.keep_rule.{why}"), &named),
+        (false, None) => fill("dialog.keep_rule.writing", &named),
     };
-    let rule = if drafted {
-        crate::gpui::textarea_el(crate::action::Focus::Keep)
-            .layer("rule")
-            .self_stretch()
-            .pad(8, 12)
-            .bg(palette::SURFACE)
-            .border(palette::BLUE_BORDER)
-            .font_size(14)
-            .color(palette::TEXT)
-    } else {
-        div().layer("writing").self_stretch().h(36).bg(palette::SURFACE).border(palette::LINE)
-    };
+    // The field takes typing from the start: the draft fills it when it comes.
+    let rule = crate::gpui::textarea_el(crate::action::Focus::Keep)
+        .layer("rule")
+        .self_stretch()
+        .pad(8, 12)
+        .bg(palette::SURFACE)
+        .border(palette::BLUE_BORDER)
+        .font_size(14)
+        .color(palette::TEXT)
+        .placeholder(word("dialog.keep_rule.placeholder"));
     asking_bar("Keep a rule bar", palette::BLUE_BORDER)
         .child(title(word("dialog.keep_rule.title")))
         .child(note(why, palette::MUTED))

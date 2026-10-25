@@ -878,6 +878,44 @@ fn accepted_work_offers_commit_and_keep_a_rule() {
     assert!(matches!(&call, Call::Act { act, .. } if act == "commit"), "{call:?}");
 }
 
+/// The rule can always be written by hand: when no draft will come, the
+/// dialog says why and stays open, Save keeps the person's own words, and
+/// Cancel stops the wait.
+#[test]
+fn a_rule_is_kept_by_hand_when_no_draft_comes() {
+    use weft_core::after_seal::Offer;
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
+    let _ = acted(&mut wire);
+    assert!(app.keep_field_mut().is_some(), "the field takes typing while the agent writes");
+    wire.event(Event::NotDrafted {
+        unit: "ask_4".into(),
+        harness: "codex".into(),
+        why: "no_draft".into(),
+    });
+    pumped(&mut app, |a| {
+        a.render()
+            .find_layer("Keep a rule bar")
+            .is_some_and(|b| b.all_text().contains("ended without writing"))
+    });
+    app.keep.set_text("Name each dependency a health check waited on.");
+    app.dispatch(BarAct::SaveRule);
+    let Call::Act { act, draft, .. } = acted(&mut wire) else { panic!() };
+    assert_eq!(act, "keep_rule");
+    let rule = draft.and_then(|d| d.rule).expect("the person's own rule");
+    assert_eq!(rule.rule, "Name each dependency a health check waited on.");
+
+    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
+    let _ = acted(&mut wire);
+    app.dispatch(BarAct::Cancel);
+    let call = acted(&mut wire);
+    assert!(
+        matches!(&call, Call::Act { act, unit, .. } if act == "drop_draft" && unit.as_deref() == Some("ask_4")),
+        "{call:?}"
+    );
+    assert_eq!(app.bottom_bar, BottomBarState::None);
+}
+
 /// A project's Git note of each Seal is off until its own settings turn it
 /// on; turning it on asks once, showing what a note holds; off asks nothing.
 #[test]
