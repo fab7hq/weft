@@ -260,6 +260,7 @@ fn seal(id: &str, n: usize, eval: Option<&str>) -> weft_core::work::Seal {
         disposition: "accepted".into(),
         by: "you".into(),
         eval: eval.map(str::to_string),
+        reason: None,
     }
 }
 

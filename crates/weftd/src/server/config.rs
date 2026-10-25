@@ -36,6 +36,7 @@ impl Session {
                 "notify": p.notify,
                 "suggest": p.suggest_on,
                 "ringframe": ringframe,
+                "export": read.export(&p.root),
             },
             "unknown": read.unknown,
             "ignored": read.ignored,

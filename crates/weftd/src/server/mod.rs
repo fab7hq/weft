@@ -1227,6 +1227,13 @@ impl Session {
                     let reason = draft.and_then(|d| d.reason.clone());
                     let (tx, disposition) = (self.tx.clone(), disposition.to_string());
                     let (config, harness) = (self.config.clone(), unit.harness.clone());
+                    // What the project records of it in Git, when it says.
+                    let export =
+                        crate::routing::read_at(&self.config, &project.harnesses).export(&root);
+                    let judged_by = eval.as_deref().and_then(|e| {
+                        record.evals.iter().find(|v| v.id == e).and_then(|v| v.judged_by.clone())
+                    });
+                    let base = mine.map(root_of).and_then(|r| r.base_commit);
                     std::thread::spawn(move || {
                         let sealed = crate::ringframe::seal(
                             &root,
@@ -1239,6 +1246,15 @@ impl Session {
                                 let row = crate::labels::sealed(&harness, &receipt);
                                 if let Err(e) = crate::labels::append(&config, &root, &row) {
                                     eprintln!("weft: the Seal's label was not kept: {e}");
+                                }
+                                let by = judged_by.as_deref();
+                                let base = base.as_deref();
+                                if let Err(e) =
+                                    crate::export::seal(&root, &receipt, export, by, base)
+                                {
+                                    eprintln!(
+                                        "weft: the Seal's record was not written to Git: {e}"
+                                    );
                                 }
                                 Answer::Ok(serde_json::json!({"receipt": receipt}))
                             }
@@ -1414,6 +1430,14 @@ impl Session {
             // `unit` is an Ask of rejected work: a follow-up's words, from
             // what its Eval found.
             "remedy" => self.remedy(at, unit),
+            // Done: every sealed unit, parked first, in the words a person reads.
+            "done" => {
+                let (units, record) =
+                    (self.projects[at].ledger.units(), self.projects[at].ledger.record());
+                let work = weft_core::work::work(&units, &record);
+                let rows = weft_core::done::done(&work, &units);
+                Answer::Ok(serde_json::json!({ "done": rows }))
+            }
             "source" => {
                 let safe =
                     !unit.is_empty() && unit.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');

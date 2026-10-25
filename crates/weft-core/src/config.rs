@@ -63,6 +63,8 @@ struct Tables {
     ringframe: Map<String, Value>,
     /// `turbo = true | false`, when this scope says.
     turbo: Option<bool>,
+    /// `[export]`: what a project records of each Seal in its Git.
+    export: crate::export::Export,
 }
 
 /// What the person said about one harness on this machine: where its
@@ -317,6 +319,12 @@ impl Config {
 
     /// Whether agents Weft starts run in turbo mode: the machine's `turbo`
     /// line, for every project, else off.
+    /// What this project records of each Seal in its Git: nothing unless
+    /// it says.
+    pub fn export(&self, root: &Path) -> crate::export::Export {
+        self.project(root).map(|p| p.export).unwrap_or_default()
+    }
+
     pub fn turbo(&self, _root: &Path) -> bool {
         self.machine.turbo.unwrap_or(false)
     }
@@ -355,6 +363,16 @@ impl Config {
                     }
                 }
                 ("ringframe", Value::Object(r)) => out.ringframe = r.clone(),
+                // A project's own: never every project's.
+                ("export", Value::Object(e)) if !at.is_empty() => {
+                    for (k, v) in e {
+                        match (k.as_str(), v) {
+                            ("git_note", Value::Bool(on)) => out.export.git_note = *on,
+                            ("agent_trace", Value::Bool(on)) => out.export.agent_trace = *on,
+                            _ => self.ignored.push(format!("{here}.{k}")),
+                        }
+                    }
+                }
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
                 ("suggest", Value::Bool(on)) if at.is_empty() => self.unsuggested = !on,
                 // Every project's only (weft-after-desktop ADR-0003 D4): a
@@ -531,6 +549,23 @@ mod tests {
 
     fn at(text: &str) -> Routing {
         read_(text).routing(Path::new(HERE))
+    }
+
+    #[test]
+    fn a_project_records_its_seals_in_git_only_when_it_says_so() {
+        let text = "[export]\ngit_note = true\n\n[projects.\"/w/a\".export]\ngit_note = true\n\
+                    agent_trace = true\nzip = true\n";
+        let c = read_(text);
+        use crate::export::Export;
+        let both = Export { git_note: true, agent_trace: true };
+        assert_eq!(c.export(Path::new("/w/a")), both);
+        assert_eq!(
+            c.export(Path::new("/w/b")),
+            Export::default(),
+            "per project, never the machine's"
+        );
+        assert!(c.ignored.contains(&"export".to_string()), "{:?}", c.ignored);
+        assert!(c.ignored.contains(&"projects.\"/w/a\".export.zip".to_string()), "{:?}", c.ignored);
     }
 
     #[test]

@@ -226,6 +226,32 @@ fn each_offer_types_what_its_dialog_shows() {
     }
     support::pane_says(&socket, &dir, &root, "sh", pane, "work-1", "ready");
 
+    // Done lists both, each with its verdict and decision.
+    let done = c
+        .answer(Call::Read {
+            what: "done".into(),
+            unit: String::new(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None,
+        })
+        .expect("Done");
+    let rows: Vec<(String, String, String)> = done["done"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|d| {
+            let s = |k: &str| d[k].as_str().unwrap_or_default().to_string();
+            (s("title"), s("verdict"), s("decision"))
+        })
+        .collect();
+    assert_eq!(rows.len(), 2, "{done}");
+    assert!(
+        rows.contains(&("Add a health endpoint.".into(), "drifted".into(), "rejected".into())),
+        "{done}"
+    );
+
     // Each offer is for one decision.
     assert_eq!(c.answer(offer("commit", &rejected, None, None)), Err("not_offered".into()));
     assert_eq!(c.answer(offer("undo", &accepted, None, None)), Err("not_offered".into()));

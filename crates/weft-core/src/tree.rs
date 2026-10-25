@@ -495,6 +495,7 @@ mod tests {
                 disposition: decision.into(),
                 by: "you".into(),
                 eval: None,
+                reason: None,
             });
         };
         for i in 0..12 {

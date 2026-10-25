@@ -48,6 +48,9 @@ pub struct Seal {
     pub by: String,
     /// The Eval it seals: the one its `links` name with `rel: "seals"`.
     pub eval: Option<String>,
+    /// Why, when the person gave a reason: `broke_something`.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// The Evals and the Seals of a ledger, in ledger order.
@@ -158,6 +161,7 @@ pub fn record(events: &[Value]) -> Record {
                     disposition: text(data, "disposition"),
                     by,
                     eval,
+                    reason: data.get("reason").and_then(Value::as_str).map(str::to_string),
                     id,
                 });
             }
