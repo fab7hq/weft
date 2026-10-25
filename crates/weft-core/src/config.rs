@@ -368,7 +368,6 @@ impl Config {
                     for (k, v) in e {
                         match (k.as_str(), v) {
                             ("git_note", Value::Bool(on)) => out.export.git_note = *on,
-                            ("agent_trace", Value::Bool(on)) => out.export.agent_trace = *on,
                             _ => self.ignored.push(format!("{here}.{k}")),
                         }
                     }
@@ -557,8 +556,7 @@ mod tests {
                     agent_trace = true\nzip = true\n";
         let c = read_(text);
         use crate::export::Export;
-        let both = Export { git_note: true, agent_trace: true };
-        assert_eq!(c.export(Path::new("/w/a")), both);
+        assert_eq!(c.export(Path::new("/w/a")), Export { git_note: true });
         assert_eq!(
             c.export(Path::new("/w/b")),
             Export::default(),
@@ -566,6 +564,8 @@ mod tests {
         );
         assert!(c.ignored.contains(&"export".to_string()), "{:?}", c.ignored);
         assert!(c.ignored.contains(&"projects.\"/w/a\".export.zip".to_string()), "{:?}", c.ignored);
+        let later = "projects.\"/w/a\".export.agent_trace".to_string();
+        assert!(c.ignored.contains(&later), "Agent Trace is not a Seal's: {:?}", c.ignored);
     }
 
     #[test]

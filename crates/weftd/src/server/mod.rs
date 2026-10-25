@@ -1233,7 +1233,6 @@ impl Session {
                     let judged_by = eval.as_deref().and_then(|e| {
                         record.evals.iter().find(|v| v.id == e).and_then(|v| v.judged_by.clone())
                     });
-                    let base = mine.map(root_of).and_then(|r| r.base_commit);
                     std::thread::spawn(move || {
                         let sealed = crate::ringframe::seal(
                             &root,
@@ -1248,10 +1247,7 @@ impl Session {
                                     eprintln!("weft: the Seal's label was not kept: {e}");
                                 }
                                 let by = judged_by.as_deref();
-                                let base = base.as_deref();
-                                if let Err(e) =
-                                    crate::export::seal(&root, &receipt, export, by, base)
-                                {
+                                if let Err(e) = crate::export::seal(&root, &receipt, export, by) {
                                     eprintln!(
                                         "weft: the Seal's record was not written to Git: {e}"
                                     );
