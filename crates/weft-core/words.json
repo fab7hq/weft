@@ -254,6 +254,7 @@
   "eval_view.found": "Found",
   "eval_view.limitations": "Limitations",
   "eval_view.readings": "Readings",
+  "eval_view.running": "`{check}`: running",
   "eval_view.split": "The judges split",
   "eval_view.unexplained": "Unexplained changes",
   "menu": "Menu",

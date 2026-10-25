@@ -38,6 +38,9 @@ pub struct EvalView {
     pub changes: Vec<Change>,
     /// The checks RingFrame ran, one line each.
     pub checks: Vec<String>,
+    /// The checks still running: the verdict waits for them.
+    #[serde(default)]
+    pub checks_running: Vec<String>,
     pub limitations: Vec<String>,
 }
 
@@ -163,6 +166,8 @@ pub struct Sources<'a> {
     /// The tasks handed out so far, and those in (accepted or failed).
     pub planned: &'a [String],
     pub done: &'a [String],
+    /// The checks RingFrame is still running for it, within their time.
+    pub checks_running: &'a [String],
 }
 
 fn s(v: &Value, k: &str) -> String {
@@ -540,6 +545,7 @@ impl EvalView {
                         .collect()
                 })
                 .unwrap_or_default(),
+            checks_running: if record.is_some() { Vec::new() } else { src.checks_running.to_vec() },
             limitations: record.map(|r| strs(r, "limitations")).unwrap_or_default(),
         }
     }
@@ -569,7 +575,13 @@ impl EvalView {
                     }
                 })
                 .collect();
-            format!("judging · {}", stages.join(" · "))
+            let n = self.checks_running.len();
+            let checks = match n {
+                0 => String::new(),
+                1 => " · 1 check running".to_string(),
+                n => format!(" · {n} checks running"),
+            };
+            format!("judging · {}{checks}", stages.join(" · "))
         }
     }
 
@@ -760,9 +772,13 @@ pub fn rows(view: &EvalView, mode: Mode, folded: &BTreeSet<String>) -> Vec<Row> 
         }
     }
     if mode == Mode::Steps {
-        if !view.checks.is_empty() {
+        if !view.checks.is_empty() || !view.checks_running.is_empty() {
             out.push(Row::text(RowKind::Heading, 0, heading("eval_view.checks")));
             out.extend(view.checks.iter().map(|c| Row::text(RowKind::Text, 1, c.clone())));
+            out.extend(view.checks_running.iter().map(|c| Row {
+                mark: State::Judging.mark().into(),
+                ..Row::text(RowKind::Text, 1, fill("eval_view.running", &[("check", c)]))
+            }));
         }
         if !view.limitations.is_empty() {
             out.push(Row::text(RowKind::Heading, 0, heading("eval_view.limitations")));
@@ -959,6 +975,16 @@ mod tests {
         planned: &[&str],
         done: &[&str],
     ) -> EvalView {
+        built_with_checks(record, outputs, planned, done, &[])
+    }
+
+    fn built_with_checks(
+        record: Option<&Value>,
+        outputs: &[Value],
+        planned: &[&str],
+        done: &[&str],
+        checks_running: &[String],
+    ) -> EvalView {
         let (c, e, b) = (changes(), evidence(), brief());
         let w = json!({"windows": {"w_t": "@@ -1 +1 @@\n+post(collect.example.com)\n"}});
         let planned: Vec<String> = planned.iter().map(|s| s.to_string()).collect();
@@ -973,6 +999,7 @@ mod tests {
             outputs,
             planned: &planned,
             done: &done,
+            checks_running,
         })
     }
 
@@ -1070,6 +1097,35 @@ mod tests {
     }
 
     #[test]
+    fn a_check_still_running_shows_as_running_and_the_verdict_waits_for_it() {
+        let reduce = json!({"kind": "reduce", "judge": {"role": "reduce"}, "requirements": [
+            {"id": S7, "vote": "met", "reason": "told", "citations": []},
+            {"id": S8, "vote": "met", "reason": "short", "citations": []}
+        ]});
+        let every = ["evl_1~m1", "evl_1~r1"];
+        let v = built_with_checks(
+            None,
+            &[map_output(), reduce],
+            &every,
+            &every,
+            &["cargo test".to_string()],
+        );
+        assert!(!v.closed);
+        assert_eq!(v.verdict, None);
+        assert_eq!(
+            v.header(),
+            "judging · map 1 of 1 · reduce 1 of 1 · confirm — · 1 check running"
+        );
+        let main = rows(&v, Mode::Steps, &BTreeSet::new());
+        let at =
+            main.iter().position(|r| r.text == "CHECKS RINGFRAME RAN").expect("a checks section");
+        assert_eq!(
+            (main[at + 1].mark.as_str(), main[at + 1].text.as_str()),
+            ("…", "`cargo test`: running")
+        );
+    }
+
+    #[test]
     fn a_device_gets_every_level_of_the_view_at_once() {
         let v = built(None, &[map_output()], &["evl_1~m1", "evl_1~r1"], &["evl_1~m1"]);
         let hunks: BTreeMap<String, String> =
@@ -1128,6 +1184,7 @@ mod tests {
             outputs: outputs.as_array().unwrap(),
             planned: &[],
             done: &[],
+            checks_running: &[],
         })
     }
 

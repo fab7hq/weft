@@ -228,6 +228,12 @@ pub fn ask_preflight(project: &Path) -> Result<(), Error> {
     api::preflight(&workspace(project)?).map_err(refused)
 }
 
+/// The checks RingFrame still runs for an Eval; none when the project cannot
+/// be opened.
+pub fn checks_running(project: &Path, eval_id: &str) -> Vec<String> {
+    workspace(project).map(|ws| api::eval_checks_running(&ws, eval_id)).unwrap_or_default()
+}
+
 /// The workspace at `project`, as RingFrame opens one.
 fn workspace(project: &Path) -> Result<api::Workspace, Error> {
     api::workspace(project).map_err(refused)

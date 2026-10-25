@@ -202,6 +202,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.unexplained", "Unexplained changes"),
     ("eval_view.split", "The judges split"),
     ("eval_view.checks", "Checks RingFrame ran"),
+    ("eval_view.running", "`{check}`: running"),
     ("eval_view.limitations", "Limitations"),
     ("eval_view.found", "Found"),
     ("eval_view.readings", "Readings"),

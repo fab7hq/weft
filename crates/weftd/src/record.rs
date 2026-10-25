@@ -80,6 +80,7 @@ pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_v
         outputs: &outputs,
         planned: &planned,
         done: &done,
+        checks_running: &crate::ringframe::checks_running(project_root, eval_id),
     }))
 }
 
@@ -90,4 +91,25 @@ pub fn window_text(project_root: &Path, eval_id: &str, window: &str) -> Option<S
     }
     let doc = json_at(&project_root.join(".fab7/rf/evals").join(eval_id).join("windows.json"))?;
     doc["windows"][window].as_str().map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_check_ringframe_still_runs_shows_until_its_results_are_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let rf = dir.path().join(".fab7/rf");
+        let eval = rf.join("evals/evl_1");
+        let tmp = rf.join("tmp/eval-evl_1");
+        std::fs::create_dir_all(&eval).unwrap();
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(eval.join("changes.json"), r#"{"requirements": []}"#).unwrap();
+        std::fs::write(tmp.join("checks.plan.json"), r#"{"commands": ["cargo test"]}"#).unwrap();
+        let view = eval_view(dir.path(), "evl_1").unwrap();
+        assert_eq!(view.checks_running, ["cargo test"]);
+        std::fs::write(tmp.join("checks.json"), r#"{"facts": [], "findings": []}"#).unwrap();
+        assert!(eval_view(dir.path(), "evl_1").unwrap().checks_running.is_empty());
+    }
 }

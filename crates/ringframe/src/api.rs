@@ -13,7 +13,7 @@ use crate::ask::AskError;
 use crate::config::Overrides;
 use crate::seal::SealError;
 pub use crate::workspace::Workspace;
-use crate::{ask, evaluate, seal, store, tasks};
+use crate::{ask, checks, evaluate, seal, store, tasks};
 
 /// Why a call wrote nothing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -559,6 +559,12 @@ pub fn eval_submit(ws: &Workspace, task_id: &str, answer: &Path) -> Result<Submi
 pub fn eval_void(ws: &Workspace, eval_id: &str, reason: &str) -> Result<(), Error> {
     evaluate::void_eval(ws, eval_id, reason, Some(&person()))?;
     Ok(())
+}
+
+/// The checks RingFrame still runs for an Eval, within their time: its
+/// verdict waits for them.
+pub fn eval_checks_running(ws: &Workspace, eval_id: &str) -> Vec<String> {
+    checks::running(ws, eval_id)
 }
 
 /// The settled record (`ringframe.eval/1`), or None while the Eval is open.
