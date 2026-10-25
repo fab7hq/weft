@@ -360,6 +360,8 @@ pub enum Step {
         n: usize,
         /// As a person reads it: accepted, rejected, parked, dropped.
         decision: String,
+        /// Why, when a reason was given: `broke something`.
+        reason: Option<String>,
         /// When, and who decided: `11:40 · by you`.
         aside: String,
     },
@@ -383,6 +385,8 @@ pub struct UnitDetail {
     pub eval: Option<Why>,
     /// `None` when Seal can run on it, else why not.
     pub seal: Option<Why>,
+    /// What it offers now it is sealed, each with its own dialog.
+    pub offers: Vec<crate::after_seal::Offer>,
 }
 
 /// A unit's Details. `judges` reads an Eval's record, when there is one;
@@ -458,6 +462,7 @@ pub fn unit_detail(
                 seal: s.id.clone(),
                 n: s.n,
                 decision: crate::tree::decision(&s.disposition),
+                reason: s.reason.as_deref().map(|r| word(&format!("seal.r.{r}")).to_string()),
                 aside: fill("unit.sealed", &[("time", &clock(&s.at)), ("by", &s.by)]),
             },
         ));
@@ -486,6 +491,12 @@ pub fn unit_detail(
         follows: u.follows.clone(),
         eval: why.0,
         seal: why.1,
+        offers: match &u.status {
+            crate::work::Status::Sealed { decision } => {
+                crate::after_seal::offers(decision).to_vec()
+            }
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -938,6 +949,7 @@ mod tests {
             ]
         );
         assert_eq!(d.follows, "evl_3");
+        assert!(d.offers.is_empty(), "open work offers nothing");
         let readme = work.of_ask("ask_r").unwrap();
         let d = unit_detail(readme, &units, &work.record, &|_| None, (None, None), 0);
         assert_eq!(d.aside, "1 Ask · claude · since 11:01");
@@ -947,9 +959,13 @@ mod tests {
                 seal: "sel_4".into(),
                 n: 1,
                 decision: "accepted".into(),
+                reason: None,
                 aside: "11:40 · by you".into()
             })
         );
+        use crate::after_seal::Offer;
+        assert_eq!(d.offers, [Offer::KeepRule, Offer::Commit], "accepted work offers these");
+        assert_eq!(serde_json::to_value(&d).unwrap()["offers"], json!(["keep_rule", "commit"]));
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["steps"][1]["step"], "eval");
         assert_eq!(v["status"], json!({"state": "sealed", "decision": "accepted"}));
