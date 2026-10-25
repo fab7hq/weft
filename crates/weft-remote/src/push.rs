@@ -203,17 +203,21 @@ pub struct Finished {
     pub unit: String,
     pub eval: String,
     pub title: String,
+    /// The title of the harness the work was asked of.
+    pub harness: String,
 }
 
-/// What a push says of an Eval that closed: "Ready to seal" opens the Seal
-/// dialog and "Needs you" the Eval, as its tag says.
+/// What a push says of an Eval that closed, titled as an agent's push is:
+/// "Ready to seal" opens the Seal dialog and "Needs you" the Eval, as its tag
+/// says.
 pub fn eval_payload(done: &Finished, project: &str, count: usize) -> Value {
     let (opens, said) = match done.notice {
         weft_core::board::Notice::ReadyToSeal => ("seal", "Ready to seal"),
         weft_core::board::Notice::NeedsYou => ("eval", "Needs you"),
     };
     json!({"tag": format!("{opens}:{}:{}", done.unit, done.eval),
-           "title": format!("{said}: {}", done.title), "body": project, "count": count})
+           "title": format!("{} in {project}", done.harness),
+           "body": format!("{said}: {}", done.title), "count": count})
 }
 
 #[cfg(test)]
@@ -259,16 +263,17 @@ mod tests {
             unit: "ask_1".into(),
             eval: "evl_1".into(),
             title: "fix login".into(),
+            harness: "Claude Code".into(),
         };
         assert_eq!(
             eval_payload(&done(Notice::ReadyToSeal), "weft", 2),
-            json!({"tag": "seal:ask_1:evl_1", "title": "Ready to seal: fix login",
-                   "body": "weft", "count": 2})
+            json!({"tag": "seal:ask_1:evl_1", "title": "Claude Code in weft",
+                   "body": "Ready to seal: fix login", "count": 2})
         );
         assert_eq!(
             eval_payload(&done(Notice::NeedsYou), "weft", 0),
-            json!({"tag": "eval:ask_1:evl_1", "title": "Needs you: fix login",
-                   "body": "weft", "count": 0})
+            json!({"tag": "eval:ask_1:evl_1", "title": "Claude Code in weft",
+                   "body": "Needs you: fix login", "count": 0})
         );
     }
 

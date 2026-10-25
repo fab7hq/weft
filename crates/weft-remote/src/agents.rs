@@ -187,11 +187,14 @@ impl Project {
             if !self.told.insert(eval.clone()) {
                 continue;
             }
+            let root = self.root_of(unit);
+            let harness = self.titles.get(&root.harness).cloned().unwrap_or(root.harness);
             out.push(crate::push::Finished {
                 notice,
                 unit: unit.root.clone(),
                 eval: eval.clone(),
-                title: self.root_of(unit).title,
+                title: root.title,
+                harness,
             });
         }
         out
@@ -848,6 +851,7 @@ mod tests {
         let before = closing("evl_0", &["ask_2"]);
         let answer = json!({
             "panes": [], "units": units, "readiness": {},
+            "harnesses": [{"name": "claude", "title": "Claude Code"}],
             "work": work_of(&units, &before),
             "records": {"evl_0": {"notice": "needs_you"}},
         });
@@ -867,6 +871,7 @@ mod tests {
                 unit: "ask_1".into(),
                 eval: "evl_1".into(),
                 title: "fix login".into(),
+                harness: "Claude Code".into(),
             }]
         );
         assert_eq!(p.finished(), [], "told once");
