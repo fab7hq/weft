@@ -48,9 +48,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
             render_seal_disposition_bar(client, project, eval, selected, reason.as_deref())
         }
         BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
-        BottomBarState::KeepRule { harness, title, share, draft, failed, .. } => {
-            render_keep_bar(harness, title, *share, (draft.is_some(), failed.as_deref()))
-        }
+        BottomBarState::Undo { commits, picked, .. } => render_undo_bar(commits, *picked),
         BottomBarState::WhyNot { sentence } => render_tree_bar(props, Some(sentence.as_str())),
         BottomBarState::None => render_tree_bar(props, None),
     }
@@ -204,63 +202,98 @@ fn render_git_note_bar(project: &std::path::Path) -> Element {
         ]))
 }
 
-/// Keep a rule (17.14, 17.15): the agent writing, then the rule to change,
-/// Just me or My team too, and Save.
-fn render_keep_bar(
-    harness: &str,
-    work: &str,
-    share: bool,
-    (drafted, failed): (bool, Option<&str>),
-) -> Element {
-    let chip = |layer: &str, said: &str, picked: bool, act: BarAct| {
+/// Undo's one dialog: the commits from where the work started up to now,
+/// newest first, in a list that scrolls and keeps the one picked in view.
+fn render_undo_bar(commits: &[weft_core::after_seal::Commit], picked: usize) -> Element {
+    let row = |(at, c): (usize, &weft_core::after_seal::Commit)| {
+        let on = at == picked;
         div()
-            .layer(layer)
-            .on_click(act)
-            .pad(6, 12)
-            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
-            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
-            .font_weight(if picked { 600 } else { 400 })
-            .font_size(13)
-            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(said.to_string())
+            .layer(format!("commit {}", c.short))
+            .on_click(BarAct::PickCommit(at))
+            .flex_row()
+            .items_center()
+            .gap(12)
+            .shrink_0()
+            .h(34)
+            .pad(0, 14)
+            .bg(if on { palette::SELECTED_BG } else { palette::SURFACE })
+            .border_bottom(palette::LINE)
+            .child(
+                div()
+                    .w(12)
+                    .h(12)
+                    .shrink_0()
+                    .style("border-radius", "6px")
+                    .bg(if on { palette::BLUE_BORDER } else { palette::SURFACE })
+                    .border(if on { palette::BLUE_BORDER } else { palette::DIM }),
+            )
+            .child(
+                div()
+                    .w(62)
+                    .shrink_0()
+                    .font_mono()
+                    .font_size(12)
+                    .color(palette::DIM)
+                    .text(c.short.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .style("min-width", "0px")
+                    .style("white-space", "nowrap")
+                    .style("overflow", "hidden")
+                    .style("text-overflow", "ellipsis")
+                    .font_size(13)
+                    .font_weight(if on { 600 } else { 400 })
+                    .color(if on { palette::TEXT } else { palette::MUTED })
+                    .text(c.subject.clone()),
+            )
+            .children(c.start.then(|| {
+                div()
+                    .font_mono()
+                    .font_size(11)
+                    .color(palette::BLUE_BORDER)
+                    .text(word("dialog.undo.started"))
+            }))
+            .child(div().font_mono().font_size(11).color(palette::DIM).text(c.when.clone()))
     };
-    let named = [("harness", harness), ("title", work)];
-    let why = match (drafted, failed) {
-        (true, _) => word("dialog.keep_rule.why").to_string(),
-        (false, Some(why)) => fill(&format!("dialog.keep_rule.{why}"), &named),
-        (false, None) => fill("dialog.keep_rule.writing", &named),
+    let count = match commits.len() {
+        1 => word("dialog.undo.count_one").to_string(),
+        n => fill("dialog.undo.count", &[("n", &n.to_string())]),
     };
-    // The field takes typing from the start: the draft fills it when it comes.
-    let rule = crate::gpui::textarea_el(crate::action::Focus::Keep)
-        .layer("rule")
-        .self_stretch()
-        .pad(8, 12)
+    let label = div()
+        .flex_col()
+        .gap(4)
+        .w(96)
+        .shrink_0()
+        .child(
+            div()
+                .font_mono()
+                .font_weight(600)
+                .font_size(10)
+                .color(palette::DIM)
+                .text(word("dialog.undo.put_back")),
+        )
+        .child(div().font_size(12).color(palette::DIM).text(count));
+    let tree = div()
+        .layer("commits")
+        .flex_col()
+        .flex_1()
+        .style("min-width", "0px")
+        .style("max-height", "156px")
+        .style("overflow-y", "auto")
         .bg(palette::SURFACE)
-        .border(palette::BLUE_BORDER)
-        .font_size(14)
-        .color(palette::TEXT)
-        .placeholder(word("dialog.keep_rule.placeholder"));
-    asking_bar("Keep a rule bar", palette::BLUE_BORDER)
-        .child(title(word("dialog.keep_rule.title")))
-        .child(note(why, palette::MUTED))
-        .child(rule)
+        .border(palette::LINE)
+        .shows(picked)
+        .children(commits.iter().enumerate().map(row));
+    asking_bar("Undo bar", palette::AMBER_BORDER)
+        .child(title(word("dialog.undo.title")))
+        .child(div().flex_row().gap(10).items_start().child(label).child(tree))
         .child(
             div()
                 .flex_row()
                 .gap(10)
                 .items_center()
-                .child(chip(
-                    "keep mine",
-                    word("dialog.keep_rule.mine"),
-                    !share,
-                    BarAct::KeepShare(false),
-                ))
-                .child(chip(
-                    "keep team",
-                    word("dialog.keep_rule.team"),
-                    share,
-                    BarAct::KeepShare(true),
-                ))
                 .child(div().flex_1())
                 .child(button(
                     "btn Cancel",
@@ -269,13 +302,7 @@ fn render_keep_bar(
                     Tone::Quiet,
                     Size::Bar,
                 ))
-                .child(button(
-                    "btn Save",
-                    word("dialog.keep_rule.go"),
-                    BarAct::SaveRule,
-                    Tone::Primary,
-                    Size::Bar,
-                )),
+                .child(button("btn Undo", word("offer.undo"), BarAct::Undo, Tone::Warn, Size::Bar)),
         )
 }
 

@@ -296,21 +296,6 @@ pub enum Event {
     RemoteAct {
         act: Value,
     },
-    /// The rule a sealed unit's agent drafted, for the person to edit and
-    /// keep: `unit` is the unit's first Ask.
-    Drafted {
-        unit: String,
-        harness: String,
-        rule: weft_core::after_seal::Drafted,
-    },
-    /// No draft will come: the request was not typed (`not_typed`), or the
-    /// agent's turn ended with nothing written (`no_draft`). The person
-    /// writes the rule themselves.
-    NotDrafted {
-        unit: String,
-        harness: String,
-        why: String,
-    },
     /// The person typed into Weft on this machine, at `at` (milliseconds):
     /// sent to every client, at most once in ten seconds (remote.md D6).
     /// A project's turbo switch changed: agents started from now on run so.
@@ -639,12 +624,6 @@ impl Event {
             Event::Update { version } => ("update.waiting", json!({"version": version})),
             Event::Remote { view } => ("remote", json!({"view": view})),
             Event::RemoteAct { act } => ("remote.act", act.clone()),
-            Event::Drafted { unit, harness, rule } => {
-                ("rule.drafted", json!({"unit": unit, "harness": harness, "rule": rule}))
-            }
-            Event::NotDrafted { unit, harness, why } => {
-                ("rule.not_drafted", json!({"unit": unit, "harness": harness, "why": why}))
-            }
             Event::Readiness { states } => ("readiness", json!({"states": states})),
             Event::Setup { view } => ("setup", json!({"view": view})),
             Event::Workspace { setup, gap } => ("workspace", json!({"setup": setup, "gap": gap})),
@@ -710,14 +689,6 @@ impl Event {
                 Event::Update { version: p.get("version")?.as_str().map(str::to_string) }
             }
             "remote" => Event::Remote { view: p.get("view")?.clone() },
-            "rule.not_drafted" => {
-                Event::NotDrafted { unit: s("unit")?, harness: s("harness")?, why: s("why")? }
-            }
-            "rule.drafted" => Event::Drafted {
-                unit: s("unit")?,
-                harness: s("harness")?,
-                rule: serde_json::from_value(p.get("rule")?.clone()).ok()?,
-            },
             "remote.act" => {
                 p.get("act")?.as_str()?;
                 Event::RemoteAct { act: p.clone() }
@@ -1260,21 +1231,6 @@ mod tests {
             Event::Update { version: None },
             Event::Remote { view: json!({"state": "on"}) },
             Event::RemoteAct { act: json!({"act": "stop"}) },
-            Event::Drafted {
-                unit: "ask_1".into(),
-                harness: "codex".into(),
-                rule: weft_core::after_seal::Drafted {
-                    name: "Degraded health".into(),
-                    rule: "Answer 503 when a dependency is down.".into(),
-                    when: "A health endpoint changes.".into(),
-                    family: "domain".into(),
-                },
-            },
-            Event::NotDrafted {
-                unit: "ask_1".into(),
-                harness: "codex".into(),
-                why: "no_draft".into(),
-            },
             Event::Injected { pane: 0, refusal: Some("NoProcess".into()), unrecorded: None },
             Event::Injected { pane: 0, refusal: None, unrecorded: Some("ledger.io".into()) },
             Event::Readiness { states: json!({"codex": "ready"}) },

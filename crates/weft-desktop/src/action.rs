@@ -27,8 +27,6 @@ pub enum Focus {
     Ask,
     /// A setting typed in Settings (a role's model).
     Setting,
-    /// The rule being kept, in Keep a rule's dialog.
-    Keep,
 }
 
 /// The top bar, `☰` and the window itself.
@@ -134,12 +132,12 @@ pub enum BarAct {
     Eval,
     Seal,
     Cancel,
-    /// Keep a rule for the team too, or just for the person.
-    KeepShare(bool),
-    /// Keep a rule's Save: the rule as edited.
-    SaveRule,
     /// The Git note dialog's Turn on.
     TurnOnGitNote,
+    /// Undo's commit to put the work back to, by its place in the list.
+    PickCommit(usize),
+    /// Undo's yes: the work back to the commit picked.
+    Undo,
     Resolve {
         project: PathBuf,
         pending: String,

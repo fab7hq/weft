@@ -134,7 +134,7 @@ impl Remote {
                         return;
                     }
                     Carries::Settings => ok["settings"] = v,
-                    Carries::Remedy => ok["remedy"] = v,
+                    Carries::Sealed(what) => ok[what.as_str()] = v,
                     Carries::Suggestion => {
                         if v.get("text").is_some() {
                             ok["text"] = v["text"].clone();
@@ -604,19 +604,20 @@ impl Remote {
                 let of = Gather::Seal { id: id.into(), after: after.map(str::to_string) };
                 (at, of, vec![(Part::Seal, "seal", id.to_string())])
             }
-            // A follow-up's words for rejected work, from what its Eval found.
-            Some("remedy") => {
+            // For rejected work: a follow-up's words, from what its Eval
+            // found, or the commits Undo offers.
+            Some(what @ ("remedy" | "commits")) => {
                 let at = self.project_named(m)?;
                 let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
                 let call = Call::Read {
-                    what: "remedy".into(),
+                    what: what.into(),
                     unit: id.into(),
                     pane: None,
                     lines: None,
                     before: None,
                     after: None,
                 };
-                return self.ask(at, call, conn, req, Carries::Remedy);
+                return self.ask(at, call, conn, req, Carries::Sealed(what.into()));
             }
             Some("eval_view") => {
                 let at = self.project_named(m)?;
@@ -627,7 +628,7 @@ impl Remote {
                 return Err((
                     "not_allowed",
                     "a device reads history, detail, work, eval, seal, session, sealed, sessions, \
-                     done, remedy or eval_view"
+                     done, remedy, commits or eval_view"
                         .into(),
                 ));
             }

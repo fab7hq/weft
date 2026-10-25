@@ -376,21 +376,23 @@ impl WeftDesktopApp {
                 Some(TreeSelection::Work { project, unit }) => self.seal_work(project, unit),
                 _ => self.why_not_for(Act::Seal),
             },
-            BarAct::Cancel => {
-                // Keep a rule cancelled: the draft still coming is not wanted.
-                if let BottomBarState::KeepRule { project, unit, .. } = &self.bottom_bar
-                    && let Some(c) = self.clients.iter_mut().find(|c| &c.root == project)
+            BarAct::Cancel => self.bottom_bar = BottomBarState::None,
+            BarAct::PickCommit(at) => {
+                if let BottomBarState::Undo { commits, picked, .. } = &mut self.bottom_bar
+                    && at < commits.len()
                 {
-                    let _ = c.act("drop_draft", Some(unit), None, None, None, None);
-                }
-                self.bottom_bar = BottomBarState::None
-            }
-            BarAct::KeepShare(on) => {
-                if let BottomBarState::KeepRule { share, .. } = &mut self.bottom_bar {
-                    *share = on;
+                    *picked = at;
                 }
             }
-            BarAct::SaveRule => self.save_rule(),
+            BarAct::Undo => {
+                if let BottomBarState::Undo { project, unit, commits, picked, .. } =
+                    std::mem::replace(&mut self.bottom_bar, BottomBarState::None)
+                    && let Some(c) = self.client_mut(&project)
+                {
+                    let id = commits[picked].id.clone();
+                    let _ = c.act("undo", Some(&unit), None, Some(&id), None, None);
+                }
+            }
             BarAct::TurnOnGitNote => {
                 if let BottomBarState::GitNoteConfirm { project } = self.bottom_bar.clone() {
                     self.git_note(&project, Some(serde_json::json!(true)));
@@ -495,61 +497,18 @@ impl WeftDesktopApp {
     }
 
     /// What sealed work offers. Follow up reads what its Eval found first;
-    /// Keep a rule opens its dialog and has the agent draft one; Undo asks
-    /// the daemon, whose one dialog follows.
+    /// Undo reads the commits its dialog offers.
     fn offer(&mut self, project: PathBuf, unit: String, offer: weft_core::after_seal::Offer) {
         use weft_core::after_seal::Offer;
-        let (harness, title) = self
-            .client(&project)
-            .and_then(|c| c.units.iter().find(|u| u.ask_id == unit))
-            .map(|u| (u.harness.clone(), u.title.clone()))
-            .unwrap_or_default();
         let Some(c) = self.client_mut(&project) else { return };
         match offer {
             Offer::FollowUp => {
                 let _ = c.read("remedy", &unit, None, Then::Remedy { unit: unit.clone() });
             }
-            Offer::KeepRule => {
-                (c.drafted, c.not_drafted) = (None, None);
-                let _ = c.act("draft_rule", Some(&unit), None, None, None, None);
-                self.keep.set_text("");
-                self.focus = Focus::Keep;
-                let (share, draft, failed) = (false, None, None);
-                self.bottom_bar = BottomBarState::KeepRule {
-                    project,
-                    unit,
-                    harness,
-                    title,
-                    share,
-                    draft,
-                    failed,
-                };
-            }
             Offer::Undo => {
-                let _ = c.act("undo", Some(&unit), None, None, None, None);
+                let _ = c.read("commits", &unit, None, Then::Commits { unit: unit.clone() });
             }
         }
-    }
-
-    /// Keep a rule's Save: the draft as edited, or the person's own rule;
-    /// nothing with the rule emptied, and the bar says why.
-    fn save_rule(&mut self) {
-        let BottomBarState::KeepRule { project, unit, share, draft, .. } = self.bottom_bar.clone()
-        else {
-            return;
-        };
-        let text = self.keep.text().trim().to_string();
-        if text.is_empty() {
-            self.bottom_bar =
-                BottomBarState::WhyNot { sentence: words::word("dialog.keep_rule.empty").into() };
-            return;
-        }
-        // The agent's draft as edited, or the person's own words alone.
-        let rule = weft_core::after_seal::Drafted { rule: text, ..draft.unwrap_or_default() };
-        if let Some(c) = self.client_mut(&project) {
-            let _ = c.keep_rule(&unit, rule, share);
-        }
-        self.bottom_bar = BottomBarState::None;
     }
 
     /// A project's own Git note setting, set or taken out.

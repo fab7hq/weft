@@ -197,11 +197,6 @@ impl Session {
             },
             None => Some("NoProcess".to_string()),
         };
-        // A draft request handed to the pane's worker waits for it; one
-        // refused here brings no draft.
-        if refusal.is_some() {
-            self.draft_typed(project, w.pane, false);
-        }
         match (refusal, w.sends) {
             // Typed and submitted is not delivered: what the pane reports it
             // received says whether this was the Ask. A report that comes
@@ -232,7 +227,6 @@ impl Session {
             Ok(a) if !a.submitted => Some("PasteNotShown".to_string()),
             Ok(_) => None,
         };
-        self.draft_typed(project, pane, refusal.is_none());
         // A judge's line is the judges' own, and no one is told of it.
         if self
             .projects

@@ -71,12 +71,6 @@ pub fn reads_overrides(layers: &str) -> Result<(), Error> {
     rules(Some(layers)).map(|_| ())
 }
 
-/// Move one of the person's rules, by id, from these layers into the
-/// project's `.fab7/rules.toml`, which RingFrame writes.
-pub fn share(project: &Path, id: &str, layers: &str) -> Result<Value, Error> {
-    api::rules_share(&workspace(project)?, id, &overrides(Some(layers))?).map_err(refused)
-}
-
 /// RingFrame's own exit code for "refused by a rule", as its help documents.
 const REFUSED_BY_A_RULE: i32 = 2;
 

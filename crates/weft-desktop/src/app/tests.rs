@@ -823,98 +823,62 @@ fn acted(wire: &mut Wire) -> Call {
     }
 }
 
-/// Sealed work offers what its decision allows: accepted work, Keep a rule
-/// alone. Keep a rule is one dialog: opening it has the agent draft one, the
-/// draft fills it, and Save keeps the rule as edited, for the team when
-/// asked.
+/// Accepted work offers nothing after its Seal: no Keep a rule, no Commit.
 #[test]
-fn accepted_work_offers_keep_a_rule() {
-    use weft_core::after_seal::{Drafted, Offer};
-    let (_tmp, mut app, mut wire) = wired_app();
+fn accepted_work_offers_nothing() {
+    let (_tmp, mut app, _wire) = wired_app();
     app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
     let unit = app.render().find_layer("sheet Unit").expect("the unit").all_text();
-    for said in ["AFTER THE SEAL", "Keep a rule"] {
-        assert!(unit.contains(said), "{said} in {unit}");
+    for gone in ["AFTER THE SEAL", "Keep a rule", "Commit", "Undo"] {
+        assert!(!unit.contains(gone), "no {gone}: {unit}");
     }
-    assert!(!unit.contains("Undo"), "accepted work is not undone: {unit}");
-
-    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
-    let call = acted(&mut wire);
-    assert!(
-        matches!(&call, Call::Act { act, unit, .. } if act == "draft_rule" && unit.as_deref() == Some("ask_4")),
-        "{call:?}"
-    );
-    let writing = app.render().find_layer("Keep a rule bar").expect("its dialog").all_text();
-    assert!(writing.contains("is writing one rule"), "{writing}");
-
-    let rule = Drafted {
-        name: "Degraded health".into(),
-        rule: "Answer 503 when a dependency is down.".into(),
-        when: "A health endpoint changes.".into(),
-        family: "domain".into(),
-    };
-    wire.event(Event::Drafted {
-        unit: "ask_4".into(),
-        harness: "codex".into(),
-        rule: rule.clone(),
-    });
-    pumped(&mut app, |a| a.keep.text() == rule.rule);
-    app.keep.set_text("Answer 503 and name what is down.");
-    app.dispatch(BarAct::KeepShare(true));
-    app.dispatch(BarAct::SaveRule);
-    let call = acted(&mut wire);
-    let Call::Act { act, unit, draft, .. } = call else { panic!("{call:?}") };
-    assert_eq!((act.as_str(), unit.as_deref()), ("keep_rule", Some("ask_4")));
-    let draft = draft.expect("the rule kept");
-    assert_eq!(
-        draft.rule.as_deref().map(|r| r.rule.as_str()),
-        Some("Answer 503 and name what is down.")
-    );
-    assert!(draft.share);
-    assert_eq!(app.bottom_bar, BottomBarState::None, "Save closes it");
 }
 
-/// The rule can always be written by hand: when no draft will come, the
-/// dialog says why and stays open, Save keeps the person's own words, and
-/// Cancel stops the wait.
+/// Undo is one dialog: it reads the commits from where the work started up
+/// to now, newest first, that one picked already; the person may pick a
+/// later one, and Undo sends the one picked.
 #[test]
-fn a_rule_is_kept_by_hand_when_no_draft_comes() {
+fn undo_puts_the_work_back_to_the_commit_picked() {
     use weft_core::after_seal::Offer;
     let (_tmp, mut app, mut wire) = wired_app();
-    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
-    let _ = acted(&mut wire);
-    assert!(app.keep_field_mut().is_some(), "the field takes typing while the agent writes");
-    wire.event(Event::NotDrafted {
-        unit: "ask_4".into(),
-        harness: "codex".into(),
-        why: "no_draft".into(),
-    });
-    pumped(&mut app, |a| {
-        a.render()
-            .find_layer("Keep a rule bar")
-            .is_some_and(|b| b.all_text().contains("ended without writing"))
-    });
-    app.keep.set_text("Name each dependency a health check waited on.");
-    app.dispatch(BarAct::SaveRule);
-    let Call::Act { act, draft, .. } = acted(&mut wire) else { panic!() };
-    assert_eq!(act, "keep_rule");
-    let rule = draft.and_then(|d| d.rule).expect("the person's own rule");
-    assert_eq!(rule.rule, "Name each dependency a health check waited on.");
-
-    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::KeepRule });
-    let _ = acted(&mut wire);
-    app.dispatch(BarAct::Cancel);
-    let call = acted(&mut wire);
+    app.dispatch(SheetAct::Offer { project: weft(), unit: "ask_4".into(), offer: Offer::Undo });
+    let (id, call) = wire.call();
     assert!(
-        matches!(&call, Call::Act { act, unit, .. } if act == "drop_draft" && unit.as_deref() == Some("ask_4")),
+        matches!(&call, Call::Read { what, unit, .. } if what == "commits" && unit == "ask_4"),
         "{call:?}"
     );
-    assert_eq!(app.bottom_bar, BottomBarState::None);
+    let commit = |id: &str, subject: &str, start: bool| json!({"id": format!("{id}ffff"), "short": id, "subject": subject, "when": "11:02", "start": start});
+    wire.answer(
+        id,
+        json!({"commits": [
+            commit("e81b7c2", "Return 503 while the database is down", false),
+            commit("7ab3d10", "Add a health endpoint", false),
+            commit("4f2a9c1", "Tidy the router", true),
+        ]}),
+    );
+    pumped(&mut app, |a| matches!(a.bottom_bar, BottomBarState::Undo { .. }));
+    let bar = app.render().find_layer("Undo bar").expect("its dialog").all_text();
+    for said in
+        ["Undo this work?", "PUT BACK TO", "3 commits", "Tidy the router", "where it started"]
+    {
+        assert!(bar.contains(said), "{said} in {bar}");
+    }
+    assert!(!bar.contains("puts your files back"), "no sentence: {bar}");
+    assert!(matches!(app.bottom_bar, BottomBarState::Undo { picked: 2, .. }), "where it started");
+
+    app.dispatch(BarAct::PickCommit(1));
+    app.dispatch(BarAct::Undo);
+    let call = acted(&mut wire);
+    assert!(
+        matches!(&call, Call::Act { act, unit, text, .. }
+            if act == "undo" && unit.as_deref() == Some("ask_4") && text.as_deref() == Some("7ab3d10ffff")),
+        "{call:?}"
+    );
+    assert_eq!(app.bottom_bar, BottomBarState::None, "Undo closes it");
 }
 
 /// A project's Git note of each Seal is off until its own settings turn it
 /// on; turning it on asks once, showing what a note holds; off asks nothing.
-    assert!(!unit.contains("Commit"), "the person commits for themselves: {unit}");
 #[test]
 fn a_projects_git_note_is_turned_on_in_one_dialog() {
     let (_tmp, mut app, mut wire) = wired_app();

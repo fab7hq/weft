@@ -27,7 +27,7 @@ fn note(root: &Path, reference: &str, text: &str, commit: &str) -> Result<(), St
     git(root, &["notes", "--ref", reference, "add", "-f", "-m", text, commit]).map(|_| ())
 }
 
-fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .arg("-C")
         .arg(root)

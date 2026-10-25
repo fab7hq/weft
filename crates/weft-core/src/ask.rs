@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::suggest::{Bm25, words};
 
 /// What the person chose before an act's Send: an Ask's route, task, plan
-/// and practice rules, a Seal's reason, or a rule to keep and whether it is
-/// shared with the team. A part left out is the default.
+/// and practice rules, or a Seal's reason. A part left out is the default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Draft {
@@ -22,10 +21,6 @@ pub struct Draft {
     pub rules: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub rule: Option<Box<crate::after_seal::Drafted>>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub share: bool,
 }
 
 /// A route as the sheet names it: `native_goal` is "Goal", `human_handoff`

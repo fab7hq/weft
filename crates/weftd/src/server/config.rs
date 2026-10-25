@@ -154,7 +154,7 @@ impl Session {
 
     /// `config.toml` read again for every project, and each project's clients
     /// told: its settings, and its turbo when that moved.
-    pub(super) fn reread_config(&mut self) {
+    fn reread_config(&mut self) {
         for at in 0..self.projects.len() {
             let p = &mut self.projects[at];
             let config = crate::routing::read_at(&self.config, &p.harnesses);
@@ -176,7 +176,7 @@ impl Session {
 
 /// `text` with the value at `path` set or taken out, refused when Weft would
 /// not read something the change brought.
-pub(super) fn checked_edit(
+fn checked_edit(
     text: &str,
     path: &[String],
     value: Option<&serde_json::Value>,

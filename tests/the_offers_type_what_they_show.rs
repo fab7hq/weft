@@ -1,7 +1,8 @@
 //! What sealed work offers types what its dialog shows, into the work's own
-//! agent, and nothing before Send: Undo on rejected work names the commit
-//! its first Ask was sent on; Follow up on rejected work starts from what its
-//! Eval found and remediates that Eval. An offer for the other decision is
+//! agent, and nothing before Send: Undo on rejected work offers the commits
+//! from the one its first Ask was sent on, and types the one picked; Follow
+//! up on rejected work starts from what its Eval found and remediates that
+//! Eval. An offer for the other decision is
 //! refused, and there is no Commit.
 //!
 //! Its own test binary because it sets `HOME` for RingFrame's configuration.
@@ -62,20 +63,6 @@ impl Client {
         self.wait(|l| match l {
             Line::Result { id: i, result } if *i == id => Some(Ok(result.clone())),
             Line::Error { id: i, code, .. } if *i == id => Some(Err(code.clone())),
-            _ => None,
-        })
-    }
-
-    /// An offer's dialog: its id, title, what it shows typed, and whether its yes warns.
-    fn dialog(&mut self, act: &str, unit: &str) -> (String, String, String, bool) {
-        self.call(offer(act, unit, None, None));
-        self.wait(|l| match l {
-            Line::Event(Event::Pending { id, what, payload, go, .. }) => Some((
-                id.clone(),
-                what.clone(),
-                String::from_utf8_lossy(payload).into_owned(),
-                go.as_ref().is_some_and(|g| g.warn),
-            )),
             _ => None,
         })
     }
@@ -256,13 +243,36 @@ fn each_offer_types_what_its_dialog_shows() {
     assert_eq!(c.answer(offer("undo", &accepted, None, None)), Err("not_offered".into()));
     assert_eq!(c.answer(offer("commit", &accepted, None, None)), Err("unknown_act".into()));
 
-    // Undo: the commit the work's first Ask was sent on is typed, never
-    // shown; its yes is amber.
-    let (pending, what, payload, warn) = c.dialog("undo", &rejected);
-    assert_eq!((what.as_str(), payload.as_str()), ("Undo this work?", ""));
-    assert!(warn, "Undo's yes is amber");
-    c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
-    let said = typed(&dir, pane, &format!("commit {base}"));
+    // Undo: the commits from the one the work's first Ask was sent on up to
+    // now, newest first, that one marked where it started; the commit the
+    // person picked in its dialog is typed at once, with Undo's limits.
+    let listed = c
+        .answer(Call::Read {
+            what: "commits".into(),
+            unit: rejected.clone(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None,
+        })
+        .expect("the commits");
+    let commits: Vec<(String, String, bool)> = listed["commits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| {
+            let s = |k: &str| c[k].as_str().unwrap_or_default().to_string();
+            (s("id"), s("subject"), c["start"] == true)
+        })
+        .collect();
+    assert_eq!(commits.len(), 2, "{listed}");
+    assert_eq!((commits[0].1.as_str(), commits[0].2), ("work", false), "{listed}");
+    assert_eq!((commits[1].0.as_str(), commits[1].2), (base.as_str(), true), "{listed}");
+    let none = offer("undo", &rejected, None, Some("0000000"));
+    assert_eq!(c.answer(none), Err("no_commit".into()), "only a listed commit");
+    let later = commits[0].0.clone();
+    c.answer(offer("undo", &rejected, None, Some(&later))).expect("typed at once");
+    let said = typed(&dir, pane, &format!("commit {later}."));
     assert!(said.contains("ask me before you discard any change"), "{said}");
 
     // Follow up: the sheet's words are what the Eval found, and the Ask

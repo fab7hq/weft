@@ -49,6 +49,8 @@ pub struct Element {
     /// A scroll: what scrolling up past its top asks for. Its children
     /// named by `id` keep their place when more goes in above them.
     pub at_top: Option<Action>,
+    /// A scroll: the child it keeps in view, scrolled to whenever it changes.
+    pub shows: Option<usize>,
     /// A text field: which one.
     pub field: Option<Focus>,
     /// A tab that can be dragged.
@@ -88,6 +90,7 @@ pub fn div() -> Element {
         text: None,
         action: None,
         at_top: None,
+        shows: None,
         field: None,
         drag: None,
         drop: None,
@@ -352,6 +355,12 @@ impl Element {
 
     pub fn at_top(mut self, action: impl Into<Action>) -> Self {
         self.at_top = Some(action.into());
+        self
+    }
+
+    /// A scroll that keeps its child `at` in view.
+    pub fn shows(mut self, at: usize) -> Self {
+        self.shows = Some(at);
         self
     }
 

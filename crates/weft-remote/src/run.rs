@@ -157,8 +157,9 @@ enum Carries {
     Suggestion,
     /// The machine's settings, as `config.get` answers them.
     Settings,
-    /// A follow-up's words, from what an Eval found.
-    Remedy,
+    /// A read of sealed work, under its name: a follow-up's words
+    /// (`remedy`) or the commits Undo offers (`commits`).
+    Sealed(String),
 }
 
 /// The daemon's reads one device read is gathered from.
@@ -488,22 +489,6 @@ impl Remote {
             Heard::Answer(at, id, answer) => self.answered(at, id, answer),
             Heard::Event(at, screen @ Event::Screen { .. }) => self.screen(at, screen),
             Heard::Event(at, pending @ Event::Pending { .. }) => self.pending_added(at, pending),
-            // No draft will come for a unit: its Keep dialog says so.
-            Heard::Event(at, Event::NotDrafted { unit, harness, why }) => {
-                if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {
-                    let project = open.agents.name.clone();
-                    self.to_devices(&json!({"type": "not_drafted", "project": project,
-                        "unit": unit, "harness": harness, "why": why}));
-                }
-            }
-            // The rule a sealed unit's agent drafted, for the Keep dialog.
-            Heard::Event(at, Event::Drafted { unit, harness, rule }) => {
-                if let Some(open) = self.projects.get(at).and_then(Option::as_ref) {
-                    let project = open.agents.name.clone();
-                    self.to_devices(&json!({"type": "drafted", "project": project,
-                        "unit": unit, "harness": harness, "rule": rule}));
-                }
-            }
             Heard::Event(_, Event::Resolved { id, yes }) => {
                 if self.pendings.remove(&id).is_some() {
                     self.to_devices(&json!({"type": "resolved", "id": id, "yes": yes}));

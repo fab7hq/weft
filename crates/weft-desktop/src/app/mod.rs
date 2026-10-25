@@ -165,16 +165,13 @@ pub enum BottomBarState {
     GitNoteConfirm {
         project: PathBuf,
     },
-    /// Keep a rule's one dialog: the agent writing, then its draft to change.
-    KeepRule {
+    /// Undo's one dialog: the commits from where the work started, newest
+    /// first, and the one picked.
+    Undo {
         project: PathBuf,
         unit: String,
-        harness: String,
-        title: String,
-        share: bool,
-        draft: Option<weft_core::after_seal::Drafted>,
-        /// Why no draft will come: `not_typed` or `no_draft`.
-        failed: Option<String>,
+        commits: Vec<weft_core::after_seal::Commit>,
+        picked: usize,
     },
 }
 
@@ -226,8 +223,6 @@ pub struct WeftDesktopApp {
     /// agents brings each one's draft back. The open Ask's field.
     pub messages: HashMap<(PathBuf, u32), TextField>,
     pub ask: TextField,
-    /// The rule being kept, in Keep a rule's dialog.
-    pub keep: TextField,
     /// What the open Ask's sheet offers, as the daemon last said it.
     pub ask_sheet: Option<serde_json::Value>,
     /// What the person picked of it.
@@ -303,7 +298,6 @@ impl WeftDesktopApp {
             unfolded_steps: HashSet::new(),
             messages: HashMap::new(),
             ask: TextField::new(Shape::Area),
-            keep: TextField::new(Shape::Area),
             ask_sheet: None,
             ask_choices: Default::default(),
             focus: Focus::Terminal,
@@ -622,36 +616,6 @@ impl WeftDesktopApp {
     }
 
     /// The setting field, while one is being typed.
-    /// Keep a rule's field, which takes typing from the start: the agent's
-    /// draft fills it when it comes, unless the person wrote first.
-    pub fn keep_field_mut(&mut self) -> Option<&mut TextField> {
-        matches!(self.bottom_bar, BottomBarState::KeepRule { .. }).then_some(&mut self.keep)
-    }
-
-    /// The draft an agent wrote fills Keep a rule's dialog, once, unless the
-    /// person wrote their own; or the dialog is told none will come.
-    fn take_draft(&mut self) {
-        let BottomBarState::KeepRule { project, unit, draft, failed, .. } = &mut self.bottom_bar
-        else {
-            return;
-        };
-        let Some(c) = self.clients.iter().find(|c| &c.root == project) else { return };
-        if draft.is_none()
-            && let Some((_, _, rule)) = c.drafted.as_ref().filter(|(u, _, _)| u == unit)
-        {
-            if self.keep.text().trim().is_empty() {
-                self.keep.set_text(&rule.rule);
-            }
-            *draft = Some(rule.clone());
-            self.focus = Focus::Keep;
-        }
-        if failed.is_none()
-            && let Some((_, why)) = c.not_drafted.as_ref().filter(|(u, _)| u == unit)
-        {
-            *failed = Some(why.clone());
-        }
-    }
-
     pub fn setting_field_mut(&mut self) -> Option<&mut TextField> {
         self.setting_editing.is_some().then_some(&mut self.setting_field)
     }
@@ -716,7 +680,6 @@ impl WeftDesktopApp {
         for (root, a) in answers {
             self.take_answer(&root, a);
         }
-        self.take_draft();
         // An agent's turn or record moved: what it said may have too, and
         // an Eval still being judged.
         if moved {
@@ -930,6 +893,16 @@ impl WeftDesktopApp {
                     unit,
                     v["words"].as_str().unwrap_or_default(),
                 );
+            }
+            // Undo opens on what it read: where the work started is picked.
+            (Then::Commits { unit }, Ok(v)) => {
+                let commits: Vec<weft_core::after_seal::Commit> =
+                    serde_json::from_value(v["commits"].clone()).unwrap_or_default();
+                let picked = commits.iter().position(|c| c.start).unwrap_or(commits.len());
+                if picked < commits.len() {
+                    let project = root.to_path_buf();
+                    self.bottom_bar = BottomBarState::Undo { project, unit, commits, picked };
+                }
             }
             (Then::Conversation { pane }, Ok(v)) => {
                 self.take_conversation(root, pane, false, &v["conversation"]);

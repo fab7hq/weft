@@ -132,49 +132,16 @@ pub const WORDS: &[(&str, &str)] = &[
     ("dialog.stop_eval.go", "Stop Eval"),
     // What sealed work offers, each with its own dialog.
     ("offer.after_seal", "AFTER THE SEAL"),
-    ("offer.keep_rule", "Keep a rule"),
     ("offer.follow_up", "Follow up"),
     ("offer.undo", "Undo"),
-    (
-        "dialog.rule_draft.request",
-        "Draft one rule for my future work, from what I asked in \"{title}\" and my follow-ups below. \
-         Write it to {path} as these four lines and nothing else:\n\
-         name: <two to four words>\n\
-         rule: <the rule, one line>\n\
-         when: <when it matters, one line>\n\
-         family: <scope, simplicity, reuse, testing, cleanup or domain>\n\
-         \n\
-         What I asked: {asked}\n\
-         My follow-ups:\n\
-         {follow_ups}",
-    ),
-    ("dialog.keep_rule.title", "Keep a rule"),
-    (
-        "dialog.keep_rule.writing",
-        "{harness} is writing one rule from your follow-ups on {title}. You can write it yourself instead.",
-    ),
-    ("dialog.keep_rule.why", "Change it as you like. It is offered on your next Asks."),
-    ("dialog.keep_rule.mine", "Just me"),
-    ("dialog.keep_rule.team", "My team too"),
-    ("dialog.keep_rule.go", "Save"),
-    ("dialog.keep_rule.empty", "Write the rule first: it is empty."),
-    (
-        "dialog.keep_rule.not_typed",
-        "{harness} was busy, so nothing was typed. Write the rule yourself, or Cancel.",
-    ),
-    (
-        "dialog.keep_rule.no_draft",
-        "{harness} ended without writing a rule. Write it yourself, or Cancel.",
-    ),
-    ("dialog.keep_rule.placeholder", "The rule, in one line"),
     ("dialog.undo.title", "Undo this work?"),
-    (
-        "dialog.undo.why",
-        "{harness} puts your files back as they were before {title} started, and asks before discarding anything else.",
-    ),
+    ("dialog.undo.put_back", "PUT BACK TO"),
+    ("dialog.undo.count", "{n} commits"),
+    ("dialog.undo.count_one", "1 commit"),
+    ("dialog.undo.started", "where it started"),
     (
         "dialog.undo.request",
-        "Undo \"{title}\": put the code back as it was at commit {commit}, where this work started. \
+        "Undo \"{title}\": put the code back as it was at commit {commit}. \
          Don't rewrite Git history, and ask me before you discard any change this work didn't make.",
     ),
     // A project's export of each Seal (17.19).

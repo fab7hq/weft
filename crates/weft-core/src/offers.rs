@@ -964,9 +964,7 @@ mod tests {
                 aside: "11:40 · by you".into()
             })
         );
-        use crate::after_seal::Offer;
-        assert_eq!(d.offers, [Offer::KeepRule], "accepted work offers this");
-        assert_eq!(serde_json::to_value(&d).unwrap()["offers"], json!(["keep_rule"]));
+        assert!(d.offers.is_empty(), "accepted work offers nothing");
         let v = serde_json::to_value(&d).unwrap();
         assert_eq!(v["steps"][1]["step"], "eval");
         assert_eq!(v["status"], json!({"state": "sealed", "decision": "accepted"}));

@@ -203,8 +203,6 @@ struct Project {
     due: Vec<typing::Due>,
     /// The judges of each Eval opened here.
     benches: Vec<judges::Bench>,
-    /// Rules agents here were asked to draft, read back once written.
-    drafting: Vec<crate::acts::Drafting>,
     /// The sessions judges ran here, which are no agent of the person's:
     /// `.fab7/weft/judges.json`.
     judged: std::collections::HashSet<String>,
@@ -365,13 +363,6 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
-    /// A rule was kept, or refused: `config.toml` is read again, and the
-    /// client answered.
-    Kept {
-        client: u64,
-        call_id: u64,
-        answer: Answer,
-    },
     /// A project's suggestion entries were read: all of them (`source` none),
     /// or again from one source. `built`: built again, so not kept yet.
     Suggested {
@@ -942,7 +933,6 @@ impl Session {
                 }
                 Wake::Tick => {
                     self.follow_the_record();
-                    self.read_drafts();
                     self.update_when_idle();
                 }
                 Wake::Suggested { root, source, entries, built } => {
@@ -981,10 +971,6 @@ impl Session {
                 }
                 Wake::Workspace { project, setup, gap } => self.set_up(project, setup, gap),
                 Wake::Answer { client, call_id, answer } => {
-                    self.clients.send_to(client, &answer.line(call_id))
-                }
-                Wake::Kept { client, call_id, answer } => {
-                    self.reread_config();
                     self.clients.send_to(client, &answer.line(call_id))
                 }
                 Wake::ConfigChecked { client, call_id, project, scope, key, value } => {
@@ -1068,8 +1054,8 @@ impl Session {
         if act == "stop" {
             return self.stage_stop(at, eval);
         }
-        if matches!(act, "draft_rule" | "drop_draft" | "keep_rule" | "undo") {
-            return self.offer((client, call_id), at, act, (unit_id, draft));
+        if act == "undo" {
+            return self.offer(at, unit_id, text);
         }
         let root = self.projects[at].root.clone();
         let units = self.projects[at].ledger.units();
@@ -1426,6 +1412,8 @@ impl Session {
             // `unit` is an Ask of rejected work: a follow-up's words, from
             // what its Eval found.
             "remedy" => self.remedy(at, unit),
+            // `unit` is an Ask of rejected work: the commits Undo offers.
+            "commits" => self.commits(at, unit),
             // Done: every sealed unit, parked first, in the words a person reads.
             "done" => {
                 let (units, record) =
@@ -2110,7 +2098,6 @@ impl Session {
                     starting: Vec::new(),
                     due: Vec::new(),
                     benches: Vec::new(),
-                    drafting: Vec::new(),
                     judged,
                     unseated,
                     turns: crate::turns::Turns::default(),

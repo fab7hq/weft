@@ -596,20 +596,20 @@ impl Project {
         Ok(v)
     }
 
-    /// What sealed work offers, on the unit a device names: the daemon
-    /// says whether this work offers it.
-    fn offer(&self, offer: &str, m: &Value) -> Result<Call, Refusal> {
+    /// Undo, on the unit a device names, back to the commit its dialog
+    /// picked: the daemon says whether this work offers it.
+    fn undo(&self, m: &Value) -> Result<Call, Refusal> {
         let id =
             m["unit"].as_str().ok_or(("bad_request", "an offer names its unit".to_string()))?;
         let unit = self.unit(id).ok_or(("no_unit", format!("{id} is not on the board")))?;
         Ok(Call::Act {
-            act: offer.into(),
+            act: "undo".into(),
             unit: Some(unit.ask_id.clone()),
             pane: None,
-            text: None,
+            text: m["commit"].as_str().map(str::to_string),
             eval: None,
             start: None,
-            draft: serde_json::from_value(m["draft"].clone()).ok(),
+            draft: None,
         })
     }
 
@@ -670,10 +670,8 @@ impl Project {
         if m["act"] == "stop" {
             return stop(m);
         }
-        if let Some(offer @ ("draft_rule" | "drop_draft" | "keep_rule" | "undo")) =
-            m["act"].as_str()
-        {
-            return self.offer(offer, m);
+        if m["act"] == "undo" {
+            return self.undo(m);
         }
         let (act, daemon) = match m["act"].as_str() {
             Some("ask") => (Act::Ask, "ask"),
@@ -1063,9 +1061,8 @@ mod tests {
         }
     }
 
-    /// What sealed work offers goes to the daemon as its own act on the
-    /// unit, with the draft the device sent; Done is every sealed unit,
-    /// searched by its words.
+    /// Undo goes to the daemon as its own act on the unit, with the commit
+    /// the device picked; Done is every sealed unit, searched by its words.
     #[test]
     fn offers_on_sealed_work_go_to_the_daemon_and_done_is_searched() {
         let mut p = opened();
@@ -1078,19 +1075,16 @@ mod tests {
         p.units[0].sealed = Some("rejected".into());
         p.units[0].seal_id = Some("sel_1".into());
         p.work = work_of(&p.units, &events);
-        for offer in ["draft_rule", "drop_draft", "keep_rule", "undo"] {
-            let m = json!({"act": offer, "unit": "ask_1", "draft": {"share": true}});
-            let Ok(Call::Act { act: a, unit, pane, text, draft, .. }) = act(&p, m) else {
-                panic!("{offer} was refused");
-            };
-            assert_eq!(
-                (a.as_str(), unit.as_deref(), pane, text),
-                (offer, Some("ask_1"), None, None)
-            );
-            assert!(draft.is_some_and(|d| d.share), "{offer} carries its draft");
+        let picked = act(&p, json!({"act": "undo", "unit": "ask_1", "commit": "7ab3d10"}));
+        assert!(
+            matches!(&picked, Ok(Call::Act { act, unit, text: Some(c), .. })
+                if act == "undo" && unit.as_deref() == Some("ask_1") && c == "7ab3d10"),
+            "Undo carries the commit picked: {picked:?}"
+        );
+        for gone in ["draft_rule", "keep_rule", "commit"] {
+            assert!(act(&p, json!({"act": gone, "unit": "ask_1"})).is_err(), "no {gone}");
         }
         assert!(act(&p, json!({"act": "undo", "unit": "ask_9"})).is_err(), "no such work");
-        assert!(act(&p, json!({"act": "commit", "unit": "ask_1"})).is_err(), "no Commit");
 
         let found = |q: &str| -> Vec<String> {
             p.done(Some(q), None)["rows"]

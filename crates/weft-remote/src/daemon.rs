@@ -152,18 +152,7 @@ pub fn allowed(call: &Call) -> bool {
         // the daemon's harness file gives: never one a device sent.
         Call::StartAgent { .. } => true,
         Call::Act { act, .. } => {
-            matches!(
-                act.as_str(),
-                "ask"
-                    | "follow_up"
-                    | "send"
-                    | "check"
-                    | "decide"
-                    | "draft_rule"
-                    | "drop_draft"
-                    | "keep_rule"
-                    | "undo"
-            )
+            matches!(act.as_str(), "ask" | "follow_up" | "send" | "check" | "decide" | "undo")
         }
         // A device may send anyway only after weft remote said its agent is
         // not ready (protocol.rs).
@@ -187,6 +176,7 @@ pub fn allowed(call: &Call) -> bool {
                     | "profile"
                     | "ask"
                     | "remedy"
+                    | "commits"
             )
         }
         _ => false,
@@ -293,15 +283,6 @@ mod tests {
                 draft: None,
             },
             Call::Act {
-                act: "keep_rule".into(),
-                unit: Some("ask_1".into()),
-                pane: None,
-                text: None,
-                eval: None,
-                start: None,
-                draft: None,
-            },
-            Call::Act {
                 act: "undo".into(),
                 unit: Some("ask_1".into()),
                 pane: None,
@@ -312,6 +293,14 @@ mod tests {
             },
             Call::Read {
                 what: "remedy".into(),
+                unit: "ask_1".into(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: None,
+            },
+            Call::Read {
+                what: "commits".into(),
                 unit: "ask_1".into(),
                 pane: None,
                 lines: None,

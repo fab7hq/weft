@@ -38,7 +38,6 @@ fn field(app: &mut WeftDesktopApp, which: Focus) -> Option<&mut TextField> {
         Focus::Message => Some(app.message_field()),
         Focus::Ask => app.ask_draft_mut(),
         Focus::Setting => app.setting_field_mut(),
-        Focus::Keep => app.keep_field_mut(),
         Focus::Terminal => None,
     }
 }
@@ -551,7 +550,6 @@ impl GpuiDesktopView {
                 Focus::Message => guard.app.dispatch(crate::action::PaneAct::SendMessage),
                 Focus::Ask => guard.app.dispatch(SheetAct::SubmitAsk),
                 Focus::Setting => guard.app.dispatch(SheetAct::CommitSetting),
-                Focus::Keep => guard.app.dispatch(crate::action::BarAct::SaveRule),
                 _ => {}
             },
             // Tab takes the suggestion shown in the message field; Escape drops
@@ -1006,6 +1004,9 @@ impl GpuiDesktopView {
             if is_scroll_y {
                 stateful = stateful.overflow_y_scroll();
             }
+            if let Some(at) = el.shows {
+                stateful = stateful.track_scroll(&self.shown_scroll(&id_str, at));
+            }
             if let Some(action) = el.at_top.clone() {
                 let handle = self.kept_scroll(&id_str, el);
                 stateful = stateful.track_scroll(&handle).on_scroll_wheel(cx.listener(
@@ -1058,6 +1059,19 @@ impl GpuiDesktopView {
             handle.scroll_to_top_of_item(at);
         }
         *first = el.children.first().and_then(|c| c.id.clone());
+        handle.clone()
+    }
+
+    /// The scroll of an element that keeps its child `at` in view: scrolled
+    /// to it when it first shows and whenever another is picked, and left
+    /// where the person scrolls it otherwise.
+    fn shown_scroll(&self, key: &str, at: usize) -> ScrollHandle {
+        let mut scrolls = self.scrolls.borrow_mut();
+        let (handle, shown) = scrolls.entry(key.to_string()).or_default();
+        if shown.as_deref() != Some(at.to_string().as_str()) {
+            handle.scroll_to_item(at);
+            *shown = Some(at.to_string());
+        }
         handle.clone()
     }
 }
@@ -1133,6 +1147,7 @@ pub(crate) const STYLES: &[&str] = &[
     "justify-content",
     "left",
     "line-height",
+    "max-height",
     "max-width",
     "min-height",
     "min-width",
@@ -1218,6 +1233,10 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
         },
         "max-width" => match n {
             Some(n) => d.max_w(px(n)),
+            None => d,
+        },
+        "max-height" => match n {
+            Some(n) => d.max_h(px(n)),
             None => d,
         },
         "padding" => {

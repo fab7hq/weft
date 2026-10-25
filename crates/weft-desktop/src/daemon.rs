@@ -269,6 +269,10 @@ pub enum Then {
     Remedy {
         unit: String,
     },
+    /// The commits Undo offers for rejected work.
+    Commits {
+        unit: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -370,11 +374,6 @@ pub struct ProjectClient {
     /// This project's settings, as the daemon last told them (`config`).
     pub config: Option<serde_json::Value>,
     pub update: Option<String>,
-    /// The rule a sealed unit's agent last drafted: its unit, harness and
-    /// draft, for the Keep dialog.
-    pub drafted: Option<(String, String, weft_core::after_seal::Drafted)>,
-    /// A unit no draft will come for, and why: `not_typed` or `no_draft`.
-    pub not_drafted: Option<(String, String)>,
     pub reopened_since: Option<i64>,
     pub harnesses: Harnesses,
     pub unread: Vec<String>,
@@ -449,8 +448,6 @@ impl ProjectClient {
             start_at_login: false,
             config: None,
             update: None,
-            drafted: None,
-            not_drafted: None,
             reopened_since: None,
             harnesses: Default::default(),
             unread: Vec::new(),
@@ -815,8 +812,6 @@ impl ProjectClient {
             | Event::RemoteAct { .. }
             | Event::Signal(_) => {}
             Event::Remote { view } => self.remote = Some(view),
-            Event::Drafted { unit, harness, rule } => self.drafted = Some((unit, harness, rule)),
-            Event::NotDrafted { unit, why, .. } => self.not_drafted = Some((unit, why)),
             Event::Added { pane, harness, spec, turbo } => {
                 if self.view(pane).is_none() {
                     self.panes.push(PaneView::new(pane, harness, spec));
@@ -960,28 +955,6 @@ impl ProjectClient {
             eval: None,
             start: start.map(str::to_string),
             draft,
-        };
-        self.tell(call, Then::Refusal)
-    }
-
-    /// Keep a rule: the agent's draft as the person edited it, for the team
-    /// too when `share`.
-    pub fn keep_rule(
-        &mut self,
-        unit: &str,
-        rule: weft_core::after_seal::Drafted,
-        share: bool,
-    ) -> Result<u64> {
-        let draft =
-            weft_core::ask::Draft { rule: Some(Box::new(rule)), share, ..Default::default() };
-        let call = Call::Act {
-            act: "keep_rule".into(),
-            unit: Some(unit.to_string()),
-            pane: None,
-            text: None,
-            eval: None,
-            start: None,
-            draft: Some(draft),
         };
         self.tell(call, Then::Refusal)
     }
