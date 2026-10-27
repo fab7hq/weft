@@ -180,13 +180,6 @@ struct Project {
     /// The record, followed here rather than in every client. One reader, and
     /// clients are told what it says.
     ledger: crate::ledger::Ledger,
-    /// What the person sent here, for suggestions: loaded or built in the
-    /// background when the project opens, nothing until then.
-    suggest: Option<Vec<weft_core::suggest::Entry>>,
-    /// `suggest = true`: the message field gets suggestions here.
-    suggest_on: bool,
-    /// The index its suggestions come from, and the change it was built at.
-    index: Option<(u64, weft_core::suggest::Index)>,
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -366,16 +359,6 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
-    /// A project's suggestion entries were read: all of them (`source` none),
-    /// or again from one source. `built`: built again, so not kept yet.
-    Suggested {
-        root: PathBuf,
-        source: Option<String>,
-        entries: Vec<weft_core::suggest::Entry>,
-        built: bool,
-    },
-    /// The habits every project's suggestions share, read at start.
-    Habits(Vec<weft_core::suggest::Entry>),
     /// Ten times a second: time to read what settled, and to frame a pane
     /// resized without printing.
     Frames,
@@ -517,12 +500,6 @@ pub struct Session {
     dismissed: Option<usize>,
     /// A newer Weft a window said is installed: started on once no agent runs.
     update: Option<Newer>,
-    /// The short messages every kept index holds, read in the background at
-    /// start: the habits every project's suggestions share.
-    habits: Vec<weft_core::suggest::Entry>,
-    /// Counts each change to any project's entries or the habits: an index
-    /// built at an older count is built again.
-    suggest_changes: u64,
     /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
     sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
     /// Sense's last answer on the Ask sheet, for its harness and words: what
@@ -945,8 +922,6 @@ impl Session {
             supervisor: Default::default(),
             dismissed: None,
             update: None,
-            habits: Vec::new(),
-            suggest_changes: 0,
             sense,
             sensed: LastSensed::default(),
             _held: crate::versions::hold_own(),
@@ -967,10 +942,9 @@ impl Session {
         // the list is empty. After an update nothing ended: they are open.
         session.reopen(!updated);
         session.remote_from_config();
-        let (habits_of, tx) = (config.to_path_buf(), session.tx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(Wake::Habits(crate::suggest::habits(&habits_of)));
-        });
+        // Prompt suggestions are gone, and with them the index of what the
+        // person sent that an earlier Weft kept for them.
+        let _ = std::fs::remove_dir_all(config.with_file_name("suggest"));
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
         outcome
@@ -1020,13 +994,6 @@ impl Session {
                 Wake::Tick => {
                     self.follow_the_record();
                     self.update_when_idle();
-                }
-                Wake::Suggested { root, source, entries, built } => {
-                    self.suggested(&root, source, entries, built)
-                }
-                Wake::Habits(entries) => {
-                    self.habits = entries;
-                    self.suggest_changes += 1;
                 }
                 Wake::Checked => {
                     let open: Vec<usize> =
@@ -1817,90 +1784,6 @@ impl Session {
         self.clients.broadcast(at, &Out::Readiness { states });
     }
 
-    /// Load a project's suggestion entries, or build them again when there
-    /// are none kept or they are of an old version, off the run loop.
-    fn read_suggestions(&mut self, at: usize) {
-        let (config, root) = (self.config.clone(), self.projects[at].root.clone());
-        let harnesses = self.projects[at].harnesses.clone();
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            let (entries, built) = match crate::suggest::load(&config, &root) {
-                Some(kept) => (kept, false),
-                None => (crate::suggest::build(&config, &root, &harnesses), true),
-            };
-            let _ = tx.send(Wake::Suggested { root, source: None, entries, built });
-        });
-    }
-
-    /// Take a project's suggestion entries, or one source's again, and keep
-    /// them. Only this loop writes the index, so two writes never cross.
-    fn suggested(
-        &mut self,
-        root: &Path,
-        source: Option<String>,
-        entries: Vec<weft_core::suggest::Entry>,
-        built: bool,
-    ) {
-        self.suggest_changes += 1;
-        let Some(p) = self.projects.iter_mut().find(|p| p.root == root && !p.closed) else {
-            return;
-        };
-        match source {
-            None => {
-                if built {
-                    let _ = crate::suggest::save(&self.config, root, &entries);
-                }
-                p.suggest = Some(entries);
-            }
-            Some(source) => {
-                // Not loaded yet: the load reads this source too.
-                let Some(all) = p.suggest.as_mut() else { return };
-                let before = all.clone();
-                crate::suggest::replace(all, &source, entries);
-                if *all != before {
-                    let _ = crate::suggest::save(&self.config, root, all);
-                }
-            }
-        }
-    }
-
-    /// `pane.suggest`: what the pane's message field could show, or nothing:
-    /// suggestions off here, no such pane, or nothing near enough.
-    fn suggestion(&mut self, client: u64, pane: u32, draft: &str) -> Answer {
-        let Some(at) = self.project_of(client) else { return Answer::no_project() };
-        let p = &self.projects[at];
-        let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else {
-            return Answer::No("no_pane", "there is no such pane here".into());
-        };
-        if !p.suggest_on {
-            return Answer::Ok(serde_json::json!({}));
-        }
-        let harness = slot.map.harness.clone();
-        // Built again only after a project's entries or the habits changed.
-        let changes = self.suggest_changes;
-        if p.index.as_ref().is_none_or(|(at_change, _)| *at_change != changes) {
-            // Every other open project's short messages count as habits too.
-            let open: Vec<weft_core::suggest::Entry> = self
-                .projects
-                .iter()
-                .filter(|o| o.root != p.root && !o.closed)
-                .flat_map(|o| o.suggest.iter().flatten().cloned())
-                .collect();
-            let others: Vec<_> = self.habits.iter().cloned().chain(open).collect();
-            let own = p.suggest.as_deref().unwrap_or_default();
-            let index = crate::suggest::index_of(own, &others, &p.root);
-            self.projects[at].index = Some((changes, index));
-        }
-        let Some((_, index)) = self.projects[at].index.as_ref() else {
-            return Answer::Ok(serde_json::json!({}));
-        };
-        let now = (crate::turns::now_millis() / 1000).max(0) as u64;
-        match crate::suggest::ask(index, &harness, draft, now) {
-            Some(s) => Answer::Ok(serde_json::json!({"text": s.text, "score": s.score})),
-            None => Answer::Ok(serde_json::json!({})),
-        }
-    }
-
     /// Tell each project's clients when its record has moved, or an agent's
     /// state has.
     fn follow_the_record(&mut self) {
@@ -1915,10 +1798,6 @@ impl Session {
             if self.projects[at].ledger.refresh() {
                 let board = self.board_of(at);
                 self.clients.broadcast(at, &board);
-                let p = &self.projects[at];
-                let asks = crate::suggest::of_asks(&p.root, &p.ledger.units());
-                let root = p.root.clone();
-                self.suggested(&root, Some("ask:".into()), asks, false);
             }
             self.tell_agents(at);
         }
@@ -2181,9 +2060,6 @@ impl Session {
                     panes: Vec::new(),
                     next_pane: 0,
                     ledger,
-                    suggest: None,
-                    suggest_on: config.suggest(),
-                    index: None,
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.
@@ -2215,7 +2091,6 @@ impl Session {
                     reopened: None,
                 });
                 let at = self.projects.len() - 1;
-                self.read_suggestions(at);
                 // A map a daemon before this one left names panes that are gone.
                 self.write_map(at);
                 self.write_projects();
@@ -2390,7 +2265,6 @@ impl Session {
                 }
             }
             Call::Attach { pane, form } => return Ok(self.attach(client, pane, &form)),
-            Call::Suggest { pane, draft } => return Ok(self.suggestion(client, pane, &draft)),
             Call::Stage { pane, bytes, how, what, why } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 let id = format!("pnd_{}", self.next_pending);
@@ -2602,9 +2476,7 @@ impl Session {
                 let root = self.projects[at].root.clone();
                 let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
                 crate::state::remove_open_project(weft_dir, &root);
-                crate::suggest::forget(&self.config, &root);
                 crate::labels::forget(&self.config, &root);
-                self.projects[at].suggest = None;
                 self.acted_in(at);
                 // Closed once the answer is sent: closing ends this client's
                 // connection to it.

@@ -552,18 +552,8 @@ impl GpuiDesktopView {
                 Focus::Setting => guard.app.dispatch(SheetAct::CommitSetting),
                 _ => {}
             },
-            // Tab takes the suggestion shown in the message field; Escape drops
-            // it, and with none shown leaves the field.
-            Outcome::Take => {
-                if which == Focus::Message {
-                    guard.app.take_suggestion();
-                }
-            }
-            Outcome::Drop => {
-                if which != Focus::Message || !guard.app.drop_suggestion() {
-                    guard.app.focus = Focus::Terminal;
-                }
-            }
+            // Escape leaves the field.
+            Outcome::Leave => guard.app.focus = Focus::Terminal,
             Outcome::Changed | Outcome::Nothing => {}
         }
         cx.notify();
@@ -701,8 +691,6 @@ impl GpuiDesktopView {
         };
         let snapshot = self.shared.lock().ok().and_then(|mut g| {
             let is_focused = g.app.focus == which;
-            let ghost =
-                (which == Focus::Message).then(|| g.app.ghost().map(str::to_string)).flatten();
             field(&mut g.app, which).map(|f| {
                 (
                     is_focused,
@@ -711,11 +699,10 @@ impl GpuiDesktopView {
                     f.cursor(),
                     f.marked.clone(),
                     f.shape(),
-                    ghost,
                 )
             })
         });
-        let Some((is_focused, text, selection, cursor, marked, shape, ghost)) = snapshot else {
+        let Some((is_focused, text, selection, cursor, marked, shape)) = snapshot else {
             return d.into_any_element();
         };
         // Only the focused field's paint is kept for the pointer and the input method.
@@ -729,7 +716,6 @@ impl GpuiDesktopView {
             cursor,
             marked,
             placeholder: el.placeholder.clone().unwrap_or_default(),
-            ghost,
             shape,
             look,
             painted,
@@ -772,7 +758,7 @@ impl GpuiDesktopView {
                 cx.notify();
             }))
             .child(element);
-        // What sits inside the field beside its words, such as the key that takes a suggestion.
+        // What sits inside the field beside its words.
         for (idx, child) in el.children.iter().enumerate() {
             let child_path = format!("{path}/{idx}");
             field_box =
@@ -1687,34 +1673,15 @@ mod tests {
         });
     }
 
-    /// A suggestion shown for the draft the field holds now.
-    fn suggested(shared: &Arc<Mutex<SharedState>>, wire: &mut Wire, text: &str) {
-        let mut g = shared.lock().unwrap();
-        let t0 = std::time::Instant::now();
-        g.app.suggest_tick(t0);
-        g.app.suggest_tick(t0 + std::time::Duration::from_millis(150));
-        let (id, call) = wire.call();
-        assert!(matches!(call, weft_proto::Call::Suggest { .. }), "{call:?}");
-        wire.answer(id, serde_json::json!({"text": text, "score": 0.8}));
-        crate::app::tests::pumped(&mut g.app, |a| a.ghost().is_some());
-        assert_eq!(g.app.ghost(), Some(text));
-    }
-
     #[test]
-    fn tab_takes_the_suggestion_and_escape_drops_it_keeping_the_field() {
+    fn escape_leaves_the_message_field_and_tab_types_nothing_into_it() {
         windowed(|cx| {
-            let (_tmp, shared, _view, mut wire, cx) = opened_view(cx);
-            wire.calls();
+            let (_tmp, shared, _view, _wire, cx) = opened_view(cx);
             cx.simulate_input("run the");
-            suggested(&shared, &mut wire, " login tests");
             cx.simulate_keystrokes("tab");
-            assert_eq!(message(&shared), "run the login tests");
-            cx.simulate_input(" now");
-            suggested(&shared, &mut wire, " please");
+            assert_eq!(message(&shared), "run the");
             cx.simulate_keystrokes("escape");
-            assert_eq!(shared.lock().unwrap().app.ghost(), None);
-            cx.simulate_input("!");
-            assert_eq!(message(&shared), "run the login tests now!", "still in the field");
+            assert_eq!(shared.lock().unwrap().app.focus, Focus::Terminal);
         });
     }
 

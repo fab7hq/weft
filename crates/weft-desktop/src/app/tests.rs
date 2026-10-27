@@ -1060,7 +1060,7 @@ fn a_tab_of_a_pane_the_daemon_does_not_have_goes() {
     assert_eq!(panes, [1]);
 }
 
-/// What the app keeps per agent, its conversation, draft and suggestion, and
+/// What the app keeps per agent, its conversation and draft, and
 /// the pick of where a staged send goes, leave with the agent or its project.
 #[test]
 fn what_is_kept_for_a_gone_agent_or_a_closed_project_goes() {
@@ -1080,8 +1080,7 @@ fn what_is_kept_for_a_gone_agent_or_a_closed_project_goes() {
     let elsewhere = PathBuf::from("/work/closed");
     for key in [(weft(), 1), (weft(), 7), (elsewhere.clone(), 1)] {
         app.conversations.insert(key.clone(), Vec::new());
-        app.messages.insert(key.clone(), TextField::new(Shape::Line));
-        app.suggestions.insert(key, (String::new(), String::new()));
+        app.messages.insert(key, TextField::new(Shape::Line));
     }
     app.staged_to.insert("pending_1".into(), "2".into());
     app.staged_to.insert("pending_gone".into(), "2".into());
@@ -1089,11 +1088,10 @@ fn what_is_kept_for_a_gone_agent_or_a_closed_project_goes() {
     let kept = [(weft(), 1)];
     assert_eq!(app.conversations.keys().cloned().collect::<Vec<_>>(), kept);
     assert_eq!(app.messages.keys().cloned().collect::<Vec<_>>(), kept);
-    assert_eq!(app.suggestions.keys().cloned().collect::<Vec<_>>(), kept);
     assert_eq!(app.staged_to.keys().collect::<Vec<_>>(), ["pending_1"]);
     app.close_project(&weft());
     assert!(app.conversations.is_empty() && app.messages.is_empty());
-    assert!(app.suggestions.is_empty() && app.staged_to.is_empty());
+    assert!(app.staged_to.is_empty());
 }
 
 /// Resume is in a session's Details only: an ended row selected opens them,
@@ -1541,85 +1539,6 @@ fn the_tree_rows_are_one_line_with_the_status_shape() {
     assert!(!tree.find_layer("row agent claude readme fix").unwrap().all_text().contains('⚡'));
     assert_eq!(tree.find_layer("section AGENTS").unwrap().all_text(), "AGENTS");
     assert_eq!(tree.find_layer("section WORK").unwrap().all_text(), "WORK");
-}
-
-/// What the desktop asked the daemon to suggest since.
-fn suggests(wire: &mut Wire) -> Vec<(u64, String)> {
-    wire.calls()
-        .into_iter()
-        .filter_map(|(id, c)| match c {
-            Call::Suggest { draft, .. } => Some((id, draft)),
-            _ => None,
-        })
-        .collect()
-}
-
-#[test]
-fn the_agent_in_front_is_suggested_the_rest_of_a_settled_draft_and_a_late_answer_is_dropped() {
-    let (_tmp, mut app, mut wire) = wired_app();
-    app.state.panes.groups.clear();
-    start(&mut app, &mut wire, "claude");
-    start(&mut app, &mut wire, "codex");
-    let t0 = Instant::now();
-    app.message_field().type_text("run the");
-    app.suggest_tick(t0);
-    app.suggest_tick(t0 + Duration::from_millis(50));
-    assert!(suggests(&mut wire).is_empty(), "not before the draft settles");
-    app.suggest_tick(t0 + Duration::from_millis(120));
-    app.suggest_tick(t0 + Duration::from_millis(300));
-    let asked = suggests(&mut wire);
-    assert_eq!(
-        asked.iter().map(|a| a.1.as_str()).collect::<Vec<_>>(),
-        ["run the"],
-        "once per draft"
-    );
-    wire.answer(asked[0].0, json!({"text": " login tests", "score": 0.8}));
-    pumped(&mut app, |a| a.ghost().is_some());
-    assert_eq!(app.ghost(), Some(" login tests"));
-    assert!(app.render().find_layer("take suggestion").is_some());
-    // Only the agent in front shows one.
-    app.dispatch(PaneAct::SelectTab { group: 0, tab: 0 });
-    assert_eq!(app.ghost(), None);
-    app.dispatch(PaneAct::SelectTab { group: 0, tab: 1 });
-    assert_eq!(app.ghost(), Some(" login tests"));
-    // Tab takes it; an answer for a draft no longer there is dropped.
-    app.take_suggestion();
-    assert_eq!(app.message_field().text(), "run the login tests");
-    app.message_field().type_text(" now");
-    app.suggest_tick(t0 + Duration::from_millis(400));
-    app.suggest_tick(t0 + Duration::from_millis(520));
-    let asked = suggests(&mut wire);
-    app.message_field().type_text("!");
-    wire.answer(asked[0].0, json!({"text": " please", "score": 0.9}));
-    pumped(&mut app, |a| !a.clients[0].owes_any(|_| true));
-    assert_eq!(app.ghost(), None, "an answer to a draft no longer there");
-    // A malformed answer shows nothing.
-    app.message_field().set_text("ok");
-    app.suggest_tick(t0 + Duration::from_millis(1000));
-    app.suggest_tick(t0 + Duration::from_millis(1120));
-    let asked = suggests(&mut wire);
-    wire.answer(asked[0].0, json!({"text": 7}));
-    pumped(&mut app, |a| !a.clients[0].owes_any(|_| true));
-    assert_eq!(app.ghost(), None);
-}
-
-#[test]
-fn an_empty_field_asks_for_the_next_prompt_once_each_turn_has_ended() {
-    let (_tmp, mut app, mut wire) = wired_app();
-    app.state.panes.groups.clear();
-    let pane = start(&mut app, &mut wire, "claude");
-    let t0 = Instant::now();
-    let mut settle = |app: &mut WeftDesktopApp, ms: u64| {
-        app.suggest_tick(t0 + Duration::from_millis(ms));
-        app.suggest_tick(t0 + Duration::from_millis(ms + 150));
-        suggests(&mut wire)
-    };
-    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Working);
-    assert!(settle(&mut app, 0).is_empty(), "nothing to follow while it works");
-    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::TurnEnded);
-    let asked = settle(&mut app, 300);
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].1, "");
 }
 
 #[test]
@@ -2772,8 +2691,7 @@ fn the_turbo_switch_sets_the_machine_s_turbo_through_the_daemon() {
 #[test]
 fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     let (_tmp, mut app, mut wire) = wired_app();
-    app.clients[0].config =
-        Some(json!({"machine": {"turbo": false, "suggest": false}, "project": null}));
+    app.clients[0].config = Some(json!({"machine": {"turbo": false}, "project": null}));
     app.dispatch(WindowAct::ToggleMenu);
     assert!(app.render().find_layer("menu Settings").is_some(), "in ☰");
     app.dispatch(WindowAct::OpenSettings);
@@ -2792,7 +2710,7 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     assert_eq!(badge("setting Turbo"), "OFF");
     assert_eq!(badge("setting Start at login"), "OFF");
     assert_eq!(badge("setting Notifications"), "ON", "on until turned off");
-    assert_eq!(badge("setting Suggestions"), "OFF");
+    assert!(sheet.find_layer("setting Suggestions").is_none(), "no prompt suggestions");
 
     app.dispatch(SheetAct::Toggle(Setting::Notify));
     let (_, call) = wire.call();
@@ -2804,17 +2722,7 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
             value: Some(json!(false))
         }
     );
-    app.dispatch(SheetAct::Toggle(Setting::Suggest));
-    let (_, call) = wire.call();
-    assert_eq!(
-        call,
-        Call::ConfigSet {
-            scope: "machine".into(),
-            key: vec!["suggest".into()],
-            value: Some(json!(true))
-        }
-    );
-    wire.event(Event::Config { config: json!({"machine": {"suggest": true, "notify": false}}) });
+    wire.event(Event::Config { config: json!({"machine": {"notify": false}}) });
     pumped(&mut app, |a| {
         a.clients[0].config.as_ref().is_some_and(|c| c["machine"]["notify"] == false)
     });
@@ -2823,7 +2731,6 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
     let said =
         |row: &str| sheet.find_layer(row).unwrap().find_layer("setting badge").unwrap().all_text();
     assert_eq!(said("setting Notifications"), "OFF");
-    assert_eq!(said("setting Suggestions"), "ON");
 }
 
 /// Workflow: who runs each step and Eval's judges, every project's; a

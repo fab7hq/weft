@@ -235,8 +235,6 @@ pub struct PanesProps<'a> {
     pub message_draft: &'a str,
     /// The message field has the keyboard.
     pub typing: bool,
-    /// What the agent in front's field shows after its caret.
-    pub ghost: Option<&'a str>,
     /// What sits under the panes: the docked Ask in place of the message row.
     pub dock: Option<Element>,
 }
@@ -394,7 +392,6 @@ pub fn render_panes_workspace(props: &PanesProps) -> Element {
             &info.project,
             &info.harness,
             props.message_draft,
-            props.ghost,
             props.typing,
         ));
     }
@@ -1023,13 +1020,7 @@ fn render_step_block(
     box_el
 }
 
-fn render_message_row(
-    project: &str,
-    harness: &str,
-    draft: &str,
-    ghost: Option<&str>,
-    typing: bool,
-) -> Element {
+fn render_message_row(project: &str, harness: &str, draft: &str, typing: bool) -> Element {
     let placeholder =
         words::fill("desktop.message.placeholder", &[("project", project), ("harness", harness)]);
     div()
@@ -1050,20 +1041,7 @@ fn render_message_row(
                 .placeholder(placeholder)
                 .font_size(13)
                 .color(palette::TEXT)
-                .text(draft.to_string())
-                .children(ghost.map(|_| {
-                    // The key that takes the suggestion, at the field's right.
-                    div()
-                        .layer("take suggestion")
-                        .on_click(PaneAct::TakeSuggestion)
-                        .shrink_0()
-                        .pad(0, 5)
-                        .font_mono()
-                        .font_size(10)
-                        .color(palette::DIM)
-                        .border(palette::LINE)
-                        .text(words::word("suggest.take"))
-                })),
+                .text(draft.to_string()),
         )
         .child(
             div()

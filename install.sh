@@ -41,8 +41,24 @@ main() {
     if [ "$platform-$arch" = apple-darwin-x86_64 ]; then
         fail 'Weft has no build for an Intel Mac: it needs Apple silicon.'
     fi
-    if [ "$platform" = unknown-linux-gnu ] && ldd --version 2>&1 | grep -qi musl; then
-        fail 'Weft has no build for a musl system, such as Alpine: it needs glibc.'
+    if [ "$platform" = unknown-linux-gnu ]; then
+        libc=$(ldd --version 2>&1 | head -n 1)
+        case "$libc" in
+            *[Mm]usl*) fail 'Weft has no build for a musl system, such as Alpine: it needs glibc.' ;;
+        esac
+        # ONNX Runtime's Linux build calls glibc 2.38's functions. A version
+        # ldd does not say is not refused.
+        glibc=${libc##* }
+        case "$glibc" in
+            [0-9]*.[0-9]*)
+                major=${glibc%%.*}
+                minor=${glibc#*.}
+                minor=${minor%%[!0-9]*}
+                if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "${minor:-0}" -lt 38 ]; }; then
+                    fail "Weft needs glibc 2.38 or later; this system has $glibc."
+                fi
+                ;;
+        esac
     fi
 
     target="$arch-$platform"

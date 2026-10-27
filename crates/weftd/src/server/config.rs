@@ -7,7 +7,7 @@ use super::*;
 
 /// Keys only the machine has: a project's would be ignored. Turbo is every
 /// project's only (weft-after-desktop ADR-0003 D4).
-const MACHINE_ONLY: [&str; 6] = ["notify", "suggest", "service", "remote", "harnesses", "turbo"];
+const MACHINE_ONLY: [&str; 5] = ["notify", "service", "remote", "harnesses", "turbo"];
 
 impl Session {
     /// This project's settings: the file's machine tables and this project's
@@ -34,7 +34,6 @@ impl Session {
                 "routing": routing_json(&p.routing),
                 "turbo": p.turbo,
                 "notify": p.notify,
-                "suggest": p.suggest_on,
                 "ringframe": ringframe,
                 "export": read.export(&p.root),
             },
@@ -161,7 +160,6 @@ impl Session {
             p.routing = config.routing(&p.root);
             p.ringframe = config.ringframe_override(&p.root);
             p.notify = config.notify();
-            p.suggest_on = config.suggest();
             let turbo = config.turbo(&p.root);
             let moved = turbo != p.turbo;
             p.turbo = turbo;

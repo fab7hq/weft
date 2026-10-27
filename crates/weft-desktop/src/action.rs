@@ -62,7 +62,6 @@ pub enum SettingsTab {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Setting {
     Notify,
-    Suggest,
 }
 
 /// The tree's rows.
@@ -330,7 +329,6 @@ pub enum PaneAct {
     SetView { group: usize, tab: usize, view: PaneViewMode },
     ToggleSteps { project: PathBuf, pane: u32, block: usize },
     Older { project: PathBuf, pane: u32 },
-    TakeSuggestion,
     SendMessage,
 }
 

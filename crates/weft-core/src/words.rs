@@ -86,8 +86,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("start.title", "Start an agent"),
     ("workspace.empty", "Open a project to get started."),
-    // The key that takes a suggestion shown in the message field.
-    ("suggest.take", "Tab"),
     // The acts, as a bar or a button names them.
     ("act.ask", "Ask"),
     ("act.eval", "Eval"),
@@ -450,7 +448,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("web.machine.every_project", "Every project on {machine}"),
     ("web.machine.login_what", "Keep Weft running on {machine}"),
     ("web.machine.notify_what", "{machine} tells you when an agent needs you"),
-    ("web.machine.suggest_what", "Dim suggestions from your own words"),
     (
         "web.machine.foot",
         "These are {machine}'s own settings: every device that reaches {machine} sees and changes the same ones, at once.",
@@ -574,8 +571,6 @@ pub const WORDS: &[(&str, &str)] = &[
     ("desktop.settings.turbo_what", "New agents get every permission and no question"),
     ("desktop.settings.notify", "Notifications"),
     ("desktop.settings.notify_what", "Tell you when an agent needs you"),
-    ("desktop.settings.suggest", "Suggestions"),
-    ("desktop.settings.suggest_what", "Dim suggestions from your own words as you type"),
     ("desktop.settings.tab.workflow", "Workflow"),
     ("desktop.settings.acts", "Who runs each step"),
     ("desktop.settings.ask_what", "Sends what you ask"),

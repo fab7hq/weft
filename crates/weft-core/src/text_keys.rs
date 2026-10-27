@@ -11,10 +11,10 @@ pub enum Edit {
     Send,
     /// A new line in a message; nothing in a one-line field.
     NewLine,
-    /// Take the suggestion shown after the caret.
-    Take,
-    /// Drop the suggestion.
-    Drop,
+    /// Leave the field.
+    Leave,
+    /// Nothing: a key a field takes so that it types nothing, as Tab.
+    Nothing,
     Left,
     Right,
     Up,
@@ -54,8 +54,8 @@ impl Edit {
         match self {
             Edit::Send => "send",
             Edit::NewLine => "new_line",
-            Edit::Take => "take",
-            Edit::Drop => "drop",
+            Edit::Leave => "leave",
+            Edit::Nothing => "nothing",
             Edit::Left => "left",
             Edit::Right => "right",
             Edit::Up => "up",
@@ -119,8 +119,8 @@ impl System {
 pub const TEXT_KEYS: &[(Edit, &str, &str)] = &[
     (Edit::Send, "enter", "enter"),
     (Edit::NewLine, "shift-enter", "shift-enter"),
-    (Edit::Take, "tab", "tab"),
-    (Edit::Drop, "escape", "escape"),
+    (Edit::Leave, "escape", "escape"),
+    (Edit::Nothing, "tab", "tab"),
     (Edit::Left, "left", "left"),
     (Edit::Right, "right", "right"),
     (Edit::Up, "up", "up"),
@@ -187,12 +187,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn enter_sends_shift_enter_adds_a_line_tab_takes_and_escape_drops_on_both() {
+    fn enter_sends_shift_enter_adds_a_line_and_escape_leaves_on_both() {
         for system in [System::Mac, System::Linux] {
             assert_eq!(edit(system, "enter"), Some(Edit::Send));
             assert_eq!(edit(system, "shift-enter"), Some(Edit::NewLine));
-            assert_eq!(edit(system, "tab"), Some(Edit::Take));
-            assert_eq!(edit(system, "escape"), Some(Edit::Drop));
+            assert_eq!(edit(system, "tab"), Some(Edit::Nothing));
+            assert_eq!(edit(system, "escape"), Some(Edit::Leave));
             assert_eq!(edit(system, "a"), None, "a character types itself");
         }
     }

@@ -26,9 +26,8 @@ pub enum Outcome {
     Changed,
     /// Send the message, or do what a one-line field is for.
     Send,
-    /// Take the suggestion; drop it.
-    Take,
-    Drop,
+    /// Leave the field.
+    Leave,
     /// Put this on the clipboard.
     Copy(String),
     /// Read the clipboard and hand it to [`TextField::paste`].
@@ -123,8 +122,8 @@ impl TextField {
         };
         match edit {
             Edit::Send => Outcome::Send,
-            Edit::Take => Outcome::Take,
-            Edit::Drop => Outcome::Drop,
+            Edit::Leave => Outcome::Leave,
+            Edit::Nothing => Outcome::Nothing,
             Edit::NewLine => match self.shape {
                 Shape::Line => Outcome::Nothing,
                 Shape::Area => {
@@ -592,10 +591,10 @@ mod tests {
     }
 
     #[test]
-    fn tab_and_escape_are_for_the_suggestion() {
+    fn escape_leaves_the_field_and_tab_does_nothing() {
         let mut f = at(Shape::Area, "run|");
-        assert_eq!(f.key_on(text_keys::System::Mac, "tab"), Some(Outcome::Take));
-        assert_eq!(f.key_on(text_keys::System::Mac, "escape"), Some(Outcome::Drop));
+        assert_eq!(f.key_on(text_keys::System::Mac, "escape"), Some(Outcome::Leave));
+        assert_eq!(f.key_on(text_keys::System::Mac, "tab"), Some(Outcome::Nothing));
         assert_eq!(f.key_on(text_keys::System::Mac, "ctrl-q"), None, "not a text key");
     }
 }

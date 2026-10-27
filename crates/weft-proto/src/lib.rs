@@ -75,12 +75,6 @@ pub enum Call {
         pane: u32,
         form: String,
     },
-    /// What to suggest in the pane's message field: the rest of `draft`, or,
-    /// when it is empty, the next prompt. Answers `{text, score}` or nothing.
-    Suggest {
-        pane: u32,
-        draft: String,
-    },
     /// Put a prompt in front of the person. Answers with its pending id;
     /// nothing is typed until that is resolved.
     Stage {
@@ -444,9 +438,6 @@ impl Call {
                 ("pane.resize", json!({"pane": pane, "rows": rows, "cols": cols}))
             }
             Call::Attach { pane, form } => ("pane.attach", json!({"pane": pane, "form": form})),
-            Call::Suggest { pane, draft } => {
-                ("pane.suggest", json!({"pane": pane, "draft": draft}))
-            }
             Call::Stage { pane, bytes, how, what, why } => (
                 "stage",
                 json!({"pane": pane, "bytes": b64(bytes), "how": handoff_json(how),
@@ -516,7 +507,6 @@ impl Call {
                 cols: n("cols")? as u16,
             },
             "pane.attach" => Call::Attach { pane: n("pane")? as u32, form: s("form")? },
-            "pane.suggest" => Call::Suggest { pane: n("pane")? as u32, draft: s("draft")? },
             "stage" => Call::Stage {
                 pane: n("pane")? as u32,
                 bytes: bytes("bytes")?,
@@ -1023,8 +1013,6 @@ mod tests {
             Call::Resize { pane: 1, rows: 24, cols: 80 },
             Call::Attach { pane: 1, form: "screen".into() },
             Call::Attach { pane: 1, form: "none".into() },
-            Call::Suggest { pane: 1, draft: "run the lo".into() },
-            Call::Suggest { pane: 2, draft: String::new() },
             Call::Resolve {
                 pending: "pnd_1".into(),
                 yes: false,

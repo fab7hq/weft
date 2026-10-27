@@ -41,7 +41,6 @@ impl Remote {
             Some("set") => self.set(conn, m, &req),
             Some("seen") => self.seen(conn, m),
             Some("follow") => self.follow(conn, m),
-            Some("suggest") => self.suggest(conn, m, &req),
             Some("push") => self.push_subscription(conn, m),
             Some("ping") => {
                 self.send(conn, json!({"type": "pong", "t": m["t"]}));
@@ -135,12 +134,6 @@ impl Remote {
                     }
                     Carries::Settings => ok["settings"] = v,
                     Carries::Sealed(what) => ok[what.as_str()] = v,
-                    Carries::Suggestion => {
-                        if v.get("text").is_some() {
-                            ok["text"] = v["text"].clone();
-                            ok["score"] = v["score"].clone();
-                        }
-                    }
                     Carries::Starts | Carries::Part(..) | Carries::Follow(..) => {}
                 }
                 self.send(asked.conn, ok);
@@ -167,20 +160,6 @@ impl Remote {
     pub(super) fn agent_id(&self, at: usize, pane: u32) -> String {
         let key = self.projects[at].as_ref().map(|o| o.agents.key.clone()).unwrap_or_default();
         agents::agent_id(&key, pane)
-    }
-
-    /// What to suggest in a watched agent's message field: only the agent
-    /// this device watches, so it learns nothing of another's.
-    fn suggest(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
-        let (at, pane) = self.agent(m)?;
-        if !self.conns.get(&conn).is_some_and(|c| c.watching.contains(&(at, pane))) {
-            return Err((
-                "not_watching",
-                "suggestions are for the agent this device watches".into(),
-            ));
-        }
-        let draft = m["draft"].as_str().unwrap_or_default().to_string();
-        self.ask(at, Call::Suggest { pane, draft }, conn, req, Carries::Suggestion)
     }
 
     // --- watching ----------------------------------------------------------

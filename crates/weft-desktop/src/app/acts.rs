@@ -639,7 +639,6 @@ impl WeftDesktopApp {
             SheetAct::Toggle(setting) => {
                 let (key, on) = match setting {
                     crate::action::Setting::Notify => ("notify", self.machine_setting("notify")),
-                    crate::action::Setting::Suggest => ("suggest", self.machine_setting("suggest")),
                 };
                 self.turn(key, !on);
             }
@@ -900,9 +899,6 @@ impl WeftDesktopApp {
                 if !self.unfolded_steps.remove(&key) {
                     self.unfolded_steps.insert(key);
                 }
-            }
-            PaneAct::TakeSuggestion => {
-                self.take_suggestion();
             }
             PaneAct::SendMessage => {
                 let text = self.message_field().text().to_string();

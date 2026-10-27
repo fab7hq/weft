@@ -242,11 +242,6 @@ pub enum Then {
     Wording {
         unit: String,
     },
-    /// What the message field of `pane` could show after `draft`.
-    Suggest {
-        pane: u32,
-        draft: String,
-    },
     /// Nothing but a refusal, which the person is shown.
     Refusal,
     /// RingFrame's practices and rules: every project's, or this project's too.
@@ -1036,11 +1031,6 @@ impl ProjectClient {
             after: None,
         };
         self.tell(call, then).map(|_| ())
-    }
-
-    pub fn suggest(&mut self, pane: u32, draft: &str) -> Result<u64> {
-        let call = Call::Suggest { pane, draft: draft.to_string() };
-        self.tell(call, Then::Suggest { pane, draft: draft.to_string() })
     }
 
     pub fn resolve(

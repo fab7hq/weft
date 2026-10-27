@@ -153,8 +153,6 @@ enum Carries {
     Conversation(String),
     /// What a followed agent's file grew by, for this device and agent.
     Follow(u64, usize, u32),
-    /// What to suggest in the agent's message field, or nothing.
-    Suggestion,
     /// The machine's settings, as `config.get` answers them.
     Settings,
     /// A read of sealed work, under its name: a follow-up's words

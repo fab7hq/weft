@@ -11,6 +11,7 @@
 pub mod accept;
 pub mod after_seal;
 pub mod ask;
+pub mod bm25;
 pub mod board;
 pub mod config;
 pub mod conversation;
@@ -32,7 +33,6 @@ pub mod routing;
 pub mod sessions;
 pub mod signal;
 pub mod state;
-pub mod suggest;
 pub mod sync;
 pub mod text_keys;
 pub mod tree;

@@ -139,8 +139,6 @@ pub fn allowed(call: &Call) -> bool {
         Call::Open { raw, .. } => !raw,
         Call::Attach { form, .. } => form == "screen" || form == "none",
         Call::Input { .. } | Call::Resize { .. } => true,
-        // What to suggest in a watched agent's message field.
-        Call::Suggest { .. } => true,
         Call::Available => true,
         // Every setting but which program runs, for a harness or the tunnel:
         // that is set on the machine only (weft-after-desktop ADR-0003 D6).

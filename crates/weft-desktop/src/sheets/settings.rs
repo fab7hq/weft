@@ -1,5 +1,5 @@
 //! Settings: the machine's, for every project, on tabs. General holds Turbo,
-//! Start at login, Notifications and Suggestions; Workflow who runs each step
+//! Start at login and Notifications; Workflow who runs each step
 //! and Eval's judges. A project's own settings use the same rows, for what
 //! differs from every project's. Each is set through the daemon and shows
 //! what it last said.
@@ -175,13 +175,6 @@ fn general(props: &SheetProps) -> Element {
             word("desktop.settings.notify"),
             word("desktop.settings.notify_what"),
             badge("setting badge", machine("notify") != Some(false), blue),
-        ),
-        switch(
-            "Suggestions",
-            SheetAct::Toggle(Setting::Suggest),
-            word("desktop.settings.suggest"),
-            word("desktop.settings.suggest_what"),
-            badge("setting badge", machine("suggest") != Some(false), blue),
         ),
     ]))
 }

@@ -22,7 +22,7 @@
     "down": "down",
     "end": "line_end",
     "enter": "send",
-    "escape": "drop",
+    "escape": "leave",
     "home": "line_start",
     "left": "left",
     "right": "right",
@@ -34,7 +34,7 @@
     "shift-left": "select_left",
     "shift-right": "select_right",
     "shift-up": "select_up",
-    "tab": "take",
+    "tab": "nothing",
     "up": "up"
   },
   "macos": {
@@ -59,7 +59,7 @@
     "down": "down",
     "end": "line_end",
     "enter": "send",
-    "escape": "drop",
+    "escape": "leave",
     "home": "line_start",
     "left": "left",
     "right": "right",
@@ -76,7 +76,7 @@
     "shift-left": "select_left",
     "shift-right": "select_right",
     "shift-up": "select_up",
-    "tab": "take",
+    "tab": "nothing",
     "up": "up"
   }
 }

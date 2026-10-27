@@ -19,7 +19,6 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # project opens.
 
 # notify = false               # no notification when an agent needs you
-# suggest = false              # no dim suggestions from your own words in the message field
 # turbo = true                 # agents run with every permission granted and no
 #                              # question asked: each harness's `turbo` flag, from
 #                              # its Weft harness file, which says what else it drops.
@@ -100,8 +99,6 @@ pub struct Config {
     pub leftover: Vec<String>,
     /// `notify = false`: no terminal notification when an agent needs you.
     quiet: bool,
-    /// `suggest = false`: no suggestions from the person's own words.
-    unsuggested: bool,
     remote: Remote,
     /// `[service] start_at_login`: Weft starts when the person logs in. Off
     /// unless turned on; Remote never turns it on.
@@ -311,12 +308,6 @@ impl Config {
         !self.quiet
     }
 
-    /// Whether the message field shows suggestions from the person's own
-    /// words. On unless one line turns it off.
-    pub fn suggest(&self) -> bool {
-        !self.unsuggested
-    }
-
     /// Whether agents Weft starts run in turbo mode: the machine's `turbo`
     /// line, for every project, else off.
     /// What this project records of each Seal in its Git: nothing unless
@@ -373,7 +364,6 @@ impl Config {
                     }
                 }
                 ("notify", Value::Bool(on)) if at.is_empty() => self.quiet = !on,
-                ("suggest", Value::Bool(on)) if at.is_empty() => self.unsuggested = !on,
                 // Every project's only (weft-after-desktop ADR-0003 D4): a
                 // project's own line is reported and not read.
                 ("turbo", Value::Bool(on)) if at.is_empty() => out.turbo = Some(*on),
@@ -767,17 +757,12 @@ mod tests {
         assert_eq!(c.ignored, ["notify"]);
     }
 
-    /// Suggestions in the message field: on unless one line turns them off.
+    /// Prompt suggestions are gone: a `suggest` line an earlier Weft wrote
+    /// is reported and not read.
     #[test]
-    fn one_line_turns_suggestions_off() {
-        assert!(read_(STARTING).suggest(), "on unless turned off");
-        assert!(!read_("suggest = false\n").suggest());
-        let uncommented = STARTING.replace("# suggest = false", "suggest = false");
-        assert!(!read_(&uncommented).suggest());
-        assert!(read_("suggest = true\n").suggest());
-        let c = read_("suggest = \"no\"\n");
-        assert!(c.suggest());
-        assert_eq!(c.ignored, ["suggest"]);
+    fn a_suggest_line_is_reported_and_not_read() {
+        assert!(!STARTING.contains("suggest"));
+        assert_eq!(read_("suggest = false\n").ignored, ["suggest"]);
     }
 
     /// Turbo mode: off unless turned on, for every project; a project's own

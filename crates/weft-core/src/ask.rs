@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::suggest::{Bm25, words};
+use crate::bm25::{Bm25, words};
 
 /// What the person chose before an act's Send: an Ask's route, task, plan
 /// and practice rules, or a Seal's reason. A part left out is the default.

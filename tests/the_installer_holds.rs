@@ -168,13 +168,16 @@ fn install_on(system: &str, machine: &str, ldd: &str) -> String {
 }
 
 #[test]
-fn linux_takes_the_gnu_build_and_an_intel_mac_or_a_musl_system_is_told_it_has_none() {
+fn linux_takes_the_gnu_build_and_an_intel_mac_a_musl_or_an_old_glibc_system_is_told_it_has_none() {
     for machine in ["x86_64", "aarch64"] {
-        let said = install_on("Linux", machine, "ldd (Debian GLIBC 2.36-9) 2.36");
+        let said = install_on("Linux", machine, "ldd (Ubuntu GLIBC 2.39-0ubuntu8.6) 2.39");
         assert!(said.contains(&format!("for {machine}-unknown-linux-gnu")), "{said}");
     }
     let said = install_on("Linux", "x86_64", "musl libc (x86_64)");
     assert!(said.contains("Weft has no build for a musl system"), "{said}");
+    assert!(!said.contains("Downloading"), "{said}");
+    let said = install_on("Linux", "aarch64", "ldd (Debian GLIBC 2.36-9+deb12u14) 2.36");
+    assert!(said.contains("Weft needs glibc 2.38 or later; this system has 2.36"), "{said}");
     assert!(!said.contains("Downloading"), "{said}");
     let said = install_on("Darwin", "x86_64", "");
     assert!(said.contains("Weft has no build for an Intel Mac"), "{said}");
