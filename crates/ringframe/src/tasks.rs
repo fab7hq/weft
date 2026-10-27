@@ -195,6 +195,8 @@ struct Ctx {
     /// The Asks whose own sentences RingFrame sorted into requirements: the
     /// requirements task lists theirs from the person's words.
     sentence_asks: Vec<String>,
+    /// How many findings concern each window, as `findings_on` finds them.
+    flagged: BTreeMap<String, usize>,
 }
 
 fn tmp(ws: &Workspace, eval_id: &str) -> PathBuf {
@@ -203,6 +205,31 @@ fn tmp(ws: &Workspace, eval_id: &str) -> PathBuf {
 
 fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+}
+
+/// How many findings concern each window: the ones that name it, or, for a
+/// finding that names no window, the ones on a unit it is in.
+fn finding_counts(changes: &Value) -> BTreeMap<String, usize> {
+    let windows_of: BTreeMap<String, Vec<String>> = array_of(changes, "units")
+        .iter()
+        .map(|u| (str_of(u, "key"), array_of(u, "windows").iter().map(str_of_value).collect()))
+        .collect();
+    let mut out = BTreeMap::new();
+    for f in array_of(changes, "findings") {
+        let on: BTreeSet<String> = match array_of(f, "windows") {
+            [] => array_of(f, "units")
+                .iter()
+                .filter_map(|u| windows_of.get(u.as_str().unwrap_or_default()))
+                .flatten()
+                .cloned()
+                .collect(),
+            ws => ws.iter().map(str_of_value).collect(),
+        };
+        for w in on {
+            *out.entry(w).or_default() += 1;
+        }
+    }
+    out
 }
 
 impl Ctx {
@@ -265,6 +292,7 @@ impl Ctx {
                 list.extend(found);
             }
         }
+        let flagged = finding_counts(&changes);
         Ok(Ctx {
             ws: ws.clone(),
             eval_id: eval_id.to_string(),
@@ -273,6 +301,7 @@ impl Ctx {
             windows,
             changes,
             sentence_asks,
+            flagged,
         })
     }
 
@@ -680,9 +709,10 @@ fn map_leaves(ctx: &Ctx, st: &Status) -> Vec<Vec<String>> {
     if !cur.is_empty() {
         leaves.push(cur);
     }
-    let risk = |l: &Vec<String>| l.iter().map(|w| ctx.findings_on(w).len()).sum::<usize>();
+    let risk =
+        |l: &Vec<String>| l.iter().map(|w| ctx.flagged.get(w).copied().unwrap_or(0)).sum::<usize>();
     let mut ranked: Vec<(usize, Vec<String>)> = leaves.into_iter().enumerate().collect();
-    ranked.sort_by(|(ia, a), (ib, b)| risk(b).cmp(&risk(a)).then(ia.cmp(ib)));
+    ranked.sort_by_cached_key(|(i, l)| (std::cmp::Reverse(risk(l)), *i));
     ranked.into_iter().map(|(_, l)| l).collect()
 }
 
@@ -812,9 +842,9 @@ fn evidence_for(ctx: &Ctx, st: &Status, req: &str, bytes: usize) -> Vec<String> 
             }
         }
     }
-    let found = |w: &String| !ctx.findings_on(w).is_empty();
+    let found = |w: &String| ctx.flagged.contains_key(w);
     theirs.retain(|w| found(w) || !elsewhere.contains(w));
-    theirs.sort_by_key(|w| !found(w));
+    theirs.sort_by_cached_key(|w| !found(w));
     let mut out: Vec<String> = Vec::new();
     let (mut size, mut extra) = (0, 0);
     for (w, mine) in
@@ -4910,6 +4940,19 @@ mod tests {
     /// the Ask's own sentences were: a unit that shares its code names is its
     /// evidence before any map, and one that nothing links, or that names a
     /// path the change never touches, gets RingFrame's finding.
+    #[test]
+    fn each_window_s_findings_are_counted_as_findings_on_finds_them() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let ctx = Ctx::load(ws, &b.eval_id).unwrap();
+            assert!(!array_of(&ctx.changes, "findings").is_empty(), "the bench has findings");
+            for w in ctx.windows.keys() {
+                let n = ctx.findings_on(w).len();
+                assert_eq!(ctx.flagged.get(w).copied().unwrap_or(0), n, "{w}");
+            }
+        });
+    }
+
     #[test]
     fn a_listed_requirement_is_linked_and_checked_as_a_sentence_is() {
         eval_bench(|ws| {
