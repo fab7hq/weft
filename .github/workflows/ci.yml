@@ -59,7 +59,7 @@ jobs:
           v=crates/weftd/src/versions.rs
           url=$(sed -n 's/^pub const SENSE_URL: &str = "\(.*\)";/\1/p' "$v")
           want=$(grep -A1 '^pub const SENSE_MANIFEST_SHA256' "$v" | grep -oE '[0-9a-f]{64}')
-          dir="$HOME/.fab7/sense/fab7-sense-v1"
+          dir="$HOME/.fab7/sense/sense-d"
           mkdir -p "$dir"
           for f in manifest.json sense.int8.onnx tokenizer.json golden_vectors.jsonl; do
               curl -fsSL --retry 3 -o "$dir/$f" "$url/$f"

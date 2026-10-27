@@ -24,10 +24,10 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     ),
     (
         "weft-sense",
-        &["anyhow", "serde", "serde_json", "sha2", "unicode-normalization"],
-        "the dual-head classifier normalizes screens and transcript entries, the Ask model reads \
-         an Ask's words (composed as its tokenizer composes them), and both run their bundle; \
-         it never touches panes, the ledger, or the wire",
+        &["anyhow", "ort", "serde", "serde_json", "sha2", "unicode-normalization"],
+        "sense-d normalizes screens and transcript entries, tokenizes them and an Ask's words, \
+         and runs its one graph on ONNX Runtime (ort); it never touches panes, the ledger, or \
+         the wire",
     ),
     (
         "weft-term",

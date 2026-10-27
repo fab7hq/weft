@@ -106,8 +106,12 @@ impl Session {
 
     /// Evaluate `weft-sense` Head 1 on each pane whose PTY output has been
     /// still for [`SENSE_SETTLE`] since Sense last read it. Looked at on the
-    /// frames tick, never waited for.
+    /// frames tick, never waited for. Until Sense has loaded nothing is read,
+    /// so a screen that settled meanwhile is read once it has.
     pub(super) fn sense_what_settled(&mut self) {
+        if self.sense.read().ok().is_none_or(|m| m.is_none()) {
+            return;
+        }
         for at in 0..self.projects.len() {
             let p = &self.projects[at];
             if p.closed {
@@ -141,8 +145,12 @@ impl Session {
         self.sense_pane(at, pane);
     }
 
-    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read.
+    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read;
+    /// nothing while Sense has not loaded.
     fn sense_pane(&mut self, at: usize, pane: u32) {
+        if self.sense.read().ok().is_none_or(|m| m.is_none()) {
+            return;
+        }
         let p = &mut self.projects[at];
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
@@ -169,6 +177,7 @@ impl Session {
             model.evaluate_surface(&weft_sense::PaneSnapshot {
                 harness: &harness,
                 hook_state: crate::turns::turn_hook_name(hook_turn),
+                last_hook: None,
                 alt_screen,
                 rows,
                 cols,

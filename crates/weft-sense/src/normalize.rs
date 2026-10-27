@@ -1,50 +1,44 @@
-use crate::model::{PaneSnapshot, TranscriptSnippet};
+//! Text as sense-d reads it (sense-d spec/bundle.md §4,
+//! `fab7.sense.decision.normalize/1`): a screen as its facts in words, then
+//! its last lines, cleaned; a transcript entry as its harness and kind, then
+//! its text; then every character the manifest's table names replaced.
 
-pub const ADDED_TOKENS: &[&str] = &[
-    "\n",
-    "(<TIME>)",
-    "[SURFACE]",
-    "[CONV]",
-    "[H:claude-code]",
-    "[H:codex]",
-    "[H:grok]",
-    "[H:antigravity]",
-    "[H:unknown]",
-    "[HOOK:ready]",
-    "[HOOK:working]",
-    "[HOOK:waiting]",
-    "[HOOK:turn_ended]",
-    "[HOOK:ended]",
-    "[HOOK:none]",
-    "[ALT:0]",
-    "[ALT:1]",
-    "[QUIET:0]",
-    "[QUIET:1]",
-    "[QUIET:2]",
-    "[QUIET:3]",
-    "<USER_REQUEST>",
-    "</USER_REQUEST>",
-    "<ADDITIONAL_METADATA>",
-    "</ADDITIONAL_METADATA>",
-    "<SYSTEM_MESSAGE>",
-    "</SYSTEM_MESSAGE>",
-    "<user-prompt-submit-hook>",
-    "</user-prompt-submit-hook>",
-    "❯",
-    "◦",
-    "●",
-    "⎿",
-    "◈",
-    "◆",
-    "✓",
-    "✗",
-    "╭",
-    "╰",
-    "│",
-    "─",
-    "▶",
-    "›",
-];
+use crate::model::{PaneSnapshot, TranscriptSnippet};
+use anyhow::bail;
+use std::collections::{BTreeMap, HashMap};
+
+/// An entry keeps this many bytes of its text.
+const ENTRY_BYTES: usize = 512;
+
+/// The manifest's normalizing table: each character and what it becomes.
+#[derive(Debug, Clone, Default)]
+pub struct Replacements(HashMap<char, String>);
+
+impl Replacements {
+    /// The table, refused if a key is not one character.
+    pub fn new(table: &BTreeMap<String, String>) -> anyhow::Result<Self> {
+        let mut out = HashMap::new();
+        for (from, to) in table {
+            let mut chars = from.chars();
+            let (Some(ch), None) = (chars.next(), chars.next()) else {
+                bail!("the normalizing table replaces {from:?}, not one character");
+            };
+            out.insert(ch, to.clone());
+        }
+        Ok(Self(out))
+    }
+
+    fn apply(&self, text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        for ch in text.chars() {
+            match self.0.get(&ch) {
+                Some(to) => out.push_str(to),
+                None => out.push(ch),
+            }
+        }
+        out
+    }
+}
 
 pub fn canonical_harness(raw: &str) -> &'static str {
     match raw.trim() {
@@ -279,46 +273,54 @@ pub fn normalize_terminal_line(line: &str) -> String {
     out
 }
 
-pub fn compute_surface_dynamics(snap: &PaneSnapshot<'_>) -> [f32; 6] {
-    let rows = snap.rows.max(1);
-    let cols = snap.cols.max(1);
-    let row_from_bottom = rows.saturating_sub(1).saturating_sub(snap.cursor_row).min(40);
-    let q_idx = match quiet_bucket(snap.ms_since_last_output) {
-        "0" => 0.0,
-        "1" => 1.0,
-        "2" => 2.0,
-        _ => 3.0,
-    };
-    let hook = canonical_hook_state(snap.hook_state);
-    [
-        if snap.alt_screen { 1.0 } else { 0.0 },
-        (row_from_bottom as f32) / 40.0,
-        ((snap.cursor_col as f32) / (cols as f32)).clamp(0.0, 1.0),
-        q_idx / 3.0,
-        if hook == "waiting" { 1.0 } else { 0.0 },
-        if hook == "turn_ended" { 1.0 } else { 0.0 },
-    ]
-}
-
-pub fn normalize_surface_frame(snap: &PaneSnapshot<'_>, max_bottom_lines: usize) -> String {
-    let harness = canonical_harness(snap.harness);
-    let hook_state = canonical_hook_state(snap.hook_state);
-    let alt = if snap.alt_screen { "1" } else { "0" };
+/// A screen as sense-d reads it: its facts in words (the harness, the hook
+/// state, the hook that fired last, the alternate screen, the cursor from
+/// the bottom, how long it has been quiet), then its last `last_lines`
+/// lines that hold anything, cleaned.
+pub fn screen_text(snap: &PaneSnapshot<'_>, last_lines: usize, table: &Replacements) -> String {
     let rows = if snap.rows == 0 { 40 } else { snap.rows };
     let row_from_bottom = rows.saturating_sub(1).saturating_sub(snap.cursor_row).min(40);
-    let q_bucket = quiet_bucket(snap.ms_since_last_output);
+    let hook = canonical_hook_state(snap.hook_state).replace('_', " ");
+    let mut facts = vec![canonical_harness(snap.harness).to_string(), format!("hook {hook}")];
+    if let Some(last) = snap.last_hook.filter(|h| !h.is_empty()) {
+        facts.push(format!("last hook {}", spaced_words(last)));
+    }
+    if snap.alt_screen {
+        facts.push("alternate screen".into());
+    }
+    facts.push(format!("cursor {row_from_bottom} {}", snap.cursor_col));
+    facts.push(format!("quiet {}", quiet_bucket(snap.ms_since_last_output)));
+    let held: Vec<&String> = snap.bottom_lines.iter().filter(|l| !l.trim().is_empty()).collect();
+    let lines =
+        held[held.len().saturating_sub(last_lines)..].iter().map(|l| normalize_terminal_line(l));
+    let text: Vec<String> = std::iter::once(facts.join(", ")).chain(lines).collect();
+    table.apply(&text.join("\n"))
+}
 
-    let non_empty: Vec<&String> =
-        snap.bottom_lines.iter().filter(|l| !l.trim().is_empty()).collect();
-    let start = non_empty.len().saturating_sub(max_bottom_lines);
-    let selected: Vec<String> =
-        non_empty[start..].iter().map(|l| normalize_terminal_line(l)).collect();
+/// A transcript entry as sense-d reads it: its harness and kind in words,
+/// then its text without control characters, cut to 512 bytes.
+pub fn entry_text(item: &TranscriptSnippet<'_>, table: &Replacements) -> String {
+    let kind = item.entry_type.trim();
+    let kind = if kind.is_empty() { "unknown" } else { kind }.replace('_', " ").to_lowercase();
+    let cleaned: String = item.snippet.chars().filter(|c| !is_control(*c)).collect();
+    let text = truncate_utf8_bytes(&cleaned, ENTRY_BYTES);
+    table.apply(&format!("{}, {kind}\n{text}", canonical_harness(item.harness)))
+}
 
-    let header = format!(
-        "[SURFACE][H:{harness}][HOOK:{hook_state}][ALT:{alt}][CUR:{row_from_bottom},{}][QUIET:{q_bucket}]",
-        snap.cursor_col
-    );
-    if selected.is_empty() { header } else { format!("{header}\n{}", selected.join("\n")) }
+/// A hook event's name in lower-case words: `PostToolUse` is `post tool use`.
+fn spaced_words(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 4);
+    for (i, ch) in name.chars().enumerate() {
+        if i > 0 && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.extend(ch.to_lowercase());
+    }
+    out
+}
+
+fn is_control(ch: char) -> bool {
+    matches!(ch as u32, 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f)
 }
 
 pub fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> &str {
@@ -332,41 +334,29 @@ pub fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> &str {
     &text[..end]
 }
 
-pub fn normalize_conversation_entry(item: &TranscriptSnippet<'_>, max_bytes: usize) -> String {
-    let h = canonical_harness(item.harness);
-    let t = {
-        let trimmed = item.entry_type.trim();
-        if trimmed.is_empty() { "unknown" } else { trimmed }
-    };
-    let mut cleaned = String::with_capacity(item.snippet.len());
-    for ch in item.snippet.chars() {
-        let cp = ch as u32;
-        if matches!(cp, 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f) {
-            continue;
-        }
-        cleaned.push(ch);
-    }
-    let snippet = truncate_utf8_bytes(&cleaned, max_bytes);
-    format!("[CONV][H:{h}][TYPE:{t}]\n{snippet}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn table() -> Replacements {
+        let pairs = [("\n", " ↵ "), ("…", "..."), ("⏸", "[pause]"), ("\u{fffd}", "")];
+        Replacements::new(&pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect())
+            .unwrap()
+    }
+
     #[test]
-    fn surface_normalization_and_dynamics_match_contract() {
+    fn a_screen_is_its_facts_in_words_then_its_last_lines_cleaned() {
         let lines = vec![
             "".to_string(),
             "· Effecting… (12s)".to_string(),
             "────────────────────────".to_string(),
             "❯".to_string(),
-            "────────────────────────".to_string(),
-            "  ⏸ manual mode on · esc to interrupt · ← for agents".to_string(),
+            "  ⏸ manual mode on".to_string(),
         ];
         let snap = PaneSnapshot {
             harness: "claude-code",
-            hook_state: Some("working"),
+            hook_state: Some("turn_ended"),
+            last_hook: Some("PostToolUse"),
             alt_screen: true,
             rows: 40,
             cols: 120,
@@ -376,21 +366,15 @@ mod tests {
             bottom_lines: &lines,
             seq: 42,
         };
-        let norm = normalize_surface_frame(&snap, 15);
         assert_eq!(
-            norm,
-            concat!(
-                "[SURFACE][H:claude-code][HOOK:working][ALT:1][CUR:2,2][QUIET:1]\n",
-                "· Effecting… (<TIME>)\n",
-                "───\n",
-                "❯\n",
-                "───\n",
-                "  ⏸ manual mode on · esc to interrupt · ← for agents"
-            )
+            screen_text(&snap, 3, &table()),
+            "claude-code, hook turn ended, last hook post tool use, alternate screen, \
+             cursor 2 2, quiet 1 ↵ ─── ↵ ❯ ↵   [pause] manual mode on"
         );
-        let dyn_vec = compute_surface_dynamics(&snap);
-        assert_eq!(dyn_vec[0], 1.0);
-        assert!((dyn_vec[1] - (2.0 / 40.0)).abs() < 1e-5);
+        let quiet = PaneSnapshot { last_hook: None, alt_screen: false, ..snap };
+        assert!(screen_text(&quiet, 15, &table()).starts_with(
+            "claude-code, hook turn ended, cursor 2 2, quiet 1 ↵ · Effecting... (<TIME>)"
+        ));
     }
 
     #[test]
@@ -408,15 +392,18 @@ mod tests {
     }
 
     #[test]
-    fn conversation_normalization_strips_control_chars_and_truncates() {
+    fn an_entry_is_its_harness_and_kind_in_words_then_its_text() {
         let item = TranscriptSnippet {
             harness: "antigravity",
             entry_type: "PLANNER_RESPONSE",
-            snippet: "ok\x07\x00",
+            snippet: "ok\x07\x00\u{fffd}…",
         };
-        assert_eq!(
-            normalize_conversation_entry(&item, 512),
-            "[CONV][H:antigravity][TYPE:PLANNER_RESPONSE]\nok"
-        );
+        assert_eq!(entry_text(&item, &table()), "antigravity, planner response ↵ ok...");
+    }
+
+    #[test]
+    fn a_table_key_of_more_than_one_character_is_refused() {
+        let bad = [("ab".to_string(), "x".to_string())].into_iter().collect();
+        assert!(Replacements::new(&bad).is_err());
     }
 }

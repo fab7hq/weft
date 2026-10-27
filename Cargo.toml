@@ -38,14 +38,9 @@ weft-term = { path = "crates/weft-term" }
 [profile.dev]
 debug = false
 
-[profile.dev.package.weft-sense]
+# Sense checks its 70 MB graph's SHA-256 on every load: 0.56 s unoptimized.
+[profile.dev.package.sha2]
 opt-level = 3
-debug-assertions = false
-overflow-checks = false
 
-[profile.test.package.weft-sense]
-opt-level = 3
-debug-assertions = false
-overflow-checks = false
 
 

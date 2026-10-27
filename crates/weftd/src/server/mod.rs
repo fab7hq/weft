@@ -618,7 +618,7 @@ fn sense_ask(
     (routes, rules): (&[&str], &[weft_sense::Rule]),
 ) -> crate::ringframe::Sensed {
     use crate::ringframe::Sensed;
-    let answers = model.read().ok().is_some_and(|m| m.as_ref().is_some_and(|m| m.answers_asks()));
+    let answers = model.read().ok().is_some_and(|m| m.is_some());
     if words.trim().is_empty() || !answers {
         return Sensed::Off;
     }
@@ -903,22 +903,26 @@ impl Session {
         });
 
         let weft_dir = config.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-        let sense = Arc::new(std::sync::RwLock::new(crate::versions::load_sense(
-            &weft_dir,
-            harnesses.is_none(),
-        )));
-        // The Sense bundle this Weft was built with, downloaded once in the
-        // background when it is missing or older; until then the one found
-        // reads, or none.
-        if harnesses.is_none() && crate::versions::sense_wanted(&weft_dir) {
-            let (weft_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
-            std::thread::spawn(move || {
-                match crate::versions::hot_reload_from_hub(&weft_dir, &*out, &slot) {
+        // Sense loads in the background, as loading its graph takes a second;
+        // then the bundle this Weft was built with is downloaded once when it
+        // is missing or older. Until then the one found reads, or none.
+        let sense = Arc::new(std::sync::RwLock::new(None));
+        let fetch = harnesses.is_none() && crate::versions::sense_wanted(&weft_dir);
+        let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
+        std::thread::spawn(move || {
+            if let Some(model) = crate::versions::load_sense(&sense_dir)
+                && let Ok(mut guard) = slot.write()
+            {
+                // A Sense the person installed meanwhile stays.
+                guard.get_or_insert(model);
+            }
+            if fetch {
+                match crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot) {
                     Ok(current) => eprintln!("weft: Sense {} installed", current.version),
                     Err(e) => eprintln!("weft: Sense not installed: {e}"),
                 }
-            });
-        }
+            }
+        });
         let mut session = Session {
             projects: Vec::new(),
             socket: socket.to_path_buf(),
@@ -1478,10 +1482,7 @@ impl Session {
                     };
                     // Whether Sense reads the words at all: the sheet shows it
                     // working only then.
-                    let senses = model
-                        .read()
-                        .ok()
-                        .is_some_and(|m| m.as_ref().is_some_and(|m| m.answers_asks()));
+                    let senses = model.read().ok().is_some_and(|m| m.is_some());
                     let answer = crate::ringframe::sheet(
                         &root,
                         over.as_deref(),
@@ -1660,7 +1661,7 @@ impl Session {
                             proceed(out, step, |_| {})
                         {
                             note = Some(format!("{step} failed: {said}"));
-                        } else if let Some(model) = crate::versions::load_sense(&weft_dir, false)
+                        } else if let Some(model) = crate::versions::load_sense(&weft_dir)
                             && let Ok(mut guard) = sense_slot.write()
                         {
                             *guard = Some(model);
@@ -1684,8 +1685,7 @@ impl Session {
                                 proceed(out, step, |_| {})
                             {
                                 note = Some(format!("{step} failed: {said}"));
-                            } else if let Some(model) =
-                                crate::versions::load_sense(&weft_dir, false)
+                            } else if let Some(model) = crate::versions::load_sense(&weft_dir)
                                 && let Ok(mut guard) = sense_slot.write()
                             {
                                 *guard = Some(model);
@@ -1721,8 +1721,7 @@ impl Session {
                                     proceed(out, step, |_| {})
                                 {
                                     note = Some(format!("{step} failed: {said}"));
-                                } else if let Some(model) =
-                                    crate::versions::load_sense(&weft_dir, false)
+                                } else if let Some(model) = crate::versions::load_sense(&weft_dir)
                                     && let Ok(mut guard) = sense_slot.write()
                                 {
                                     *guard = Some(model);
@@ -2623,31 +2622,7 @@ impl Session {
 mod tests {
     use super::*;
 
-    fn stage_sense_bundle_at(dst: &Path, version: &str) {
-        let workspace_bundle =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sense/dist/fab7-sense-v1");
-        let src = if workspace_bundle.exists() {
-            workspace_bundle
-        } else {
-            let home = std::env::var_os("HOME").expect("HOME");
-            PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
-        };
-        let pinned = crate::versions::SENSE_MANIFEST_SHA256;
-        let src = weft_sense::manifest::bundle_with_digest(&src, pinned).unwrap();
-        std::fs::create_dir_all(dst).unwrap();
-        for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
-            let p = src.join(name);
-            if p.exists() {
-                std::fs::copy(p, dst.join(name)).unwrap();
-            }
-        }
-        let mut manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(src.join("manifest.json")).unwrap())
-                .unwrap();
-        manifest["version"] = serde_json::json!(version);
-        std::fs::write(dst.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap())
-            .unwrap();
-    }
+    use crate::versions::tests::stage_sense_bundle as stage_sense_bundle_at;
 
     /// Updates' rows send only acts the daemon knows: RingFrame's row syncs
     /// its configuration; Weft's has none, since Weft is the person's to update.

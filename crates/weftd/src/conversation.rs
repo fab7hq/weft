@@ -396,10 +396,8 @@ mod tests {
         let found = file(&agy, home.path(), "s-agy", None).expect("found by brain/{session} find");
         assert_eq!(found, path.canonicalize().unwrap());
 
-        let bundle = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../sense/dist/fab7-sense-v1");
         let pinned = crate::versions::SENSE_MANIFEST_SHA256;
-        let bundle = weft_sense::manifest::bundle_with_digest(&bundle, pinned).unwrap();
+        let bundle = weft_sense::manifest::bundle_for_tests(pinned).unwrap();
         let sense = weft_sense::SenseModel::load(&bundle).ok();
         let Answer::Page { items, .. } =
             page_with_sense(&agy, "antigravity", Some(&found), None, sense.as_ref())

@@ -157,7 +157,9 @@ impl SenseShown {
         let (mut kept, mut shown) = (d.rules.clone(), self.rules.clone());
         kept.sort();
         shown.sort();
-        let p = self.answer.rules.iter().map(|r| (r.id.clone(), f64::from(r.p))).collect();
+        // A rule the convention decided was not scored, so it has no probability.
+        let scored = self.answer.rules.iter().filter_map(|r| Some((r.id.clone(), f64::from(r.p?))));
+        let p = scored.collect();
         self.chooser(kept == shown, p)
     }
 
@@ -364,10 +366,7 @@ fn candidate_rules(
     Ok(rules
         .practices
         .into_iter()
-        .filter_map(|r| {
-            let family = r.family.unwrap_or_default();
-            Some(weft_sense::Rule { id: r.id, family, when: r.when?, examples: Vec::new() })
-        })
+        .filter_map(|r| Some(weft_sense::Rule { id: r.id, when: r.when? }))
         .collect())
 }
 

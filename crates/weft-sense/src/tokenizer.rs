@@ -1,5 +1,5 @@
-//! The Ask graph's tokenizer: DeBERTa-v3's SentencePiece Unigram, read from
-//! `ask_tokenizer.json` and run as the reference `tokenizers` runs it, without
+//! sense-d's tokenizer: DeBERTa-v3's SentencePiece Unigram, read from
+//! `tokenizer.json` and run as the reference `tokenizers` runs it, without
 //! special tokens or truncation. Its normalizer turns two or more blanks, or
 //! a newline, return or tab, into one space, composes (NFC) and strips the
 //! right; its pre-tokenizer is Metaspace (`▁`, always prepended, split).
@@ -9,11 +9,18 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 
+/// A question row fits this many tokens (sense-d spec/bundle.md §4).
+pub const MAX_ROW: usize = 256;
+/// A question keeps up to its first this many tokens.
+const MAX_QUESTION: usize = 128;
+/// A text too long for its row keeps its start and this many last tokens.
+const TEXT_LAST: usize = 32;
+
 /// What a piece no vocabulary entry covers costs, below the cheapest piece.
 const UNK_PENALTY: f64 = 10.0;
 const METASPACE: char = '▁';
 
-pub struct AskTokenizer {
+pub struct Tokenizer {
     pieces: HashMap<String, (u32, f64)>,
     longest_piece: usize,
     unk_id: u32,
@@ -43,12 +50,12 @@ struct UnigramJson {
     vocab: Vec<(String, f64)>,
 }
 
-impl AskTokenizer {
+impl Tokenizer {
     pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
         let parsed: TokenizerJson =
-            serde_json::from_slice(bytes).context("parse ask_tokenizer.json")?;
+            serde_json::from_slice(bytes).context("parse tokenizer.json")?;
         if parsed.model.kind != "Unigram" {
-            bail!("ask_tokenizer.json is a {} model, not Unigram", parsed.model.kind);
+            bail!("tokenizer.json is a {} model, not Unigram", parsed.model.kind);
         }
         let vocab = parsed.model.vocab;
         let unk_score = vocab.iter().map(|(_, s)| *s).fold(f64::INFINITY, f64::min) - UNK_PENALTY;
@@ -70,7 +77,7 @@ impl AskTokenizer {
         let found = self.pieces.get(piece).map(|(id, _)| *id);
         found
             .or_else(|| self.specials.iter().find(|(c, _)| c == piece).map(|(_, id)| *id))
-            .with_context(|| format!("ask_tokenizer.json has no {piece}"))
+            .with_context(|| format!("tokenizer.json has no {piece}"))
     }
 
     /// `text`'s ids, with no special tokens added and no truncation.
@@ -116,6 +123,21 @@ impl AskTokenizer {
         for word in split_before_metaspace(&spaced) {
             self.viterbi(word, ids);
         }
+    }
+
+    /// `[CLS] text [SEP] question [SEP]`, from `text`'s ids: the question
+    /// keeps its first 128 tokens, and a text too long for the rest keeps
+    /// its start and its last 32.
+    pub fn question_row(&self, text: &[u32], question: &str) -> anyhow::Result<Vec<u32>> {
+        let (cls, sep) = (self.id("[CLS]")?, self.id("[SEP]")?);
+        let mut q = self.encode(question);
+        q.truncate(MAX_QUESTION);
+        let room = MAX_ROW - q.len() - 3;
+        let text = match text.len() > room {
+            true => [&text[..room - TEXT_LAST], &text[text.len() - TEXT_LAST..]].concat(),
+            false => text.to_vec(),
+        };
+        Ok([&[cls][..], &text, &[sep], &q, &[sep]].concat())
     }
 
     /// The best-scoring pieces of `word`, as the reference finds them: the
@@ -202,6 +224,26 @@ mod tests {
         assert_eq!(normalize("a\nb"), "a b");
         assert_eq!(normalize("a\u{a0}b"), "a\u{a0}b", "one blank that is not a line break stays");
         assert_eq!(normalize("cafe\u{301}"), "caf\u{e9}", "composed");
+    }
+
+    #[test]
+    fn a_long_text_keeps_its_start_and_last_32_tokens_and_a_question_its_first_128() {
+        let json = r#"{"added_tokens": [{"id": 0, "content": "[CLS]", "special": true},
+            {"id": 1, "content": "[SEP]", "special": true}],
+            "model": {"type": "Unigram", "unk_id": 2,
+                      "vocab": [["[CLS]", 0.0], ["[SEP]", 0.0], ["[UNK]", 0.0], ["\u2581q", -1.0]]}}"#;
+        let tok = Tokenizer::from_bytes(json.as_bytes()).unwrap();
+        let text: Vec<u32> = (100..400).collect();
+        let row = tok.question_row(&text, &"q ".repeat(200)).unwrap();
+        assert_eq!(row.len(), MAX_ROW);
+        let room = MAX_ROW - 128 - 3;
+        assert_eq!(row[0], 0);
+        assert_eq!(&row[1..room - 32 + 1], &text[..room - 32]);
+        assert_eq!(&row[room - 32 + 1..room + 1], &text[300 - 32..]);
+        assert_eq!(&row[room + 1..room + 2], &[1]);
+        assert_eq!(row[room + 2..MAX_ROW - 1], [3; 128]);
+        let short = tok.question_row(&[7, 8], "q").unwrap();
+        assert_eq!(short, [0, 7, 8, 1, 3, 1]);
     }
 
     #[test]

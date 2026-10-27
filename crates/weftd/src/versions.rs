@@ -123,35 +123,32 @@ pub fn sense_version(weft_dir: &Path) -> Option<String> {
     sense_current(weft_dir).map(|c| c.version)
 }
 
-/// The installed Sense bundle version in `$HOME/.fab7/weft/sense/current.json`
-/// (falling back to `$HOME/.fab7/sense/fab7-sense-v1/manifest.json`).
+/// The installed Sense bundle version in `$HOME/.fab7/weft/sense/current.json`.
 pub fn default_sense_version() -> Option<String> {
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    if let Some(ver) = sense_version(&home.join(".fab7/weft")) {
-        return Some(ver);
-    }
-    let fallback = home.join(".fab7/sense/fab7-sense-v1/manifest.json");
-    let text = std::fs::read_to_string(fallback).ok()?;
-    let val: serde_json::Value = serde_json::from_str(&text).ok()?;
-    val["version"].as_str().filter(|v| !v.is_empty()).map(str::to_string)
+    sense_version(&PathBuf::from(std::env::var_os("HOME")?).join(".fab7/weft"))
 }
 
-/// Load the active `SenseModel` from `<weft_dir>/sense/current.json`, falling
-/// back to `$HOME/.fab7/sense/fab7-sense-v1/` when `fallback_home` is true.
-pub fn load_sense(weft_dir: &Path, fallback_home: bool) -> Option<weft_sense::SenseModel> {
-    if let Some(cur) = sense_current(weft_dir)
-        && let Ok(model) = weft_sense::SenseModel::load(&cur.path)
-    {
-        return Some(model);
-    }
-    if fallback_home && let Some(home) = std::env::var_os("HOME") {
-        return weft_sense::SenseModel::load_default_home(Path::new(&home)).ok().flatten();
-    }
-    None
+/// Load the active `SenseModel` from `<weft_dir>/sense/current.json`.
+pub fn load_sense(weft_dir: &Path) -> Option<weft_sense::SenseModel> {
+    weft_sense::SenseModel::load(&sense_current(weft_dir)?.path).ok()
 }
 
-/// Copy a candidate Sense bundle into `<weft_dir>/sense/versions/<version>.tmp`,
-/// verify all SHA-256 digests and ONNX/tokenizer weights via `SenseModel::load`,
+/// The files a bundle's manifest names, each a plain name in its folder.
+fn bundle_files(manifest: &[u8]) -> anyhow::Result<Vec<String>> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest)?;
+    let files = manifest["files"].as_object().into_iter().flatten();
+    files
+        .map(|(key, f)| {
+            let name = f["path"].as_str().unwrap_or_default();
+            let plain = !name.is_empty() && name != ".." && !name.contains(['/', '\\']);
+            anyhow::ensure!(plain, "Sense's manifest names its {key} file {name:?}");
+            Ok(name.to_string())
+        })
+        .collect()
+}
+
+/// Copy a candidate Sense bundle (its manifest and every file it names) into
+/// `<weft_dir>/sense/versions/<version>.tmp`, verify them via `SenseModel::load`,
 /// atomically promote to `<weft_dir>/sense/versions/<version>`, update
 /// `<weft_dir>/sense/current.json`, and prune older versions (`ADR-0003`).
 pub fn install_sense_bundle(
@@ -178,24 +175,20 @@ pub fn install_sense_bundle(
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
 
-    for name in [
-        "manifest.json",
-        "sense.int8.onnx",
-        "model.int8.onnx",
-        "tokenizer.json",
-        "calibration.json",
-    ] {
-        let src_file = source_dir.join(name);
-        if src_file.is_file() {
-            std::fs::copy(&src_file, tmp_dir.join(name))?;
-        }
+    let names = bundle_files(manifest_text.as_bytes())?;
+    for name in std::iter::once("manifest.json").chain(names.iter().map(String::as_str)) {
+        std::fs::copy(source_dir.join(name), tmp_dir.join(name))?;
     }
 
-    // Verify SHA-256 digests and load the ONNX/tokenizer bundle before promoting.
-    if let Err(err) = weft_sense::SenseModel::load(&tmp_dir) {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(err);
-    }
+    // Verify SHA-256 digests and load the bundle before promoting; the model
+    // holds its files in memory, so the one loaded here is the one kept.
+    let model = match weft_sense::SenseModel::load(&tmp_dir) {
+        Ok(model) => model,
+        Err(err) => {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            return Err(err);
+        }
+    };
 
     let final_dir = versions_dir.join(&version);
     if final_dir.exists() {
@@ -203,7 +196,6 @@ pub fn install_sense_bundle(
     }
     std::fs::rename(&tmp_dir, &final_dir)?;
 
-    let model = weft_sense::SenseModel::load(&final_dir)?;
     let current = SenseCurrent { version, path: final_dir.clone() };
     let current_tmp = sense_root.join("current.json.tmp");
     let current_path = sense_root.join("current.json");
@@ -236,14 +228,19 @@ pub fn hot_reload_sense(
 /// The Sense bundle this Weft was built with: the version, the tag on
 /// Hugging Face it is downloaded from, and its `manifest.json`'s SHA-256.
 /// The manifest names every other file's digest, so pinning it pins them all.
-pub const SENSE_VERSION: &str = "0.2.0";
-pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense/resolve/v0.2.0";
+pub const SENSE_VERSION: &str = "0.1.0";
+pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.0";
 pub const SENSE_MANIFEST_SHA256: &str =
-    "ed08996f6591f04e6cad670142015b5cd9215a7ad20aa7cca64f0d2f3d6d31a7";
+    "b611d83967761d4fc45890d47122ea428030f62d2bb9df758da90998d2fae286";
 
-/// Whether the bundle under `weft_dir` is missing or older than this Weft's.
+/// Whether the bundle under `weft_dir` is missing, from before sense-d, or
+/// older than this Weft's.
 pub fn sense_wanted(weft_dir: &Path) -> bool {
-    sense_version(weft_dir).is_none_or(|v| weft_core::sync::older(&v, SENSE_VERSION))
+    let Some(current) = sense_current(weft_dir) else { return true };
+    let manifest = std::fs::read(current.path.join("manifest.json")).unwrap_or_default();
+    let schema = serde_json::from_slice::<serde_json::Value>(&manifest).ok();
+    let sense_d = schema.is_some_and(|m| m["schema"] == weft_sense::manifest::SCHEMA);
+    !sense_d || weft_core::sync::older(&current.version, SENSE_VERSION)
 }
 
 /// Download this Weft's Sense bundle with `curl`, as `out` runs it, and
@@ -298,14 +295,8 @@ fn fetch_sense_from(
             weft_sense::sha256_hex(&bytes) == manifest_sha256,
             "Sense's manifest.json is not the one this Weft names"
         );
-        let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
-        for file in ["model", "tokenizer"] {
-            let name = manifest["files"][file]["path"].as_str().unwrap_or_default();
-            anyhow::ensure!(
-                ["sense.int8.onnx", "model.int8.onnx", "tokenizer.json"].contains(&name),
-                "Sense's manifest names an unknown {file} file: {name}"
-            );
-            get(name)?;
+        for name in bundle_files(&bytes)? {
+            get(&name)?;
         }
         install_sense_bundle(weft_dir, &dir).map(|(current, _)| current)
     })();
@@ -314,7 +305,7 @@ fn fetch_sense_from(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn layout(name: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -412,30 +403,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(versions.parent().unwrap());
     }
 
-    fn stage_sense_bundle(dst: &Path, version: &str) {
-        let workspace_bundle =
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sense/dist/fab7-sense-v1");
-        let src = if workspace_bundle.exists() {
-            workspace_bundle
-        } else {
-            let home = std::env::var_os("HOME").expect("HOME");
-            PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
-        };
-        let pinned = crate::versions::SENSE_MANIFEST_SHA256;
-        let src = weft_sense::manifest::bundle_with_digest(&src, pinned).unwrap();
+    /// The pinned sense-d bundle, copied to `dst` as `version`, with every
+    /// file its manifest names.
+    pub(crate) fn stage_sense_bundle(dst: &Path, version: &str) {
+        let src = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
         std::fs::create_dir_all(dst).unwrap();
-        for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
-            let p = src.join(name);
-            if p.exists() {
-                std::fs::copy(p, dst.join(name)).unwrap();
-            }
+        let bytes = std::fs::read(src.join("manifest.json")).unwrap();
+        for name in bundle_files(&bytes).unwrap() {
+            std::fs::copy(src.join(&name), dst.join(&name)).unwrap();
         }
-        let mut manifest: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(src.join("manifest.json")).unwrap())
-                .unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         manifest["version"] = serde_json::json!(version);
         std::fs::write(dst.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn this_weft_pins_sense_d_0_1_0_on_hugging_face() {
+        assert_eq!(SENSE_VERSION, "0.1.0");
+        assert_eq!(SENSE_URL, "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.0");
+        let pinned = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
+        let manifest = std::fs::read(pinned.join("manifest.json")).unwrap();
+        let manifest = weft_sense::manifest::Manifest::parse(&manifest).unwrap();
+        assert_eq!(manifest.version, SENSE_VERSION);
+    }
+
+    #[test]
+    fn a_bundle_from_before_sense_d_is_wanted_whatever_its_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join(".fab7/weft");
+        let old = weft_dir.join("sense/versions/0.2.0");
+        std::fs::create_dir_all(&old).unwrap();
+        let manifest = r#"{"schema": "fab7.sense.bundle/2", "version": "0.2.0", "files": {}}"#;
+        std::fs::write(old.join("manifest.json"), manifest).unwrap();
+        let pointer = serde_json::json!({"version": "0.2.0", "path": old});
+        std::fs::write(weft_dir.join("sense/current.json"), pointer.to_string()).unwrap();
+        assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.2.0"));
+        assert!(sense_wanted(&weft_dir), "0.2.0 is not older, but it is not sense-d");
+    }
+
+    #[test]
+    fn a_manifest_naming_a_file_outside_its_folder_is_refused() {
+        for path in ["../sense.int8.onnx", "a/b.onnx", "", ".."] {
+            let manifest = serde_json::json!({"files": {"model": {"path": path, "sha256": "ab"}}});
+            assert!(bundle_files(manifest.to_string().as_bytes()).is_err(), "{path:?}");
+        }
     }
 
     #[test]
@@ -457,6 +469,9 @@ mod tests {
             fetch_sense_from(&weft_dir, &*crate::outside::machine(), &url, &named).unwrap();
         assert_eq!(current.version, SENSE_VERSION);
         assert!(!sense_wanted(&weft_dir));
+        for name in bundle_files(&manifest).unwrap() {
+            assert!(current.path.join(&name).is_file(), "{name} is installed");
+        }
         assert!(!weft_dir.join("sense/download").exists(), "the download folder goes");
     }
 
