@@ -1,15 +1,18 @@
 //! Eval as bounded tasks that RingFrame hands out and checks, over the change
-//! DAG: **map** reads the change once, in the file tree's order, and says
-//! why each window is there; the **shuffle** gives each requirement the
-//! windows the map assigned to it and RingFrame's own evidence for it;
-//! **reduce** decides each requirement from that; **confirm** reads again,
-//! as a plain first reading of its kind in a fresh session, every decisive
-//! negative and every requirement whose evidence carries a finding: a window's
-//! two readings settle it only when they agree. RingFrame merges the rest.
+//! DAG: first, when an Ask's own words hold requirements, the
+//! **requirements** task lists them from the person's words; **map** reads
+//! the change once, in the file tree's order, and says why each window is
+//! there; the **shuffle** gives each requirement the windows the map
+//! assigned to it and RingFrame's own evidence for it; **reduce** decides
+//! each requirement from that; **confirm** reads again, as a plain first
+//! reading of its kind in a fresh session, every requirement whose first
+//! reading is not `met`, that a finding names, whose parts disagree or whose
+//! work was undone, and every window the map called unexplained. A second
+//! reading that contradicts the first is read a third time, and the
+//! majority settles it. RingFrame merges the rest.
 //!
-//! `eval next` says which tasks are ready and writes each one's file, with
-//! its evidence inline (`eval task` hands them out one at a time); a
-//! judge writes its output and runs `eval submit`,
+//! `eval task` hands out one ready task at a time and writes its file, with
+//! its evidence inline; a judge writes its output and runs `eval submit`,
 //! which checks every citation against its source before anything counts.
 //! No model decides the order, and no model writes the report.
 //!
