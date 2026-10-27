@@ -638,6 +638,77 @@ fn an_ask_goes_to_the_daemon_and_its_staged_send_is_answered() {
     });
 }
 
+/// With Sense (17.22, 17.23): while the words are read the sheet shows one
+/// panel; when no route was picked for them, the person picks one before Ask
+/// sends, and only the proposed practice is kept.
+#[test]
+fn the_ask_sheet_shows_the_words_read_and_waits_for_a_route_sense_left_open() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    let rule =
+        |id: &str| json!({"id": id, "label": id, "text": "", "family": null, "layer": "shipped"});
+    let sheet = json!({
+        "routes": ["native_plan", "native_goal"], "route": null, "tasks": ["plan"], "task": "plan",
+        "plan": null, "plans": [], "route_rules": [rule("route.step_loop")],
+        "practices": [rule("practice.kiss"), rule("practice.yagni"), rule("practice.gall"), rule("practice.knuth")],
+        "proposed": ["practice.gall"], "senses": true,
+    });
+    // Each read is answered as it comes; the words change once one is shown.
+    let answer_reads = |app: &mut WeftDesktopApp,
+                        wire: &mut Wire,
+                        until: &dyn Fn(&WeftDesktopApp) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut seen = Vec::new();
+        while !until(app) {
+            assert!(Instant::now() < deadline, "the sheet never came");
+            app.pump();
+            for (id, c) in wire.calls() {
+                if matches!(c, Call::Read { ref what, .. } if what == "ask") && !seen.contains(&id)
+                {
+                    wire.answer(id, sheet.clone());
+                    seen.push(id);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    answer_reads(&mut app, &mut wire, &|a| a.ask_sheet.is_some());
+    app.ask.set_text("the health check says the build is unknown");
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    assert!(
+        drawn.contains("Sensing your best fit…") && drawn.contains("Pick a route yourself"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("PRACTICES"), "one panel while the words are read: {drawn}");
+    answer_reads(&mut app, &mut wire, &|a| {
+        a.ask_sheet_for.as_deref() == Some("the health check says the build is unknown")
+    });
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    for said in [
+        "Pick a route",
+        "They show once you pick a route.",
+        "PRACTICES · 1",
+        "practice.gall",
+        "+ 3 more",
+        "Pick a route to ask.",
+    ] {
+        assert!(drawn.contains(said), "{said} in {drawn}");
+    }
+    app.dispatch(SheetAct::SubmitAsk);
+    assert_eq!(app.bottom_bar, BottomBarState::WhyNot { sentence: "Pick a route to ask.".into() });
+    assert!(
+        !wire
+            .calls()
+            .into_iter()
+            .any(|(_, c)| matches!(c, Call::Act { ref act, .. } if act == "ask")),
+        "nothing asked"
+    );
+}
+
 /// The Ask's draft (17.1): the daemon offers the route, plan and rules for the
 /// harness and the words; the person picks a route, takes a practice out, and
 /// Ask sends what they kept.
@@ -661,19 +732,29 @@ fn the_ask_sheet_offers_a_route_a_plan_and_rules_and_sends_what_was_kept() {
             "route_rules": [rule("route.step_loop", "Step Loop")],
         })
     };
-    // The sheet is read for the harness and the words, and drawn when it comes.
+    // The sheet is read for the harness and the words, one read at a time,
+    // and drawn when it comes: a read for the words before is answered first.
     let answered = |app: &mut WeftDesktopApp, wire: &mut Wire, route: &str| {
-        app.pump();
-        let (id, query) = wire
-            .calls()
-            .into_iter()
-            .rev()
-            .find_map(|(id, c)| match c {
+        let mut answered_before = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (id, query) = loop {
+            assert!(Instant::now() < deadline, "the sheet for the words is never read");
+            app.pump();
+            let read = wire.calls().into_iter().rev().find_map(|(id, c)| match c {
                 Call::Read { what, unit, .. } if what == "ask" => Some((id, unit)),
                 _ => None,
-            })
-            .expect("the sheet is read");
-        let query: Value = serde_json::from_str(&query).unwrap();
+            });
+            let Some((id, query)) = read.filter(|(id, _)| !answered_before.contains(id)) else {
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            };
+            let query: Value = serde_json::from_str(&query).unwrap();
+            if query["words"] == "show the build number" {
+                break (id, query);
+            }
+            wire.answer(id, sheet(route));
+            answered_before.push(id);
+        };
         assert_eq!(query["words"], "show the build number");
         wire.answer(id, sheet(route));
         pumped(app, |a| a.ask_sheet.as_ref().is_some_and(|s| s["route"] == route));

@@ -421,6 +421,8 @@ mod tests {
             let home = std::env::var_os("HOME").expect("HOME");
             PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
         };
+        let pinned = crate::versions::SENSE_MANIFEST_SHA256;
+        let src = weft_sense::manifest::bundle_with_digest(&src, pinned).unwrap();
         std::fs::create_dir_all(dst).unwrap();
         for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
             let p = src.join(name);

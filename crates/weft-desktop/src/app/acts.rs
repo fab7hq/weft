@@ -544,7 +544,7 @@ impl WeftDesktopApp {
             running.iter().copied().find(|&p| Some(p) == front).or(running.first().copied())
         });
         self.ask = TextField::new(Shape::Area);
-        (self.ask_sheet, self.ask_choices) = (None, Default::default());
+        (self.ask_sheet, self.ask_choices, self.ask_sheet_for) = (None, Default::default(), None);
         self.active_sheet =
             Some(ActiveSheet::Ask { project, send_to: pane.map(pane_key), follow_up_unit: unit });
         self.focus = Focus::Ask;
@@ -661,6 +661,10 @@ impl WeftDesktopApp {
                     self.active_sheet.clone()
                 {
                     let draft = self.ask.text().to_string();
+                    if self.ask_sheet.as_ref().is_some_and(|s| s["route"].is_null()) {
+                        self.why_not(weft_core::words::word("ask.pick_to_ask"));
+                        return;
+                    }
                     // Not asked, the Ask stays open with what was written.
                     if self.submit_ask(
                         &project,
@@ -684,13 +688,13 @@ impl WeftDesktopApp {
                 (self.ask_choices.plan, self.ask_choices.open) = (Some(plan), None);
             }
             SheetAct::AskRuleOut(id) => {
-                self.ask_choices.removed.insert(id);
+                self.ask_choices.picked.insert(id, false);
             }
             SheetAct::AskRuleBack(id) => {
-                self.ask_choices.removed.remove(&id);
+                self.ask_choices.picked.insert(id, true);
             }
-            SheetAct::AskMore => self.ask_choices.all = true,
-            SheetAct::AskAddRule => self.ask_choices.adding = !self.ask_choices.adding,
+            SheetAct::AskMore | SheetAct::AskAddRule => self.ask_choices.all = true,
+            SheetAct::AskPickRoute => self.ask_choices.picking = true,
             SheetAct::FollowUp { project, unit } => self.open_ask(project, None, Some(unit)),
             SheetAct::Offer { project, unit, offer } => self.offer(project, unit, offer),
             SheetAct::GitNote { project, on: true } => {

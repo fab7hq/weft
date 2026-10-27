@@ -1,6 +1,13 @@
+pub mod ask;
+pub mod ask_graph;
+pub mod learn;
+pub mod manifest;
 pub mod model;
 pub mod normalize;
+pub mod pair;
+pub mod unigram;
 
+pub use ask::{AskAnswer, Rule};
 pub use model::{
     ConversationEntry, ConversationReading, PaneSnapshot, SenseCurrentPointer, SenseModel,
     SurfaceReading, SurfaceState, TranscriptSnippet, sha256_hex,

@@ -521,8 +521,10 @@ pub struct Session {
     /// built at an older count is built again.
     suggest_changes: u64,
     /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
-    #[allow(dead_code)]
     sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
+    /// Sense's last answer on the Ask sheet, for its harness and words: what
+    /// a Send of those words was shown.
+    sensed: LastSensed,
     /// This daemon's own version, held while it runs so it is never removed
     /// from under it.
     _held: Option<crate::versions::Held>,
@@ -600,32 +602,108 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
     })
 }
 
+/// Sense's last answer on the Ask sheet, with the harness and words it was for.
+type LastSensed = Arc<std::sync::Mutex<Option<((String, String), weft_sense::AskAnswer)>>>;
+
+/// How long the Ask sheet waits for Sense before the person picks.
+const SENSE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Sense on `words` for `harness`, its answer kept in `last` for their
+/// Send. Off without words or a bundle that answers an Ask; failed when it
+/// errs or takes past [`SENSE_DEADLINE`].
+fn sense_ask(
+    model: &Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
+    last: &LastSensed,
+    (harness, words): (&str, &str),
+    (routes, rules): (&[&str], &[weft_sense::Rule]),
+) -> crate::ringframe::Sensed {
+    use crate::ringframe::Sensed;
+    let answers = model.read().ok().is_some_and(|m| m.as_ref().is_some_and(|m| m.answers_asks()));
+    if words.trim().is_empty() || !answers {
+        return Sensed::Off;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (model, text) = (Arc::clone(model), words.to_string());
+    let (routes, rules): (Vec<String>, Vec<weft_sense::Rule>) =
+        (routes.iter().map(|r| r.to_string()).collect(), rules.to_vec());
+    std::thread::spawn(move || {
+        let guard = model.read().ok();
+        let routes: Vec<&str> = routes.iter().map(String::as_str).collect();
+        let answer = guard.as_ref().and_then(|m| m.as_ref()?.ask(&text, &routes, &rules).ok());
+        let _ = tx.send(answer);
+    });
+    match rx.recv_timeout(SENSE_DEADLINE) {
+        Ok(Some(answer)) => {
+            let key = (harness.to_string(), words.to_string());
+            *last.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, answer.clone()));
+            Sensed::Answered(Box::new(answer))
+        }
+        Ok(None) | Err(_) => Sensed::Failed,
+    }
+}
+
+/// The answer Sense gave these words on the sheet, if it was the last.
+fn sensed_for(last: &LastSensed, (harness, words): (&str, &str)) -> Option<weft_sense::AskAnswer> {
+    let last = last.lock().unwrap_or_else(|e| e.into_inner());
+    let ((h, w), answer) = last.as_ref()?;
+    (h == harness && w == words).then(|| answer.clone())
+}
+
 /// The Ask the person drafted, with what they left unchosen at its default:
-/// the harness's first route, the task that route is for, the plan their
-/// words are most about, and every practice rule offered. A draft that was
-/// sent says its plan, or that there is none.
+/// Sense's, as the sheet showed it, or else the harness's first route, the
+/// task that route is for and every practice rule offered; and the plan
+/// their words are most about. A draft that was sent says its plan, or that
+/// there is none. A route Sense left unselected must be picked.
 fn ask_draft(
     root: &Path,
     over: Option<&str>,
     (harness, words): (String, String),
-    draft: Option<&weft_core::ask::Draft>,
+    (draft, sensed): (Option<&weft_core::ask::Draft>, Option<weft_sense::AskAnswer>),
     link: Option<(String, String)>,
 ) -> Result<crate::ringframe::AskDraft, String> {
     let chosen = draft.cloned().unwrap_or_default();
     let picked = (chosen.route.as_deref(), chosen.task.as_deref());
-    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked)
+    let sense = |_: &[&str], _: &[weft_sense::Rule]| match &sensed {
+        Some(answer) => crate::ringframe::Sensed::Answered(Box::new(answer.clone())),
+        None => crate::ringframe::Sensed::Off,
+    };
+    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked, &sense)
         .map_err(|crate::ringframe::Error::Refused { message, .. }| message)?;
     let text = |key: &str| sheet[key].as_str().unwrap_or_default().to_string();
     let plan = match draft {
         Some(_) => chosen.plan,
         None => sheet["plan"]["path"].as_str().map(str::to_string),
     };
-    let practices = sheet["practices"].as_array().into_iter().flatten();
-    let offered: Vec<String> =
-        practices.filter_map(|r| r["id"].as_str().map(str::to_string)).collect();
+    let ids = |key: &str| -> Option<Vec<String>> {
+        let list = sheet[key].as_array()?.iter();
+        Some(list.filter_map(|r| r.as_str().or(r["id"].as_str()).map(str::to_string)).collect())
+    };
+    // What the sheet showed chosen: Sense's proposals, or every practice.
+    let offered = ids("proposed").or_else(|| ids("practices")).unwrap_or_default();
     let rules = chosen.rules.unwrap_or_else(|| offered.clone());
     let (route, task) = (text("route"), text("task"));
-    Ok(crate::ringframe::AskDraft { words, harness, route, task, plan, rules, offered, link })
+    if route.is_empty() {
+        return Err("Pick a route: Sense was not sure which this Ask needs.".into());
+    }
+    let effects = ids("effects").unwrap_or_default();
+    let sense = sensed.map(|answer| crate::ringframe::SenseShown {
+        route: sheet["route"].as_str().map(str::to_string),
+        task: sheet["task"].as_str().map(str::to_string),
+        rules: offered.clone(),
+        answer,
+    });
+    Ok(crate::ringframe::AskDraft {
+        words,
+        harness,
+        route,
+        task,
+        effects,
+        plan,
+        rules,
+        offered,
+        link,
+        sense,
+    })
 }
 
 /// RingFrame set up here, as `ringframe init` would, or what it still needs; and
@@ -863,6 +941,7 @@ impl Session {
             habits: Vec::new(),
             suggest_changes: 0,
             sense,
+            sensed: LastSensed::default(),
             _held: crate::versions::hold_own(),
         };
         // Older versions nothing runs any more are removed: never this one,
@@ -1152,7 +1231,10 @@ impl Session {
                 let over = project.ringframe.clone();
                 let title = project.harnesses.find(&harness).map_or(&harness, |h| &h.title).clone();
                 let words = text.unwrap_or_default().to_string();
-                let draft = match ask_draft(&root, over.as_deref(), (harness, words), draft, link) {
+                let sensed = sensed_for(&self.sensed, (&harness, &words));
+                let drafted = (draft, sensed);
+                let draft = match ask_draft(&root, over.as_deref(), (harness, words), drafted, link)
+                {
                     Ok(draft) => draft,
                     Err(why) => return Answer::No("refused", why),
                 };
@@ -1389,13 +1471,28 @@ impl Session {
                 let tx = self.tx.clone();
                 let (words, picked) =
                     (text("words").unwrap_or_default(), (text("route"), text("task")));
+                let (model, sensed) = (Arc::clone(&self.sense), Arc::clone(&self.sensed));
                 std::thread::spawn(move || {
+                    let sense = |routes: &[&str], rules: &[weft_sense::Rule]| {
+                        sense_ask(&model, &sensed, (&harness, &words), (routes, rules))
+                    };
+                    // Whether Sense reads the words at all: the sheet shows it
+                    // working only then.
+                    let senses = model
+                        .read()
+                        .ok()
+                        .is_some_and(|m| m.as_ref().is_some_and(|m| m.answers_asks()));
                     let answer = crate::ringframe::sheet(
                         &root,
                         over.as_deref(),
                         (&harness, &words),
                         (picked.0.as_deref(), picked.1.as_deref()),
+                        &sense,
                     )
+                    .map(|mut sheet| {
+                        sheet["senses"] = serde_json::json!(senses);
+                        sheet
+                    })
                     .map_or_else(ringframe_error, Answer::Ok);
                     let _ = tx.send(Wake::Answer { client, call_id, answer });
                 });
@@ -2535,6 +2632,8 @@ mod tests {
             let home = std::env::var_os("HOME").expect("HOME");
             PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
         };
+        let pinned = crate::versions::SENSE_MANIFEST_SHA256;
+        let src = weft_sense::manifest::bundle_with_digest(&src, pinned).unwrap();
         std::fs::create_dir_all(dst).unwrap();
         for name in ["sense.int8.onnx", "tokenizer.json", "calibration.json"] {
             let p = src.join(name);

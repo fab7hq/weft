@@ -50,16 +50,24 @@ fn now_ms() -> u64 {
 }
 
 /// An Ask the person sent: their words, and the route, plan and practice
-/// rules they sent it with, against the rules the sheet offered. No
-/// suggestion was made, so `sense` is null.
+/// rules they sent it with, against the rules the sheet offered; and what
+/// Sense said, its top route even when it was unsure, or null.
 pub fn asked(draft: &crate::ringframe::AskDraft, ask_id: &str) -> Value {
+    let sense = draft.sense.as_ref().map(|s| {
+        let a = &s.answer;
+        let top = a.route.p.iter().max_by(|x, y| x.1.total_cmp(y.1));
+        let rules: Vec<Value> = a.rules.iter().map(|r| json!([r.id, r.p])).collect();
+        json!({"version": a.sense, "route": top.map(|(c, p)| json!([c, p])),
+               "route_p": a.route.p, "task": a.task.on, "effects": a.effects.on,
+               "rules": rules})
+    });
     let (chosen, offered) = (&draft.rules, &draft.offered);
     let kept: Vec<&String> = chosen.iter().filter(|r| offered.contains(r)).collect();
     let removed: Vec<&String> = offered.iter().filter(|r| !chosen.contains(r)).collect();
     let added: Vec<&String> = chosen.iter().filter(|r| !offered.contains(r)).collect();
     json!({
         "schema": SCHEMA, "kind": "ask", "at": now_ms(), "harness": draft.harness,
-        "ask_id": ask_id, "intent": draft.words, "sense": null,
+        "ask_id": ask_id, "intent": draft.words, "sense": sense,
         "final": {"route": draft.route, "plan": draft.plan, "rules_kept": kept,
                   "rules_removed": removed, "rules_added": added},
     })
@@ -86,11 +94,40 @@ mod tests {
             harness: "codex".into(),
             route: "native_plan".into(),
             task: "implement".into(),
+            effects: vec!["read".into(), "write".into()],
             plan: Some("plans/x/plan.md".into()),
             rules: vec!["practice.kiss".into(), "mine.1".into()],
             offered: vec!["practice.kiss".into(), "practice.yagni".into()],
             link: None,
+            sense: None,
         }
+    }
+
+    #[test]
+    fn an_ask_sense_answered_records_what_sense_said() {
+        let answer: weft_sense::AskAnswer = serde_json::from_value(json!({
+            "sense": "0.3.0",
+            "route": {"pick": null, "p": {"direct": 0.25, "plan": 0.5, "goal": 0.25}},
+            "task": {"on": ["implement"], "p": {"implement": 0.9, "plan": 0.2}},
+            "effects": {"on": ["read", "write"], "p": {"read": 0.99, "write": 0.8}},
+            "result": "plan",
+            "rules": [{"id": "practice.kiss", "p": 0.75}],
+        }))
+        .unwrap();
+        let mut d = draft();
+        d.sense = Some(crate::ringframe::SenseShown {
+            answer,
+            route: None,
+            task: Some("implement".into()),
+            rules: vec!["practice.kiss".into()],
+        });
+        let row = asked(&d, "ask_2");
+        assert_eq!(
+            row["sense"],
+            json!({"version": "0.3.0", "route": ["plan", 0.5],
+                   "route_p": {"direct": 0.25, "goal": 0.25, "plan": 0.5}, "task": ["implement"],
+                   "effects": ["read", "write"], "rules": [["practice.kiss", 0.75]]})
+        );
     }
 
     #[test]

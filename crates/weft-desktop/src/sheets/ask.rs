@@ -1,7 +1,7 @@
 //! The Ask, docked under the panes: what to ask, and where it goes; or a
 //! follow-up on a work.
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use weft_core::ask::{Draft, route_label};
@@ -21,19 +21,19 @@ pub struct AskChoices {
     pub route: Option<String>,
     /// The plan picked: none here is the one offered; `Some(None)`, no plan.
     pub plan: Option<Option<String>>,
-    /// Practices taken out, by id.
-    pub removed: BTreeSet<String>,
-    /// Every practice shown, past the first few.
+    /// Practices the person put in (true) or took out (false), by id.
+    pub picked: BTreeMap<String, bool>,
+    /// Every practice shown: the kept ones past the first few, and the rest.
     pub all: bool,
-    /// The practices taken out are shown, to put one back.
-    pub adding: bool,
+    /// The person picks the route now, rather than wait while the words are read.
+    pub picking: bool,
     /// The ROUTE or PLAN list that is open.
     pub open: Option<String>,
 }
 
 impl AskChoices {
     /// What Ask sends: the route and its task, the plan, and every practice
-    /// not taken out.
+    /// kept.
     pub fn draft(&self, sheet: &Value) -> Draft {
         let text = |key: &str| sheet[key].as_str().map(str::to_string);
         let plan = match &self.plan {
@@ -43,7 +43,7 @@ impl AskChoices {
         let rules = practices(sheet)
             .iter()
             .filter_map(|r| r["id"].as_str())
-            .filter(|id| !self.removed.contains(*id))
+            .filter(|id| is_in(sheet, &self.picked, id))
             .map(str::to_string)
             .collect();
         Draft {
@@ -63,6 +63,58 @@ pub fn query(harness: &str, words: &str, choices: &AskChoices) -> String {
 
 fn practices(sheet: &Value) -> &[Value] {
     sheet["practices"].as_array().map_or(&[], Vec::as_slice)
+}
+
+/// Whether a practice is kept: the person's pick, else whether it was
+/// proposed for the words; with none proposed, every one is.
+pub fn is_in(sheet: &Value, picked: &BTreeMap<String, bool>, id: &str) -> bool {
+    picked.get(id).copied().unwrap_or_else(|| match sheet["proposed"].as_array() {
+        Some(proposed) => proposed.iter().any(|p| p == id),
+        None => true,
+    })
+}
+
+/// The practices kept, and those not.
+fn split_practices<'a>(sheet: &'a Value, c: &AskChoices) -> (Vec<&'a Value>, Vec<&'a Value>) {
+    practices(sheet)
+        .iter()
+        .partition(|r| is_in(sheet, &c.picked, r["id"].as_str().unwrap_or_default()))
+}
+
+/// Whether the sheet shows the words being read (17.23): they are read at
+/// all, there are words, the sheet shown is for others, and the person has
+/// not picked a route or chosen to.
+pub fn sensing(sheet: Option<&Value>, sheet_for: Option<&str>, text: &str, c: &AskChoices) -> bool {
+    let senses = sheet.is_some_and(|s| s["senses"] == true);
+    let picks = c.picking || c.route.is_some();
+    senses && !picks && !text.trim().is_empty() && sheet_for != Some(text)
+}
+
+/// The words being read (17.23): one panel where the route, its rules and
+/// the practices will be.
+fn sensing_panel() -> Element {
+    // The window breathes `pulse` alone, so the dots breathe together.
+    let dot = || {
+        div()
+            .w(8)
+            .h(8)
+            .style("border-radius", "4px")
+            .bg(palette::BLUE_BORDER)
+            .style("animation", "pulse")
+    };
+    div()
+        .layer("sensing")
+        .self_stretch()
+        .h(150)
+        .flex_col()
+        .gap(10)
+        .items_center()
+        .justify_center()
+        .bg(palette::SURFACE)
+        .border(palette::BLUE_BORDER)
+        .child(div().flex_row().gap(6).child(dot()).child(dot()).child(dot()))
+        .child(div().font_weight(600).font_size(15).text(word("ask.sensing")))
+        .child(div().font_size(13).color(palette::MUTED).text(word("ask.sensing_line")))
 }
 
 fn label(text: impl Into<String>) -> Element {
@@ -128,9 +180,15 @@ fn draft_rows(sheet: &Value, c: &AskChoices, harness: &str) -> (Vec<Element>, Ve
         Some(picked) => picked.clone(),
         None => sheet["plan"]["path"].as_str().map(str::to_string),
     };
+    let route_pick = match route {
+        "" => pick("route", word("ask.pick_route").into())
+            .style("border-color", palette::AMBER)
+            .color(palette::AMBER),
+        r => pick("route", route_label(r)),
+    };
     let picks = vec![
         label(word("ask.route")),
-        pick("route", route_label(route)),
+        route_pick,
         label(word("ask.plan")),
         pick("plan", plan.clone().unwrap_or_else(|| word("ask.no_plan").to_string())),
     ];
@@ -185,25 +243,28 @@ fn draft_rows(sheet: &Value, c: &AskChoices, harness: &str) -> (Vec<Element>, Ve
         );
     }
     let named = format!("{harness} · {} · {}", route_label(route), word("ask.always"));
-    let route_rules = sheet["route_rules"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|r| rule_line(r, span(named.clone()).color(palette::DIM)))
-        .collect();
+    let route_rules = match route {
+        "" => vec![
+            div().pad(7, 12).font_size(13).color(palette::DIM).text(word("ask.route_rules_wait")),
+        ],
+        _ => sheet["route_rules"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| rule_line(r, span(named.clone()).color(palette::DIM)))
+            .collect(),
+    };
     rows.push(rules_box(label(word("ask.route_rules")), route_rules).layer("route rules"));
-    let kept: Vec<&Value> = practices(sheet)
-        .iter()
-        .filter(|r| !c.removed.contains(r["id"].as_str().unwrap_or_default()))
-        .collect();
+    let (kept, not_kept) = split_practices(sheet, c);
     let shown = if c.all { kept.len() } else { kept.len().min(SHOWN) };
     let out = |r: &Value| {
         let id = r["id"].as_str().unwrap_or_default().to_string();
         span("×").layer(format!("out {id}")).on_click(SheetAct::AskRuleOut(id)).color(palette::DIM)
     };
     let mut lines: Vec<Element> = kept[..shown].iter().map(|r| rule_line(r, out(r))).collect();
-    if shown < kept.len() {
-        let more = fill("ask.more", &[("n", &(kept.len() - shown).to_string())]);
+    let more = practices(sheet).len() - shown;
+    if !c.all && more > 0 {
+        let more = fill("ask.more", &[("n", &more.to_string())]);
         lines.push(
             div()
                 .layer("more")
@@ -214,15 +275,15 @@ fn draft_rows(sheet: &Value, c: &AskChoices, harness: &str) -> (Vec<Element>, Ve
                 .text(more),
         );
     }
-    if c.adding {
-        for r in practices(sheet)
-            .iter()
-            .filter(|r| c.removed.contains(r["id"].as_str().unwrap_or_default()))
-        {
+    if c.all {
+        for r in not_kept {
             let id = r["id"].as_str().unwrap_or_default().to_string();
             lines.push(rule_line(
                 r,
-                span("+").on_click(SheetAct::AskRuleBack(id)).color(palette::BLUE_BORDER),
+                span("+")
+                    .layer(format!("in {id}"))
+                    .on_click(SheetAct::AskRuleBack(id))
+                    .color(palette::BLUE_BORDER),
             ));
         }
     }
@@ -237,18 +298,29 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
 
     let targets = props.send_to.map(|v| send_to::render(v, |key| SheetAct::AskTo(key).into()));
     let harness = props.send_to.map(|v| v.picked_harness()).unwrap_or_default();
+    let c = props.ask_choices;
+    let reading = sensing(props.ask_sheet, props.ask_sheet_for, props.ask_draft, c);
     let (picks, rows) = match props.ask_sheet {
-        Some(sheet) => draft_rows(sheet, props.ask_choices, &harness),
+        Some(_) if reading => (Vec::new(), vec![sensing_panel()]),
+        Some(sheet) => draft_rows(sheet, c, &harness),
         None => (Vec::new(), Vec::new()),
     };
-    let add_rule = (!props.ask_choices.removed.is_empty()).then(|| {
-        div()
-            .layer("add rule")
-            .on_click(SheetAct::AskAddRule)
-            .font_size(13)
-            .color(palette::BLUE_BORDER)
-            .text(word("ask.add_rule"))
+    let no_route = !reading && props.ask_sheet.is_some_and(|s| s["route"].is_null());
+    let link = |layer: &str, act: SheetAct, key: &str| {
+        div().layer(layer).on_click(act).font_size(13).color(palette::BLUE_BORDER).text(word(key))
+    };
+    let add_rule = props.ask_sheet.filter(|_| !reading && !c.all).and_then(|sheet| {
+        let (_, not_kept) = split_practices(sheet, c);
+        (!not_kept.is_empty()).then(|| link("add rule", SheetAct::AskAddRule, "ask.add_rule"))
     });
+    let pick_yourself =
+        reading.then(|| link("pick yourself", SheetAct::AskPickRoute, "ask.pick_yourself"));
+    let hint = no_route.then(|| {
+        div().layer("hint").font_size(13).color(palette::AMBER).text(word("ask.pick_to_ask"))
+    });
+    let ask_button = button("btn Ask", act, SheetAct::SubmitAsk, Tone::Primary, Size::Sheet);
+    let ask_button =
+        if no_route || reading { ask_button.style("opacity", "0.4") } else { ask_button };
     let eyebrow = follow_up_unit.and_then(|unit| eyebrow(props, unit)).map(|said| {
         div()
             .layer("eyebrow")
@@ -310,7 +382,9 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 .gap(12)
                 .items_center()
                 .children(add_rule)
+                .children(pick_yourself)
                 .child(div().flex_1())
+                .children(hint)
                 .child(button(
                     "btn Cancel",
                     word("act.cancel"),
@@ -318,7 +392,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                     Tone::Quiet,
                     Size::Sheet,
                 ))
-                .child(button("btn Ask", act, SheetAct::SubmitAsk, Tone::Primary, Size::Sheet)),
+                .child(ask_button),
         )
 }
 
@@ -330,4 +404,55 @@ fn eyebrow(props: &SheetProps, unit: &str) -> Option<String> {
     let title = client.units.iter().find(|u| u.ask_id == work.root).map(|u| u.title.as_str())?;
     let said = format!("{} · {title} · {}", word("act.follow_up"), work.follows);
     Some(said.to_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A sheet of 14 practices, of which the first `n` were proposed.
+    fn sheet(n: Option<usize>) -> Value {
+        let ids: Vec<String> = (0..14).map(|i| format!("r{i}")).collect();
+        let practices: Vec<Value> = ids.iter().map(|id| json!({"id": id, "label": id})).collect();
+        let proposed = n.map(|n| ids[..n].to_vec());
+        json!({"route": "native_plan", "task": "plan", "practices": practices, "proposed": proposed})
+    }
+
+    #[test]
+    fn the_proposed_practices_are_kept_with_0_1_or_12_of_14() {
+        for n in [0, 1, 12] {
+            let s = sheet(Some(n));
+            let c = AskChoices::default();
+            let (kept, not_kept) = split_practices(&s, &c);
+            assert_eq!((kept.len(), not_kept.len()), (n, 14 - n));
+            let sent = c.draft(&s).rules.unwrap();
+            assert_eq!(sent, (0..n).map(|i| format!("r{i}")).collect::<Vec<_>>());
+        }
+        let none = sheet(None);
+        let (kept, _) = split_practices(&none, &AskChoices::default());
+        assert_eq!(kept.len(), 14, "nothing proposed: every practice is kept");
+    }
+
+    #[test]
+    fn the_person_puts_in_and_takes_out_whatever_was_proposed() {
+        let s = sheet(Some(1));
+        let mut c = AskChoices::default();
+        c.picked.insert("r0".into(), false);
+        c.picked.insert("r7".into(), true);
+        assert_eq!(c.draft(&s).rules.unwrap(), ["r7"]);
+    }
+
+    #[test]
+    fn the_words_show_as_read_while_the_sheet_is_for_others() {
+        let s = json!({"senses": true});
+        let c = AskChoices::default();
+        assert!(sensing(Some(&s), Some("old"), "new", &c));
+        assert!(!sensing(Some(&s), Some("new"), "new", &c));
+        assert!(!sensing(Some(&s), Some("old"), "  ", &c));
+        assert!(!sensing(Some(&json!({"senses": false})), Some("old"), "new", &c));
+        let picking = AskChoices { picking: true, ..Default::default() };
+        assert!(!sensing(Some(&s), Some("old"), "new", &picking));
+        let routed = AskChoices { route: Some("native_goal".into()), ..Default::default() };
+        assert!(!sensing(Some(&s), Some("old"), "new", &routed));
+    }
 }

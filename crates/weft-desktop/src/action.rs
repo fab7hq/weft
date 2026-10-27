@@ -233,13 +233,15 @@ pub enum SheetAct {
     AskRoute(String),
     /// The plan picked, or none.
     AskPlan(Option<String>),
-    /// A practice taken out of the Ask, or put back.
+    /// A practice taken out of the Ask, or put in.
     AskRuleOut(String),
     AskRuleBack(String),
-    /// Show every practice, past the first few.
+    /// Show every practice: the kept ones past the first few, and the rest to put in.
     AskMore,
-    /// Show the practices taken out, to put one back.
+    /// Show the practices not kept, to put one in.
     AskAddRule,
+    /// Pick the route now, rather than wait while the words are read.
+    AskPickRoute,
     SubmitAsk,
     FollowUp {
         project: PathBuf,

@@ -227,6 +227,9 @@ pub struct WeftDesktopApp {
     pub ask_sheet: Option<serde_json::Value>,
     /// What the person picked of it.
     pub ask_choices: crate::sheets::ask::AskChoices,
+    /// The words the shown sheet was made for: while they differ from the
+    /// field's, the words are being read.
+    pub ask_sheet_for: Option<String>,
     /// Where the keyboard goes.
     pub focus: Focus,
     /// What each agent's field could show after its caret, and the draft it is for.
@@ -300,6 +303,7 @@ impl WeftDesktopApp {
             ask: TextField::new(Shape::Area),
             ask_sheet: None,
             ask_choices: Default::default(),
+            ask_sheet_for: None,
             focus: Focus::Terminal,
             suggestions: HashMap::new(),
             settling: None,
@@ -767,7 +771,8 @@ impl WeftDesktopApp {
     /// SEND TO for `project`, `picked` ticked: its running agents, then a new
     /// agent of each harness.
     /// Ask the daemon what the open Ask's sheet offers for its harness, words
-    /// and route; keep its answer once it comes, and only the newest.
+    /// and route; keep its answer once it comes, and only the newest. One is
+    /// asked at a time: the words are read for each, so the next waits.
     pub(crate) fn want_ask_sheet(&mut self) {
         let Some(ActiveSheet::Ask { project, send_to, .. }) = &self.active_sheet else { return };
         let (project, send_to) = (project.clone(), send_to.clone().unwrap_or_default());
@@ -783,10 +788,12 @@ impl WeftDesktopApp {
             };
         let query = crate::sheets::ask::query(&harness, self.ask.text(), &self.ask_choices);
         let then = crate::daemon::Then::AskSheet { query: query.clone() };
+        let asking = |t: &crate::daemon::Then| matches!(t, crate::daemon::Then::AskSheet { .. });
         if let Some(sheet) = c.read.get(&then) {
             self.ask_sheet = Some(sheet.clone());
-            c.read.retain(|t, _| !matches!(t, crate::daemon::Then::AskSheet { .. }) || *t == then);
-        } else if !c.refused.contains_key(&then) {
+            self.ask_sheet_for = Some(self.ask.text().to_string());
+            c.read.retain(|t, _| !asking(t) || *t == then);
+        } else if !c.refused.contains_key(&then) && !c.owes_any(asking) {
             let _ = c.read("ask", &query, None, then);
         }
     }
@@ -1427,6 +1434,7 @@ impl WeftDesktopApp {
                 ask_draft: self.ask.text(),
                 ask_sheet: self.ask_sheet.as_ref(),
                 ask_choices: &self.ask_choices,
+                ask_sheet_for: self.ask_sheet_for.as_deref(),
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
                 back: self.sheet_back.last().map(|(_, name)| name.as_str()),

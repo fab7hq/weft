@@ -1,3 +1,5 @@
+use crate::ask::{AskAnswer, AskSense, Rule};
+use crate::manifest::{Head, Manifest};
 use crate::normalize::{ADDED_TOKENS, normalize_conversation_entry, normalize_surface_frame};
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -142,48 +144,6 @@ pub struct TranscriptSnippet<'a> {
     pub harness: &'a str,
     pub entry_type: &'a str,
     pub snippet: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestFileEntry {
-    path: String,
-    sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestFiles {
-    model: ManifestFileEntry,
-    tokenizer: ManifestFileEntry,
-}
-
-#[derive(Debug, Deserialize)]
-struct BundleManifest {
-    schema: String,
-    version: String,
-    #[serde(default = "default_max_seq_len")]
-    max_seq_len: usize,
-    #[serde(default = "default_max_bottom_lines")]
-    max_bottom_lines: usize,
-    #[serde(default = "default_temp")]
-    temperature: f32,
-    #[serde(default = "default_temp")]
-    conversation_temperature: f32,
-    #[serde(default = "default_min_conf_bp")]
-    min_confidence_bp: u16,
-    files: ManifestFiles,
-}
-
-fn default_max_seq_len() -> usize {
-    256
-}
-fn default_max_bottom_lines() -> usize {
-    15
-}
-fn default_temp() -> f32 {
-    1.0
-}
-fn default_min_conf_bp() -> u16 {
-    7500
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -818,19 +778,26 @@ fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
 /// `offset` (`128 - w_zp`) and `sum`. Every column has its own `scale`, as the
 /// fused attention layer joins three tensors' columns.
 #[derive(Clone)]
-struct QuantLinear {
-    in_dim: usize,
-    out_dim: usize,
+pub(crate) struct QuantLinear {
+    pub(crate) in_dim: usize,
+    pub(crate) out_dim: usize,
     cols: Vec<i8>,
     offset: Vec<i32>,
     sum: Vec<i32>,
     scale: Vec<f32>,
-    bias: Vec<f32>,
+    pub(crate) bias: Vec<f32>,
 }
 
 impl QuantLinear {
     /// From the quantized weights, row-major `[in_dim, out_dim]`.
-    fn new(in_dim: usize, out_dim: usize, w: &[u8], zp: u8, scale: f32, bias: Vec<f32>) -> Self {
+    pub(crate) fn new(
+        in_dim: usize,
+        out_dim: usize,
+        w: &[u8],
+        zp: u8,
+        scale: f32,
+        bias: Vec<f32>,
+    ) -> Self {
         let mut cols = vec![0_i8; in_dim * out_dim];
         for (i, row) in w.chunks_exact(out_dim).enumerate() {
             for (j, &v) in row.iter().enumerate() {
@@ -844,7 +811,7 @@ impl QuantLinear {
     }
 
     /// Layers' columns side by side, each layer's scale times its factor.
-    fn joined(parts: &[(&QuantLinear, f32)], bias: Vec<f32>) -> Self {
+    pub(crate) fn joined(parts: &[(&QuantLinear, f32)], bias: Vec<f32>) -> Self {
         let in_dim = parts[0].0.in_dim;
         let mut joined = QuantLinear {
             in_dim,
@@ -879,6 +846,19 @@ impl QuantLinear {
         out: &mut [f32],
         put: impl Fn(&mut f32, f32),
     ) {
+        self.exact_product(xq, rows, x_scale, out, |o, exact, scale, _| put(o, exact * scale));
+    }
+
+    /// As [`Self::product`], giving `put` each exact sum, its column's
+    /// scale and the column.
+    pub(crate) fn exact_product(
+        &self,
+        xq: &[f32],
+        rows: usize,
+        x_scale: f32,
+        out: &mut [f32],
+        put: impl Fn(&mut f32, f32, f32, usize),
+    ) {
         let (k, n) = (self.in_dim, self.out_dim);
         let mut x8 = vec![0_i8; rows * k];
         let mut shifts = vec![0_i32; rows];
@@ -903,7 +883,7 @@ impl QuantLinear {
                     + self.offset[j] * x_sum
                     + shift * self.sum[j]
                     + k as i32 * shift * self.offset[j];
-                put(&mut out_row[j], exact as f32 * (x_scale * self.scale[j]));
+                put(&mut out_row[j], exact as f32, x_scale * self.scale[j], j);
             }
         }
     }
@@ -1302,8 +1282,14 @@ pub struct SenseModel {
     conversation_temperature: f32,
     surface_min_confidence_bp: u16,
     conversation_min_confidence_bp: u16,
+    /// The surface head's classes, in its logits' order.
+    surface_states: Vec<SurfaceState>,
+    /// The conversation head's classes, in its logits' order.
+    conversation_kinds: Vec<ConversationEntry>,
     tokenizer: SenseTokenizer,
     weights: OnnxDualHeadWeights,
+    /// What answers an Ask; none in a bundle without the Ask heads.
+    ask: Option<AskSense>,
 }
 
 #[derive(Default)]
@@ -1607,21 +1593,22 @@ fn get_worker_pool() -> &'static WorkerPool {
 }
 
 impl SenseModel {
-    /// Load and SHA-256 verify a bundle directory containing manifest.json,
-    /// sense.int8.onnx (or model.int8.onnx), tokenizer.json, and optional calibration.json.
+    /// Load and SHA-256 verify a bundle directory: bundle 2 or 3's
+    /// manifest.json, sense.int8.onnx (or model.int8.onnx), tokenizer.json, and
+    /// an optional calibration.json.
     pub fn load(bundle_dir: &Path) -> anyhow::Result<Self> {
         let manifest_path = bundle_dir.join("manifest.json");
         let manifest_bytes = fs::read(&manifest_path)
             .with_context(|| format!("read {}", manifest_path.display()))?;
-        let manifest: BundleManifest =
-            serde_json::from_slice(&manifest_bytes).context("parse manifest.json")?;
-        if manifest.schema != "fab7.sense.bundle/2" {
-            bail!("unsupported Sense bundle schema: {}", manifest.schema);
-        }
+        let manifest = Manifest::parse(&manifest_bytes)?;
+        let surface = manifest.head("surface")?;
+        let conversation = manifest.head("conversation")?;
+        let surface_states = head_classes(surface, SurfaceState::from_class_str)?;
+        let conversation_kinds = head_classes(conversation, ConversationEntry::from_class_str)?;
 
-        let model_rel = &manifest.files.model.path;
+        let model_entry = manifest.file("model")?;
         let model_path = {
-            let p = bundle_dir.join(model_rel);
+            let p = bundle_dir.join(&model_entry.path);
             if p.exists() {
                 p
             } else if bundle_dir.join("sense.int8.onnx").exists() {
@@ -1630,30 +1617,10 @@ impl SenseModel {
                 bundle_dir.join("model.int8.onnx")
             }
         };
-        let model_bytes =
-            fs::read(&model_path).with_context(|| format!("read {}", model_path.display()))?;
-        let actual_model_sha = sha256_hex(&model_bytes);
-        if actual_model_sha != manifest.files.model.sha256 {
-            bail!(
-                "model SHA-256 mismatch for {}: expected {}, got {}",
-                model_path.display(),
-                manifest.files.model.sha256,
-                actual_model_sha
-            );
-        }
-
-        let tok_path = bundle_dir.join(&manifest.files.tokenizer.path);
+        let model_bytes = read_verified(&model_path, &model_entry.sha256, "model")?;
+        let tok_entry = manifest.file("tokenizer")?;
         let tok_bytes =
-            fs::read(&tok_path).with_context(|| format!("read {}", tok_path.display()))?;
-        let actual_tok_sha = sha256_hex(&tok_bytes);
-        if actual_tok_sha != manifest.files.tokenizer.sha256 {
-            bail!(
-                "tokenizer SHA-256 mismatch for {}: expected {}, got {}",
-                tok_path.display(),
-                manifest.files.tokenizer.sha256,
-                actual_tok_sha
-            );
-        }
+            read_verified(&bundle_dir.join(&tok_entry.path), &tok_entry.sha256, "tokenizer")?;
 
         let cal_path = bundle_dir.join("calibration.json");
         let cal: CalibrationFile = if cal_path.exists() {
@@ -1663,20 +1630,26 @@ impl SenseModel {
             CalibrationFile::default()
         };
 
-        let temperature = cal.temperature.unwrap_or(manifest.temperature);
+        let temperature = cal.temperature.unwrap_or(surface.temperature);
         let conversation_temperature =
-            cal.conversation_temperature.unwrap_or(manifest.conversation_temperature);
+            cal.conversation_temperature.unwrap_or(conversation.temperature);
+        let min_confidence_bp = surface.min_confidence_bp.unwrap_or(7500);
         let surface_min_confidence_bp = cal
             .surface_min_confidence
             .map(|c| (c * 10000.0).round() as u16)
-            .unwrap_or_else(|| manifest.min_confidence_bp.max(8500));
+            .unwrap_or_else(|| min_confidence_bp.max(8500));
         let conversation_min_confidence_bp = cal
             .conversation_min_confidence
             .map(|c| (c * 10000.0).round() as u16)
-            .unwrap_or_else(|| manifest.min_confidence_bp.max(8000));
+            .unwrap_or_else(|| min_confidence_bp.max(8000));
 
+        let ask = match manifest.head("ask_task") {
+            Ok(_) => Some(AskSense::load(bundle_dir, &manifest)?),
+            Err(_) => None,
+        };
         let tokenizer = SenseTokenizer::from_bytes(&tok_bytes)?;
-        let weights = parse_onnx_weights(&model_bytes)?;
+        let weights =
+            parse_onnx_weights(&model_bytes, surface_states.len(), conversation_kinds.len())?;
         if weights.position_embeddings.len() / 384 < manifest.max_seq_len {
             bail!("the model has fewer positions than max_seq_len {}", manifest.max_seq_len);
         }
@@ -1694,8 +1667,11 @@ impl SenseModel {
             conversation_temperature,
             surface_min_confidence_bp,
             conversation_min_confidence_bp,
+            surface_states,
+            conversation_kinds,
             tokenizer,
             weights,
+            ask,
         };
         Ok(model)
     }
@@ -1726,6 +1702,21 @@ impl SenseModel {
         Ok(None)
     }
 
+    /// Whether this bundle answers an Ask.
+    pub fn answers_asks(&self) -> bool {
+        self.ask.is_some()
+    }
+
+    /// Sense's answer to an Ask: its defaults, with the route among the
+    /// harness's `routes` (any, when none are given) and which of `rules`
+    /// it proposes. A bundle without the Ask heads is an error naming one.
+    pub fn ask(&self, text: &str, routes: &[&str], rules: &[Rule]) -> anyhow::Result<AskAnswer> {
+        let ask = self.ask.as_ref();
+        let ask =
+            ask.with_context(|| format!("Sense bundle {} has no ask_task head", self.version))?;
+        ask.answer(text, routes, rules)
+    }
+
     /// Return the loaded bundle's version string from manifest.json.
     pub fn version(&self) -> &str {
         &self.version
@@ -1741,7 +1732,7 @@ impl SenseModel {
             return None;
         }
         Some(SurfaceReading {
-            state: SurfaceState::from_index(idx)?,
+            state: *self.surface_states.get(idx)?,
             confidence_bp: conf_bp,
             seq: snap.seq,
         })
@@ -1760,13 +1751,13 @@ impl SenseModel {
             return None;
         }
         Some(ConversationReading {
-            kind: ConversationEntry::from_index(idx)?,
+            kind: *self.conversation_kinds.get(idx)?,
             confidence_bp: conf_bp,
         })
     }
 
     /// Run tokenization and dual-head ONNX inference on a pre-formatted `[SURFACE]` or `[CONV]` string.
-    pub fn infer_raw_text(&self, text: &str) -> ([f32; 8], [f32; 5], Vec<u32>) {
+    pub fn infer_raw_text(&self, text: &str) -> (Vec<f32>, Vec<f32>, Vec<u32>) {
         let ids = self.tokenizer.encode(text, self.max_seq_len);
         let (surf, conv, _) = self.forward_ids(&ids);
         (surf, conv, ids)
@@ -1779,7 +1770,7 @@ impl SenseModel {
         self.forward_ids(&ids).2.to_vec()
     }
 
-    fn forward_ids(&self, ids: &[u32]) -> ([f32; 8], [f32; 5], [f32; 384]) {
+    fn forward_ids(&self, ids: &[u32]) -> (Vec<f32>, Vec<f32>, [f32; 384]) {
         INFER_SCRATCH.with(|cell| {
             let mut s = cell.borrow_mut();
             self.forward_ids_with_scratch(ids, &mut s)
@@ -1790,7 +1781,7 @@ impl SenseModel {
         &self,
         ids: &[u32],
         s: &mut InferenceScratch,
-    ) -> ([f32; 8], [f32; 5], [f32; 384]) {
+    ) -> (Vec<f32>, Vec<f32>, [f32; 384]) {
         const D: usize = 384;
         const D3: usize = 1152;
         const HEADS: usize = 12;
@@ -1934,13 +1925,13 @@ impl SenseModel {
 
         let pq = QuantizedActivation::from_f32(&pooled, 1, D, scratch);
         let mut surf_hidden = [0.0_f32; 192];
-        let mut surf_logits = [0.0_f32; 8];
+        let mut surf_logits = vec![0.0_f32; w.surface_fc2.out_dim];
         w.surface_fc0.forward_quant(&pq, &mut surf_hidden);
         gelu_in_place(&mut surf_hidden);
         w.surface_fc2.forward(&surf_hidden, 1, &mut surf_logits, scratch);
 
         let mut conv_hidden = [0.0_f32; 192];
-        let mut conv_logits = [0.0_f32; 5];
+        let mut conv_logits = vec![0.0_f32; w.conv_fc2.out_dim];
         w.conv_fc0.forward_quant(&pq, &mut conv_hidden);
         pq.recycle(scratch);
         gelu_in_place(&mut conv_hidden);
@@ -2202,16 +2193,20 @@ fn gelu_bias_minmax_in_place(slice: &mut [f32], bias: &[f32]) -> (f32, f32) {
 }
 
 fn gelu_in_place(slice: &mut [f32]) {
-    const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
     for x in slice.iter_mut() {
-        let v = *x;
-        *x = (v * (erf_f32(v * INV_SQRT2) + 1.0_f32)) * 0.5_f32;
+        *x = gelu(*x);
     }
+}
+
+/// GELU by erf, as the graphs' `Erf` and torch's default compute it.
+pub(crate) fn gelu(v: f32) -> f32 {
+    const INV_SQRT2: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    (v * (erf_f32(v * INV_SQRT2) + 1.0_f32)) * 0.5_f32
 }
 
 #[allow(clippy::excessive_precision)]
 #[inline(always)]
-fn erf_f32(x: f32) -> f32 {
+pub(crate) fn erf_f32(x: f32) -> f32 {
     let a = x.abs().min(4.0_f32);
     let p = ((((((0.0000430638_f32 * a + 0.0002765672_f32) * a + 0.0001520143_f32) * a
         + 0.0092705272_f32)
@@ -2266,6 +2261,28 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         let _ = write!(&mut out, "{b:02x}");
     }
     out
+}
+
+/// A head's classes as this runtime's own kinds, refused when the head names
+/// one it does not know.
+fn head_classes<T>(head: &Head, known: impl Fn(&str) -> Option<T>) -> anyhow::Result<Vec<T>> {
+    if head.classes.is_empty() {
+        bail!("the {} head lists no classes", head.name);
+    }
+    let classes = head.classes.iter();
+    classes
+        .map(|c| known(c).with_context(|| format!("the {} head's class {c} is unknown", head.name)))
+        .collect()
+}
+
+/// A bundle file's bytes, refused unless their SHA-256 is the manifest's.
+pub(crate) fn read_verified(path: &Path, sha256: &str, what: &str) -> anyhow::Result<Vec<u8>> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let actual = sha256_hex(&bytes);
+    if actual != sha256 {
+        bail!("{what} SHA-256 mismatch for {}: expected {sha256}, got {actual}", path.display());
+    }
+    Ok(bytes)
 }
 
 // --- Minimal ONNX Protobuf Reader ---
@@ -2452,112 +2469,149 @@ fn parse_tensor_proto(buf: &[u8]) -> anyhow::Result<RawTensor> {
     Ok(t)
 }
 
-fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights> {
-    let mut nodes: HashMap<String, RawNode> = HashMap::new();
-    let mut inits: HashMap<String, RawTensor> = HashMap::new();
+/// An ONNX graph's nodes and initializers, by name.
+pub(crate) struct OnnxGraph {
+    nodes: HashMap<String, RawNode>,
+    inits: HashMap<String, RawTensor>,
+}
 
-    let mut pos = 0;
-    while pos < model_bytes.len() {
-        let tag = read_varint(model_bytes, &mut pos)?;
-        let field_num = (tag >> 3) as u32;
-        let wire_type = (tag & 0x7) as u8;
-        if field_num == 7 && wire_type == 2 {
-            let graph_buf = read_bytes(model_bytes, &mut pos)?;
+impl OnnxGraph {
+    pub(crate) fn read(model_bytes: &[u8]) -> anyhow::Result<Self> {
+        let mut nodes: HashMap<String, RawNode> = HashMap::new();
+        let mut inits: HashMap<String, RawTensor> = HashMap::new();
 
-            let mut gpos = 0;
-            while gpos < graph_buf.len() {
-                let gtag = read_varint(graph_buf, &mut gpos)?;
-                let gfield = (gtag >> 3) as u32;
-                let gwire = (gtag & 0x7) as u8;
-                match (gfield, gwire) {
-                    (1, 2) => {
-                        let n = parse_node_proto(read_bytes(graph_buf, &mut gpos)?)?;
-                        if !n.name.is_empty() {
-                            nodes.insert(n.name.clone(), n);
+        let mut pos = 0;
+        while pos < model_bytes.len() {
+            let tag = read_varint(model_bytes, &mut pos)?;
+            let field_num = (tag >> 3) as u32;
+            let wire_type = (tag & 0x7) as u8;
+            if field_num == 7 && wire_type == 2 {
+                let graph_buf = read_bytes(model_bytes, &mut pos)?;
+
+                let mut gpos = 0;
+                while gpos < graph_buf.len() {
+                    let gtag = read_varint(graph_buf, &mut gpos)?;
+                    let gfield = (gtag >> 3) as u32;
+                    let gwire = (gtag & 0x7) as u8;
+                    match (gfield, gwire) {
+                        (1, 2) => {
+                            let n = parse_node_proto(read_bytes(graph_buf, &mut gpos)?)?;
+                            if !n.name.is_empty() {
+                                nodes.insert(n.name.clone(), n);
+                            }
                         }
-                    }
-                    (5, 2) => {
-                        let t = parse_tensor_proto(read_bytes(graph_buf, &mut gpos)?)?;
-                        if !t.name.is_empty() {
-                            inits.insert(t.name.clone(), t);
+                        (5, 2) => {
+                            let t = parse_tensor_proto(read_bytes(graph_buf, &mut gpos)?)?;
+                            if !t.name.is_empty() {
+                                inits.insert(t.name.clone(), t);
+                            }
                         }
+                        _ => skip_field(graph_buf, &mut gpos, gwire)?,
                     }
-                    _ => skip_field(graph_buf, &mut gpos, gwire)?,
                 }
+            } else {
+                skip_field(model_bytes, &mut pos, wire_type)?;
             }
-        } else {
-            skip_field(model_bytes, &mut pos, wire_type)?;
         }
+        Ok(Self { nodes, inits })
     }
+
+    pub(crate) fn has_node(&self, name: &str) -> bool {
+        self.nodes.contains_key(name)
+    }
+
+    fn init(&self, name: &str) -> anyhow::Result<&RawTensor> {
+        self.inits.get(name).with_context(|| format!("missing initializer {name}"))
+    }
+
+    /// An initializer's floats, refused unless it has `len` of them.
+    pub(crate) fn f32s(&self, name: &str, len: usize) -> anyhow::Result<Vec<f32>> {
+        let v = self.init(name)?.f32s(name)?;
+        if v.len() != len {
+            bail!("{name} has {} values, not {len}", v.len());
+        }
+        Ok(v)
+    }
+
+    /// A quantized tensor `<prefix>_quantized` in rows `dim` wide, with its
+    /// zero point and scale.
+    pub(crate) fn quantized(&self, prefix: &str, dim: usize) -> anyhow::Result<(Vec<u8>, u8, f32)> {
+        let name = format!("{prefix}_quantized");
+        let t = self.init(&name)?;
+        if t.dims.len() != 2 || t.dims[0] == 0 || t.dims[1] != dim {
+            bail!("{name} has shape {:?}, not rows of {dim}", t.dims);
+        }
+        let zp = self.init(&format!("{prefix}_zero_point"))?.scalar_u8();
+        let scale = self.init(&format!("{prefix}_scale"))?.scalar_f32();
+        Ok((t.u8s(&name)?, zp, scale))
+    }
+
+    /// A dequantized tensor of rows of `dim`.
+    fn dequantized(&self, prefix: &str, dim: usize) -> anyhow::Result<Vec<f32>> {
+        let (q, zp, sc) = self.quantized(prefix, dim)?;
+        Ok(q.into_iter().map(|v| (v as f32 - zp as f32) * sc).collect())
+    }
+
+    /// A LayerNorm's weight and bias, each `dim` wide.
+    pub(crate) fn layer_norm(
+        &self,
+        w_name: &str,
+        b_name: &str,
+        dim: usize,
+    ) -> anyhow::Result<(Vec<f32>, Vec<f32>)> {
+        Ok((self.f32s(w_name, dim)?, self.f32s(b_name, dim)?))
+    }
+
+    /// The weight input name of an integer product node.
+    pub(crate) fn weight_of(&self, node_name: &str) -> anyhow::Result<&str> {
+        let node =
+            self.nodes.get(node_name).with_context(|| format!("missing ONNX node {node_name}"))?;
+        let w =
+            node.inputs.get(1).with_context(|| format!("node {node_name} missing weight input"))?;
+        w.strip_suffix("_quantized").with_context(|| format!("unexpected weight name {w}"))
+    }
+
+    /// The quantized layer an integer product node reads, with its bias.
+    pub(crate) fn qlinear(
+        &self,
+        node_name: &str,
+        bias_name: &str,
+        in_dim: usize,
+        out_dim: usize,
+    ) -> anyhow::Result<QuantLinear> {
+        let prefix = self.weight_of(node_name)?;
+        let w_q_name = format!("{prefix}_quantized");
+        let w_tensor = self.init(&w_q_name)?;
+        if w_tensor.dims != [in_dim, out_dim] {
+            bail!("{w_q_name} has shape {:?}, not [{in_dim}, {out_dim}]", w_tensor.dims);
+        }
+        let (w_raw, w_zp, w_scale) = self.quantized(prefix, out_dim)?;
+        let bias = self.f32s(bias_name, out_dim)?;
+        Ok(QuantLinear::new(in_dim, out_dim, &w_raw, w_zp, w_scale, bias))
+    }
+}
+
+/// The dual-head graph's weights; its heads have `surface_classes` and
+/// `conversation_classes` outputs.
+fn parse_onnx_weights(
+    model_bytes: &[u8],
+    surface_classes: usize,
+    conversation_classes: usize,
+) -> anyhow::Result<OnnxDualHeadWeights> {
+    let graph = OnnxGraph::read(model_bytes)?;
 
     // The model's widths, as the forward pass reads them.
     const D: usize = 384;
     const FFN_DIM: usize = 1536;
     const HEAD_DIM: usize = 192;
 
-    let dequant_emb = |prefix: &str| -> anyhow::Result<Vec<f32>> {
-        let name = format!("{prefix}_quantized");
-        let t = inits.get(&name).with_context(|| format!("missing {name}"))?;
-        if t.dims.len() != 2 || t.dims[0] == 0 || t.dims[1] != D {
-            bail!("{name} has shape {:?}, not rows of {D}", t.dims);
-        }
-        let q = t.u8s(&name)?;
-        let zp = inits
-            .get(&format!("{prefix}_zero_point"))
-            .with_context(|| format!("missing {prefix}_zero_point"))?
-            .scalar_u8() as f32;
-        let sc = inits
-            .get(&format!("{prefix}_scale"))
-            .with_context(|| format!("missing {prefix}_scale"))?
-            .scalar_f32();
-        Ok(q.into_iter().map(|v| (v as f32 - zp) * sc).collect())
-    };
-
+    let dequant_emb = |prefix: &str| graph.dequantized(prefix, D);
     let load_ln = |w_name: &str, b_name: &str| -> anyhow::Result<LayerNorm> {
-        let weight =
-            inits.get(w_name).with_context(|| format!("missing {w_name}"))?.f32s(w_name)?;
-        let bias = inits.get(b_name).with_context(|| format!("missing {b_name}"))?.f32s(b_name)?;
-        if weight.len() != D || bias.len() != D {
-            bail!("{w_name} and {b_name} have {} and {} values, not {D}", weight.len(), bias.len());
-        }
+        let (weight, bias) = graph.layer_norm(w_name, b_name, D)?;
         Ok(LayerNorm { weight, bias })
     };
-
-    let load_qlinear = |node_name: &str,
-                        bias_name: &str,
-                        in_dim: usize,
-                        out_dim: usize|
-     -> anyhow::Result<QuantLinear> {
-        let node =
-            nodes.get(node_name).with_context(|| format!("missing ONNX node {node_name}"))?;
-        let w_q_name =
-            node.inputs.get(1).with_context(|| format!("node {node_name} missing weight input"))?;
-        let prefix = w_q_name
-            .strip_suffix("_quantized")
-            .with_context(|| format!("unexpected weight name {w_q_name}"))?;
-        let w_tensor =
-            inits.get(w_q_name).with_context(|| format!("missing initializer {w_q_name}"))?;
-        if w_tensor.dims != [in_dim, out_dim] {
-            bail!("{w_q_name} has shape {:?}, not [{in_dim}, {out_dim}]", w_tensor.dims);
-        }
-        let w_raw = w_tensor.u8s(w_q_name)?;
-        let w_zp = inits
-            .get(&format!("{prefix}_zero_point"))
-            .with_context(|| format!("missing {prefix}_zero_point"))?
-            .scalar_u8();
-        let w_scale = inits
-            .get(&format!("{prefix}_scale"))
-            .with_context(|| format!("missing {prefix}_scale"))?
-            .scalar_f32();
-        let bias = inits
-            .get(bias_name)
-            .with_context(|| format!("missing {bias_name}"))?
-            .f32s(bias_name)?;
-        if bias.len() != out_dim {
-            bail!("{bias_name} has {} values, not {out_dim}", bias.len());
-        }
-
-        Ok(QuantLinear::new(in_dim, out_dim, &w_raw, w_zp, w_scale, bias))
+    let load_qlinear = |node_name: &str, bias_name: &str, in_dim: usize, out_dim: usize| {
+        graph.qlinear(node_name, bias_name, in_dim, out_dim)
     };
 
     let word_embeddings = dequant_emb("backbone.embeddings.word_embeddings.weight")?;
@@ -2642,7 +2696,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         "/surface_head/surface_head.2/Gemm_MatMul_quant",
         "surface_head.2.bias",
         HEAD_DIM,
-        8,
+        surface_classes,
     )?;
     let conv_fc0 = load_qlinear(
         "/conversation_head/conversation_head.0/Gemm_MatMul_quant",
@@ -2654,7 +2708,7 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
         "/conversation_head/conversation_head.2/Gemm_MatMul_quant",
         "conversation_head.2.bias",
         HEAD_DIM,
-        5,
+        conversation_classes,
     )?;
 
     Ok(OnnxDualHeadWeights {
@@ -2676,14 +2730,18 @@ fn parse_onnx_weights(model_bytes: &[u8]) -> anyhow::Result<OnnxDualHeadWeights>
 mod tests {
     use super::*;
 
+    /// The released 0.2.0 bundle, refused unless it is the one Weft pins.
     fn test_bundle_dir() -> PathBuf {
         let workspace_bundle =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../sense/dist/fab7-sense-v1");
-        if workspace_bundle.exists() {
-            return workspace_bundle;
-        }
-        let home = std::env::var("HOME").unwrap_or_default();
-        PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
+        let dir = if workspace_bundle.exists() {
+            workspace_bundle
+        } else {
+            let home = std::env::var("HOME").unwrap_or_default();
+            PathBuf::from(home).join(".fab7/sense/fab7-sense-v1")
+        };
+        let pinned = "ed08996f6591f04e6cad670142015b5cd9215a7ad20aa7cca64f0d2f3d6d31a7";
+        crate::manifest::bundle_with_digest(&dir, pinned).unwrap()
     }
 
     #[test]
@@ -2707,15 +2765,15 @@ mod tests {
     #[test]
     fn a_damaged_model_is_refused_never_a_panic() {
         let bytes = std::fs::read(test_bundle_dir().join("sense.int8.onnx")).unwrap();
-        assert!(parse_onnx_weights(&bytes).is_ok());
+        assert!(parse_onnx_weights(&bytes, 8, 5).is_ok());
         // One byte in every 4099 spoiled in turn: lengths, tags, shapes and values alike.
         for at in (0..bytes.len()).step_by(4099).take(400) {
             let mut bad = bytes.clone();
             bad[at] ^= 0xFF;
-            let _ = parse_onnx_weights(&bad);
+            let _ = parse_onnx_weights(&bad, 8, 5);
         }
         for cut in (0..bytes.len()).step_by(bytes.len() / 50) {
-            assert!(parse_onnx_weights(&bytes[..cut]).is_err(), "cut at {cut}");
+            assert!(parse_onnx_weights(&bytes[..cut], 8, 5).is_err(), "cut at {cut}");
         }
     }
 

@@ -24,8 +24,9 @@ const ALLOWED: &[(&str, &[&str], &str)] = &[
     ),
     (
         "weft-sense",
-        &["anyhow", "serde", "serde_json", "sha2"],
-        "the dual-head classifier normalizes screens and transcript entries and runs its bundle; \
+        &["anyhow", "serde", "serde_json", "sha2", "unicode-normalization"],
+        "the dual-head classifier normalizes screens and transcript entries, the Ask model reads \
+         an Ask's words (composed as its tokenizer composes them), and both run their bundle; \
          it never touches panes, the ledger, or the wire",
     ),
     (

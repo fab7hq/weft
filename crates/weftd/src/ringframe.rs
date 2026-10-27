@@ -116,12 +116,14 @@ pub fn observe_tools(project: &Path, host: &str) -> Option<Value> {
 
 /// An Ask as the person sent it from Weft's sheet: their words as written,
 /// and what they chose.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AskDraft {
     pub words: String,
     pub harness: String,
     pub route: String,
     pub task: String,
+    /// What doing it affects: Sense's, or reads and writes.
+    pub effects: Vec<String>,
     pub plan: Option<String>,
     /// Practice rules, by id.
     pub rules: Vec<String>,
@@ -129,11 +131,56 @@ pub struct AskDraft {
     pub offered: Vec<String>,
     /// The work it follows: `follows` or `remediates`, and that record's id.
     pub link: Option<(String, String)>,
+    /// What Sense set in the sheet, when it answered.
+    pub sense: Option<SenseShown>,
+}
+
+/// Sense's answer and the defaults the sheet showed from it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SenseShown {
+    pub answer: weft_sense::AskAnswer,
+    pub route: Option<String>,
+    pub task: Option<String>,
+    pub rules: Vec<String>,
+}
+
+impl SenseShown {
+    /// Who chose the route and task: Sense, when the person kept both.
+    fn classified_by(&self, d: &AskDraft) -> api::Chooser {
+        let kept = self.route.as_deref() == Some(&d.route) && self.task.as_deref() == Some(&d.task);
+        let p = &self.answer.route.p;
+        self.chooser(kept, p.iter().map(|(c, p)| (c.clone(), f64::from(*p))).collect())
+    }
+
+    /// Who chose the practice rules: Sense, when the person kept its own.
+    fn selected_by(&self, d: &AskDraft) -> api::Chooser {
+        let (mut kept, mut shown) = (d.rules.clone(), self.rules.clone());
+        kept.sort();
+        shown.sort();
+        let p = self.answer.rules.iter().map(|r| (r.id.clone(), f64::from(r.p))).collect();
+        self.chooser(kept == shown, p)
+    }
+
+    fn chooser(
+        &self,
+        kept: bool,
+        probabilities: std::collections::BTreeMap<String, f64>,
+    ) -> api::Chooser {
+        match kept {
+            true => api::Chooser::Sense { version: self.answer.sense.clone(), probabilities },
+            false => api::Chooser::Person,
+        }
+    }
 }
 
 impl AskDraft {
     fn request<'a>(&'a self, overrides: &'a Overrides) -> api::Compile<'a> {
         let result = if self.task == "plan" { "plan" } else { "workspace_change" };
+        let by = |s: &SenseShown, f: fn(&SenseShown, &AskDraft) -> api::Chooser| f(s, self);
+        let classified_by =
+            self.sense.as_ref().map_or(api::Chooser::Person, |s| by(s, SenseShown::classified_by));
+        let selected_by =
+            self.sense.as_ref().map_or(api::Chooser::Person, |s| by(s, SenseShown::selected_by));
         api::Compile {
             source: &self.words,
             harness: api::Harness { name: &self.harness, version: None, session_ref: None },
@@ -141,12 +188,12 @@ impl AskDraft {
             classification: api::Classification {
                 task: vec![self.task.clone()],
                 result: result.into(),
-                effects: vec!["read".into(), "write".into()],
+                effects: self.effects.clone(),
             },
             plan: self.plan.as_deref(),
             practices: self.rules.clone(),
-            classified_by: api::Chooser::Person,
-            selected_by: api::Chooser::Person,
+            classified_by,
+            selected_by,
             links: self.link.iter().map(|(rel, id)| api::Link { rel, id }).collect(),
             overrides,
             via: "weft",
@@ -167,15 +214,35 @@ pub fn compile(project: &Path, d: &AskDraft, layers: Option<&str>) -> Result<Str
     Ok(compiled.ask_id)
 }
 
+/// What Sense made of the words: nothing, as without a bundle that answers
+/// an Ask or before any words; a failure, as when it took too long; or its
+/// answer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Sensed {
+    Off,
+    Failed,
+    Answered(Box<weft_sense::AskAnswer>),
+}
+
+/// Sense on the words, given the harness's routes it may pick and the
+/// practice rules it may propose.
+pub type Sensing<'a> = &'a dyn Fn(&[&str], &[weft_sense::Rule]) -> Sensed;
+
 /// What the Ask sheet offers for `harness` and these words: every route of
-/// its profile, its default first; the kinds of work; the plan the words are
-/// most about, of the plans held here; and, for the route and task given or
-/// their defaults, the practice rules to choose from and the route's rules.
+/// its profile; the kinds of work; the plan the words are most about, of the
+/// plans held here; and, for the route and task given or their defaults, the
+/// practice rules to choose from and the route's rules. With Sense, its
+/// answer sets the defaults and proposes practices; a route it is unsure of,
+/// or one needing an explicit request for its effects, is left unselected.
+/// When Sense fails the person picks: no route and no practice is chosen.
+/// Without Sense, the first route is the default and every practice is
+/// offered.
 pub fn sheet(
     project: &Path,
     layers: Option<&str>,
     (harness, words): (&str, &str),
     (route, task): (Option<&str>, Option<&str>),
+    sense: Sensing,
 ) -> Result<Value, Error> {
     let ws = workspace(project)?;
     let profile = api::profile(&ws, harness).map_err(refused)?;
@@ -185,8 +252,28 @@ pub fn sheet(
         .flatten()
         .filter_map(|c| c["id"].as_str())
         .collect();
-    let route = route.or(routes.first().copied()).unwrap_or_default();
+    let overrides = overrides(layers)?;
+    let candidates = candidate_rules(&ws, harness, routes.first().copied(), &overrides)?;
+    let classes: Vec<&str> = routes.iter().filter_map(|r| r.strip_prefix("native_")).collect();
+    let sensed = sense(&classes, &candidates);
+    let failed = sensed == Sensed::Failed;
+    let answer = match sensed {
+        Sensed::Answered(a) => Some(*a),
+        Sensed::Off | Sensed::Failed => None,
+    };
+    let defaults = answer.as_ref().map(|a| SenseDefaults::of(a, &profile));
+    let first = routes.first().copied().unwrap_or_default();
+    let shown_route = match (route, &defaults) {
+        (Some(r), _) => Some(r.to_string()),
+        (None, Some(d)) => d.route.clone(),
+        (None, None) => (!failed).then(|| first.to_string()),
+    };
+    let route = shown_route.as_deref().unwrap_or(first);
+    let sensed_task = defaults.as_ref().and_then(|d| d.task.as_deref());
+    let task = task.or(sensed_task);
     let task = task.unwrap_or(if route.contains("plan") { "plan" } else { "implement" });
+    let effects =
+        defaults.as_ref().map_or(vec!["read".into(), "write".into()], |d| d.effects.clone());
     // A plan folder with no plan.md has no path, and is no plan to work.
     let plans: Vec<weft_core::ask::Plan> = profile["plans"]
         .as_array()
@@ -200,23 +287,88 @@ pub fn sheet(
         .collect();
     let plan = weft_core::ask::plan_for(words, &plans).cloned();
     let result = if task == "plan" { "plan" } else { "workspace_change" };
-    let classification = api::Classification {
-        task: vec![task.into()],
-        result: result.into(),
-        effects: vec!["read".into(), "write".into()],
-    };
-    let rules =
-        api::rules(&ws, harness, route, &classification, &overrides(layers)?).map_err(refused)?;
+    let classification =
+        api::Classification { task: vec![task.into()], result: result.into(), effects };
+    let rules = api::rules(&ws, harness, route, &classification, &overrides).map_err(refused)?;
     let rule = |r: &api::Rule| {
         serde_json::json!({"id": r.id, "label": r.label, "text": r.text, "family": r.family,
                            "layer": r.layer})
     };
+    let offered = |id: &&String| rules.practices.iter().any(|r| &r.id == *id);
+    let proposed: Option<Vec<&String>> = match &defaults {
+        Some(d) => Some(d.rules.iter().filter(offered).collect()),
+        None => failed.then(Vec::new),
+    };
     Ok(serde_json::json!({
-        "routes": routes, "route": route, "tasks": api::tasks(), "task": task,
-        "plan": plan, "plans": plans,
+        "routes": routes, "route": shown_route, "tasks": api::tasks(), "task": task,
+        "effects": classification.effects, "plan": plan, "plans": plans,
         "practices": rules.practices.iter().map(rule).collect::<Vec<_>>(),
+        "proposed": proposed,
         "route_rules": rules.route.iter().map(rule).collect::<Vec<_>>(),
+        "sense": answer,
     }))
+}
+
+/// What Sense sets in the sheet from its answer: the route it picked,
+/// unless the profile says that route needs an explicit request for an
+/// effect Sense found; its likeliest task; its effects; its proposed rules.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SenseDefaults {
+    pub route: Option<String>,
+    pub task: Option<String>,
+    pub effects: Vec<String>,
+    pub rules: Vec<String>,
+}
+
+impl SenseDefaults {
+    pub fn of(answer: &weft_sense::AskAnswer, profile: &Value) -> Self {
+        let effects = answer.effects.on.clone();
+        let needs_asking = |id: &str| {
+            let capability = profile["capabilities"].as_array().into_iter().flatten();
+            let capability = capability.into_iter().find(|c| c["id"] == id);
+            let explicit = capability.map(|c| &c["requires_explicit_request_for_effects"]);
+            let explicit = explicit.and_then(Value::as_array).into_iter().flatten();
+            explicit.into_iter().any(|e| effects.iter().any(|on| e == on.as_str()))
+        };
+        let route = answer.route.pick.as_ref().map(|pick| format!("native_{pick}"));
+        let route = route.filter(|id| !needs_asking(id));
+        let likeliest = answer.task.on.iter().max_by(|a, b| {
+            let p = |c: &String| answer.task.p.get(c).copied().unwrap_or(0.0);
+            p(a).total_cmp(&p(b))
+        });
+        Self {
+            route,
+            task: likeliest.cloned(),
+            effects: effects.clone(),
+            rules: answer.rules.iter().map(|r| r.id.clone()).collect(),
+        }
+    }
+}
+
+/// Every practice rule Sense may propose for an Ask on `harness`: those of
+/// every kind of work, with their `when` lines and the example intents
+/// people kept them for.
+fn candidate_rules(
+    ws: &ringframe::workspace::Workspace,
+    harness: &str,
+    route: Option<&str>,
+    overrides: &Overrides,
+) -> Result<Vec<weft_sense::Rule>, Error> {
+    let all = api::Classification {
+        task: api::tasks().iter().map(|t| t.to_string()).collect(),
+        result: "workspace_change".into(),
+        effects: vec!["read".into(), "write".into()],
+    };
+    let rules = api::rules(ws, harness, route.unwrap_or_default(), &all, overrides);
+    let rules = rules.map_err(refused)?;
+    Ok(rules
+        .practices
+        .into_iter()
+        .filter_map(|r| {
+            let family = r.family.unwrap_or_default();
+            Some(weft_sense::Rule { id: r.id, family, when: r.when?, examples: Vec::new() })
+        })
+        .collect())
 }
 
 /// Whether this workspace could finish an Ask at all, asked of RingFrame.
@@ -420,12 +572,14 @@ mod tests {
         let repo = folder("sheet", true);
         std::fs::create_dir_all(repo.join("plans/uptime")).unwrap();
         std::fs::write(repo.join("plans/uptime/plan.md"), "# Uptime endpoint\n").unwrap();
-        let said = sheet(&repo, None, ("claude-code", "add the uptime endpoint"), (None, None));
+        let said =
+            sheet(&repo, None, ("claude-code", "add the uptime endpoint"), (None, None), &no_sense);
         let said = said.unwrap();
         assert_eq!(said["routes"][0], said["route"], "the first route is the default");
         assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
         assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
-        let goal = sheet(&repo, None, ("claude-code", "fix it"), (Some("native_goal"), None));
+        let goal =
+            sheet(&repo, None, ("claude-code", "fix it"), (Some("native_goal"), None), &no_sense);
         let goal = goal.unwrap();
         assert_eq!((&goal["route"], &goal["task"]), (&"native_goal".into(), &"implement".into()));
         assert_eq!(goal["plan"], Value::Null, "no plan named");
@@ -436,6 +590,158 @@ mod tests {
             .filter_map(|r| r["label"].as_str())
             .collect();
         assert_eq!(labels, ["Step Loop", "Done Check"]);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    fn no_sense(_: &[&str], _: &[weft_sense::Rule]) -> Sensed {
+        Sensed::Off
+    }
+
+    /// Sense's answer as a fixture: its route pick, top route, tasks on,
+    /// effects on and proposed rules.
+    fn sensed(
+        pick: Option<&str>,
+        tasks: &[&str],
+        effects: &[&str],
+        rules: &[&str],
+    ) -> weft_sense::AskAnswer {
+        let p = |on: &[&str]| {
+            on.iter()
+                .map(|c| (c.to_string(), serde_json::json!(0.9)))
+                .collect::<serde_json::Map<_, _>>()
+        };
+        serde_json::from_value(serde_json::json!({
+            "sense": "0.3.0",
+            "route": {"pick": pick, "p": {"direct": 0.1, "plan": 0.7, "goal": 0.1, "review": 0.1}},
+            "task": {"on": tasks, "p": p(tasks)},
+            "effects": {"on": effects, "p": p(effects)},
+            "result": "plan",
+            "rules": rules.iter().map(|id| serde_json::json!({"id": id, "p": 0.8})).collect::<Vec<_>>(),
+        }))
+        .unwrap()
+    }
+
+    fn answered(pick: Option<&str>, tasks: &[&str], effects: &[&str], rules: &[&str]) -> Sensed {
+        Sensed::Answered(Box::new(sensed(pick, tasks, effects, rules)))
+    }
+
+    /// Sense sets the route, the task and effects and the practices it
+    /// proposes; the sheet still lists every practice to add.
+    #[test]
+    fn sense_fills_the_sheets_defaults() {
+        fixture_home();
+        let repo = folder("sense-defaults", true);
+        let plain = sheet(&repo, None, ("claude-code", "plan the export"), (None, None), &no_sense)
+            .unwrap();
+        let offered: Vec<String> = plain["practices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        assert!(offered.len() >= 2, "{plain}");
+        let asked = std::cell::RefCell::new(Vec::new());
+        let sense = |routes: &[&str], rules: &[weft_sense::Rule]| {
+            asked
+                .borrow_mut()
+                .push((routes.iter().map(|r| r.to_string()).collect::<Vec<_>>(), rules.len()));
+            answered(
+                Some("plan"),
+                &["plan"],
+                &["read", "write"],
+                &[&offered[1], "practice.unoffered"],
+            )
+        };
+        let said =
+            sheet(&repo, None, ("claude-code", "plan the export"), (None, None), &sense).unwrap();
+        assert_eq!((&said["route"], &said["task"]), (&"native_plan".into(), &"plan".into()));
+        assert_eq!(said["effects"], serde_json::json!(["read", "write"]));
+        assert_eq!(
+            said["proposed"],
+            serde_json::json!([offered[1]]),
+            "only rules the sheet offers"
+        );
+        assert!(
+            said["practices"].as_array().unwrap().len() >= offered.len(),
+            "every practice to add"
+        );
+        assert_eq!(said["sense"]["sense"], "0.3.0");
+        let (routes, candidates) = asked.borrow()[0].clone();
+        assert_eq!(routes, ["plan", "direct", "goal"], "Sense picks among this harness's routes");
+        assert!(candidates >= offered.len(), "every practice is a candidate");
+        // A route the person picked stays theirs.
+        let goal =
+            sheet(&repo, None, ("claude-code", "x"), (Some("native_goal"), None), &sense).unwrap();
+        assert_eq!(goal["route"], "native_goal");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// RingFrame records Sense as the chooser only of what the person kept.
+    #[test]
+    fn sense_is_recorded_as_chooser_only_of_what_the_person_kept() {
+        let shown = SenseShown {
+            answer: sensed(Some("plan"), &["plan"], &["read"], &["practice.kiss"]),
+            route: Some("native_plan".into()),
+            task: Some("plan".into()),
+            rules: vec!["practice.kiss".into()],
+        };
+        let mut d = AskDraft {
+            words: "plan it".into(),
+            harness: "codex".into(),
+            route: "native_plan".into(),
+            task: "plan".into(),
+            effects: vec!["read".into()],
+            plan: None,
+            rules: vec!["practice.kiss".into()],
+            offered: vec!["practice.kiss".into()],
+            link: None,
+            sense: Some(shown.clone()),
+        };
+        let sense = |c: &api::Chooser| matches!(c, api::Chooser::Sense { version, .. } if version == "0.3.0");
+        assert!(sense(&shown.classified_by(&d)) && sense(&shown.selected_by(&d)));
+        d.route = "native_goal".into();
+        d.rules.push("practice.yagni".into());
+        assert!(!sense(&shown.classified_by(&d)) && !sense(&shown.selected_by(&d)));
+    }
+
+    /// When Sense fails, as when it takes too long, the person picks the
+    /// route and the practices: none is chosen, and every one is offered.
+    #[test]
+    fn when_sense_fails_the_person_picks() {
+        fixture_home();
+        let repo = folder("sense-failed", true);
+        let failed = |_: &[&str], _: &[weft_sense::Rule]| Sensed::Failed;
+        let said =
+            sheet(&repo, None, ("claude-code", "fix the typo"), (None, None), &failed).unwrap();
+        assert_eq!(said["route"], Value::Null);
+        assert_eq!(said["proposed"], serde_json::json!([]));
+        assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
+        assert_eq!(said["sense"], Value::Null);
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// An unsure route, or one the profile says needs an explicit request
+    /// for Sense's effects, is shown unselected: the person picks.
+    #[test]
+    fn an_unsure_or_explicit_only_route_is_left_for_the_person() {
+        fixture_home();
+        let repo = folder("sense-unsure", true);
+        let words = ("claude-code", "fix the typo");
+        let unsure =
+            |_: &[&str], _: &[weft_sense::Rule]| answered(None, &["implement"], &["read"], &[]);
+        assert_eq!(sheet(&repo, None, words, (None, None), &unsure).unwrap()["route"], Value::Null);
+        let writes = |_: &[&str], _: &[weft_sense::Rule]| {
+            answered(Some("direct"), &["implement"], &["read", "write"], &[])
+        };
+        let said = sheet(&repo, None, words, (None, None), &writes).unwrap();
+        assert_eq!(said["route"], Value::Null, "native_direct needs an explicit request to write");
+        let reads = |_: &[&str], _: &[weft_sense::Rule]| {
+            answered(Some("direct"), &["question"], &["read"], &[])
+        };
+        assert_eq!(
+            sheet(&repo, None, words, (None, None), &reads).unwrap()["route"],
+            "native_direct"
+        );
         let _ = std::fs::remove_dir_all(repo);
     }
 
@@ -452,10 +758,12 @@ mod tests {
             harness: "claude-code".into(),
             route: "native_plan".into(),
             task: "implement".into(),
+            effects: vec!["read".into(), "write".into()],
             plan: None,
             rules: Vec::new(),
             offered: Vec::new(),
             link: None,
+            sense: None,
         };
         compile(&repo, &draft, None).unwrap();
         let wrong = seal(&repo, "rejected", None, Some("finish_later"));
@@ -491,10 +799,12 @@ mod tests {
             harness: "claude-code".into(),
             route: "native_direct".into(),
             task: "implement".into(),
+            effects: vec!["read".into(), "write".into()],
             plan: None,
             rules: Vec::new(),
             offered: Vec::new(),
             link: None,
+            sense: None,
         };
         let ask = compile(&repo, &draft, None).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();

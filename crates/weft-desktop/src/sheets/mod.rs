@@ -40,6 +40,8 @@ pub struct SheetProps<'a> {
     /// What the open Ask's sheet offers, and what the person picked of it.
     pub ask_sheet: Option<&'a serde_json::Value>,
     pub ask_choices: &'a ask::AskChoices,
+    /// The words the open Ask's sheet was made for.
+    pub ask_sheet_for: Option<&'a str>,
     /// The tunnel picked in Remote, not yet used.
     pub remote_pick: Option<&'a str>,
     /// The open Ask's SEND TO.
