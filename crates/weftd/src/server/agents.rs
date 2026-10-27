@@ -171,13 +171,13 @@ impl Session {
             return;
         }
         let ms_since_last_output = slot.last_output_at.elapsed().as_millis().max(150) as u64;
-        let harness = slot.map.harness.clone();
+        let (harness, last_hook) = (slot.map.harness.clone(), slot.last_hook.clone());
         let reading = self.sense.read().ok().and_then(|guard| {
             let model = guard.as_ref()?;
             model.evaluate_surface(&weft_sense::PaneSnapshot {
                 harness: &harness,
                 hook_state: crate::turns::turn_hook_name(hook_turn),
-                last_hook: None,
+                last_hook: last_hook.as_deref(),
                 alt_screen,
                 rows,
                 cols,
@@ -333,6 +333,7 @@ impl Session {
                     turbo,
                     token,
                     transcript: None,
+                    last_hook: None,
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
@@ -422,14 +423,20 @@ impl Session {
                 (at, root)
             }
         };
-        // The transcript a hook names is its pane's, for its Conversation.
-        if let (Some(at), Some(pane), Some(path)) = (at, sent.pane, sent.transcript.take())
+        // The transcript a hook names is its pane's, for its Conversation,
+        // and the hook is the last its pane's screen heard.
+        if let (Some(at), Some(pane)) = (at, sent.pane)
             && let Some(slot) = self.projects[at]
                 .panes
                 .iter_mut()
                 .find(|s| s.map.pane == pane && s.map.harness == sent.harness)
         {
-            slot.transcript = Some(path.into());
+            if let Some(path) = sent.transcript.take() {
+                slot.transcript = Some(path.into());
+            }
+            if !sent.hook.is_empty() {
+                slot.last_hook = Some(sent.hook.clone());
+            }
         }
         if let Some(at) = at {
             self.listen(at, &sent.harness);

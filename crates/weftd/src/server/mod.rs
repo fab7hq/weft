@@ -101,6 +101,9 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
+    /// The hook event that fired last for this pane, as its harness names
+    /// it: a fact of the screen Sense reads.
+    last_hook: Option<String>,
     /// When the pane last printed output, and the PTY sequence and reading
     /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
     last_output_at: std::time::Instant,
