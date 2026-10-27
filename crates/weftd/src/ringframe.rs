@@ -428,14 +428,16 @@ pub fn eval_open(
     }
 }
 
-/// One ready task of an open Eval for a judge, of `role` when given; or that
-/// none is ready, or that the Eval has settled.
+/// One ready task of an open Eval for a judge, of `role` when given, that
+/// reads nothing the judge's session has `read`; or that none is ready, or
+/// that the Eval has settled.
 pub fn eval_task(
     project: &Path,
     eval_id: &str,
     role: Option<&str>,
+    read: &[String],
 ) -> Result<api::EvalStep, Error> {
-    api::eval_task(&workspace(project)?, eval_id, role).map_err(refused)
+    api::eval_task_for(&workspace(project)?, eval_id, role, read).map_err(refused)
 }
 
 /// Whether a task's answer is in: accepted, or recorded failed.
@@ -497,11 +499,11 @@ pub fn seal_checked(project: &Path, seal_id: &str) -> Result<Value, Error> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A scratch folder, with Git and one commit when `git` says so.
-    fn folder(name: &str, git: bool) -> std::path::PathBuf {
+    pub(crate) fn folder(name: &str, git: bool) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("weft-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -538,7 +540,7 @@ mod tests {
 
     /// RingFrame's test configuration, installed in a home of this test's own:
     /// nextest runs each test in a process of its own.
-    fn fixture_home() {
+    pub(crate) fn fixture_home() {
         let home = std::env::temp_dir().join(format!("weft-rf-home-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
         // SAFETY: this test's process reads HOME on this thread only.

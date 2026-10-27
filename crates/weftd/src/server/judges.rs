@@ -5,6 +5,7 @@
 //! are kept beside the judges' sessions, so a Weft started again judges them
 //! on.
 
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 use ringframe::api;
@@ -54,9 +55,30 @@ struct Seat {
     launch: Launch,
     /// It ran a map: a confirm, the second reading, never goes to it.
     ran_map: bool,
+    /// The windows and requirements its tasks read: no task that reads one
+    /// of them again goes to it.
+    read: BTreeSet<String>,
     /// Its process exited.
     gone: bool,
     held: Option<Held>,
+}
+
+impl Seat {
+    /// A judge for `task`, which it holds.
+    fn new(pane: u32, task: api::Task, gone: bool) -> Self {
+        let launch = launch_of(&task);
+        let mut seat =
+            Seat { pane, launch, ran_map: false, read: BTreeSet::new(), gone, held: None };
+        seat.hold(task);
+        seat
+    }
+
+    /// Give it a task: what the task reads is read in this session.
+    fn hold(&mut self, task: api::Task) {
+        self.ran_map |= task.kind == "map";
+        self.read.extend(task.reads.iter().cloned());
+        self.held = Some(Held::new(task));
+    }
 }
 
 /// The task a judge holds.
@@ -108,6 +130,7 @@ struct SeatLook {
     pane: u32,
     launch: Launch,
     ran_map: bool,
+    read: Vec<String>,
     gone: bool,
     /// Its task, whether its turn is over or its lease has passed, and how
     /// often it was typed.
@@ -148,6 +171,7 @@ impl Bench {
                     pane: s.pane,
                     launch: s.launch.clone(),
                     ran_map: s.ran_map,
+                    read: s.read.iter().cloned().collect(),
                     gone: s.gone,
                     held: s.held.as_ref().map(|h| {
                         (h.task.task_id.clone(), h.over, h.since.elapsed() >= LEASE, h.typed)
@@ -222,7 +246,8 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
         }
         open += 1;
     }
-    // An idle judge takes a task of a role started on what it was started on.
+    // An idle judge takes a task of a role started on what it was started on,
+    // that reads nothing it has read.
     let mut still_idle = Vec::new();
     'seats: for s in idle {
         for role in ROLES {
@@ -230,7 +255,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
             if !fits || (role == "confirm" && s.ran_map) {
                 continue;
             }
-            match eval_task(root, &look.eval_id, Some(role))? {
+            match eval_task(root, &look.eval_id, Some(role), &s.read)? {
                 api::EvalStep::Task(task) => {
                     did.push(Did::Give { pane: s.pane, task });
                     continue 'seats;
@@ -244,7 +269,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
     // What no idle judge could take gets a judge of its own: in a free
     // place, or in an idle judge's, which is closed for it.
     while open < look.judges || !still_idle.is_empty() {
-        match eval_task(root, &look.eval_id, None)? {
+        match eval_task(root, &look.eval_id, None, &[])? {
             api::EvalStep::Task(task) => {
                 if open >= look.judges {
                     let pane = still_idle.pop().expect("an idle judge");
@@ -327,8 +352,7 @@ impl Session {
                 Did::Give { pane, task } => {
                     bench.seen.insert(task.role.clone(), launch_of(&task));
                     if let Some(seat) = bench.seat(pane) {
-                        seat.ran_map |= task.kind == "map";
-                        seat.held = Some(Held::new(task));
+                        seat.hold(task);
                     }
                 }
                 Did::Again { pane } => {
@@ -376,7 +400,6 @@ impl Session {
             .find(&harness)
             .map(|h| h.judge_spec(launch.0.as_deref(), launch.1.as_deref()));
         let pane = spec.and_then(|spec| self.spawn(client, at, &harness, &spec, None));
-        let ran_map = task.kind == "map";
         let seat = match pane {
             Some(pane) => {
                 if let Some(slot) = self.projects[at].slot(pane) {
@@ -385,12 +408,10 @@ impl Session {
                 // Each window lists it under its Eval from now on.
                 let panes = self.pane_infos(at);
                 self.clients.broadcast(at, &Out::Panes { panes });
-                Seat { pane, launch, ran_map, gone: false, held: Some(Held::new(task)) }
+                Seat::new(pane, task, false)
             }
             // No pane: a seat for no pane, so the task is handed back.
-            None => {
-                Seat { pane: u32::MAX, launch, ran_map, gone: true, held: Some(Held::new(task)) }
-            }
+            None => Seat::new(u32::MAX, task, true),
         };
         let bench = &mut self.projects[at].benches[i];
         bench.seats.push(seat);
@@ -565,5 +586,154 @@ impl Session {
         let title = title.map_or(e.id.clone(), |u| u.title.clone());
         let built = crate::acts::stop(&e.id.clone(), &title);
         self.stage(at, NO_PANE, built)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ringframe::tests::{fixture_home, folder};
+    use crate::ringframe::{AskDraft, compile, eval_open, set_up};
+    use serde_json::{Value, json};
+
+    /// A judge's answer, written where its task says: the map calls the
+    /// telemetry window unexplained and the rest serve the first requirement,
+    /// and its second reading says the telemetry serves it too; the reduce
+    /// finds nothing met, its confirm all it can cite met. Each second
+    /// reading contradicts the first, so each is read a third time.
+    fn answer(task: &api::Task) {
+        let file = task.brief.to_string_lossy().replace(".brief.md", ".json");
+        let file: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        let text = std::fs::read_to_string(file["windows_file"].as_str().unwrap()).unwrap();
+        let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+        // The first added line of a window, as a quote.
+        let quote = |w: &str| -> Option<String> {
+            let head = format!("=== {w} ");
+            let mut lines = text.lines().skip_while(|l| !l.starts_with(&head)).skip(1);
+            let line = lines.find(|l| l.starts_with('+') && l.len() > 12)?;
+            Some(line[1..].chars().take(24).collect())
+        };
+        let local = task.task_id.rsplit('~').next().unwrap();
+        let doc = match task.kind.as_str() {
+            "requirements" => json!({"requirements": list("asks").iter().map(|a| {
+                json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
+                       "quote": a["text"].as_str().unwrap().trim()})
+            }).collect::<Vec<_>>()}),
+            "map" => {
+                let first = list("requirements")[0]["id"].clone();
+                json!({"windows": list("windows").iter().map(|w| {
+                    let id = w["id"].as_str().unwrap();
+                    if w["path"] == "src/telemetry.js" && !local.starts_with("cw") {
+                        json!({"window": id, "unexplained": format!("posts outside ({local})"),
+                               "quote": quote(id).unwrap()})
+                    } else {
+                        json!({"window": id, "serves": [first]})
+                    }
+                }).collect::<Vec<_>>()})
+            }
+            _ => json!({"requirements": list("requirements").iter().map(|r| {
+                let id = r["id"].as_str().unwrap();
+                let cited = r["windows"].as_array().into_iter().flatten()
+                    .filter_map(|w| Some((w.as_str()?, quote(w.as_str()?)?))).next();
+                match cited {
+                    Some((w, q)) if !local.starts_with('r') => json!({"id": id, "vote": "met",
+                        "reason": format!("{id} is shown ({local})"),
+                        "citations": [{"window": w, "quote": q}]}),
+                    _ => json!({"id": id, "vote": "not_met", "reason": format!("{id} is absent ({local})"),
+                                "missing": format!("a change doing {id} ({local})")}),
+                }
+            }).collect::<Vec<_>>()}),
+        };
+        std::fs::write(&task.answer, doc.to_string()).unwrap();
+    }
+
+    /// Judges stepped as Weft steps them, each answering its task at once:
+    /// no idle session is given a reading of a window or a requirement it
+    /// has read, so no second or third reading comes from an earlier reader.
+    #[test]
+    fn no_session_reads_an_item_twice() {
+        fixture_home();
+        let repo = folder("judges-read", true);
+        assert_eq!(set_up(&repo), None);
+        let draft = AskDraft {
+            words: "Add the uptime export to src/uptime.js with a test.".into(),
+            harness: "claude-code".into(),
+            route: "native_direct".into(),
+            task: "implement".into(),
+            effects: vec!["read".into(), "write".into()],
+            plan: None,
+            rules: Vec::new(),
+            link: None,
+            sense: None,
+        };
+        let ask = compile(&repo, &draft, None).unwrap();
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        for (path, text) in [
+            ("src/uptime.js", "export const uptime = () => process.uptime();\n"),
+            ("src/telemetry.js", "export const beacon = () => fetch('https://example.com/c');\n"),
+        ] {
+            std::fs::write(repo.join(path), text).unwrap();
+        }
+        for args in [&["add", "src"][..], &["commit", "-q", "-m", "work"]] {
+            let ok = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(ok.success(), "git {args:?}");
+        }
+        let eval_id = eval_open(&repo, &ask, None, None).unwrap();
+        let ws = ringframe::api::workspace(&repo).unwrap();
+        let mut bench = Bench::new(eval_id, "sh".into(), 2, 0);
+        let mut given: Vec<String> = Vec::new();
+        let mut next = 0;
+        for _ in 0..60 {
+            let mut done = false;
+            for d in step(&bench.look(&repo)) {
+                match d {
+                    Did::Give { pane, task } => {
+                        bench.seen.insert(task.role.clone(), launch_of(&task));
+                        let seat = bench.seat(pane).unwrap();
+                        let again: Vec<&String> =
+                            task.reads.iter().filter(|i| seat.read.contains(*i)).collect();
+                        assert!(again.is_empty(), "{} read {again:?} again", task.task_id);
+                        assert!(task.role != "confirm" || !seat.ran_map, "{}", task.task_id);
+                        given.push(task.task_id.clone());
+                        answer(&task);
+                        seat.hold(task);
+                    }
+                    Did::Start { task } => {
+                        next += 1;
+                        bench.seen.insert(task.role.clone(), launch_of(&task));
+                        given.push(task.task_id.clone());
+                        answer(&task);
+                        bench.seats.push(Seat::new(next, task, false));
+                    }
+                    Did::Free { pane } => bench.seat(pane).unwrap().held = None,
+                    Did::Close { pane } => bench.seats.retain(|s| s.pane != pane),
+                    Did::Again { pane } => panic!("pane {pane}'s answer was refused"),
+                    Did::Done => done = true,
+                }
+            }
+            if done {
+                let locals: Vec<&str> = given.iter().filter_map(|t| t.rsplit('~').next()).collect();
+                for stage in ["cr1", "ct1", "cw1", "cwt1"] {
+                    assert!(locals.contains(&stage), "{stage} ran: {locals:?}");
+                }
+                let _ = std::fs::remove_dir_all(repo);
+                return;
+            }
+            // Each answer is submitted, and its judge's turn is over.
+            for seat in &mut bench.seats {
+                if let Some(h) = seat.held.as_mut().filter(|h| !h.over) {
+                    let said = api::eval_submit(&ws, &h.task.task_id, &h.task.answer).unwrap();
+                    assert_eq!(said.outcome, api::Outcome::Accepted, "{:?}", said.errors);
+                    (h.over, h.typed) = (true, 1);
+                }
+            }
+        }
+        panic!("the Eval did not settle: {given:?}");
     }
 }

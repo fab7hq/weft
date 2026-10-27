@@ -446,6 +446,8 @@ pub struct Task {
     pub answer: PathBuf,
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// What its judge reads: a map's windows, a reduce's requirements.
+    pub reads: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -463,7 +465,19 @@ pub enum EvalStep {
 /// when given. A task out past its time goes out once more, then fails.
 /// Once every task is in, the Eval settles.
 pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<EvalStep, Error> {
-    let out = tasks::take(ws, eval_id, role)?;
+    eval_task_for(ws, eval_id, role, &[])
+}
+
+/// `eval_task` for a session that has read `read`, the `reads` of the tasks
+/// it was given: only a task that reads none of them, so no session reads
+/// an item twice.
+pub fn eval_task_for(
+    ws: &Workspace,
+    eval_id: &str,
+    role: Option<&str>,
+    read: &[String],
+) -> Result<EvalStep, Error> {
+    let out = tasks::take_unread(ws, eval_id, role, read)?;
     if out["state"] == "done" {
         let record = evaluate::load_record(ws, eval_id)?.unwrap_or_default();
         return Ok(EvalStep::Settled {
@@ -489,6 +503,13 @@ pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Ev
         answer: PathBuf::from(str_of(t, "answer")),
         model: text("model"),
         effort: text("effort"),
+        reads: t["reads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
     }))
 }
 

@@ -161,6 +161,18 @@ pub struct Task {
     pub windows: Vec<String>,
 }
 
+impl Task {
+    /// What its judge reads: a map's windows, a reduce's requirements. The
+    /// requirements task reads the Asks' words, which no other task reads.
+    fn reads(&self) -> Vec<String> {
+        match self.kind {
+            "map" => self.windows.clone(),
+            "reduce" => self.obligations.iter().map(|o| str_of(o, "id")).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 struct Ctx {
     ws: Workspace,
     eval_id: String,
@@ -1634,6 +1646,18 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
 /// running; `done` once every task is in. A task out past its time goes out
 /// once more, to a fresh session, then fails.
 pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
+    take_unread(ws, eval_id, role, &[])
+}
+
+/// `take`, for a session that has read `read` (windows and requirements, as
+/// each task's `reads` names them): only a task that reads none of them, so
+/// a second reading never comes from the session that gave the first.
+pub fn take_unread(
+    ws: &Workspace,
+    eval_id: &str,
+    role: Option<&str>,
+    read: &[String],
+) -> Result<Value, EvalError> {
     if let Some(r) = role {
         need(
             ROLES.contains(&r) || r == "requirements",
@@ -1643,10 +1667,15 @@ pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, 
     }
     // Its state and the ledger are read, changed and written as one: two
     // judges at once would be handed one task, or settle twice.
-    store::locked(ws, || hand_out(ws, eval_id, role))
+    store::locked(ws, || hand_out(ws, eval_id, role, read))
 }
 
-fn hand_out(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
+fn hand_out(
+    ws: &Workspace,
+    eval_id: &str,
+    role: Option<&str>,
+    read: &[String],
+) -> Result<Value, EvalError> {
     if crate::evaluate::load_record(ws, eval_id)?.is_some() {
         return Ok(json!({"state": "done", "eval_id": eval_id}));
     }
@@ -1690,7 +1719,10 @@ fn hand_out(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, 
         return Ok(json!({"state": "done", "eval_id": eval_id, "verdict": record["verdict"],
                          "confidence": record["confidence"]}));
     }
-    let Some(t) = open.iter().find(|t| !is_out(&t.id, &state) && role.is_none_or(|r| t.role == r))
+    let unread = |t: &Task| t.reads().iter().all(|i| !read.contains(i));
+    let Some(t) = open
+        .iter()
+        .find(|t| !is_out(&t.id, &state) && role.is_none_or(|r| t.role == r) && unread(t))
     else {
         return Ok(json!({"state": "waiting", "remaining": open.len()}));
     };
@@ -1735,6 +1767,7 @@ fn hand_out(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, 
                            --file {}.", t.id, brief_path.display(), t.id, answer.display()),
         "brief": brief_path.to_string_lossy(),
         "answer": answer.to_string_lossy(),
+        "reads": t.reads(),
     });
     for k in ["model", "effort"] {
         if let Some(v) = ctx.brief["agents"][t.role].get(k) {
@@ -4631,6 +4664,51 @@ mod tests {
             assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
             assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
             refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
+        });
+    }
+
+    /// A task says what its judge reads: a map's windows, a reduce's
+    /// requirements. A session that read one of them is handed another
+    /// task, or none: a second reading never comes from the first reader.
+    #[test]
+    fn a_session_is_never_handed_a_reading_of_what_it_read() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            let reads = |t: &Value| -> Vec<String> {
+                array_of(t, "reads").iter().map(str_of_value).collect()
+            };
+            let m1 = take(ws, e, Some("map")).unwrap()["task"].clone();
+            assert_eq!(
+                reads(&m1),
+                array_of(&task_of(ws, &str_of(&m1, "task_id")), "windows")
+                    .iter()
+                    .map(|w| str_of(w, "id"))
+                    .collect::<Vec<_>>()
+            );
+            hand_back(ws, &str_of(&m1, "task_id")).unwrap();
+            map_all(ws, e);
+            let r1 = take(ws, e, Some("reduce")).unwrap()["task"].clone();
+            let r1_id = str_of(&r1, "task_id");
+            let read = reads(&r1);
+            assert!(read.contains(&S1.to_string()), "{read:?}");
+            let mut doc = head(&r1_id, "reduce", "reduce");
+            doc["requirements"] = json!(array_of(&task_of(ws, &r1_id), "requirements").iter().map(|r| {
+                json!({"id": r["id"], "vote": "not_met", "reason": format!("{} is absent", str_of(r, "id")),
+                       "missing": format!("a change doing {}", str_of(r, "id"))})
+            }).collect::<Vec<_>>());
+            put(ws, &r1_id, doc);
+            assert_eq!(submit(ws, &r1_id).unwrap().0, 0);
+            // The requirements' confirm reads what r1 read: the window's does not.
+            let got = take_unread(ws, e, Some("confirm"), &read).unwrap();
+            let local =
+                |t: &Value| str_of(&t["task"], "task_id").rsplit('~').next().unwrap().to_string();
+            assert_eq!(local(&got), "cw1", "{got}");
+            assert!(reads(&got["task"]).iter().all(|w| !read.contains(w)));
+            let got = take_unread(ws, e, Some("confirm"), &read).unwrap();
+            assert_eq!(got["state"], "waiting", "only a reading of what it read is left: {got}");
+            let got = take(ws, e, Some("confirm")).unwrap();
+            assert_eq!(local(&got), "cr1", "a fresh session takes it: {got}");
         });
     }
 
