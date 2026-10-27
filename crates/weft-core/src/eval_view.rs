@@ -316,19 +316,34 @@ fn is_sentence(id: &str) -> bool {
 
 /// What the Eval judges against, as RingFrame does: `changes.json`'s
 /// requirements, with the Asks' sentences replaced by the list a judge made
-/// of them (`<ask>/f<n>`) once that list is accepted.
+/// of them once that list is accepted. RingFrame names each by its Ask and
+/// the words it quotes (`<ask>/f<digest>`, the text too when two quote the
+/// same words); it is labelled by its place in its Ask's list (`f<n>`).
 fn requirements(changes: &Value, outputs: &[Value]) -> Vec<Value> {
+    use sha2::{Digest, Sha256};
     let mut all = list(changes, "requirements").to_vec();
     let Some(listed) = outputs.iter().find(|o| s(o, "kind") == "requirements") else {
         return all;
     };
     all.retain(|r| !is_sentence(&s(r, "id")));
     let mut n: BTreeMap<String, usize> = BTreeMap::new();
+    let mut ids: BTreeSet<String> = BTreeSet::new();
     for r in list(listed, "requirements") {
-        let ask = s(r, "ask");
+        let (ask, quote) = (s(r, "ask"), s(r, "quote"));
+        let digest = |words: &str| {
+            let squashed = words.split_whitespace().collect::<Vec<_>>().join(" ");
+            let d = Sha256::digest(format!("{ask}\0{squashed}").as_bytes());
+            let hex: String = d.iter().take(6).map(|b| format!("{b:02x}")).collect();
+            format!("{ask}/f{hex}")
+        };
+        let mut id = digest(&quote);
+        if ids.contains(&id) {
+            id = digest(&format!("{quote}\0{}", s(r, "text")));
+        }
+        ids.insert(id.clone());
         let k = n.entry(ask.clone()).or_default();
-        all.push(serde_json::json!({"id": format!("{ask}/f{k}"), "kind": r["kind"], "ask": ask,
-                                    "part": ask, "text": r["text"], "done_when": ""}));
+        all.push(serde_json::json!({"id": id, "label": format!("f{k}"), "kind": r["kind"],
+                                    "ask": ask, "part": ask, "text": r["text"], "done_when": ""}));
         *k += 1;
     }
     all
@@ -416,10 +431,10 @@ impl EvalView {
                 let title = titles.get(&ask).cloned().unwrap_or_else(|| ask.clone());
                 (ask, format!("Ask: {title}"))
             };
-            let label = id
-                .strip_prefix(&format!("{part}/"))
-                .map(str::to_string)
-                .unwrap_or_else(|| id.rsplit('#').next().unwrap_or(&id).to_string());
+            let label = r["label"].as_str().map(str::to_string).unwrap_or_else(|| {
+                let short = id.strip_prefix(&format!("{part}/"));
+                short.unwrap_or_else(|| id.rsplit('#').next().unwrap_or(&id)).to_string()
+            });
             labels.insert(id.clone(), label.clone());
             let step = Step {
                 id,
@@ -1406,7 +1421,8 @@ mod tests {
         let v = split_eval();
         assert_eq!(v.title, "Account erasure plan", "named by its first Ask");
         assert_eq!(payload(&v, &BTreeMap::new()).title, v.title);
-        let f0 = v.step("ask_01M37RDYJCHWWSD12A5DGEYE08/f0").expect("the listed requirement");
+        let f0 =
+            v.step("ask_01M37RDYJCHWWSD12A5DGEYE08/f32613aa33b3f").expect("the listed requirement");
         assert_eq!(f0.state, State::Met);
         assert_eq!(f0.label, "f0");
         assert!(

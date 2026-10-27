@@ -368,8 +368,11 @@ fn ask_words(ws: &Workspace, ask: &str) -> String {
     std::fs::read_to_string(ws.rf_dir().join(format!("asks/{ask}/source.txt"))).unwrap_or_default()
 }
 
-/// The requirements task's list, once it is accepted, as requirements:
-/// `<ask>/f<n>`, beside the exact ones (plan steps, named paths).
+/// The requirements task's list, once it is accepted, as requirements
+/// beside the exact ones (plan steps, named paths). Each is named by its Ask
+/// and the words it quotes, `<ask>/f<digest>`, never by its place in the
+/// list, so a reading carried from another Eval names the same requirement;
+/// two that quote the same words are told apart by their text.
 fn listed_requirements(
     ws: &Workspace,
     eval_id: &str,
@@ -383,19 +386,18 @@ fn listed_requirements(
     };
     let doc =
         read_json(&ws.rf_dir().join(str_of(&e["data"]["artifact"], "path"))).unwrap_or(Value::Null);
-    let mut n: BTreeMap<String, usize> = BTreeMap::new();
-    let mut out = Vec::new();
+    let mut out: Vec<crate::changes::Listed> = Vec::new();
     for r in array_of(&doc, "requirements") {
-        let ask = str_of(r, "ask");
-        let k = n.entry(ask.clone()).or_default();
-        out.push(crate::changes::Listed {
-            id: format!("{ask}/f{k}"),
-            kind: str_of(r, "kind"),
-            ask,
-            text: str_of(r, "text"),
-            quote: str_of(r, "quote"),
-        });
-        *k += 1;
+        let (ask, text, quote) = (str_of(r, "ask"), str_of(r, "text"), str_of(r, "quote"));
+        let digest = |words: &str| {
+            let d = crate::digest::sha256_bytes(format!("{ask}\0{}", squash(words)).as_bytes());
+            format!("{ask}/f{}", &d[..12])
+        };
+        let mut id = digest(&quote);
+        if out.iter().any(|l| l.id == id) {
+            id = digest(&format!("{quote}\0{text}"));
+        }
+        out.push(crate::changes::Listed { id, kind: str_of(r, "kind"), ask, text, quote });
     }
     Ok(Some(out))
 }
@@ -3850,6 +3852,72 @@ mod tests {
         });
     }
 
+    /// A listed requirement is named by its Ask and the words it quotes, not
+    /// by its place in the list: a reading carried from an Eval that listed
+    /// them in another order still names its own requirement.
+    #[test]
+    fn a_carried_reading_names_its_own_requirement_whatever_the_order_listed() {
+        eval_bench(|ws| {
+            let (a, b) = (
+                "Add `alpha_count` to src/a.js for the counter",
+                "Add `beta_total` to src/b.js for the sum",
+            );
+            let words = format!("{a}. {b}.\n");
+            let prompt = format!("/goal {words}");
+            confirm_ask_as(ws, "Counts", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            commit(
+                &ws.root,
+                &[
+                    ("src/a.js", Some("export const alpha_count = (xs) => xs.length;\n")),
+                    (
+                        "src/b.js",
+                        Some("export const beta_total = (xs) => xs.reduce((s, x) => s + x, 0);\n"),
+                    ),
+                ],
+                "work",
+            );
+            // The requirements task lists them in `order`; returns each one's
+            // id by its words.
+            let list = |e: &str, order: [&str; 2]| -> BTreeMap<String, String> {
+                let q1 = str_of(&take(ws, e, Some("requirements")).unwrap()["task"], "task_id");
+                let ask = str_of(&array_of(&task_of(ws, &q1), "asks")[0], "id");
+                let entries: Vec<Value> = order
+                    .iter()
+                    .map(|q| json!({"ask": ask, "kind": "local", "text": q, "quote": q}))
+                    .collect();
+                put(ws, &q1, json!({"requirements": entries}));
+                assert_eq!(submit(ws, &q1).unwrap().0, 0);
+                let ctx = Ctx::load(ws, e).unwrap();
+                ctx.requirements().iter().map(|r| (str_of(r, "text"), str_of(r, "id"))).collect()
+            };
+            let first = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let ids1 = list(&first, [a, b]);
+            for t in ids(&ready(ws, &first)) {
+                let windows: Vec<Value> = array_of(&task_of(ws, &t), "windows")
+                    .iter()
+                    .map(|w| {
+                        let serves =
+                            if str_of(w, "path") == "src/a.js" { &ids1[a] } else { &ids1[b] };
+                        json!({"window": w["id"], "serves": [serves]})
+                    })
+                    .collect();
+                put(ws, &t, json!({"windows": windows}));
+                assert_eq!(submit(ws, &t).unwrap().0, 0, "{t}");
+            }
+            crate::testing::settled(ws, &first, true);
+
+            commit(&ws.root, &[("src/c.js", Some("export const gamma = 3;\n"))], "more");
+            let second = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let ids2 = list(&second, [b, a]);
+            let ctx = Ctx::load(ws, &second).unwrap();
+            let kept = carried(&ctx).windows;
+            for (path, words) in [("src/a.js", a), ("src/b.js", b)] {
+                let w = window_for(ws, &second, path);
+                assert_eq!(kept[&w]["map"]["serves"], json!([ids2[words]]), "{path}");
+            }
+        });
+    }
+
     /// A reading is carried only where it still means something: an
     /// `elsewhere` only for an Ask this Eval names as elsewhere, an `undoes`
     /// only for its own requirements, as a `serves` is.
@@ -4878,7 +4946,8 @@ mod tests {
             let after: Vec<String> = ctx.requirements().iter().map(|r| str_of(r, "id")).collect();
             assert!(!after.iter().any(|id| is_sentence(id)), "{after:?}");
             assert!(
-                after.contains(&format!("{ask}/f0")) && after.contains(&S1.to_string()),
+                after.iter().any(|id| id.starts_with(&format!("{ask}/f")))
+                    && after.contains(&S1.to_string()),
                 "{after:?}"
             );
             let map = take(ws, e, None).unwrap();
