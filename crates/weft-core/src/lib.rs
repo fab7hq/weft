@@ -8,7 +8,6 @@
 //! The shell that does reach those things lives above: it reads the files,
 //! runs `ringframe`, owns the PTYs, and asks this crate what any of it means.
 
-pub mod accept;
 pub mod after_seal;
 pub mod ask;
 pub mod bm25;

@@ -691,7 +691,6 @@ fn ask_draft(
         effects,
         plan,
         rules,
-        offered,
         link,
         sense,
     })
@@ -958,9 +957,11 @@ impl Session {
         // the list is empty. After an update nothing ended: they are open.
         session.reopen(!updated);
         session.remote_from_config();
-        // Prompt suggestions are gone, and with them the index of what the
-        // person sent that an earlier Weft kept for them.
-        let _ = std::fs::remove_dir_all(config.with_file_name("suggest"));
+        // What an earlier Weft kept of what the person sent, for prompt
+        // suggestions and for learning, which are gone: nothing reads it.
+        for kept in ["suggest", "labels"] {
+            let _ = std::fs::remove_dir_all(config.with_file_name(kept));
+        }
         let outcome = session.run(rx);
         let _ = std::fs::remove_file(socket);
         outcome
@@ -1287,7 +1288,6 @@ impl Session {
                     };
                     let reason = draft.and_then(|d| d.reason.clone());
                     let (tx, disposition) = (self.tx.clone(), disposition.to_string());
-                    let (config, harness) = (self.config.clone(), unit.harness.clone());
                     // What the project records of it in Git, when it says.
                     let export =
                         crate::routing::read_at(&self.config, &project.harnesses).export(&root);
@@ -1303,10 +1303,6 @@ impl Session {
                         );
                         let answer = match sealed {
                             Ok(receipt) => {
-                                let row = crate::labels::sealed(&harness, &receipt);
-                                if let Err(e) = crate::labels::append(&config, &root, &row) {
-                                    eprintln!("weft: the Seal's label was not kept: {e}");
-                                }
                                 let by = judged_by.as_deref();
                                 if let Err(e) = crate::export::seal(&root, &receipt, export, by) {
                                     eprintln!(
@@ -2457,10 +2453,6 @@ impl Session {
                     let over = self.projects[at].ringframe.clone();
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {
                         Ok(ask_id) => {
-                            let row = crate::labels::asked(&draft, &ask_id);
-                            if let Err(e) = crate::labels::append(&self.config, &root, &row) {
-                                eprintln!("weft: the Ask's label was not kept: {e}");
-                            }
                             w.sends = Some(ask_id);
                         }
                         Err(crate::ringframe::Error::Refused { message, .. }) => {
@@ -2495,7 +2487,6 @@ impl Session {
                 let root = self.projects[at].root.clone();
                 let weft_dir = self.config.parent().unwrap_or_else(|| Path::new("."));
                 crate::state::remove_open_project(weft_dir, &root);
-                crate::labels::forget(&self.config, &root);
                 self.acted_in(at);
                 // Closed once the answer is sent: closing ends this client's
                 // connection to it.

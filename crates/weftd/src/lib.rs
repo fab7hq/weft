@@ -11,7 +11,6 @@ pub mod export;
 pub mod forward;
 pub mod gpu;
 pub mod harness;
-pub mod labels;
 pub mod ledger;
 pub mod listen;
 pub mod onboarding;

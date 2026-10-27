@@ -97,14 +97,6 @@ impl Client {
     }
 }
 
-/// Every row of the label streams beside `config`.
-fn labels(config: &Path) -> Vec<serde_json::Value> {
-    let dir = config.with_file_name("labels");
-    let files = std::fs::read_dir(dir).into_iter().flatten().flatten();
-    let text: String = files.map(|f| std::fs::read_to_string(f.path()).unwrap()).collect();
-    text.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
-}
-
 fn events(root: &Path) -> Vec<serde_json::Value> {
     let ws = ringframe::api::workspace(root).unwrap();
     ringframe::api::events(&ws).unwrap()
@@ -205,7 +197,6 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
     c.call(Call::Resolve { pending, yes: false, force: false, to: None, start: None });
     std::thread::sleep(Duration::from_millis(300));
     assert!(compiled(&root).is_empty(), "a Cancel records nothing");
-    assert!(labels(&config).is_empty(), "and keeps no label");
 
     // Send: compiled, confirmed by Weft, and typed as shown.
     let (pending, _, _, _) = ask(&mut c);
@@ -222,10 +213,7 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
         events(&root).into_iter().filter(|e| e["type"] == "ask.confirmed").collect();
     assert_eq!(confirmed[0]["data"]["confirmation"]["via"], "weft");
     let ask_id = asks[0]["id"].as_str().unwrap();
-    let rows = labels(&config);
-    assert_eq!(rows.len(), 1, "one label row: {rows:?}");
-    assert_eq!((&rows[0]["kind"], &rows[0]["ask_id"]), (&"ask".into(), &ask_id.into()));
-    assert_eq!(rows[0]["final"]["route"], "native_goal");
+    assert!(!config.with_file_name("labels").exists(), "Weft keeps no label stream");
     let ws = ringframe::api::workspace(&root).unwrap();
     assert_eq!(ringframe::api::prompt(&ws, ask_id, None).unwrap().text, shown, "as shown");
     let deadline = Instant::now() + Duration::from_secs(5);

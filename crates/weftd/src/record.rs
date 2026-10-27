@@ -3,13 +3,11 @@
 //! What one means lives in [`weft_core::record`]; this opens the file and
 //! hands the bytes over.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
-use weft_core::accept;
 use weft_core::board::{Notice, notice};
-use weft_core::eval_view::EvalView;
 
 pub use weft_core::record::*;
 
@@ -88,48 +86,12 @@ pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_v
     }))
 }
 
-/// What each open Eval asks of the person, by its id: ready to seal or needs
-/// you, a "Ready" demoted when your own past Seals say you turn such down.
+/// What each open Eval asks of the person, by its id: ready to seal or
+/// needs you, from the Eval and its checks alone.
 pub fn notices(project_root: &Path, units: &[weft_core::ledger::Unit]) -> BTreeMap<String, Notice> {
-    let mut sealed = BTreeMap::new();
-    let mut open = BTreeSet::new();
-    for u in units {
-        let Some(c) = &u.check else { continue };
-        if let Some(d) = &u.sealed {
-            sealed.insert(c.eval_id.clone(), d == "accepted");
-        } else {
-            open.insert(c.eval_id.clone());
-        }
-    }
-    let views: Vec<(String, EvalView)> = open
-        .into_iter()
-        .filter_map(|id| Some((id.clone(), eval_view(project_root, &id)?)))
-        .collect();
-    let any_ready = views.iter().any(|(_, v)| notice(v) == Some(Notice::ReadyToSeal));
-    let demotion = any_ready.then(|| learned(project_root, &sealed)).flatten();
-    views
-        .iter()
-        .filter_map(|(id, view)| {
-            let n = notice(view)?;
-            Some((id.clone(), demotion.as_ref().map_or(n, |d| d.apply(n, &accept::features(view)))))
-        })
+    let open = units.iter().filter(|u| u.sealed.is_none()).filter_map(|u| u.check.as_ref());
+    open.filter_map(|c| Some((c.eval_id.clone(), notice(&eval_view(project_root, &c.eval_id)?)?)))
         .collect()
-}
-
-/// The demotion your sealed Evals teach, if there are enough of them.
-fn learned(project_root: &Path, sealed: &BTreeMap<String, bool>) -> Option<accept::Demotion> {
-    let seals: Vec<accept::Seal> = sealed
-        .iter()
-        .filter_map(|(id, accepted)| {
-            let view = eval_view(project_root, id)?;
-            Some(accept::Seal {
-                features: accept::features(&view),
-                ready: notice(&view) == Some(Notice::ReadyToSeal),
-                accepted: *accepted,
-            })
-        })
-        .collect();
-    accept::Demotion::learn(&seals)
 }
 
 /// One change's hunk, as RingFrame cut it.
@@ -210,10 +172,10 @@ mod tests {
         );
     }
 
-    /// Thirty Seals of Evals just like it, each turned down: a "Ready" you
-    /// keep turning down needs you.
+    /// "Ready to seal" comes from the Eval and its checks alone: thirty
+    /// Seals of Evals just like it, each turned down, change nothing.
     #[test]
-    fn past_seals_turned_down_demote_a_ready_eval() {
+    fn past_seals_never_demote_a_ready_eval() {
         use weft_core::board::Notice;
         let dir = tempfile::tempdir().unwrap();
         let mut units = Vec::new();
@@ -224,14 +186,6 @@ mod tests {
         }
         closed(dir.path(), "evl_new", "aligned", "succeeded");
         units.push(judged("ask_new", "evl_new", None));
-        assert_eq!(notices(dir.path(), &units).get("evl_new"), Some(&Notice::NeedsYou));
-        units.pop();
-        units.remove(0);
-        units.push(judged("ask_new", "evl_new", None));
-        assert_eq!(
-            notices(dir.path(), &units).get("evl_new"),
-            Some(&Notice::ReadyToSeal),
-            "29 Seals teach nothing"
-        );
+        assert_eq!(notices(dir.path(), &units).get("evl_new"), Some(&Notice::ReadyToSeal));
     }
 }
