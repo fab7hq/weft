@@ -283,7 +283,21 @@ fn fetch_sense_from(
             let (to, from) = (dir.join(name), format!("{url}/{name}"));
             let to = to.to_string_lossy();
             let ok = out
-                .run("curl", &["-fsSL", "--max-time", "300", "-o", &to, &from], None)?
+                .run(
+                    "curl",
+                    &[
+                        "-fsSL",
+                        "--retry",
+                        "3",
+                        "--retry-all-errors",
+                        "--max-time",
+                        "300",
+                        "-o",
+                        &to,
+                        &from,
+                    ],
+                    None,
+                )?
                 .status
                 .success();
             anyhow::ensure!(ok, "could not download Sense's {name}");
