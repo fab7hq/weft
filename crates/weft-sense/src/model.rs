@@ -215,10 +215,19 @@ impl SenseModel {
     /// What a settled screen shows, or `None` when the `surface` head is
     /// unsure or the graph fails.
     pub fn evaluate_surface(&self, snap: &PaneSnapshot<'_>) -> Option<SurfaceReading> {
-        let text = screen_text(snap, self.screen_last_lines, &self.table);
-        let (idx, confidence_bp) = self.read(&self.surface, self.tokenizer.encode(&text))?;
+        self.read_screen(&self.screen_text(snap), snap.seq)
+    }
+
+    /// A screen as Sense reads it: two screens with the same text read the same.
+    pub fn screen_text(&self, snap: &PaneSnapshot<'_>) -> String {
+        screen_text(snap, self.screen_last_lines, &self.table)
+    }
+
+    /// What a screen's text shows, as [`Self::evaluate_surface`] reads it.
+    pub fn read_screen(&self, text: &str, seq: u64) -> Option<SurfaceReading> {
+        let (idx, confidence_bp) = self.read(&self.surface, self.tokenizer.encode(text))?;
         let state = *self.surface_states.get(idx)?;
-        Some(SurfaceReading { state, confidence_bp, seq: snap.seq })
+        Some(SurfaceReading { state, confidence_bp, seq })
     }
 
     /// What a transcript entry or a tool's outcome is, or `None` when the

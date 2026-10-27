@@ -109,6 +109,10 @@ struct Slot {
     last_output_at: std::time::Instant,
     sense_settled_seq: u64,
     sensed_surface: Option<weft_sense::SurfaceReading>,
+    /// The screen's text as Sense last read it: the same text is not read
+    /// again. And whether a read is under way, off the run loop.
+    sensed_text: Option<String>,
+    sensing: bool,
     /// Types this pane's sends one after another, off the run loop: made at
     /// its first send, ended with the pane.
     typer: Option<Sender<typing::Job>>,
@@ -359,6 +363,13 @@ enum Wake {
     },
     /// Time to look at the ledgers again.
     Tick,
+    /// Sense read a pane's screen, whose text was `text`.
+    Sensed {
+        root: PathBuf,
+        pane: u32,
+        text: String,
+        reading: Option<weft_sense::SurfaceReading>,
+    },
     /// Ten times a second: time to read what settled, and to frame a pane
     /// resized without printing.
     Frames,
@@ -994,6 +1005,9 @@ impl Session {
                 Wake::Tick => {
                     self.follow_the_record();
                     self.update_when_idle();
+                }
+                Wake::Sensed { root, pane, text, reading } => {
+                    self.sensed(&root, pane, text, reading)
                 }
                 Wake::Checked => {
                     let open: Vec<usize> =
@@ -3010,5 +3024,68 @@ mod tests {
         weft_proto::send(&mut writer, &Line::Call { id: 99, call: Call::Shutdown }.encode())
             .unwrap();
         let _ = srv.join();
+    }
+    /// Four panes whose spinner turns and whose seconds count, which Sense
+    /// reads as the same words: each is read once, and off the run loop, so
+    /// the daemon answers at once while Sense reads.
+    #[test]
+    fn sense_reads_off_the_run_loop_and_only_words_that_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let weft_dir = dir.path().join(".fab7/weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let (socket, config) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&config, "").unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let bundle = dir.path().join("bundle");
+        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_with(&srv_sock, &srv_cfg, Some(harnesses));
+        });
+        while !weft_proto::is_live(&socket) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut id = 0;
+        let mut call = |c: Call| {
+            id += 1;
+            let at = std::time::Instant::now();
+            weft_proto::send(&mut writer, &Line::Call { id, call: c }.encode()).unwrap();
+            while let Ok(Some(line)) = reader.next() {
+                if matches!(line, Line::Result { id: r, .. } | Line::Error { id: r, .. } if r == id)
+                {
+                    break;
+                }
+            }
+            at.elapsed()
+        };
+        call(Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL });
+        call(Call::Open { path: project.display().to_string(), rows: 40, cols: 120, raw: true });
+        let spinner = dir.path().join("spinner.sh");
+        let script = "#!/bin/sh\ni=0\nwhile true; do for c in ⠋ ⠙ ⠹ ⠸; do \
+                      i=$((i+1)); printf '\\r%s Working (%ds)' \"$c\" \"$i\"; sleep 0.3; done; done\n";
+        std::fs::write(&spinner, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&spinner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for _ in 0..4 {
+            let spec = spinner.display().to_string();
+            call(Call::StartAgent { harness: "claude-code".into(), spec, session: None });
+        }
+        let started = std::time::Instant::now();
+        let mut slowest = std::time::Duration::ZERO;
+        while started.elapsed() < std::time::Duration::from_secs(10) {
+            slowest = slowest.max(call(Call::Available));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(
+            slowest < std::time::Duration::from_millis(150),
+            "the daemon took {slowest:?} to answer while Sense read"
+        );
     }
 }

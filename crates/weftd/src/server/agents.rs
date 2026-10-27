@@ -145,12 +145,12 @@ impl Session {
         self.sense_pane(at, pane);
     }
 
-    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read;
-    /// nothing while Sense has not loaded.
+    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read,
+    /// off the run loop: a read takes a fifth of a second. Nothing while
+    /// Sense has not loaded, while a read of this pane is under way, or when
+    /// its screen reads as the words Sense last read.
     fn sense_pane(&mut self, at: usize, pane: u32) {
-        if self.sense.read().ok().is_none_or(|m| m.is_none()) {
-            return;
-        }
+        let model = Arc::clone(&self.sense);
         let p = &mut self.projects[at];
         let sessions = p.turns.sessions();
         let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
@@ -158,6 +158,9 @@ impl Session {
         let Some(idx) = p.panes.iter().position(|s| s.map.pane == pane) else { return };
         let hook_turn = raw_states.get(idx).copied().flatten();
         let slot = &mut p.panes[idx];
+        if slot.sensing {
+            return;
+        }
         let crate::pane::Surface {
             alt: alt_screen,
             size: (rows, cols),
@@ -165,19 +168,12 @@ impl Session {
             bottom: bottom_lines,
             seq,
         } = slot.pane.surface_snapshot();
-        slot.sense_settled_seq = seq;
-        if bottom_lines.is_empty() {
-            slot.sensed_surface = None;
-            return;
-        }
         let ms_since_last_output = slot.last_output_at.elapsed().as_millis().max(150) as u64;
-        let (harness, last_hook) = (slot.map.harness.clone(), slot.last_hook.clone());
-        let reading = self.sense.read().ok().and_then(|guard| {
-            let model = guard.as_ref()?;
-            model.evaluate_surface(&weft_sense::PaneSnapshot {
-                harness: &harness,
+        let text = model.read().ok().and_then(|guard| {
+            Some(guard.as_ref()?.screen_text(&weft_sense::PaneSnapshot {
+                harness: &slot.map.harness,
                 hook_state: crate::turns::turn_hook_name(hook_turn),
-                last_hook: last_hook.as_deref(),
+                last_hook: slot.last_hook.as_deref(),
                 alt_screen,
                 rows,
                 cols,
@@ -186,9 +182,46 @@ impl Session {
                 ms_since_last_output,
                 bottom_lines: &bottom_lines,
                 seq,
-            })
+            }))
         });
+        let Some(text) = text else { return };
+        slot.sense_settled_seq = seq;
+        if bottom_lines.is_empty() {
+            slot.sensed_surface = None;
+            return;
+        }
+        if slot.sensed_text.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        slot.sensing = true;
+        let (root, tx) = (p.root.clone(), self.tx.clone());
+        std::thread::spawn(move || {
+            let read = |m: &weft_sense::SenseModel| m.read_screen(&text, seq);
+            let reading = model.read().ok().and_then(|guard| guard.as_ref().and_then(read));
+            let _ = tx.send(super::Wake::Sensed { root, pane, text, reading });
+        });
+    }
+
+    /// Sense's reading of a pane's screen, kept and told; then the pane is
+    /// looked at again, as a hook or its screen may have moved meanwhile.
+    pub(super) fn sensed(
+        &mut self,
+        root: &Path,
+        pane: u32,
+        text: String,
+        reading: Option<weft_sense::SurfaceReading>,
+    ) {
+        let Some(at) = self.projects.iter().position(|p| p.root == root && !p.closed) else {
+            return;
+        };
+        let Some(slot) = self.projects[at].panes.iter_mut().find(|s| s.map.pane == pane) else {
+            return;
+        };
+        slot.sensing = false;
+        slot.sensed_text = Some(text);
         slot.sensed_surface = reading;
+        self.sense_pane(at, pane);
+        self.tell_agents(at);
     }
 
     /// The command line that resumes `id`, when the index holds it for this
@@ -337,6 +370,8 @@ impl Session {
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
+                    sensed_text: None,
+                    sensing: false,
                     typer: None,
                     judge: None,
                 });
