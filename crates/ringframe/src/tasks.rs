@@ -1666,16 +1666,18 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
 /// running; `done` once every task is in. A task out past its time goes out
 /// once more, to a fresh session, then fails.
 pub fn take(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<Value, EvalError> {
-    take_unread(ws, eval_id, role, &[])
+    take_for(ws, eval_id, role, None, &[])
 }
 
-/// `take`, for a session that has read `read` (windows and requirements, as
-/// each task's `reads` names them): only a task that reads none of them, so
-/// a second reading never comes from the session that gave the first.
-pub fn take_unread(
+/// `take`, for a session of the harness `host`, which the record names as
+/// the judge's, that has read `read` (windows and requirements, as each
+/// task's `reads` names them): only a task that reads none of them, so a
+/// second reading never comes from the session that gave the first.
+pub fn take_for(
     ws: &Workspace,
     eval_id: &str,
     role: Option<&str>,
+    host: Option<&str>,
     read: &[String],
 ) -> Result<Value, EvalError> {
     if let Some(r) = role {
@@ -1687,13 +1689,14 @@ pub fn take_unread(
     }
     // Its state and the ledger are read, changed and written as one: two
     // judges at once would be handed one task, or settle twice.
-    store::locked(ws, || hand_out(ws, eval_id, role, read))
+    store::locked(ws, || hand_out(ws, eval_id, role, host, read))
 }
 
 fn hand_out(
     ws: &Workspace,
     eval_id: &str,
     role: Option<&str>,
+    host: Option<&str>,
     read: &[String],
 ) -> Result<Value, EvalError> {
     if crate::evaluate::load_record(ws, eval_id)?.is_some() {
@@ -1779,6 +1782,9 @@ fn hand_out(
         *slot = json!([]);
     }
     slot.as_array_mut().expect("an array").push(json!(now));
+    if let Some(h) = host {
+        state["hosts"][&t.id] = json!(h);
+    }
     write(&state_file, &store::canonical(&state))?;
     let answer = dir.join("out").join(format!("{}.json", t.id));
     let mut task = json!({
@@ -2800,14 +2806,15 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
         "the verdict is a judgement by sub-agents over bounded evidence; agreement is its confidence, nothing here is certain"
             .to_string(),
     );
-    // Who judged, from what RingFrame knows: the model and effort each role
-    // was asked to run on.
+    // Who judged, from what RingFrame knows: the harness each task was
+    // handed out to, and the model and effort its role was asked to run on.
     let agents = &ctx.brief["agents"];
+    let hosts = read_json(&state_path(&ctx.ws, eval_id)).unwrap_or_default()["hosts"].clone();
     let mut judges: Vec<Value> = Vec::new();
-    for doc in st.accepted.values() {
+    for (id, doc) in &st.accepted {
         let role = str_of(&doc["judge"], "role");
-        let judge = json!({"angle": role, "host": "", "model": agents[&role]["model"],
-                           "effort": agents[&role]["effort"]});
+        let judge = json!({"angle": role, "host": str_of(&hosts, id),
+                           "model": agents[&role]["model"], "effort": agents[&role]["effort"]});
         if !judges.contains(&judge) {
             judges.push(judge);
         }
@@ -4753,6 +4760,30 @@ mod tests {
         });
     }
 
+    /// The record names the harness each judge ran in, as the program that
+    /// started it said when it took the task.
+    #[test]
+    fn the_record_names_the_host_each_judge_ran_in() {
+        eval_bench(|ws| {
+            let e = &bench_unlisted(ws).eval_id;
+            for _ in 0..40 {
+                let got = take_for(ws, e, None, Some("codex"), &[]).unwrap();
+                if got["state"] == "done" {
+                    let rec = crate::evaluate::load_record(ws, e).unwrap().unwrap();
+                    let judges = array_of(&rec, "judges");
+                    let angles: Vec<String> = judges.iter().map(|j| str_of(j, "angle")).collect();
+                    assert!(angles.contains(&"requirements".to_string()), "{angles:?}");
+                    assert!(judges.iter().all(|j| j["host"] == "codex"), "{judges:?}");
+                    return;
+                }
+                let task = str_of(&got["task"], "task_id");
+                crate::testing::answer_task(ws, &task);
+                assert_eq!(submit(ws, &task).unwrap().0, 0, "{task}");
+            }
+            panic!("the Eval did not settle");
+        });
+    }
+
     /// A task says what its judge reads: a map's windows, a reduce's
     /// requirements. A session that read one of them is handed another
     /// task, or none: a second reading never comes from the first reader.
@@ -4786,12 +4817,12 @@ mod tests {
             put(ws, &r1_id, doc);
             assert_eq!(submit(ws, &r1_id).unwrap().0, 0);
             // The requirements' confirm reads what r1 read: the window's does not.
-            let got = take_unread(ws, e, Some("confirm"), &read).unwrap();
+            let got = take_for(ws, e, Some("confirm"), None, &read).unwrap();
             let local =
                 |t: &Value| str_of(&t["task"], "task_id").rsplit('~').next().unwrap().to_string();
             assert_eq!(local(&got), "cw1", "{got}");
             assert!(reads(&got["task"]).iter().all(|w| !read.contains(w)));
-            let got = take_unread(ws, e, Some("confirm"), &read).unwrap();
+            let got = take_for(ws, e, Some("confirm"), None, &read).unwrap();
             assert_eq!(got["state"], "waiting", "only a reading of what it read is left: {got}");
             let got = take(ws, e, Some("confirm")).unwrap();
             assert_eq!(local(&got), "cr1", "a fresh session takes it: {got}");

@@ -428,16 +428,17 @@ pub fn eval_open(
     }
 }
 
-/// One ready task of an open Eval for a judge, of `role` when given, that
-/// reads nothing the judge's session has `read`; or that none is ready, or
-/// that the Eval has settled.
+/// One ready task of an open Eval for a judge in `harness`, of `role` when
+/// given, that reads nothing the judge's session has `read`; or that none is
+/// ready, or that the Eval has settled.
 pub fn eval_task(
     project: &Path,
     eval_id: &str,
     role: Option<&str>,
+    harness: &str,
     read: &[String],
 ) -> Result<api::EvalStep, Error> {
-    api::eval_task_for(&workspace(project)?, eval_id, role, read).map_err(refused)
+    api::eval_task_for(&workspace(project)?, eval_id, role, harness, read).map_err(refused)
 }
 
 /// Whether a task's answer is in: accepted, or recorded failed.

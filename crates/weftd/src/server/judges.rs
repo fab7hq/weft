@@ -141,6 +141,7 @@ struct SeatLook {
 struct Look {
     root: PathBuf,
     eval_id: String,
+    harness: String,
     judges: usize,
     seats: Vec<SeatLook>,
     seen: HashMap<String, Launch>,
@@ -181,6 +182,7 @@ impl Bench {
         Look {
             root: root.to_path_buf(),
             eval_id: self.eval_id.clone(),
+            harness: self.harness.clone(),
             judges: self.judges,
             seats,
             seen: self.seen.clone(),
@@ -255,7 +257,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
             if !fits || (role == "confirm" && s.ran_map) {
                 continue;
             }
-            match eval_task(root, &look.eval_id, Some(role), &s.read)? {
+            match eval_task(root, &look.eval_id, Some(role), &look.harness, &s.read)? {
                 api::EvalStep::Task(task) => {
                     did.push(Did::Give { pane: s.pane, task });
                     continue 'seats;
@@ -269,7 +271,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
     // What no idle judge could take gets a judge of its own: in a free
     // place, or in an idle judge's, which is closed for it.
     while open < look.judges || !still_idle.is_empty() {
-        match eval_task(root, &look.eval_id, None, &[])? {
+        match eval_task(root, &look.eval_id, None, &look.harness, &[])? {
             api::EvalStep::Task(task) => {
                 if open >= look.judges {
                     let pane = still_idle.pop().expect("an idle judge");
@@ -722,6 +724,10 @@ mod tests {
                 for stage in ["cr1", "ct1", "cw1", "cwt1"] {
                     assert!(locals.contains(&stage), "{stage} ran: {locals:?}");
                 }
+                // The record names the harness every judge ran in.
+                let record = api::eval_record(&ws, &bench.eval_id).unwrap().unwrap();
+                let judges = record["judges"].as_array().unwrap();
+                assert!(judges.iter().all(|j| j["host"] == "sh"), "{judges:?}");
                 let _ = std::fs::remove_dir_all(repo);
                 return;
             }

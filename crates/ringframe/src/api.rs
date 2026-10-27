@@ -465,19 +465,26 @@ pub enum EvalStep {
 /// when given. A task out past its time goes out once more, then fails.
 /// Once every task is in, the Eval settles.
 pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<EvalStep, Error> {
-    eval_task_for(ws, eval_id, role, &[])
+    let out = tasks::take(ws, eval_id, role)?;
+    eval_step(ws, eval_id, out)
 }
 
-/// `eval_task` for a session that has read `read`, the `reads` of the tasks
-/// it was given: only a task that reads none of them, so no session reads
-/// an item twice.
+/// `eval_task` for a session of the harness `host`, which the record names
+/// as its judge, that has read `read`, the `reads` of the tasks it was
+/// given: only a task that reads none of them, so no session reads an item
+/// twice.
 pub fn eval_task_for(
     ws: &Workspace,
     eval_id: &str,
     role: Option<&str>,
+    host: &str,
     read: &[String],
 ) -> Result<EvalStep, Error> {
-    let out = tasks::take_unread(ws, eval_id, role, read)?;
+    let out = tasks::take_for(ws, eval_id, role, Some(host), read)?;
+    eval_step(ws, eval_id, out)
+}
+
+fn eval_step(ws: &Workspace, eval_id: &str, out: Value) -> Result<EvalStep, Error> {
     if out["state"] == "done" {
         let record = evaluate::load_record(ws, eval_id)?.unwrap_or_default();
         return Ok(EvalStep::Settled {
