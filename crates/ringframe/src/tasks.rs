@@ -176,6 +176,13 @@ impl Task {
     }
 }
 
+/// The model and effort a role's tasks run on, as the Eval was opened with:
+/// the requirements task reads the Asks' words as the reduce reads
+/// requirements, so it runs on the reduce's.
+fn agent<'a>(brief: &'a Value, role: &str) -> &'a Value {
+    &brief["agents"][if role == "requirements" { "reduce" } else { role }]
+}
+
 struct Ctx {
     ws: Workspace,
     eval_id: String,
@@ -1591,7 +1598,7 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
     });
     // How hard to work, for a harness that takes no effort per sub-agent: the
     // judge reads it here, and the instructions say what each level means.
-    if let Some(effort) = ctx.brief["agents"][t.role]["effort"].as_str() {
+    if let Some(effort) = agent(&ctx.brief, t.role)["effort"].as_str() {
         v["effort"] = json!(effort);
     }
     // The evidence, handed over: what RingFrame hands a judge counts as read.
@@ -1799,7 +1806,7 @@ fn hand_out(
         "reads": t.reads(),
     });
     for k in ["model", "effort"] {
-        if let Some(v) = ctx.brief["agents"][t.role].get(k) {
+        if let Some(v) = agent(&ctx.brief, t.role).get(k) {
             task[k] = v.clone();
         }
     }
@@ -2811,13 +2818,13 @@ fn close(ctx: &Ctx, st: &Status) -> Result<Value, EvalError> {
     );
     // Who judged, from what RingFrame knows: the harness each task was
     // handed out to, and the model and effort its role was asked to run on.
-    let agents = &ctx.brief["agents"];
     let hosts = read_json(&state_path(&ctx.ws, eval_id)).unwrap_or_default()["hosts"].clone();
     let mut judges: Vec<Value> = Vec::new();
     for (id, doc) in &st.accepted {
         let role = str_of(&doc["judge"], "role");
         let judge = json!({"angle": role, "host": str_of(&hosts, id),
-                           "model": agents[&role]["model"], "effort": agents[&role]["effort"]});
+                           "model": agent(&ctx.brief, &role)["model"],
+                           "effort": agent(&ctx.brief, &role)["effort"]});
         if !judges.contains(&judge) {
             judges.push(judge);
         }
@@ -4760,6 +4767,34 @@ mod tests {
             assert_eq!(take(ws, e, Some("map")).unwrap()["state"], "waiting", "m1 is out");
             assert_eq!(take(ws, e, Some("reduce")).unwrap()["state"], "waiting", "none ready");
             refused(take(ws, e, Some("judge")).unwrap_err(), "eval.role");
+        });
+    }
+
+    /// The requirements task runs on the reduce's model and effort: it reads
+    /// the Asks' words as the reduce reads requirements.
+    #[test]
+    fn the_requirements_task_runs_on_the_reduces_model_and_effort() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
+            confirm_ask_as(
+                ws,
+                "Build it",
+                b"build phase 1 and keep the notes plain\n",
+                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+                "native_goal",
+            );
+            commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
+            let agents = json!({"reduce": {"model": "m-reduce", "effort": "high"},
+                                "map": {"model": "m-map", "effort": "low"}});
+            let open = Open { agents: Some(agents), ..Default::default() };
+            let e = &str_of(&open_eval(ws, open).unwrap(), "eval_id");
+            let t = take(ws, e, None).unwrap()["task"].clone();
+            assert_eq!(str_of(&t, "role"), "requirements", "{t}");
+            assert_eq!(
+                (str_of(&t, "model"), str_of(&t, "effort")),
+                ("m-reduce".into(), "high".into())
+            );
+            assert_eq!(task_of(ws, &str_of(&t, "task_id"))["effort"], "high");
         });
     }
 
