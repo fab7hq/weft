@@ -109,11 +109,8 @@ fn a_release_archive_holds_the_app() {
     for name in ["weft-desktop", "weft", "ringframe"] {
         stub(&built, name);
     }
-    let target = if cfg!(target_os = "macos") {
-        "aarch64-apple-darwin"
-    } else {
-        "x86_64-unknown-linux-musl"
-    };
+    let target =
+        if cfg!(target_os = "macos") { "aarch64-apple-darwin" } else { "x86_64-unknown-linux-gnu" };
     let made = Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/pack"))
         .args(["v0.9.0", target])
         .arg(&built)
@@ -150,12 +147,13 @@ fn a_release_archive_holds_the_app() {
     }
 }
 
-/// `bin/cask` writes the tap's cask for a release from its two macOS
-/// checksums: Weft.app, `weft` and `ringframe` on PATH, the quarantine taken
-/// away; Ruby reads it. A tag or checksum that is not one writes nothing.
+/// `bin/cask` writes the tap's cask for a release from its Apple silicon
+/// checksum: Weft.app, `weft` and `ringframe` on PATH, the quarantine taken
+/// away, no Intel Mac; Ruby reads it. A tag or checksum that is not one
+/// writes nothing.
 #[test]
 #[cfg(target_os = "macos")]
-fn the_cask_installs_the_release_archives() {
+fn the_cask_installs_the_release_archive() {
     let tmp = tempfile::tempdir().unwrap();
     let cask = |args: &[&str]| {
         Command::new(Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/cask"))
@@ -164,16 +162,16 @@ fn the_cask_installs_the_release_archives() {
             .output()
             .unwrap()
     };
-    let (arm, intel) = ("a".repeat(64), "b".repeat(64));
-    let made = cask(&["v0.9.0", &arm, &intel]);
+    let arm = "a".repeat(64);
+    let made = cask(&["v0.9.0", &arm]);
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let rb = std::fs::read_to_string(tmp.path().join("Casks/weft.rb")).unwrap();
     for held in [
         "cask \"weft\" do",
         "version \"0.9.0\"",
-        &format!("sha256 arm:   \"{arm}\","),
-        &format!("intel: \"{intel}\""),
-        "fab7-v#{version}-#{arch}-apple-darwin.tar.gz",
+        &format!("sha256 \"{arm}\""),
+        "fab7-v#{version}-aarch64-apple-darwin.tar.gz",
+        "depends_on arch: :arm64",
         "app \"Weft.app\"",
         "binary \"#{appdir}/Weft.app/Contents/MacOS/weft\"",
         "binary \"#{appdir}/Weft.app/Contents/MacOS/ringframe\"",
@@ -183,12 +181,13 @@ fn the_cask_installs_the_release_archives() {
     ] {
         assert!(rb.contains(held), "{held}\n{rb}");
     }
+    assert!(!rb.contains("intel"), "{rb}");
     std::fs::remove_file(tmp.path().join("Casks/weft.rb")).unwrap();
-    assert!(!cask(&["0.9.0", &arm, &intel]).status.success(), "not a release tag");
-    assert!(!cask(&["v0.9.0", "abc", &intel]).status.success(), "not a checksum");
+    assert!(!cask(&["0.9.0", &arm]).status.success(), "not a release tag");
+    assert!(!cask(&["v0.9.0", "abc"]).status.success(), "not a checksum");
     let two_lines = format!("{arm}\n\"; system \"true");
-    assert!(!cask(&["v0.9.0", &two_lines, &intel]).status.success(), "checked whole");
-    assert!(!cask(&["v0.9.0\"; system \"true", &arm, &intel]).status.success(), "a tag, whole");
-    assert!(!cask(&["v0.9.0\n1", &arm, &intel]).status.success(), "a tag on one line");
+    assert!(!cask(&["v0.9.0", &two_lines]).status.success(), "checked whole");
+    assert!(!cask(&["v0.9.0\"; system \"true", &arm]).status.success(), "a tag, whole");
+    assert!(!cask(&["v0.9.0\n1", &arm]).status.success(), "a tag on one line");
     assert!(!tmp.path().join("Casks/weft.rb").exists());
 }

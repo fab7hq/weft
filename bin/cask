@@ -1,21 +1,21 @@
 #!/bin/sh
 # The Homebrew cask for a release, `Casks/weft.rb` in the current folder (a
-# checkout of fab7hq/homebrew-tap), from the release's tag and the checksums
-# of its two macOS archives; then checked. It writes the file and nothing
-# else: `.github/workflows/tap.yml` commits and pushes it when a release is
-# published.
+# checkout of fab7hq/homebrew-tap), from the release's tag and the checksum
+# of its macOS archive, for Apple silicon; then checked. It writes the file
+# and nothing else: `.github/workflows/tap.yml` commits and pushes it when a
+# release is published.
 #
-#   bin/cask <tag> <arm64-sha256> <x86_64-sha256>
+#   bin/cask <tag> <arm64-sha256>
 #
 # `brew install --cask fab7hq/tap/weft` installs Weft.app from the same
 # archives install.sh does, puts `weft` and `ringframe` on PATH, and takes
-# away the quarantine an ad hoc signed app would be stopped by.
+# away the quarantine an ad hoc signed app would be stopped by. There is no
+# Intel build: Sense runs on ONNX Runtime, built for Apple silicon only.
 set -eu
 
-usage='usage: bin/cask <tag> <arm64-sha256> <x86_64-sha256>'
+usage='usage: bin/cask <tag> <arm64-sha256>'
 tag=${1:?$usage}
 arm=${2:?$usage}
-intel=${3:?$usage}
 # Each is checked whole, never line by line: what passes is written into Ruby.
 only() { # <allowed characters> <value>: the value holds those and nothing else
     case $2 in '' | *[!$1]*) return 1 ;; esac
@@ -25,28 +25,24 @@ if ! only 'v0-9.' "$tag" || [ "${tag#v}" = "$tag" ] ||
     echo "bin/cask: not a release tag: $tag" >&2
     exit 1
 fi
-for sum in "$arm" "$intel"; do
-    if ! only '0-9a-f' "$sum" || [ ${#sum} -ne 64 ]; then
-        echo "bin/cask: not a sha256: $sum" >&2
-        exit 1
-    fi
-done
+if ! only '0-9a-f' "$arm" || [ ${#arm} -ne 64 ]; then
+    echo "bin/cask: not a sha256: $arm" >&2
+    exit 1
+fi
 version=${tag#v}
 
 mkdir -p Casks
 cat > Casks/weft.rb <<CASK
 cask "weft" do
-  arch arm: "aarch64", intel: "x86_64"
-
   version "$version"
-  sha256 arm:   "$arm",
-         intel: "$intel"
+  sha256 "$arm"
 
-  url "https://github.com/fab7hq/weft/releases/download/v#{version}/fab7-v#{version}-#{arch}-apple-darwin.tar.gz"
+  url "https://github.com/fab7hq/weft/releases/download/v#{version}/fab7-v#{version}-aarch64-apple-darwin.tar.gz"
   name "Weft"
   desc "Coding agents in panes, with what was asked, checked and decided"
   homepage "https://github.com/fab7hq/weft"
 
+  depends_on arch: :arm64
   depends_on macos: :monterey
 
   app "Weft.app"

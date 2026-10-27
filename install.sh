@@ -26,7 +26,7 @@ main() {
 
     case "$(uname -s)" in
         Darwin) platform=apple-darwin ;;
-        Linux) platform=unknown-linux-musl ;;
+        Linux) platform=unknown-linux-gnu ;;
         *) fail "Unsupported system: $(uname -s). Weft builds for macOS and Linux." ;;
     esac
 
@@ -35,6 +35,15 @@ main() {
         x86_64 | amd64) arch=x86_64 ;;
         *) fail "Unsupported architecture: $(uname -m)." ;;
     esac
+
+    # Sense runs on ONNX Runtime, which is built for Apple silicon and for
+    # Linux with glibc only.
+    if [ "$platform-$arch" = apple-darwin-x86_64 ]; then
+        fail 'Weft has no build for an Intel Mac: it needs Apple silicon.'
+    fi
+    if [ "$platform" = unknown-linux-gnu ] && ldd --version 2>&1 | grep -qi musl; then
+        fail 'Weft has no build for a musl system, such as Alpine: it needs glibc.'
+    fi
 
     target="$arch-$platform"
 

@@ -149,7 +149,36 @@ fn script() -> PathBuf {
 }
 
 fn platform() -> &'static str {
-    if cfg!(target_os = "macos") { "apple-darwin" } else { "unknown-linux-musl" }
+    if cfg!(target_os = "macos") { "apple-darwin" } else { "unknown-linux-gnu" }
+}
+
+/// What install.sh says on a system that `uname -s` and `uname -m` name,
+/// whose `ldd --version` prints `ldd`.
+fn install_on(system: &str, machine: &str, ldd: &str) -> String {
+    let release = Release::make("v0.1.0", false);
+    let bin = release.dir.path().join("bin");
+    let uname =
+        format!("#!/bin/sh\ncase \"$1\" in -s) echo {system} ;; -m) echo {machine} ;; esac\n");
+    std::fs::write(bin.join("uname"), uname).unwrap();
+    std::fs::write(bin.join("ldd"), format!("#!/bin/sh\necho '{ldd}'\n")).unwrap();
+    make_executable(&bin.join("uname"));
+    make_executable(&bin.join("ldd"));
+    let out = release.install("v0.1.0");
+    format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+}
+
+#[test]
+fn linux_takes_the_gnu_build_and_an_intel_mac_or_a_musl_system_is_told_it_has_none() {
+    for machine in ["x86_64", "aarch64"] {
+        let said = install_on("Linux", machine, "ldd (Debian GLIBC 2.36-9) 2.36");
+        assert!(said.contains(&format!("for {machine}-unknown-linux-gnu")), "{said}");
+    }
+    let said = install_on("Linux", "x86_64", "musl libc (x86_64)");
+    assert!(said.contains("Weft has no build for a musl system"), "{said}");
+    assert!(!said.contains("Downloading"), "{said}");
+    let said = install_on("Darwin", "x86_64", "");
+    assert!(said.contains("Weft has no build for an Intel Mac"), "{said}");
+    assert!(!said.contains("Downloading"), "{said}");
 }
 
 fn arch() -> &'static str {

@@ -33,13 +33,10 @@ jobs:
           - target: aarch64-apple-darwin
             desktop: aarch64-apple-darwin
             os: macos-14
-          - target: x86_64-apple-darwin
-            desktop: x86_64-apple-darwin
-            os: macos-14
-          - target: x86_64-unknown-linux-musl
+          - target: x86_64-unknown-linux-gnu
             desktop: x86_64-unknown-linux-gnu
             os: ubuntu-24.04
-          - target: aarch64-unknown-linux-musl
+          - target: aarch64-unknown-linux-gnu
             desktop: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
     runs-on: ${{ matrix.os }}
@@ -72,14 +69,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.target }},${{ matrix.desktop }}
-      - name: Install the musl toolchain and the desktop app's libraries
-        # weft and ringframe statically linked, so one Linux build runs on
-        # every distribution rather than tracking a glibc version; the app
-        # links the system's Wayland, X11 and Vulkan.
-        if: endsWith(matrix.target, '-musl')
+      - name: Install the desktop app's libraries
+        # Linux builds link glibc, as ONNX Runtime, which Sense runs on, has
+        # no musl build; the app links the system's Wayland, X11 and Vulkan.
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools libxkbcommon-dev libxkbcommon-x11-dev \
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev \
               libwayland-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
               libzstd-dev libvulkan1
 
@@ -108,8 +104,8 @@ jobs:
           echo "archive=fab7-$TAG-$TARGET.tar.gz" >> "$GITHUB_OUTPUT"
 
       - name: Check what was built actually runs
-        # A cross-built binary that cannot start is worse than no binary.
-        if: matrix.target == 'aarch64-apple-darwin' || matrix.target == 'x86_64-unknown-linux-musl'
+        # A binary that cannot start is worse than no binary. Each target is
+        # built on its own kind of runner, so each one runs.
         env:
           TARGET: ${{ matrix.target }}
           DESKTOP: ${{ matrix.desktop }}
@@ -146,11 +142,11 @@ jobs:
         with:
           merge-multiple: true
       - name: Refuse a partial release
-        # Four platforms or none: install.sh has no fallback to building.
+        # Three platforms or none: install.sh has no fallback to building.
         run: |
           set -eu
           count=$(ls -1 fab7-*.tar.gz | wc -l | tr -d ' ')
-          [ "$count" -eq 4 ] || { echo "only $count of 4 platforms built"; exit 1; }
+          [ "$count" -eq 3 ] || { echo "only $count of 3 platforms built"; exit 1; }
           ls -l fab7-* install.sh
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
