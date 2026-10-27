@@ -771,27 +771,41 @@ pub fn requirements(
     }
     for (ask, prompt) in prompts.iter().filter(|(a, _)| !planning.contains(a)) {
         for (n, s) in sentences(prompt).into_iter().enumerate() {
-            let low = s.to_lowercase();
-            out.push(Requirement {
-                id: format!("{ask}/s{n}"),
-                kind: kind_of(&s),
-                ask: ask.clone(),
-                part: ask.clone(),
-                paths: named_paths(&s),
-                claims: Vec::new(),
-                names: names.of(&s),
-                hint: BTreeSet::new(),
-                aliases: harnesses
-                    .iter()
-                    .filter(|(t, _)| low.contains(t.as_str()))
-                    .flat_map(|(_, p)| p.clone())
-                    .collect(),
-                text: s,
-                done_when: String::new(),
-            });
+            let kind = kind_of(&s);
+            out.push(from_words(format!("{ask}/s{n}"), kind, ask, s, &mut names, &harnesses));
         }
     }
     (out, names)
+}
+
+/// A requirement in an Ask's own words: one of its sentences, or one the
+/// requirements task listed from them.
+fn from_words(
+    id: String,
+    kind: &'static str,
+    ask: &str,
+    text: String,
+    names: &mut Names,
+    harnesses: &[(String, Vec<String>)],
+) -> Requirement {
+    let low = text.to_lowercase();
+    Requirement {
+        id,
+        kind,
+        ask: ask.to_string(),
+        part: ask.to_string(),
+        paths: named_paths(&text),
+        claims: Vec::new(),
+        names: names.of(&text),
+        hint: BTreeSet::new(),
+        aliases: harnesses
+            .iter()
+            .filter(|(t, _)| low.contains(t.as_str()))
+            .flat_map(|(_, p)| p.clone())
+            .collect(),
+        text,
+        done_when: String::new(),
+    }
 }
 
 // ---- links ----------------------------------------------------------------------
@@ -847,7 +861,13 @@ pub(crate) fn names_path(paths: &BTreeSet<String>, path: &str) -> bool {
 /// Score every local requirement against every unit (spec §4).
 pub fn links(reqs: &[Requirement], names: &Names, units: &[Unit], history: &History) -> Links {
     let mut names = names.clone();
-    let unit_names: Vec<BTreeSet<String>> = units
+    let unit_names = units_names(&mut names, units);
+    scored(reqs, &names, units, &unit_names, history)
+}
+
+/// What each unit links by: the names in its changed lines and its path.
+fn units_names(names: &mut Names, units: &[Unit]) -> Vec<BTreeSet<String>> {
+    units
         .iter()
         .map(|u| {
             let text: String = u.lines.iter().map(|(_, l)| format!("{l}\n")).collect();
@@ -855,12 +875,23 @@ pub fn links(reqs: &[Requirement], names: &Names, units: &[Unit], history: &Hist
             n.extend(names.of(&u.path.replace('/', " ")));
             n
         })
-        .collect();
+        .collect()
+}
+
+/// `links`, with each unit's names already read.
+fn scored(
+    reqs: &[Requirement],
+    names: &Names,
+    units: &[Unit],
+    unit_names: &[BTreeSet<String>],
+    history: &History,
+) -> Links {
+    let mut names = names.clone();
     let messages: BTreeMap<&str, BTreeSet<String>> =
         history.commits.iter().map(|c| (c.hash.as_str(), names.of(&c.subject))).collect();
     let n = units.len().max(1) as f64;
     let mut df: BTreeMap<&str, usize> = BTreeMap::new();
-    for ns in &unit_names {
+    for ns in unit_names {
         for t in ns {
             *df.entry(t.as_str()).or_default() += 1;
         }
@@ -1007,44 +1038,9 @@ pub fn findings(
     history: &History,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
-    let local: Vec<&Requirement> = reqs.iter().filter(|r| r.kind == "local").collect();
-    // A file's old name counts as touched: a split, a move out of it or a
-    // rename changed it, even when its lines now live elsewhere.
-    let touched: Vec<&str> = units
-        .iter()
-        .map(|u| u.path.as_str())
-        .chain(units.iter().flat_map(|u| u.also.iter().map(|k| k.split('#').next().unwrap_or(k))))
-        .chain(ev.files.iter().map(|f| f.path.as_str()))
-        .chain(ev.files.iter().filter_map(|f| f.renamed_from.as_deref()))
-        .collect();
-    for r in &local {
-        let untouched: Vec<&String> = r
-            .paths
-            .iter()
-            .filter(|p| !touched.iter().any(|t| names_path(&BTreeSet::from([(*p).clone()]), t)))
-            .collect();
-        if !r.paths.is_empty() && untouched.len() == r.paths.len() {
-            out.push(Finding {
-                kind: "untouched_path",
-                windows: vec![],
-                requirements: vec![r.id.clone()],
-                units: vec![],
-                detail: format!(
-                    "names {}, which the change never touches",
-                    untouched.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
-                ),
-            });
-        }
-        if links.evidence.get(&r.id).is_none_or(Vec::is_empty) {
-            out.push(Finding {
-                kind: "no_link",
-                windows: vec![],
-                requirements: vec![r.id.clone()],
-                units: vec![],
-                detail: "no unit of the change shares a code name with it or is in a path it names"
-                    .into(),
-            });
-        }
+    let touched = touched(ev, units);
+    for r in reqs.iter().filter(|r| r.kind == "local") {
+        out.extend(requirement_findings(r, &touched, links));
     }
     let claimed_by: BTreeMap<&str, Vec<&str>> = reqs.iter().fold(BTreeMap::new(), |mut m, r| {
         for c in &r.claims {
@@ -1168,6 +1164,155 @@ pub fn findings(
     out
 }
 
+/// The paths a change touches. A file's old name counts as touched: a split,
+/// a move out of it or a rename changed it, even when its lines now live
+/// elsewhere.
+fn touched<'a>(ev: &'a Evidence, units: &'a [Unit]) -> Vec<&'a str> {
+    units
+        .iter()
+        .map(|u| u.path.as_str())
+        .chain(units.iter().flat_map(|u| u.also.iter().map(|k| k.split('#').next().unwrap_or(k))))
+        .chain(ev.files.iter().map(|f| f.path.as_str()))
+        .chain(ev.files.iter().filter_map(|f| f.renamed_from.as_deref()))
+        .collect()
+}
+
+/// A local requirement's own findings: every path it names is one the change
+/// never touches, or no unit links to it.
+fn requirement_findings<S: AsRef<str>>(
+    r: &Requirement,
+    touched: &[S],
+    links: &Links,
+) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let untouched: Vec<&String> = r
+        .paths
+        .iter()
+        .filter(|p| {
+            !touched.iter().any(|t| names_path(&BTreeSet::from([(*p).clone()]), t.as_ref()))
+        })
+        .collect();
+    if !r.paths.is_empty() && untouched.len() == r.paths.len() {
+        out.push(Finding {
+            kind: "untouched_path",
+            windows: vec![],
+            requirements: vec![r.id.clone()],
+            units: vec![],
+            detail: format!(
+                "names {}, which the change never touches",
+                untouched.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", ")
+            ),
+        });
+    }
+    if links.evidence.get(&r.id).is_none_or(Vec::is_empty) {
+        out.push(Finding {
+            kind: "no_link",
+            windows: vec![],
+            requirements: vec![r.id.clone()],
+            units: vec![],
+            detail: "no unit of the change shares a code name with it or is in a path it names"
+                .into(),
+        });
+    }
+    out
+}
+
+// ---- requirements listed later --------------------------------------------------------
+
+/// A requirement listed after the view was published: the requirements
+/// task's, from an Ask's words.
+pub struct Listed {
+    pub id: String,
+    pub kind: String,
+    pub ask: String,
+    /// The requirement as the task put it, and the person's words it quotes.
+    pub text: String,
+    pub quote: String,
+}
+
+/// Requirements listed after the view was published, linked and checked as
+/// its own sentences were, from what it kept of the change: each one's
+/// requirement, its evidence links, and its `untouched_path` and `no_link`
+/// findings. The view's requirements are the ones scored beside them.
+pub fn link_listed(view: &Value, listed: &[Listed]) -> (Vec<Value>, Value, Vec<Value>) {
+    let text = |v: &Value, k: &str| v[k].as_str().unwrap_or_default().to_string();
+    let strs = |v: &Value, k: &str| -> Vec<String> {
+        let list = v[k].as_array().into_iter().flatten();
+        list.filter_map(|s| s.as_str().map(str::to_string)).collect()
+    };
+    let list = |v: &Value, k: &str| v[k].as_array().cloned().unwrap_or_default();
+    let kept = &view["linking"];
+    let mut names = Names { code: strs(kept, "code").into_iter().collect() };
+    let units: Vec<Unit> = list(view, "units")
+        .iter()
+        .map(|u| Unit {
+            key: text(u, "key"),
+            repo: text(u, "repo"),
+            path: text(u, "path"),
+            item: text(u, "item"),
+            hash: text(u, "hash"),
+            also: strs(u, "also"),
+            windows: Vec::new(),
+            bytes: 0,
+            class: text(u, "class"),
+            lines: Vec::new(),
+            added_at: Vec::new(),
+            commits: strs(u, "commits"),
+        })
+        .collect();
+    let unit_names: Vec<BTreeSet<String>> =
+        units.iter().map(|u| strs(&kept["units"], &u.key).into_iter().collect()).collect();
+    let history = History {
+        commits: list(view, "commits")
+            .iter()
+            .map(|c| Commit {
+                repo: text(c, "repo"),
+                hash: text(c, "hash"),
+                order: c["order"].as_u64().unwrap_or_default() as usize,
+                subject: text(c, "subject"),
+            })
+            .collect(),
+        ..History::default()
+    };
+    let harnesses = crate::profiles::aliases();
+    // The view's own requirements are scored beside them, as at open, so a
+    // long one weighs as it would have there.
+    let mut reqs: Vec<Requirement> = list(view, "requirements")
+        .iter()
+        .filter(|r| r["kind"] == "local")
+        .map(|r| {
+            let words = format!("{} {}", text(r, "text"), text(r, "done_when"));
+            from_words(text(r, "id"), "local", &text(r, "ask"), words, &mut names, &harnesses)
+        })
+        .collect();
+    let theirs = reqs.len();
+    for l in listed {
+        let kind = match l.kind.as_str() {
+            "local" => "local",
+            "cross" => "cross",
+            _ => "process",
+        };
+        let mut r = from_words(l.id.clone(), kind, &l.ask, l.text.clone(), &mut names, &harnesses);
+        r.paths.extend(named_paths(&l.quote));
+        r.names.extend(names.of(&l.quote));
+        reqs.push(r);
+    }
+    let links = scored(&reqs, &names, &units, &unit_names, &history);
+    let touched = strs(kept, "touched");
+    let mut evidence = serde_json::Map::new();
+    let mut findings = Vec::new();
+    for r in &reqs[theirs..] {
+        let ls = links.evidence.get(&r.id).map_or(&[][..], Vec::as_slice);
+        evidence.insert(r.id.clone(), ls.iter().map(Link::to_json).collect());
+        // A view published by an earlier RingFrame kept nothing to link by.
+        if r.kind == "local" && kept.is_object() {
+            findings.extend(requirement_findings(r, &touched, &links).iter().map(Finding::to_json));
+        }
+    }
+    let out = reqs[theirs..].iter().map(Requirement::to_json).collect();
+    (out, Value::Object(evidence), findings)
+}
+
 // ---- the view ---------------------------------------------------------------------
 
 const VIEW_SCHEMA: &str = "ringframe.eval-changes/1";
@@ -1250,8 +1395,9 @@ pub fn view(
     let mut us = units(ev);
     let h = history(ev, 0, &mut us)?;
     let edges = hints(&us);
-    let (reqs, names) = requirements(asks, prompts, obligations, &h);
-    let ls = links(&reqs, &names, &us, &h);
+    let (reqs, mut names) = requirements(asks, prompts, obligations, &h);
+    let unit_names = units_names(&mut names, &us);
+    let ls = scored(&reqs, &names, &us, &unit_names, &h);
     let fs = findings(ev, &us, &reqs, &ls, &h);
     let ask_ids: BTreeSet<String> =
         asks.iter().filter_map(|a| a["ask_id"].as_str().map(str::to_string)).collect();
@@ -1281,6 +1427,13 @@ pub fn view(
         },
         "findings": fs.iter().map(Finding::to_json).collect::<Vec<_>>(),
         "reuse": reused,
+        // What requirements listed later are linked by, as these were.
+        "linking": {
+            "code": names.code,
+            "units": us.iter().zip(&unit_names).map(|(u, n)| (u.key.clone(), json!(n)))
+                .collect::<serde_json::Map<_, _>>(),
+            "touched": touched(ev, &us),
+        },
     });
     let mut bytes = store::canonical(&doc);
     bytes.push(b'\n');

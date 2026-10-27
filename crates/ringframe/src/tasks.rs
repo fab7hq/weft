@@ -238,11 +238,22 @@ impl Ctx {
                 sentence_asks.push(ask);
             }
         }
-        if let (Some(listed), Some(list)) =
-            (listed_requirements(ws, eval_id)?, changes["requirements"].as_array_mut())
-        {
-            list.retain(|r| !is_sentence(&str_of(r, "id")));
-            list.extend(listed);
+        // The requirements task's list in place of the sentences, linked to
+        // the change and checked as they were.
+        if let Some(listed) = listed_requirements(ws, eval_id)? {
+            if let Some(list) = changes["requirements"].as_array_mut() {
+                list.retain(|r| !is_sentence(&str_of(r, "id")));
+            }
+            let (reqs, links, found) = crate::changes::link_listed(&changes, &listed);
+            if let Some(list) = changes["requirements"].as_array_mut() {
+                list.extend(reqs);
+            }
+            for (id, ls) in links.as_object().into_iter().flatten() {
+                changes["links"]["evidence"][id] = ls.clone();
+            }
+            if let Some(list) = changes["findings"].as_array_mut() {
+                list.extend(found);
+            }
         }
         Ok(Ctx {
             ws: ws.clone(),
@@ -358,9 +369,11 @@ fn ask_words(ws: &Workspace, ask: &str) -> String {
 }
 
 /// The requirements task's list, once it is accepted, as requirements:
-/// `<ask>/f<n>`, beside the exact ones (plan steps, named paths). They have no
-/// DAG links, so their evidence is what the map ties to them.
-fn listed_requirements(ws: &Workspace, eval_id: &str) -> Result<Option<Vec<Value>>, EvalError> {
+/// `<ask>/f<n>`, beside the exact ones (plan steps, named paths).
+fn listed_requirements(
+    ws: &Workspace,
+    eval_id: &str,
+) -> Result<Option<Vec<crate::changes::Listed>>, EvalError> {
     let q1 = task_id(eval_id, "q1");
     let Some(e) = outcomes(ws, eval_id)?
         .into_iter()
@@ -375,8 +388,13 @@ fn listed_requirements(ws: &Workspace, eval_id: &str) -> Result<Option<Vec<Value
     for r in array_of(&doc, "requirements") {
         let ask = str_of(r, "ask");
         let k = n.entry(ask.clone()).or_default();
-        out.push(json!({"id": format!("{ask}/f{k}"), "kind": r["kind"], "ask": ask, "part": ask,
-                        "text": r["text"], "done_when": "", "paths": [], "claims": []}));
+        out.push(crate::changes::Listed {
+            id: format!("{ask}/f{k}"),
+            kind: str_of(r, "kind"),
+            ask,
+            text: str_of(r, "text"),
+            quote: str_of(r, "quote"),
+        });
         *k += 1;
     }
     Ok(Some(out))
@@ -4748,6 +4766,51 @@ mod tests {
             assert!(brief.contains("build phase 1 and keep the notes plain"), "{brief}");
             assert!(!brief.contains("Keep the README"), "the prompt is not the person's words");
             assert_eq!(take(ws, e, None).unwrap()["state"], "waiting", "the maps wait for it");
+        });
+    }
+
+    /// A requirement the requirements task lists is linked to the change as
+    /// the Ask's own sentences were: a unit that shares its code names is its
+    /// evidence before any map, and one that nothing links, or that names a
+    /// path the change never touches, gets RingFrame's finding.
+    #[test]
+    fn a_listed_requirement_is_linked_and_checked_as_a_sentence_is() {
+        eval_bench(|ws| {
+            let words = "Add `uptime_seconds` to src/uptime.js for the server. Make the colour \
+                         scheme lavender everywhere. Describe it in docs/changelog.md as well.\n";
+            let prompt = format!("/goal {words}");
+            confirm_ask_as(ws, "Uptime", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
+            let e = &str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let got = take(ws, e, Some("requirements")).unwrap();
+            let q1 = str_of(&got["task"], "task_id");
+            let ask = str_of(&array_of(&task_of(ws, &q1), "asks")[0], "id");
+            let listed =
+                |quote: &str| json!({"ask": ask, "kind": "local", "text": quote, "quote": quote});
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [
+                    listed("Add `uptime_seconds` to src/uptime.js for the server"),
+                    listed("Make the colour scheme lavender everywhere"),
+                    listed("Describe it in docs/changelog.md as well"),
+                ]}),
+            );
+            assert_eq!(submit(ws, &q1).unwrap().0, 0);
+            let ctx = Ctx::load(ws, e).unwrap();
+            let ids: Vec<String> = ctx.requirements().iter().map(|r| str_of(r, "id")).collect();
+            assert_eq!(ids.len(), 3, "the sentences are replaced: {ids:?}");
+            let (uptime, colour, docs) = (&ids[0], &ids[1], &ids[2]);
+            let st = status(&ctx).unwrap();
+            let up = window_for(ws, e, "src/uptime.js");
+            assert_eq!(evidence_for(&ctx, &st, uptime, usize::MAX), [up], "linked before any map");
+            assert!(!array_of(&ctx.changes["links"]["evidence"], uptime).is_empty());
+            let kinds = |id: &str| -> Vec<String> {
+                ctx.findings_naming(id).iter().map(|f| str_of(f, "kind")).collect()
+            };
+            assert!(kinds(uptime).is_empty(), "{:?}", kinds(uptime));
+            assert_eq!(kinds(colour), ["no_link"]);
+            assert!(kinds(docs).contains(&"untouched_path".to_string()), "{:?}", kinds(docs));
         });
     }
 
