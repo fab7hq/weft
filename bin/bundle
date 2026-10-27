@@ -1,11 +1,13 @@
 #!/bin/sh
 # Make Weft.app from built binaries: the desktop app as the bundle's program,
-# `weft` and `ringframe` beside it, the mark as its icon, fab7's files in its
-# Resources (what a first start sets its home up from), then sign it.
+# `weft` and `ringframe` beside it with Sense's WebGPU library, which they
+# find there, the mark as its icon, fab7's files in its Resources (what a
+# first start sets its home up from), then sign it.
 #
 #   bin/bundle <built-dir> <out-dir> <fab7-dir>
 #
-# <built-dir> holds weft-desktop, weft and ringframe, as cargo leaves them;
+# <built-dir> holds weft-desktop, weft, ringframe and libwebgpu_dawn.dylib,
+# as cargo leaves them;
 # <fab7-dir> is a fab7 checkout.
 # WEFT_SIGN_IDENTITY names the identity to sign with; without it the bundle
 # is signed ad hoc, which runs on the Mac that made it.
@@ -20,7 +22,7 @@ version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -n 1)
 app="$out/Weft.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-for name in weft-desktop weft ringframe; do
+for name in weft-desktop weft ringframe libwebgpu_dawn.dylib; do
     [ -f "$built/$name" ] || { echo "bin/bundle: $built has no $name" >&2; exit 1; }
     cp "$built/$name" "$app/Contents/MacOS/$name"
     chmod 755 "$app/Contents/MacOS/$name"
@@ -29,11 +31,17 @@ sed "s/VERSION/$version/g" "$root/assets/macos/Info.plist" > "$app/Contents/Info
 cp "$root/assets/weft.icns" "$app/Contents/Resources/weft.icns"
 "$root/bin/fab7-files" "$fab7" "$app/Contents/Resources/fab7"
 
-# Its tools first, then the bundle, as codesign wants.
+# Its tools first, then the bundle, as codesign wants. The hardened runtime
+# is for notarizing, which an identity's signature is for; ad hoc it would
+# only refuse the WebGPU library, whose signature names no team.
 identity=${WEFT_SIGN_IDENTITY:--}
-for name in weft ringframe weft-desktop; do
-    codesign --force --options runtime --timestamp=none -s "$identity" "$app/Contents/MacOS/$name"
+hardened=
+[ "$identity" = - ] || hardened="--options runtime"
+for name in libwebgpu_dawn.dylib weft ringframe weft-desktop; do
+    # shellcheck disable=SC2086 # empty, or two words
+    codesign --force $hardened --timestamp=none -s "$identity" "$app/Contents/MacOS/$name"
 done
-codesign --force --options runtime --timestamp=none -s "$identity" "$app"
+# shellcheck disable=SC2086
+codesign --force $hardened --timestamp=none -s "$identity" "$app"
 codesign --verify --deep --strict "$app"
 printf 'Made %s (weft %s), signed %s\n' "$app" "$version" "$([ "$identity" = - ] && echo 'ad hoc' || echo "as $identity")"

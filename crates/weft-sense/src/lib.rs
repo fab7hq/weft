@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod model;
 pub mod normalize;
 pub mod tokenizer;
+pub mod trial;
 
 pub use ask::{AskAnswer, Rule};
 pub use model::{

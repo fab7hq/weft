@@ -898,7 +898,8 @@ impl Session {
         // then the bundle this Weft was built with is downloaded once when it
         // is missing or older. Until then the one found reads, or none.
         let sense = Arc::new(std::sync::RwLock::new(None));
-        let fetch = harnesses.is_none() && crate::versions::sense_wanted(&weft_dir);
+        let machine = harnesses.is_none();
+        let fetch = machine && crate::versions::sense_wanted(&weft_dir);
         let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
         std::thread::spawn(move || {
             if let Some(model) = crate::versions::load_sense(&sense_dir)
@@ -912,6 +913,10 @@ impl Session {
                     Ok(current) => eprintln!("weft: Sense {} installed", current.version),
                     Err(e) => eprintln!("weft: Sense not installed: {e}"),
                 }
+            }
+            // This machine's GPU is tried once per version, by this program.
+            if machine && let Ok(program) = std::env::current_exe() {
+                crate::versions::sense_on_gpu(&sense_dir, &slot, &program);
             }
         });
         let mut session = Session {

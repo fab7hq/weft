@@ -4,7 +4,8 @@
 #
 #   bin/pack <tag> <target> <built-dir> <desktop-built-dir> <fab7-dir>
 #
-#   macOS  Weft.app (bin/bundle), holding weft-desktop, weft and ringframe
+#   macOS  Weft.app (bin/bundle), holding weft-desktop, weft, ringframe and
+#          Sense's WebGPU library
 #   Linux  weft and ringframe from <built-dir>, weft-desktop from
 #          <desktop-built-dir>, the desktop entry and the icon, flat
 #   both   fab7's files from the checkout <fab7-dir> (bin/fab7-files): in
@@ -27,7 +28,7 @@ trap 'rm -rf "$staged"' EXIT INT TERM
 case "$target" in
     *-apple-darwin)
         mkdir -p "$staged/programs"
-        cp "$built/weft" "$built/ringframe" "$staged/programs/"
+        cp "$built/weft" "$built/ringframe" "$built/libwebgpu_dawn.dylib" "$staged/programs/"
         cp "$desktop/weft-desktop" "$staged/programs/"
         "$root/bin/bundle" "$staged/programs" "$staged" "$fab7" >/dev/null
         tar -czf "$archive" -C "$staged" Weft.app

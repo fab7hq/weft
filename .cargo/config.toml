@@ -1,0 +1,4 @@
+# Sense's WebGPU library (libwebgpu_dawn.dylib) sits beside each program on a
+# Mac: in target/<profile>, and in Weft.app's Contents/MacOS.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path"]

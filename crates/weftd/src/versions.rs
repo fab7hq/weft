@@ -130,7 +130,37 @@ pub fn default_sense_version() -> Option<String> {
 
 /// Load the active `SenseModel` from `<weft_dir>/sense/current.json`.
 pub fn load_sense(weft_dir: &Path) -> Option<weft_sense::SenseModel> {
-    weft_sense::SenseModel::load(&sense_current(weft_dir)?.path).ok()
+    let current = sense_current(weft_dir)?;
+    let kept = crate::gpu::verdict(weft_dir, &current.version);
+    let on_gpu = kept.filter(|p| *p != weft_sense::graph::Provider::Cpu);
+    on_gpu
+        .and_then(|gpu| weft_sense::SenseModel::load_on(&current.path, gpu).ok())
+        .or_else(|| weft_sense::SenseModel::load(&current.path).ok())
+}
+
+/// Try this machine's GPU for the Sense in `slot`, once per Weft and Sense
+/// version, with `program` as the child that tries it; a GPU kept takes the
+/// slot's place.
+pub fn sense_on_gpu(
+    weft_dir: &Path,
+    slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
+    program: &Path,
+) {
+    let Some(current) = sense_current(weft_dir) else { return };
+    if crate::gpu::verdict(weft_dir, &current.version).is_some() {
+        return;
+    }
+    let chosen = slot.read().ok().and_then(|guard| {
+        let cpu = guard.as_ref()?;
+        Some(crate::gpu::settle(weft_dir, &current.path, &current.version, cpu, program))
+    });
+    let Some(gpu) = chosen.filter(|p| *p != weft_sense::graph::Provider::Cpu) else { return };
+    if let Ok(model) = weft_sense::SenseModel::load_on(&current.path, gpu)
+        && let Ok(mut guard) = slot.write()
+    {
+        eprintln!("weft: Sense runs on {gpu:?}");
+        *guard = Some(model);
+    }
 }
 
 /// The files a bundle's manifest names, each a plain name in its folder.
@@ -178,6 +208,11 @@ pub fn install_sense_bundle(
     let names = bundle_files(manifest_text.as_bytes())?;
     for name in std::iter::once("manifest.json").chain(names.iter().map(String::as_str)) {
         std::fs::copy(source_dir.join(name), tmp_dir.join(name))?;
+    }
+    // The golden vectors, which a GPU is tried on, when the bundle has them.
+    let golden = source_dir.join(weft_sense::trial::GOLDEN);
+    if golden.is_file() {
+        std::fs::copy(golden, tmp_dir.join(weft_sense::trial::GOLDEN))?;
     }
 
     // Verify SHA-256 digests and load the bundle before promoting; the model
@@ -312,6 +347,7 @@ fn fetch_sense_from(
         for name in bundle_files(&bytes)? {
             get(&name)?;
         }
+        get(weft_sense::trial::GOLDEN)?;
         install_sense_bundle(weft_dir, &dir).map(|(current, _)| current)
     })();
     let _ = std::fs::remove_dir_all(&dir);
@@ -423,8 +459,9 @@ pub(crate) mod tests {
         let src = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
         std::fs::create_dir_all(dst).unwrap();
         let bytes = std::fs::read(src.join("manifest.json")).unwrap();
-        for name in bundle_files(&bytes).unwrap() {
-            std::fs::copy(src.join(&name), dst.join(&name)).unwrap();
+        let golden = [weft_sense::trial::GOLDEN.to_string()];
+        for name in bundle_files(&bytes).unwrap().iter().chain(&golden) {
+            std::fs::copy(src.join(name), dst.join(name)).unwrap();
         }
         let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         manifest["version"] = serde_json::json!(version);
@@ -486,6 +523,7 @@ pub(crate) mod tests {
         for name in bundle_files(&manifest).unwrap() {
             assert!(current.path.join(&name).is_file(), "{name} is installed");
         }
+        assert!(current.path.join(weft_sense::trial::GOLDEN).is_file(), "and its golden vectors");
         assert!(!weft_dir.join("sense/download").exists(), "the download folder goes");
     }
 

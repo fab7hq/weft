@@ -16,6 +16,22 @@ pub const ONNX_RUNTIME: &str = "1.31";
 /// passes of this many.
 const ROWS_PER_PASS: usize = 64;
 
+/// Where the graph runs: the CPU, or a GPU this build carries a provider
+/// for (WebGPU, on Metal, on macOS).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Provider {
+    Cpu,
+    WebGpu,
+}
+
+impl Provider {
+    /// The GPU provider this build carries, if any.
+    pub fn gpu() -> Option<Self> {
+        cfg!(target_os = "macos").then_some(Self::WebGpu)
+    }
+}
+
 pub struct Graph {
     session: Mutex<Session>,
 }
@@ -25,10 +41,20 @@ impl Graph {
     /// performance core, and each weight's quantization kept apart from the
     /// activations, so a row's logit does not move with its batch mates.
     pub fn load(model: &[u8]) -> anyhow::Result<Self> {
-        let session = Session::builder(environment()?)
+        Self::load_on(model, Provider::Cpu)
+    }
+
+    /// The graph on `provider`; a GPU provider that cannot be had is an error.
+    pub fn load_on(model: &[u8], provider: Provider) -> anyhow::Result<Self> {
+        let builder = Session::builder(environment()?)
             .map_err(ort_error)?
             .with_auto_device(AutoDevicePolicy::PreferCPU)
-            .map_err(ort_error)?
+            .map_err(ort_error)?;
+        let builder = match provider {
+            Provider::Cpu => builder,
+            Provider::WebGpu => with_webgpu(builder)?,
+        };
+        let session = builder
             .with_optimization_level(GraphOptimizationLevel::All)
             .map_err(ort_error)?
             .with_intra_threads(performance_cores())
@@ -112,6 +138,21 @@ fn sysctl_u32(name: &std::ffi::CStr) -> Option<u32> {
         sysctlbyname(name.as_ptr(), (&raw mut value).cast(), &mut len, std::ptr::null_mut(), 0)
     };
     (found == 0 && value > 0).then_some(value)
+}
+
+#[cfg(target_os = "macos")]
+fn with_webgpu(
+    builder: ort::session::builder::SessionBuilder,
+) -> anyhow::Result<ort::session::builder::SessionBuilder> {
+    let webgpu = ort::ep::WebGPU::default().build().error_on_failure();
+    builder.with_execution_providers([webgpu]).map_err(ort_error)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn with_webgpu(
+    _: ort::session::builder::SessionBuilder,
+) -> anyhow::Result<ort::session::builder::SessionBuilder> {
+    anyhow::bail!("this build of Weft carries no WebGPU")
 }
 
 fn ort_error<R>(e: ort::Error<R>) -> anyhow::Error {

@@ -43,7 +43,7 @@ fn the_bundle_holds_the_app_its_tools_and_icon_and_is_signed() {
     let tmp = tempfile::tempdir().unwrap();
     let built = tmp.path().join("built");
     std::fs::create_dir_all(&built).unwrap();
-    for name in ["weft-desktop", "weft", "ringframe"] {
+    for name in ["weft-desktop", "weft", "ringframe", "libwebgpu_dawn.dylib"] {
         stub(&built, name);
     }
     let out = tmp.path().join("out");
@@ -55,7 +55,8 @@ fn the_bundle_holds_the_app_its_tools_and_icon_and_is_signed() {
         .expect("bin/bundle runs");
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let app = out.join("Weft.app/Contents");
-    for name in ["weft-desktop", "weft", "ringframe"] {
+    // Sense's WebGPU library, beside the programs that find it there.
+    for name in ["weft-desktop", "weft", "ringframe", "libwebgpu_dawn.dylib"] {
         assert!(app.join("MacOS").join(name).is_file(), "{name}");
     }
     assert!(app.join("Resources/weft.icns").is_file());
@@ -106,7 +107,7 @@ fn a_release_archive_holds_the_app() {
     let tmp = tempfile::tempdir().unwrap();
     let built = tmp.path().join("built");
     std::fs::create_dir_all(&built).unwrap();
-    for name in ["weft-desktop", "weft", "ringframe"] {
+    for name in ["weft-desktop", "weft", "ringframe", "libwebgpu_dawn.dylib"] {
         stub(&built, name);
     }
     let target =
@@ -130,6 +131,7 @@ fn a_release_archive_holds_the_app() {
             "Weft.app/Contents/MacOS/weft-desktop",
             "Weft.app/Contents/MacOS/weft",
             "Weft.app/Contents/MacOS/ringframe",
+            "Weft.app/Contents/MacOS/libwebgpu_dawn.dylib",
             "Weft.app/Contents/Info.plist",
         ] {
             assert!(held.contains(&f), "{f}: {held:?}");

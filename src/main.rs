@@ -154,6 +154,15 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Started by weftd to try Sense on this machine's GPU, which can abort
+    // the process that tries it: prints the golden Asks' trial.
+    if first.as_deref() == Some("--sense-gpu-check") {
+        let mut args = std::env::args().skip(2);
+        let dir = std::path::PathBuf::from(args.next().unwrap_or_default());
+        println!("{}", weftd::gpu::tried(&dir, &args.next().unwrap_or_default())?);
+        return Ok(());
+    }
+
     if first.as_deref() == Some("update") {
         if std::env::args().nth(2).as_deref() == Some("--sense") {
             return update_sense();

@@ -1,5 +1,5 @@
 use crate::ask::{AskAnswer, AskHeads, Rule};
-use crate::graph::Graph;
+use crate::graph::{Graph, Provider};
 use crate::heads::choice;
 use crate::manifest::{Head, HeadKind, Manifest};
 use crate::normalize::{Replacements, entry_text, screen_text};
@@ -168,6 +168,11 @@ impl SenseModel {
     /// The sense-d bundle in `bundle_dir`, each file checked against the
     /// digest its manifest names.
     pub fn load(bundle_dir: &Path) -> anyhow::Result<Self> {
+        Self::load_on(bundle_dir, Provider::Cpu)
+    }
+
+    /// The bundle in `bundle_dir`, its graph on `provider`.
+    pub fn load_on(bundle_dir: &Path, provider: Provider) -> anyhow::Result<Self> {
         let manifest_path = bundle_dir.join("manifest.json");
         let manifest_bytes = fs::read(&manifest_path)
             .with_context(|| format!("read {}", manifest_path.display()))?;
@@ -188,7 +193,7 @@ impl SenseModel {
             conversation,
             ask: AskHeads::from_manifest(&manifest)?,
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
-            graph: Graph::load(&read("model")?)?,
+            graph: Graph::load_on(&read("model")?, provider)?,
         })
     }
 
