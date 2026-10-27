@@ -1619,7 +1619,8 @@ fn write(path: &Path, bytes: &[u8]) -> Result<(), EvalError> {
 /// The task file, and its windows as text. The windows go in a file of their
 /// own, as lines: a harness's file reader cuts long lines and reads a long file
 /// by line ranges, so one line of JSON holding the change would be read in part.
-fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
+/// Its effort is that of `role`, the role the task runs as.
+fn task_file(ctx: &Ctx, t: &Task, role: &str, facts: &[Value]) -> (Value, String) {
     let dir = tmp(&ctx.ws, &ctx.eval_id);
     let mut v = json!({
         "task_id": t.id, "eval_id": ctx.eval_id, "kind": t.kind, "role": t.role,
@@ -1628,7 +1629,7 @@ fn task_file(ctx: &Ctx, t: &Task, facts: &[Value]) -> (Value, String) {
     });
     // How hard to work, for a harness that takes no effort per sub-agent: the
     // judge reads it here, and the instructions say what each level means.
-    if let Some(effort) = agent(&ctx.brief, t.role)["effort"].as_str() {
+    if let Some(effort) = agent(&ctx.brief, role)["effort"].as_str() {
         v["effort"] = json!(effort);
     }
     // The evidence, handed over: what RingFrame hands a judge counts as read.
@@ -1807,9 +1808,9 @@ fn hand_out(
     std::fs::create_dir_all(dir.join("out"))?;
     std::fs::create_dir_all(dir.join("tasks/scratch"))?;
     // A second reading is a plain first reading of its kind: nothing in its
-    // files says what the first reading found.
-    let shown = Task { role: if t.kind == "map" { "map" } else { "reduce" }, ..(*t).clone() };
-    let (file, text) = task_file(&ctx, &shown, &facts);
+    // files says what the first reading found, only the effort it runs at.
+    let shown = Task { role: t.kind, ..(*t).clone() };
+    let (file, text) = task_file(&ctx, &shown, t.role, &facts);
     let mut bytes = serde_json::to_vec_pretty(&file).unwrap_or_default();
     bytes.push(b'\n');
     // RingFrame's own record of the task; the judge reads only the brief.
@@ -4825,6 +4826,40 @@ mod tests {
                 ("m-reduce".into(), "high".into())
             );
             assert_eq!(task_of(ws, &str_of(&t, "task_id"))["effort"], "high");
+            let brief = std::fs::read_to_string(str_of(&t, "brief")).unwrap();
+            assert!(brief.contains("You are the `requirements` judge"), "{brief}");
+        });
+    }
+
+    /// A second reading is shown as a first reading of its kind, but its
+    /// files state the effort it was handed out with, its own role's.
+    #[test]
+    fn a_confirm_task_states_the_confirm_s_effort() {
+        eval_bench(|ws| {
+            let agents = json!({"map": {"effort": "low"}, "reduce": {"effort": "high"},
+                                "confirm": {"effort": "medium"}});
+            let e = &bench_opened(ws, UPTIME, Open { agents: Some(agents), ..Default::default() })
+                .eval_id;
+            map_all(ws, e);
+            let r1 = str_of(&take(ws, e, Some("reduce")).unwrap()["task"], "task_id");
+            let mut doc = head(&r1, "reduce", "reduce");
+            doc["requirements"] = json!(array_of(&task_of(ws, &r1), "requirements").iter().map(|r| {
+                json!({"id": r["id"], "vote": "not_met", "reason": format!("{} is absent", str_of(r, "id")),
+                       "missing": format!("a change doing {}", str_of(r, "id"))})
+            }).collect::<Vec<_>>());
+            put(ws, &r1, doc);
+            assert_eq!(submit(ws, &r1).unwrap().0, 0);
+            let mut kinds = BTreeSet::new();
+            for _ in 0..2 {
+                let t = take(ws, e, Some("confirm")).unwrap()["task"].clone();
+                let id = str_of(&t, "task_id");
+                kinds.insert(str_of(&t, "kind"));
+                assert_eq!(str_of(&t, "effort"), "medium", "{t}");
+                assert_eq!(task_of(ws, &id)["effort"], "medium", "{id}");
+                let brief = std::fs::read_to_string(str_of(&t, "brief")).unwrap();
+                assert!(brief.contains("- Your effort: `medium`"), "{brief}");
+            }
+            assert_eq!(kinds.len(), 2, "a window's and a requirement's: {kinds:?}");
         });
     }
 
