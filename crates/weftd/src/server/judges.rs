@@ -24,6 +24,11 @@ const LOOK_EVERY: Duration = Duration::from_secs(5);
 /// handed back: RingFrame's own attempts.
 const TYPED_MAX: usize = 3;
 
+/// How long a judge whose harness has reported nothing yet must hold its
+/// screen still before it is fed: a harness may report a session only from
+/// its first prompt.
+const SILENT_QUIET: Duration = Duration::from_secs(3);
+
 /// The roles whose tasks an idle judge asks for, in the order they run.
 const ROLES: [&str; 4] = ["requirements", "map", "reduce", "confirm"];
 
@@ -192,6 +197,17 @@ impl Bench {
 
     fn seat(&mut self, pane: u32) -> Option<&mut Seat> {
         self.seats.iter_mut().find(|s| s.pane == pane)
+    }
+}
+
+/// Whether a judge may be typed its task: its harness says it is ready and
+/// its screen has settled; or its harness has said nothing yet and its screen
+/// has held still for [`SILENT_QUIET`]. Weft started the session for the Eval
+/// the person said yes to, and it holds no one's work.
+fn may_feed(state: Option<crate::turns::Turn>, settled: bool, silent_still: bool) -> bool {
+    match state {
+        None => silent_still,
+        known => settled && crate::turns::may_type(known).is_ok(),
     }
 }
 
@@ -430,11 +446,11 @@ impl Session {
             return;
         }
         let (states, _) = self.agents_of(at);
-        let ready: HashMap<u32, bool> = self.projects[at]
+        let states: HashMap<u32, Option<crate::turns::Turn>> = self.projects[at]
             .panes
             .iter()
             .zip(states)
-            .map(|(s, state)| (s.map.pane, crate::turns::may_type(state).is_ok()))
+            .map(|(s, state)| (s.map.pane, state))
             .collect();
         let tx = self.tx.clone();
         let p = &mut self.projects[at];
@@ -444,9 +460,11 @@ impl Session {
                 let Some(slot) = p.panes.iter_mut().find(|s| s.map.pane == seat.pane) else {
                     continue;
                 };
-                let still = slot.pane.gone_quiet(&mut h.screen, typing::STARTED_QUIET)
+                let settled = slot.pane.gone_quiet(&mut h.screen, typing::STARTED_QUIET)
                     || h.screen.0.elapsed() >= typing::STARTED_QUIET;
-                if !ready.get(&seat.pane).copied().unwrap_or(false) || !still {
+                let silent_still = slot.pane.gone_quiet(&mut h.screen, SILENT_QUIET);
+                let Some(&state) = states.get(&seat.pane) else { continue };
+                if !may_feed(state, settled, silent_still) {
                     continue;
                 }
                 let job = typing::Job {
@@ -597,6 +615,22 @@ mod tests {
     use crate::ringframe::tests::{fixture_home, folder};
     use crate::ringframe::{AskDraft, compile, eval_open, set_up};
     use serde_json::{Value, json};
+
+    /// A judge is fed when its harness says it is ready and its screen has
+    /// settled; one whose harness has said nothing yet, as a harness that
+    /// reports a session only from its first prompt, once its screen has held
+    /// still for longer. A judge at work or asking is never fed.
+    #[test]
+    fn a_judge_is_fed_once_ready_or_still_and_silent() {
+        use weft_core::turns::Turn;
+        assert!(may_feed(Some(Turn::Ready), true, false));
+        assert!(may_feed(Some(Turn::TurnEnded), true, false));
+        assert!(!may_feed(Some(Turn::Ready), false, false));
+        assert!(may_feed(None, false, true));
+        assert!(!may_feed(None, true, false), "silent and only briefly still");
+        assert!(!may_feed(Some(Turn::Working), true, true));
+        assert!(!may_feed(Some(Turn::Waiting), true, true));
+    }
 
     /// A judge's answer, written where its task says: the map calls the
     /// telemetry window unexplained and the rest serve the first requirement,
