@@ -88,12 +88,13 @@ impl Routing {
     /// Every harness an act or an Eval stage is routed to, once each, sorted.
     pub fn harnesses(&self) -> Vec<String> {
         let stages = self.eval_stages.iter().flat_map(|s| s.as_object().into_iter().flatten());
-        let mut out: Vec<String> = self
-            .by_act
-            .values()
-            .cloned()
-            .chain(stages.filter_map(|(_, st)| Some(st.get("harness")?.as_str()?.to_string())))
-            .collect();
+        // A stage's own harness, and each of its roles'.
+        let named = stages.flat_map(|(_, st)| {
+            let roles = st.as_object().into_iter().flat_map(|r| r.values());
+            std::iter::once(st).chain(roles).filter_map(|t| t.get("harness")?.as_str())
+        });
+        let mut out: Vec<String> =
+            self.by_act.values().cloned().chain(named.map(str::to_string)).collect();
         out.sort();
         out.dedup();
         out
@@ -118,6 +119,12 @@ mod tests {
         )
         .routing(std::path::Path::new("/p"));
         assert_eq!(r.harnesses(), ["claude-code"], "a gather harness is no longer read");
+        let r = crate::config::read(
+            "[eval.debate]\nharness = \"claude-code\"\nconfirm = { harness = \"codex\" }\n",
+            &crate::harness::fixture::harnesses(),
+        )
+        .routing(std::path::Path::new("/p"));
+        assert_eq!(r.harnesses(), ["claude-code", "codex"], "and a role's own");
         assert!(Routing::default().harnesses().is_empty());
     }
 }

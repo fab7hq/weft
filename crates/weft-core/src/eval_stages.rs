@@ -29,15 +29,40 @@ pub fn role_now(name: &str) -> &str {
 pub struct Stage {
     pub harness: String,
     pub roles: Vec<(String, Option<String>, Option<String>)>,
+    /// The roles that run in a harness of their own, and that harness.
+    pub hosts: Vec<(String, String)>,
     /// How many judges run at once.
     pub judges: usize,
+}
+
+impl Stage {
+    /// The harness a task of `role` runs in: the role's own, else the
+    /// debate's. The requirements task runs in the reduce's.
+    pub fn harness_of(&self, role: &str) -> &str {
+        let role = if role == "requirements" { "reduce" } else { role };
+        self.hosts.iter().find(|(r, _)| r == role).map_or(&self.harness, |(_, h)| h)
+    }
+
+    /// Every harness the debate's judges run in, once each: the debate's,
+    /// then each role's own in the order the roles run.
+    pub fn harnesses(&self) -> Vec<&str> {
+        let mut out = vec![self.harness.as_str()];
+        for role in DEBATE_ROLES {
+            let h = self.harness_of(role);
+            if !out.contains(&h) {
+                out.push(h);
+            }
+        }
+        out
+    }
 }
 
 /// How many judges run at once when the debate does not say.
 pub const JUDGES: usize = 8;
 
 /// The debate for this project: its harness is `[eval.debate] harness`, else
-/// `routing.eval`, else `fallback`; each role is what `[eval.debate]` sets.
+/// `routing.eval`, else `fallback`; each role is what `[eval.debate]` sets,
+/// its own `harness` included.
 pub fn resolve(stages: Option<&Value>, eval: Option<&str>, fallback: &str) -> Stage {
     let route = stages.and_then(|e| e.get("debate"));
     let harness = route
@@ -60,8 +85,15 @@ pub fn resolve(stages: Option<&Value>, eval: Option<&str>, fallback: &str) -> St
             (model.is_some() || effort.is_some()).then(|| (role.to_string(), model, effort))
         })
         .collect();
+    let hosts = DEBATE_ROLES
+        .iter()
+        .filter_map(|role| {
+            let h = route?.get(*role)?.get("harness")?.as_str().filter(|h| !h.is_empty())?;
+            Some((role.to_string(), h.to_string()))
+        })
+        .collect();
     let judges = route.and_then(|r| r.get("judges")).and_then(Value::as_u64);
-    Stage { harness, roles, judges: judges.map_or(JUDGES, |n| n as usize) }
+    Stage { harness, roles, hosts, judges: judges.map_or(JUDGES, |n| n as usize) }
 }
 
 /// The roles as `ringframe eval open --agents` takes them, when any is set.
@@ -120,6 +152,27 @@ mod tests {
             None,
             "nothing set: the plugin's tiers apply"
         );
+    }
+
+    /// A role may run in a harness of its own; one that names none runs in
+    /// the debate's. The requirements task runs in the reduce's harness.
+    #[test]
+    fn a_role_runs_in_its_own_harness_else_the_debates() {
+        let stages = json!({"debate": {"harness": "codex",
+            "map": {"harness": "antigravity"},
+            "confirm": {"harness": "claude-code", "effort": "high"}}});
+        let d = resolve(Some(&stages), None, "grok");
+        assert_eq!(d.harness_of("map"), "antigravity");
+        assert_eq!(d.harness_of("reduce"), "codex");
+        assert_eq!(d.harness_of("requirements"), "codex");
+        assert_eq!(d.harness_of("confirm"), "claude-code");
+        assert_eq!(d.harnesses(), ["codex", "antigravity", "claude-code"]);
+        assert_eq!(agents(&d), Some(json!({"confirm": {"effort": "high"}})), "no harness in it");
+        let reduce = json!({"debate": {"reduce": {"harness": "claude-code"}}});
+        let d = resolve(Some(&reduce), None, "codex");
+        assert_eq!(d.harness_of("requirements"), "claude-code");
+        assert_eq!(d.harness_of("map"), "codex");
+        assert_eq!(resolve(None, None, "codex").harnesses(), ["codex"]);
     }
 
     #[test]

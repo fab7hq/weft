@@ -40,9 +40,9 @@ pub const STARTING: &str = r#"# Weft: where each RingFrame act goes, how an Eval
 # seal = "<harness>"
 
 [eval.debate]                  # Weft gathers the Eval itself; the debate goes here
-# harness   = "<harness>"
-# adversary = { model = "<model>", effort = "high" }
-# trace     = { model = "<model>", effort = "low" }   # also intent, coverage, confirm
+# harness = "<harness>"        # where every role runs, unless it names its own
+# map     = { harness = "<harness>", model = "<model>", effort = "low" }
+# reduce  = { model = "<model>", effort = "high" }   # also confirm
 
 [ringframe]                    # RingFrame overrides, in RingFrame's keys
 # [ringframe.deltas."practices/software-development"]
@@ -416,7 +416,8 @@ impl Config {
         out
     }
 
-    /// A stage's `harness` and each of its roles' `model` and `effort`.
+    /// A stage's `harness` and each of its roles' `harness`, `model` and
+    /// `effort`.
     fn stage(
         &mut self,
         body: &Value,
@@ -448,7 +449,11 @@ impl Config {
             } else {
                 let mut settings = Map::new();
                 for (k, v) in value.as_object().into_iter().flatten() {
-                    if ["model", "effort"].contains(&k.as_str())
+                    if k == "harness" {
+                        if let Some(h) = harness(v, &format!("{path}.{k}"), known, self) {
+                            settings.insert(k.clone(), Value::from(h));
+                        }
+                    } else if ["model", "effort"].contains(&k.as_str())
                         && v.as_str().is_some_and(|v| !v.is_empty())
                     {
                         settings.insert(k.clone(), v.clone());
@@ -840,6 +845,26 @@ routing = { ask = "claude-code" }
             ["eval.debate.judges", "projects.\"/work/thing\".eval.debate.judges"]
         );
         assert_eq!(c.routing(Path::new(HERE)).eval_stages, None);
+    }
+
+    /// A role may name a harness of its own; one Weft has no harness file
+    /// for is reported as the debate's would be, and the rest of the role
+    /// still stands.
+    #[test]
+    fn a_role_names_its_own_harness() {
+        let c = read_(
+            "[eval.debate]\nharness = \"claude-code\"\n\
+             map = { harness = \"codex\", effort = \"low\" }\n\
+             confirm = { harness = \"aider\", effort = \"high\" }\n",
+        );
+        assert_eq!(c.unknown, ["eval.debate.confirm.harness: aider"]);
+        assert!(c.ignored.is_empty(), "{:?}", c.ignored);
+        assert_eq!(
+            c.routing(Path::new(HERE)).eval_stages,
+            Some(json!({"debate": {"harness": "claude-code",
+                "map": {"harness": "codex", "effort": "low"},
+                "confirm": {"effort": "high"}}}))
+        );
     }
 
     #[test]
