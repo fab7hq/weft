@@ -5,7 +5,7 @@
 //! are kept beside the judges' sessions, so a Weft started again judges them
 //! on.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use ringframe::api;
@@ -32,13 +32,16 @@ const SILENT_QUIET: Duration = Duration::from_secs(3);
 /// The roles whose tasks an idle judge asks for, in the order they run.
 const ROLES: [&str; 4] = ["requirements", "map", "reduce", "confirm"];
 
-/// The model and effort a judge session was started on.
-type Launch = (Option<String>, Option<String>);
+/// The harness, model and effort a judge session was started on.
+type Launch = (String, Option<String>, Option<String>);
+
+/// The harness each role's tasks run in.
+pub(super) type Hosts = BTreeMap<String, String>;
 
 /// One Eval's judges.
 pub(super) struct Bench {
     pub(super) eval_id: String,
-    harness: String,
+    hosts: Hosts,
     /// The most judges that run at once.
     judges: usize,
     /// Whose window size a judge pane starts at.
@@ -69,9 +72,8 @@ struct Seat {
 }
 
 impl Seat {
-    /// A judge for `task`, which it holds.
-    fn new(pane: u32, task: api::Task, gone: bool) -> Self {
-        let launch = launch_of(&task);
+    /// A judge started on `launch` for `task`, which it holds.
+    fn new(pane: u32, launch: Launch, task: api::Task, gone: bool) -> Self {
         let mut seat =
             Seat { pane, launch, ran_map: false, read: BTreeSet::new(), gone, held: None };
         seat.hold(task);
@@ -146,7 +148,7 @@ struct SeatLook {
 struct Look {
     root: PathBuf,
     eval_id: String,
-    harness: String,
+    hosts: Hosts,
     judges: usize,
     seats: Vec<SeatLook>,
     seen: HashMap<String, Launch>,
@@ -154,10 +156,10 @@ struct Look {
 }
 
 impl Bench {
-    pub(super) fn new(eval_id: String, harness: String, judges: usize, client: u64) -> Self {
+    pub(super) fn new(eval_id: String, hosts: Hosts, judges: usize, client: u64) -> Self {
         Bench {
             eval_id,
-            harness,
+            hosts,
             judges,
             client,
             seats: Vec::new(),
@@ -187,7 +189,7 @@ impl Bench {
         Look {
             root: root.to_path_buf(),
             eval_id: self.eval_id.clone(),
-            harness: self.harness.clone(),
+            hosts: self.hosts.clone(),
             judges: self.judges,
             seats,
             seen: self.seen.clone(),
@@ -211,8 +213,28 @@ fn may_feed(state: Option<crate::turns::Turn>, settled: bool, silent_still: bool
     }
 }
 
-fn launch_of(task: &api::Task) -> Launch {
-    (task.model.clone(), task.effort.clone())
+/// Each role's harness, as the debate resolved it.
+pub(super) fn hosts(stage: &weft_core::eval_stages::Stage) -> Hosts {
+    ROLES.iter().map(|r| (r.to_string(), stage.harness_of(r).to_string())).collect()
+}
+
+fn host<'a>(hosts: &'a Hosts, role: &str) -> &'a str {
+    hosts.get(role).map_or("", String::as_str)
+}
+
+fn launch_of(hosts: &Hosts, task: &api::Task) -> Launch {
+    (host(hosts, &task.role).to_string(), task.model.clone(), task.effort.clone())
+}
+
+/// What a step asks RingFrame for when no idle judge took a task: any task,
+/// when every role runs in one harness; else each role's in turn, for its
+/// own harness, so the record names the harness that runs it.
+fn takes(hosts: &Hosts) -> Vec<(Option<&str>, &str)> {
+    let mut each = hosts.values();
+    match each.next() {
+        Some(one) if each.all(|h| h == one) => vec![(None, one.as_str())],
+        _ => ROLES.iter().map(|r| (Some(*r), host(hosts, r))).collect(),
+    }
 }
 
 /// One step: settle what each judge finished, give idle judges what they can
@@ -265,7 +287,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
         open += 1;
     }
     // An idle judge takes a task of a role started on what it was started on,
-    // that reads nothing it has read.
+    // its harness included, that reads nothing it has read.
     let mut still_idle = Vec::new();
     'seats: for s in idle {
         for role in ROLES {
@@ -273,7 +295,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
             if !fits || (role == "confirm" && s.ran_map) {
                 continue;
             }
-            match eval_task(root, &look.eval_id, Some(role), &look.harness, &s.read)? {
+            match eval_task(root, &look.eval_id, Some(role), &s.launch.0, &s.read)? {
                 api::EvalStep::Task(task) => {
                     did.push(Did::Give { pane: s.pane, task });
                     continue 'seats;
@@ -287,19 +309,25 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
     // What no idle judge could take gets a judge of its own: in a free
     // place, or in an idle judge's, which is closed for it.
     while open < look.judges || !still_idle.is_empty() {
-        match eval_task(root, &look.eval_id, None, &look.harness, &[])? {
-            api::EvalStep::Task(task) => {
-                if open >= look.judges {
-                    let pane = still_idle.pop().expect("an idle judge");
-                    did.push(Did::Close { pane });
-                } else {
-                    open += 1;
+        let mut taken = None;
+        for (role, host) in takes(&look.hosts) {
+            match eval_task(root, &look.eval_id, role, host, &[])? {
+                api::EvalStep::Task(task) => {
+                    taken = Some(task);
+                    break;
                 }
-                did.push(Did::Start { task });
+                api::EvalStep::Waiting { .. } => {}
+                api::EvalStep::Settled { .. } => return Ok(vec![Did::Done]),
             }
-            api::EvalStep::Waiting { .. } => break,
-            api::EvalStep::Settled { .. } => return Ok(vec![Did::Done]),
         }
+        let Some(task) = taken else { break };
+        if open >= look.judges {
+            let pane = still_idle.pop().expect("an idle judge");
+            did.push(Did::Close { pane });
+        } else {
+            open += 1;
+        }
+        did.push(Did::Start { task });
     }
     Ok(did)
 }
@@ -317,7 +345,7 @@ impl Session {
         if benches.iter().any(|b| b.eval_id == eval_id) {
             return;
         }
-        benches.push(Bench::new(eval_id.to_string(), stage.harness.clone(), stage.judges, client));
+        benches.push(Bench::new(eval_id.to_string(), hosts(stage), stage.judges, client));
         keep(&self.projects[at]);
         self.step_judges(at, eval_id);
     }
@@ -325,12 +353,11 @@ impl Session {
     /// The project opened in a Weft started again: the Evals the last one
     /// was judging here get judges again.
     pub(super) fn resume_judges(&mut self, at: usize, client: u64) {
-        for (eval_id, harness) in std::mem::take(&mut self.projects[at].unseated) {
-            let p = &self.projects[at];
-            let stages = p.routing.eval_stages.as_ref();
-            let judges = weft_core::eval_stages::resolve(stages, Some(&harness), &harness).judges;
+        for (eval_id, hosts) in std::mem::take(&mut self.projects[at].unseated) {
+            let stages = self.projects[at].routing.eval_stages.as_ref();
+            let judges = weft_core::eval_stages::resolve(stages, None, "").judges;
             let bench =
-                Bench { reclaim: true, ..Bench::new(eval_id.clone(), harness, judges, client) };
+                Bench { reclaim: true, ..Bench::new(eval_id.clone(), hosts, judges, client) };
             self.projects[at].benches.push(bench);
             self.step_judges(at, &eval_id);
         }
@@ -368,7 +395,7 @@ impl Session {
             let bench = &mut self.projects[at].benches[i];
             match d {
                 Did::Give { pane, task } => {
-                    bench.seen.insert(task.role.clone(), launch_of(&task));
+                    bench.seen.insert(task.role.clone(), launch_of(&bench.hosts, &task));
                     if let Some(seat) = bench.seat(pane) {
                         seat.hold(task);
                     }
@@ -404,19 +431,19 @@ impl Session {
         self.type_judges(at);
     }
 
-    /// Start a judge pane for a task, on the model and effort RingFrame
-    /// handed it out with. One that does not start holds the task as gone, so
-    /// the next step hands it back.
+    /// Start a judge pane for a task, in its role's harness, on the model and
+    /// effort RingFrame handed it out with. One that does not start holds the
+    /// task as gone, so the next step hands it back.
     fn start_judge(&mut self, at: usize, i: usize, task: api::Task) {
         let bench = &mut self.projects[at].benches[i];
-        let launch = launch_of(&task);
+        let launch = launch_of(&bench.hosts, &task);
         bench.seen.insert(task.role.clone(), launch.clone());
-        let (harness, client, eval_id) =
-            (bench.harness.clone(), bench.client, bench.eval_id.clone());
+        let (client, eval_id) = (bench.client, bench.eval_id.clone());
+        let (harness, model, effort) = launch.clone();
         let spec = self.projects[at]
             .harnesses
             .find(&harness)
-            .map(|h| h.judge_spec(launch.0.as_deref(), launch.1.as_deref()));
+            .map(|h| h.judge_spec(model.as_deref(), effort.as_deref()));
         let pane = spec.and_then(|spec| self.spawn(client, at, &harness, &spec, None));
         let seat = match pane {
             Some(pane) => {
@@ -426,10 +453,10 @@ impl Session {
                 // Each window lists it under its Eval from now on.
                 let panes = self.pane_infos(at);
                 self.clients.broadcast(at, &Out::Panes { panes });
-                Seat::new(pane, task, false)
+                Seat::new(pane, launch, task, false)
             }
             // No pane: a seat for no pane, so the task is handed back.
-            None => Seat::new(u32::MAX, task, true),
+            None => Seat::new(u32::MAX, launch, task, true),
         };
         let bench = &mut self.projects[at].benches[i];
         bench.seats.push(seat);
@@ -555,20 +582,39 @@ pub(super) fn sessions(root: &Path) -> std::collections::HashSet<String> {
     listed.filter_map(|s| s.as_str()).map(str::to_string).collect()
 }
 
-/// The Evals Weft was judging in this project, each with its judges'
-/// harness.
-pub(super) fn benched(root: &Path) -> Vec<(String, String)> {
+/// The Evals Weft was judging in this project, each with its roles'
+/// harnesses. One kept with a single harness ran every role in it.
+pub(super) fn benched(root: &Path) -> Vec<(String, Hosts)> {
     let read = judges_read(root);
     let listed = read["evals"].as_object().into_iter().flatten();
-    listed.filter_map(|(e, h)| Some((e.clone(), h.as_str()?.to_string()))).collect()
+    listed
+        .filter_map(|(e, kept)| {
+            let hosts = match kept {
+                serde_json::Value::String(h) => {
+                    ROLES.iter().map(|r| (r.to_string(), h.clone())).collect()
+                }
+                serde_json::Value::Object(each) => each
+                    .iter()
+                    .filter_map(|(r, h)| Some((r.clone(), h.as_str()?.to_string())))
+                    .collect(),
+                _ => return None,
+            };
+            Some((e.clone(), hosts))
+        })
+        .collect()
+}
+
+/// The Evals being judged, as they are kept: each with its roles' harnesses.
+fn evals(benches: &[Bench]) -> serde_json::Value {
+    let each = benches.iter().map(|b| (b.eval_id.clone(), serde_json::json!(b.hosts)));
+    serde_json::Value::Object(each.collect())
 }
 
 /// Keep the sessions judges ran here, and the Evals being judged.
 fn keep(p: &Project) {
     let mut sessions: Vec<&String> = p.judged.iter().collect();
     sessions.sort();
-    let evals: serde_json::Map<String, serde_json::Value> =
-        p.benches.iter().map(|b| (b.eval_id.clone(), b.harness.clone().into())).collect();
+    let evals = evals(&p.benches);
     let mut text =
         serde_json::to_string_pretty(&serde_json::json!({"sessions": sessions, "evals": evals}))
             .unwrap_or_default();
@@ -683,9 +729,33 @@ mod tests {
         std::fs::write(&task.answer, doc.to_string()).unwrap();
     }
 
+    /// An Eval Weft was judging is kept with each role's harness; one kept
+    /// by an earlier Weft, with one harness for all, is read as every role's.
+    #[test]
+    fn an_eval_is_kept_with_each_roles_harness() {
+        let root = std::env::temp_dir().join(format!("weft-benched-{}", std::process::id()));
+        let file = judges_file(&root);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mixed = json!({"map": "agy", "reduce": "claude-code", "requirements": "claude-code",
+                           "confirm": "codex"});
+        std::fs::write(&file, json!({"evals": {"e1": "codex", "e2": mixed}}).to_string()).unwrap();
+        let mut kept = benched(&root);
+        kept.sort();
+        let all = |h: &str| -> Hosts { ROLES.iter().map(|r| (r.to_string(), h.into())).collect() };
+        assert_eq!(kept[0], ("e1".into(), all("codex")));
+        assert_eq!(kept[1].1.get("map").map(String::as_str), Some("agy"));
+        assert_eq!(kept[1].1.get("confirm").map(String::as_str), Some("codex"));
+        assert_eq!(
+            evals(&[Bench::new("e1".into(), all("codex"), 2, 0)]),
+            json!({"e1": all("codex")})
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Judges stepped as Weft steps them, each answering its task at once:
     /// no idle session is given a reading of a window or a requirement it
     /// has read, so no second or third reading comes from an earlier reader.
+    /// Each role runs in its own harness, and the record names it.
     #[test]
     fn no_session_reads_an_item_twice() {
         fixture_home();
@@ -722,7 +792,11 @@ mod tests {
         }
         let eval_id = eval_open(&repo, &ask, None, None).unwrap();
         let ws = ringframe::api::workspace(&repo).unwrap();
-        let mut bench = Bench::new(eval_id, "sh".into(), 2, 0);
+        let debate = json!({"debate": {"harness": "sh-a", "reduce": {"harness": "sh-b"},
+                                       "confirm": {"harness": "sh-b"}}});
+        let stage = weft_core::eval_stages::resolve(Some(&debate), None, "sh");
+        let mut bench = Bench::new(eval_id, hosts(&stage), 2, 0);
+        let host_of = |role: &str| if role == "map" { "sh-a" } else { "sh-b" };
         let mut given: Vec<String> = Vec::new();
         let mut next = 0;
         for _ in 0..60 {
@@ -730,8 +804,9 @@ mod tests {
             for d in step(&bench.look(&repo)) {
                 match d {
                     Did::Give { pane, task } => {
-                        bench.seen.insert(task.role.clone(), launch_of(&task));
+                        bench.seen.insert(task.role.clone(), launch_of(&bench.hosts, &task));
                         let seat = bench.seat(pane).unwrap();
+                        assert_eq!(seat.launch.0, host_of(&task.role), "{}", task.task_id);
                         let again: Vec<&String> =
                             task.reads.iter().filter(|i| seat.read.contains(*i)).collect();
                         assert!(again.is_empty(), "{} read {again:?} again", task.task_id);
@@ -742,10 +817,12 @@ mod tests {
                     }
                     Did::Start { task } => {
                         next += 1;
-                        bench.seen.insert(task.role.clone(), launch_of(&task));
+                        let launch = launch_of(&bench.hosts, &task);
+                        assert_eq!(launch.0, host_of(&task.role), "{}", task.task_id);
+                        bench.seen.insert(task.role.clone(), launch.clone());
                         given.push(task.task_id.clone());
                         answer(&task);
-                        bench.seats.push(Seat::new(next, task, false));
+                        bench.seats.push(Seat::new(next, launch, task, false));
                     }
                     Did::Free { pane } => bench.seat(pane).unwrap().held = None,
                     Did::Close { pane } => bench.seats.retain(|s| s.pane != pane),
@@ -761,7 +838,11 @@ mod tests {
                 // The record names the harness every judge ran in.
                 let record = api::eval_record(&ws, &bench.eval_id).unwrap().unwrap();
                 let judges = record["judges"].as_array().unwrap();
-                assert!(judges.iter().all(|j| j["host"] == "sh"), "{judges:?}");
+                let roles: Vec<&str> = judges.iter().filter_map(|j| j["angle"].as_str()).collect();
+                assert!(roles.contains(&"map") && roles.contains(&"confirm"), "{judges:?}");
+                for j in judges {
+                    assert_eq!(j["host"], host_of(j["angle"].as_str().unwrap()), "{judges:?}");
+                }
                 let _ = std::fs::remove_dir_all(repo);
                 return;
             }

@@ -206,9 +206,9 @@ struct Project {
     /// The sessions judges ran here, which are no agent of the person's:
     /// `.fab7/weft/judges.json`.
     judged: std::collections::HashSet<String>,
-    /// The Evals the last Weft was judging here, with their judges'
-    /// harness: seated again when a window opens the project.
-    unseated: Vec<(String, String)>,
+    /// The Evals the last Weft was judging here, with each role's harness:
+    /// seated again when a window opens the project.
+    unseated: Vec<(String, judges::Hosts)>,
     /// The harnesses Weft has a file for, read when the project opened, and
     /// the files it could not read.
     harnesses: weft_core::harness::Harnesses,
@@ -1349,14 +1349,18 @@ impl Session {
         title: &str,
         asks: usize,
     ) -> Answer {
-        let into = debate.stage.harness.clone();
-        let Some(judges) = self.projects[at].harnesses.find(&into).map(|h| h.title.clone()) else {
-            return Answer::No(
-                "no_harness",
-                format!("Weft has no harness file for {into}, so no judge can start"),
-            );
-        };
-        let built = crate::acts::eval(debate, title, asks, &judges);
+        // Every role's harness needs its harness file, or its judges cannot start.
+        let mut titles = Vec::new();
+        for into in debate.stage.harnesses() {
+            let Some(h) = self.projects[at].harnesses.find(into) else {
+                return Answer::No(
+                    "no_harness",
+                    format!("Weft has no harness file for {into}, so no judge can start"),
+                );
+            };
+            titles.push(h.title.clone());
+        }
+        let built = crate::acts::eval(debate, title, asks, &titles.join(" + "));
         self.stage(at, NO_PANE, built)
     }
 

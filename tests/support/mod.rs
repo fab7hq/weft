@@ -168,8 +168,28 @@ pub fn real_ask_of(
 /// `<dir>/typed-<id>`. A judge of it starts with
 /// `--model` and `--effort`, as its `[eval.launch]` says.
 pub fn stub_harness(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
+    let file = stub_file(dir, "judge.sh", "Stub");
+    let (read, unread) = weft_core::harness::Harnesses::read(vec![(name.to_string(), file)]);
+    assert!(unread.is_empty(), "the stub harness file reads");
+    read
+}
+
+/// Stub harnesses, as [`stub_harness`], each titled with its name and run
+/// from its own script, `<dir>/judge-<name>.sh`.
+pub fn stub_harnesses(dir: &Path, names: &[&str]) -> weft_core::harness::Harnesses {
+    let files = names
+        .iter()
+        .map(|n| (n.to_string(), stub_file(dir, &format!("judge-{n}.sh"), n)))
+        .collect();
+    let (read, unread) = weft_core::harness::Harnesses::read(files);
+    assert!(unread.is_empty(), "the stub harness files read");
+    read
+}
+
+/// A stub harness's script, written to `<dir>/<script>`, and its harness file.
+fn stub_file(dir: &Path, script: &str, title: &str) -> String {
     std::fs::create_dir_all(dir).expect("agent dir");
-    let path = dir.join("judge.sh");
+    let path = dir.join(script);
     let script = "#!/bin/sh\n\
         d=$(dirname \"$0\")\n\
         printf 'WEFT_PANE=%s\\nWEFT_PANE_TOKEN=%s\\nWEFT_SOCKET=%s\\nPID=%s\\nARGS=%s\\n' \
@@ -177,17 +197,14 @@ pub fn stub_harness(dir: &Path, name: &str) -> weft_core::harness::Harnesses {
         mv \"$d/pane-$WEFT_PANE.tmp\" \"$d/pane-$WEFT_PANE\"\n\
         exec tee \"$d/typed-$WEFT_PANE\"\n";
     std::fs::write(&path, script).expect("judge script");
-    let file = format!(
-        "title = \"Stub\"\nprogram = \"/bin/sh\"\nargs = [\"{}\"]\nresume = [\"--resume\"]\n\
+    format!(
+        "title = \"{title}\"\nprogram = \"/bin/sh\"\nargs = [\"{}\"]\nresume = [\"--resume\"]\n\
          [config]\ndefault = \".stub\"\n[plugin]\nlist = [\"list\"]\n\
          [eval]\nefforts = [\"low\", \"high\"]\neffort = \"model\"\n\
          default = {{ map = \"low\", reduce = \"low\", confirm = \"low\" }}\n\
          [eval.launch]\nmodel = [\"--model\", \"{{model}}\"]\neffort = [\"--effort\", \"{{effort}}\"]\n",
         path.display()
-    );
-    let (read, unread) = weft_core::harness::Harnesses::read(vec![(name.to_string(), file)]);
-    assert!(unread.is_empty(), "the stub harness file reads");
-    read
+    )
 }
 
 /// The task lines typed into a judge, in order: each task, and where its
