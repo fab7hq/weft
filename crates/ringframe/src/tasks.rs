@@ -769,6 +769,13 @@ fn map_answers(st: &Status) -> BTreeMap<String, BTreeMap<String, Value>> {
     out
 }
 
+/// The map's own accepted outputs. Only these say which windows break a
+/// requirement: a second or third reading of a window comes after the reduce
+/// was planned.
+fn first_readings(st: &Status) -> impl Iterator<Item = &Value> {
+    st.accepted.values().filter(|o| o["judge"]["role"] == "map")
+}
+
 /// The requirements a window serves, following `follows_from`.
 fn served(answers: &BTreeMap<String, BTreeMap<String, Value>>, w: &str) -> Vec<String> {
     let mut cur = w.to_string();
@@ -814,7 +821,7 @@ fn evidence_for(ctx: &Ctx, st: &Status, req: &str, bytes: usize) -> Vec<String> 
         }
     }
     // Windows a map said break a cross-cutting requirement.
-    for doc in st.accepted.values().filter(|o| o["kind"] == "map") {
+    for doc in first_readings(st) {
         for b in array_of(doc, "breaks") {
             if b["requirement"] == req {
                 own.push(str_of(b, "window"));
@@ -945,7 +952,7 @@ fn carried_items(ctx: &Ctx, st: &Status) -> Vec<Value> {
 /// Every requirement a reduce would judge, with its evidence.
 fn every_target(ctx: &Ctx, st: &Status) -> Vec<(String, Vec<String>)> {
     let mut ids = local_ids(ctx);
-    for doc in st.accepted.values().filter(|o| o["kind"] == "map") {
+    for doc in first_readings(st) {
         for b in array_of(doc, "breaks") {
             let r = str_of(b, "requirement");
             if !ids.contains(&r) {
@@ -5156,6 +5163,47 @@ mod tests {
                 assert!(w["readings"].get("third").is_some(), "every reading is kept: {w}");
             });
         }
+    }
+
+    /// A break a second reading reports comes after the reduce was planned:
+    /// it adds neither evidence nor a requirement to judge.
+    #[test]
+    fn a_break_a_second_reading_reports_does_not_reach_the_reduce() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            map_all(ws, e);
+            let tele = window_for(ws, e, "src/telemetry.js");
+            let cross = Ctx::load(ws, e)
+                .unwrap()
+                .requirements()
+                .iter()
+                .find(|r| r["kind"] == "cross")
+                .map(|r| str_of(r, "id"))
+                .unwrap();
+            let cw = task_id(e, "cw1");
+            loop {
+                let got = take(ws, e, None).unwrap();
+                assert_eq!(got["state"], "running", "{got}");
+                let task = str_of(&got["task"], "task_id");
+                if task == cw {
+                    break;
+                }
+                crate::testing::answer_task(ws, &task);
+                assert_eq!(submit(ws, &task).unwrap().0, 0, "{task}");
+            }
+            let mut doc = head(&cw, "map", "confirm");
+            doc["windows"] = json!([{"window": tele, "unexplained": "posts to an outside address",
+                                     "quote": "https://example.com/collect"}]);
+            doc["breaks"] = json!([{"requirement": cross, "window": tele,
+                                   "quote": "https://example.com/collect", "reason": "r"}]);
+            put(ws, &cw, doc);
+            assert_eq!(submit(ws, &cw).unwrap().0, 0);
+            let ctx = Ctx::load(ws, e).unwrap();
+            let st = status(&ctx).unwrap();
+            assert!(every_target(&ctx, &st).iter().all(|(id, _)| id != &cross), "no new target");
+            assert!(!evidence_for(&ctx, &st, &cross, usize::MAX).contains(&tele), "no evidence");
+        });
     }
 
     /// A window's map and second reading settle it when they agree; when they
