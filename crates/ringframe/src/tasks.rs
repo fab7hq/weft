@@ -417,7 +417,7 @@ fn ask_words(ws: &Workspace, ask: &str) -> String {
 /// beside the exact ones (plan steps, named paths). Each is named by its Ask
 /// and the words it quotes, `<ask>/f<digest>`, never by its place in the
 /// list, so a reading carried from another Eval names the same requirement;
-/// two that quote the same words are told apart by their text.
+/// those that quote the same words are each told apart by their text.
 fn listed_requirements(
     ws: &Workspace,
     eval_id: &str,
@@ -431,16 +431,21 @@ fn listed_requirements(
     };
     let doc =
         read_json(&ws.rf_dir().join(str_of(&e["data"]["artifact"], "path"))).unwrap_or(Value::Null);
+    let digest = |ask: &str, words: &str| {
+        let d = crate::digest::sha256_bytes(format!("{ask}\0{}", squash(words)).as_bytes());
+        format!("{ask}/f{}", &d[..12])
+    };
+    let entries = array_of(&doc, "requirements");
+    let mut quoted: BTreeMap<String, usize> = BTreeMap::new();
+    for r in entries {
+        *quoted.entry(digest(&str_of(r, "ask"), &str_of(r, "quote"))).or_default() += 1;
+    }
     let mut out: Vec<crate::changes::Listed> = Vec::new();
-    for r in array_of(&doc, "requirements") {
+    for r in entries {
         let (ask, text, quote) = (str_of(r, "ask"), str_of(r, "text"), str_of(r, "quote"));
-        let digest = |words: &str| {
-            let d = crate::digest::sha256_bytes(format!("{ask}\0{}", squash(words)).as_bytes());
-            format!("{ask}/f{}", &d[..12])
-        };
-        let mut id = digest(&quote);
-        if out.iter().any(|l| l.id == id) {
-            id = digest(&format!("{quote}\0{text}"));
+        let mut id = digest(&ask, &quote);
+        if quoted[&id] > 1 {
+            id = digest(&ask, &format!("{quote}\0{text}"));
         }
         out.push(crate::changes::Listed { id, kind: str_of(r, "kind"), ask, text, quote });
     }
@@ -3976,6 +3981,50 @@ mod tests {
                 let w = window_for(ws, &second, path);
                 assert_eq!(kept[&w]["map"]["serves"], json!([ids2[words]]), "{path}");
             }
+        });
+    }
+
+    /// Two requirements that quote the same words keep their ids whatever
+    /// order they are listed in.
+    #[test]
+    fn requirements_quoting_the_same_words_are_named_the_same_in_any_order() {
+        eval_bench(|ws| {
+            let words = "Add `alpha_count` to src/a.js for the counter";
+            let prompt = format!("/goal {words}.\n");
+            confirm_ask_as(ws, "Counts", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            commit(
+                &ws.root,
+                &[("src/a.js", Some("export const alpha_count = (xs) => xs.length;\n"))],
+                "work",
+            );
+            let (a, b) = ("alpha_count counts the items", "alpha_count is in src/a.js");
+            // The requirements task lists both, quoting the same words, in
+            // `order`; returns each one's id by its text.
+            let list = |order: [&str; 2]| -> BTreeMap<String, String> {
+                let e = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+                let q1 = str_of(&take(ws, &e, Some("requirements")).unwrap()["task"], "task_id");
+                let ask = str_of(&array_of(&task_of(ws, &q1), "asks")[0], "id");
+                let entries: Vec<Value> = order
+                    .iter()
+                    .map(|t| json!({"ask": ask, "kind": "local", "text": t, "quote": words}))
+                    .collect();
+                put(ws, &q1, json!({"requirements": entries}));
+                assert_eq!(submit(ws, &q1).unwrap().0, 0);
+                let ctx = Ctx::load(ws, &e).unwrap();
+                let ids = ctx
+                    .requirements()
+                    .iter()
+                    .map(|r| (str_of(r, "text"), str_of(r, "id")))
+                    .filter(|(t, _)| order.contains(&t.as_str()))
+                    .collect();
+                crate::testing::settled(ws, &e, true);
+                ids
+            };
+            let first = list([a, b]);
+            commit(&ws.root, &[("src/c.js", Some("export const gamma = 3;\n"))], "more");
+            let second = list([b, a]);
+            assert_eq!(first.len(), 2, "{first:?}");
+            assert_eq!(first, second);
         });
     }
 
