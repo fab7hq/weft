@@ -1,11 +1,10 @@
 //! Eval: a judged verdict with confidence over every open Ask.
 //!
-//! The CLI records facts exactly: the open Asks, the anchor, the subject
+//! RingFrame records facts exactly: the open Asks, the anchor, the subject
 //! digest, the changed files, how many unrecorded prompts followed each Ask,
-//! which judgements were submitted. Sub-agents of the eval skill judge: one
-//! reconstructs the effective intent from the Asks; at least three, from
-//! distinct angles, vote per item and classify each changed path. The CLI
-//! aggregates majorities and agreement into `verdict` and `confidence`.
+//! which judgements were submitted. Judges, sessions started for the Eval, take
+//! one task at a time; RingFrame checks every answer and merges them into
+//! `verdict` and `confidence`.
 //! RingFrame runs none of the project's commands and knows nothing about its
 //! stack.
 //!
@@ -361,8 +360,8 @@ pub fn observed_limits(ws: &Workspace, ask_ids: &[String]) -> Result<Vec<String>
     Ok(out)
 }
 
-/// How many prompts that were neither `/rf:` invocations nor observed Ask
-/// submissions bear on this Eval.
+/// How many prompts that were not observed Ask submissions bear on this
+/// Eval.
 ///
 /// Measured from the anchor, which is where the delta is measured from, so
 /// the two facts describe one span. Prompts between the anchor and the first
@@ -646,12 +645,8 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
                 .ok()
                 .and_then(|b| serde_json::from_slice(&b).ok())
                 .unwrap_or(Value::Null);
-        let prompts: Vec<String> = asks
-            .iter()
-            .filter_map(|a| {
-                std::fs::read_to_string(ws.rf_dir().join(str_of(&a["prompt"], "path"))).ok()
-            })
-            .collect();
+        let prompts: Vec<String> =
+            asks.iter().map(|a| crate::evidence::asked(ws, a).words).collect();
         let steps = array_of(&changes, "requirements")
             .iter()
             .flat_map(|r| [str_of(r, "text"), str_of(r, "done_when")])
@@ -976,8 +971,13 @@ mod tests {
     fn open_refuses_without_an_open_ask() {
         eval_bench(|ws| {
             refused(open_eval(ws, Open::default()).unwrap_err(), "eval.no_open_ask");
-            let out = crate::testing::confirm_ask(ws, "t", b"s\n", b"p\n");
-            crate::ask::cancel(ws, &str_of(&out, "ask_id"), None, None, false).unwrap();
+            // An Ask an older RingFrame recorded as cancelled is not open.
+            let out = crate::testing::confirm_ask(ws, b"p\n");
+            let actor = json!({"kind": "human", "id": "local-user", "authority": "interactive"});
+            let cancelled = json!({"cancellation": {"observed_by": "skill", "surface": null}});
+            let ev =
+                crate::ask::event("ask.cancelled", &str_of(&out, "ask_id"), &actor, cancelled, &[]);
+            crate::store::append(ws, &ev).unwrap();
             refused(open_eval(ws, Open::default()).unwrap_err(), "eval.no_open_ask");
         });
     }
@@ -987,8 +987,8 @@ mod tests {
         eval_bench(|ws| {
             let base = head(&ws.root);
             let (a, b, sha) = two_asks_and_work(ws);
-            // Three plain prompts after Ask B, one observed submission of A's
-            // prompt (not counted), one /rf: invocation (not counted).
+            // Three plain prompts after Ask B and one observed submission of
+            // A's prompt (not counted).
             let say = |text: &str| {
                 crate::sessions::observe_prompt(ws, "claude-code", "s9", text, None, "weft")
                     .unwrap()
@@ -996,8 +996,7 @@ mod tests {
             };
             say("please also update the docs");
             say("run the tests");
-            say("/rf:eval");
-            let sub = say("Fix the login bug.\n");
+            let sub = say(&crate::ask::prompt_text(ws, &a).unwrap());
             assert_eq!(
                 crate::ask::submission_from_capture(
                     ws,
@@ -1089,7 +1088,7 @@ mod tests {
                     .unwrap();
             }
             commit(&ws.root, &[("docs/notes.md", Some("edited by chat\n"))], "chat edit");
-            crate::testing::confirm_ask(ws, "Next", b"do the next thing\n", b"Do it.\n");
+            crate::testing::confirm_ask(ws, b"Do it.\n");
 
             let out = open_eval(ws, Open::default()).unwrap();
             assert_eq!(out["anchor"]["kind"], "seal", "the anchor is the Seal");
@@ -1203,10 +1202,7 @@ mod tests {
             let base = head(&ws.root);
             let (a, b, sha) = two_asks_and_work(ws);
             let follow = |id: &str| vec![json!({"rel": "follows", "id": id})];
-            let c = str_of(
-                &crate::testing::confirm_ask_linked(ws, "Also the docs", follow(&a)),
-                "ask_id",
-            );
+            let c = str_of(&crate::testing::confirm_ask_linked(ws, follow(&a)), "ask_id");
             // Another unit's Seal is not where this unit's change starts.
             store::append(ws, &json!({
                 "schema": store::SCHEMA, "event_id": ids::new_id("evt"), "type": "seal.created",
@@ -1230,10 +1226,7 @@ mod tests {
 
             // A follow-up of the unit's Eval is in the unit too.
             let eval_id = str_of(&out, "eval_id");
-            let d = str_of(
-                &crate::testing::confirm_ask_linked(ws, "And the 503", follow(&eval_id)),
-                "ask_id",
-            );
+            let d = str_of(&crate::testing::confirm_ask_linked(ws, follow(&eval_id)), "ask_id");
             assert_eq!(crate::ask::unit_of(ws, &d).unwrap(), [a.clone(), c, d]);
             assert_eq!(crate::ask::unit_of(ws, &b).unwrap(), [b]);
         });
@@ -1286,7 +1279,7 @@ mod tests {
         // `compile` now requires Git, so reach the Eval guard the only way
         // left: the repository is removed.
         eval_bench(|ws| {
-            crate::testing::confirm_ask(ws, "t", b"s\n", b"p\n");
+            crate::testing::confirm_ask(ws, b"p\n");
             std::fs::remove_dir_all(ws.root.join(".git")).unwrap();
             refused(open_eval(ws, Open::default()).unwrap_err(), "eval.no_git");
         });
@@ -1552,7 +1545,7 @@ mod tests {
     #[test]
     fn a_patch_over_the_limit_is_cut_on_a_whole_file() {
         eval_bench(|ws| {
-            crate::testing::confirm_ask(ws, "big", b"s\n", b"p\n");
+            crate::testing::confirm_ask(ws, b"p\n");
             let big = "x".repeat(80) + "\n";
             commit(
                 &ws.root,
@@ -1637,9 +1630,9 @@ mod tests {
             assert!(!got.iter().any(|l| l.starts_with("submission observed by")), "{got:?}");
         });
         eval_bench(|ws| {
-            two_asks_and_work(ws);
-            crate::observe::prompt(ws, "weft", "claude-code", "s1", "Skip the cache.\n", None)
-                .unwrap();
+            let (_, b, _) = two_asks_and_work(ws);
+            let typed = crate::ask::prompt_text(ws, &b).unwrap();
+            crate::observe::prompt(ws, "weft", "claude-code", "s1", &typed, None).unwrap();
             let got = limits(ws);
             assert!(got.contains(&"submission observed by weft".to_string()), "{got:?}");
             assert!(!got.contains(&NOTHING_OBSERVED.to_string()), "{got:?}");
@@ -1650,7 +1643,7 @@ mod tests {
     fn nothing_else_is_a_fact() {
         eval_bench(|ws| {
             assert_eq!(fact(ws, "succeeded", "npm test"), None, "no Ask is open");
-            crate::testing::confirm_ask(ws, "t", b"s\n", b"p\n");
+            crate::testing::confirm_ask(ws, b"p\n");
             assert_eq!(fact(ws, "succeeded", "ringframe eval open"), None);
             assert_eq!(fact(ws, "succeeded", "  ringframe ask list --json"), None);
             assert_eq!(fact(ws, "succeeded", ""), None);

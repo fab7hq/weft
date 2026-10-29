@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::ask::{AskError, NeedsInput};
 use crate::seal::SealError;
 use crate::workspace::Workspace;
-use crate::{VERSION, ask, deltas, evaluate, output, profiles, seal, store, workspace};
+use crate::{VERSION, ask, deltas, evaluate, output, seal, store, workspace};
 
 /// What one invocation produced. The tests drive this directly, so nothing
 /// here touches the real streams.
@@ -54,41 +54,7 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
     match (cmd, sub) {
         ("init", None) => s(&["--from"], &["--global"], NONE, false, NONE),
         ("sync", None) => s(&["--from"], &["--check"], NONE, false, NONE),
-        ("profile", Some("show")) => {
-            s(&["--host", "--version", "--override"], NONE, &["--host"], true, NONE)
-        }
-        ("ask", Some("compile")) => s(
-            &[
-                "--staged",
-                "--title",
-                "--capability",
-                "--classification",
-                "--route",
-                "--host",
-                "--link",
-                "--limitation",
-                "--override",
-            ],
-            NONE,
-            &["--staged", "--title", "--capability", "--classification", "--route", "--host"],
-            false,
-            &["--link", "--limitation"],
-        ),
-        ("ask", Some("request")) => {
-            s(&["--staged", "--host"], NONE, &["--staged", "--host"], false, NONE)
-        }
-        ("ask", Some("confirm")) => s(&["--ask"], NONE, &["--ask"], false, NONE),
-        ("ask", Some("unanswered")) => s(&["--ask", "--reason"], NONE, &["--ask"], false, NONE),
-        ("ask", Some("cancel")) => {
-            s(&["--ask", "--reason"], &["--attributed"], &["--ask"], false, NONE)
-        }
-        ("ask", Some("submitted")) => s(&["--ask"], &["--as-modified"], &["--ask"], false, NONE),
-        ("ask", Some("copy")) => s(&["--ask", "--host"], &["--body"], &["--ask"], false, NONE),
-        ("ask", Some("delivery")) => {
-            s(&["--ask", "--state", "--reason"], &["--handoff"], &["--ask"], false, NONE)
-        }
         ("ask", Some("list")) => s(NONE, NONE, NONE, true, NONE),
-        ("ask", Some("preflight")) => s(NONE, NONE, NONE, false, NONE),
         ("eval", Some("open")) => s(
             &[
                 "--ask",
@@ -96,7 +62,6 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
                 "--subject-kind",
                 "--subject-ref",
                 "--agents",
-                "--agents-from",
                 "--override",
                 "--repo",
                 "--host",
@@ -128,20 +93,6 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
         ("deltas", Some("domains")) => s(&["--override"], NONE, NONE, true, NONE),
         ("deltas", Some("list")) => s(&["--override"], NONE, NONE, true, NONE),
-        ("deltas", Some("render")) => s(
-            &[
-                "--host",
-                "--host-version",
-                "--capability",
-                "--classification",
-                "--statuses",
-                "--override",
-            ],
-            NONE,
-            &["--host", "--capability", "--classification"],
-            true,
-            NONE,
-        ),
         ("observe", Some("prompt")) => s(
             &["--by", "--host", "--session", "--host-version"],
             &["--layers"],
@@ -162,20 +113,10 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
 
 /// Every (command, subcommand) pair, for the help and for the tests that hold
 /// the surface. The order is the order the help prints them in.
-const SURFACE: [(&str, Option<&str>); 33] = [
+const SURFACE: [(&str, Option<&str>); 22] = [
     ("init", None),
     ("sync", None),
-    ("profile", Some("show")),
-    ("ask", Some("request")),
-    ("ask", Some("compile")),
-    ("ask", Some("confirm")),
-    ("ask", Some("unanswered")),
-    ("ask", Some("cancel")),
-    ("ask", Some("submitted")),
-    ("ask", Some("copy")),
-    ("ask", Some("delivery")),
     ("ask", Some("list")),
-    ("ask", Some("preflight")),
     ("eval", Some("open")),
     ("eval", Some("list")),
     ("eval", Some("task")),
@@ -191,7 +132,6 @@ const SURFACE: [(&str, Option<&str>); 33] = [
     ("ledger", Some("verify")),
     ("deltas", Some("domains")),
     ("deltas", Some("list")),
-    ("deltas", Some("render")),
     ("observe", Some("prompt")),
     ("observe", Some("tool")),
     // Listed last because they are not commands.
@@ -207,26 +147,7 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
             "replace the synced configuration; overrides arrive with --override. \
              --check only says whether a newer release is out"
         }
-        ("profile", _) => "the host's capabilities and how each one has to be delivered",
-        ("ask", Some("compile")) => {
-            "persist a staged intent and its prompt; the only Ask that writes artifacts"
-        }
-        ("ask", Some("request")) => {
-            "record the staged intent as asked, before it is composed, where no prompt hook can"
-        }
-        ("ask", Some("confirm")) => "record the chooser's answer",
-        ("ask", Some("unanswered")) => {
-            "the confirmation surface gave no answer; the Ask stays open"
-        }
-        ("ask", Some("cancel")) => "record that the person said no",
-        ("ask", Some("submitted")) => "the person attests they submitted the prompt",
-        ("ask", Some("copy")) => {
-            "the compiled prompt, verbatim; --body drops its command prefix; --host gives it as \
-             that host takes it, with how it has to be sent"
-        }
-        ("ask", Some("delivery")) => "record how the prompt reached the host, or emit the handoff",
         ("ask", Some("list")) => "every compiled Ask, oldest first",
-        ("ask", Some("preflight")) => "refuse early what compile would refuse at the end",
         ("eval", Some("open")) => {
             "write the facts-only brief over every open Ask, or --ask one's unit of work"
         }
@@ -262,7 +183,6 @@ fn purpose(cmd: &str, sub: Option<&str>) -> &'static str {
         ("deltas", Some("list")) => {
             "every catalog's rules as the layers leave them, each with the layer that last set it"
         }
-        ("deltas", Some("render")) => "the directives that apply to one classification",
         ("observe", Some("prompt")) => {
             "a prompt --by someone saw submitted in --session; reads its bytes on stdin and \
              keeps them only for a RingFrame invocation; with --layers, a JSON list on stdin: \
@@ -321,23 +241,16 @@ fn command_help(cmd: &str, sub: Option<&str>, spec: &Spec) -> String {
     if spec.fetch {
         out.push_str("  --json | --minimal\n");
     }
-    if (cmd, sub) == ("ask", Some("compile")) {
-        out.push_str(
-            "\n  --link is revises:<ask_id>, follows:<ask_id|evl_id> or remediates:<evl_id>.\n  \
-             A remedy's prompt starts by pointing at that Eval's eval.md. Any other link is\n  \
-             refused (ask.link_rel_unknown), and so is one to nothing here (ask.link_unknown).\n",
-        );
-    }
     out
 }
 
 /// Which commands take a subcommand at all.
 fn takes_sub(cmd: &str) -> bool {
-    matches!(cmd, "profile" | "ask" | "eval" | "seal" | "ledger" | "deltas" | "observe")
+    matches!(cmd, "ask" | "eval" | "seal" | "ledger" | "deltas" | "observe")
 }
 
-const COMMANDS: [&str; 10] =
-    ["init", "sync", "profile", "ask", "eval", "seal", "ledger", "deltas", "observe", "--version"];
+const COMMANDS: [&str; 9] =
+    ["init", "sync", "ask", "eval", "seal", "ledger", "deltas", "observe", "--version"];
 
 struct Parsed {
     cmd: String,
@@ -482,7 +395,6 @@ fn parse(argv: &[String]) -> Result<Parsed, Usage> {
     for (flag, allowed) in [
         ("--disposition", &seal::DISPOSITIONS[..]),
         ("--subject-kind", &evaluate::KINDS[..]),
-        ("--state", &["delivery_failed", "unavailable"][..]),
         ("--outcome", &["succeeded", "failed"][..]),
     ] {
         if let Some(v) = out.one(flag)
@@ -506,12 +418,9 @@ fn json_arg(text: &str) -> Result<Value, String> {
     serde_json::from_str(&body).map_err(|e| e.to_string())
 }
 
-/// `--agents`, over the tiers of `--agents-from`'s agent definitions.
+/// `--agents`: each role's model and effort.
 fn agents_arg(ns: &Parsed) -> Result<Option<Value>, String> {
-    let given = ns.one("--agents").map(json_arg).transpose()?;
-    let defaults =
-        ns.one("--agents-from").map(|d| crate::tasks::agents_from(Path::new(d))).transpose()?;
-    Ok(crate::tasks::agents_over(given, defaults))
+    ns.one("--agents").map(json_arg).transpose()
 }
 
 fn actor_of(text: Option<&str>, authority: &str) -> Value {
@@ -519,16 +428,6 @@ fn actor_of(text: Option<&str>, authority: &str) -> Value {
     let (kind, id) = text.split_once(':').unwrap_or((text, ""));
     json!({"kind": kind, "id": if id.is_empty() { "local-user" } else { id },
            "authority": authority})
-}
-
-fn links_of(items: &[String]) -> Vec<Value> {
-    items
-        .iter()
-        .map(|item| {
-            let (rel, id) = item.split_once(':').unwrap_or((item.as_str(), ""));
-            json!({"rel": rel, "id": id})
-        })
-        .collect()
 }
 
 /// What `observe` answers in a repository with no workspace: nothing
@@ -541,8 +440,6 @@ fn not_initialized(ws: Workspace, key: &str) -> (Workspace, Outcome) {
 /// Every outcome a command can end in, before it is rendered.
 enum Outcome {
     Ok(i32, Value),
-    /// A command whose result is text rather than a document.
-    Text(String),
     UsageDetail(String),
     Needs(NeedsInput),
     Refused(Vec<String>),
@@ -570,9 +467,7 @@ fn from_config_error(e: crate::config::ConfigError) -> Outcome {
 
 pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
     // `--version` and `--help` win wherever they appear, as argparse's do.
-    // `profile show --version` names a host version, so it is not one of them.
-    let naming_a_host = argv.iter().any(|a| a == "show");
-    if argv.iter().any(|a| a == "--version") && !naming_a_host {
+    if argv.iter().any(|a| a == "--version") {
         return Run { code: 0, out: format!("ringframe {VERSION}\n"), err: String::new() };
     }
     if argv.iter().any(|a| a == "--help" || a == "-h") {
@@ -630,10 +525,7 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
             if result.is_string()
                 && matches!(
                     (ns.cmd.as_str(), sub.as_deref()),
-                    ("ask", Some("copy"))
-                        | ("eval", Some("show"))
-                        | ("eval", Some("window"))
-                        | ("eval", Some("commits"))
+                    ("eval", Some("show")) | ("eval", Some("window")) | ("eval", Some("commits"))
                 )
             {
                 return Run {
@@ -644,7 +536,6 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
             }
             (code, output::project(&ns.cmd, sub.as_deref(), ns.minimal, &result, &ws))
         }
-        Outcome::Text(text) => (0, Value::String(text)),
         Outcome::UsageDetail(detail) => (1, json!({"error": "usage", "detail": detail})),
         Outcome::Needs(n) => (3, json!({"needs_input": n.reason})),
         Outcome::Refused(codes) => (2, json!({"error": "seal.refused", "refusal_codes": codes})),
@@ -654,14 +545,8 @@ pub fn run(argv: &[String], read_stdin: &mut dyn FnMut() -> String) -> Run {
 }
 
 /// The commands that read configuration, and so take `--override`.
-const READS_CONFIG: [(&str, Option<&str>); 6] = [
-    ("profile", Some("show")),
-    ("deltas", Some("domains")),
-    ("deltas", Some("list")),
-    ("deltas", Some("render")),
-    ("ask", Some("compile")),
-    ("eval", Some("open")),
-];
+const READS_CONFIG: [(&str, Option<&str>); 3] =
+    [("deltas", Some("domains")), ("deltas", Some("list")), ("eval", Some("open"))];
 
 fn emit(obj: &Value, as_json: bool, minimal: bool) -> String {
     let newline = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
@@ -721,26 +606,10 @@ fn dispatch(
                 Err(e) => (ws, Outcome::Error(e.code, e.detail)),
             }
         }
-        ("profile", Some("show")) => {
-            let host =
-                json!({"name": ns.one("--host"), "version": ns.one("--version").unwrap_or("")});
-            let profile = match profiles::for_host(&host) {
-                Ok(p) => p,
-                Err(e) => bail!(from_config_error(e)),
-            };
-            let name = profile.get("host").and_then(Value::as_str).unwrap_or("unknown").to_string();
-            let sha = match profiles::sha256(&name) {
-                Ok(s) => s,
-                Err(e) => bail!(from_config_error(e)),
-            };
-            let mut out = profile;
-            out["sha256"] = json!(sha);
-            // The routing authority answers "which plan already exists", so
-            // an Ask that names one can be routed to building it.
-            out["plans"] = json!(workspace::plans(&ws));
-            (ws, Outcome::Ok(0, out))
-        }
-        ("ask", Some(what)) => ask_command(ns, ws, actor, what),
+        ("ask", Some(_)) => match ask::list_asks(&ws) {
+            Ok(asks) => (ws, Outcome::Ok(0, json!({"asks": asks}))),
+            Err(e) => (ws, from_ask_error(e)),
+        },
         ("deltas", Some(what)) => deltas_command(ns, ws, what),
         ("eval", Some("list")) => match evaluate::list_records(&ws) {
             Ok(evals) => (ws, Outcome::Ok(0, json!({"evals": evals}))),
@@ -923,104 +792,6 @@ fn dispatch(
     }
 }
 
-fn ask_command(ns: &Parsed, ws: Workspace, actor: Value, what: &str) -> (Workspace, Outcome) {
-    macro_rules! done {
-        ($e:expr) => {
-            match $e {
-                Ok(v) => return (ws, Outcome::Ok(0, v)),
-                Err(e) => return (ws, from_ask_error(e.into())),
-            }
-        };
-    }
-    let id = ns.one("--ask").unwrap_or_default().to_string();
-    match what {
-        "compile" => {
-            let classification = match json_arg(ns.one("--classification").unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => return (ws, Outcome::UsageDetail(e)),
-            };
-            let route = match json_arg(ns.one("--route").unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => return (ws, Outcome::UsageDetail(e)),
-            };
-            let host = match json_arg(ns.one("--host").unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => return (ws, Outcome::UsageDetail(e)),
-            };
-            let staged = PathBuf::from(ns.one("--staged").unwrap_or_default());
-            done!(ask::compile(
-                &ws,
-                ask::Compile {
-                    staged: &staged,
-                    title: ns.one("--title").unwrap_or_default(),
-                    capability: ns.one("--capability").unwrap_or_default(),
-                    classification,
-                    route,
-                    host,
-                    links: links_of(&ns.all("--link")),
-                    limitations: ns.all("--limitation"),
-                    actor: Some(actor),
-                    overrides: &ns.overrides,
-                }
-            ))
-        }
-        "request" => {
-            let host = match json_arg(ns.one("--host").unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => return (ws, Outcome::UsageDetail(e)),
-            };
-            let staged = PathBuf::from(ns.one("--staged").unwrap_or_default());
-            done!(ask::request_staged(&ws, &staged, &host))
-        }
-        "confirm" => done!(ask::confirm(&ws, &id, Some(&actor))),
-        "unanswered" => done!(ask::unanswered(&ws, &id, ns.one("--reason"), Some(&actor))),
-        "cancel" => {
-            done!(ask::cancel(&ws, &id, ns.one("--reason"), Some(&actor), ns.has("--attributed")))
-        }
-        "submitted" => done!(ask::submitted(&ws, &id, ns.has("--as-modified"), Some(&actor))),
-        "preflight" => done!(ask::preflight(&ws)),
-        "copy" => {
-            // `--body` is the prompt without the command its prefix names, so
-            // a person typing the command has something to paste that needs no
-            // slicing.
-            // `--host` is the prompt as another host takes it: that host's
-            // command for the same capability, then the same wording.
-            if let Some(host) = ns.one("--host") {
-                return match ask::prompt_for_host(&ws, &id, host) {
-                    Ok(v) => (ws, Outcome::Ok(0, v)),
-                    Err(e) => (ws, from_ask_error(e)),
-                };
-            }
-            let got = if ns.has("--body") {
-                ask::prompt_body(&ws, &id)
-            } else {
-                ask::prompt_text(&ws, &id)
-            };
-            match got {
-                Ok(text) => (ws, Outcome::Ok(0, Value::String(text))),
-                Err(e) => (ws, from_ask_error(e)),
-            }
-        }
-        "delivery" => {
-            if ns.has("--handoff") {
-                return match ask::delivery_handoff(&ws, &id) {
-                    Ok((text, _)) => (ws, Outcome::Text(text)),
-                    Err(e) => (ws, from_ask_error(e)),
-                };
-            }
-            let Some(state) = ns.one("--state") else {
-                return (ws, Outcome::UsageDetail("--handoff or --state is required".into()));
-            };
-            done!(ask::delivery_state(&ws, &id, state, ns.one("--reason").unwrap_or("")))
-        }
-        "list" => match ask::list_asks(&ws) {
-            Ok(asks) => (ws, Outcome::Ok(0, json!({"asks": asks}))),
-            Err(e) => (ws, from_ask_error(e)),
-        },
-        other => (ws, Outcome::UsageDetail(format!("unknown ask command {other}"))),
-    }
-}
-
 fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome) {
     macro_rules! config_try {
         ($e:expr) => {
@@ -1035,39 +806,11 @@ fn deltas_command(ns: &Parsed, ws: Workspace, what: &str) -> (Workspace, Outcome
             let listed = config_try!(deltas::domains(&ns.overrides));
             (ws, Outcome::Ok(0, json!({"domains": listed})))
         }
-        "list" => {
+        _ => {
             let listed = config_try!(deltas::list(&ns.overrides));
             let deny = ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec()));
             let judges = crate::tasks::judges(deny.as_ref());
             (ws, Outcome::Ok(0, json!({"catalogs": listed, "judges": judges})))
-        }
-        _ => {
-            let host = json!({"name": ns.one("--host"),
-                              "version": ns.one("--host-version").unwrap_or("")});
-            let profile = config_try!(profiles::for_host(&host));
-            let classification = match json_arg(ns.one("--classification").unwrap_or_default()) {
-                Ok(v) => v,
-                Err(e) => return (ws, Outcome::UsageDetail(e)),
-            };
-            let statuses: Vec<String> = ns
-                .one("--statuses")
-                .unwrap_or("qualified")
-                .split(',')
-                .map(str::to_string)
-                .collect();
-            let rendered = config_try!(deltas::render(
-                &ns.overrides,
-                &profile,
-                ns.one("--capability").unwrap_or_default(),
-                &classification,
-                &statuses,
-                deltas::DEFAULT_DOMAIN,
-            ));
-            if ns.json || ns.minimal {
-                (ws, Outcome::Ok(0, rendered))
-            } else {
-                (ws, Outcome::Text(rendered["text"].as_str().unwrap_or_default().to_string()))
-            }
         }
     }
 }
@@ -1097,53 +840,6 @@ mod tests {
                 serde_json::from_str(&run.out).unwrap_or_else(|_| Value::String(run.out.clone()));
             (run.code, body, run.err)
         }
-
-        fn staged(&self, name: &str) -> String {
-            let d = self.root.join(".fab7/rf/tmp").join(name);
-            std::fs::create_dir_all(&d).unwrap();
-            std::fs::write(d.join("source.txt"), b"fix login\n").unwrap();
-            std::fs::write(d.join("prompt.txt"), b"Fix login.\n").unwrap();
-            d.to_string_lossy().to_string()
-        }
-
-        /// Compile an Ask and confirm it in one step.
-        fn confirm(&self, stage: &str, title: &str, session: &str, capability: &str) -> Value {
-            let staged = self.staged(stage);
-            let host = host_json(session);
-            let (code, out, _) = self.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                title,
-                "--capability",
-                capability,
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            if code == 0 {
-                let id = out["ask_id"].as_str().unwrap().to_string();
-                let (c2, o2, _) = self.go(&["ask", "confirm", "--ask", &id]);
-                assert_eq!(c2, 0);
-                assert_eq!(o2["confirmation"]["observed_by"], "skill");
-            }
-            out
-        }
-    }
-
-    const CLS: &str = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read"]}"#;
-    const ROUTE: &str =
-        r#"{"fits":"f","alternatives":[],"continuation":"c","effects":"e","gaps":[]}"#;
-
-    fn host_json(session: &str) -> String {
-        format!(
-            r#"{{"name":"claude-code","version":"2.1.260","surface":"native-tui","session_ref":"{session}"}}"#
-        )
     }
 
     fn cli<T>(body: impl FnOnce(&Cli) -> T) -> T {
@@ -1151,59 +847,12 @@ mod tests {
     }
 
     #[test]
-    fn init_and_profile_show() {
+    fn init_makes_the_records_folder() {
         cli(|c| {
             let (code, out, _) = c.go(&["init"]);
             assert_eq!(code, 0);
             assert!(out["rf_dir"].as_str().unwrap().ends_with(".fab7/rf"));
             assert!(c.root.join(".fab7/rf/.gitignore").exists());
-            let (code, out, _) = c.go(&[
-                "profile",
-                "show",
-                "--host",
-                "claude-code",
-                "--version",
-                "2.1.260",
-                "--json",
-            ]);
-            assert_eq!(code, 0);
-            assert_eq!(out["profile_id"], "claude-code");
-            assert_eq!(out["sha256"].as_str().unwrap().len(), 64);
-            let (_, out, _) = c.go(&["profile", "show", "--host", "loom", "--json"]);
-            assert_eq!(out["profile_id"], "unknown");
-        });
-    }
-
-    #[test]
-    fn the_routing_authority_says_which_plans_the_project_already_holds() {
-        // Which wording named a plan — a path, a slug, or words — is not
-        // something the record can settle. Routing reads what is on disk.
-        cli(|c| {
-            c.go(&["init"]);
-            let (_, out, text) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
-            assert!(out["plans"].is_null(), "a project with none says nothing about plans");
-            assert!(!text.contains("plans"), "{text}");
-
-            std::fs::create_dir_all(c.root.join("plans/crypto-trading-agent/adr")).unwrap();
-            let (code, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
-            assert_eq!(code, 0);
-            // No plan.md yet: the folder is listed, with no path to name.
-            assert_eq!(
-                out["plans"],
-                serde_json::json!([{"slug": "crypto-trading-agent", "path": null, "title": null}])
-            );
-            std::fs::write(
-                c.root.join("plans/crypto-trading-agent/plan.md"),
-                "Intro.\n\n# Crypto trading agent\n\n## Step 1\n",
-            )
-            .unwrap();
-            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
-            assert_eq!(
-                out["plans"],
-                serde_json::json!([{"slug": "crypto-trading-agent",
-                                    "path": "plans/crypto-trading-agent/plan.md",
-                                    "title": "Crypto trading agent"}])
-            );
         });
     }
 
@@ -1269,7 +918,12 @@ mod tests {
                 .map(|l| serde_json::from_str(l).unwrap())
                 .collect();
             assert_eq!(kept.len(), 1, "one prompt received");
-            assert_eq!(kept[0]["prompt"], "/rf:ask fix login", "the first");
+            assert_eq!(
+                kept[0]["sha256"],
+                crate::digest::sha256_bytes(b"/rf:ask fix login"),
+                "the first"
+            );
+            assert!(kept[0].get("prompt").is_none());
             let (code, _, _) = c.piped(&args, "/rf:ask fix login");
             assert_ne!(code, 0, "not a list");
             let (code, _, _) = c.piped(&args, r#"["a", 1]"#);
@@ -1278,265 +932,17 @@ mod tests {
     }
 
     #[test]
-    fn ask_confirm_show_delivery_flow() {
-        cli(|c| {
-            let observe = ["observe", "prompt", "--by", "weft", "--host", "claude-code"];
-            let mut args = observe.to_vec();
-            args.extend(["--session", "s1"]);
-            let (code, out, _) = c.piped(&args, "/rf:ask fix login");
-            assert_eq!(code, 0);
-            assert_eq!(out["recorded"], true);
-
-            let out = c.confirm("stage-1", "Login", "s1", "native_plan");
-            let keys: BTreeMap<String, Value> =
-                out.as_object().unwrap().clone().into_iter().collect();
-            assert_eq!(
-                keys.keys().cloned().collect::<Vec<_>>(),
-                ["ask_id", "delivery_mode", "prompt_path", "source_verified"]
-            );
-            assert_eq!(out["source_verified"], "exact");
-            let ask_id = out["ask_id"].as_str().unwrap().to_string();
-
-            let delivered = [
-                "observe",
-                "tool",
-                "--by",
-                "weft",
-                "--host",
-                "claude-code",
-                "--session",
-                "s1",
-                "--tool",
-                "EnterPlanMode",
-                "--outcome",
-                "succeeded",
-            ];
-            let (code, out, _) = c.go(&delivered);
-            assert_eq!(code, 0);
-            assert_eq!(out["recorded"], true);
-            assert_eq!(out["kind"], "delivery");
-            assert_eq!(out["state"], "native_accepted");
-            // Delivered once; a second sighting records nothing and still exits 0.
-            let (code, out, _) = c.go(&delivered);
-            assert_eq!(code, 0);
-            assert_eq!(out["recorded"], false);
-
-            let (code, out, _) = c.go(&["ask", "list", "--json"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["asks"][0]["id"], ask_id);
-            assert_eq!(out["asks"][0]["delivery"], "native_accepted");
-            let (code, out, _) = c.go(&["ledger", "verify", "--json"]);
-            assert_eq!(code, 0);
-            assert_eq!(out, json!({"findings": [], "clean": true}));
-        });
-    }
-
-    #[test]
-    fn ask_handoff_state_and_resolution_exit_codes() {
-        cli(|c| {
-            let a = c.confirm("stage-1", "Login", "s1", "native_plan");
-            let a_id = a["ask_id"].as_str().unwrap().to_string();
-            let (code, out, _) = c.go(&["ask", "delivery", "--ask", &a_id, "--handoff"]);
-            assert_eq!(code, 0);
-            let text = out.as_str().unwrap();
-            assert!(text.contains("prompt.txt"), "{text}");
-            assert!(text.contains("Claude Code TUI"));
-            let (code, out, _) = c.go(&[
-                "ask",
-                "delivery",
-                "--ask",
-                &a_id,
-                "--state",
-                "unavailable",
-                "--reason",
-                "x",
-            ]);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "delivery.duplicate");
-
-            // Two Asks in one workspace are both listed, oldest first. There
-            // is no resolution step: a client picks from the list it holds.
-            let b = c.confirm("stage-2", "Logout", "s2", "native_direct");
-            let b_id = b["ask_id"].as_str().unwrap().to_string();
-            let (code, out, _) = c.go(&["ask", "list", "--json"]);
-            assert_eq!(code, 0);
-            let ids: Vec<&str> =
-                out["asks"].as_array().unwrap().iter().map(|x| x["id"].as_str().unwrap()).collect();
-            assert_eq!(ids, [a_id.as_str(), b_id.as_str()]);
-        });
-    }
-
-    /// A skill whose harness has no prompt hook puts the Ask on record as
-    /// asked from its staging; compiling that staging keeps the id.
-    #[test]
-    fn ask_request_records_the_staged_intent_and_compile_keeps_its_id() {
-        cli(|c| {
-            let staged = c.staged("stage-1");
-            let host = r#"{"name":"claude-code","surface":"native-tui"}"#;
-            let bare = c.go(&["ask", "request", "--staged", &staged, "--host", "claude-code"]);
-            assert_ne!(bare.0, 0, "a bare name is not a host");
-            let (code, out, _) = c.go(&["ask", "request", "--staged", &staged, "--host", host]);
-            assert_eq!(code, 0, "{out}");
-            assert_eq!(out["recorded"], true);
-            let id = out["ask_id"].as_str().unwrap().to_string();
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "t",
-                "--capability",
-                "native_plan",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                host,
-            ]);
-            assert_eq!(code, 0, "{out}");
-            assert_eq!(out["ask_id"], id.as_str());
-        });
-    }
-
-    #[test]
-    fn ask_compile_cancel_submitted_copy_and_usage_errors() {
-        cli(|c| {
-            let staged = c.staged("stage-1");
-            let host = host_json("s1");
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "t",
-                "--capability",
-                "native_plan",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            assert_eq!(code, 0);
-            assert_eq!(out["delivery_mode"], "native_dispatch");
-            let id = out["ask_id"].as_str().unwrap().to_string();
-
-            let (code, out, _) = c.go(&["ask", "cancel", "--ask", &id, "--reason", "nah"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["state"], "cancelled");
-            let (code, out, _) = c.go(&["ask", "submitted", "--ask", &id, "--as-modified"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["state"], "attributed");
-            assert_eq!(out["as_modified"], true);
-            let (code, out, _) = c.go(&["ask", "copy", "--ask", &id]);
-            assert_eq!(code, 0);
-            assert_eq!(out, "Fix login.\n");
-            // As Codex takes it: its own command to plan by, then the wording.
-            let (code, out, _) = c.go(&["ask", "copy", "--ask", &id, "--host", "codex"]);
-            assert_eq!(code, 0);
-            assert_eq!(out["prompt"], "/plan Fix login.\n");
-            assert_eq!(out["delivery"]["mode"], "/plan");
-
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                "/nope",
-                "--title",
-                "t",
-                "--capability",
-                "native_plan",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            assert_eq!(code, 2);
-            // Outside the opened directory is refused before its contents are
-            // ever looked at, because compile deletes what it reads.
-            assert_eq!(out["error"], "workspace.outside");
-
-            // Inside it, a directory that is not a staging directory is still
-            // refused for what it holds.
-            let bad = c.root.join(".fab7/rf/tmp/not-a-stage");
-            std::fs::create_dir_all(&bad).unwrap();
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &bad.to_string_lossy(),
-                "--title",
-                "t",
-                "--capability",
-                "native_plan",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "ask.staged_dir");
-
-            // Missing required arguments are a usage error, on stderr.
-            let (code, _, err) = c.go(&["ask", "compile"]);
-            assert_eq!(code, 1);
-            assert!(err.contains("the following arguments are required"), "{err}");
-
-            let staged = c.staged("s3");
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "t",
-                "--capability",
-                "native_plan",
-                "--classification",
-                "{not json",
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ]);
-            assert_eq!(code, 1);
-            assert_eq!(out["error"], "usage");
-        });
-    }
-
-    #[test]
     fn an_observed_pasted_prompt_records_an_observed_submission() {
         cli(|c| {
-            let staged = c.staged("stage-1");
-            let (code, out, _) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "t",
-                "--capability",
-                "native_direct",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                r#"{"name":"codex","surface":"native-tui"}"#,
-            ]);
-            assert_eq!(code, 0);
-            let id = out["ask_id"].as_str().unwrap().to_string();
+            let ws = crate::workspace::resolve(Some(&c.root), None).unwrap();
+            let id = crate::testing::confirm_ask(&ws, b"Fix login.\n")["ask_id"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            let typed = crate::ask::prompt_text(&ws, &id).unwrap();
             let (code, cap, _) = c.piped(
-                &["observe", "prompt", "--by", "weft", "--host", "codex", "--session", "c9"],
-                "Fix login.\n",
+                &["observe", "prompt", "--by", "weft", "--host", "claude-code", "--session", "c9"],
+                &typed,
             );
             assert_eq!(code, 0);
             assert_eq!(cap["recorded"], true);
@@ -1544,7 +950,7 @@ mod tests {
             assert_eq!(cap["submission"]["state"], "observed");
             let (_, listed, _) = c.go(&["ask", "list", "--json"]);
             assert_eq!(listed["asks"][0]["submission"], "observed");
-            assert_eq!(listed["asks"][0]["outcome"], "compiled");
+            assert_eq!(listed["asks"][0]["outcome"], "confirmed");
         });
     }
 
@@ -1841,41 +1247,36 @@ mod tests {
         let whole = super::run(&["--help".to_string()], &mut none);
         assert_eq!(whole.code, 0);
         assert!(whole.out.contains("usage: ringframe"), "{}", whole.out);
-        assert!(whole.out.contains("ask compile"));
+        assert!(whole.out.contains("eval submit"));
         assert!(whole.out.contains("Exit codes: 0 ok, 1 usage"));
-        // Eval runs only by tasks Weft hands its judges: nothing of eval/1 or
-        // of a coordinator is left.
-        for gone in ["eval close", "eval context", "eval next", "--parallel", "--returned"] {
+        // Eval runs only by tasks Weft hands its judges, and Weft asks and
+        // confirms: nothing of eval/1, of a coordinator or of a harness's
+        // skill is left.
+        for gone in [
+            "eval close",
+            "eval context",
+            "eval next",
+            "--parallel",
+            "--returned",
+            "--agents-from",
+            "profile show",
+            "ask request",
+            "ask compile",
+            "ask confirm",
+            "ask unanswered",
+            "ask cancel",
+            "ask submitted",
+            "ask copy",
+            "ask delivery",
+            "ask preflight",
+            "deltas render",
+        ] {
             assert!(!whole.out.contains(gone), "{gone}: {}", whole.out);
         }
         let one = super::run(&["eval".to_string(), "task".into(), "--help".into()], &mut none);
         assert_eq!(one.code, 0);
         assert!(one.out.contains("usage: ringframe eval task"), "{}", one.out);
         assert!(one.out.contains("--eval VALUE (required)"), "{}", one.out);
-        let compile =
-            super::run(&["ask".to_string(), "compile".into(), "--help".into()], &mut none);
-        for said in [
-            "remediates:<evl_id>",
-            "follows:<ask_id|evl_id>",
-            "ask.link_unknown",
-            "ask.link_rel_unknown",
-        ] {
-            assert!(compile.out.contains(said), "{said} missing from:\n{}", compile.out);
-        }
-        // `profile show --version` names a host version, not this binary's.
-        let host = super::run(
-            &[
-                "profile".to_string(),
-                "show".into(),
-                "--host".into(),
-                "codex".into(),
-                "--version".into(),
-                "0.1".into(),
-                "--minimal".into(),
-            ],
-            &mut none,
-        );
-        assert!(!host.out.starts_with("ringframe 0."), "{}", host.out);
     }
 
     #[test]
@@ -1885,88 +1286,6 @@ mod tests {
         assert_eq!(run.code, 0);
         assert_eq!(run.out, format!("ringframe {VERSION}\n"));
         assert!(!VERSION.starts_with("0.0."), "the Rust era starts at 0.1.0: {VERSION}");
-    }
-
-    #[test]
-    fn deltas_commands() {
-        cli(|c| {
-            let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["api_surface"]}"#;
-            let (code, out, _) = c.go(&[
-                "deltas",
-                "render",
-                "--host",
-                "codex",
-                "--host-version",
-                "codex-cli 0.153.4",
-                "--capability",
-                "native_plan",
-                "--classification",
-                cls,
-                "--json",
-            ]);
-            assert_eq!(code, 0);
-            assert!(
-                out["practice"]["selected"].as_array().unwrap().contains(&json!("practice.hyrum"))
-            );
-            assert!(!out["text"].as_str().unwrap().is_empty());
-            let (code, text, _) = c.go(&[
-                "deltas",
-                "render",
-                "--host",
-                "codex",
-                "--host-version",
-                "codex-cli 0.153.4",
-                "--capability",
-                "native_plan",
-                "--classification",
-                cls,
-            ]);
-            assert_eq!(code, 0);
-            assert!(text.as_str().unwrap().contains("observable behaviour"));
-        });
-    }
-
-    #[test]
-    fn deltas_render_json_exposes_each_directive_for_composition() {
-        cli(|c| {
-            let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["api_surface"]}"#;
-            let (code, out, _) = c.go(&[
-                "deltas",
-                "render",
-                "--host",
-                "codex",
-                "--host-version",
-                "codex-cli 0.153.4",
-                "--capability",
-                "native_plan",
-                "--classification",
-                cls,
-                "--json",
-            ]);
-            assert_eq!(code, 0);
-            let ids: Vec<&str> = out["practice"]["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| e["id"].as_str().unwrap())
-                .collect();
-            let selected: Vec<&str> = out["practice"]["selected"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| e.as_str().unwrap())
-                .collect();
-            assert_eq!(ids, selected);
-            assert!(
-                out["practice"]["entries"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .all(|e| !e["text"].as_str().unwrap_or_default().is_empty())
-            );
-            // Nothing qualified yet.
-            assert_eq!(out["host"]["entries"], json!([]));
-        });
     }
 
     #[test]
@@ -1982,9 +1301,9 @@ mod tests {
         with_config_home(|_| {
             let repo = crate::testing::repo();
             let c = Cli { root: repo.path().to_path_buf() };
-            let (code, out, _) = c.go(&["ask", "preflight"]);
-            assert_ne!(code, 0);
-            assert!(out.to_string().contains("workspace.uninitialized"), "{out}");
+            let ws = crate::workspace::resolve(Some(repo.path()), None).unwrap();
+            let e = crate::ask::preflight(&ws).unwrap_err();
+            assert!(e.to_string().contains("workspace.uninitialized"), "{e}");
             assert!(!repo.path().join(".fab7").exists());
 
             let (code, _, _) = c.go(&["init"]);
@@ -1993,8 +1312,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(rf.join(".gitignore")).unwrap(), "*\n");
             use std::os::unix::fs::PermissionsExt;
             assert_eq!(rf.metadata().unwrap().permissions().mode() & 0o777, 0o700);
-            let (code, _, _) = c.go(&["ask", "preflight"]);
-            assert_eq!(code, 0);
+            assert!(crate::ask::preflight(&ws).is_ok());
         });
     }
 
@@ -2092,30 +1410,8 @@ mod tests {
             assert!(out["detail"].as_str().unwrap().contains("git init"));
             assert!(!dir.path().join(".fab7").exists());
 
-            let staged = c.staged("stage-1");
-            let host = host_json("s1");
-            let compile: Vec<&str> = vec![
-                "ask",
-                "compile",
-                "--staged",
-                &staged,
-                "--title",
-                "Login",
-                "--capability",
-                "native_plan",
-                "--classification",
-                CLS,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-            ];
-            let (code, out, _) = c.go(&compile);
-            assert_eq!(code, 2);
-            assert_eq!(out["error"], "workspace.no_git");
-
             crate::testing::run(&["git", "init", "-q", &dir.path().to_string_lossy()]);
-            let (code, out, _) = c.go(&compile);
+            let (code, out, _) = c.go(&["init"]);
             assert_eq!(code, 2);
             assert_eq!(out["error"], "workspace.no_commit");
         });
@@ -2141,8 +1437,7 @@ mod tests {
     #[test]
     fn minimal_and_json_are_mutually_exclusive() {
         cli(|c| {
-            let (code, _, err) =
-                c.go(&["profile", "show", "--host", "claude-code", "--json", "--minimal"]);
+            let (code, _, err) = c.go(&["eval", "list", "--json", "--minimal"]);
             assert_eq!(code, 1);
             assert!(err.contains("not allowed with"), "{err}");
         });
@@ -2151,156 +1446,10 @@ mod tests {
     #[test]
     fn minimal_emits_compact_json() {
         cli(|c| {
-            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
-            // Still JSON the skill can address by name.
+            let (_, out, _) = c.go(&["eval", "list", "--minimal"]);
             assert!(out.is_object());
             let (_, raw, _) = c.go(&["ask", "list", "--minimal"]);
             assert!(raw.is_object());
-        });
-    }
-
-    /// A profile carries the harness facts the CLI reads, `profile show
-    /// --json` returns them, and `unknown` carries none. How a harness is
-    /// started, resumed and set up is not RingFrame's.
-    #[test]
-    fn a_profile_carries_the_harness_and_unknown_carries_none() {
-        const FACTS: [&str; 2] = ["title", "invocation_prefix"];
-        cli(|c| {
-            for host in ["claude-code", "codex"] {
-                let (code, out, _) = c.go(&["profile", "show", "--host", host, "--json"]);
-                assert_eq!(code, 0);
-                for k in FACTS {
-                    assert!(!out[k].is_null(), "{host} has no {k}");
-                }
-                for k in ["program", "resume", "transcript", "turbo", "config", "plugin"] {
-                    assert!(out[k].is_null(), "{host} carries {k}");
-                }
-                // No payload field: RingFrame reads no hook.
-                for k in ["session_field", "workspace_field"] {
-                    assert!(out[k].is_null(), "{host} carries {k}");
-                }
-            }
-            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--json"]);
-            assert_eq!(
-                out["observe"],
-                json!({"delivery_tool": "EnterPlanMode", "shell_tool": "Bash"})
-            );
-            let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--json"]);
-            assert!(out["observe"].is_null(), "codex names no tool");
-            let (_, out, _) = c.go(&["profile", "show", "--host", "loom", "--json"]);
-            assert!(out["title"].is_null(), "unknown carries a title");
-            let (code, _, _) = c.go(&["profile", "list", "--json"]);
-            assert_ne!(code, 0, "no command lists harnesses for another program");
-        });
-    }
-
-    /// harness-profile.md §5.3, the CLI's half: a made-up third harness is
-    /// read from its profile alone, its prefix and its title, with no change
-    /// to the program.
-    #[test]
-    fn a_made_up_third_harness_is_read_from_its_profile_alone() {
-        cli(|c| {
-            let home = std::path::PathBuf::from(std::env::var("HOME").unwrap());
-            let zed = r#"schema = "ringframe.profile/1"
-profile_id = "zed-agent"
-host = "zed-agent"
-surface = "native-tui"
-invocation_prefix = "@rf:"
-fallback = "human_handoff"
-title = "Zed Agent"
-
-[routing]
-precedence = ["native_direct"]
-guidance = ["Continue directly."]
-
-[[capabilities]]
-id = "native_direct"
-selection = "anything"
-purpose = "continue"
-activation = {}
-confirmation = {}
-continuation = "same turn"
-effects = []
-permission_owner = "host"
-delivery_mode = "human_handoff"
-qualification = {}
-limitations = []
-"#;
-            std::fs::write(home.join(".fab7/rf/config/harnesses/zed-agent.toml"), zed).unwrap();
-
-            let observe = |prompt: &str| {
-                let argv = ["observe", "prompt", "--by", "weft", "--host", "zed-agent"];
-                let mut argv = argv.to_vec();
-                argv.extend(["--session", "z1"]);
-                c.piped(&argv, prompt)
-            };
-            let (_, out, _) = observe("@rf:ask fix it");
-            assert_eq!(out["recorded"], true);
-            observe("/rf:ask fix it");
-            let kept = std::fs::read_to_string(
-                c.root.join(".fab7/rf/sessions/zed-agent/z1/prompts.jsonl"),
-            )
-            .unwrap();
-            let stored: Vec<Value> =
-                kept.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-            assert_eq!(stored[0]["prompt"], "@rf:ask fix it", "its own prefix is its invocation");
-            assert!(stored[1]["prompt"].is_null(), "another harness's prefix is only a prompt");
-        });
-    }
-
-    #[test]
-    fn minimal_profile_keeps_only_what_routing_reads() {
-        cli(|c| {
-            let (_, out, _) = c.go(&["profile", "show", "--host", "claude-code", "--minimal"]);
-            let mut keys: Vec<&String> = out.as_object().unwrap().keys().collect();
-            keys.sort();
-            assert_eq!(keys, ["capabilities", "host", "paste_fold_chars", "routing"]);
-            let allowed: BTreeMap<&str, ()> = [
-                "id",
-                "selection",
-                "effects",
-                "confirmation",
-                "activation",
-                "delivery_mode",
-                "continuation",
-                "limitations",
-                "requires_explicit_request_for_effects",
-                "prompt_prefix",
-                "prompt_prefix_kind",
-                "prompt_prefix_active",
-            ]
-            .into_iter()
-            .map(|k| (k, ()))
-            .collect();
-            let first = &out["capabilities"][0];
-            for k in first.as_object().unwrap().keys() {
-                assert!(allowed.contains_key(k.as_str()), "{k} is not part of the routing view");
-            }
-            assert!(!first["selection"].as_str().unwrap().is_empty());
-            assert!(!out["routing"]["precedence"].as_array().unwrap().is_empty());
-        });
-    }
-
-    #[test]
-    fn minimal_profile_says_how_a_prefixed_prompt_has_to_be_submitted() {
-        // A client that knows the command but not whether it is a mode cannot
-        // decide how to send it, and both hosts stop reading a long paste for
-        // commands. The prefix, its kind and the fold size travel together.
-        cli(|c| {
-            let (_, out, _) = c.go(&["profile", "show", "--host", "codex", "--minimal"]);
-            assert_eq!(out["paste_fold_chars"], 1001);
-            let by_id: BTreeMap<String, Value> = out["capabilities"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|c| (c["id"].as_str().unwrap().to_string(), c.clone()))
-                .collect();
-            assert_eq!(by_id["native_plan"]["prompt_prefix_kind"], "mode");
-            assert_eq!(by_id["native_plan"]["prompt_prefix_active"], "Plan mode");
-            // `/goal` takes its objective as the argument, so there is no mode
-            // to enter.
-            assert_eq!(by_id["native_goal"]["prompt_prefix_kind"], "inline");
-            assert!(by_id["native_goal"].get("prompt_prefix_active").is_none());
         });
     }
 
@@ -2345,86 +1494,11 @@ limitations = []
                 "-qm",
                 "init",
             ]);
-            let a = c.confirm("stage-1", "Login", "s1", "native_plan");
+            assert_eq!(c.go(&["init"]).0, 0);
             let ws = crate::workspace::resolve(Some(&project), None).unwrap();
+            let a = crate::testing::confirm_ask(&ws, b"Fix login.\n");
             assert_eq!(crate::ask::list_asks(&ws).unwrap()[0]["ask_id"], a["ask_id"]);
             assert!(!repo.path().join(".fab7").exists(), "the parent keeps nothing");
-        });
-    }
-
-    #[test]
-    fn compile_reads_the_merged_ledger_delta_files() {
-        cli(|c| {
-            let over = json!([
-                {"layer": "weft", "ringframe": {"deltas": {"practices/software-development":
-                    {"concerns": ["project_special"], "render": {"core_cap": 1},
-                     "entries": [{"id": "practice.kiss", "text": "Use the machine setting."}]}}}},
-                {"layer": "weft-project", "ringframe": {"deltas": {"practices/software-development":
-                    {"entries": [{"id": "practice.kiss", "text": "Use the project setting."}]}}}},
-            ])
-            .to_string();
-            let cls = r#"{"task":["implement"],"result":"workspace_change","interaction":"approval_gated","horizon":"session","effects":["write"],"concerns":["project_special"]}"#;
-            let stage = c.root.join("stage");
-            std::fs::create_dir_all(&stage).unwrap();
-            std::fs::write(stage.join("source.txt"), "fix login").unwrap();
-            std::fs::write(stage.join("body.txt"), "Fix login.").unwrap();
-            let host = host_json("s1");
-            let (code, out, err) = c.go(&[
-                "ask",
-                "compile",
-                "--staged",
-                &stage.to_string_lossy(),
-                "--title",
-                "Login",
-                "--capability",
-                "native_plan",
-                "--classification",
-                cls,
-                "--route",
-                ROUTE,
-                "--host",
-                &host,
-                "--override",
-                &over,
-            ]);
-            assert_eq!(code, 0, "{err}");
-            let text = std::fs::read_to_string(out["prompt_path"].as_str().unwrap()).unwrap();
-            // The compiled prompt is the merge: the later layer won.
-            assert!(text.contains("Use the project setting."), "{text}");
-        });
-    }
-
-    #[test]
-    fn profile_exposes_routing_and_capability_sources() {
-        cli(|c| {
-            for name in ["codex", "claude-code"] {
-                let (code, out, _) = c.go(&["profile", "show", "--host", name, "--json"]);
-                assert_eq!(code, 0);
-                assert_eq!(out["routing"], crate::profiles::load(name).unwrap()["routing"]);
-                let precedence: BTreeMap<String, ()> = out["routing"]["precedence"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|p| (p.as_str().unwrap().to_string(), ()))
-                    .collect();
-                let ids: BTreeMap<String, ()> = out["capabilities"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|c| (c["id"].as_str().unwrap().to_string(), ()))
-                    .collect();
-                assert_eq!(precedence.keys().collect::<Vec<_>>(), ids.keys().collect::<Vec<_>>());
-                for cap in out["capabilities"].as_array().unwrap() {
-                    assert!(!cap["selection"].as_str().unwrap_or_default().is_empty());
-                    let sources = cap["sources"].as_array().unwrap();
-                    assert!(!sources.is_empty());
-                    assert!(sources.iter().all(|u| u.as_str().unwrap().starts_with("https://")));
-                    assert!(
-                        ["native_dispatch", "human_handoff"]
-                            .contains(&cap["delivery_mode"].as_str().unwrap())
-                    );
-                }
-            }
         });
     }
 
@@ -2460,24 +1534,20 @@ limitations = []
                 .find(|e| e["id"] == id)
                 .unwrap();
             assert_eq!((&now["status"], &now["source"]), (&json!("candidate"), &json!("weft")));
-            let class = r#"{"task":["plan"],"result":"plan","interaction":"approval_gated","horizon":"session","effects":["read","write"]}"#;
-            let render = |extra: &[&str]| {
-                let mut args = vec![
-                    "deltas",
-                    "render",
-                    "--host",
-                    "claude-code",
-                    "--capability",
-                    "native_plan",
-                    "--classification",
-                    class,
-                    "--json",
-                ];
-                args.extend(extra);
-                c.go(&args).1["text"].as_str().unwrap_or_default().to_string()
+            let class = json!({"task": ["plan"], "result": "plan", "effects": ["read", "write"]});
+            let route = |over: &crate::config::Overrides| -> Vec<String> {
+                crate::rules::route_rules(over, "claude-code", "native_plan", &class)
+                    .unwrap()
+                    .iter()
+                    .map(|r| r["label"].as_str().unwrap_or_default().to_string())
+                    .collect()
             };
-            assert!(render(&[]).contains(label), "shipped, it is in the prompt");
-            assert!(!render(&["--override", &over]).contains(label), "a candidate is not");
+            let layered = crate::config::Overrides::parse(&over).unwrap();
+            assert!(
+                route(&Default::default()).contains(&label.to_string()),
+                "shipped, it is in the prompt"
+            );
+            assert!(!route(&layered).contains(&label.to_string()), "a candidate is not");
         });
     }
 
@@ -2528,37 +1598,7 @@ limitations = []
     #[test]
     fn a_malformed_override_is_refused_by_every_command_that_reads_configuration() {
         cli(|c| {
-            for cmd in [
-                &["profile", "show", "--host", "codex"][..],
-                &["deltas", "domains"],
-                &[
-                    "deltas",
-                    "render",
-                    "--host",
-                    "codex",
-                    "--capability",
-                    "native_plan",
-                    "--classification",
-                    "{}",
-                ],
-                &[
-                    "ask",
-                    "compile",
-                    "--staged",
-                    "x",
-                    "--title",
-                    "t",
-                    "--capability",
-                    "native_plan",
-                    "--classification",
-                    "{}",
-                    "--route",
-                    "{}",
-                    "--host",
-                    "{}",
-                ],
-                &["eval", "open"],
-            ] {
+            for cmd in [&["deltas", "domains"][..], &["deltas", "list"], &["eval", "open"]] {
                 let mut args = cmd.to_vec();
                 args.extend(["--override", r#"[{"layer":"weft"}]"#]);
                 let (code, out, _) = c.go(&args);
@@ -2609,100 +1649,18 @@ limitations = []
 /// command they use stops existing, a wording fix in the marketplace becomes a
 /// broken install for everyone.
 #[cfg(test)]
-mod the_marketplace_contract {
-    use super::*;
-
-    /// Every `ringframe …` the shipped skills, hooks and plugins invoke.
-    /// Taken from `fab7/products/ringframe/`, and checked against it below
-    /// when that tree happens to be beside this one.
-    const CALLED: [(&str, Option<&str>); 19] = [
-        ("init", None),
-        ("profile", Some("show")),
-        ("deltas", Some("domains")),
-        ("deltas", Some("render")),
-        ("ask", Some("preflight")),
-        ("ask", Some("request")),
-        ("ask", Some("compile")),
-        ("ask", Some("copy")),
-        ("ask", Some("confirm")),
-        ("ask", Some("cancel")),
-        ("ask", Some("unanswered")),
-        ("ask", Some("submitted")),
-        ("ask", Some("delivery")),
-        ("ask", Some("list")),
-        ("eval", Some("open")),
-        ("eval", Some("list")),
-        ("eval", Some("show")),
-        ("seal", Some("create")),
-        ("seal", Some("check")),
-    ];
-
+mod the_marketplace {
+    /// RingFrame raises nothing in a harness: its plugins hold their hooks
+    /// and nothing else, no skill and no agent.
     #[test]
-    fn every_command_the_skills_call_still_exists() {
-        for (cmd, sub) in CALLED {
-            assert!(
-                spec(cmd, sub).is_some(),
-                "the skills call `ringframe {cmd} {}` and this release has no such command",
-                sub.unwrap_or("")
-            );
-            assert!(
-                SURFACE.contains(&(cmd, sub)),
-                "`ringframe {cmd} {}` is not in the help",
-                sub.unwrap_or("")
-            );
-        }
-    }
-
-    /// A coordinator that composed its own report from a record it had read in
-    /// part invented obligations. Every Eval skill shows
-    /// RingFrame's report and describes none of its own.
-    #[test]
-    fn every_eval_skill_shows_ringframes_report() {
+    fn the_plugins_hold_only_their_hooks() {
         let plugins = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fab7/products/ringframe/plugins");
         let Ok(plugins) = plugins.canonicalize() else {
             return; // not checked out here
         };
-        // Every Eval skill, however deep its plugin keeps it (`agents/codex/…`)
-        // and whatever its host types it as (`eval`, `rf-eval`).
-        let mut skills = Vec::new();
         let mut stack = vec![plugins];
-        while let Some(dir) = stack.pop() {
-            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                let in_skills = dir.file_name().is_some_and(|n| n == "skills");
-                if in_skills && matches!(name, "eval" | "rf-eval") {
-                    skills.push(path.join("SKILL.md"));
-                } else {
-                    stack.push(path);
-                }
-            }
-        }
-        for skill in &skills {
-            let text = std::fs::read_to_string(skill).expect("an Eval skill's SKILL.md");
-            assert!(text.contains("ringframe eval show --eval"), "{}", skill.display());
-            for composed in ["item table", "Show the item", "commission paths with"] {
-                assert!(!text.contains(composed), "{} still composes: {composed}", skill.display());
-            }
-        }
-        assert!(skills.len() >= 3, "only {} Eval skills found: {skills:?}", skills.len());
-    }
-
-    #[test]
-    fn the_marketplace_calls_nothing_this_release_lacks() {
-        // Read from the marketplace itself when it is checked out beside this
-        // repository, so the list above cannot quietly fall behind.
-        let market = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fab7/products/ringframe");
-        let Ok(market) = market.canonicalize() else {
-            return; // not checked out here; the list above still holds
-        };
-        let mut found: std::collections::BTreeSet<(String, Option<String>)> = Default::default();
-        let mut stack = vec![market];
+        let mut hooks = 0;
         while let Some(dir) = stack.pop() {
             for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
                 let path = entry.path();
@@ -2710,32 +1668,15 @@ mod the_marketplace_contract {
                     stack.push(path);
                     continue;
                 }
-                let Ok(text) = std::fs::read_to_string(&path) else { continue };
-                for call in text.match_indices("ringframe ").map(|(i, _)| &text[i..]) {
-                    // Prose and code fences wrap these in backticks, quotes
-                    // and commas; the command is what is left.
-                    let word = |w: &str| {
-                        w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-').to_string()
-                    };
-                    let mut words = call.split_whitespace().skip(1).map(word);
-                    let Some(cmd) = words.next() else { continue };
-                    // `--version` and `--help` are answered before parsing, so
-                    // they have no options table; SURFACE covers them.
-                    if cmd.starts_with('-') || !COMMANDS.contains(&cmd.as_str()) {
-                        continue;
-                    }
-                    let sub = words.next().filter(|_| takes_sub(&cmd));
-                    found.insert((cmd, sub));
-                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                assert!(
+                    matches!(name, "hooks.json" | "weft-signal" | "plugin.json"),
+                    "{} is not a hook",
+                    path.display()
+                );
+                hooks += usize::from(name == "hooks.json");
             }
         }
-        assert!(found.len() > 10, "only {} calls found; the scan broke", found.len());
-        for (cmd, sub) in &found {
-            assert!(
-                spec(cmd, sub.as_deref()).is_some(),
-                "the marketplace calls `ringframe {cmd} {}`, which this release does not have",
-                sub.clone().unwrap_or_default()
-            );
-        }
+        assert_eq!(hooks, 4, "one hooks file per harness");
     }
 }

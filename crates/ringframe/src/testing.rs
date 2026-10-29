@@ -115,85 +115,58 @@ pub fn commit(root: &Path, files: &[(&str, Option<&str>)], message: &str) -> Str
     head(Path::new(&root))
 }
 
-/// A staging directory with `source.txt` and one prompt form.
-pub fn stage_in(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std::path::PathBuf {
-    let mut d = ws.rf_dir().join("tmp").join("stage-1");
-    let mut n = 1;
-    while d.exists() {
-        n += 1;
-        d = ws.rf_dir().join("tmp").join(format!("stage-{n}"));
-    }
-    std::fs::create_dir_all(&d).unwrap();
-    std::fs::write(d.join("source.txt"), source).unwrap();
-    std::fs::write(d.join(name), prompt).unwrap();
-    d
-}
-
-/// Compile an Ask and confirm it in one step.
-pub fn confirm_ask(ws: &Workspace, title: &str, source: &[u8], prompt: &[u8]) -> Value {
-    confirm_ask_as(ws, title, source, prompt, "native_plan")
+/// An Ask of these words, compiled and confirmed as Weft sends one: the
+/// prompt is the words verbatim, then the route's rules.
+pub fn confirm_ask(ws: &Workspace, words: &[u8]) -> Value {
+    confirm_ask_as(ws, words, "native_plan")
 }
 
 /// As `confirm_ask`, linked: `follows`, `revises` or `remediates` another.
-pub fn confirm_ask_linked(ws: &Workspace, title: &str, links: Vec<Value>) -> Value {
-    confirm_ask_with(ws, title, b"more\n", b"More.\n", "native_plan", links)
+pub fn confirm_ask_linked(ws: &Workspace, links: Vec<Value>) -> Value {
+    confirm_ask_with(ws, b"More.\n", "native_plan", links)
 }
 
 /// As `confirm_ask`, routed to `capability`: `native_goal` for work an Eval
 /// judges (a planning Ask gives it no requirement).
-pub fn confirm_ask_as(
-    ws: &Workspace,
-    title: &str,
-    source: &[u8],
-    prompt: &[u8],
-    capability: &str,
-) -> Value {
-    confirm_ask_with(ws, title, source, prompt, capability, Vec::new())
+pub fn confirm_ask_as(ws: &Workspace, words: &[u8], capability: &str) -> Value {
+    confirm_ask_with(ws, words, capability, Vec::new())
 }
 
-fn confirm_ask_with(
-    ws: &Workspace,
-    title: &str,
-    source: &[u8],
-    prompt: &[u8],
-    capability: &str,
-    links: Vec<Value>,
-) -> Value {
-    let staged = stage_in(ws, "prompt.txt", source, prompt);
-    let planning = capability == "native_plan";
-    let out = crate::ask::compile(
+fn confirm_ask_with(ws: &Workspace, words: &[u8], capability: &str, links: Vec<Value>) -> Value {
+    // Work, not a plan; and an objective rather than a change, since a goal
+    // for a change works a plan, which these workspaces do not hold.
+    let classification = match capability {
+        "native_plan" => json!({"task": ["plan"], "result": "plan", "effects": ["read"]}),
+        "native_goal" => json!({"task": ["implement"], "result": "continuing_objective",
+                                "effects": ["workspace_write"]}),
+        _ => {
+            json!({"task": ["implement"], "result": "workspace_change", "effects": ["workspace_write"]})
+        }
+    };
+    crate::compile::compile(
         ws,
-        crate::ask::Compile {
-            staged: &staged,
-            title,
+        crate::compile::Request {
+            source: words,
+            host: json!({"name": "claude-code", "version": "2.1.260", "session_ref": "s1"}),
             capability,
-            classification: if planning {
-                json!({"task": ["plan"], "result": "plan", "interaction": "approval_gated",
-                       "horizon": "session", "effects": ["read"]})
-            } else {
-                json!({"task": ["implement"], "result": "workspace_change", "interaction": "interactive",
-                       "horizon": "session", "effects": ["workspace_write"]})
-            },
-            route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
-                      "effects": "reads", "gaps": []}),
-            host: json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
-                     "session_ref": "s1"}),
+            classification,
+            plan: None,
+            practices: Vec::new(),
+            classified_by: json!({"by": "person"}),
+            selected_by: json!({"by": "person"}),
             links,
-            limitations: Vec::new(),
-            actor: None,
             overrides: &crate::config::Overrides::default(),
+            via: "weft",
         },
     )
-    .unwrap();
-    crate::ask::confirm(ws, out["ask_id"].as_str().unwrap(), None).unwrap();
-    out
+    .unwrap()
 }
 
 /// Base commit → Ask A confirmed → Ask B confirmed → work commit touching
 /// `src/`, `tests/` and `docs/`.
 pub fn two_asks_and_work(ws: &Workspace) -> (String, String, String) {
-    let a = confirm_ask(ws, "Add uptime endpoint", b"fix the login bug\n", b"Fix the login bug.\n");
-    let b = confirm_ask(ws, "Skip the cache", b"skip the cache\n", b"Skip the cache.\n");
+    let a = confirm_ask(ws, b"Fix the login bug.\n");
+    let b = confirm_ask(ws, b"Skip the cache.\n");
     let sha = commit(
         &ws.root,
         &[
@@ -218,14 +191,9 @@ pub struct Opened {
 /// `opened`, with one Ask that asks for something the change does: its
 /// requirement can be met.
 pub fn opened_with_requirement(ws: &Workspace) -> Opened {
-    let a = confirm_ask_as(
-        ws,
-        "Add uptime endpoint",
-        b"add the uptime export\n",
-        b"/goal Add the uptime export to src/uptime.js with a test.\n",
-        "native_goal",
-    );
-    let b = confirm_ask(ws, "Skip the cache", b"skip the cache\n", b"Skip the cache.\n");
+    let a =
+        confirm_ask_as(ws, b"Add the uptime export to src/uptime.js with a test.\n", "native_goal");
+    let b = confirm_ask(ws, b"Skip the cache.\n");
     let sha = commit(
         &ws.root,
         &[

@@ -58,76 +58,6 @@ const QUOTE_MAX: usize = 300;
 /// The roles, and the tier each wants from a plugin's configuration.
 pub const ROLES: [&str; 3] = ["map", "reduce", "confirm"];
 
-/// The agent definition a role's tasks are spawned as: `rf-map`,
-/// `rf-reduce`, `rf-confirm`, each a Markdown file of the harness's plugin.
-pub fn agent_name(role: &str) -> String {
-    format!("rf-{role}")
-}
-
-/// Each role's `model` and `effort`, from the agent definitions in `dir`:
-/// `rf-<role>.md`, or `rf-<role>/agent.md`, with the two in its frontmatter.
-/// A role with no file, or a key its file leaves out, is left unset.
-pub fn agents_from(dir: &Path) -> Result<Value, String> {
-    let mut out = serde_json::Map::new();
-    for role in ROLES {
-        let name = agent_name(role);
-        let Some(text) = [dir.join(format!("{name}.md")), dir.join(&name).join("agent.md")]
-            .iter()
-            .find_map(|p| std::fs::read_to_string(p).ok())
-        else {
-            continue;
-        };
-        let mut keys = serde_json::Map::new();
-        for (k, v) in frontmatter(&text) {
-            if (k == "model" || k == "effort") && !v.is_empty() {
-                keys.insert(k, json!(v));
-            }
-        }
-        out.insert(role.to_string(), Value::Object(keys));
-    }
-    if out.is_empty() {
-        return Err(format!(
-            "{} holds no agent definition (rf-map, rf-reduce, rf-confirm)",
-            dir.display()
-        ));
-    }
-    Ok(Value::Object(out))
-}
-
-/// The `key: value` lines of a Markdown file's frontmatter.
-fn frontmatter(text: &str) -> Vec<(String, String)> {
-    let mut lines = text.lines();
-    if lines.next().map(str::trim) != Some("---") {
-        return Vec::new();
-    }
-    lines
-        .take_while(|l| l.trim() != "---")
-        .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
-        .filter_map(|l| l.split_once(':'))
-        .map(|(k, v)| {
-            let v = v.split(" #").next().unwrap_or(v).trim().trim_matches(['"', '\'']);
-            (k.trim().to_string(), v.to_string())
-        })
-        .collect()
-}
-
-/// `given` over `defaults`, key by key: what the person or a tool asked for
-/// wins over the harness's agent definitions.
-pub fn agents_over(given: Option<Value>, defaults: Option<Value>) -> Option<Value> {
-    let Some(mut base) = defaults.map(|d| current_roles(&d)) else { return given };
-    let Some(given) = given else { return Some(base) };
-    for (role, keys) in current_roles(&given).as_object().into_iter().flatten() {
-        let slot = &mut base[role.as_str()];
-        if !slot.is_object() {
-            *slot = json!({});
-        }
-        for (k, v) in keys.as_object().into_iter().flatten() {
-            slot[k] = v.clone();
-        }
-    }
-    Some(base)
-}
-
 /// `agents` with the earlier role names on the current ones: `trace` and
 /// `drift` read windows (`map`), `coverage` judged requirements (`reduce`),
 /// `adversary` looked for failures (`confirm`). `intent` and `context` no
@@ -3152,9 +3082,7 @@ mod tests {
         commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
         confirm_ask_as(
             ws,
-            "Build it",
-            b"build phase 1\n",
-            b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+            b"Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
             "native_goal",
         );
         commit(
@@ -3196,7 +3124,8 @@ mod tests {
             })
             .collect();
         put(ws, &q1, json!({"requirements": entries}));
-        assert_eq!(submit(ws, &q1).unwrap().0, 0);
+        let said = submit(ws, &q1).unwrap();
+        assert_eq!(said.0, 0, "{}", said.1);
     }
 
     /// The bench without its requirements task answered.
@@ -3204,9 +3133,7 @@ mod tests {
         commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
         confirm_ask_as(
             ws,
-            "Build it",
-            b"build phase 1 and keep the notes plain\n",
-            b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+            b"Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
             "native_goal",
         );
         commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
@@ -3287,7 +3214,8 @@ mod tests {
             let mut doc = head(&t, "map", "map");
             doc["windows"] = json!(entries);
             put(ws, &t, doc);
-            assert_eq!(submit(ws, &t).unwrap().0, 0, "{t}");
+            let said = submit(ws, &t).unwrap();
+            assert_eq!(said.0, 0, "{t}: {}", said.1);
         }
     }
 
@@ -3303,13 +3231,10 @@ mod tests {
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
             let a = confirm_ask_as(
                 ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+                b"Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
                 "native_goal",
             );
-            let beacon =
-                crate::testing::confirm_ask(ws, "Telemetry beacon", b"beacon\n", b"Beacon.\n");
+            let beacon = crate::testing::confirm_ask(ws, b"Beacon.\n");
             let beacon = str_of(&beacon, "ask_id");
             commit(
                 &ws.root,
@@ -3345,7 +3270,7 @@ mod tests {
             let md =
                 std::fs::read_to_string(tmp(ws, e).join(format!("tasks/{m1}.brief.md"))).unwrap();
             assert!(
-                md.contains(&format!("`{beacon}`: Telemetry beacon")),
+                md.contains(&format!("`{beacon}`: Beacon.")),
                 "the brief the judge reads names it too: {md}"
             );
             let answer = |other: &str| {
@@ -3588,13 +3513,7 @@ mod tests {
             // Step 2's note claims commit A; commit B, which no step claims,
             // rewrites A's line in the file that serves step 1.
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             let a = commit(
                 &ws.root,
                 &[
@@ -3686,32 +3605,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn the_agent_definitions_give_each_role_its_tiers_under_what_was_asked() {
-        let dir = crate::testing::tmp_dir();
-        write(
-            &dir.path().join("rf-map.md"),
-            b"---\nname: rf-map\nmodel: haiku\neffort: low  # classification\ntools:\n  - Read\n---\n\nMap.\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(dir.path().join("rf-confirm")).unwrap();
-        write(&dir.path().join("rf-confirm/agent.md"), b"---\nmodel: \"pro\"\n---\nConfirm.\n")
-            .unwrap();
-        let defs = agents_from(dir.path()).unwrap();
-        assert_eq!(
-            defs,
-            json!({"map": {"model": "haiku", "effort": "low"}, "confirm": {"model": "pro"}})
-        );
-        let asked = json!({"confirm": {"effort": "high"}, "trace": {"model": "sonnet"}});
-        assert_eq!(
-            agents_over(Some(asked), Some(defs)),
-            Some(json!({"map": {"model": "sonnet", "effort": "low"},
-                        "confirm": {"model": "pro", "effort": "high"}})),
-            "what was asked wins key by key, earlier names too"
-        );
-        assert!(agents_from(crate::testing::tmp_dir().path()).is_err(), "no definition at all");
-    }
-
     /// A function moved to a new file: the window it left holds only removed
     /// lines and the move, so RingFrame answers it and no judge reads it.
     #[test]
@@ -3726,13 +3619,7 @@ mod tests {
                 ],
                 "plan",
             );
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             commit(
                 &ws.root,
                 &[
@@ -3930,7 +3817,7 @@ mod tests {
             );
             let words = format!("{a}. {b}.\n");
             let prompt = format!("/goal {words}");
-            confirm_ask_as(ws, "Counts", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            confirm_ask_as(ws, prompt.as_bytes(), "native_goal");
             commit(
                 &ws.root,
                 &[
@@ -3991,7 +3878,7 @@ mod tests {
         eval_bench(|ws| {
             let words = "Add `alpha_count` to src/a.js for the counter";
             let prompt = format!("/goal {words}.\n");
-            confirm_ask_as(ws, "Counts", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            confirm_ask_as(ws, prompt.as_bytes(), "native_goal");
             commit(
                 &ws.root,
                 &[("src/a.js", Some("export const alpha_count = (xs) => xs.length;\n"))],
@@ -4224,13 +4111,7 @@ mod tests {
             let mut md = String::new();
             eval_bench(|ws| {
                 commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-                confirm_ask_as(
-                    ws,
-                    "Build it",
-                    b"build\n",
-                    b"/goal Build Phase 1 of plans/plan.md.\n",
-                    "native_goal",
-                );
+                confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md.\n", "native_goal");
                 commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
                 let out = open_eval(ws, Open { deny: deny.clone(), ..Default::default() }).unwrap();
                 let e = str_of(&out, "eval_id");
@@ -4257,13 +4138,7 @@ mod tests {
         eval_bench(|ws| {
             // Work left uncommitted, so a cited file is read from disk.
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             for (path, text) in [
                 ("src/uptime.js", UPTIME),
                 ("docs/notes.md", "The server reports uptime_seconds since it started.\n"),
@@ -4377,13 +4252,7 @@ mod tests {
                 s
             };
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             commit(
                 &ws.root,
                 &[
@@ -4459,13 +4328,7 @@ mod tests {
             let plan =
                 PLAN.replace("| A test calls `uptime_seconds`. |", "| `make check` is clean. |");
             commit(&ws.root, &[("plans/plan.md", Some(&plan))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             commit(
                 &ws.root,
                 &[
@@ -4537,13 +4400,7 @@ mod tests {
                 s
             };
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             let mut make = String::from("check:\n");
             for line in [10, 200, 400, 600, 790] {
                 make.push_str(&format!("\t@echo 'src/b_big.js:{line}:1: warning: unused'\n"));
@@ -4978,9 +4835,7 @@ mod tests {
             commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
             confirm_ask_as(
                 ws,
-                "Build it",
-                b"build phase 1 and keep the notes plain\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
+                b"Build Phase 1 of plans/plan.md, steps 1 to 2. Keep the README short and plain.\n",
                 "native_goal",
             );
             commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
@@ -5134,8 +4989,8 @@ mod tests {
                 "{got}"
             );
             let brief = std::fs::read_to_string(str_of(&got["task"], "brief")).unwrap();
-            assert!(brief.contains("build phase 1 and keep the notes plain"), "{brief}");
-            assert!(!brief.contains("Keep the README"), "the prompt is not the person's words");
+            assert!(brief.contains("Keep the README short and plain."), "{brief}");
+            assert!(!brief.contains("show each check"), "the rules are not the person's words");
             assert_eq!(take(ws, e, None).unwrap()["state"], "waiting", "the maps wait for it");
         });
     }
@@ -5163,7 +5018,7 @@ mod tests {
             let words = "Add `uptime_seconds` to src/uptime.js for the server. Make the colour \
                          scheme lavender everywhere. Describe it in docs/changelog.md as well.\n";
             let prompt = format!("/goal {words}");
-            confirm_ask_as(ws, "Uptime", words.as_bytes(), prompt.as_bytes(), "native_goal");
+            confirm_ask_as(ws, prompt.as_bytes(), "native_goal");
             commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
             let e = &str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
             let got = take(ws, e, Some("requirements")).unwrap();
@@ -5221,22 +5076,25 @@ mod tests {
             assert!(array_of(&out, "errors").iter().any(|x| x["at"] == at), "{at}: {out}");
         };
         refused_at(
-            submitted(|a| answer("Keep the README short and plain", a, "cross")),
+            submitted(|a| answer("show each check as you run it", a, "cross")),
             "requirements[0].quote",
         );
         refused_at(
-            submitted(|_| answer("keep the notes plain", "ask_other", "cross")),
+            submitted(|_| answer("Keep the README short and plain", "ask_other", "cross")),
             "requirements[0].ask",
         );
         refused_at(
-            submitted(|a| answer("keep the notes plain", a, "style")),
+            submitted(|a| answer("Keep the README short and plain", a, "style")),
             "requirements[0].kind",
         );
         refused_at(submitted(|_| json!({"requirements": []})), "requirements");
         // Only how the work is done: the map would have nothing to tie the
         // change to, and every window would read as unexplained.
-        refused_at(submitted(|a| answer("keep the notes plain", a, "process")), "requirements");
-        assert_eq!(submitted(|a| answer("keep the notes plain", a, "cross")).0, 0);
+        refused_at(
+            submitted(|a| answer("Keep the README short and plain", a, "process")),
+            "requirements",
+        );
+        assert_eq!(submitted(|a| answer("Keep the README short and plain", a, "cross")).0, 0);
     }
 
     /// Accepted, its requirements take the place of the sentences RingFrame
@@ -5255,7 +5113,7 @@ mod tests {
                 &q1,
                 json!({"requirements": [{"ask": ask, "kind": "cross",
                                                   "text": "the notes stay plain",
-                                                  "quote": "keep the notes plain"}]}),
+                                                  "quote": "Keep the README short and plain"}]}),
             );
             assert_eq!(submit(ws, &q1).unwrap().0, 0);
             let ctx = Ctx::load(ws, e).unwrap();
@@ -5268,6 +5126,57 @@ mod tests {
             );
             let map = take(ws, e, None).unwrap();
             assert_eq!(str_of(&map["task"], "role"), "map", "{map}");
+        });
+    }
+
+    /// An Ask Weft compiles holds its plan line and its route's rules after
+    /// the person's words: its requirements are the words' alone, a list of
+    /// rules the person wrote included.
+    #[test]
+    fn requirements_come_from_the_persons_words_not_the_plan_line_or_the_route() {
+        eval_bench(|ws| {
+            let plan = format!("# Uptime\n\n{PLAN}");
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(&plan))], "plan");
+            let words = "Build Phase 1 of plans/uptime/plan.md, steps 1 to 2.\n\nRules:\n\
+                         Keep the notes in docs/notes.md plain and short.\n";
+            crate::compile::compile(
+                ws,
+                crate::compile::Request {
+                    source: words.as_bytes(),
+                    host: json!({"name": "claude-code", "session_ref": "s1"}),
+                    capability: "native_goal",
+                    classification: json!({"task": ["implement"], "result": "workspace_change",
+                                           "effects": ["write"]}),
+                    plan: Some("plans/uptime/plan.md"),
+                    practices: vec!["practice.kiss".into()],
+                    classified_by: json!({"by": "person"}),
+                    selected_by: json!({"by": "person"}),
+                    links: Vec::new(),
+                    overrides: &crate::config::Overrides::default(),
+                    via: "weft",
+                },
+            )
+            .unwrap();
+            commit(&ws.root, &[("src/uptime.js", Some(UPTIME))], "work");
+            let e = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let texts: Vec<String> = Ctx::load(ws, &e)
+                .unwrap()
+                .requirements()
+                .iter()
+                .map(|r| str_of(r, "text"))
+                .collect();
+            assert!(
+                texts.iter().any(|t| t.contains("Keep the notes in docs/notes.md plain")),
+                "{texts:?}"
+            );
+            assert!(
+                texts.iter().any(|t| t.contains("Add `uptime_seconds`")),
+                "the plan's steps: {texts:?}"
+            );
+            for not_asked in ["Plan: plans/uptime/plan.md", "KISS", "Done Check", "For this route"]
+            {
+                assert!(!texts.iter().any(|t| t.contains(not_asked)), "{not_asked}: {texts:?}");
+            }
         });
     }
 

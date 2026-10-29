@@ -555,7 +555,7 @@ pub(crate) mod tests {
     fn the_profile_and_the_rules_are_read_through_the_crate() {
         fixture_home();
         let repo = folder("profile", true);
-        assert_eq!(profile(&repo, "codex").unwrap()["invocation_prefix"], "$rf:");
+        assert_eq!(profile(&repo, "codex").unwrap()["title"], "Codex");
         let observe = observe_tools(&repo, "claude-code").expect("claude-code's [observe]");
         assert!(observe.get("shell_tool").is_some(), "{observe}");
         let listed = rules(None).unwrap();

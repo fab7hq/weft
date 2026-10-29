@@ -360,19 +360,19 @@ mod tests {
                 ),
                 (
                     "harnesses/antigravity.toml",
-                    "69d406f9ec1e4c9f0a4d00368fb6f648785a5811553599037f2683b926a7b1e1",
+                    "27d95326f645ad9dc5035808129457d78f64609627d48b8d8f384119759c780d",
                 ),
                 (
                     "harnesses/claude-code.toml",
-                    "89965133aaf83dc972442a52a2f517032cc6acf0f546b69b43bd3d2e11337f1e",
+                    "45fa20f3c7f7a9281e8bae7b7e4049b2071237dca250e9c2b355175ce55ddef9",
                 ),
                 (
                     "harnesses/codex.toml",
-                    "4fd19ce9f22d14b19056112c84bfaf8e682edb09d6f7493db302b2b1c43961b8",
+                    "7e85d99eae2b1634e1df81edb891a9e285edf040658bc67c76d9dc60a088210e",
                 ),
                 (
                     "harnesses/unknown.toml",
-                    "dfedc7b4b74791f7e91d747c54fecf12e1b3bc8bf5d1186b2d72d6cb20673bfc",
+                    "5429a4c337924f7be8e2e555809c67e4bdc8682897804e82135c90b774be7461",
                 ),
             ],
         )];
@@ -387,15 +387,15 @@ mod tests {
                     ),
                     (
                         "config/deltas/antigravity.toml",
-                        "1ddda693ce7198d1ad82216655dd6a3ed5d8c6ee69afd78c77d64cbbc635ea17",
+                        "f3c0a8090df4b9b5f8df7540bdae704284871a569459c035d50b11219d99bd07",
                     ),
                     (
                         "config/deltas/claude-code.toml",
-                        "7ae9628082b3b9f6de57826f0372d2cd67179130885ded34d9ca7df7ab640d34",
+                        "38c818964e6914b80ab394cac51dbf75301f6cd46adb58852bfa854317137d95",
                     ),
                     (
                         "config/deltas/codex.toml",
-                        "0a32b0ba145c88d9f562e409d3696d81ea1e072926d1e19ce67f30f24520aebc",
+                        "34c7cc7789a4ec8c3178e45b6476082c4bf88c6cdf9b5ed2ac376d2bacd5da82",
                     ),
                     (
                         "config/deltas/practices/autonomous-trading.toml",
@@ -407,19 +407,19 @@ mod tests {
                     ),
                     (
                         "config/harnesses/antigravity.toml",
-                        "3f10f5de7eafcaca1850c4cf133ee2251fbe8e4c4e6d74e8e30f743510f0ebbe",
+                        "215fa820d8373a25bc122535521088a48e570e752edf312b58098c291cc9fc90",
                     ),
                     (
                         "config/harnesses/claude-code.toml",
-                        "b40c481fe868f2498b9522779e3bfb05942ebb37aeca91dafc8032943cf9ce9c",
+                        "2b4611f843ed3d4f80bb90278ae2a7bf2d27f2e3255fb358bb7ae33d30860ef5",
                     ),
                     (
                         "config/harnesses/codex.toml",
-                        "fb4c0a1d274c4054e4c4cbb262dc5a6d30f0ab07758cfa0441ddc11a61655441",
+                        "f04bd24a5db3891d9860075472d396a1e273767f30d6c9b342b23e589df581c9",
                     ),
                     (
                         "config/harnesses/unknown.toml",
-                        "4034ecdeaed228dd062c0a9c4f1cd4df9695646b9791ee53c45b7958b1e61ceb",
+                        "411ed2e0d3a094f4238a69917e55dddccc265ac3f0d1a8281309382b0d0a01be",
                     ),
                 ],
             ));
@@ -465,10 +465,7 @@ mod tests {
             let repo = repo();
             let ws = ws_for(repo.path());
             assert_eq!(super::home(), home.join(".fab7/rf"));
-            assert_eq!(
-                profiles::load("codex").unwrap()["confirmation"]["tool"],
-                "request_user_input"
-            );
+            assert_eq!(profiles::load("codex").unwrap()["profile_id"], "codex");
             // The project holds no configuration, and the home only the mirror.
             assert!(!ws.rf_dir().join("deltas").exists());
             let mut held: Vec<String> = std::fs::read_dir(home.join(".fab7/rf"))
@@ -494,7 +491,7 @@ mod tests {
 
     #[test]
     fn a_later_override_layer_wins_by_id_and_each_is_named() {
-        use crate::{deltas, profiles, testing::with_config_home};
+        use crate::{deltas, testing::with_config_home};
         with_config_home(|_| {
             let mut doc =
                 load_toml(&config_dir().join("deltas/practices/software-development.toml"))
@@ -508,25 +505,24 @@ mod tests {
                     "codex": {"entries": [{"id": "codex.native_plan.after_approval",
                         "status": "qualified", "text": "Project host rule."}]}}}},
             ]));
-            let result = deltas::render(
+            let tasks = ["implement".to_string()];
+            let practices = crate::rules::practice_rules(&layers, &tasks).unwrap();
+            assert_eq!(practices[0]["id"], "practice.kiss");
+            let route = crate::rules::route_rules(
                 &layers,
-                &profiles::load("codex").unwrap(),
+                "codex",
                 "native_plan",
                 &json!({"task": ["implement"], "result": "workspace_change"}),
-                &["qualified".to_string()],
-                deltas::DEFAULT_DOMAIN,
             )
             .unwrap();
-            assert_eq!(result["practice"]["selected"][0], "practice.kiss");
-            let text = result["text"].as_str().unwrap();
+            let text = crate::rules::compose("Do it.", &[], &practices[..1], &route, &tasks);
             assert!(text.contains("Project rule."), "{text}");
             assert!(!text.contains("Machine rule."));
             assert!(text.contains("Project host rule."));
-            let roots: Vec<&Value> = result["practice"]["layers"]
-                .as_array()
+            let roots: Vec<String> = deltas::layers(&layers, "practices/software-development")
                 .unwrap()
-                .iter()
-                .map(|l| &l["root"])
+                .into_iter()
+                .map(|l| l.root)
                 .collect();
             assert_eq!(roots, ["config", "weft", "weft-project"]);
             let listing = deltas::effective(&layers, deltas::DEFAULT_DOMAIN).unwrap();

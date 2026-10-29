@@ -4,47 +4,46 @@
 > under tension. That is this: the record everything else is measured against.
 > [Weft](../..) is the thread carried across them.
 
-RingFrame records what was asked of a coding agent, judges what came back, and
-seals the decision. Three acts over one append-only ledger in `.fab7/rf/`:
+RingFrame is Weft's engine. It records what a person asked of a coding agent,
+judges what came back, and seals their decision. Three acts over one
+append-only ledger in `.fab7/rf/`:
 
-- **Ask** — compile an intent into a prompt, with the directives that apply to
-  it, and record that it was confirmed before anything is sent.
-- **Eval** — write a facts-only brief over the open Asks and aggregate
-  independent judgements into a verdict.
-- **Seal** — record the decision that closes them, with a receipt that can be
+- **Ask** — the person's words, kept as they wrote them, with the practice
+  rules they chose and their harness's route rules. Sending it from Weft is
+  the confirmation.
+- **Eval** — the change over the open Asks, judged by harness sessions Weft
+  starts and feeds one task at a time. Every citation is checked, and the
+  verdict is computed, not judged.
+- **Seal** — the decision that closes the Asks, with a receipt that can be
   re-verified later.
 
 ## Weft links it
 
 This crate lives in Weft's repository. weftd links it and calls it through
-`ringframe::api`; the `ringframe` binary is built from it too. Only this crate
-writes `.fab7/rf/`: Weft renders what it wrote and never writes there itself.
+`ringframe::api`. Only this crate writes `.fab7/rf/`: Weft shows what it
+wrote and never writes there itself. A person uses RingFrame through Weft.
 
-## Using it
+## The `ringframe` command
 
-The binary installs beside `weft`:
-
-```sh
-curl -fsSL https://github.com/fab7hq/weft/releases/latest/download/install.sh | sh
-```
-
-It is driven by skills rather than typed by hand — `rf:ask`, `rf:eval` and
-`rf:seal` in Claude Code and Codex, from the [fab7 marketplace]. Twenty-one
-commands, each printing one JSON object with `--json`:
+The binary is built from this crate and installs beside `weft`. It holds what
+Eval's judges run (`eval task`, `eval submit`, and the lookups `eval window`,
+`eval grep`, `eval commits`), and commands to inspect and check a project's
+record:
 
 ```sh
-ringframe init                 # prepare this project
-ringframe ask list --json      # every compiled Ask, oldest first
-ringframe ledger verify --json # re-check every event and every artifact
+ringframe ask list --json          # every Ask, oldest first
+ringframe eval show --eval <id>    # an Eval's report
+ringframe ledger verify --json     # re-check every event and every artifact
 ```
 
-[fab7 marketplace]: https://github.com/fab7hq/fab7
+`ringframe --help` lists them all.
 
 ## Configuration is not here
 
-The profiles, the delta catalogs and the skills are configuration, synced from
-the marketplace into `~/.fab7/rf/`. This package ships none of it: a core with
-no configuration refuses to compile an Ask rather than inventing one.
+The harness profiles and the rule catalogs are configuration, synced from the
+[fab7 marketplace](https://github.com/fab7hq/fab7) into `~/.fab7/rf/`. This
+crate ships none of it: with no configuration it refuses to compile an Ask
+rather than invent one.
 
 ## License
 

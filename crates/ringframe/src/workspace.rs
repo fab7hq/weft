@@ -204,8 +204,8 @@ pub fn within(ws: &Workspace, path: &Path) -> Result<PathBuf, WorkspaceError> {
 /// subject. Refused here rather than at Eval, so that no Ask is ever recorded
 /// in a workspace whose work could not later be evaluated or sealed.
 /// What every command but `init` says in a repository that has not been set
-/// up. Only `ringframe init` makes a workspace: a hook, a skill or a command
-/// that records something writes into one that exists, and never creates it.
+/// up. Only `ringframe init` makes a workspace: a hook or a command that
+/// records something writes into one that exists, and never creates it.
 pub fn uninitialized(ws: &Workspace) -> String {
     format!(
         "{} has no RingFrame workspace. Go to your repository's root and run          `ringframe init` once, then try again.",

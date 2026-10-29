@@ -491,7 +491,7 @@ impl Config {
         }
     }
 
-    /// The `--override` value every `/rf:` command carries here, or `None`
+    /// The configuration layers RingFrame reads here, as `--override` takes them, or `None`
     /// when neither layer overrides anything: the machine's `[ringframe]`,
     /// then the project's, each as it stands. A `'` is written as JSON's
     /// `\u0027`, so the value is always one single-quoted shell word.

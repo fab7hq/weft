@@ -2,7 +2,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value, json};
 
@@ -124,9 +124,8 @@ pub fn log(
     f.write_all(&line)
 }
 
-/// Store a prompt someone observed (`ringframe observe prompt`): a `/rf:` or
-/// `$rf:` invocation in full, every other prompt as digest and byte count
-/// only, never its text. `by` is whoever observed it.
+/// Store a prompt someone observed (`ringframe observe prompt`) as its digest
+/// and byte count only, never its text. `by` is whoever observed it.
 pub fn observe_prompt(
     ws: &Workspace,
     host: &str,
@@ -140,125 +139,21 @@ pub fn observe_prompt(
     }
     let data = prompt.as_bytes();
     let version = host_version.map(str::trim).filter(|v| !v.is_empty());
-    let mut rec = json!({
+    let rec = json!({
         "session_id": session,
         "sha256": digest::sha256_bytes(data),
         "bytes": data.len(),
         "host_version": version.map_or(Value::Null, |v| Value::String(v.to_string())),
         "observed_by": by,
     });
-    let prefix = crate::profiles::fact(host, "invocation_prefix");
-    if prefix.as_ref().is_some_and(|p| prompt.starts_with(p)) {
-        rec["prompt"] = Value::String(prompt.to_string());
-    }
     log(ws, host, session, "prompts.jsonl", &rec)?;
-    // An Ask is on record the moment it is asked. A workspace that cannot
-    // hold one refuses it here as compile would later; observing stays silent.
-    if let Some(intent) = prefix.and_then(|p| ask_intent(&p, prompt)) {
-        let _ = crate::ask::request(ws, host, Some(session), intent.as_bytes(), by);
-    }
     Ok(Some(rec))
-}
-
-/// Compare source bytes with the argument bytes of a captured `/rf:ask`
-/// invocation.
-pub fn source_verified(
-    ws: &Workspace,
-    host: &str,
-    session: Option<&str>,
-    source: &[u8],
-) -> (String, Option<String>) {
-    let Some(session) = session.filter(|s| !s.is_empty()) else {
-        return ("unverified".into(), Some("no_session_ref".into()));
-    };
-    let path = ws.rf_dir().join("sessions").join(host).join(session).join("prompts.jsonl");
-    let Ok(raw) = std::fs::read_to_string(&path) else {
-        return ("unverified".into(), Some("no_capture".into()));
-    };
-    let want = String::from_utf8_lossy(source).trim_end_matches('\n').to_string();
-    let prefix = crate::profiles::fact(host, "invocation_prefix").unwrap_or_default();
-    for line in raw.lines() {
-        let rec: Value = serde_json::from_str(line).unwrap_or(Value::Null);
-        if matches(&prefix, rec.get("prompt").and_then(Value::as_str).unwrap_or_default(), &want) {
-            return ("exact".into(), None);
-        }
-    }
-    ("unverified".into(), Some("mismatch".into()))
-}
-
-/// The intent a `<prefix>ask <intent>` invocation carries, when it carries one.
-fn ask_intent<'a>(prefix: &str, prompt: &'a str) -> Option<&'a str> {
-    let (head, args) = prompt.split_once(' ')?;
-    (head == format!("{prefix}ask") && !args.trim().is_empty()).then_some(args)
-}
-
-/// A captured `<prefix>ask` invocation whose argument bytes are these.
-fn matches(prefix: &str, prompt: &str, want: &str) -> bool {
-    let (head, args) = prompt.split_once(' ').unwrap_or((prompt, ""));
-    head == format!("{prefix}ask") && args.trim_end_matches('\n') == want
-}
-
-/// The one session whose recent captured `/rf:ask` invocation carries exactly
-/// these source bytes.
-///
-/// The model never knows its own session id; the hook does. Ambiguity resolves
-/// to nothing.
-pub fn resolve_session(
-    ws: &Workspace,
-    host: &str,
-    source: &[u8],
-    window: Duration,
-) -> Option<Value> {
-    let base = ws.rf_dir().join("sessions").join(host);
-    let want = String::from_utf8_lossy(source).trim_end_matches('\n').to_string();
-    let cutoff = SystemTime::now().checked_sub(window)?;
-    let prefix = crate::profiles::fact(host, "invocation_prefix")?;
-    let mut sessions: Vec<PathBuf> =
-        std::fs::read_dir(&base).into_iter().flatten().flatten().map(|e| e.path()).collect();
-    sessions.sort();
-    let mut hits = Vec::new();
-    for session in sessions {
-        let path = session.join("prompts.jsonl");
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
-        if meta.modified().is_ok_and(|m| m < cutoff) {
-            continue;
-        }
-        let Ok(raw) = std::fs::read_to_string(&path) else { continue };
-        for line in raw.lines() {
-            let rec: Value = serde_json::from_str(line).unwrap_or(Value::Null);
-            if matches(
-                &prefix,
-                rec.get("prompt").and_then(Value::as_str).unwrap_or_default(),
-                &want,
-            ) {
-                hits.push(json!({
-                    "session_ref": session.file_name().unwrap_or_default().to_string_lossy(),
-                    "host_version": rec.get("host_version").cloned().unwrap_or(Value::Null),
-                }));
-                break;
-            }
-        }
-    }
-    (hits.len() == 1).then(|| hits.remove(0))
-}
-
-/// The window `resolve_session` looks back over when nothing says otherwise.
-pub const WINDOW: Duration = Duration::from_secs(1800);
-
-pub fn parse_duration(text: &str) -> Result<Duration, String> {
-    let bad = || "duration must look like 7d or 36h".to_string();
-    let (digits, unit) = text.split_at(text.len().checked_sub(1).ok_or_else(bad)?);
-    let n: u64 = digits.parse().map_err(|_| bad())?;
-    match unit {
-        "d" => Ok(Duration::from_secs(n * 86_400)),
-        "h" => Ok(Duration::from_secs(n * 3_600)),
-        _ => Err(bad()),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store;
     use crate::testing::{repo, ws_for};
 
     fn capture(
@@ -279,96 +174,26 @@ mod tests {
     }
 
     #[test]
-    fn capture_stores_only_rf_invocations() {
+    fn a_prompt_is_kept_as_its_digest_size_and_host_version_never_its_text() {
         // Profiles are read from the config home, which is per process.
         crate::testing::with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let other = capture(&ws, "claude-code", "hello there", "s1", None).unwrap().unwrap();
-            assert!(other["sha256"].is_string());
-            assert_eq!(other["bytes"], 11);
-            assert!(other.get("prompt").is_none(), "the text must never be stored");
-            assert!(!prompts(&ws, "claude-code", "s1").contains("hello there"));
-
-            let rec = capture(&ws, "claude-code", "/rf:ask fix the login bug", "s1", None)
-                .unwrap()
-                .unwrap();
-            assert!(rec["sha256"].is_string());
-            assert_eq!(rec["bytes"], "/rf:ask fix the login bug".len());
-            let text = prompts(&ws, "claude-code", "s1");
-            let stored: Vec<&str> = text.lines().collect();
-            assert_eq!(stored.len(), 2);
-            let second: Value = serde_json::from_str(stored[1]).unwrap();
-            assert_eq!(second["prompt"], "/rf:ask fix the login bug");
-        });
-    }
-
-    #[test]
-    fn find_invocation_matches_argument_bytes() {
-        // Profiles are read from the config home, which is per process.
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            capture(&ws, "claude-code", "/rf:ask fix the login bug", "s1", None).unwrap();
-            let got = |s: Option<&str>, b: &[u8]| source_verified(&ws, "claude-code", s, b);
-            assert_eq!(got(Some("s1"), b"fix the login bug\n"), ("exact".into(), None));
-            assert_eq!(
-                got(Some("s1"), b"fix login"),
-                ("unverified".into(), Some("mismatch".into()))
-            );
-            assert_eq!(got(Some("nope"), b"x"), ("unverified".into(), Some("no_capture".into())));
-            assert_eq!(got(None, b"x"), ("unverified".into(), Some("no_session_ref".into())));
-        });
-    }
-
-    #[test]
-    fn capture_records_host_version_and_resolves_the_session() {
-        // Profiles are read from the config home, which is per process.
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let rec = capture(
-                &ws,
-                "claude-code",
-                "/rf:ask fix the login bug",
-                "sA",
-                Some("2.1.263 (Claude Code)\n"),
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(rec["host_version"], "2.1.263 (Claude Code)");
-            assert_eq!(
-                resolve_session(&ws, "claude-code", b"fix the login bug\n", WINDOW),
-                Some(json!({"session_ref": "sA", "host_version": "2.1.263 (Claude Code)"}))
-            );
-            assert_eq!(resolve_session(&ws, "claude-code", b"something else", WINDOW), None);
-            capture(&ws, "claude-code", "/rf:ask fix the login bug", "sB", None).unwrap();
-            // Two sessions carry the same intent, so neither can be claimed.
-            assert_eq!(resolve_session(&ws, "claude-code", b"fix the login bug", WINDOW), None);
-        });
-    }
-
-    #[test]
-    fn the_codex_dollar_prefix_is_an_invocation_too() {
-        // Profiles are read from the config home, which is per process.
-        crate::testing::with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            let rec =
-                capture(&ws, "codex", "$rf:ask fix the login bug", "c1", Some("codex-cli 0.153.4"))
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(rec["prompt"], "$rf:ask fix the login bug");
-            assert_eq!(
-                source_verified(&ws, "codex", Some("c1"), b"fix the login bug\n"),
-                ("exact".into(), None)
-            );
-            assert_eq!(
-                resolve_session(&ws, "codex", b"fix the login bug", WINDOW),
-                Some(json!({"session_ref": "c1", "host_version": "codex-cli 0.153.4"}))
-            );
-            let plain = capture(&ws, "codex", "$rfx not ours", "c1", None).unwrap().unwrap();
-            assert!(plain.get("prompt").is_none());
+            for (n, prompt) in ["hello there", "/rf:ask fix the login bug"].into_iter().enumerate()
+            {
+                let rec =
+                    capture(&ws, "claude-code", prompt, "s1", Some("2.1.263 (Claude Code)\n"))
+                        .unwrap()
+                        .unwrap();
+                assert!(rec["sha256"].is_string());
+                assert_eq!(rec["bytes"], prompt.len());
+                assert_eq!(rec["host_version"], "2.1.263 (Claude Code)");
+                assert!(rec.get("prompt").is_none(), "the text must never be stored");
+                let kept = prompts(&ws, "claude-code", "s1");
+                assert_eq!(kept.lines().count(), n + 1);
+                assert!(!kept.contains(prompt), "{kept}");
+            }
+            assert!(store::events(&ws).unwrap().is_empty(), "a prompt records no Ask");
         });
     }
 

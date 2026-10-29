@@ -188,7 +188,7 @@ struct Project {
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
     routing: weft_core::routing::Routing,
-    /// The `--override` every `/rf:` command carries here, if any.
+    /// The configuration layers RingFrame reads here, if any.
     ringframe: Option<String>,
     /// Whether clients tell the person when an agent needs them.
     notify: bool,

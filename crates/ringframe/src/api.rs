@@ -2,8 +2,8 @@
 //! reads.
 //!
 //! Every call takes the workspace, prints nothing, and returns its result or an
-//! [`Error`] carrying RingFrame's refusal code. Each one records what the CLI
-//! records for the same inputs.
+//! [`Error`] carrying RingFrame's refusal code. Where the CLI has the same
+//! command, both record the same for the same inputs.
 
 use std::path::{Path, PathBuf};
 
@@ -101,7 +101,7 @@ pub fn init(ws: &Workspace) -> Result<(), Error> {
 }
 
 /// What `host`'s profile says, with its digest and the plans this project
-/// holds, as `profile show` prints it.
+/// holds.
 pub fn profile(ws: &Workspace, host: &str) -> Result<Value, Error> {
     let mut out =
         crate::profiles::for_host(&json!({"name": host, "version": ""})).map_err(config_error)?;
@@ -972,13 +972,12 @@ mod tests {
             let said = |args: &[&str]| cli(&aw, args);
 
             preflight(&aw).unwrap();
-            let got = prompt(&aw, &aa, Some("codex")).unwrap();
-            let want = said(&["ask", "copy", "--ask", &aa, "--host", "codex"]);
-            assert_eq!(got.text, want["prompt"].as_str().unwrap());
-            assert_eq!(got.delivery, want["delivery"]);
             let typed = prompt(&aw, &aa, Some("claude-code")).unwrap().text;
             assert!(typed.starts_with(&format!("/goal {WORDS}\n")), "{typed}");
-            assert_eq!(json!(typed), said(&["ask", "copy", "--ask", &aa]));
+            let codex = prompt(&aw, &aa, Some("codex")).unwrap();
+            let body = typed.strip_prefix("/goal ").unwrap();
+            assert!(codex.text.ends_with(body), "the same wording: {}", codex.text);
+            assert_eq!(codex.delivery["body_bytes"], json!(body.len()));
             assert_eq!(
                 prompt(&aw, &aa, None).unwrap(),
                 prompt(&aw, &aa, Some("claude-code")).unwrap()
@@ -1098,17 +1097,13 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_and_the_catalogs_say_what_the_cli_says() {
+    fn the_profile_names_its_harness_and_the_catalogs_say_what_the_cli_says() {
         eval_bench(|ws| {
             let said = |args: &[&str]| cli(ws, args);
-            assert_eq!(
-                profile(ws, "claude-code").unwrap(),
-                said(&["profile", "show", "--host", "claude-code", "--json"])
-            );
-            assert_eq!(
-                profile(ws, "loom").unwrap(),
-                said(&["profile", "show", "--host", "loom", "--json"])
-            );
+            let claude = profile(ws, "claude-code").unwrap();
+            assert_eq!(claude["host"], "claude-code");
+            assert_eq!(claude["sha256"], json!(crate::profiles::sha256("claude-code").unwrap()));
+            assert_eq!(profile(ws, "loom").unwrap()["profile_id"], "unknown");
             let got = catalogs(&Overrides::default()).unwrap();
             let listed = said(&["deltas", "list", "--json"]);
             assert_eq!(got["domains"], said(&["deltas", "domains", "--json"])["domains"]);

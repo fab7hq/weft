@@ -1,5 +1,5 @@
-//! The `ringframe` binary. The skills in `fab7` call it by name, and that
-//! string is the contract.
+//! The `ringframe` binary: what Eval's judges call, and the commands that
+//! inspect the record.
 
 use std::io::{Read, Write};
 

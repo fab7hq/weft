@@ -3,21 +3,17 @@ schema = "ringframe.profile/1"
 profile_id = "codex"
 host = "codex"
 surface = "native-tui"
-invocation_prefix = "$rf:"
-confirmation = { tool = "request_user_input" }
 # The composer folds a paste of this many characters or more into a placeholder, and a
 # folded paste is not scanned for slash commands. Measured against the installed host:
 # codex 0.155.1: a paste of 1001 characters or more becomes `[Pasted Content N chars]`.
 # A prompt at or over this length cannot carry its command in the same paste.
 paste_fold_chars = 1001
-subagents = true
-fallback = "human_handoff"
 
 # What the ringframe CLI reads about this harness. How to start it, resume it and
 # set its plugin up is not RingFrame's: those are in the harness's own file for
 # the tool that runs it. No text to match on its screen, and no hook payload: the CLI
 # reads none (ADR-0022).
-# The name a person reads, in the handoff the CLI writes.
+# The name a person reads.
 title = "Codex"
 # The folder names this harness's files go by in a repository (its plugin
 # folder): how an Eval links a step that names the harness to its files.
@@ -25,61 +21,12 @@ path_names = ["codex"]
 
 [routing]
 precedence = ["native_goal", "native_review", "native_plan", "native_direct"]
-guidance = [
-  """\
-Infer the intended outcome, required continuation, and effects from the \
-source intent; users do not need to name a native command.""",
-  """\
-Honor an explicit supported capability choice and preserve planning-only or \
-review-only scope. Never invent a completion condition or additional \
-permissions.""",
-  """\
-Compare capability selection guidance; use precedence when multiple \
-capabilities fit. Continuing objectives take precedence over the general \
-planning default for work with effects.""",
-  """\
-Large scope, the word fully, or write effects alone do not imply persistent \
-continuation. Explain material uncertainty in route gaps and let the user \
-revise the proposed route.""",
-  """\
-When work needs a plan before it can be built, the Ask that produces the \
-plan delivers the plan itself. Classify it as task plan with result plan, \
-even when the source intent names the change the plan is for. Building is a \
-later Ask that reads what was written. Classification happens before a \
-capability is chosen, so decide this from the work rather than from the \
-route; one Ask classified as both draws rules for work that turn will not \
-do.""",
-  """\
-Before routing work that builds something, look for the subject in `plans`, \
-matching on the subject rather than the wording. When it is not listed, this \
-Ask writes the plan and stops there, classified as task plan with result \
-plan, whatever the source intent calls the change, and building is the next \
-Ask once there are files to read. When it is listed, the plan is the \
-terminal condition, so this Ask builds it, classified as task implement with \
-result workspace_change, preferring the continuing objective, and naming the \
-plan by the path `plans` gives, rather than restating what it already says, since a route with a \
-character budget cannot carry the same constraints twice. The terminal \
-condition is the plan finished, not its first step, so the Ask covers the \
-whole sequence and its done-criteria; scope it to one step only when the \
-source intent itself asks for that step. Only `plans` answers this. A plan \
-named in conversation, or implied by scaffolding already in the workspace, \
-is not one this project holds.""",
-  """\
-A declared capability is a RingFrame integration contract, not proof that \
-the current host exposes it. Follow its delivery mode and limitations; \
-report unavailable tools or rejected commands without claiming activation.""",
-]
 
 [[capabilities]]
 id = "native_plan"
-selection = """\
-A plan or analysis before implementation, or bounded work with effects when \
-the user has not requested immediate execution. Do not prefer this general \
-default over a fitting continuing objective or dedicated review."""
 sources = ["https://learn.chatgpt.com/codex/reference/slash-commands"]
 purpose = "Codex Plan mode, entered by the person with /plan"
 activation = {}
-confirmation = { tool = "request_user_input" }
 continuation = """\
 the person submits the prompt; Codex Plan mode researches and ends with a \
 proposed plan, writing nothing; the person leaves Plan mode, and the next \
@@ -100,18 +47,12 @@ limitations = [
 
 [[capabilities]]
 id = "native_goal"
-selection = """\
-A continuing objective with a user-supplied terminal condition, where work \
-should continue until that condition is met. Infer this from the intended \
-continuation, without requiring the word goal. Do not select for a plan-only \
-or review-only request."""
 sources = [
   "https://learn.chatgpt.com/use-cases/follow-goals",
   "https://learn.chatgpt.com/codex/reference/slash-commands",
 ]
 purpose = "Codex persistent chat goal, entered by the person with /goal"
 activation = {}
-confirmation = { tool = "request_user_input" }
 continuation = """\
 the person submits the prompt; Codex works across turns and stops when it \
 judges the stopping condition met; pause, resume and clear are the person's"""
@@ -130,15 +71,9 @@ limitations = [
 
 [[capabilities]]
 id = "native_direct"
-selection = """\
-An answer, read-only investigation, or review without a fitting dedicated \
-capability; also work the user explicitly asks to execute immediately or \
-without planning. Effects listed in requires_explicit_request_for_effects \
-require that explicit source intent."""
 sources = ["https://developers.openai.com/codex/sandboxing"]
 purpose = "continue immediately under normal permissions"
 activation = {}
-confirmation = { tool = "request_user_input" }
 continuation = "same turn"
 effects = ["per source intent"]
 permission_owner = "host"
@@ -154,17 +89,12 @@ limitations = ["no delivery receipt exists for same-turn continuation"]
 
 [[capabilities]]
 id = "native_review"
-selection = """\
-Review existing code changes for bugs, regressions, or missing tests and \
-report findings without implementing fixes. For review followed by \
-implementation, choose a route covering the whole intent."""
 sources = [
   "https://developers.openai.com/codex/cli/slash-commands",
   "https://github.com/openai/codex/blob/main/codex-rs/tui/src/slash_command.rs",
 ]
 purpose = "Native code review with the compiled prompt as custom review instructions"
 activation = {}
-confirmation = { tool = "request_user_input" }
 continuation = """\
 The person submits the prompt; Codex reviews the specified changes and \
 reports findings."""

@@ -1,78 +1,16 @@
-//! Ask: persist a compiled intent, then append graded observations
-//! (confirmation, cancellation, submission, delivery).
+//! Ask: what is on record of each compiled intent, and the graded
+//! observations appended to it (submission, delivery).
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::store::LedgerError;
 use crate::workspace::Workspace;
-use crate::{config, deltas, digest, ids, profiles, schema, sessions, store, workspace};
+use crate::{config, digest, ids, profiles, schema, sessions, store, workspace};
 
 /// How far back a `PostToolUse` hook may reach for the Ask it belongs to.
 const DELIVERY_WINDOW_MS: i64 = 30 * 60 * 1000;
-
-/// The root is named because a handoff is submitted by hand, and nothing
-/// stops it being submitted somewhere else. The prompt's paths are relative
-/// to the workspace, so a session started one directory up writes the work
-/// outside the record that is meant to describe it — and the Eval then judges
-/// a tree where nothing happened.
-const HANDOFF: &str = "Prompt prepared for {host} ({capability}):
-{path}
-
-Submit it in this directory — the paths in the prompt are relative to it, and
-it is where this work is recorded:
-{root}
-";
-/// What to do when the prompt is short enough to go in as it stands. A prompt
-/// that folds gets different instructions, and printing both would contradict
-/// itself: "copy its complete contents" is the one thing that does not work.
-const HANDOFF_WHOLE: &str = "
-Open the file, copy its complete contents, and submit them in the
-active {host_title} TUI. RingFrame does not observe that submission.
-";
-const HANDOFF_OBSERVATION: &str = "
-RingFrame does not observe that submission.
-";
-
-/// A prompt long enough to be folded cannot carry its own command: the host
-/// stops reading a folded paste as text, so the command goes in as prose and
-/// the mode is never entered. Said here rather than left to be discovered.
-const HANDOFF_FOLDS_MODE: &str = "
-{host_title} folds a paste of {fold} characters or more into a placeholder and
-does not read a folded paste for commands, so pasting all {total} characters
-at once would run this as an ordinary request instead of {mode}.
-
-{how}
-";
-// The body is offered as its own thing rather than as "the rest of the file".
-// `{mode} ` is the first few characters of the first line, not a line of its
-// own, so "the rest" invites a copy that starts at line two and silently drops
-// the first sentence — which is the objective. Nothing here asks anyone to
-// split a line by eye.
-const HANDOFF_MODE_FIRST: &str = "Submit `{mode}` on its own first. {host_title} shows
-`{active}` once it is on. Then copy the body, which is the prompt without its
-command:
-
-    ringframe ask copy --ask {ask} --body
-
-Paste that and submit it.";
-const HANDOFF_TYPE_PREFIX: &str = "Type `{mode} ` yourself at the start of an empty
-composer — typed, the command is read; pasted, it is not. Then copy the body,
-which is the prompt without its command:
-
-    ringframe ask copy --ask {ask} --body
-
-Paste that beside what you typed, and submit.";
-
-fn fill(template: &str, pairs: &[(&str, String)]) -> String {
-    let mut out = template.to_string();
-    for (k, v) in pairs {
-        out = out.replace(&format!("{{{k}}}"), v);
-    }
-    out
-}
 
 /// The Ask cannot go on without a person: an authorization is missing, and
 /// only a person can grant one.
@@ -170,187 +108,6 @@ pub(crate) fn list_of(v: &Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// Interactive humans act by being present. Any other actor needs a
-/// pre-authorization record.
-fn authorized(
-    ws: &Workspace,
-    actor: &Value,
-    capability: &str,
-    effects: &[String],
-) -> Result<Value, AskError> {
-    let authority = {
-        let a = str_of(actor, "authority");
-        if a.is_empty() { "interactive".to_string() } else { a }
-    };
-    if str_of(actor, "kind") == "human" && authority == "interactive" {
-        return Ok(actor.clone());
-    }
-    let id = str_of(actor, "id");
-    let kind = str_of(actor, "kind");
-    let path = ws.rf_dir().join("authorizations").join(format!("{id}.json"));
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Err(NeedsInput {
-            reason: format!(
-                "authorization required: no record at authorizations/{id}.json for {kind}:{id}"
-            ),
-        }
-        .into());
-    };
-    let grant: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-    let allowed = grant.get("allowed").cloned().unwrap_or_else(|| json!({}));
-    let expired = grant
-        .get("expires")
-        .and_then(Value::as_str)
-        .and_then(sessions::parse_time)
-        .is_some_and(|e| e <= sessions::now_millis());
-    let granted: BTreeSet<String> = list_of(&allowed, "effects").into_iter().collect();
-    let ok = grant.get("actor").and_then(Value::as_str) == Some(&format!("{kind}:{id}"))
-        && list_of(&allowed, "capabilities").iter().any(|c| c == capability)
-        && effects.iter().all(|e| granted.contains(e))
-        && !expired;
-    if !ok {
-        let mut shown: Vec<&String> = effects.iter().collect();
-        shown.sort();
-        return Err(NeedsInput {
-            reason: format!(
-                "authorization does not cover {capability} with effects [{}] for {kind}:{id}",
-                shown.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(", ")
-            ),
-        }
-        .into());
-    }
-    let mut out = actor.clone();
-    out["authority"] = json!(format!("preauthorized:authorizations/{id}.json"));
-    Ok(out)
-}
-
-/// The classification as recorded: `task`, `result` and `effects`, with
-/// `workspace-change` read as `workspace_change`. Anything else a skill
-/// sends is left out: nothing reads it.
-fn normalize_classification(c: &Value) -> Value {
-    let fix = |v: &Value| match v.as_str() {
-        Some(s) => Value::String(s.replace('-', "_")),
-        None => v.clone(),
-    };
-    let mut out = Map::new();
-    for k in ["task", "result", "effects"] {
-        if let Some(v) = c.get(k) {
-            let next = match v.as_array() {
-                Some(items) => Value::Array(items.iter().map(fix).collect()),
-                None => fix(v),
-            };
-            out.insert(k.to_string(), next);
-        }
-    }
-    Value::Object(out)
-}
-
-/// `source.txt` plus exactly one of `prompt.txt` (legacy: the model wrote
-/// everything), `body.txt` (the CLI renders the directives after it) or
-/// `composed.txt` (the model applied the CLI-selected directives; the CLI adds
-/// the prefix only).
-fn staged_form(names: &[String]) -> Option<&'static str> {
-    match names.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["prompt.txt", "source.txt"] => Some("prompt"),
-        ["body.txt", "source.txt"] => Some("body"),
-        ["composed.txt", "source.txt"] => Some("composed"),
-        _ => None,
-    }
-}
-
-fn read_staged(staged: &Path) -> Result<(Vec<u8>, &'static str, Vec<u8>), AskError> {
-    let mut names: Vec<String> = std::fs::read_dir(staged)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .collect();
-    names.sort();
-    let Some(form) = staged_form(&names) else {
-        return Err(ledger(
-            "ask.staged_dir",
-            "must contain exactly source.txt and one of composed.txt, body.txt or prompt.txt",
-        ));
-    };
-    let read = |name: &str| -> Result<Vec<u8>, AskError> {
-        let data = std::fs::read(staged.join(name))?;
-        if data.is_empty()
-            || data.starts_with(b"\xef\xbb\xbf")
-            || String::from_utf8(data.clone()).is_err()
-        {
-            return Err(ledger(
-                "ask.staged_file",
-                format!("{name} must be non-empty UTF-8 without BOM"),
-            ));
-        }
-        Ok(data)
-    };
-    let source = read("source.txt")?;
-    let text = read(&names[0])?;
-    Ok((source, form, text))
-}
-
-fn without(block: &Value, drop: &[&str]) -> Value {
-    let mut out = Map::new();
-    for (k, v) in block.as_object().into_iter().flatten() {
-        if !drop.contains(&k.as_str()) {
-            out.insert(k.clone(), v.clone());
-        }
-    }
-    Value::Object(out)
-}
-
-/// prompt = capability prefix + text (+ rendered directives when the form is
-/// `body`). The selection is always the CLI's; a composed prompt records what
-/// was supplied, recomputed from the classification.
-fn render_prompt(
-    over: &crate::config::Overrides,
-    profile: &Value,
-    cap: &Value,
-    capability: &str,
-    classification: &Value,
-    text_in: &[u8],
-    form: &str,
-) -> Result<(Vec<u8>, Value, bool), AskError> {
-    let rendered = deltas::render(
-        over,
-        profile,
-        capability,
-        classification,
-        &["qualified".to_string()],
-        deltas::DEFAULT_DOMAIN,
-    )
-    .map_err(|e| ledger("ask.classification", e.0))?;
-    let body = String::from_utf8_lossy(text_in).trim_end_matches('\n').to_string();
-    let names_plan = rendered["host"]["entries"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .any(|e| e["names_plan"] == json!(true));
-    let mut text = format!("{}{body}\n", str_of(cap, "prompt_prefix"));
-    let rendered_text = str_of(&rendered, "text");
-    if form == "body" && !rendered_text.is_empty() {
-        text.push_str(rendered_text.trim_end_matches('\n'));
-        text.push('\n');
-    }
-    let mut provenance = json!({
-        "source": form,
-        "host": without(&rendered["host"], &["text", "entries"]),
-        "practice": without(&rendered["practice"], &["text", "entries"]),
-    });
-    if form == "composed" {
-        let route: Vec<Value> = rendered["host"]["entries"].as_array().cloned().unwrap_or_default();
-        let mut supplied = route.clone();
-        supplied.extend(rendered["practice"]["entries"].as_array().cloned().unwrap_or_default());
-        let (applied, omitted) =
-            deltas::audit_composed(&String::from_utf8_lossy(text_in), &supplied, &route)
-                .map_err(|e| ledger("ask.composed_rules", e.0))?;
-        provenance["applied"] = json!(applied);
-        provenance["omitted"] = json!(omitted);
-    }
-    Ok((text.into_bytes(), provenance, names_plan))
-}
-
 /// How this prompt has to reach the host, recorded rather than re-derived.
 ///
 /// `prompt.txt` stays what it has always been — the whole thing, prefix and
@@ -380,45 +137,14 @@ pub(crate) fn delivery_block(profile: &Value, cap: &Value, prompt: &[u8]) -> Val
     })
 }
 
-/// The RingFrame configuration a source intent carries: one that begins
-/// `--override '<json>'`, as a tool that runs RingFrame types it. Read from the
-/// exact source rather than trusted to the flag, because the model composing
-/// the Ask repeats that flag by hand and once left it off `ask compile` (q01,
-/// Claude Code), which compiled the prompt without the rules it turns on.
-fn source_override(source: &[u8]) -> Result<Option<config::Overrides>, AskError> {
-    let text = String::from_utf8_lossy(source);
-    let Some(rest) = text.trim_start().strip_prefix("--override '") else {
-        return Ok(None);
-    };
-    let Some(end) = rest.find('\'') else {
-        return Err(ledger("ask.override", "the source intent's --override has no closing quote"));
-    };
-    config::Overrides::parse(&rest[..end]).map(Some).map_err(|e| ledger("ask.override", e.0))
-}
-
 /// Refuse an Ask this workspace could never finish, before any work is done.
 ///
-/// `compile` already requires Git, but it runs at the end: by then the skill
-/// has read the profile, classified the intent, composed the prompt and staged
-/// it, and the person has waited through a model turn to be told the workspace
-/// was never usable. This is the same refusal, available first.
+/// The same refusal `compile` makes, available before the person writes an
+/// Ask they could not send.
 pub fn preflight(ws: &Workspace) -> Result<Value, AskError> {
     workspace::require_git(ws)?;
     workspace::require_initialized(ws)?;
     Ok(json!({"ready": true, "workspace": ws.root.to_string_lossy()}))
-}
-
-pub struct Compile<'a> {
-    pub staged: &'a Path,
-    pub title: &'a str,
-    pub capability: &'a str,
-    pub classification: Value,
-    pub route: Value,
-    pub host: Value,
-    pub links: Vec<Value>,
-    pub limitations: Vec<String>,
-    pub actor: Option<Value>,
-    pub overrides: &'a crate::config::Overrides,
 }
 
 /// Every link names something this workspace has, of the kind the link means:
@@ -467,21 +193,6 @@ pub(crate) fn check_links(ws: &Workspace, links: &[Value]) -> Result<(), AskErro
     Ok(())
 }
 
-/// The id a request names as the one it follows: `[follow-up <id>]` in front
-/// of the person's words, after any `--override '<json>'`.
-fn follow_up_marker(source: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(source);
-    let mut rest = text.trim_start();
-    if let Some(after) = rest.strip_prefix("--override '")
-        && let Some(end) = after.find('\'')
-    {
-        rest = after[end + 1..].trim_start();
-    }
-    let inner = rest.strip_prefix("[follow-up ")?;
-    let id = inner[..inner.find(']')?].trim();
-    (!id.is_empty()).then(|| id.to_string())
-}
-
 /// What a request is titled until its compile names it: the first line the
 /// person wrote, without the `--override '<json>'` or `[follow-up <id>]` a
 /// tool that runs RingFrame may put in front of it, cut to 72 characters.
@@ -504,306 +215,6 @@ pub fn requested_title(source: &[u8]) -> String {
     } else {
         line.to_string()
     }
-}
-
-/// The request a compile of these source bytes continues: recorded by this
-/// host, not yet compiled, with the same words (a trailing newline aside),
-/// and from the same session when both know theirs. The newest wins.
-fn open_request(
-    ws: &Workspace,
-    host: &str,
-    session: Option<&str>,
-    source: &[u8],
-) -> Result<Option<(String, Value)>, AskError> {
-    let want = |b: &[u8]| String::from_utf8_lossy(b).trim_end_matches('\n').to_string();
-    let wanted = want(source);
-    for (id, rec) in by_id(ws)?.into_iter().rev() {
-        let Some(req) = rec.requested.filter(|_| rec.compiled.is_none()) else { continue };
-        let d = &req["data"];
-        let theirs = d["host"]["session_ref"].as_str();
-        if str_of(&d["host"], "name") != host || session.zip(theirs).is_some_and(|(a, b)| a != b) {
-            continue;
-        }
-        let path = ws.rf_dir().join(str_of(&d["source"], "path"));
-        if std::fs::read(&path).is_ok_and(|b| want(&b) == wanted) {
-            return Ok(Some((id, d["source"].clone())));
-        }
-    }
-    Ok(None)
-}
-
-/// Put an Ask on record the moment it is asked, before any of it is composed:
-/// the person's words, as `asks/<id>/source.txt`, and `ask.requested`. The
-/// compile that follows takes the same id, so an Ask whose composing never
-/// finished is still on record as asked. Asked again before it is compiled,
-/// the same request is returned and nothing is written.
-pub fn request(
-    ws: &Workspace,
-    host: &str,
-    session: Option<&str>,
-    source: &[u8],
-    captured_by: &str,
-) -> Result<Value, AskError> {
-    workspace::require_git(ws)?;
-    if let Some((id, source_ref)) = open_request(ws, host, session, source)? {
-        return Ok(json!({"ask_id": id, "source": source_ref, "recorded": false}));
-    }
-    let ask_id = ids::new_id("ask");
-    let path = format!("asks/{ask_id}/source.txt");
-    let source_ref = json!({"role": "source_intent", "path": path,
-                            "bytes": source.len(), "sha256": digest::sha256_bytes(source)});
-    let data = json!({
-        "title": requested_title(source),
-        "source": source_ref,
-        "host": {"name": host, "session_ref": session},
-        "captured_by": captured_by,
-    });
-    // Marked as a follow-up of something this workspace has: linked from the
-    // start, so it is in its unit of work before it is composed.
-    let links: Vec<Value> = follow_up_marker(source)
-        .map(|id| vec![json!({"rel": "follows", "id": id})])
-        .filter(|l| check_links(ws, l).is_ok())
-        .unwrap_or_default();
-    let ev = event("ask.requested", &ask_id, &default_actor(None), data, &links);
-    schema::validate_event(&ev)?;
-    let wrote = store::publish(ws, &path, source, "source_intent")?;
-    assert_eq!(wrote, source_ref, "the published source is not what was recorded");
-    store::append(ws, &ev)?;
-    Ok(json!({"ask_id": ask_id, "source": source_ref, "recorded": true}))
-}
-
-/// `ringframe ask request --staged <dir> --host <json>`: the request from a
-/// skill, for a harness whose prompt reaches no hook. Reads the staged
-/// `source.txt` and leaves the staging for the compile.
-pub fn request_staged(ws: &Workspace, staged: &Path, host: &Value) -> Result<Value, AskError> {
-    let staged = workspace::within(ws, staged)?;
-    let source = std::fs::read(staged.join("source.txt"))?;
-    if source.is_empty() || String::from_utf8(source.clone()).is_err() {
-        return Err(ledger("ask.staged_file", "source.txt must be non-empty UTF-8"));
-    }
-    let name = str_of(host, "name");
-    let session = host.get("session_ref").and_then(Value::as_str);
-    request(ws, &name, session, &source, "skill")
-}
-
-/// The only Ask operation that writes artifacts. Appends `ask.compiled`.
-pub fn compile(ws: &Workspace, args: Compile<'_>) -> Result<Value, AskError> {
-    workspace::require_git(ws)?;
-    // Staging is read and then deleted, so it has to be inside the directory
-    // RingFrame was opened in. The skill already stages under `.fab7/rf/tmp/`.
-    let staged = workspace::within(ws, args.staged)?;
-    let (source, form, mut prompt) = read_staged(&staged)?;
-    // A request marked as a follow-up is linked to what it follows, whether
-    // or not the agent that composed it passed the link.
-    let links = match follow_up_marker(&source) {
-        Some(id) if args.links.is_empty() => vec![json!({"rel": "follows", "id": id})],
-        _ => args.links.clone(),
-    };
-    check_links(ws, &links)?;
-    let from_source = source_override(&source)?;
-    let overrides = from_source.as_ref().unwrap_or(args.overrides);
-    let classification = normalize_classification(&args.classification);
-    let mut host = args.host.clone();
-    let mut provenance: Vec<(&str, Value)> = Vec::new();
-    if str_of(&host, "session_ref").is_empty()
-        && let Some(found) =
-            sessions::resolve_session(ws, &str_of(&host, "name"), &source, sessions::WINDOW)
-    {
-        host["session_ref"] = found["session_ref"].clone();
-        provenance.push(("session_ref_source", json!("capture")));
-        if str_of(&host, "version").is_empty() && found["host_version"].is_string() {
-            host["version"] = found["host_version"].clone();
-            provenance.push(("version_source", json!("capture")));
-        }
-    }
-    let profile = profiles::for_host(&host)?;
-    let Some(cap) = profiles::capability(&profile, args.capability).cloned() else {
-        return Err(ledger(
-            "ask.capability",
-            format!("'{}' is not in profile {}", args.capability, str_of(&profile, "profile_id")),
-        ));
-    };
-    let effects = list_of(&classification, "effects");
-    let gated: Vec<String> = {
-        let mut g: Vec<String> = list_of(&cap, "requires_explicit_request_for_effects")
-            .into_iter()
-            .filter(|e| effects.contains(e))
-            .collect();
-        g.sort();
-        g
-    };
-    if !gated.is_empty() && args.route.get("explicit_direct_request") != Some(&json!(true)) {
-        // The alternatives come from the profile, not from one hardcoded id.
-        // Naming `native_plan` unconditionally sent an Ask that should have
-        // been a continuing objective into planning instead, because the
-        // refusal told it to go there.
-        let free: Vec<String> = profile["capabilities"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|c| str_of(c, "id") != args.capability)
-            .filter(|c| {
-                let needs = list_of(c, "requires_explicit_request_for_effects");
-                !effects.iter().any(|e| needs.contains(e))
-            })
-            .map(|c| str_of(c, "id"))
-            .collect();
-        return Err(ledger(
-            "ask.route_policy",
-            format!(
-                "{} with effects [{}] requires route.explicit_direct_request=true, which is only \
-                 true when the source intent itself asks to skip planning or act immediately; \
-                 otherwise select a capability that does not require it, and use this profile's \
-                 selection guidance to choose between them: {}",
-                args.capability,
-                gated.iter().map(|e| format!("'{e}'")).collect::<Vec<_>>().join(", "),
-                free.join(", ")
-            ),
-        ));
-    }
-    let mut compiler = json!({"source": "prompt"});
-    let mut names_plan = false;
-    if form != "prompt" {
-        let (rendered, prov, plan_rule) = render_prompt(
-            overrides,
-            &profile,
-            &cap,
-            args.capability,
-            &classification,
-            &prompt,
-            form,
-        )?;
-        prompt = rendered;
-        compiler = prov;
-        names_plan = plan_rule;
-    }
-    let prefix = str_of(&cap, "prompt_prefix");
-    if !prefix.is_empty() && !prompt.starts_with(prefix.as_bytes()) {
-        return Err(ledger(
-            "ask.prompt_prefix",
-            format!(
-                "{} on {} requires prompt.txt to begin with '{prefix}'",
-                args.capability,
-                str_of(&host, "name")
-            ),
-        ));
-    }
-    // A remedy starts from what was found, whichever harness runs it. The line
-    // is the CLI's, so it does not depend on a model remembering the path, and
-    // it goes after the command so a `/goal` still reads as one.
-    if let Some(l) = links.iter().find(|l| str_of(l, "rel") == "remediates") {
-        let line = format!(
-            "Read .fab7/rf/evals/{}/eval.md first: it lists what the last Eval found.\n",
-            str_of(l, "id")
-        );
-        prompt.splice(prefix.len()..prefix.len(), line.into_bytes());
-    }
-    let text = String::from_utf8_lossy(&prompt).to_string();
-    // A rule that works "the plan's steps" is only well defined beside the
-    // plan it means, so the prompt names one this workspace holds, by path.
-    if names_plan {
-        let held: Vec<String> = workspace::plans(ws)
-            .iter()
-            .filter_map(|p| p["slug"].as_str().map(str::to_string))
-            .collect();
-        if !held.iter().any(|slug| text.contains(&format!("plans/{slug}/"))) {
-            return Err(ledger(
-                "ask.plan_path",
-                if held.is_empty() {
-                    "this route's rules work a plan, and this workspace holds none: write the plan first"
-                        .to_string()
-                } else {
-                    format!(
-                        "this route's rules work a plan: name it by its path (plans/<slug>/plan.md); held: {}",
-                        held.join(", ")
-                    )
-                },
-            ));
-        }
-    }
-    if let Some(max) = cap.get("max_prompt_chars").and_then(Value::as_u64)
-        && text.trim_end_matches('\n').chars().count() as u64 > max
-    {
-        return Err(ledger(
-            "ask.prompt_too_long",
-            format!(
-                "{} on {} allows at most {max} characters",
-                args.capability,
-                str_of(&host, "name")
-            ),
-        ));
-    }
-    let actor = authorized(ws, &default_actor(args.actor.as_ref()), args.capability, &effects)?;
-    let mut limitations = args.limitations.clone();
-    limitations.extend(list_of(&cap, "limitations"));
-    if str_of(&profile, "profile_id") == "unknown" {
-        limitations.push("qualification gap: no profile for this host".into());
-    }
-    let session_ref = host.get("session_ref").and_then(Value::as_str).map(str::to_string);
-    // An Ask already on record as asked is this one: same id, and the source
-    // it was asked with, which is published already.
-    let requested = open_request(ws, &str_of(&host, "name"), session_ref.as_deref(), &source)?;
-    let ask_id = requested.as_ref().map_or_else(|| ids::new_id("ask"), |(id, _)| id.clone());
-    // Provisional references let the event be validated before anything is written.
-    let source_ref = match &requested {
-        Some((_, r)) => r.clone(),
-        None => json!({"role": "source_intent", "path": format!("asks/{ask_id}/source.txt"),
-                       "bytes": source.len(), "sha256": digest::sha256_bytes(&source)}),
-    };
-    let prompt_ref = json!({"role": "generated_prompt", "path": format!("asks/{ask_id}/prompt.txt"),
-                            "bytes": prompt.len(), "sha256": digest::sha256_bytes(&prompt)});
-    let (verified, reason) =
-        sessions::source_verified(ws, &str_of(&host, "name"), session_ref.as_deref(), &source);
-    if let Some(reason) = reason {
-        limitations.push(format!("source_verified unverified: {reason}"));
-    }
-    let mut host_block = json!({
-        "name": host.get("name").cloned().unwrap_or(Value::Null),
-        "version": host.get("version").cloned().unwrap_or(Value::Null),
-        "surface": host.get("surface").cloned().unwrap_or(Value::Null),
-        "session_ref": host.get("session_ref").cloned().unwrap_or(Value::Null),
-        "workspace": ws.describe(),
-        "profile_id": str_of(&profile, "profile_id"),
-        "profile_sha256": profiles::sha256(
-            profile.get("host").and_then(Value::as_str).unwrap_or("unknown"))?,
-    });
-    for (k, v) in provenance {
-        host_block[k] = v;
-    }
-    // Where the Eval reads each repository's change from: the commit it is at
-    // now, for the workspace and every repository the Ask names.
-    let (baselines, unreadable) = crate::evidence::baselines(
-        ws,
-        &[&String::from_utf8_lossy(&source), &String::from_utf8_lossy(&prompt)],
-    );
-    limitations.extend(unreadable);
-    let data = json!({
-        "title": args.title, "classification": classification,
-        "selected_capability": args.capability, "route_explanation": args.route,
-        "host": host_block, "source": source_ref, "prompt": prompt_ref,
-        "source_verified": verified, "limitations": limitations,
-        "delivery_mode": cap["delivery_mode"],
-        "delivery": delivery_block(&profile, &cap, &prompt),
-        "compiler": compiler, "base_commit": head(ws), "baselines": baselines,
-    });
-    let ev = event("ask.compiled", &ask_id, &actor, data.clone(), &links);
-    schema::validate_event(&ev)?;
-    if requested.is_none() {
-        let wrote = store::publish(ws, &str_of(&source_ref, "path"), &source, "source_intent")?;
-        // The references went into a validated event before the bytes existed;
-        // if they now disagree, the record would describe a file that is not there.
-        assert_eq!(wrote, source_ref, "the published source is not what was recorded");
-    }
-    let wrote_prompt =
-        store::publish(ws, &str_of(&prompt_ref, "path"), &prompt, "generated_prompt")?;
-    assert_eq!(wrote_prompt, prompt_ref, "the published prompt is not what was recorded");
-    store::append(ws, &ev)?;
-    std::fs::remove_dir_all(&staged)?;
-    Ok(json!({
-        "ask_id": ask_id, "source": source_ref, "prompt": prompt_ref,
-        "prompt_path": ws.rf_dir().join(str_of(&prompt_ref, "path")).to_string_lossy(),
-        "source_verified": verified, "delivery_mode": data["delivery_mode"],
-    }))
 }
 
 /// The workspace commit an Ask starts from; Eval's anchor when no Seal
@@ -835,120 +246,6 @@ fn append_event(
         out[k] = v.clone();
     }
     Ok(out)
-}
-
-/// The confirmation surface a profile declares. None under the unknown
-/// profile: never invent a surface.
-fn confirmation_surface(host: &Value) -> Value {
-    profiles::for_host(host)
-        .ok()
-        .and_then(|p| p.get("confirmation").and_then(|c| c.get("tool")).cloned())
-        .unwrap_or(Value::Null)
-}
-
-/// Record the skill-reported chooser answer. Evidence grade: observed by the
-/// skill, not by the host.
-pub fn confirm(ws: &Workspace, ask_id: &str, actor: Option<&Value>) -> Result<Value, AskError> {
-    let rec = record(ws, ask_id)?;
-    if rec.confirmed.is_some() {
-        return Err(ledger("ask.already_confirmed", ask_id));
-    }
-    let d = &rec.compiled.as_ref().expect("a record has a compiled event")["data"];
-    let actor = authorized(
-        ws,
-        &default_actor(actor),
-        &str_of(d, "selected_capability"),
-        &list_of(&d["classification"], "effects"),
-    )?;
-    append_event(
-        ws,
-        "ask.confirmed",
-        ask_id,
-        json!({"confirmation": {"observed_by": "skill", "surface": confirmation_surface(&d["host"])}}),
-        Some(&actor),
-    )
-}
-
-pub fn cancel(
-    ws: &Workspace,
-    ask_id: &str,
-    reason: Option<&str>,
-    actor: Option<&Value>,
-    attributed: bool,
-) -> Result<Value, AskError> {
-    let rec = record(ws, ask_id)?;
-    if rec.cancelled.is_some() {
-        return Err(ledger("ask.already_cancelled", ask_id));
-    }
-    let a = default_actor(actor);
-    let grade = if attributed {
-        json!({"attributed_by": format!("{}:{}", str_of(&a, "kind"), str_of(&a, "id"))})
-    } else {
-        json!({"observed_by": "skill"})
-    };
-    let mut data = json!({"cancellation": grade});
-    if let Some(reason) = reason.filter(|r| !r.is_empty()) {
-        data["reason"] = json!(reason);
-    }
-    append_event(ws, "ask.cancelled", ask_id, data, Some(&a))
-}
-
-/// The confirmation surface gave no answer. An observation, not an outcome.
-///
-/// Dismissed, timed out and closed-without-choosing are indistinguishable in
-/// what the surface returns, so this records what was seen — nothing — and
-/// says which surface it was seen on. It deliberately does **not** end the
-/// Ask: no answer is not a no, and treating it as one throws away a candidate
-/// the person may still want, while writing a refusal they never made.
-///
-/// The Ask stays open and confirmable. Whoever asks next — the same skill, or
-/// a tool that shows the record — can still put it to the person.
-pub fn unanswered(
-    ws: &Workspace,
-    ask_id: &str,
-    reason: Option<&str>,
-    actor: Option<&Value>,
-) -> Result<Value, AskError> {
-    let rec = record(ws, ask_id)?;
-    if rec.confirmed.is_some() {
-        return Err(ledger("ask.already_confirmed", ask_id));
-    }
-    if rec.cancelled.is_some() {
-        return Err(ledger("ask.already_cancelled", ask_id));
-    }
-    let a = default_actor(actor);
-    let d = &rec.compiled.as_ref().expect("a record has a compiled event")["data"];
-    let mut data = json!({"unanswered": {"observed_by": "skill", "surface": confirmation_surface(&d["host"])}});
-    if let Some(reason) = reason.filter(|r| !r.is_empty()) {
-        data["reason"] = json!(reason);
-    }
-    append_event(ws, "ask.unanswered", ask_id, data, Some(&a))
-}
-
-/// The person attests that they submitted the prompt, possibly edited. Human
-/// attestation, not host evidence.
-pub fn submitted(
-    ws: &Workspace,
-    ask_id: &str,
-    as_modified: bool,
-    actor: Option<&Value>,
-) -> Result<Value, AskError> {
-    let rec = record(ws, ask_id)?;
-    let a = default_actor(actor);
-    let d = &rec.compiled.as_ref().expect("a record has a compiled event")["data"];
-    append_event(
-        ws,
-        "ask.submission",
-        ask_id,
-        json!({
-            "state": "attributed", "observed_by": null,
-            "attributed_by": format!("{}:{}", str_of(&a, "kind"), str_of(&a, "id")),
-            "as_modified": as_modified,
-            "host": {"name": d["host"]["name"], "session_ref": d["host"]["session_ref"]},
-            "prompt_sha256": d["prompt"]["sha256"],
-        }),
-        Some(&a),
-    )
 }
 
 /// A later user prompt whose bytes equal one compiled `prompt.txt`:
@@ -1160,9 +457,6 @@ fn unstored_prefix(d: &Value) -> String {
 /// Everything the ledger says about one Ask.
 #[derive(Default, Clone)]
 pub struct AskRecord {
-    /// Asked, before anything was composed. Absent from an Ask compiled
-    /// before requests were recorded.
-    pub requested: Option<Value>,
     pub compiled: Option<Value>,
     pub confirmed: Option<Value>,
     pub cancelled: Option<Value>,
@@ -1184,7 +478,6 @@ fn by_id(ws: &Workspace) -> Result<Vec<(String, AskRecord)>, AskError> {
         let rec = &mut out.iter_mut().find(|(k, _)| *k == id).expect("just inserted").1;
         match kind {
             "submission" => rec.submissions.push(ev),
-            "requested" => rec.requested = Some(ev),
             "compiled" => rec.compiled = Some(ev),
             "confirmed" => rec.confirmed = Some(ev),
             "cancelled" => rec.cancelled = Some(ev),
@@ -1244,7 +537,7 @@ fn append_delivery(
         "mode": mode, "mechanism": mechanism, "state": state,
         "qualification": qualification,
         "receipt": receipt,
-        "submission": if mode == "human_handoff" { "unobserved" } else { "not_applicable" },
+        "submission": "not_applicable",
         "limitations": all,
     });
     let ev = event("ask.delivery", ask_id, &default_actor(actor), data.clone(), &[]);
@@ -1329,109 +622,6 @@ pub fn delivery_observed(
         },
         None,
     )?))
-}
-
-pub fn delivery_handoff(ws: &Workspace, ask_id: &str) -> Result<(String, Value), AskError> {
-    let compiled = record(ws, ask_id)?.compiled.expect("compiled");
-    let d = &compiled["data"];
-    let path = ws.rf_dir().join(str_of(&d["prompt"], "path"));
-    let host = str_of(&d["host"], "name");
-    // The name a person reads; the host's id when its profile gives none.
-    let title = profiles::fact(&host, "title").unwrap_or_else(|| host.clone());
-    let mut text = fill(
-        HANDOFF,
-        &[
-            ("host", host.clone()),
-            ("capability", str_of(d, "selected_capability")),
-            ("path", path.to_string_lossy().to_string()),
-            ("root", ws.root.to_string_lossy().to_string()),
-        ],
-    );
-    // One instruction, never two: a prompt that folds cannot be pasted whole,
-    // so saying "copy its complete contents" beside the fold advice would
-    // contradict it.
-    let folded = handoff_mode(d.get("delivery").unwrap_or(&Value::Null), &title, ask_id);
-    if folded.is_empty() {
-        text.push_str(&fill(HANDOFF_WHOLE, &[("host_title", title.clone())]));
-    } else {
-        text.push_str(HANDOFF_OBSERVATION);
-        text.push_str(&folded);
-    }
-    let rec = append_delivery(
-        ws,
-        ask_id,
-        &compiled,
-        Delivery {
-            mode: "human_handoff",
-            mechanism: Value::Null,
-            state: "handoff_ready",
-            receipt: json!({"path": str_of(&d["prompt"], "path"), "emitted_by": "cli"}),
-            limitations: vec!["submission unobserved".into()],
-        },
-        None,
-    )?;
-    Ok((text, rec))
-}
-
-/// What the person has to do differently because this prompt carries a mode.
-///
-/// Nothing, unless the prompt is long enough for the host to fold it. A record
-/// from before `delivery` existed has no mode here and says nothing extra.
-fn handoff_mode(delivery: &Value, title: &str, ask_id: &str) -> String {
-    let mode = delivery.get("mode").and_then(Value::as_str).unwrap_or_default();
-    if mode.is_empty() || delivery.get("folds") != Some(&json!(true)) {
-        return String::new();
-    }
-    let active = str_of(delivery, "mode_active");
-    let how = if str_of(delivery, "mode_kind") == "mode" && !active.is_empty() {
-        fill(
-            HANDOFF_MODE_FIRST,
-            &[
-                ("mode", mode.to_string()),
-                ("host_title", title.to_string()),
-                ("active", active),
-                ("ask", ask_id.to_string()),
-            ],
-        )
-    } else {
-        fill(HANDOFF_TYPE_PREFIX, &[("mode", mode.to_string()), ("ask", ask_id.to_string())])
-    };
-    let total = delivery.get("prefix_bytes").and_then(Value::as_u64).unwrap_or(0)
-        + delivery.get("body_bytes").and_then(Value::as_u64).unwrap_or(0);
-    fill(
-        HANDOFF_FOLDS_MODE,
-        &[
-            ("host_title", title.to_string()),
-            ("fold", delivery.get("paste_fold_chars").map_or(String::new(), |v| v.to_string())),
-            ("total", total.to_string()),
-            ("mode", mode.to_string()),
-            ("how", how),
-        ],
-    )
-}
-
-pub fn delivery_state(
-    ws: &Workspace,
-    ask_id: &str,
-    state: &str,
-    reason: &str,
-) -> Result<Value, AskError> {
-    let compiled = record(ws, ask_id)?.compiled.expect("compiled");
-    let declared = str_of(&compiled["data"], "delivery_mode");
-    let mode = if declared == "unsupported" { "human_handoff".to_string() } else { declared };
-    append_delivery(
-        ws,
-        ask_id,
-        &compiled,
-        Delivery {
-            mode: &mode,
-            mechanism: Value::Null,
-            state,
-            receipt: Value::Null,
-            limitations: vec![reason.to_string()],
-        },
-        None,
-    )
 }
 
 pub fn submission_grade(rec: &AskRecord) -> &'static str {
@@ -1568,122 +758,76 @@ mod tests {
     use super::*;
     use crate::testing::{repo, with_config_home, ws_for};
 
-    fn host() -> Value {
-        json!({"name": "claude-code", "version": "2.1.260", "surface": "native-tui",
-               "session_ref": "s1"})
+    fn bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
+        with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            body(&ws)
+        })
     }
 
-    fn cls() -> Value {
-        json!({"task": ["plan"], "result": "plan", "interaction": "approval_gated",
-               "horizon": "session", "effects": ["read"]})
-    }
-
-    fn route() -> Value {
-        json!({"fits": "bounded",
-               "alternatives": [{"capability": "native_direct", "reason": "no review"}],
-               "continuation": "plan review", "effects": "reads", "gaps": []})
-    }
-
-    /// A staging directory holding `source.txt` and one prompt form.
-    fn stage_named(ws: &Workspace, name: &str, source: &[u8], prompt: &[u8]) -> std::path::PathBuf {
-        let mut d = ws.rf_dir().join("tmp").join("stage-1");
-        let mut n = 1;
-        while d.exists() {
-            n += 1;
-            d = ws.rf_dir().join("tmp").join(format!("stage-{n}"));
-        }
-        std::fs::create_dir_all(&d).unwrap();
-        std::fs::write(d.join("source.txt"), source).unwrap();
-        std::fs::write(d.join(name), prompt).unwrap();
-        d
-    }
-
-    fn stage(ws: &Workspace) -> std::path::PathBuf {
-        stage_named(ws, "prompt.txt", b"fix the login bug\n", b"Fix the login bug.\n")
-    }
-
-    fn staged_prompt(ws: &Workspace, prompt: &[u8]) -> std::path::PathBuf {
-        stage_named(ws, "prompt.txt", b"fix the login bug\n", prompt)
-    }
-
-    /// Defaults with keyword overrides, for building a `Compile` in tests.
-    struct Args {
-        staged: Option<std::path::PathBuf>,
-        title: String,
-        capability: String,
-        classification: Value,
-        route: Value,
-        host: Value,
+    /// An Ask of these words, as Weft compiles and confirms one.
+    fn ask(
+        ws: &Workspace,
+        words: &[u8],
+        host: &str,
+        capability: &str,
         links: Vec<Value>,
-        actor: Option<Value>,
-        overrides: crate::config::Overrides,
-    }
-
-    impl Default for Args {
-        fn default() -> Self {
-            Args {
-                staged: None,
-                title: "Login fix".into(),
-                capability: "native_plan".into(),
-                classification: cls(),
-                route: route(),
-                host: host(),
-                links: Vec::new(),
-                actor: None,
-                overrides: crate::config::Overrides::default(),
-            }
-        }
-    }
-
-    fn compile_with(ws: &Workspace, args: Args) -> Result<Value, AskError> {
-        let staged = args.staged.unwrap_or_else(|| stage(ws));
-        compile(
+    ) -> Result<Value, AskError> {
+        let classification = if capability == "native_plan" {
+            json!({"task": ["plan"], "result": "plan", "effects": ["read"]})
+        } else {
+            json!({"task": ["implement"], "result": "workspace_change", "effects": ["write"]})
+        };
+        crate::compile::compile(
             ws,
-            Compile {
-                staged: &staged,
-                title: &args.title,
-                capability: &args.capability,
-                classification: args.classification,
-                route: args.route,
-                host: args.host,
-                links: args.links,
-                limitations: Vec::new(),
-                actor: args.actor,
-                overrides: &args.overrides,
+            crate::compile::Request {
+                source: words,
+                host: json!({"name": host, "session_ref": "s1"}),
+                capability,
+                classification,
+                plan: None,
+                practices: Vec::new(),
+                classified_by: json!({"by": "person"}),
+                selected_by: json!({"by": "person"}),
+                links,
+                overrides: &config::Overrides::default(),
+                via: "weft",
             },
         )
+    }
+
+    fn plan(ws: &Workspace, words: &[u8]) -> Value {
+        ask(ws, words, "claude-code", "native_plan", Vec::new()).unwrap()
+    }
+
+    fn codex_plan(ws: &Workspace, words: &[u8]) -> Value {
+        ask(ws, words, "codex", "native_plan", Vec::new()).unwrap()
     }
 
     fn link(rel: &str, id: &str) -> Vec<Value> {
         vec![json!({"rel": rel, "id": id})]
     }
 
-    /// What the person asked as a follow-up says so: `[follow-up <id>]` in
-    /// front of their words links the Ask to what it follows, whether or not
-    /// the agent that composed it passed the link.
-    #[test]
-    fn a_request_marked_as_a_follow_up_is_linked_to_what_it_follows() {
-        bench(|ws| {
-            let first = str_of(&compile_with(ws, Args::default()).unwrap(), "ask_id");
-            let marked = format!("[follow-up {first}] also cover the expired token\n");
-            let staged = stage_named(ws, "prompt.txt", marked.as_bytes(), b"Cover it.\n");
-            let next =
-                compile_with(ws, Args { staged: Some(staged), ..Default::default() }).unwrap();
-            let compiled =
-                events(ws).into_iter().rev().find(|e| e["type"] == "ask.compiled").unwrap();
-            assert_eq!(compiled["links"], json!([{"rel": "follows", "id": first}]));
-            assert_eq!(crate::ask::unit_of(ws, &str_of(&next, "ask_id")).unwrap().len(), 2);
-            // Asked and not composed yet, it is linked already.
-            let asked = request(ws, "claude-code", Some("s1"), marked.as_bytes(), "hook").unwrap();
-            let requested =
-                events(ws).into_iter().rev().find(|e| e["type"] == "ask.requested").unwrap();
-            assert_eq!(str_of(&requested, "id"), str_of(&asked, "ask_id"));
-            assert_eq!(requested["links"], json!([{"rel": "follows", "id": first}]));
-            // A marker naming nothing here is refused, as a link would be.
-            let bad = stage_named(ws, "prompt.txt", b"[follow-up ask_gone] more\n", b"More.\n");
-            let e = compile_with(ws, Args { staged: Some(bad), ..Default::default() }).unwrap_err();
-            assert!(e.to_string().contains("ask.link_unknown"), "{e}");
-        });
+    fn ledger_error(e: AskError) -> LedgerError {
+        match e {
+            AskError::Ledger(e) => e,
+            other => panic!("wanted a ledger error, got {other}"),
+        }
+    }
+
+    fn events(ws: &Workspace) -> Vec<Value> {
+        store::events(ws).unwrap()
+    }
+
+    fn capture(ws: &Workspace, host: &str, session: &str, prompt: &str) -> String {
+        let rec = sessions::observe_prompt(ws, host, session, prompt, None, "weft").unwrap();
+        str_of(&rec.unwrap(), "sha256")
+    }
+
+    fn submitted(ws: &Workspace, host: &str, session: &str, prompt: &str) -> Option<Value> {
+        let sha = capture(ws, host, session, prompt);
+        submission_from_capture(ws, host, session, &sha, "hook:UserPromptSubmit").unwrap()
     }
 
     /// An Eval over the bench's two open Asks, opened and settled.
@@ -1694,15 +838,49 @@ mod tests {
         eval_id
     }
 
-    fn prompt_of(ws: &Workspace, out: &Value) -> String {
-        let path = format!("asks/{}/prompt.txt", str_of(out, "ask_id"));
-        std::fs::read_to_string(ws.rf_dir().join(path)).unwrap()
+    #[test]
+    fn a_requests_title_is_what_was_asked_without_what_weft_adds() {
+        assert_eq!(requested_title(b"fix the login bug\nand more"), "fix the login bug");
+        assert_eq!(
+            requested_title(b"--override '{\"a\": 1}' [follow-up evl_1] tidy the tests"),
+            "tidy the tests"
+        );
+        let long = "x".repeat(100);
+        assert_eq!(requested_title(long.as_bytes()).chars().count(), 72);
+    }
+
+    #[test]
+    fn preflight_clears_a_workspace_an_ask_could_finish() {
+        bench(|ws| {
+            assert_eq!(
+                preflight(ws).unwrap(),
+                json!({"ready": true, "workspace": ws.root.to_string_lossy()})
+            );
+        });
+    }
+
+    #[test]
+    fn preflight_refuses_what_compile_would_refuse() {
+        let dir = crate::testing::tmp_dir();
+        let plain = workspace::resolve(Some(dir.path()), None).unwrap();
+        let AskError::Workspace(e) = preflight(&plain).unwrap_err() else {
+            panic!("wanted a workspace error")
+        };
+        assert_eq!(e.code, "workspace.no_git");
+
+        crate::testing::run(&["git", "init", "-q", &dir.path().to_string_lossy()]);
+        let empty = workspace::resolve(Some(dir.path()), None).unwrap();
+        let AskError::Workspace(e) = preflight(&empty).unwrap_err() else {
+            panic!("wanted a workspace error")
+        };
+        assert_eq!(e.code, "workspace.no_commit");
+        assert!(e.detail.contains("first commit"), "{}", e.detail);
     }
 
     #[test]
     fn a_link_must_name_something_this_workspace_has() {
         bench(|ws| {
-            let first = str_of(&compiled(ws), "ask_id");
+            let first = str_of(&plan(ws, b"Fix the login bug.\n"), "ask_id");
             let open_eval = str_of(
                 &crate::evaluate::open_eval(ws, crate::evaluate::Open::default()).unwrap(),
                 "eval_id",
@@ -1710,7 +888,7 @@ mod tests {
             let before = events(ws).len();
             let refused = |links: Vec<Value>, code: &str| {
                 let e = ledger_error(
-                    compile_with(ws, Args { links, ..Default::default() }).unwrap_err(),
+                    ask(ws, b"More.\n", "claude-code", "native_plan", links).unwrap_err(),
                 );
                 assert_eq!(e.code, code, "{e}");
                 e.to_string()
@@ -1724,12 +902,11 @@ mod tests {
             assert!(unfinished.contains(&open_eval), "{unfinished}");
             assert_eq!(events(ws).len(), before, "a refused link writes nothing");
 
-            compile_with(ws, Args { links: link("revises", &first), ..Default::default() })
-                .unwrap();
-            compile_with(ws, Args { links: link("follows", &first), ..Default::default() })
-                .unwrap();
-            compile_with(ws, Args { links: link("follows", &open_eval), ..Default::default() })
-                .unwrap();
+            for links in
+                [link("revises", &first), link("follows", &first), link("follows", &open_eval)]
+            {
+                ask(ws, b"More.\n", "claude-code", "native_plan", links).unwrap();
+            }
         });
     }
 
@@ -1741,7 +918,7 @@ mod tests {
             let before = events(ws).len();
             for rel in ["remediates", "follows"] {
                 let e = ledger_error(
-                    compile_with(ws, Args { links: link(rel, &eval_id), ..Default::default() })
+                    ask(ws, b"Fix it.\n", "claude-code", "native_plan", link(rel, &eval_id))
                         .unwrap_err(),
                 );
                 assert_eq!(e.code, "ask.link_voided", "{e}");
@@ -1756,907 +933,112 @@ mod tests {
         bench(|ws| {
             let eval_id = completed_eval(ws);
             let read_first = format!(
-                "Read .fab7/rf/evals/{eval_id}/eval.md first: it lists what the last Eval found.\n"
+                "Read .fab7/rf/evals/{eval_id}/eval.md first: it lists what the last Eval found."
             );
-            let fix = compile_with(
-                ws,
-                Args { links: link("remediates", &eval_id), ..Default::default() },
-            )
-            .unwrap();
-            assert_eq!(prompt_of(ws, &fix), format!("{read_first}Fix the login bug.\n"));
-
-            let follow =
-                compile_with(ws, Args { links: link("follows", &eval_id), ..Default::default() })
+            let fix =
+                ask(ws, b"Fix it.\n", "claude-code", "native_plan", link("remediates", &eval_id))
                     .unwrap();
-            assert_eq!(prompt_of(ws, &follow), "Fix the login bug.\n");
-            assert_ne!(fix["prompt"]["sha256"], follow["prompt"]["sha256"]);
-
-            let mut r = route();
-            r["explicit_direct_request"] = json!(true);
-            let goal = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
-                    capability: "native_goal".into(),
-                    host: codex(),
-                    classification: goal_cls(),
-                    route: r,
-                    links: link("remediates", &eval_id),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                prompt_of(ws, &goal),
-                format!("/goal {read_first}Keep the suite green.\n"),
-                "the line goes inside the goal, after its command"
-            );
-        });
-    }
-
-    fn compiled(ws: &Workspace) -> Value {
-        compile_with(ws, Args::default()).unwrap()
-    }
-
-    fn ledger_error(e: AskError) -> LedgerError {
-        match e {
-            AskError::Ledger(e) => e,
-            other => panic!("wanted a ledger error, got {other}"),
-        }
-    }
-
-    fn events(ws: &Workspace) -> Vec<Value> {
-        store::events(ws).unwrap()
-    }
-
-    fn compiled_event(ws: &Workspace) -> Value {
-        events(ws).into_iter().find(|e| e["type"] == "ask.compiled").expect("a compiled Ask")
-    }
-
-    fn types(ws: &Workspace) -> Vec<String> {
-        events(ws).iter().map(|e| str_of(e, "type")).collect()
-    }
-
-    fn capture(
-        ws: &Workspace,
-        host: &str,
-        session: &str,
-        prompt: &str,
-        version: Option<&str>,
-    ) -> Value {
-        sessions::observe_prompt(ws, host, session, prompt, version, "weft").unwrap().unwrap()
-    }
-
-    /// One Ask by id, as `ask list` reports it.
-    fn ask_by_id(ws: &Workspace, id: &str) -> Value {
-        list_asks(ws)
-            .expect("list")
-            .into_iter()
-            .find(|a| str_of(a, "id") == id || str_of(a, "ask_id") == id)
-            .expect("that Ask")
-    }
-
-    /// The one Ask in a fixture workspace, as `ask list` reports it.
-    fn only_ask(ws: &Workspace) -> Value {
-        let mut asks = list_asks(ws).expect("list");
-        assert_eq!(asks.len(), 1, "this fixture holds one Ask");
-        asks.pop().expect("one")
-    }
-
-    fn bench<T>(body: impl FnOnce(&Workspace) -> T) -> T {
-        with_config_home(|_| {
-            let repo = repo();
-            let ws = ws_for(repo.path());
-            body(&ws)
-        })
-    }
-
-    #[test]
-    fn compile_publishes_two_artifacts_and_one_event() {
-        bench(|ws| {
-            capture(ws, "claude-code", "s1", "/rf:ask fix the login bug", None);
-            let out = compiled(ws);
-            assert!(str_of(&out, "ask_id").starts_with("ask_"));
-            assert_eq!(out["delivery_mode"], "native_dispatch");
-            assert_eq!(out["source_verified"], "exact");
-            assert_eq!(
-                std::fs::read(ws.rf_dir().join(str_of(&out["prompt"], "path"))).unwrap(),
-                b"Fix the login bug.\n"
-            );
-            assert!(!ws.rf_dir().join("tmp/stage-1").exists());
-            // The prompt hook put the Ask on record as asked; compile adds one event.
-            assert_eq!(types(ws), ["ask.requested", "ask.compiled"]);
-            let ev = compiled_event(ws);
-            assert_eq!(ev["id"], out["ask_id"]);
-            assert_eq!(ev["data"]["host"]["profile_id"], "claude-code");
-            assert_eq!(ev["data"]["host"]["workspace"]["rule"], "cwd");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            let shown = only_ask(ws);
-            assert_eq!(shown["outcome"], "compiled");
-            assert_eq!(shown["submission"], "unobserved");
-        });
-    }
-
-    /// An Ask is on record the moment the person asks it: the prompt hook
-    /// records their words as `ask.requested`, before any of it is composed,
-    /// and the compile that follows keeps its id and its source.
-    #[test]
-    fn an_ask_is_on_record_the_moment_it_is_asked_and_its_compile_keeps_the_id() {
-        bench(|ws| {
-            capture(ws, "claude-code", "s1", "/rf:ask fix the login bug", None);
-            let evs = events(ws);
-            assert_eq!(types(ws), ["ask.requested"]);
-            let id = str_of(&evs[0], "id");
-            assert!(id.starts_with("ask_"));
-            let d = &evs[0]["data"];
-            assert_eq!(d["title"], "fix the login bug");
-            assert_eq!(d["host"]["name"], "claude-code");
-            assert_eq!(d["host"]["session_ref"], "s1");
-            let source = ws.rf_dir().join(str_of(&d["source"], "path"));
-            assert_eq!(std::fs::read(source).unwrap(), b"fix the login bug");
-            assert!(list_asks(ws).unwrap().is_empty(), "not an Ask RingFrame can act on yet");
-
-            let out = compiled(ws);
-            assert_eq!(str_of(&out, "ask_id"), id, "the compile is the same Ask");
-            assert_eq!(out["source"], d["source"], "and its source is the one asked");
-            assert_eq!(types(ws), ["ask.requested", "ask.compiled"]);
-            assert_eq!(out["source_verified"], "exact");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            assert_eq!(only_ask(ws)["outcome"], "compiled");
-
-            // A revision is a new candidate, with an id of its own.
-            let again =
-                compile_with(ws, Args { links: link("revises", &id), ..Args::default() }).unwrap();
-            assert_ne!(str_of(&again, "ask_id"), id);
+            assert!(str_of(&fix, "prompt").contains(&read_first), "{}", fix["prompt"]);
+            let follow =
+                ask(ws, b"Fix it.\n", "claude-code", "native_plan", link("follows", &eval_id))
+                    .unwrap();
+            assert!(!str_of(&follow, "prompt").contains(&read_first), "{}", follow["prompt"]);
         });
     }
 
     #[test]
-    fn a_prompt_that_is_not_an_ask_requests_nothing() {
+    fn a_submission_is_the_prompt_as_typed_or_without_its_trailing_newline_once() {
         bench(|ws| {
-            capture(ws, "claude-code", "s1", "hello there", None);
-            capture(ws, "claude-code", "s1", "/rf:ask   ", None);
-            capture(ws, "claude-code", "s1", "/rf:eval the login fix", None);
-            assert!(types(ws).is_empty(), "{:?}", types(ws));
-        });
-    }
-
-    /// A harness with no prompt hook records the request from its skill,
-    /// from the staged source, which compile then reads from the same place.
-    /// Asked twice, it is recorded once.
-    #[test]
-    fn a_request_from_staging_is_recorded_once_and_compiled_under_its_id() {
-        bench(|ws| {
-            let staged = stage(ws);
-            let host = json!({"name": "claude-code", "surface": "native-tui"});
-            let first = request_staged(ws, &staged, &host).unwrap();
-            let second = request_staged(ws, &staged, &host).unwrap();
-            assert_eq!(first["ask_id"], second["ask_id"]);
-            assert_eq!(types(ws), ["ask.requested"]);
-            assert!(staged.exists(), "compile still reads the staging");
-            let out = compile_with(
-                ws,
-                Args { staged: Some(staged), host: host.clone(), ..Args::default() },
-            )
-            .unwrap();
-            assert_eq!(out["ask_id"], first["ask_id"]);
-        });
-    }
-
-    #[test]
-    fn a_requests_title_is_what_was_asked_without_what_weft_adds() {
-        assert_eq!(requested_title(b"fix the login bug\nand more"), "fix the login bug");
-        assert_eq!(
-            requested_title(b"--override '{\"a\": 1}' [follow-up evl_1] tidy the tests"),
-            "tidy the tests"
-        );
-        let long = "x".repeat(100);
-        assert_eq!(requested_title(long.as_bytes()).chars().count(), 72);
-    }
-
-    fn codex() -> Value {
-        json!({"name": "codex", "version": "0.155.1", "surface": "native-tui",
-               "session_ref": "c1"})
-    }
-
-    fn goal_cls() -> Value {
-        json!({"task": ["implement"], "result": "continuing_objective",
-               "interaction": "approval_gated", "horizon": "persistent", "effects": ["read"]})
-    }
-
-    #[test]
-    fn a_compiled_ask_records_the_mode_beside_the_prompt() {
-        // prompt.txt stays the whole thing; the mode it carries is recorded
-        // too. Both hosts fold a long paste and stop reading it for commands,
-        // so a client has to be able to send the command and the body apart.
-        // It can only do that if the record says which prefix is a mode and
-        // where the body starts.
-        bench(|ws| {
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let evs = events(ws);
-            let d = &evs[0]["data"]["delivery"];
-            assert_eq!(d["mode"], "/plan");
-            assert_eq!(d["mode_kind"], "mode");
-            assert_eq!(d["mode_active"], "Plan mode");
-            // The prompt itself is untouched, and the split is exact.
-            let prompt = std::fs::read(ws.rf_dir().join(str_of(&out["prompt"], "path"))).unwrap();
-            assert_eq!(prompt, b"/plan Ship the endpoint.\n");
-            let prefix = d["prefix_bytes"].as_u64().unwrap() as usize;
-            assert_eq!(&prompt[prefix..], b"Ship the endpoint.\n");
-            assert_eq!(prefix as u64 + d["body_bytes"].as_u64().unwrap(), prompt.len() as u64);
-            assert_eq!(d["paste_fold_chars"], 1001);
-            assert_eq!(d["folds"], false, "short enough to paste whole");
-        });
-    }
-
-    #[test]
-    fn a_prompt_past_the_fold_is_recorded_as_folding() {
-        bench(|ws| {
-            let mut long = b"/plan ".to_vec();
-            long.extend(std::iter::repeat_n(b'x', 1200));
-            long.push(b'\n');
-            compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, &long)),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(events(ws)[0]["data"]["delivery"]["folds"], true);
-        });
-    }
-
-    #[test]
-    fn an_inline_command_is_recorded_as_one_and_not_a_mode() {
-        // `/goal` takes its objective as the argument: sent alone it only
-        // views the goal, so there is no two-step to offer and the record
-        // says so.
-        bench(|ws| {
-            let mut r = route();
-            r["explicit_direct_request"] = json!(true);
-            compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
-                    capability: "native_goal".into(),
-                    host: codex(),
-                    classification: goal_cls(),
-                    route: r,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let d = &events(ws)[0]["data"]["delivery"];
-            assert_eq!(d["mode"], "/goal");
-            assert_eq!(d["mode_kind"], "inline");
-            assert_eq!(d["mode_active"], json!(null));
-        });
-    }
-
-    #[test]
-    fn a_capability_with_no_prefix_records_no_mode() {
-        bench(|ws| {
-            compiled(ws);
-            let d = &events(ws)[0]["data"]["delivery"];
-            assert_eq!(d["mode"], json!(null));
-            assert_eq!(d["mode_kind"], json!(null));
-            assert_eq!(d["prefix_bytes"], 0);
-        });
-    }
-
-    #[test]
-    fn compile_will_not_read_or_delete_a_staging_directory_outside_the_workspace() {
-        // Compile removes the staging directory when it is done, so a path
-        // that escaped would have RingFrame delete something nobody opened.
-        bench(|ws| {
-            let elsewhere = crate::testing::tmp_dir();
-            let staged = elsewhere.path().join("stage-1");
-            std::fs::create_dir_all(&staged).unwrap();
-            std::fs::write(staged.join("source.txt"), b"do it\n").unwrap();
-            std::fs::write(staged.join("prompt.txt"), b"/plan Do it.\n").unwrap();
-
-            let e = compile_with(ws, Args { staged: Some(staged.clone()), ..Default::default() })
-                .unwrap_err();
-            assert!(matches!(&e, AskError::Workspace(w) if w.code == "workspace.outside"), "{e}");
-            assert!(staged.exists(), "and it is still there");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-        });
-    }
-
-    #[test]
-    fn the_handoff_says_which_directory_to_submit_it_in() {
-        // A handoff is submitted by hand and nothing stops it being submitted
-        // one directory up. Observed: a plan and its build both landed in the
-        // parent repository while the record sat in the workspace, so the
-        // Eval would have judged a tree where nothing had happened.
-        bench(|ws| {
-            let out = compile_with(ws, Args::default()).unwrap();
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let (text, _) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
-            assert!(
-                text.contains(&ws.root.to_string_lossy().to_string()),
-                "the root the paths are relative to is named: {text}"
-            );
-        });
-    }
-
-    #[test]
-    fn the_handoff_says_how_to_submit_a_mode_it_cannot_paste_whole() {
-        bench(|ws| {
-            let mut long = b"/plan ".to_vec();
-            long.extend(std::iter::repeat_n(b'x', 1200));
-            long.push(b'\n');
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, &long)),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let (text, _) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
-            assert!(text.contains("1001 characters or more"), "{text}");
-            assert!(text.contains("Submit `/plan` on its own first"), "{text}");
-            assert!(text.contains("Plan mode"));
-
-            // A prompt short enough to paste whole says nothing extra.
-            let short = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Ship it.\n")),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            confirm(ws, &str_of(&short, "ask_id"), None).unwrap();
-            let (plain, _) = delivery_handoff(ws, &str_of(&short, "ask_id")).unwrap();
-            assert!(!plain.contains("characters or more"), "{plain}");
-        });
-    }
-
-    #[test]
-    fn the_handoff_never_asks_anyone_to_split_a_line_by_eye() {
-        // `/plan ` is the first few characters of the first line, not a line
-        // of its own. Telling someone to paste "the rest of the file" invites
-        // a copy that starts at line two and silently drops the first
-        // sentence — which is the objective.
-        bench(|ws| {
-            let mut long = b"/plan ".to_vec();
-            long.extend(std::iter::repeat_n(b'x', 1200));
-            long.push(b'\n');
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, &long)),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let id = str_of(&out, "ask_id");
-            confirm(ws, &id, None).unwrap();
-            let (text, _) = delivery_handoff(ws, &id).unwrap();
-            assert!(!text.contains("rest of the file"), "{text}");
-            assert!(!text.contains("everything after"), "{text}");
-            // It names the command that produces exactly what to paste.
-            assert!(text.contains(&format!("ringframe ask copy --ask {id} --body")), "{text}");
-            // And it does not also say to copy the whole thing, which is the
-            // one thing that cannot work here.
-            assert!(!text.contains("complete contents"), "{text}");
-        });
-    }
-
-    #[test]
-    fn the_body_is_the_prompt_without_its_command() {
-        bench(|ws| {
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let id = str_of(&out, "ask_id");
-            let whole = prompt_text(ws, &id).unwrap();
-            let body = prompt_body(ws, &id).unwrap();
-            assert_eq!(whole, "/plan Ship the endpoint.\n");
-            assert_eq!(body, "Ship the endpoint.\n");
-            // Typing the command and pasting the body reproduces the prompt
-            // byte for byte, which is the whole point.
-            assert_eq!(format!("/plan {body}"), whole);
-
-            // A capability with no prefix has nothing to drop.
-            let plain = compiled(ws);
-            let id = str_of(&plain, "ask_id");
-            assert_eq!(prompt_body(ws, &id).unwrap(), prompt_text(ws, &id).unwrap());
-        });
-    }
-
-    #[test]
-    fn a_prompt_that_fits_is_told_to_go_in_whole() {
-        bench(|ws| {
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Ship it.\n")),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let id = str_of(&out, "ask_id");
-            confirm(ws, &id, None).unwrap();
-            let (text, _) = delivery_handoff(ws, &id).unwrap();
-            assert!(text.contains("copy its complete contents"), "{text}");
-            assert!(!text.contains("--body"), "{text}");
-            assert!(text.contains("RingFrame does not observe"), "{text}");
-        });
-    }
-
-    #[test]
-    fn no_answer_leaves_the_ask_open_rather_than_refusing_it() {
-        // Codex's chooser returns the same empty answer whether it was
-        // dismissed, closed or timed out after its fixed two minutes. None of
-        // those is a no, so none of them ends the Ask: the candidate stays
-        // open for the person.
-        bench(|ws| {
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Ship the endpoint.\n")),
-                    host: codex(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let id = str_of(&out, "ask_id");
-            unanswered(ws, &id, Some("no answer within the chooser's limit"), None).unwrap();
-
-            let shown = only_ask(ws);
-            assert_eq!(shown["outcome"], "compiled", "not cancelled");
-            assert_eq!(shown["state"], "open", "and still usable");
-            assert!(
-                shown["unanswered_at"].is_string(),
-                "the record says it was asked and not answered"
-            );
-            assert!(open_asks(ws).unwrap().iter().any(|a| str_of(a, "ask_id") == id));
-
-            let last = events(ws).pop().unwrap();
-            assert_eq!(last["type"], "ask.unanswered");
-            assert_eq!(last["data"]["unanswered"]["observed_by"], "skill");
-            // Named, so the record says where the question went unanswered.
-            assert_eq!(last["data"]["unanswered"]["surface"], "request_user_input");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-        });
-    }
-
-    #[test]
-    fn an_unanswered_ask_can_still_be_confirmed_later() {
-        // The whole point: the person gets to say yes afterwards, from
-        // wherever they are — the same skill asking again, or Weft's board.
-        bench(|ws| {
-            let out = compiled(ws);
-            let id = str_of(&out, "ask_id");
-            unanswered(ws, &id, Some("chooser closed"), None).unwrap();
-            confirm(ws, &id, None).unwrap();
-            assert_eq!(only_ask(ws)["outcome"], "confirmed");
-        });
-    }
-
-    #[test]
-    fn an_ask_that_was_answered_or_refused_is_not_unanswered() {
-        bench(|ws| {
-            let yes = str_of(&compiled(ws), "ask_id");
-            confirm(ws, &yes, None).unwrap();
-            assert_eq!(
-                ledger_error(unanswered(ws, &yes, None, None).unwrap_err()).code,
-                "ask.already_confirmed"
-            );
-
-            let no = str_of(&compiled(ws), "ask_id");
-            cancel(ws, &no, Some("not what I meant"), None, false).unwrap();
-            assert_eq!(
-                ledger_error(unanswered(ws, &no, None, None).unwrap_err()).code,
-                "ask.already_cancelled"
-            );
-        });
-    }
-
-    #[test]
-    fn cancel_still_means_the_person_said_no() {
-        // Unanswered is not a softer cancel. An actual Cancel still ends it.
-        bench(|ws| {
-            let id = str_of(&compiled(ws), "ask_id");
-            cancel(ws, &id, Some("wrong route"), None, false).unwrap();
-            let shown = only_ask(ws);
-            assert_eq!(shown["outcome"], "cancelled");
-            assert_eq!(shown["state"], "cancelled");
-            assert!(open_asks(ws).unwrap().is_empty());
-        });
-    }
-
-    #[test]
-    fn preflight_clears_a_workspace_an_ask_could_finish() {
-        bench(|ws| {
-            assert_eq!(
-                preflight(ws).unwrap(),
-                json!({"ready": true, "workspace": ws.root.to_string_lossy()})
-            );
-        });
-    }
-
-    #[test]
-    fn preflight_refuses_what_compile_would_refuse_at_the_end() {
-        // The same refusal, before the skill classifies, composes and stages.
-        // `compile` has always required Git. It runs last, so the person
-        // waited through a model turn to learn the workspace was never usable.
-        let dir = crate::testing::tmp_dir();
-        let plain = workspace::resolve(Some(dir.path()), None).unwrap();
-        let e = preflight(&plain).unwrap_err();
-        let AskError::Workspace(e) = e else { panic!("wanted a workspace error") };
-        assert_eq!(e.code, "workspace.no_git");
-
-        crate::testing::run(&["git", "init", "-q", &dir.path().to_string_lossy()]);
-        let empty = workspace::resolve(Some(dir.path()), None).unwrap();
-        let AskError::Workspace(e) = preflight(&empty).unwrap_err() else {
-            panic!("wanted a workspace error")
-        };
-        assert_eq!(e.code, "workspace.no_commit");
-        assert!(e.detail.contains("first commit"), "{}", e.detail);
-    }
-
-    #[test]
-    fn confirm_and_cancel_are_appended_graded_events() {
-        bench(|ws| {
-            let id = str_of(&compiled(ws), "ask_id");
-            let rec = confirm(ws, &id, None).unwrap();
-            // The Claude profile has no top-level confirmation surface.
-            assert_eq!(rec["confirmation"], json!({"observed_by": "skill", "surface": null}));
-            assert_eq!(
-                ledger_error(confirm(ws, &id, None).unwrap_err()).code,
-                "ask.already_confirmed"
-            );
-            let later = cancel(ws, &id, Some("changed my mind"), None, true).unwrap();
-            assert_eq!(later["cancellation"], json!({"attributed_by": "human:local-user"}));
-            assert_eq!(types(ws), ["ask.compiled", "ask.confirmed", "ask.cancelled"]);
-            assert_eq!(only_ask(ws)["outcome"], "cancelled");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            assert_eq!(
-                ledger_error(confirm(ws, "ask_nope", None).unwrap_err()).code,
-                "ask.not_compiled"
-            );
-        });
-    }
-
-    #[test]
-    fn submission_observed_from_capture_and_attributed_by_human() {
-        bench(|ws| {
-            let codex_host = json!({"name": "codex", "surface": "native-tui"});
-            let out = compile_with(
-                ws,
-                Args {
-                    capability: "native_direct".into(),
-                    host: codex_host.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let other = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"Something else.\n")),
-                    title: "Other".into(),
-                    capability: "native_direct".into(),
-                    host: codex_host.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            // The person pastes the exact prompt; the hook captures its digest.
-            let rec = capture(ws, "codex", "c1", "Fix the login bug.\n", None);
-            let sub = submission_from_capture(
-                ws,
-                "codex",
-                "c1",
-                &str_of(&rec, "sha256"),
-                "hook:UserPromptSubmit",
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(sub["ask_id"], out["ask_id"]);
+            let one = plan(ws, b"Fix the login bug.\n");
+            let other = plan(ws, b"Something else.\n");
+            let typed = prompt_text(ws, &str_of(&one, "ask_id")).unwrap();
+            let sub = submitted(ws, "claude-code", "s1", &typed).unwrap();
+            assert_eq!(sub["ask_id"], one["ask_id"]);
             assert_eq!(sub["state"], "observed");
             assert_eq!(sub["observed_by"], "hook:UserPromptSubmit");
             assert_eq!(sub["match"], "exact");
-            // Once only.
-            assert!(
-                submission_from_capture(
-                    ws,
-                    "codex",
-                    "c1",
-                    &str_of(&rec, "sha256"),
-                    "hook:UserPromptSubmit"
-                )
-                .unwrap()
-                .is_none()
-            );
-            // Composers drop the trailing newline of a pasted file; that is
-            // still the same prompt.
-            let pasted = capture(ws, "codex", "c1", "Something else.", None);
-            let sub2 = submission_from_capture(
-                ws,
-                "codex",
-                "c1",
-                &str_of(&pasted, "sha256"),
-                "hook:UserPromptSubmit",
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(sub2["ask_id"], other["ask_id"]);
-            assert_eq!(sub2["match"], "trailing_newline_dropped");
-            assert_eq!(ask_by_id(ws, &str_of(&other, "ask_id"))["submission"], "observed");
-            let third = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"Third.\n")),
-                    title: "Third".into(),
-                    capability: "native_direct".into(),
-                    host: codex_host,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert!(
-                submission_from_capture(
-                    ws,
-                    "codex",
-                    "c1",
-                    &"f".repeat(64),
-                    "hook:UserPromptSubmit"
-                )
-                .unwrap()
-                .is_none()
-            );
-            assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
-            let att = submitted(ws, &str_of(&third, "ask_id"), true, None).unwrap();
-            assert_eq!(att["state"], "attributed");
-            assert_eq!(att["as_modified"], true);
-            assert_eq!(ask_by_id(ws, &str_of(&third, "ask_id"))["submission"], "attributed");
+            assert!(submitted(ws, "claude-code", "s1", &typed).is_none(), "once only");
+            // Composers drop the trailing newline of a pasted file.
+            let typed = prompt_text(ws, &str_of(&other, "ask_id")).unwrap();
+            let sub = submitted(ws, "claude-code", "s1", typed.trim_end()).unwrap();
+            assert_eq!(sub["ask_id"], other["ask_id"]);
+            assert_eq!(sub["match"], "trailing_newline_dropped");
+            assert!(submitted(ws, "claude-code", "s1", "Not an Ask.").is_none());
+            let listed = list_asks(ws).unwrap();
+            assert!(listed.iter().all(|a| a["submission"] == "observed"), "{listed:?}");
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }
 
     #[test]
-    fn prompt_text_for_copy() {
+    fn a_submission_matches_when_the_host_strips_its_slash_command_prefix() {
         bench(|ws| {
-            let id = str_of(&compiled(ws), "ask_id");
-            assert_eq!(prompt_text(ws, &id).unwrap(), "Fix the login bug.\n");
+            let out = codex_plan(ws, b"Fix the login bug.\n");
+            let typed = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
+            let body = typed.strip_prefix("/plan ").expect("codex plans by /plan");
+            // Codex hands its hook the text after "/plan ", without the newline.
+            let sub = submitted(ws, "codex", "c1", body.trim_end()).unwrap();
+            assert_eq!(sub["ask_id"], out["ask_id"]);
+            assert_eq!(sub["match"], "host_prefix_stripped");
         });
     }
 
     #[test]
-    fn confirm_resolves_session_and_version_from_capture() {
+    fn another_host_takes_the_same_wording_with_its_own_command_or_none() {
         bench(|ws| {
-            capture(
-                ws,
-                "claude-code",
-                "hook-session",
-                "/rf:ask fix the login bug",
-                Some("2.1.263 (Claude Code)"),
-            );
-            let out = compile_with(
-                ws,
-                Args {
-                    host: json!({"name": "claude-code", "surface": "native-tui"}),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            assert_eq!(out["source_verified"], "exact");
-            let host = compiled_event(ws)["data"]["host"].clone();
-            assert_eq!(host["session_ref"], "hook-session");
-            assert_eq!(host["session_ref_source"], "capture");
-            assert_eq!(host["version"], "2.1.263 (Claude Code)");
-            assert_eq!(host["version_source"], "capture");
-            assert_eq!(host["profile_id"], "claude-code");
-            let rec = delivery_observed(
-                ws,
-                "claude-code",
-                "hook-session",
-                "EnterPlanMode",
-                false,
-                "weft",
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(rec["state"], "native_accepted");
+            let out = codex_plan(ws, b"Fix the login bug.\n");
+            let id = str_of(&out, "ask_id");
+            let own = prompt_for_host(ws, &id, "codex").unwrap();
+            let body = prompt_body(ws, &id).unwrap();
+            assert_eq!(own["prompt"], format!("/plan {body}"));
+            assert_eq!(own["delivery"]["mode"], "/plan");
+            // Antigravity plans with its own /plan, a mode it shows.
+            let agy = prompt_for_host(ws, &id, "antigravity").unwrap();
+            assert_eq!(agy["prompt"], format!("/plan {body}"));
+            assert_eq!(agy["delivery"]["prefix_bytes"], 6);
+            // Claude Code has no command to plan by: the wording alone.
+            let claude = prompt_for_host(ws, &id, "claude-code").unwrap();
+            assert_eq!(claude["prompt"], body);
+            assert_eq!(claude["delivery"]["mode"], Value::Null);
         });
     }
 
     #[test]
-    fn compile_without_capture_is_unverified() {
+    fn a_prompt_sent_into_another_host_is_its_submission_there() {
         bench(|ws| {
-            let out = compiled(ws);
-            assert_eq!(out["source_verified"], "unverified");
-            assert_eq!(events(ws)[0]["data"]["source_verified"], "unverified");
+            // A host that plans by another command.
+            let dir = config::config_dir().join("harnesses");
+            let codex = std::fs::read_to_string(dir.join("codex.toml")).unwrap();
+            let other = codex
+                .replace("host = \"codex\"", "host = \"other\"")
+                .replace("profile_id = \"codex\"", "profile_id = \"other\"")
+                .replace("prompt_prefix = \"/plan \"", "prompt_prefix = \"/think \"");
+            std::fs::write(dir.join("other.toml"), other).unwrap();
+            let out = codex_plan(ws, b"Fix the login bug.\n");
+            let id = str_of(&out, "ask_id");
+            let theirs = str_of(&prompt_for_host(ws, &id, "other").unwrap(), "prompt");
+            assert!(theirs.starts_with("/think "), "{theirs}");
+            let sub = submitted(ws, "other", "s-9", theirs.trim_end()).unwrap();
+            assert_eq!(sub["ask_id"], out["ask_id"]);
+            assert_eq!(sub["match"], "receiving_host_prefix");
+            assert_eq!(sub["host"]["name"], "other");
         });
     }
 
     #[test]
-    fn compile_rejects_bad_staging_and_unknown_capability() {
+    fn two_asks_with_one_prompt_and_no_delivery_record_no_submission() {
         bench(|ws| {
-            let d = stage(ws);
-            std::fs::write(d.join("extra"), "x").unwrap();
-            let e = compile_with(ws, Args { staged: Some(d.clone()), ..Default::default() })
-                .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.staged_dir");
-            std::fs::remove_file(d.join("extra")).unwrap();
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(d.clone()),
-                    capability: "native_review".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.capability");
-            assert!(events(ws).is_empty());
-            assert!(d.join("source.txt").exists());
-        });
-    }
-
-    #[test]
-    fn a_direct_route_with_effects_needs_an_explicit_request() {
-        bench(|ws| {
-            let mut writes = cls();
-            writes["effects"] = json!(["write"]);
-            let e = compile_with(
-                ws,
-                Args {
-                    capability: "native_direct".into(),
-                    classification: writes.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            let e = ledger_error(e);
-            assert_eq!(e.code, "ask.route_policy");
-            // The refusal names what this profile actually offers instead of
-            // one hardcoded id. It named `native_plan` alone, so an Ask that
-            // should have been a continuing objective was sent to planning.
-            let offered = e.detail.rsplit_once(": ").expect("the alternatives").1;
-            assert!(offered.contains("native_plan"), "{offered}");
-            assert!(offered.contains("native_goal"), "the goal route is an option too: {offered}");
-            assert!(!offered.contains("native_direct"), "not the one just refused: {offered}");
-            assert!(events(ws).is_empty());
-            assert_eq!(std::fs::read_dir(ws.rf_dir().join("asks")).unwrap().count(), 0);
-
-            // The staging survived the refusal.
-            let mut explicit = route();
-            explicit["explicit_direct_request"] = json!(true);
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(ws.rf_dir().join("tmp/stage-1")),
-                    capability: "native_direct".into(),
-                    classification: writes,
-                    route: explicit,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(out["delivery_mode"], "native_dispatch");
-
-            let mut question = cls();
-            question["task"] = json!(["question"]);
-            question["result"] = json!("answer");
-            compile_with(
-                ws,
-                Args {
-                    staged: Some(stage_named(
-                        ws,
-                        "prompt.txt",
-                        b"what does auth.ts do?",
-                        b"Explain auth.ts.",
-                    )),
-                    title: "Q".into(),
-                    capability: "native_direct".into(),
-                    classification: question,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        });
-    }
-
-    #[test]
-    fn an_invalid_classification_publishes_nothing() {
-        bench(|ws| {
-            let mut bad = cls();
-            bad["task"] = json!(["add-endpoint"]);
-            let e =
-                compile_with(ws, Args { classification: bad, ..Default::default() }).unwrap_err();
-            assert!(ledger_error(e).detail.contains("classification.task"));
-            assert_eq!(std::fs::read_dir(ws.rf_dir().join("asks")).unwrap().count(), 0);
-            assert!(events(ws).is_empty());
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-            // Staging survives for a retry.
-            assert!(ws.rf_dir().join("tmp/stage-1/source.txt").exists());
-        });
-    }
-
-    #[test]
-    fn the_classification_keeps_task_result_and_effects_only() {
-        bench(|ws| {
-            let mut c = cls();
-            c["interaction"] = json!("approval-gated");
-            c["horizon"] = json!("one-turn");
-            c["concerns"] = json!(["api_surface"]);
-            c["domains"] = json!(["software-development"]);
-            c["result"] = json!("workspace-change");
-            compile_with(ws, Args { classification: c, ..Default::default() }).unwrap();
-            let recorded = events(ws)[0]["data"]["classification"].clone();
-            let keys: Vec<&String> = recorded.as_object().unwrap().keys().collect();
-            assert_eq!(keys, ["effects", "result", "task"]);
-            assert_eq!(recorded["result"], "workspace_change");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-        });
-    }
-
-    #[test]
-    fn an_unknown_host_falls_back_to_handoff() {
-        bench(|ws| {
-            let out = compile_with(
-                ws,
-                Args {
-                    host: json!({"name": "loom", "version": "1.0", "surface": "cli",
-                             "session_ref": null}),
-                    capability: "human_handoff".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(out["delivery_mode"], "human_handoff");
-            let limitations = events(ws)[0]["data"]["limitations"].to_string().to_lowercase();
-            assert!(limitations.contains("qualification"), "{limitations}");
-        });
-    }
-
-    #[test]
-    fn cancel_after_compile_keeps_both_artifacts() {
-        bench(|ws| {
-            let out = compiled(ws);
-            let rec =
-                cancel(ws, &str_of(&out, "ask_id"), Some("changed mind"), None, false).unwrap();
-            assert_eq!(types(ws), ["ask.compiled", "ask.cancelled"]);
-            assert_eq!(events(ws)[1]["data"]["reason"], "changed mind");
-            assert_eq!(rec["cancellation"], json!({"observed_by": "skill"}));
-            assert!(ws.rf_dir().join(str_of(&out["source"], "path")).exists());
-            assert!(ws.rf_dir().join(str_of(&out["prompt"], "path")).exists());
+            let a = plan(ws, b"Fix the login bug.\n");
+            plan(ws, b"Fix the login bug.\n");
+            let typed = prompt_text(ws, &str_of(&a, "ask_id")).unwrap();
+            assert!(submitted(ws, "claude-code", "s1", &typed).is_none());
         });
     }
 
     #[test]
     fn an_observed_delivery_tool_records_native_accepted_once() {
         bench(|ws| {
-            let out = compiled(ws);
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
+            let out = plan(ws, b"Fix the login bug.\n");
             let rec = delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
                 .unwrap()
                 .unwrap();
@@ -2668,8 +1050,7 @@ mod tests {
                 last["data"]["receipt"],
                 json!({"tool": "EnterPlanMode", "session_id": "s1", "captured_by": "weft"})
             );
-            assert_eq!(last["data"]["qualification"]["id"], "ringframe-ask-plan-q04");
-            // Already delivered: skip, and log why.
+            // Already delivered: skipped, and why is logged.
             assert!(
                 delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
                     .unwrap()
@@ -2680,15 +1061,13 @@ mod tests {
             )
             .unwrap();
             assert!(skipped.contains("no_candidate"), "{skipped}");
-            assert_eq!(types(ws).iter().filter(|t| *t == "ask.delivery").count(), 1);
         });
     }
 
     #[test]
     fn an_observed_failed_delivery_tool_records_failed() {
         bench(|ws| {
-            let out = compiled(ws);
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
+            plan(ws, b"Fix the login bug.\n");
             let rec = delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", true, "weft")
                 .unwrap()
                 .unwrap();
@@ -2699,32 +1078,14 @@ mod tests {
     #[test]
     fn an_observed_delivery_tool_ignores_other_sessions_tools_and_ambiguity() {
         bench(|ws| {
-            let out = compiled(ws);
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            assert!(
-                delivery_observed(ws, "claude-code", "other", "EnterPlanMode", false, "weft")
-                    .unwrap()
-                    .is_none()
-            );
-            assert!(
-                delivery_observed(ws, "claude-code", "s1", "Write", false, "weft")
-                    .unwrap()
-                    .is_none()
-            );
-            compile_with(
-                ws,
-                Args {
-                    staged: Some(stage_named(ws, "prompt.txt", b"a", b"b")),
-                    title: "second".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert!(
-                delivery_observed(ws, "claude-code", "s1", "EnterPlanMode", false, "weft")
-                    .unwrap()
-                    .is_none()
-            );
+            plan(ws, b"Fix the login bug.\n");
+            let seen = |session: &str, tool: &str| {
+                delivery_observed(ws, "claude-code", session, tool, false, "weft").unwrap()
+            };
+            assert!(seen("other", "EnterPlanMode").is_none());
+            assert!(seen("s1", "Write").is_none());
+            plan(ws, b"Something else.\n");
+            assert!(seen("s1", "EnterPlanMode").is_none());
             let skipped = std::fs::read_to_string(
                 ws.rf_dir().join("sessions/claude-code/s1/delivery-skipped.jsonl"),
             )
@@ -2734,907 +1095,52 @@ mod tests {
     }
 
     #[test]
-    fn handoff_emits_text_and_records_once() {
-        bench(|ws| {
-            let out = compiled(ws);
-            let id = str_of(&out, "ask_id");
-            confirm(ws, &id, None).unwrap();
-            let (text, rec) = delivery_handoff(ws, &id).unwrap();
-            let path = ws.rf_dir().join(str_of(&out["prompt"], "path"));
-            assert!(text.contains(&path.to_string_lossy().to_string()), "{text}");
-            assert!(text.contains("active Claude Code TUI"));
-            assert_eq!(rec["state"], "handoff_ready");
-            assert_eq!(events(ws).pop().unwrap()["data"]["submission"], "unobserved");
-            let e = delivery_state(ws, &id, "unavailable", "x").unwrap_err();
-            assert_eq!(ledger_error(e).code, "delivery.duplicate");
-        });
-    }
-
-    #[test]
-    fn the_codex_handoff_has_a_prompt_prefix_and_a_length_policy() {
-        bench(|ws| {
-            let host =
-                json!({"name": "codex", "version": "codex-cli 0.153.1", "surface": "native-tui"});
-            let mut goal = cls();
-            goal["result"] = json!("continuing_objective");
-            goal["horizon"] = json!("persistent");
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/goal Keep the checkout p95 under 800 ms.\n")),
-                    capability: "native_goal".into(),
-                    host: host.clone(),
-                    classification: goal.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(out["delivery_mode"], "human_handoff");
-
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"Keep the checkout fast.\n")),
-                    capability: "native_goal".into(),
-                    host: host.clone(),
-                    classification: goal.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.prompt_prefix");
-
-            let mut long = b"/goal ".to_vec();
-            long.extend(std::iter::repeat_n(b'x', 4000));
-            long.push(b'\n');
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, &long)),
-                    capability: "native_goal".into(),
-                    host,
-                    classification: goal,
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.prompt_too_long");
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-        });
-    }
-
-    #[test]
-    fn a_goal_too_long_for_claude_code_is_refused_before_anybody_submits_it() {
-        bench(|ws| {
-            let host = json!({"name": "claude-code", "version": "2.1.278",
-                              "surface": "native-tui"});
-            let mut goal = cls();
-            goal["result"] = json!("continuing_objective");
-            goal["horizon"] = json!("persistent");
-
-            let mut long = b"/goal ".to_vec();
-            long.extend(std::iter::repeat_n(b'x', 4000));
-            long.push(b'\n');
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, &long)),
-                    capability: "native_goal".into(),
-                    host: host.clone(),
-                    classification: goal.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            let e = ledger_error(e);
-            assert_eq!(e.code, "ask.prompt_too_long");
-            assert!(e.detail.contains("4000"), "the budget is named: {}", e.detail);
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-
-            // One that fits still compiles.
-            compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/goal Keep the suite green.\n")),
-                    capability: "native_goal".into(),
-                    host,
-                    classification: goal,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        });
-    }
-
-    #[test]
-    fn a_non_human_actor_needs_authorization_to_compile_or_confirm() {
-        bench(|ws| {
-            let agent = json!({"kind": "agent", "id": "ci", "authority": "preauthorized"});
-            let e = compile_with(ws, Args { actor: Some(agent.clone()), ..Default::default() })
-                .unwrap_err();
-            assert!(matches!(&e, AskError::Needs(n) if n.reason.contains("authorization")), "{e}");
-
-            std::fs::create_dir_all(ws.rf_dir().join("authorizations")).unwrap();
-            std::fs::write(
-                ws.rf_dir().join("authorizations/ci.json"),
-                serde_json::to_string(&json!({
-                    "schema": "ringframe.authorization/1", "actor": "agent:ci",
-                    "granted_by": "human:owner", "time": "t",
-                    "allowed": {"capabilities": ["native_plan"], "effects": ["read"],
-                                "dispositions": [], "eval_verdicts": [], "subject_kinds": []},
-                    "expires": "2999-01-01T00:00:00Z"
-                }))
-                .unwrap(),
-            )
-            .unwrap();
-            let out = compile_with(ws, Args { actor: Some(agent.clone()), ..Default::default() })
-                .unwrap();
-            confirm(ws, &str_of(&out, "ask_id"), Some(&agent)).unwrap();
-            assert_eq!(
-                events(ws)[0]["actor"],
-                json!({"kind": "agent", "id": "ci",
-                       "authority": "preauthorized:authorizations/ci.json"})
-            );
-            let mut question = cls();
-            question["task"] = json!(["question"]);
-            question["result"] = json!("answer");
-            let e = compile_with(
-                ws,
-                Args {
-                    actor: Some(agent),
-                    capability: "native_direct".into(),
-                    classification: question,
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert!(matches!(e, AskError::Needs(_)), "{e}");
-        });
-    }
-
-    #[test]
-    fn the_confirmation_surface_comes_from_the_profile_or_is_unknown() {
-        bench(|ws| {
-            // An unknown host must not acquire a native confirmation surface.
-            let out = compile_with(
-                ws,
-                Args {
-                    host: json!({"name": "unknown-host", "surface": "native-tui"}),
-                    capability: "human_handoff".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let rec = confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            assert_eq!(rec["confirmation"]["surface"], json!(null));
-
-            capture(ws, "codex", "cx", "$rf:ask fix the login bug", Some("codex-cli 0.153.4"));
-            let mut writes = cls();
-            writes["task"] = json!(["implement"]);
-            writes["result"] = json!("workspace_change");
-            writes["effects"] = json!(["write"]);
-            let out2 = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
-                    title: "second".into(),
-                    host: json!({"name": "codex", "surface": "native-tui"}),
-                    classification: writes,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                confirm(ws, &str_of(&out2, "ask_id"), None).unwrap()["confirmation"]["surface"],
-                "request_user_input"
-            );
-        });
-    }
-
-    /// Each Ask comes from its own hook-identified Codex session: the hook,
-    /// not the model, knows the session.
-    fn codex_plan(ws: &Workspace, title: &str, prompt: &[u8]) -> Value {
-        capture(
-            ws,
-            "codex",
-            &format!("s-{title}"),
-            "$rf:ask fix the login bug",
-            Some("codex-cli 0.153.4"),
-        );
-        let mut writes = cls();
-        writes["task"] = json!(["implement"]);
-        writes["result"] = json!("workspace_change");
-        writes["effects"] = json!(["write"]);
-        compile_with(
-            ws,
-            Args {
-                staged: Some(staged_prompt(ws, prompt)),
-                title: title.into(),
-                host: json!({"name": "codex", "version": "codex-cli 0.153.4",
-                         "surface": "native-tui", "session_ref": format!("s-{title}")}),
-                classification: writes,
-                ..Default::default()
-            },
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn a_submission_matches_when_the_host_strips_its_slash_command_prefix() {
-        bench(|ws| {
-            let out = codex_plan(ws, "one", b"/plan Fix the login bug.\n");
-            // Codex hands the UserPromptSubmit hook the text after "/plan ",
-            // without the file's trailing newline.
-            let rec = capture(ws, "codex", "s-one", "Fix the login bug.", None);
-            let sub = submission_from_capture(
-                ws,
-                "codex",
-                "s-one",
-                &str_of(&rec, "sha256"),
-                "hook:UserPromptSubmit",
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(sub["ask_id"], out["ask_id"]);
-            assert_eq!(sub["match"], "host_prefix_stripped");
-            assert_eq!(ask_by_id(ws, &str_of(&out, "ask_id"))["submission"], "observed");
-        });
-    }
-
-    #[test]
-    fn another_host_takes_the_same_wording_with_its_own_command_or_none() {
-        bench(|ws| {
-            let out = codex_plan(ws, "one", b"/plan Fix the login bug.\n");
-            let id = str_of(&out, "ask_id");
-            let own = prompt_for_host(ws, &id, "codex").unwrap();
-            assert_eq!(own["prompt"], "/plan Fix the login bug.\n");
-            assert_eq!(own["delivery"]["mode"], "/plan");
-            // Antigravity plans with its own /plan, a mode it shows.
-            let agy = prompt_for_host(ws, &id, "antigravity").unwrap();
-            assert_eq!(agy["prompt"], "/plan Fix the login bug.\n");
-            assert_eq!(agy["delivery"]["prefix_bytes"], 6);
-            // Claude Code has no command to plan by: the wording alone.
-            let claude = prompt_for_host(ws, &id, "claude-code").unwrap();
-            assert_eq!(claude["prompt"], "Fix the login bug.\n");
-            assert_eq!(claude["delivery"]["mode"], Value::Null);
-            assert_eq!(claude["delivery"]["prefix_bytes"], 0);
-        });
-    }
-
-    #[test]
-    fn a_prompt_sent_into_another_host_is_its_submission_there() {
-        bench(|home| {
-            // A host that plans by another command, and hands its hook the
-            // prompt whole.
-            let dir = config::config_dir().join("harnesses");
-            let codex = std::fs::read_to_string(dir.join("codex.toml")).unwrap();
-            let other = codex
-                .replace("host = \"codex\"", "host = \"other\"")
-                .replace("profile_id = \"codex\"", "profile_id = \"other\"")
-                .replace("prompt_prefix = \"/plan \"", "prompt_prefix = \"/think \"");
-            std::fs::write(dir.join("other.toml"), other).unwrap();
-            let out = codex_plan(home, "one", b"/plan Fix the login bug.\n");
-            let id = str_of(&out, "ask_id");
-            assert_eq!(
-                prompt_for_host(home, &id, "other").unwrap()["prompt"],
-                "/think Fix the login bug.\n"
-            );
-            let rec = capture(home, "other", "s-9", "/think Fix the login bug.", None);
-            let sub = submission_from_capture(
-                home,
-                "other",
-                "s-9",
-                &str_of(&rec, "sha256"),
-                "hook:UserPromptSubmit",
-            )
-            .unwrap()
-            .unwrap();
-            assert_eq!(sub["ask_id"], out["ask_id"]);
-            assert_eq!(sub["match"], "receiving_host_prefix");
-            assert_eq!(sub["host"]["name"], "other");
-        });
-    }
-
-    #[test]
-    fn an_ambiguous_submission_prefers_the_delivered_ask_and_otherwise_records_nothing() {
-        bench(|ws| {
-            let first = codex_plan(ws, "one", b"/plan Fix the login bug.\n");
-            let second = codex_plan(ws, "two", b"/plan Fix the login bug.\n");
-            confirm(ws, &str_of(&second, "ask_id"), None).unwrap();
-            delivery_handoff(ws, &str_of(&second, "ask_id")).unwrap();
-            let rec = capture(ws, "codex", "s-two", "Fix the login bug.", None);
-            let sub = submission_from_capture(
-                ws,
-                "codex",
-                "s-two",
-                &str_of(&rec, "sha256"),
-                "hook:UserPromptSubmit",
-            )
-            .unwrap()
-            .unwrap();
-            // The Ask that was handed off is the one a paste is expected for.
-            assert_eq!(sub["ask_id"], second["ask_id"]);
-
-            let third = codex_plan(ws, "three", b"/plan Fix the login bug.\n");
-            for a in [&first, &third] {
-                confirm(ws, &str_of(a, "ask_id"), None).unwrap();
-                delivery_handoff(ws, &str_of(a, "ask_id")).unwrap();
-            }
-            let rec2 = capture(ws, "codex", "s-three", "Fix the login bug.", None);
-            // Two delivered candidates: no attribution.
-            assert!(
-                submission_from_capture(
-                    ws,
-                    "codex",
-                    "s-three",
-                    &str_of(&rec2, "sha256"),
-                    "hook:UserPromptSubmit"
-                )
-                .unwrap()
-                .is_none()
-            );
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-        });
-    }
-
-    #[test]
-    fn compile_renders_a_prompt_from_a_body_and_records_compiler_provenance() {
-        bench(|ws| {
-            capture(ws, "codex", "cg", "$rf:ask keep checkout fast", Some("codex-cli 0.153.4"));
-            let d = stage_named(
-                ws,
-                "body.txt",
-                b"keep checkout fast\n",
-                b"Run plans/checkout-perf, every item in order.\n",
-            );
-            let cls = json!({"task": ["implement"], "result": "continuing_objective",
-                             "interaction": "approval_gated", "horizon": "persistent",
-                             "effects": ["write"], "concerns": ["performance"]});
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(d),
-                    title: "Checkout goal".into(),
-                    capability: "native_goal".into(),
-                    host: json!({"name": "codex", "surface": "native-tui"}),
-                    classification: cls,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
-            // Host prefix + body: the CLI added the prefix.
-            assert!(
-                text.starts_with("/goal Run plans/checkout-perf, every item in order.\n"),
-                "{text}"
-            );
-            // A continuing objective carries the goal's Done Check, not the
-            // Step Loop, which works a plan.
-            assert!(text.contains("\nRules:\nFor this route:\n- Done Check: "), "{text}");
-            // A labelled directive, offered for implementing.
-            assert!(
-                text.contains("- Knuth: Do not optimize on suspicion; measure first"),
-                "{text}"
-            );
-            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
-            let comp = &ev["data"]["compiler"];
-            assert_eq!(comp["source"], "body");
-            assert_eq!(comp["host"]["deltas"], json!(["codex.native_goal.done_check"]));
-            assert!(list_of(&comp["practice"], "selected").contains(&"practice.knuth".to_string()));
-            assert_eq!(str_of(&comp["practice"], "shipped_sha256").len(), 64);
-            assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
-
-            // prompt.txt and body.txt together are ambiguous.
-            let d2 = stage(ws);
-            std::fs::write(d2.join("body.txt"), b"x\n").unwrap();
-            let e = compile_with(ws, Args { staged: Some(d2), ..Default::default() }).unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.staged_dir");
-        });
-    }
-
-    #[test]
-    fn a_composed_prompt_records_the_cli_selection_not_the_models_claim() {
-        bench(|ws| {
-            capture(
-                ws,
-                "codex",
-                "cc",
-                "$rf:ask add the health endpoint",
-                Some("codex-cli 0.153.4"),
-            );
-            let d = stage_named(
-                ws,
-                "composed.txt",
-                b"add the health endpoint\n",
-                b"Add GET /health returning uptime. Reuse the existing bearer check.\n\nRules:\n\
-                  - Hyrum: keep every current endpoint's behaviour unchanged.\n\
-                  - KISS, YAGNI: return only uptime; no options.\n",
-            );
-            let cls = json!({"task": ["implement"], "result": "workspace_change",
-                             "interaction": "approval_gated", "horizon": "session",
-                             "effects": ["write"], "concerns": ["api_surface"]});
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(d),
-                    title: "Health".into(),
-                    host: json!({"name": "codex", "surface": "native-tui"}),
-                    classification: cls,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
-            // Prefix added, nothing appended.
-            assert!(
-                text.starts_with(
-                    "/plan Add GET /health returning uptime. Reuse the existing bearer check.\n"
-                ),
-                "{text}"
-            );
-            assert!(text.trim_end_matches('\n').ends_with("no options."), "{text}");
-            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
-            let comp = &ev["data"]["compiler"];
-            assert_eq!(comp["source"], "composed");
-            let selected = list_of(&comp["practice"], "selected");
-            assert!(selected.contains(&"practice.hyrum".to_string()));
-            assert!(selected.contains(&"practice.kiss".to_string()));
-            assert_eq!(comp["host"]["deltas"], json!([]));
-        });
-    }
-
-    fn composed_stage(ws: &Workspace, rules: &str) -> std::path::PathBuf {
-        stage_named(
-            ws,
-            "composed.txt",
-            b"add the health endpoint\n",
-            format!(
-                "Add GET /health/details returning uptime and version behind the existing bearer check.\n\nRules:\n{rules}"
-            )
-            .as_bytes(),
-        )
-    }
-
-    #[test]
-    fn composed_rules_are_audited_against_the_supplied_directives() {
-        bench(|ws| {
-            let cls = json!({"task": ["implement"], "result": "workspace_change",
-                             "interaction": "approval_gated", "horizon": "session",
-                             "effects": ["write"], "concerns": ["api_surface"]});
-            let host = json!({"name": "codex", "version": "codex-cli 0.153.4",
-                              "surface": "native-tui", "session_ref": "cx"});
-            let good = composed_stage(
-                ws,
-                "- KISS, YAGNI: Expose only uptime and version; no new options or abstractions.\n\
-                 - Hyrum: Keep every existing endpoint's observable behaviour unchanged.\n",
-            );
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(good),
-                    title: "Health".into(),
-                    host: host.clone(),
-                    classification: cls.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
-            let comp = &ev["data"]["compiler"];
-            assert_eq!(comp["source"], "composed");
-            let applied: BTreeSet<String> = list_of(comp, "applied").into_iter().collect();
-            assert_eq!(
-                applied,
-                ["practice.kiss".to_string(), "practice.yagni".into(), "practice.hyrum".into()]
-                    .into()
-            );
-            let selected: BTreeSet<String> =
-                list_of(&comp["practice"], "selected").into_iter().collect();
-            let omitted: BTreeSet<String> = list_of(comp, "omitted").into_iter().collect();
-            assert_eq!(omitted, selected.difference(&applied).cloned().collect());
-            assert!(omitted.contains("practice.testing_pyramid"));
-            assert!(prompt_text(ws, &str_of(&out, "ask_id")).unwrap().starts_with("/plan Add GET"));
-
-            let bad =
-                composed_stage(ws, "- KISS: Keep it small.\n- Telepathy: Read the user's mind.\n");
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(bad),
-                    title: "Health".into(),
-                    host: host.clone(),
-                    classification: cls.clone(),
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.composed_rules");
-
-            let norules = stage_named(
-                ws,
-                "composed.txt",
-                b"add the health endpoint\n",
-                b"Add GET /health/details.\n",
-            );
-            let e = compile_with(
-                ws,
-                Args {
-                    staged: Some(norules),
-                    title: "Health".into(),
-                    host,
-                    classification: cls,
-                    ..Default::default()
-                },
-            )
-            .unwrap_err();
-            assert_eq!(ledger_error(e).code, "ask.composed_rules");
-        });
-    }
-
-    /// Claude Code's goal rules turned on the way an evaluation arm does it:
-    /// an override layer that marks them qualified.
-    fn goal_rules_on() -> crate::config::Overrides {
-        let on = |id: &str| json!({"id": id, "status": "qualified"});
-        crate::config::Overrides::parse(
-            &json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
-                on("claude-code.native_goal.step_loop"),
-                on("claude-code.native_goal.done_check"),
-            ]}}}}])
-            .to_string(),
-        )
-        .unwrap()
-    }
-
-    /// The plan a goal Ask names, on disk, as a plan Ask would have left it.
-    fn hold_plan(ws: &Workspace, slug: &str) {
-        std::fs::create_dir_all(ws.root.join(format!("plans/{slug}"))).unwrap();
-        std::fs::write(ws.root.join(format!("plans/{slug}/plan.md")), "# X\n\n## Step 1\n")
-            .unwrap();
-    }
-
-    fn goal_args(staged: std::path::PathBuf) -> Args {
-        Args {
-            staged: Some(staged),
-            title: "Build x".into(),
-            capability: "native_goal".into(),
-            classification: json!({"task": ["implement"], "result": "workspace_change",
-                                   "interaction": "approval_gated", "horizon": "session",
-                                   "effects": ["write"]}),
-            host: json!({"name": "claude-code", "surface": "native-tui"}),
-            overrides: goal_rules_on(),
-            ..Default::default()
-        }
-    }
-
-    const STEP_LOOP: &str =
-        "- Step Loop: Work steps 1 to 3 of plans/x/plan.md in order, test-first.\n";
-    const DONE_CHECK: &str = "- Done Check: Show each step's `npm test` run and its result.\n";
-
-    fn goal_stage(ws: &Workspace, rules: &str) -> std::path::PathBuf {
-        stage_named(
-            ws,
-            "composed.txt",
-            b"build plans/x\n",
-            format!("Build plans/x/plan.md, steps 1 to 3.\n\nRules:\nFor this route:\n{rules}\n- KISS: Build each step as written.\n").as_bytes(),
-        )
-    }
-
-    #[test]
-    fn candidates_render_through_an_override_layer() {
-        bench(|ws| {
-            hold_plan(ws, "x");
-            hold_plan(ws, "y");
-            let out =
-                compile_with(ws, goal_args(goal_stage(ws, &format!("{STEP_LOOP}{DONE_CHECK}"))))
-                    .unwrap();
-            let comp = &compiled_event(ws)["data"]["compiler"];
-            assert_eq!(
-                comp["host"]["deltas"],
-                json!(["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"])
-            );
-            assert!(prompt_text(ws, &str_of(&out, "ask_id")).unwrap().starts_with("/goal Build"));
-
-            // A layer that marks them candidates keeps them out of the prompt.
-            let mut plain = goal_args(stage_named(
-                ws,
-                "composed.txt",
-                b"build plans/y\n",
-                b"Build plans/y/plan.md.\n\nRules:\n- KISS: Build each step as written.\n",
-            ));
-            let off = |id: &str| json!({"id": id, "status": "candidate"});
-            plain.overrides = crate::config::Overrides::parse(
-                &json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
-                    off("claude-code.native_goal.step_loop"),
-                    off("claude-code.native_goal.done_check"),
-                ]}}}}])
-                .to_string(),
-            )
-            .unwrap();
-            compile_with(ws, plain).unwrap();
-            let last = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
-            assert_eq!(last["data"]["compiler"]["host"]["deltas"], json!([]));
-        });
-    }
-
-    #[test]
-    fn a_composed_prompt_records_host_rules_as_applied() {
-        bench(|ws| {
-            hold_plan(ws, "x");
-            hold_plan(ws, "y");
-            compile_with(ws, goal_args(goal_stage(ws, &format!("{STEP_LOOP}{DONE_CHECK}"))))
-                .unwrap();
-            let comp = &compiled_event(ws)["data"]["compiler"];
-            let applied = list_of(comp, "applied");
-            for id in ["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"] {
-                assert!(applied.contains(&id.to_string()), "{id}: {applied:?}");
-            }
-            assert!(!list_of(comp, "omitted").iter().any(|i| i.starts_with("claude-code.")));
-        });
-    }
-
-    #[test]
-    fn a_composed_prompt_that_omits_a_host_rule_is_refused() {
-        bench(|ws| {
-            hold_plan(ws, "x");
-            hold_plan(ws, "y");
-            let before = events(ws).len();
-            let e = compile_with(ws, goal_args(goal_stage(ws, STEP_LOOP))).unwrap_err();
-            let e = ledger_error(e);
-            assert_eq!(e.code, "ask.composed_rules");
-            assert!(e.to_string().contains("'Done Check' is required on this route"), "{e}");
-            assert_eq!(events(ws).len(), before, "nothing is written");
-        });
-    }
-
-    #[test]
-    fn a_rendered_goal_carries_its_route_rules_first() {
-        bench(|ws| {
-            hold_plan(ws, "x");
-            hold_plan(ws, "y");
-            let d = stage_named(ws, "body.txt", b"build plans/x\n", b"Build plans/x/plan.md.\n");
-            // Every implementing rule is offered now; a goal has room for one.
-            let cat = crate::deltas::load_practice_catalog(
-                crate::deltas::DEFAULT_DOMAIN,
-                &crate::config::Overrides::default(),
-            )
-            .unwrap();
-            let off: Vec<Value> = cat["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|e| e["id"] != "practice.kiss")
-                .map(|e| json!({"id": e["id"], "enabled": false}))
-                .collect();
-            let on = |id: &str| json!({"id": id, "status": "qualified"});
-            let mut args = goal_args(d);
-            args.overrides = crate::config::Overrides::parse(
-                &json!([{"layer": "eval", "ringframe": {"deltas": {
-                    "claude-code": {"entries": [on("claude-code.native_goal.step_loop"),
-                                                on("claude-code.native_goal.done_check")]},
-                    "practices/software-development": {"entries": off}}}}])
-                .to_string(),
-            )
-            .unwrap();
-            let out = compile_with(ws, args).unwrap();
-            let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
-            assert!(
-                text.starts_with(
-                    "/goal Build plans/x/plan.md.\nRules:\nFor this route:\n- Step Loop: Work the plan's steps"
-                ),
-                "{text}"
-            );
-            assert!(text.contains("\n- Done Check: A separate model judges"), "{text}");
-            assert!(text.contains("\n\n- KISS: "), "{text}");
-        });
-    }
-
-    #[test]
-    fn the_source_intents_override_applies_even_when_the_flag_is_left_off() {
-        bench(|ws| {
-            hold_plan(ws, "x");
-            let on = |id: &str| json!({"id": id, "status": "qualified"});
-            let layer = json!([{"layer": "eval", "ringframe": {"deltas": {"claude-code": {"entries": [
-                on("claude-code.native_goal.step_loop"), on("claude-code.native_goal.done_check")]}}}}]);
-            let source = format!("--override '{layer}' build plans/x\n");
-            let d = stage_named(
-                ws,
-                "composed.txt",
-                source.as_bytes(),
-                format!(
-                    "Build plans/x/plan.md.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}"
-                )
-                .as_bytes(),
-            );
-            let mut args = goal_args(d);
-            args.overrides = crate::config::Overrides::default();
-            compile_with(ws, args).unwrap();
-            assert_eq!(
-                compiled_event(ws)["data"]["compiler"]["host"]["deltas"],
-                json!(["claude-code.native_goal.step_loop", "claude-code.native_goal.done_check"])
-            );
-        });
-    }
-
-    #[test]
-    fn a_rule_that_works_a_plan_needs_the_plans_path() {
-        // q01 chain, Codex and Antigravity: the next /goal named the plan by
-        // its slug or by words, which a transcript-only judge cannot open.
-        bench(|ws| {
-            let by_words = |ws: &Workspace| {
-                goal_args(stage_named(
-                    ws,
-                    "composed.txt",
-                    b"build the json flag\n",
-                    format!("Build the json flag plan.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}").as_bytes(),
-                ))
-            };
-            let e = ledger_error(compile_with(ws, by_words(ws)).unwrap_err());
-            assert_eq!(e.code, "ask.plan_path");
-            assert!(e.to_string().contains("holds none"), "{e}");
-
-            hold_plan(ws, "cli-json-flag");
-            let e = ledger_error(compile_with(ws, by_words(ws)).unwrap_err());
-            assert_eq!(e.code, "ask.plan_path");
-            assert!(e.to_string().contains("held: cli-json-flag"), "{e}");
-
-            let by_path = goal_args(stage_named(
-                ws,
-                "composed.txt",
-                b"build the json flag\n",
-                format!("Build plans/cli-json-flag/plan.md.\n\nRules:\nFor this route:\n{STEP_LOOP}{DONE_CHECK}").as_bytes(),
-            ));
-            compile_with(ws, by_path).unwrap();
-        });
-    }
-
-    #[test]
-    fn ask_list_enumerates_every_compiled_ask_oldest_first() {
+    fn asks_are_listed_oldest_first_and_stay_open_until_sealed() {
         bench(|ws| {
             assert!(list_asks(ws).unwrap().is_empty());
-            let a = compiled(ws);
-            let b = compile_with(
-                ws,
-                Args {
-                    staged: Some(staged_prompt(ws, b"Other.\n")),
-                    title: "Other".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            confirm(ws, &str_of(&b, "ask_id"), None).unwrap();
-            let listed = list_asks(ws).unwrap();
-            assert_eq!(
-                listed.iter().map(|x| str_of(x, "ask_id")).collect::<Vec<_>>(),
-                [str_of(&a, "ask_id"), str_of(&b, "ask_id")]
-            );
-            assert_eq!(listed[0]["outcome"], "compiled");
-            assert_eq!(listed[1]["outcome"], "confirmed");
-            assert_eq!(listed[1]["title"], "Other");
-        });
-    }
-
-    #[test]
-    fn compile_records_the_base_commit_and_asks_stay_open_until_sealed_or_cancelled() {
-        bench(|ws| {
-            let out = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&ws.root)
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .unwrap();
-            let head = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let a = compiled(ws);
-            let b =
-                compile_with(ws, Args { title: "Second".into(), ..Default::default() }).unwrap();
-            assert_eq!(events(ws)[0]["data"]["base_commit"], head);
-            let states = |ws: &Workspace| {
-                list_asks(ws).unwrap().iter().map(|x| str_of(x, "state")).collect::<Vec<_>>()
-            };
-            assert_eq!(states(ws), ["open", "open"]);
-            assert_eq!(
-                open_asks(ws).unwrap().iter().map(|x| str_of(x, "ask_id")).collect::<Vec<_>>(),
-                [str_of(&a, "ask_id"), str_of(&b, "ask_id")]
-            );
-            cancel(ws, &str_of(&b, "ask_id"), None, None, false).unwrap();
-            assert_eq!(states(ws), ["open", "cancelled"]);
-            assert_eq!(
-                open_asks(ws).unwrap().iter().map(|x| str_of(x, "ask_id")).collect::<Vec<_>>(),
-                [str_of(&a, "ask_id")]
-            );
+            let head = crate::evaluate::git(&ws.root, &["rev-parse", "HEAD"]).unwrap();
+            let a = plan(ws, b"Fix the login bug.\n");
+            let b = plan(ws, b"Other.\n");
+            assert_eq!(events(ws)[0]["data"]["base_commit"], head.trim());
+            let ids =
+                |asks: Vec<Value>| asks.iter().map(|x| str_of(x, "ask_id")).collect::<Vec<_>>();
+            let (a, b) = (str_of(&a, "ask_id"), str_of(&b, "ask_id"));
+            assert_eq!(ids(list_asks(ws).unwrap()), [a.clone(), b.clone()]);
+            assert_eq!(list_asks(ws).unwrap()[1]["title"], "Other.");
+            assert_eq!(ids(open_asks(ws).unwrap()), [a.clone(), b.clone()]);
             // A seal event naming the Ask in its basis closes it.
             store::append(ws, &json!({
                 "schema": store::SCHEMA, "event_id": ids::new_id("evt"), "type": "seal.created",
                 "time": sessions::now(), "id": "sel_x",
                 "actor": {"kind": "human", "id": "local-user"}, "links": [],
                 "data": {
-                    "basis": {"asks": [str_of(&a, "ask_id")]}, "eval": null,
-                    "subject": {"kind": "git_commit", "ref": head}, "disposition": "accepted",
+                    "basis": {"asks": [a]}, "eval": null,
+                    "subject": {"kind": "git_commit", "ref": head.trim()}, "disposition": "accepted",
                     "authority": {"kind": "human", "id": "local-user", "authority": "interactive"},
                     "artifact": {"role": "seal_receipt", "path": "seals/sel_x.json", "bytes": 0,
                                  "sha256": "0".repeat(64)}
                 }
             })).unwrap();
-            assert_eq!(states(ws), ["sealed", "cancelled"]);
-            assert!(open_asks(ws).unwrap().is_empty());
+            let states =
+                list_asks(ws).unwrap().iter().map(|x| str_of(x, "state")).collect::<Vec<_>>();
+            assert_eq!(states, ["sealed", "open"]);
+            assert_eq!(ids(open_asks(ws).unwrap()), [b]);
         });
     }
 
+    /// Nothing writes a cancellation any more; one an older RingFrame wrote
+    /// still closes its Ask.
     #[test]
-    fn compile_outside_git_is_refused() {
-        // Git is a hard requirement: an Ask that could never be evaluated is
-        // not recorded.
-        with_config_home(|_| {
-            let dir = crate::testing::tmp_dir();
-            let ws = workspace::resolve(None, Some(dir.path())).unwrap();
-            ws.ensure().unwrap();
-            let e = compile_with(&ws, Args::default()).unwrap_err();
-            let AskError::Workspace(e) = e else { panic!("wanted a workspace error") };
-            assert_eq!(e.code, "workspace.no_git");
-            assert!(events(&ws).is_empty());
-        });
-    }
-
-    #[test]
-    fn compile_keeps_the_observed_version_and_the_profile_digest() {
-        // One workspace per version: the host carries no session_ref, so the
-        // capture is what has to supply both it and the version, and two
-        // captures of the same intent would be ambiguous.
-        for version in [Some("codex-cli 1.0.0"), Some("development"), None] {
-            bench(|ws| {
-                capture(ws, "codex", "new", "$rf:ask fix the login bug", version);
-                let out = compile_with(
-                    ws,
-                    Args {
-                        staged: Some(staged_prompt(ws, b"/plan Fix.\n")),
-                        host: json!({"name": "codex"}),
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
-                let recorded = compiled_event(ws)["data"]["host"].clone();
-                assert_eq!(recorded["version"], json!(version));
-                assert_eq!(recorded["profile_id"], "codex");
-                assert_eq!(recorded["profile_sha256"], profiles::sha256("codex").unwrap());
-                assert_eq!(out["source_verified"], "exact");
-                assert_eq!(
-                    confirm(ws, &str_of(&out, "ask_id"), None).unwrap()["confirmation"]["surface"],
-                    "request_user_input"
-                );
-            });
-        }
-    }
-
-    #[test]
-    fn codex_review_compiles_and_hands_off_from_the_profile() {
+    fn an_ask_an_older_ringframe_cancelled_stays_cancelled() {
         bench(|ws| {
-            let d = stage_named(
-                ws,
-                "body.txt",
-                b"fix the login bug\n",
-                b"Review the current diff for regressions.\n",
-            );
-            let mut review = cls();
-            review["task"] = json!(["review"]);
-            review["result"] = json!("evidence");
-            let out = compile_with(
-                ws,
-                Args {
-                    staged: Some(d),
-                    capability: "native_review".into(),
-                    host: json!({"name": "codex", "surface": "native-tui"}),
-                    classification: review,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let text = prompt_text(ws, &str_of(&out, "ask_id")).unwrap();
-            assert!(text.starts_with("/review Review the current diff for regressions."), "{text}");
-            confirm(ws, &str_of(&out, "ask_id"), None).unwrap();
-            let (_, delivery) = delivery_handoff(ws, &str_of(&out, "ask_id")).unwrap();
-            assert_eq!(delivery["state"], "handoff_ready");
-            let ev = events(ws).into_iter().rfind(|e| e["type"] == "ask.compiled").unwrap();
-            assert_eq!(ev["data"]["host"]["profile_sha256"], profiles::sha256("codex").unwrap());
-            assert_eq!(ev["data"]["selected_capability"], "native_review");
+            let a = str_of(&plan(ws, b"Fix the login bug.\n"), "ask_id");
+            let actor = json!({"kind": "human", "id": "local-user", "authority": "interactive"});
+            let cancelled = json!({"cancellation": {"observed_by": "skill", "surface": null}});
+            let ev = event("ask.cancelled", &a, &actor, cancelled, &[]);
+            schema::validate_event(&ev).unwrap();
+            store::append(ws, &ev).unwrap();
+            assert_eq!(str_of(&list_asks(ws).unwrap()[0], "state"), "cancelled");
+            assert!(open_asks(ws).unwrap().is_empty());
             assert_eq!(store::verify(ws).unwrap(), Vec::<Value>::new());
         });
     }

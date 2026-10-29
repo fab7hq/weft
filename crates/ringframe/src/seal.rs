@@ -325,14 +325,15 @@ mod tests {
     #[test]
     fn a_seal_names_who_observed_its_asks_or_that_nothing_was() {
         eval_bench(|ws| {
-            confirm_ask(ws, "t", b"s\n", b"p\n");
+            confirm_ask(ws, b"p\n");
             let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             let limits = strings_at(&receipt, "limitations");
             assert!(limits.contains(&crate::evaluate::NOTHING_OBSERVED.to_string()), "{limits:?}");
         });
         eval_bench(|ws| {
-            confirm_ask(ws, "t", b"s\n", b"p\n");
-            crate::observe::prompt(ws, "weft", "claude-code", "s1", "p\n", None).unwrap();
+            let ask = confirm_ask(ws, b"p\n");
+            let typed = crate::ask::prompt_text(ws, ask["ask_id"].as_str().unwrap()).unwrap();
+            crate::observe::prompt(ws, "weft", "claude-code", "s1", &typed, None).unwrap();
             let receipt = create(ws, "deferred", None, None, None, None).unwrap();
             let limits = strings_at(&receipt, "limitations");
             assert!(limits.contains(&"submission observed by weft".to_string()), "{limits:?}");
@@ -361,7 +362,7 @@ mod tests {
                     .iter()
                     .map(|x| str_of(x, "title"))
                     .collect::<Vec<_>>(),
-                ["Add uptime endpoint", "Skip the cache"]
+                ["Add the uptime export to src/uptime.js with a test.", "Skip the cache."]
             );
             let last = store::events(ws).unwrap().pop().unwrap();
             assert_eq!(last["type"], "seal.created");
@@ -390,7 +391,7 @@ mod tests {
     fn a_seal_without_an_eval_seals_only_the_asks_its_eval_covers() {
         eval_bench(|ws| {
             let (a, b, _) = judged(ws, true);
-            let later = str_of(&confirm_ask(ws, "Another unit", b"other\n", b"Other.\n"), "ask_id");
+            let later = str_of(&confirm_ask(ws, b"Other.\n"), "ask_id");
             let receipt = create(ws, "accepted", None, None, None, None).unwrap();
             assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
             let open: Vec<String> =
@@ -405,7 +406,7 @@ mod tests {
         // since stays open for the next Eval.
         eval_bench(|ws| {
             let (a, b, rec) = judged(ws, true);
-            let later = confirm_ask(ws, "Third", b"third\n", b"Third.\n");
+            let later = confirm_ask(ws, b"Third.\n");
             let later = str_of(&later, "ask_id");
             let eval_id = str_of(&rec, "eval_id");
             let receipt = create(ws, "accepted", Some(&eval_id), None, None, None).unwrap();
@@ -489,7 +490,7 @@ mod tests {
                 rec["eval_id"]
             );
             // A later basis cannot seal against an Eval of the earlier, closed Asks.
-            let c = confirm_ask(ws, "Third", b"third\n", b"Third.\n");
+            let c = confirm_ask(ws, b"Third.\n");
             let e = create(ws, "accepted", Some(&eval_id), None, None, None).unwrap_err();
             assert_eq!(codes_of(e), ["seal.eval_unrelated"]);
             create(ws, "abandoned", None, None, None, None).unwrap();

@@ -1153,13 +1153,13 @@ pub fn prepare(
     }
     repos.extend(other_repos(ws, asks, named, first_time.as_deref(), limitations)?);
     let ev = gather(&repos, 0)?;
-    let prompts: Vec<(String, String)> = asks
-        .iter()
-        .map(|a| {
-            let path = ws.rf_dir().join(str_of(&a["prompt"], "path"));
-            (str_of(a, "ask_id"), std::fs::read_to_string(path).unwrap_or_default())
-        })
-        .collect();
+    // The plans and documents an Ask names are read from its prompt, the
+    // rules left out; its requirements, from what the person asked.
+    let read = |pick: fn(Asked) -> String| -> Vec<(String, String)> {
+        asks.iter().map(|a| (str_of(a, "ask_id"), pick(asked(ws, a)))).collect()
+    };
+    let prompts = read(|a| a.prompt);
+    let words = read(|a| a.words);
     let (docs, obligations) = crate::documents::read(ws, &prompts, limitations);
     let pairs: Vec<(String, BTreeSet<String>)> = obligations
         .iter()
@@ -1207,7 +1207,7 @@ pub fn prepare(
     let windows_ref = publish("windows.json", &windows_doc, "eval_windows")?;
     let evidence_ref = publish("evidence.json", &evidence_doc, "eval_evidence")?;
     let (changes, changes_ref) =
-        crate::changes::view(ws, eval_id, &ev, asks, &prompts, &obligations)?;
+        crate::changes::view(ws, eval_id, &ev, asks, &words, &obligations)?;
     let summary = json!({
         "repos": ev.repos.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
         "windows": ev.windows.len(),
@@ -1435,6 +1435,36 @@ pub fn grep_window(id: &str, text: &str, needle: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// What an Ask asks, read from its record.
+pub(crate) struct Asked {
+    /// Its prompt up to the rules compiled after it: the words, then what
+    /// they rest on (the plan, a remedy's findings).
+    pub prompt: String,
+    /// The person's words alone, when the prompt starts with them as a
+    /// verbatim compile writes it; otherwise the prompt above.
+    pub words: String,
+}
+
+pub(crate) fn asked(ws: &Workspace, ask: &Value) -> Asked {
+    let read = |key: &str| {
+        std::fs::read_to_string(ws.rf_dir().join(str_of(&ask[key], "path"))).unwrap_or_default()
+    };
+    let full = read("prompt");
+    let rules = format!("\n\n{}\n", crate::rules::RULES);
+    let cut = |text: &str| text.split(&rules).next().unwrap_or_default().to_string();
+    let source = read("source");
+    let said = source.trim_end();
+    match full.strip_prefix(said).filter(|_| !said.is_empty()) {
+        // The rules block is the first after the words: the words may hold
+        // a list of rules of the person's own.
+        Some(after) => Asked { prompt: format!("{said}{}", cut(after)), words: source },
+        None => {
+            let prompt = cut(&full);
+            Asked { words: prompt.clone(), prompt }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1763,7 +1793,7 @@ mod open_tests {
             let before = commit(other.path(), &[("products/x.toml", Some("a = 1\n"))], "base");
             let named = other.path().join("products/x.toml");
             let prompt = format!("Change {} and the server.\n", named.display());
-            let ask = confirm_ask(ws, "Both", b"change both\n", prompt.as_bytes());
+            let ask = confirm_ask(ws, prompt.as_bytes());
             let baselines = store::events(ws)
                 .unwrap()
                 .into_iter()
@@ -1813,7 +1843,7 @@ mod open_tests {
             std::fs::write(other.path().join("a.md"), "left from before\n").unwrap();
             std::fs::write(ws.root.join("scratch.txt"), "also before\n").unwrap();
             let prompt = format!("Tidy {}.\n", other.path().join("a.md").display());
-            confirm_ask(ws, "Tidy", b"tidy\n", prompt.as_bytes());
+            confirm_ask(ws, prompt.as_bytes());
             let out = open_eval(ws, Open::default()).unwrap();
             let id = str_of(&out, "eval_id");
             let brief: Value = serde_json::from_slice(
@@ -1885,12 +1915,7 @@ mod open_tests {
         eval_bench(|ws| {
             let plan = "## Phase 1\n\n| # | Step | Done when |\n| --- | --- | --- |\n| 1 | Add `uptime_seconds` to the server. | A test calls `uptime_seconds`. |\n| 2 | Document it. | `docs/notes.md` says so. |\n";
             commit(&ws.root, &[("plans/plan.md", Some(plan))], "plan");
-            confirm_ask(
-                ws,
-                "Build it",
-                b"build phase 1\n",
-                b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-            );
+            confirm_ask(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n");
             commit(
                 &ws.root,
                 &[

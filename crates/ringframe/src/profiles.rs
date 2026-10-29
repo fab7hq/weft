@@ -99,9 +99,8 @@ pub fn of(host: &str) -> Result<Value, ConfigError> {
     for_host(&serde_json::json!({"name": host}))
 }
 
-/// One of a host's facts, read from its profile: `title`,
-/// `invocation_prefix`. None when it names none, or there is no profile to
-/// read.
+/// One of a host's facts, read from its profile, such as `paste_open`. None
+/// when it names none, or there is no profile to read.
 pub fn fact(host: &str, key: &str) -> Option<String> {
     of(host).ok()?.get(key)?.as_str().map(str::to_string)
 }
@@ -210,7 +209,6 @@ mod tests {
             for host in [json!("loom"), json!("../codex"), json!(""), json!(null)] {
                 let p = for_host(&json!({"name": host, "version": "2.2.0"})).unwrap();
                 assert_eq!(p["profile_id"], "unknown");
-                assert_eq!(p["fallback"], "human_handoff");
                 assert!(capability(&p, "native_plan").is_none());
             }
         });
@@ -235,11 +233,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_is_handoff_only_with_request_user_input() {
+    fn codex_is_handoff_only() {
         with_config_home(|_| {
             let p = load("codex").unwrap();
             assert_eq!(p["profile_id"], "codex");
-            assert_eq!(p["confirmation"], json!({"tool": "request_user_input"}));
             let ids: std::collections::BTreeSet<&str> = p["capabilities"]
                 .as_array()
                 .unwrap()
@@ -267,14 +264,46 @@ mod tests {
     }
 
     #[test]
-    fn goal_is_a_capability_on_both_hosts_and_subagents_are_declared() {
+    fn goal_is_a_capability_on_both_hosts() {
         with_config_home(|_| {
             for name in ["claude-code", "codex"] {
                 let p = load(name).unwrap();
                 let goal = capability(&p, "native_goal").unwrap();
                 assert_eq!(goal["delivery_mode"], "human_handoff", "{name}");
                 assert_eq!(goal["prompt_prefix"], "/goal ", "{name}");
-                assert_eq!(p["subagents"], true, "{name}");
+            }
+        });
+    }
+
+    /// fab7's profiles load, one per harness, and say nothing a model reads
+    /// to raise a dialog or choose a route: Weft confirms, and Sense and the
+    /// person choose. The route table stays.
+    #[test]
+    fn fab7s_profiles_load_and_raise_no_dialog() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fab7/products/ringframe/config/harnesses");
+        if !dir.is_dir() {
+            return;
+        }
+        with_config_home(|_| {
+            let installed = config::config_dir().join("harnesses");
+            for host in ["claude-code", "codex", "antigravity", "grok", "unknown"] {
+                let file = format!("{host}.toml");
+                std::fs::copy(dir.join(&file), installed.join(&file)).unwrap();
+                let p = load(host).unwrap_or_else(|e| panic!("{host}: {e}"));
+                for gone in ["confirmation", "invocation_prefix"] {
+                    assert!(p.get(gone).is_none(), "{host} has {gone}");
+                }
+                assert!(p["routing"].get("guidance").is_none(), "{host} has routing guidance");
+                for cap in p["capabilities"].as_array().into_iter().flatten() {
+                    for gone in ["confirmation", "selection"] {
+                        assert!(cap.get(gone).is_none(), "{host} {} has {gone}", cap["id"]);
+                    }
+                }
+                if host != "unknown" {
+                    assert!(!p["routing"]["precedence"].as_array().unwrap().is_empty(), "{host}");
+                    assert!(capability(&p, "native_goal").is_some(), "{host}");
+                }
             }
         });
     }

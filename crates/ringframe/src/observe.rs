@@ -10,9 +10,8 @@ use crate::workspace::Workspace;
 use crate::{ask, evaluate, profiles, sessions};
 
 /// `observe prompt`: one prompt's bytes, seen submitted in `session`. Kept in
-/// `prompts.jsonl` (in full only for a RingFrame invocation); an `ask`
-/// invocation puts the Ask on record as asked, and a prompt that equals a
-/// compiled one is that Ask's observed submission.
+/// `prompts.jsonl` as its digest; a prompt that equals a compiled one is that
+/// Ask's observed submission.
 pub fn prompt(
     ws: &Workspace,
     by: &str,
@@ -29,20 +28,18 @@ pub fn prompt(
         out[k] = v.clone();
     }
     out["submission"] = Value::Null;
-    if rec.get("prompt").is_none() {
-        let sha = rec["sha256"].as_str().unwrap_or_default();
-        let mut sub = ask::submission_from_capture(ws, host, session, sha, by)?;
-        // A host that wraps a long paste in markers of its own when it
-        // reports what it received: compared without them.
-        if sub.is_none()
-            && let Some(inner) = unwrapped(host, prompt)
-        {
-            let inner = crate::digest::sha256_bytes(inner.as_bytes());
-            sub = ask::submission_as(ws, host, session, &inner, by, Some("host_paste_unwrapped"))?;
-        }
-        if let Some(s) = sub {
-            out["submission"] = s;
-        }
+    let sha = rec["sha256"].as_str().unwrap_or_default();
+    let mut sub = ask::submission_from_capture(ws, host, session, sha, by)?;
+    // A host that wraps a long paste in markers of its own when it reports
+    // what it received: compared without them.
+    if sub.is_none()
+        && let Some(inner) = unwrapped(host, prompt)
+    {
+        let inner = crate::digest::sha256_bytes(inner.as_bytes());
+        sub = ask::submission_as(ws, host, session, &inner, by, Some("host_paste_unwrapped"))?;
+    }
+    if let Some(s) = sub {
+        out["submission"] = s;
     }
     Ok(out)
 }
@@ -63,7 +60,7 @@ pub fn layered(
         return Ok(json!({"recorded": false}));
     };
     let mut out = prompt(ws, by, host, session, received, host_version)?;
-    if out["recorded"] != true || !out["submission"].is_null() || out.get("prompt").is_some() {
+    if out["recorded"] != true || !out["submission"].is_null() {
         return Ok(out);
     }
     for other in others {
@@ -157,8 +154,13 @@ mod tests {
             .collect()
     }
 
+    /// The prompt as it is typed: what a hook sees submitted.
+    fn typed(ws: &Workspace, ask: &Value) -> String {
+        crate::ask::prompt_text(ws, ask["ask_id"].as_str().unwrap()).unwrap()
+    }
+
     #[test]
-    fn a_prompt_keeps_the_rf_bytes_and_only_a_digest_otherwise() {
+    fn a_prompt_is_kept_as_a_digest_only() {
         bench(|ws| {
             let out = prompt(ws, "weft", "claude-code", "s1", "hello there", None).unwrap();
             assert_eq!(out["recorded"], true);
@@ -171,16 +173,11 @@ mod tests {
             assert_eq!(lines[0]["bytes"], 11);
             assert_eq!(lines[0]["sha256"], crate::digest::sha256_bytes(b"hello there"));
             assert_eq!(lines[0]["observed_by"], "weft");
-            assert_eq!(lines[1]["prompt"], "/rf:ask fix the login bug");
             for line in &lines {
+                assert!(line.get("prompt").is_none(), "a prompt's text is never kept");
                 assert!(line.get("cwd").is_none() && line.get("permission_mode").is_none());
             }
-            // The Ask is on record as asked, graded by who saw it.
-            let evs = events(ws);
-            assert_eq!(evs.len(), 1);
-            assert_eq!(evs[0]["type"], "ask.requested");
-            assert_eq!(evs[0]["data"]["captured_by"], "weft");
-            assert_eq!(evs[0]["data"]["host"]["session_ref"], "s1");
+            assert!(events(ws).is_empty(), "a prompt alone records no Ask");
         });
     }
 
@@ -192,15 +189,15 @@ mod tests {
             let out = prompt(ws, "weft", "claude-code", "s1", "", None).unwrap();
             assert_eq!(out["recorded"], false, "an empty prompt records nothing");
             assert_eq!(prompts(ws, "codex", "c1")[0]["host_version"], "codex-cli 0.161.0");
-            assert_eq!(prompts(ws, "codex", "c1")[0]["prompt"], "$rf:ask fix it");
+            assert!(prompts(ws, "codex", "c1")[0].get("prompt").is_none());
         });
     }
 
     #[test]
     fn a_compiled_prompt_seen_submitted_is_an_observed_submission_by_the_caller() {
         bench(|ws| {
-            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
-            let out = prompt(ws, "weft", "claude-code", "s1", "Fix login.\n", None).unwrap();
+            let ask = confirm_ask(ws, b"Fix login.\n");
+            let out = prompt(ws, "weft", "claude-code", "s1", &typed(ws, &ask), None).unwrap();
             assert_eq!(out["submission"]["ask_id"], ask["ask_id"]);
             let sub = events(ws).into_iter().find(|e| e["type"] == "ask.submission").unwrap();
             assert_eq!(sub["data"]["state"], "observed");
@@ -223,44 +220,27 @@ mod tests {
                  paste_close = \"\\n</paste n=\\\"{id}\\\">\\n\"",
             );
             std::fs::write(dir.join("loom.toml"), loom).unwrap();
-            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            let ask = confirm_ask(ws, b"Fix login.\n");
+            let text = typed(ws, &ask);
+            let wrapped =
+                |a: &str, b: &str| format!("\n\n<paste n=\"{a}\">\n{text}\n</paste n=\"{b}\">\n");
             let none =
                 |p: &str| prompt(ws, "weft", "loom", "s1", p, None).unwrap()["submission"].clone();
             assert!(
-                none("Fix it first.\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"7f\">\n")
-                    .is_null(),
+                none(&format!("Fix it first.{}", wrapped("7f", "7f"))).is_null(),
                 "a wrapper that is not the whole prompt"
             );
-            assert!(
-                none("\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"8a\">\n").is_null(),
-                "two ids"
-            );
-            let out = prompt(
-                ws,
-                "weft",
-                "loom",
-                "s1",
-                "\n\n<paste n=\"7f\">\nFix login.\n\n</paste n=\"7f\">\n",
-                None,
-            )
-            .unwrap();
+            assert!(none(&wrapped("7f", "8a")).is_null(), "two ids");
+            let out = prompt(ws, "weft", "loom", "s1", &wrapped("7f", "7f"), None).unwrap();
             assert_eq!(out["submission"]["ask_id"], ask["ask_id"]);
             let sub = events(ws).into_iter().find(|e| e["type"] == "ask.submission").unwrap();
             assert_eq!(sub["data"]["match"], "host_paste_unwrapped");
             assert_eq!(sub["data"]["state"], "observed");
             // A host whose profile names no wrapper compares the prompt as it came.
-            let other = confirm_ask(ws, "Other", b"other\n", b"Other.\n");
-            let as_came = prompt(
-                ws,
-                "weft",
-                "unknown",
-                "s2",
-                "\n\n<paste n=\"1\">\nOther.\n\n</paste n=\"1\">\n",
-                None,
-            )
-            .unwrap();
+            let other = typed(ws, &confirm_ask(ws, b"Other.\n"));
+            let as_came = format!("\n\n<paste n=\"1\">\n{other}\n</paste n=\"1\">\n");
+            let as_came = prompt(ws, "weft", "unknown", "s2", &as_came, None).unwrap();
             assert!(as_came["submission"].is_null(), "{as_came}");
-            let _ = other;
         });
     }
 
@@ -270,11 +250,11 @@ mod tests {
     #[test]
     fn another_record_of_the_prompt_received_says_which_ask_it_was() {
         bench(|ws| {
-            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            let ask = confirm_ask(ws, b"Fix login.\n");
             let host = "Goal set: Fix login.";
             let out = layered(ws, "weft", "claude-code", "s1", &[host.into()], None).unwrap();
             assert!(out["submission"].is_null(), "the host's words alone are no Ask");
-            let others = [host.into(), "not it".into(), "Fix login.\n".into()];
+            let others = [host.into(), "not it".into(), typed(ws, &ask)];
             let out = layered(ws, "weft", "claude-code", "s1", &others, None).unwrap();
             assert_eq!(out["submission"]["ask_id"], ask["ask_id"]);
             assert_eq!(
@@ -296,7 +276,7 @@ mod tests {
     #[test]
     fn the_delivery_tool_is_a_delivery_receipt_graded_by_the_caller() {
         bench(|ws| {
-            let ask = confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            let ask = confirm_ask(ws, b"Fix login.\n");
             let out =
                 tool(ws, "weft", "claude-code", "s1", "EnterPlanMode", "succeeded", None).unwrap();
             assert_eq!(out["recorded"], true);
@@ -318,7 +298,7 @@ mod tests {
     #[test]
     fn a_failed_delivery_tool_is_a_failed_delivery() {
         bench(|ws| {
-            confirm_ask(ws, "Login", b"fix login\n", b"Fix login.\n");
+            confirm_ask(ws, b"Fix login.\n");
             let out =
                 tool(ws, "weft", "claude-code", "s1", "EnterPlanMode", "failed", None).unwrap();
             assert_eq!(out["state"], "delivery_failed");
@@ -328,7 +308,7 @@ mod tests {
     #[test]
     fn the_shell_tool_is_a_tool_fact_graded_by_the_caller() {
         bench(|ws| {
-            confirm_ask(ws, "Uptime", b"add uptime\n", b"Add uptime.\n");
+            confirm_ask(ws, b"Add uptime.\n");
             let out =
                 tool(ws, "weft", "claude-code", "s1", "Bash", "failed", Some("npm test")).unwrap();
             assert_eq!(out["recorded"], true);
@@ -346,7 +326,7 @@ mod tests {
     #[test]
     fn another_tool_or_a_host_that_names_none_records_nothing() {
         bench(|ws| {
-            confirm_ask(ws, "Uptime", b"add uptime\n", b"Add uptime.\n");
+            confirm_ask(ws, b"Add uptime.\n");
             let before = events(ws).len();
             let none = |host: &str, t: &str, command: Option<&str>| {
                 let out = tool(ws, "weft", host, "s1", t, "succeeded", command).unwrap();
@@ -366,31 +346,9 @@ mod tests {
     #[test]
     fn without_observe_ringframe_records_the_weaker_grades() {
         bench(|ws| {
-            let staged =
-                crate::testing::stage_in(ws, "prompt.txt", b"fix login\n", b"Fix login.\n");
-            let out = ask::compile(
-                ws,
-                ask::Compile {
-                    staged: &staged,
-                    title: "Login",
-                    capability: "native_plan",
-                    classification: json!({"task": ["plan"], "result": "plan",
-                        "interaction": "approval_gated", "horizon": "session", "effects": ["read"]}),
-                    route: json!({"fits": "bounded", "alternatives": [], "continuation": "plan review",
-                        "effects": "reads", "gaps": []}),
-                    host: json!({"name": "claude-code", "surface": "native-tui"}),
-                    links: Vec::new(),
-                    limitations: Vec::new(),
-                    actor: None,
-                    overrides: &crate::config::Overrides::default(),
-                },
-            )
-            .unwrap();
-            let id = out["ask_id"].as_str().unwrap();
-            ask::confirm(ws, id, None).unwrap();
-            assert_eq!(out["source_verified"], "unverified", "the wording is the skill's");
+            confirm_ask(ws, b"Fix login.\n");
             let compiled = events(ws).into_iter().find(|e| e["type"] == "ask.compiled").unwrap();
-            assert!(compiled["data"]["host"]["session_ref"].is_null(), "no session_ref");
+            assert_eq!(compiled["data"]["source_verified"], "exact", "the words are the person's");
             let listed = ask::list_asks(ws).unwrap();
             assert_eq!(listed[0]["submission"], "unobserved");
             assert!(listed[0]["delivery"].is_null(), "no recorded delivery outcome");

@@ -149,7 +149,9 @@ fn a_typed_prompt_and_a_shell_tool_reach_observe_and_nothing_else_does() {
     let seen: Vec<serde_json::Value> =
         prompts().unwrap().lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     assert_eq!(seen.len(), 1, "{seen:?}");
-    assert_eq!(seen[0]["prompt"], "/rf:ask fix the login bug\n  exactly", "byte for byte");
+    let sent = ringframe::digest::sha256_bytes(b"/rf:ask fix the login bug\n  exactly");
+    assert_eq!(seen[0]["sha256"], sent, "byte for byte");
+    assert!(seen[0].get("prompt").is_none(), "its text is never kept");
     assert_eq!(seen[0]["observed_by"], "weft");
     let facts = facts();
     assert_eq!(facts.len(), 1, "Write and Stop are not forwarded: {facts:?}");

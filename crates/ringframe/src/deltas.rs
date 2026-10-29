@@ -42,13 +42,6 @@ pub struct Layer {
     pub document: Value,
 }
 
-impl Layer {
-    /// The layer as the record carries it: everything but the document itself.
-    fn described(&self) -> Value {
-        json!({"root": self.root, "path": self.path, "sha256": self.sha256})
-    }
-}
-
 /// The synced bundle, then each `--override` layer in order. Later layers win
 /// by id. `relative` is the document's path under `deltas/`, without the
 /// extension.
@@ -321,10 +314,6 @@ pub(crate) fn phase_heading(task: &str) -> Option<&'static str> {
     PHASES.iter().find(|(t, _)| *t == task).map(|(_, h)| *h)
 }
 
-pub fn is_heading(line: &str) -> bool {
-    line == EVERY_PHASE || line == THIS_ROUTE || PHASES.iter().any(|(_, h)| *h == line)
-}
-
 pub fn revision() -> String {
     std::fs::read_to_string(config::config_dir().join(".revision"))
         .map(|s| s.trim().to_string())
@@ -368,321 +357,6 @@ pub(crate) fn phase_of(entry: &Value, tasks: &[String]) -> String {
     }
 }
 
-/// One catalog's rules for the Ask's tasks, per phase when it names several.
-struct Practice {
-    domain: String,
-    shipped_sha256: Value,
-    effective_sha256: String,
-    layers: Vec<Value>,
-    selected: Vec<String>,
-    heading: String,
-    rendered: Vec<(String, Vec<Value>)>,
-    entries: Vec<Value>,
-}
-
-fn practice(
-    over: &Overrides,
-    domain: &str,
-    classification: &Value,
-    statuses: &[String],
-) -> Result<Practice, ConfigError> {
-    let cat = load_practice_catalog(domain, over)?;
-    let merged = effective(over, domain)?;
-    // `attributed` and `qualified` render; candidates only in evaluation runs.
-    let mut practice_statuses: BTreeSet<&str> = ["attributed", "qualified"].into();
-    if statuses.iter().any(|s| s == "candidate") {
-        practice_statuses.insert("candidate");
-    }
-    let tasks: Vec<String> = classification
-        .get("task")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|t| phase_heading(t).is_some())
-        .map(str::to_string)
-        .collect();
-    let selected: Vec<Value> = merged
-        .into_iter()
-        .map(|(_, e)| e)
-        .filter(|e| {
-            e.get("enabled") != Some(&json!(false))
-                && practice_statuses.contains(status_of(e).as_str())
-                && crate::rules::for_tasks(e, &tasks)
-        })
-        .collect();
-    // One group per named task, so a research rule reads apart from an
-    // implementation one. A single task keeps one unnamed group, which renders
-    // as a flat list.
-    let mut groups: Vec<String> = vec![EVERY_PHASE.to_string()];
-    if tasks.len() > 1 {
-        groups.extend(tasks.iter().filter_map(|t| phase_heading(t)).map(str::to_string));
-    }
-    let group_of = |entry: &Value| -> String {
-        if tasks.len() > 1 {
-            phase_heading(&phase_of(entry, &tasks)).unwrap_or(EVERY_PHASE).to_string()
-        } else {
-            EVERY_PHASE.to_string()
-        }
-    };
-    let rendered: Vec<(String, Vec<Value>)> = groups
-        .iter()
-        .map(|g| (g.clone(), selected.iter().filter(|e| group_of(e) == *g).cloned().collect()))
-        .filter(|(_, kept): &(String, Vec<Value>)| !kept.is_empty())
-        .collect();
-    let catalog_layers = layers(over, &format!("practices/{domain}"))?;
-    let shipped = dir()?.join("practices").join(format!("{domain}.toml"));
-    // None when no synced file shipped this domain: it is the user's own.
-    let shipped_sha256 = match std::fs::read_to_string(&shipped) {
-        Ok(text) => Value::String(config::sha256_of(&config::load_toml_text(
-            &text,
-            &shipped.display().to_string(),
-        )?)),
-        Err(_) => Value::Null,
-    };
-    Ok(Practice {
-        domain: domain.to_string(),
-        shipped_sha256,
-        effective_sha256: config::sha256_of(&cat),
-        layers: catalog_layers.iter().map(Layer::described).collect(),
-        selected: selected.iter().map(|e| text_of(e, "id")).collect(),
-        heading: {
-            let h = text_of(&cat["render"], "heading");
-            if h.is_empty() { "Rules:".into() } else { h }
-        },
-        entries: selected
-            .iter()
-            .map(|e| {
-                json!({"id": text_of(e, "id"), "label": label(e), "text": squeeze(&text_of(e, "text"))})
-            })
-            .collect(),
-        rendered,
-    })
-}
-
-/// Deterministic delta block for one Ask: one `Rules:` list, the host's route
-/// rules first under their own heading, then the base practice rules, then
-/// each pack's that a layer switches on.
-pub fn render(
-    over: &Overrides,
-    profile: &Value,
-    capability: &str,
-    classification: &Value,
-    statuses: &[String],
-    domain: &str,
-) -> Result<Value, ConfigError> {
-    // ---- host layer
-    let mut host_block = json!({
-        "catalog_sha256": null, "deltas": [], "status_filter": statuses, "text": "", "entries": []
-    });
-    let host = text_of(profile, "host");
-    if !host.is_empty() && host_catalog_names()?.contains(&host) {
-        let cat = load_host_catalog(&host, over)?;
-        let chosen: Vec<&Value> = entries(&cat)
-            .iter()
-            .filter(|e| {
-                text_of(e, "capability") == capability
-                    && statuses.contains(&text_of(e, "status"))
-                    && e.get("enabled") != Some(&json!(false))
-                    && matches(e, classification)
-            })
-            .collect();
-        host_block = json!({
-            "catalog_sha256": config::sha256_of(&cat),
-            "deltas": chosen.iter().map(|e| text_of(e, "id")).collect::<Vec<_>>(),
-            "status_filter": statuses,
-            "text": chosen.iter().map(|e| rule_line(e)).collect::<Vec<_>>().join("\n"),
-            "entries": chosen.iter().map(|e| {
-                let mut out = json!({
-                    "id": text_of(e, "id"), "label": label(e), "text": squeeze(&text_of(e, "text"))
-                });
-                if e.get("names_plan") == Some(&json!(true)) {
-                    out["names_plan"] = json!(true);
-                }
-                out
-            }).collect::<Vec<_>>(),
-        });
-    }
-
-    // ---- practice layers: the base first, then each pack switched on
-    let names = if domain == DEFAULT_DOMAIN { domains_on(over)? } else { vec![domain.to_string()] };
-    let blocks: Vec<Practice> = names
-        .iter()
-        .map(|n| practice(over, n, classification, statuses))
-        .collect::<Result<_, _>>()?;
-
-    let all_entries: Vec<Value> = blocks.iter().flat_map(|b| b.entries.clone()).collect();
-    let heading = blocks[0].heading.clone();
-    // One phase at a time, base rules before each pack's, so a reader
-    // sees every rule for researching together and every rule for implementing
-    // together.
-    let tasks: Vec<String> = classification
-        .get("task")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|t| phase_heading(t).is_some())
-        .map(str::to_string)
-        .collect();
-    let mut order: Vec<String> = vec![EVERY_PHASE.to_string()];
-    if tasks.len() > 1 {
-        order.extend(tasks.iter().filter_map(|t| phase_heading(t)).map(str::to_string));
-    }
-    let rules_in = |phase: &str| -> Vec<Value> {
-        blocks
-            .iter()
-            .flat_map(|b| b.rendered.iter())
-            .filter(|(g, _)| g == phase)
-            .flat_map(|(_, kept)| kept.iter().cloned())
-            .collect()
-    };
-    let mut lines: Vec<String> = Vec::new();
-    for phase in &order {
-        let rules = rules_in(phase);
-        if rules.is_empty() {
-            continue;
-        }
-        if order.len() > 1 {
-            lines.push(String::new());
-            lines.push(phase.clone());
-        }
-        lines.extend(rules.iter().map(rule_line));
-    }
-    let principles = lines.join("\n").trim_start_matches('\n').to_string();
-    let practice_text =
-        if all_entries.is_empty() { String::new() } else { format!("{heading}\n{principles}") };
-    // What this turn is for, before how to do it.
-    let route = text_of(&host_block, "text");
-    let text = match (route.is_empty(), principles.is_empty()) {
-        (true, _) => practice_text.clone(),
-        (false, true) => format!("{heading}\n{THIS_ROUTE}\n{route}"),
-        (false, false) => format!("{heading}\n{THIS_ROUTE}\n{route}\n\n{principles}"),
-    };
-
-    let first = &blocks[0];
-    let practice_block = json!({
-        "domain": first.domain,
-        "shipped_sha256": first.shipped_sha256,
-        "effective_sha256": first.effective_sha256,
-        "layers": first.layers,
-        "revision": revision(),
-        "text": practice_text,
-        "entries": all_entries,
-        "selected": blocks.iter().flat_map(|b| b.selected.clone()).collect::<Vec<_>>(),
-        "phases": order.iter().filter(|g| !rules_in(g).is_empty()).map(|g| json!({
-            "phase": g,
-            "entries": rules_in(g).iter().map(|e| text_of(e, "id")).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
-        "domains": blocks.iter().map(|b| json!({
-            "domain": b.domain, "selected": b.selected,
-            "shipped_sha256": b.shipped_sha256, "effective_sha256": b.effective_sha256,
-        })).collect::<Vec<_>>(),
-    });
-
-    Ok(json!({"text": text, "host": host_block, "practice": practice_block}))
-}
-
-fn rule_line(e: &Value) -> String {
-    format!("- {}: {}", label(e), squeeze(&text_of(e, "text")))
-}
-
-/// A composed prompt must end with a `Rules:` list whose every label names a
-/// supplied directive, and must apply every `required` one (the host's route
-/// rules) under `For this route:`, with nothing else in that block: a blank
-/// line ends it, as the CLI prints it. Returns the applied ids and the
-/// omitted ones.
-pub fn audit_composed(
-    text: &str,
-    supplied: &[Value],
-    required: &[Value],
-) -> Result<(Vec<String>, Vec<String>), ConfigError> {
-    let lines: Vec<&str> = text.lines().collect();
-    let last_rules = lines.iter().rposition(|l| l.trim().eq_ignore_ascii_case("rules:"));
-    let start = last_rules
-        .ok_or_else(|| ConfigError("composed prompt has no `Rules:` section".to_string()))?;
-    let mut by_label: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for e in supplied {
-        let id = text_of(e, "id");
-        for key in
-            [label(e).to_lowercase(), text_of(e, "principle").to_lowercase(), id.to_lowercase()]
-        {
-            if !key.is_empty() {
-                by_label.insert(key, id.clone());
-            }
-        }
-    }
-    let known = || {
-        let mut names: Vec<String> = supplied.iter().map(label).collect();
-        names.sort();
-        names.dedup();
-        format!("[{}]", names.iter().map(|s| format!("'{s}'")).collect::<Vec<_>>().join(", "))
-    };
-    let route_ids: Vec<String> = required.iter().map(|e| text_of(e, "id")).collect();
-    let mut applied: Vec<String> = Vec::new();
-    let mut inside_a_rule = false;
-    let mut in_route = false;
-    for line in &lines[start + 1..] {
-        let line = line.trim();
-        if line.is_empty() || is_heading(line) {
-            // A phase heading the CLI printed; match the exact text, never its shape.
-            in_route = line == THIS_ROUTE;
-            continue;
-        }
-        // A directive is a sentence, and a sentence wraps. A line that does
-        // not open a rule continues the one above it; only text arriving
-        // before any rule is prose where a list belongs.
-        if inside_a_rule && !line.starts_with("- ") {
-            continue;
-        }
-        check(
-            line.starts_with("- ") && line.contains(": "),
-            format!(
-                "rule line is not `- <labels>: <applied directive>`: '{}'",
-                line.chars().take(60).collect::<String>()
-            ),
-        )?;
-        inside_a_rule = true;
-        let head = line[2..].split(": ").next().unwrap_or_default().replace(" and ", ",");
-        for raw in head.split(',') {
-            let lab = raw.trim();
-            if lab.is_empty() {
-                continue;
-            }
-            let id = by_label.get(&lab.to_lowercase()).ok_or_else(|| {
-                ConfigError(format!(
-                    "rule label '{lab}' names no supplied directive; supplied: {}",
-                    known()
-                ))
-            })?;
-            // The route block holds the host's rules and only them, so a reader
-            // can tell what this turn is for from how to do it.
-            let is_route = route_ids.contains(id);
-            if is_route != in_route {
-                return Err(ConfigError(if is_route {
-                    format!("rule '{lab}' is a route rule: put it under `{THIS_ROUTE}`")
-                } else {
-                    format!(
-                        "rule '{lab}' is not a route rule: end the `{THIS_ROUTE}` block with a \
-                         blank line before it"
-                    )
-                }));
-            }
-            if !applied.contains(id) {
-                applied.push(id.clone());
-            }
-        }
-    }
-    // A route rule says how the host works, not whether a principle bears on
-    // the task, so it is never the model's to leave out.
-    if let Some(missing) = required.iter().find(|e| !applied.contains(&text_of(e, "id"))) {
-        return Err(ConfigError(format!("rule '{}' is required on this route", label(missing))));
-    }
-    let omitted: Vec<String> =
-        supplied.iter().map(|e| text_of(e, "id")).filter(|id| !applied.contains(id)).collect();
-    Ok((applied, omitted))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,12 +364,6 @@ mod tests {
     use crate::testing::{TempDir, repo, with_config_home, ws_for};
     use crate::workspace::Workspace;
     use std::path::Path;
-
-    const QUALIFIED: [&str; 1] = ["qualified"];
-
-    fn statuses(names: &[&str]) -> Vec<String> {
-        names.iter().map(|s| s.to_string()).collect()
-    }
 
     fn impl_task() -> Value {
         json!({"task": ["implement"], "result": "workspace_change",
@@ -709,26 +377,6 @@ mod tests {
             let ws = ws_for(repo.path());
             body(&ws, home)
         })
-    }
-
-    fn rendered(profile: &str, cls: &Value) -> Value {
-        render(
-            &Overrides::default(),
-            &profiles::load(profile).unwrap(),
-            "native_plan",
-            cls,
-            &statuses(&QUALIFIED),
-            DEFAULT_DOMAIN,
-        )
-        .unwrap()
-    }
-
-    fn ids(v: &Value) -> Vec<String> {
-        v.as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect()
-    }
-
-    fn selected(out: &Value) -> Vec<String> {
-        ids(&out["practice"]["selected"])
     }
 
     fn entry<'a>(list: &'a [(String, Value)], id: &str) -> &'a Value {
@@ -776,65 +424,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn host_deltas_render_only_when_qualified_by_default() {
-        bench(|_, _| {
-            // Codex's After Approval is still a candidate (q01 never saw it).
-            let out = rendered("codex", &impl_task());
-            assert_eq!(
-                out["host"]["catalog_sha256"],
-                json!(config::sha256_of(
-                    &load_host_catalog("codex", &Overrides::default()).unwrap()
-                ))
-            );
-            assert_eq!(out["host"]["deltas"], json!([]));
-            assert_eq!(out["host"]["status_filter"], json!(["qualified"]));
-            // Claude Code's, qualified, renders by default.
-            assert_eq!(
-                ids(&rendered("claude-code", &impl_task())["host"]["deltas"]),
-                ["claude-code.native_plan.after_approval"]
-            );
-            let out2 = render(
-                &Overrides::default(),
-                &profiles::load("codex").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&["qualified", "candidate"]),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            assert_eq!(ids(&out2["host"]["deltas"]), ["codex.native_plan.after_approval"]);
-            assert!(!text_of(&out2["host"], "text").is_empty());
-        });
-    }
-
-    #[test]
-    fn practice_selection_is_by_task() {
-        bench(|_, _| {
-            let implementing = selected(&rendered("codex", &impl_task()));
-            for want in [
-                "practice.kiss",
-                "practice.yagni",
-                "practice.testing_pyramid",
-                "practice.boy_scout",
-                "practice.hyrum",
-                "practice.dry",
-            ] {
-                assert!(implementing.contains(&want.to_string()), "{want}");
-            }
-            let text = text_of(&rendered("codex", &impl_task()), "text");
-            assert!(text.contains("- KISS: ") && text.contains("- Hyrum: "), "{text}");
-
-            let mut planning = impl_task();
-            planning["task"] = json!(["plan"]);
-            planning["result"] = json!("plan");
-            planning["effects"] = json!(["read"]);
-            let out = rendered("codex", &planning);
-            assert!(!selected(&out).contains(&"practice.testing_pyramid".to_string()));
-            assert!(selected(&out).contains(&"practice.gall".to_string()));
-        });
-    }
-
     fn over(layers: Value) -> Overrides {
         Overrides::parse(&layers.to_string()).unwrap()
     }
@@ -864,24 +453,16 @@ mod tests {
                     {"entries": [{"id": "practice.yagni", "enabled": false}]}}}},
             ]));
 
-            let r = render(
-                &layers,
-                &profiles::load("codex").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            assert!(text_of(&r, "text").contains("Keep it plain."));
-            assert!(!selected(&r).contains(&"practice.yagni".to_string()));
-            assert!(selected(&r).contains(&"practice.team.commit_style".to_string()));
-            let named: Vec<(String, String)> = r["practice"]["layers"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|l| (text_of(l, "root"), text_of(l, "path")))
-                .collect();
+            let chosen = crate::rules::practice_rules(&layers, &["implement".into()]).unwrap();
+            let chosen: Vec<String> = chosen.iter().map(|e| text_of(e, "id")).collect();
+            assert!(!chosen.contains(&"practice.yagni".to_string()));
+            assert!(chosen.contains(&"practice.team.commit_style".to_string()));
+            let named: Vec<(String, String)> =
+                super::layers(&layers, "practices/software-development")
+                    .unwrap()
+                    .iter()
+                    .map(|l| (l.root.clone(), l.path.clone()))
+                    .collect();
             let synced = config::config_dir().join("deltas/practices/software-development.toml");
             assert_eq!(
                 named,
@@ -893,62 +474,9 @@ mod tests {
             );
             let listing = effective(&layers, DEFAULT_DOMAIN).unwrap();
             assert_eq!(entry(&listing, "practice.kiss")["layer"], "weft");
+            assert_eq!(entry(&listing, "practice.kiss")["text"], "Keep it plain.");
             assert_eq!(entry(&listing, "practice.yagni")["layer"], "weft-project");
             assert_eq!(entry(&listing, "practice.yagni")["enabled"], false);
-        });
-    }
-
-    #[test]
-    fn render_is_a_labelled_rules_list_and_entries_carry_labels() {
-        bench(|_, _| {
-            let r = rendered("codex", &impl_task());
-            let text = text_of(&r["practice"], "text");
-            let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(lines[0], "Rules:");
-            assert!(
-                lines[1..]
-                    .iter()
-                    .filter(|l| !l.trim().is_empty() && !is_heading(l))
-                    .all(|l| l.starts_with("- ") && l.contains(": ")),
-                "{text}"
-            );
-            let labels: BTreeSet<String> = r["practice"]["entries"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|e| text_of(e, "label"))
-                .collect();
-            assert!(labels.contains("KISS") && labels.contains("Hyrum"));
-            assert!(labels.iter().all(|l| !l.is_empty()));
-            assert!(lines.iter().any(|l| l.starts_with("- KISS: ")));
-            assert!(lines.iter().any(|l| l.starts_with("- Hyrum: ")));
-            for name in host_catalog_names().unwrap() {
-                for e in entries(&load_host_catalog(&name, &Overrides::default()).unwrap()) {
-                    assert!(!text_of(e, "label").is_empty(), "{}", text_of(e, "id"));
-                }
-            }
-        });
-    }
-
-    #[test]
-    fn candidate_practice_entries_render_only_when_candidates_are_requested() {
-        bench(|_, _| {
-            let default = rendered("claude-code", &impl_task());
-            // A candidate is never in the default prompt.
-            assert!(!selected(&default).contains(&"practice.assumptions".to_string()));
-            let evaluation = render(
-                &Overrides::default(),
-                &profiles::load("claude-code").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&["qualified", "candidate"]),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            assert!(selected(&evaluation).contains(&"practice.assumptions".to_string()));
-            let before: BTreeSet<String> = selected(&default).into_iter().collect();
-            let after: BTreeSet<String> = selected(&evaluation).into_iter().collect();
-            assert!(after.is_superset(&before), "an evaluation arm hides nothing");
         });
     }
 
@@ -968,38 +496,6 @@ mod tests {
 
     fn probe(task: &str) -> Value {
         json!({"task": [task], "result": "plan", "effects": ["read"]})
-    }
-
-    fn with_candidates(host: &str, capability: &str, cls: &Value) -> Value {
-        render(
-            &Overrides::default(),
-            &profiles::load(host).unwrap(),
-            capability,
-            cls,
-            &statuses(&["qualified", "candidate"]),
-            DEFAULT_DOMAIN,
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn a_host_rule_selects_by_result() {
-        // `native_plan` is also the route for ordinary bounded work, which
-        // must not be told to write a plan and stop.
-        bench(|_, _| {
-            for host in ["antigravity", "claude-code", "codex"] {
-                let mut plan = impl_task();
-                plan["result"] = json!("plan");
-                assert_eq!(
-                    ids(&with_candidates(host, "native_plan", &plan)["host"]["deltas"]),
-                    [format!("{host}.native_plan.plan_as_files")]
-                );
-                assert_eq!(
-                    ids(&with_candidates(host, "native_plan", &impl_task())["host"]["deltas"]),
-                    [format!("{host}.native_plan.after_approval")]
-                );
-            }
-        });
     }
 
     #[test]
@@ -1043,26 +539,54 @@ mod tests {
         ]
     }
 
+    /// The rules of a host's route a classification reaches, whatever their
+    /// status.
+    fn reached(host: &str, capability: &str, cls: &Value) -> Vec<String> {
+        entries(&load_host_catalog(host, &Overrides::default()).unwrap())
+            .iter()
+            .filter(|e| text_of(e, "capability") == capability && matches(e, cls))
+            .map(|e| text_of(e, "id"))
+            .collect()
+    }
+
     #[test]
-    fn every_host_rule_can_be_selected() {
+    fn a_host_rule_selects_by_result() {
+        // `native_plan` is also the route for ordinary bounded work, which
+        // must not be told to write a plan and stop.
         bench(|_, _| {
-            for host in host_catalog_names().unwrap() {
-                let reached: BTreeSet<String> = route_probes()
-                    .iter()
-                    .flat_map(|(cap, cls)| ids(&with_candidates(&host, cap, cls)["host"]["deltas"]))
-                    .collect();
-                let all: BTreeSet<String> =
-                    entries(&load_host_catalog(&host, &Overrides::default()).unwrap())
-                        .iter()
-                        .map(|e| text_of(e, "id"))
-                        .collect();
-                assert_eq!(reached, all, "{host}");
+            for host in ["antigravity", "claude-code", "codex"] {
+                let mut plan = impl_task();
+                plan["result"] = json!("plan");
+                assert_eq!(
+                    reached(host, "native_plan", &plan),
+                    [format!("{host}.native_plan.plan_as_files")]
+                );
+                assert_eq!(
+                    reached(host, "native_plan", &impl_task()),
+                    [format!("{host}.native_plan.after_approval")]
+                );
             }
         });
     }
 
     #[test]
-    fn a_goal_prompt_with_its_host_rules_fits() {
+    fn every_host_rule_can_be_selected() {
+        bench(|_, _| {
+            for host in host_catalog_names().unwrap() {
+                let got: BTreeSet<String> =
+                    route_probes().iter().flat_map(|(cap, cls)| reached(&host, cap, cls)).collect();
+                let all: BTreeSet<String> =
+                    entries(&load_host_catalog(&host, &Overrides::default()).unwrap())
+                        .iter()
+                        .map(|e| text_of(e, "id"))
+                        .collect();
+                assert_eq!(got, all, "{host}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_goal_prompt_with_its_route_rules_fits() {
         // A goal shares its character budget with the words and the rules;
         // the route rules alone leave room for both.
         bench(|_, _| {
@@ -1072,41 +596,43 @@ mod tests {
                 let Some(max) = cap.get("max_prompt_chars").and_then(Value::as_u64) else {
                     continue;
                 };
-                let out = with_candidates(host, "native_goal", &impl_task());
-                assert_eq!(ids(&out["host"]["deltas"]).len(), 2, "{host}");
-                let prompt = format!(
-                    "{}{}\n{}",
-                    text_of(&cap, "prompt_prefix"),
-                    "b".repeat(1500),
-                    text_of(&out["host"], "text")
-                );
-                let n = prompt.chars().count() as u64;
+                let catalog = load_host_catalog(host, &Overrides::default()).unwrap();
+                let route: Vec<Value> = entries(&catalog)
+                    .iter()
+                    .filter(|e| {
+                        text_of(e, "capability") == "native_goal" && matches(e, &impl_task())
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(route.len(), 2, "{host}");
+                let words = "b".repeat(1500);
+                let prompt = crate::rules::compose(&words, &[], &[], &route, &["implement".into()]);
+                let n = (text_of(&cap, "prompt_prefix") + &prompt).chars().count() as u64;
                 assert!(n <= max, "{host}: {n} of {max}");
             }
         });
     }
 
     #[test]
-    fn every_task_selects_at_least_one_rule() {
+    fn every_task_has_a_practice_rule_and_named_ones_are_for_their_task() {
         bench(|_, _| {
+            let for_task = |task: &str| -> Vec<String> {
+                crate::rules::practice_rules(&Overrides::default(), &[task.to_string()])
+                    .unwrap()
+                    .iter()
+                    .map(|e| text_of(e, "id"))
+                    .collect()
+            };
             for task in TASKS {
-                let out = rendered("claude-code", &probe(task));
-                assert!(!selected(&out).is_empty(), "{task} selects no rule");
+                assert!(!for_task(task).is_empty(), "{task} selects no rule");
             }
-        });
-    }
-
-    #[test]
-    fn named_rules_select_for_their_task() {
-        bench(|_, _| {
             for (task, rule) in [
                 ("research", "practice.occam"),
                 ("review", "practice.linus"),
                 ("question", "practice.confirmation_bias"),
                 ("implement", "practice.testing_pyramid"),
             ] {
-                let out = rendered("claude-code", &probe(task));
-                assert!(selected(&out).contains(&rule.to_string()), "{rule} missing for {task}");
+                assert!(for_task(task).contains(&rule.to_string()), "{rule} missing for {task}");
             }
         });
     }
@@ -1156,50 +682,34 @@ text = "Measure the widget after fitting it."
     }
 
     #[test]
-    fn a_pack_not_switched_on_renders_only_the_base() {
+    fn a_pack_switched_on_comes_after_the_base() {
         two_domains(|_| {
-            let mut cls = impl_task();
-            // Naming it in the classification no longer selects it.
-            cls["domains"] = json!(["fixture-domain"]);
-            let out = rendered("claude-code", &cls);
-            let listed: Vec<String> = out["practice"]["domains"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|d| text_of(d, "domain"))
-                .collect();
-            assert_eq!(listed, ["software-development"]);
-            assert!(!selected(&out).iter().any(|i| i.starts_with("practice.widget")));
+            let ids_of = |over: &Overrides| -> Vec<String> {
+                crate::rules::practice_rules(over, &["implement".into()])
+                    .unwrap()
+                    .iter()
+                    .map(|e| text_of(e, "id"))
+                    .collect()
+            };
+            let base = ids_of(&Overrides::default());
+            assert!(!base.iter().any(|i| i.starts_with("practice.widget")));
+            let both = ids_of(&switched_on());
+            assert_eq!(both[..base.len()], base[..]);
+            assert_eq!(both[base.len()..], ["practice.widget_first", "practice.widget_check"]);
         });
     }
 
     #[test]
-    fn a_pack_switched_on_renders_after_the_base() {
-        two_domains(|_| {
-            let out = render(
-                &switched_on(),
-                &profiles::load("claude-code").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            let p = &out["practice"];
-            let listed: Vec<String> =
-                p["domains"].as_array().unwrap().iter().map(|d| text_of(d, "domain")).collect();
-            assert_eq!(listed, ["software-development", "fixture-domain"]);
-            let base_ids = ids(&p["domains"][0]["selected"]);
-            assert_eq!(selected(&out)[..base_ids.len()], base_ids[..]);
-            assert!(selected(&out).contains(&"practice.widget_first".to_string()));
-            assert!(selected(&out).contains(&"practice.widget_check".to_string()));
-            let text = text_of(p, "text");
-            let labels: Vec<&str> = text
-                .lines()
-                .filter(|l| l.starts_with("- "))
-                .map(|l| l.split(':').next().unwrap_or(""))
-                .collect();
-            assert_eq!(labels[base_ids.len()], "- Widget First", "{text}");
+    fn a_domain_can_be_added_through_an_override() {
+        bench(|_, _| {
+            let domain = config::load_toml_text(second_domain(), "fixture-domain").unwrap();
+            let layers = over(json!([{"layer": "weft", "ringframe": {"deltas": {
+                "practices/fixture-domain": domain}}}]));
+            let listed = domains(&layers).unwrap();
+            let fixture = listed.iter().find(|d| d["domain"] == "fixture-domain").expect("listed");
+            assert_eq!(fixture["base"], false);
+            let chosen = crate::rules::practice_rules(&layers, &["implement".into()]).unwrap();
+            assert!(chosen.iter().any(|e| e["id"] == "practice.widget_first"));
         });
     }
 
@@ -1230,264 +740,7 @@ text = "Measure the widget after fitting it."
         two_domains(|ws| assert!(!ws.rf_dir().join("deltas").exists()));
     }
 
-    #[test]
-    fn a_domain_can_be_added_through_an_override() {
-        bench(|_, _| {
-            let domain = config::load_toml_text(second_domain(), "fixture-domain").unwrap();
-            let layers = over(json!([{"layer": "weft", "ringframe": {"deltas": {
-                "practices/fixture-domain": domain}}}]));
-            let listed = domains(&layers).unwrap();
-            let fixture = listed.iter().find(|d| d["domain"] == "fixture-domain").expect("listed");
-            assert_eq!(fixture["base"], false);
-
-            let out = render(
-                &layers,
-                &profiles::load("claude-code").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            assert!(selected(&out).contains(&"practice.widget_first".to_string()));
-            let block = out["practice"]["domains"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|d| d["domain"] == "fixture-domain")
-                .unwrap()
-                .clone();
-            // Nothing shipped it; it is the person's own.
-            assert_eq!(block["shipped_sha256"], json!(null));
-        });
-    }
-
     // ---- phases: one Ask that spans several tasks --------------------------
-
-    fn research_and_implement() -> Value {
-        json!({"task": ["research", "implement"], "result": "workspace_change",
-               "interaction": "approval_gated", "horizon": "session",
-               "effects": ["read", "write"]})
-    }
-
-    #[test]
-    fn one_task_renders_a_flat_list() {
-        bench(|_, _| {
-            let out = rendered("claude-code", &impl_task());
-            let text = text_of(&out["practice"], "text");
-            let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(lines[0], "Rules:");
-            // One task means no phase headings.
-            assert!(!lines.iter().any(|l| PHASES.iter().any(|(_, h)| h == l)), "{text}");
-            assert!(
-                lines[1..].iter().filter(|l| !l.trim().is_empty()).all(|l| l.starts_with("- ")),
-                "{text}"
-            );
-        });
-    }
-
-    #[test]
-    fn several_tasks_group_the_rules_by_phase() {
-        bench(|_, _| {
-            let out = rendered("claude-code", &research_and_implement());
-            let text = text_of(&out["practice"], "text");
-            assert!(text.contains("While researching:"), "{text}");
-            assert!(text.contains("While implementing:"));
-            // A rule that applies to every named task is stated once, not
-            // repeated per phase.
-            assert_eq!(text.matches("- Occam").count(), 1);
-            let labels: Vec<&str> = text.lines().filter(|l| l.starts_with("- ")).collect();
-            let unique: BTreeSet<&&str> = labels.iter().collect();
-            assert_eq!(labels.len(), unique.len());
-        });
-    }
-
-    #[test]
-    fn research_rules_survive_beside_implement_ones() {
-        bench(|_, _| {
-            let out = rendered("claude-code", &research_and_implement());
-            assert!(
-                selected(&out).contains(&"practice.occam".to_string()),
-                "a research rule must survive a research+implement Ask"
-            );
-            assert!(
-                selected(&out).contains(&"practice.testing_pyramid".to_string()),
-                "and so must an implement rule"
-            );
-        });
-    }
-
-    #[test]
-    fn phases_appear_in_the_order_the_classification_names_them() {
-        bench(|_, _| {
-            let mut cls = research_and_implement();
-            cls["task"] = json!(["implement", "research"]);
-            let out = rendered("claude-code", &cls);
-            let text = text_of(&out["practice"], "text");
-            assert!(text.find("While implementing:") < text.find("While researching:"), "{text}");
-        });
-    }
-
-    #[test]
-    fn the_prompt_audit_accepts_phase_headings() {
-        bench(|_, _| {
-            let out = rendered("claude-code", &research_and_implement());
-            let supplied: Vec<Value> = out["practice"]["entries"].as_array().unwrap().clone();
-            let composed = format!(
-                "Do the thing.\n\nRules:\n\nWhile researching:\n- {}: applied to this task.\n",
-                text_of(&supplied[0], "label")
-            );
-            let (applied, omitted) = audit_composed(&composed, &supplied, &[]).unwrap();
-            assert_eq!(applied, [text_of(&supplied[0], "id")]);
-            assert_eq!(omitted.len(), supplied.len() - 1);
-        });
-    }
-
-    #[test]
-    fn the_audit_still_rejects_a_line_that_is_neither_rule_nor_heading() {
-        bench(|_, _| {
-            let out = rendered("claude-code", &impl_task());
-            let supplied: Vec<Value> = out["practice"]["entries"].as_array().unwrap().clone();
-            let e = audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied, &[])
-                .unwrap_err();
-            assert!(e.0.contains("not `- <labels>"), "{e}");
-        });
-    }
-
-    #[test]
-    fn the_audit_accepts_every_heading_the_cli_can_print() {
-        // Including the one-word `Throughout:`, which a shape heuristic misses.
-        bench(|_, _| {
-            let out = rendered("claude-code", &research_and_implement());
-            let supplied: Vec<Value> = out["practice"]["entries"].as_array().unwrap().clone();
-            let headings: Vec<&str> =
-                std::iter::once(EVERY_PHASE).chain(PHASES.iter().map(|(_, h)| *h)).collect();
-            for heading in headings {
-                let composed = format!(
-                    "Do the thing.\n\nRules:\n{heading}\n- {}: applied here.\n",
-                    text_of(&supplied[0], "label")
-                );
-                let (applied, _) = audit_composed(&composed, &supplied, &[]).unwrap();
-                assert_eq!(applied, [text_of(&supplied[0], "id")], "{heading}");
-            }
-        });
-    }
-
-    #[test]
-    fn a_rule_may_wrap_onto_more_than_one_line() {
-        // A directive is a sentence and a sentence wraps. Demanding one line
-        // per rule refuses prompts that are correct in every way that counts.
-        bench(|_, _| {
-            let supplied = rendered("claude-code", &impl_task())["practice"]["entries"]
-                .as_array()
-                .unwrap()
-                .clone();
-            let label = text_of(&supplied[0], "label");
-            let wrapped = format!(
-                "Do the thing.\n\nRules:\n- {label}: applied to this task, at such\n  length that it wraps onto a second line,\n  and a third.\n"
-            );
-            let (applied, _) = audit_composed(&wrapped, &supplied, &[]).unwrap();
-            assert_eq!(applied, [text_of(&supplied[0], "id")]);
-        });
-    }
-
-    #[test]
-    fn prose_before_any_rule_is_still_refused() {
-        // Wrapping is a continuation of a rule. Text arriving before one is
-        // prose where a list belongs, and that is still wrong.
-        bench(|_, _| {
-            let supplied = rendered("claude-code", &impl_task())["practice"]["entries"]
-                .as_array()
-                .unwrap()
-                .clone();
-            let e = audit_composed("Do it.\n\nRules:\nthis is just prose\n", &supplied, &[])
-                .unwrap_err();
-            assert!(e.0.contains("not `- <labels>"), "{e}");
-        });
-    }
-
-    #[test]
-    fn host_rules_lead_the_rules_list_under_for_this_route() {
-        // A deliverable listed third of ten reads like an aside.
-        bench(|_, _| {
-            let mut cls = impl_task();
-            cls["result"] = json!("plan");
-            let out = with_candidates("claude-code", "native_plan", &cls);
-            let text = text_of(&out, "text");
-            let lines: Vec<&str> = text.lines().collect();
-            assert_eq!(lines[0], "Rules:");
-            assert_eq!(lines[1], THIS_ROUTE);
-            assert!(lines[2].starts_with("- Plan As Files:"), "{text}");
-            // And the principles follow, after a blank line.
-            assert!(text.contains("\n\n- KISS:"), "{text}");
-            // The heading is one the audit knows, so a composed prompt may
-            // carry it back; the practice block alone does not carry it.
-            assert!(is_heading(THIS_ROUTE));
-            assert!(!text_of(&out["practice"], "text").contains(THIS_ROUTE));
-        });
-    }
-
-    #[test]
-    fn with_no_route_rule_there_is_no_route_heading() {
-        bench(|_, _| {
-            // Codex's bounded-work plan route has no qualified rule.
-            let out = render(
-                &Overrides::default(),
-                &profiles::load("codex").unwrap(),
-                "native_plan",
-                &impl_task(),
-                &statuses(&QUALIFIED),
-                DEFAULT_DOMAIN,
-            )
-            .unwrap();
-            let text = text_of(&out, "text");
-            assert!(!text.contains(THIS_ROUTE), "{text}");
-            assert!(text.starts_with("Rules:\n- "), "{text}");
-        });
-    }
-
-    #[test]
-    fn the_audit_requires_every_route_rule() {
-        bench(|_, _| {
-            let out = with_candidates("codex", "native_goal", &impl_task());
-            let route: Vec<Value> = out["host"]["entries"].as_array().unwrap().clone();
-            let composed = "Build it.\n\nRules:\nFor this route:\n- Step Loop: in order.\n";
-            let e = audit_composed(composed, &route, &route).unwrap_err();
-            assert!(e.0.contains("'Done Check' is required on this route"), "{e}");
-            let both = format!("{composed}- Done Check: a checkpoint per step.\n");
-            let (applied, omitted) = audit_composed(&both, &route, &route).unwrap();
-            assert_eq!(applied.len(), 2);
-            assert!(omitted.is_empty());
-        });
-    }
-
-    #[test]
-    fn the_route_block_holds_the_route_rules_and_only_them() {
-        // Seen on Antigravity (q01 L2, F4): no blank line after the route
-        // rules, so the principles read as part of the route.
-        bench(|_, _| {
-            let out = with_candidates("antigravity", "native_goal", &impl_task());
-            let route: Vec<Value> = out["host"]["entries"].as_array().unwrap().clone();
-            let mut supplied = route.clone();
-            supplied.extend(out["practice"]["entries"].as_array().unwrap().iter().cloned());
-            let head = "Build it.\n\nRules:\nFor this route:\n- Step Loop: in order.\n- Done Check: show checks.\n";
-            let run_on = format!("{head}- KISS: keep it small.\n");
-            let e = audit_composed(&run_on, &supplied, &route).unwrap_err();
-            assert!(e.0.contains("'KISS' is not a route rule"), "{e}");
-            let apart = format!("{head}\n- KISS: keep it small.\n");
-            assert!(audit_composed(&apart, &supplied, &route).is_ok());
-            let outside =
-                "Build it.\n\nRules:\n- Step Loop: in order.\n- Done Check: show checks.\n";
-            let e = audit_composed(outside, &supplied, &route).unwrap_err();
-            assert!(e.0.contains("'Step Loop' is a route rule"), "{e}");
-        });
-    }
-
-    #[test]
-    fn the_audit_refuses_a_composed_prompt_with_no_rules_list() {
-        let e = audit_composed("Just do it.\n", &[], &[]).unwrap_err();
-        assert!(e.0.contains("no `Rules:` section"), "{e}");
-    }
 
     #[allow(dead_code)]
     fn unused(_: &TempDir) {}

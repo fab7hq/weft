@@ -324,20 +324,14 @@ mod tests {
     #[test]
     fn a_fixed_world_has_only_the_programs_it_names() {
         let w = Fixed::new()
-            .answers(
-                "ringframe",
-                &["profile", "show", "codex"],
-                0,
-                "{\"invocation_prefix\":\"$rf:\"}",
-            )
+            .answers("ringframe", &["ledger", "verify"], 0, "{\"clean\":true}")
             .exists("codex");
         assert!(w.on_path("codex") && w.on_path("ringframe") && !w.on_path("claude"));
-        let said =
-            w.run("ringframe", &["--workspace", "/p", "profile", "show", "--host", "codex"], None);
+        let said = w.run("ringframe", &["--workspace", "/p", "ledger", "verify", "--json"], None);
         let said = said.unwrap();
         assert!(said.status.success());
-        assert_eq!(said.stdout, b"{\"invocation_prefix\":\"$rf:\"}");
-        assert!(!w.run("ringframe", &["ask", "preflight"], None).unwrap().status.success());
+        assert_eq!(said.stdout, b"{\"clean\":true}");
+        assert!(!w.run("ringframe", &["ask", "list"], None).unwrap().status.success());
         assert!(w.run("claude", &["--version"], None).is_err(), "no such program");
         assert!(!w.run("codex", &["plugin", "list"], None).unwrap().status.success());
     }

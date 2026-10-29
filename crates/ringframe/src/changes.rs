@@ -1792,13 +1792,7 @@ mod tests {
                     | 2 | Add `notes_line` for the notes. | `notes_line` returns a line. |\n";
         eval_bench(|ws| {
             commit(&ws.root, &[("plans/plan.md", Some(plan))], "plan");
-            confirm_ask_as(
-                ws,
-                "Build it",
-                b"build\n",
-                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
-                "native_goal",
-            );
+            confirm_ask_as(ws, b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n", "native_goal");
             let uptime =
                 "pub fn uptime_seconds() -> u64 {\n    let started = 1;\n    started * 60\n}\n";
             let notes = "pub fn notes_line() -> String {\n    let line = \"up\";\n    line.to_string()\n}\n";
