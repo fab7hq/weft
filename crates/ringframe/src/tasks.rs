@@ -197,6 +197,10 @@ struct Ctx {
     sentence_asks: Vec<String>,
     /// How many findings concern each window, as `findings_on` finds them.
     flagged: BTreeMap<String, usize>,
+    /// The same, without the checks' warnings: what ranks the map's leaves,
+    /// so each map task holds the same windows whether or not the checks are
+    /// in yet.
+    risk: BTreeMap<String, usize>,
 }
 
 fn tmp(ws: &Workspace, eval_id: &str) -> PathBuf {
@@ -259,14 +263,6 @@ impl Ctx {
             )
         })?;
         let mut changes = changes;
-        // The checks' warnings on added lines, once they are in: findings on
-        // their windows. They name no requirement, so the plan is the same
-        // whether or not they are in yet.
-        if let (Some(c), Some(list)) =
-            (crate::checks::results(ws, eval_id), changes["findings"].as_array_mut())
-        {
-            list.extend(array_of(&c, "findings").iter().cloned());
-        }
         let mut sentence_asks: Vec<String> = Vec::new();
         for r in array_of(&changes, "requirements").iter().filter(|r| is_sentence(&str_of(r, "id")))
         {
@@ -292,6 +288,15 @@ impl Ctx {
                 list.extend(found);
             }
         }
+        let risk = finding_counts(&changes);
+        // The checks' warnings on added lines, once they are in: findings on
+        // their windows. They name no requirement and do not rank the map's
+        // leaves, so the plan is the same whether or not they are in yet.
+        if let (Some(c), Some(list)) =
+            (crate::checks::results(ws, eval_id), changes["findings"].as_array_mut())
+        {
+            list.extend(array_of(&c, "findings").iter().cloned());
+        }
         let flagged = finding_counts(&changes);
         Ok(Ctx {
             ws: ws.clone(),
@@ -302,6 +307,7 @@ impl Ctx {
             changes,
             sentence_asks,
             flagged,
+            risk,
         })
     }
 
@@ -654,7 +660,7 @@ fn local_ids(ctx: &Ctx) -> Vec<String> {
 
 /// The map's leaves: the change's windows in the file tree's order, a unit's
 /// windows kept together, each window once, packed to `LEAF_BYTES`; the
-/// leaves holding more of RingFrame's findings go first.
+/// leaves holding more of RingFrame's findings, the checks' aside, go first.
 fn map_leaves(ctx: &Ctx, st: &Status) -> Vec<Vec<String>> {
     // Code moved away needs no judge: RingFrame answers it.
     let judged: BTreeSet<String> = ctx
@@ -710,7 +716,7 @@ fn map_leaves(ctx: &Ctx, st: &Status) -> Vec<Vec<String>> {
         leaves.push(cur);
     }
     let risk =
-        |l: &Vec<String>| l.iter().map(|w| ctx.flagged.get(w).copied().unwrap_or(0)).sum::<usize>();
+        |l: &Vec<String>| l.iter().map(|w| ctx.risk.get(w).copied().unwrap_or(0)).sum::<usize>();
     let mut ranked: Vec<(usize, Vec<String>)> = leaves.into_iter().enumerate().collect();
     ranked.sort_by_cached_key(|(i, l)| (std::cmp::Reverse(risk(l)), *i));
     ranked.into_iter().map(|(_, l)| l).collect()
@@ -4465,6 +4471,69 @@ mod tests {
                 md.contains("new_warning `make check`: warning: uptime is never tested"),
                 "{md}"
             );
+        });
+    }
+
+    /// The checks land while the map is out: each map task still holds the
+    /// windows it held, and its judge is shown the warnings as findings.
+    #[test]
+    fn the_map_tasks_hold_the_same_windows_once_the_checks_are_in() {
+        eval_bench(|ws| {
+            let big = |name: &str| {
+                let mut s = format!("export const table_{name} = {{\n");
+                for i in 0..800 {
+                    s.push_str(&format!("  {name}_{i}: \"{}\",\n", "x".repeat(60)));
+                }
+                s.push_str("};\n");
+                s
+            };
+            commit(&ws.root, &[("plans/plan.md", Some(PLAN))], "plan");
+            confirm_ask_as(
+                ws,
+                "Build it",
+                b"build phase 1\n",
+                b"/goal Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
+                "native_goal",
+            );
+            let mut make = String::from("check:\n");
+            for line in [10, 200, 400, 600, 790] {
+                make.push_str(&format!("\t@echo 'src/b_big.js:{line}:1: warning: unused'\n"));
+            }
+            commit(
+                &ws.root,
+                &[
+                    ("src/a_big.js", Some(&big("a"))),
+                    ("src/b_big.js", Some(&big("b"))),
+                    ("src/uptime.js", Some(UPTIME)),
+                    ("Makefile", Some(&make)),
+                ],
+                "work",
+            );
+            let e = &str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+            let plan_file = tmp(ws, e).join("checks.plan.json");
+            write(&plan_file, json!({"commands": ["make check"]}).to_string().as_bytes()).unwrap();
+            let maps = || -> Vec<(String, Vec<String>)> {
+                let ctx = Ctx::load(ws, e).unwrap();
+                let st = status(&ctx).unwrap();
+                plan(&ctx, &st)
+                    .into_iter()
+                    .filter(|t| t.role == "map")
+                    .map(|t| (t.id, t.windows))
+                    .collect()
+            };
+            let before = maps();
+            assert!(before.len() >= 2, "{before:?}");
+            crate::checks::run(ws, e).unwrap();
+            assert_eq!(maps(), before, "each map task holds the windows it held");
+            let ctx = Ctx::load(ws, e).unwrap();
+            let st = status(&ctx).unwrap();
+            let warned = plan(&ctx, &st)
+                .iter()
+                .filter(|t| t.role == "map")
+                .flat_map(|t| array_of(&task_file(&ctx, t, "map", &[]).0, "found").to_vec())
+                .filter(|f| f["kind"] == "new_warning")
+                .count();
+            assert!(warned > 0, "the judges see the warnings as findings");
         });
     }
 
