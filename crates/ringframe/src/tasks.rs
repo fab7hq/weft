@@ -195,12 +195,11 @@ struct Ctx {
     /// The Asks whose own sentences RingFrame sorted into requirements: the
     /// requirements task lists theirs from the person's words.
     sentence_asks: Vec<String>,
-    /// How many findings concern each window, as `findings_on` finds them.
+    /// How many findings concern each window, as `findings_on` finds them,
+    /// without the checks' warnings: what ranks the map's leaves and picks a
+    /// requirement's evidence, so every task holds the same whether or not
+    /// the checks are in yet.
     flagged: BTreeMap<String, usize>,
-    /// The same, without the checks' warnings: what ranks the map's leaves,
-    /// so each map task holds the same windows whether or not the checks are
-    /// in yet.
-    risk: BTreeMap<String, usize>,
 }
 
 fn tmp(ws: &Workspace, eval_id: &str) -> PathBuf {
@@ -288,16 +287,16 @@ impl Ctx {
                 list.extend(found);
             }
         }
-        let risk = finding_counts(&changes);
+        let flagged = finding_counts(&changes);
         // The checks' warnings on added lines, once they are in: findings on
-        // their windows. They name no requirement and do not rank the map's
-        // leaves, so the plan is the same whether or not they are in yet.
+        // their windows that the judges see. They name no requirement and are
+        // not counted in `flagged`, so the plan is the same whether or not
+        // they are in yet.
         if let (Some(c), Some(list)) =
             (crate::checks::results(ws, eval_id), changes["findings"].as_array_mut())
         {
             list.extend(array_of(&c, "findings").iter().cloned());
         }
-        let flagged = finding_counts(&changes);
         Ok(Ctx {
             ws: ws.clone(),
             eval_id: eval_id.to_string(),
@@ -307,7 +306,6 @@ impl Ctx {
             changes,
             sentence_asks,
             flagged,
-            risk,
         })
     }
 
@@ -721,7 +719,7 @@ fn map_leaves(ctx: &Ctx, st: &Status) -> Vec<Vec<String>> {
         leaves.push(cur);
     }
     let risk =
-        |l: &Vec<String>| l.iter().map(|w| ctx.risk.get(w).copied().unwrap_or(0)).sum::<usize>();
+        |l: &Vec<String>| l.iter().map(|w| ctx.flagged.get(w).copied().unwrap_or(0)).sum::<usize>();
     let mut ranked: Vec<(usize, Vec<String>)> = leaves.into_iter().enumerate().collect();
     ranked.sort_by_cached_key(|(i, l)| (std::cmp::Reverse(risk(l)), *i));
     ranked.into_iter().map(|(_, l)| l).collect()
@@ -817,7 +815,9 @@ fn served(answers: &BTreeMap<String, BTreeMap<String, Value>>, w: &str) -> Vec<S
 /// RingFrame's own, from its strongest units and the units in paths it names,
 /// up to `EXTRA_BYTES` and only while the whole stays within
 /// `REQUIREMENT_BYTES`, so they never make parts. Of RingFrame's, windows that carry a finding come first, and a
-/// window the map gave another requirement is left out unless it carries one.
+/// window the map gave another requirement is left out unless it carries one;
+/// the checks' warnings do not count, so the evidence is the same whether or
+/// not they are in yet.
 fn evidence_for(ctx: &Ctx, st: &Status, req: &str, bytes: usize) -> Vec<String> {
     let answers = map_answers(st);
     let judged: BTreeSet<String> = ctx.judged_windows().iter().map(|w| str_of(w, "id")).collect();
@@ -4583,6 +4583,50 @@ mod tests {
                 .filter(|f| f["kind"] == "new_warning")
                 .count();
             assert!(warned > 0, "the judges see the warnings as findings");
+        });
+    }
+
+    /// The checks land while the reduce is out: each reduce task still holds
+    /// the requirements and evidence it held, though a warning lands on a
+    /// window step 2 is linked to and the map gave to step 1.
+    #[test]
+    fn the_reduce_tasks_hold_the_same_evidence_once_the_checks_are_in() {
+        eval_bench(|ws| {
+            let b = bench(ws);
+            let e = &b.eval_id;
+            for t in ids(&ready(ws, e)) {
+                let entries: Vec<Value> = array_of(&task_of(ws, &t), "windows")
+                    .iter()
+                    .map(|w| json!({"window": w["id"], "serves": [S1]}))
+                    .collect();
+                let mut doc = head(&t, "map", "map");
+                doc["windows"] = json!(entries);
+                put(ws, &t, doc);
+                assert_eq!(submit(ws, &t).unwrap().0, 0, "{t}");
+            }
+            write(
+                &ws.root.join("Makefile"),
+                b"check:\n\t@echo 'docs/notes.md:1:1: warning: unused'\n",
+            )
+            .unwrap();
+            let plan_file = tmp(ws, e).join("checks.plan.json");
+            write(&plan_file, json!({"commands": ["make check"]}).to_string().as_bytes()).unwrap();
+            let reduces = || -> Vec<(String, Vec<Value>)> {
+                let ctx = Ctx::load(ws, e).unwrap();
+                let st = status(&ctx).unwrap();
+                plan(&ctx, &st)
+                    .into_iter()
+                    .filter(|t| t.kind == "reduce")
+                    .map(|t| (t.id, t.obligations))
+                    .collect()
+            };
+            let before = reduces();
+            assert!(!before.is_empty());
+            crate::checks::run(ws, e).unwrap();
+            let ctx = Ctx::load(ws, e).unwrap();
+            let notes = window_for(ws, e, "docs/notes.md");
+            assert!(ctx.findings_on(&notes).iter().any(|f| f["kind"] == "new_warning"));
+            assert_eq!(reduces(), before, "each reduce task holds what it held");
         });
     }
 
