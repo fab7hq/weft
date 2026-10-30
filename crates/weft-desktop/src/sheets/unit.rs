@@ -204,8 +204,12 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
             Size::Sheet,
         ),
     ];
-    // Sealed, it offers what its decision allows instead (17.11, 17.12).
-    let left = if d.offers.is_empty() { left } else { offers(project, &d.unit, &d.offers) };
+    // Sealed, it offers only what its decision allows: accepted work nothing (17.11, 17.12).
+    let left = match d.status {
+        Status::Sealed { .. } if d.offers.is_empty() => Vec::new(),
+        Status::Sealed { .. } => offers(project, &d.unit, &d.offers),
+        _ => left,
+    };
     sheet("sheet Unit", head, body, sheet_foot(left, vec![close_button()]))
 }
 

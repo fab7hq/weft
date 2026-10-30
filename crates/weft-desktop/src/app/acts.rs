@@ -524,13 +524,35 @@ impl WeftDesktopApp {
         self.ask.set_text(words);
     }
 
+    /// The pane of the agent an Ask's work is with: where it arrived, else a
+    /// running agent of its harness.
+    fn work_pane(&self, project: &Path, ask: &str) -> Option<u32> {
+        let u = self.client(project)?.units.iter().find(|u| u.ask_id == ask)?;
+        let session =
+            u.arrived.as_ref().map(|a| a.session.clone()).or_else(|| u.session_ref.clone());
+        if let Some(pane) = session.and_then(|s| self.pane_of(project, &s)) {
+            return Some(pane);
+        }
+        let listed = self.tree_projects().into_iter().find(|l| l.root == project)?;
+        listed
+            .project
+            .agents
+            .rows
+            .into_iter()
+            .filter(|a| a.state == weft_core::sessions::State::Running && a.harness == u.harness)
+            .find_map(|a| a.pane)
+    }
+
     fn open_ask(&mut self, project: PathBuf, session: Option<String>, unit: Option<String>) {
         self.send_to_open = false;
         // The agent named, else the one in front when it is this project's,
         // else its first running one: picked here, so the sheet shows where
         // it goes. An agent is picked by its pane.
         let named = session.and_then(|s| self.pane_of(&project, &s));
-        let pane = named.or_else(|| {
+        // A follow-up goes to the work's own agent: its session's pane, else
+        // a running agent of its harness.
+        let work = unit.as_deref().and_then(|u| self.work_pane(&project, u));
+        let pane = named.or(work).or_else(|| {
             let front = self.active_tab().filter(|t| t.project == project).map(|t| t.pane);
             let listed = self.tree_projects().into_iter().find(|l| l.root == project)?;
             let running: Vec<u32> = listed

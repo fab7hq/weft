@@ -826,6 +826,9 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     app.dispatch(SheetAct::FollowUp { project: weft(), unit: "ask_3".into() });
     let sheet = app.render().find_layer("sheet Ask").expect("the Ask").all_text();
     assert!(sheet.contains("FOLLOW UP · HEALTH ENDPOINT · "), "the eyebrow: {sheet}");
+    // It goes to the work's own harness (codex), not the agent in front.
+    let to = app.render().find_layer("send to choice").expect("its SEND TO").all_text();
+    assert!(to.contains("codex"), "to the work's harness: {to}");
     app.active_sheet = None;
 
     // Seal decides on the unit's Eval; Eval names the unit.
@@ -913,6 +916,12 @@ fn accepted_work_offers_nothing() {
     for gone in ["AFTER THE SEAL", "Keep a rule", "Commit", "Undo"] {
         assert!(!unit.contains(gone), "no {gone}: {unit}");
     }
+    // Nor the acts of open work: sealed, it is done with.
+    let sheet = app.render().find_layer("sheet Unit").unwrap().clone();
+    for gone in ["btn Follow up", "btn Eval", "btn Seal"] {
+        assert!(sheet.find_layer(gone).is_none(), "no {gone} on accepted work");
+    }
+    assert!(sheet.find_layer("btn Close").is_some());
 }
 
 /// Undo is one dialog: it reads the commits from where the work started up
@@ -945,6 +954,16 @@ fn undo_puts_the_work_back_to_the_commit_picked() {
         assert!(bar.contains(said), "{said} in {bar}");
     }
     assert!(!bar.contains("puts your files back"), "no sentence: {bar}");
+    // The list takes the dialog's width, and its acts sit at the right (17.17).
+    let dom = app.render();
+    let stretched = |layer: &str| {
+        dom.find_layer(layer)
+            .unwrap_or_else(|| panic!("{layer}"))
+            .styles
+            .iter()
+            .any(|(k, v)| k == "align-self" && v == "stretch")
+    };
+    assert!(stretched("undo list") && stretched("undo acts"), "both stretch across the dialog");
     assert!(matches!(app.bottom_bar, BottomBarState::Undo { picked: 2, .. }), "where it started");
 
     app.dispatch(BarAct::PickCommit(1));
@@ -1944,10 +1963,20 @@ fn a_running_eval_is_a_picture_with_its_judges_and_a_stop() {
         assert!(text.contains(said), "{said} in {text}");
     }
     assert!(sheet.find_layer("progress ring").is_some(), "a picture, not a status line");
+    // As 17.6: the share inside the ring, the stages in a row over a bar.
+    let ring = sheet.find_layer("progress ring").unwrap();
+    assert!(
+        ring.find_layer("ring label").is_some_and(|l| l.all_text().contains("50%")),
+        "{ring:?}"
+    );
+    let stages = sheet.find_layer("stages").expect("the stages");
+    assert!(stages.styles.iter().any(|(k, v)| k == "flex-direction" && v == "row"), "in a row");
+    assert!(sheet.find_layer("progress bar").is_some(), "a bar under the stages");
     let sweep = sheet.find_layer("progress sweep").expect("an arc sweeping round the ring");
     assert!(sweep.styles.iter().any(|(k, v)| k == "animation" && v == "spin"), "{sweep:?}");
     assert!(crate::gpui::asset("weft-sweep").is_some(), "the arc is one of Weft's pictures");
     assert!(!text.contains("map 1 of 1"), "no inner words: {text}");
+    assert!(text.contains("One judge is reading"), "one judge, said as one: {text}");
     let card = sheet.find_layer("judge 9").expect("its judge, under it");
     assert!(card.all_text().contains("codex"), "{:?}", card.all_text());
     app.dispatch(SheetAct::WatchJudge { project: weft(), pane: 9 });
@@ -2562,6 +2591,46 @@ fn a_dialog_that_stops_an_eval_says_stop_eval_in_amber() {
     assert_eq!(go.all_text(), "Stop Eval");
     assert!(go.styles.iter().any(|(k, v)| k == "color" && v == palette::AMBER), "amber: {go:?}");
     assert!(dom.find_layer("btn Send").is_none(), "no Send on a dialog that types nothing");
+    // It types into no agent, so it names none, and it is amber as its yes is.
+    assert!(
+        dom.find_layer("send to choice").is_none(),
+        "no SEND TO on a dialog that types nothing"
+    );
+    let bar = dom.find_layer("Cancel / Send bar").unwrap();
+    assert!(
+        bar.styles.iter().any(|(k, v)| k == "border-top" && v.contains(palette::AMBER)),
+        "{bar:?}"
+    );
+}
+
+/// The exact prompt reads from its first line, each line wrapped in the box,
+/// the route's command marked: one run of text, not words laid side by side.
+#[test]
+fn the_exact_prompt_reads_from_its_first_line_and_wraps() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    let typed =
+        "/goal Read the build number\n\nRules:\n- KISS: keep it plain and short so anyone reads it";
+    wire.event(Event::Pending {
+        id: "p1".into(),
+        pane,
+        what: "Ask Claude Code?".into(),
+        why: String::new(),
+        payload: typed.as_bytes().to_vec(),
+        sends: None,
+        go: None,
+    });
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    let dom = app.render();
+    let payload = dom.find_layer("payload").expect("the prompt");
+    assert!(
+        payload.children.iter().all(|c| c.tag != "span"),
+        "no spans laid in a row: {payload:?}"
+    );
+    let text = payload.children.iter().find(|c| c.tag == "rich").expect("one run of text");
+    assert_eq!(text.text.as_deref(), Some(typed));
+    assert_eq!(text.runs.first().map(|(r, _)| r.clone()), Some(0..5), "/goal marked");
 }
 
 #[test]

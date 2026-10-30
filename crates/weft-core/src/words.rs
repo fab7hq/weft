@@ -171,6 +171,8 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("dialog.export.go", "Turn on"),
     ("follow_up.from_findings", "Fix what the last Eval found:"),
+    ("follow_up.not_met", "not met: {what}"),
+    ("follow_up.unexplained", "unexplained change: {path} {why}"),
     ("follow_up.from_eval", "from what Eval {n} found"),
     // The one dialog a Seal has: the decision, and why when it is not a yes.
     ("dialog.seal.title", "Seal this work?"),
@@ -253,6 +255,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.checking", "Checking your work"),
     ("eval_view.checked", "checked"),
     ("eval_view.reading", "{n} judges are reading what changed against what you asked."),
+    ("eval_view.reading_one", "One judge is reading what changed against what you asked."),
     ("eval_view.stage.read", "Gather changes"),
     ("eval_view.stage.check", "Compare to your tasks"),
     ("eval_view.stage.again", "Double-check"),

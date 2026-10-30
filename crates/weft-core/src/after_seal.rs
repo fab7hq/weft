@@ -85,6 +85,24 @@ pub fn follow_up_link(unit: &crate::work::UnitOfWork) -> (&'static str, &str) {
     }
 }
 
+/// What a follow-up fixes, one line each, from the Eval's view: each step
+/// not met, each change nothing explains (its file, and why as a judge said),
+/// then what RingFrame found.
+pub fn remedy_lines(view: &crate::eval_view::EvalView) -> Vec<String> {
+    use crate::eval_view::State;
+    let not_met = view.groups.iter().flat_map(|g| &g.steps).filter(|s| s.state == State::NotMet);
+    let unexplained = view.changes.iter().filter(|c| c.result == "unexplained");
+    not_met
+        .map(|s| fill("follow_up.not_met", &[("what", s.text.trim())]))
+        .chain(unexplained.map(|c| {
+            fill("follow_up.unexplained", &[("path", &c.path), ("why", c.why.trim())])
+                .trim()
+                .to_string()
+        }))
+        .chain(view.findings.iter().cloned())
+        .collect()
+}
+
 /// A follow-up's words, written for the person to change: what the Eval
 /// found, one line each.
 pub fn remedy_words(findings: &[String]) -> String {
@@ -172,5 +190,57 @@ mod tests {
             "Fix what the last Eval found:\n- not met: Return 503\n- unexplained change: a.rs"
         );
         assert_eq!(remedy_words(&[]), "");
+    }
+
+    /// What a follow-up fixes, from the Eval's view: each step not met, each
+    /// change nothing explains (its file and why), then RingFrame's findings.
+    #[test]
+    fn a_follow_up_names_what_was_not_met_and_what_nothing_explains() {
+        use crate::eval_view::{Change, EvalView, Group, State, Step};
+        let step = |text: &str, state| Step {
+            id: text.into(),
+            label: String::new(),
+            text: text.into(),
+            done_when: String::new(),
+            state,
+            changes: Vec::new(),
+            readings: Vec::new(),
+            findings: Vec::new(),
+        };
+        let change = |path: &str, result: &str, why: &str| Change {
+            window: path.into(),
+            path: path.into(),
+            result: result.into(),
+            serves: Vec::new(),
+            why: why.into(),
+            quotes: Vec::new(),
+            lines: None,
+            readings: Vec::new(),
+        };
+        let view = EvalView {
+            groups: vec![Group {
+                key: "ask".into(),
+                title: "health endpoint".into(),
+                steps: vec![
+                    step("Add a health endpoint", State::Met),
+                    step("Return 503 while the database is down", State::NotMet),
+                ],
+            }],
+            changes: vec![
+                change("src/health.rs", "required", ""),
+                change("src/db/pool.rs", "unexplained", "rewrites the retry loop"),
+            ],
+            findings: vec!["unclaimed rewrite: commit 94d7989".into()],
+            ..EvalView::default()
+        };
+        assert_eq!(
+            remedy_lines(&view),
+            [
+                "not met: Return 503 while the database is down",
+                "unexplained change: src/db/pool.rs rewrites the retry loop",
+                "unclaimed rewrite: commit 94d7989",
+            ]
+        );
+        assert!(remedy_lines(&EvalView::default()).is_empty());
     }
 }

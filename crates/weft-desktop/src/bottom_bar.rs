@@ -8,7 +8,7 @@ use weft_core::words::{fill, word};
 use crate::action::{Answer, BarAct, SheetAct};
 use crate::app::BottomBarState;
 use crate::daemon::{ProjectClient, Staged};
-use crate::gpui::{Element, div, palette, span};
+use crate::gpui::{Element, Run, div, palette, rich, span};
 use crate::tree_view::TreeSelection;
 use crate::ui::{Size, Tone, asking_bar, bar_acts, button, note};
 
@@ -72,8 +72,9 @@ fn render_staged_bar(
     let cancel =
         button("btn Cancel", word("act.cancel"), resolve(Answer::No), Tone::Plain, Size::Sheet);
 
-    // It keeps SEND TO: where it was staged, another agent, or a new one.
-    let choice = send_to.map(|v| {
+    // It keeps SEND TO: where it was staged, another agent, or a new one. A
+    // dialog that types nothing names no agent.
+    let choice = send_to.filter(|_| !staged.payload.is_empty()).map(|v| {
         let pick = |to: String| BarAct::SendTo { pending: staged.id.clone(), to }.into();
         div()
             .flex_row()
@@ -118,10 +119,6 @@ fn render_staged_bar(
     // route's command marked.
     let typed = String::from_utf8_lossy(&staged.payload).into_owned();
     let command = typed.split_once(' ').map(|(c, _)| c).filter(|c| c.starts_with(['/', '$']));
-    let (command, rest) = match command {
-        Some(c) => (Some(format!("{c} ")), typed[c.len() + 1..].to_string()),
-        None => (None, typed.clone()),
-    };
     let into = (!typed.is_empty()).then(|| {
         let name = client.root.file_name().map(|n| n.to_string_lossy().into_owned());
         let target = match (name, pane) {
@@ -134,6 +131,14 @@ fn render_staged_bar(
             .color(palette::MUTED)
             .text(fill("dialog.ask.into", &[("target", &target)]))
     });
+    // One run of text, so it reads from its first line and wraps in the box.
+    let runs = command
+        .as_ref()
+        .map(|c| {
+            (0..c.trim_end().len(), Run { color: Some(palette::BLUE_BORDER), ..Run::default() })
+        })
+        .into_iter()
+        .collect();
     let payload = (!typed.is_empty()).then(|| {
         div()
             .layer("payload")
@@ -147,10 +152,15 @@ fn render_staged_bar(
             .style("max-height", "240px")
             .style("overflow-y", "auto")
             .color(palette::TEXT)
-            .children(command.map(|c| span(c).color(palette::BLUE_BORDER)))
-            .child(span(rest))
+            .child(rich(typed.clone(), runs).self_stretch())
     });
-    asking_bar("Cancel / Send bar", palette::BLUE_BORDER)
+    // A dialog whose yes stops something is amber, as its yes is.
+    let accent = if staged.go.as_ref().is_some_and(|g| g.warn) {
+        palette::AMBER
+    } else {
+        palette::BLUE_BORDER
+    };
+    asking_bar("Cancel / Send bar", accent)
         .child(
             div().flex_row().gap(8).items_center().child(title(staged.what.clone())).children(into),
         )
@@ -288,21 +298,22 @@ fn render_undo_bar(commits: &[weft_core::after_seal::Commit], picked: usize) -> 
         .children(commits.iter().enumerate().map(row));
     asking_bar("Undo bar", palette::AMBER_BORDER)
         .child(title(word("dialog.undo.title")))
-        .child(div().flex_row().gap(10).items_start().child(label).child(tree))
         .child(
             div()
+                .layer("undo list")
+                .self_stretch()
                 .flex_row()
                 .gap(10)
-                .items_center()
-                .child(div().flex_1())
-                .child(button(
-                    "btn Cancel",
-                    word("act.cancel"),
-                    BarAct::Cancel,
-                    Tone::Quiet,
-                    Size::Bar,
-                ))
-                .child(button("btn Undo", word("offer.undo"), BarAct::Undo, Tone::Warn, Size::Bar)),
+                .items_start()
+                .child(label)
+                .child(tree),
+        )
+        .child(
+            bar_acts(vec![
+                button("btn Cancel", word("act.cancel"), BarAct::Cancel, Tone::Quiet, Size::Bar),
+                button("btn Undo", word("offer.undo"), BarAct::Undo, Tone::Warn, Size::Bar),
+            ])
+            .layer("undo acts"),
         )
 }
 

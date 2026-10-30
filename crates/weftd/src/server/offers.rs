@@ -120,7 +120,9 @@ impl Session {
             return Answer::No("not_offered", "no Eval judged this work".into());
         };
         let root = &self.projects[at].root;
-        let found = crate::record::eval_view(root, eval).map(|v| v.findings).unwrap_or_default();
+        let found = crate::record::eval_view(root, eval)
+            .map(|v| weft_core::after_seal::remedy_lines(&v))
+            .unwrap_or_default();
         let n = self.projects[at].ledger.record().evals.iter().find(|e| e.id == eval).map(|e| e.n);
         Answer::Ok(serde_json::json!({
             "words": weft_core::after_seal::remedy_words(&found),

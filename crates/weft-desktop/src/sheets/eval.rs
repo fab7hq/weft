@@ -534,11 +534,28 @@ fn ring_svg(percent: u8) -> String {
     )
 }
 
+/// How wide a running Eval's row of stages and its bar are drawn.
+const STAGES_WIDTH: u32 = 600;
+
+/// The bar under the stages: the share checked, filled from the left.
+fn bar_svg(percent: u8) -> String {
+    let filled = f64::from(percent.min(100)) / 100.0 * f64::from(STAGES_WIDTH);
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="6" viewBox="0 0 {w} 6"><rect width="{w}" height="6" rx="3" fill="{line}"/><rect width="{filled:.0}" height="6" rx="3" fill="{teal}"/></svg>"#,
+        w = STAGES_WIDTH,
+        line = palette::LINE,
+        teal = palette::TEAL,
+    )
+}
+
 /// A running Eval as a picture (17.6): the ring, each stage lit in turn and
 /// the one under way breathing, and its judges as cards that open their pane.
 fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> Element {
-    let reading = (!judges.is_empty())
-        .then(|| fill("eval_view.reading", &[("n", &judges.len().to_string())]));
+    let reading = match judges.len() {
+        0 => None,
+        1 => Some(word("eval_view.reading_one").to_string()),
+        n => Some(fill("eval_view.reading", &[("n", &n.to_string())])),
+    };
     let head = div()
         .flex_col()
         .gap(4)
@@ -547,32 +564,36 @@ fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> 
             [v.title.clone()].into_iter().chain(reading).collect::<Vec<_>>().join(" · "),
             palette::MUTED,
         ));
+    // The ring, the share checked inside it (17.6).
     let ring = div()
         .layer("progress ring")
-        .flex_row()
-        .gap(16)
-        .items_center()
+        .style("position", "relative")
+        .style("width", "132px")
+        .style("height", "132px")
+        .shrink_0()
+        .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
         .child(
-            div()
-                .style("position", "relative")
-                .style("width", "132px")
-                .style("height", "132px")
-                .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
-                .child(
-                    div().style("position", "absolute").style("top", "0").style("left", "0").child(
-                        img_el("weft-sweep")
-                            .layer("progress sweep")
-                            .style("animation", "spin")
-                            .style("width", "132px")
-                            .style("height", "132px"),
-                    ),
-                ),
+            div().style("position", "absolute").style("top", "0").style("left", "0").child(
+                img_el("weft-sweep")
+                    .layer("progress sweep")
+                    .style("animation", "spin")
+                    .style("width", "132px")
+                    .style("height", "132px"),
+            ),
         )
         .child(
             div()
+                .layer("ring label")
+                .style("position", "absolute")
+                .style("top", "0")
+                .style("left", "0")
+                .style("width", "132px")
+                .style("height", "132px")
                 .flex_col()
-                .child(div().font_weight(700).font_size(28).text(format!("{}%", p.percent)))
-                .child(note(word("eval_view.checked"), palette::DIM)),
+                .items_center()
+                .style("justify-content", "center")
+                .child(div().font_weight(700).font_size(26).text(format!("{}%", p.percent)))
+                .child(div().font_size(12).color(palette::DIM).text(word("eval_view.checked"))),
         );
     let stage = |s: &Lit| {
         let (mark, colour) = match s.light {
@@ -581,7 +602,7 @@ fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> 
             Light::Next => ("○", palette::DIM),
             Light::Running => ("◌", palette::AMBER),
         };
-        let mut node = div().font_size(16).color(colour).text(mark);
+        let mut node = div().font_size(18).color(colour).text(mark);
         if matches!(s.light, Light::Now | Light::Running) {
             node = node.style("animation", "pulse");
         }
@@ -592,13 +613,26 @@ fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> 
         let said = if s.light == Light::Running { palette::AMBER } else { palette::MUTED };
         div()
             .layer(format!("stage {}", s.name))
-            .flex_row()
-            .gap(12)
+            .flex_1()
+            .flex_col()
+            .gap(6)
             .items_center()
             .child(node)
-            .child(div().flex_col().child(name).child(note(s.note.clone(), said)))
+            .child(name)
+            .child(div().font_size(12).color(said).text(s.note.clone()))
     };
-    let stages = div().flex_col().gap(14).children(p.stages.iter().map(stage));
+    // The stages in a row, lit in turn, over a bar of the share checked.
+    let stages = div()
+        .flex_col()
+        .gap(14)
+        .style("width", format!("{STAGES_WIDTH}px"))
+        .child(div().layer("stages").flex_row().items_start().children(p.stages.iter().map(stage)))
+        .child(
+            svg_el(bar_svg(p.percent))
+                .layer("progress bar")
+                .style("width", format!("{STAGES_WIDTH}px"))
+                .style("height", "6px"),
+        );
     let judge = |j: &&PaneView| {
         let act = SheetAct::WatchJudge { project: project.to_path_buf(), pane: j.id };
         let turn = j.turn.map_or(word("turn.ready"), Turn::words);
