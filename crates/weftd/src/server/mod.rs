@@ -2766,7 +2766,7 @@ mod tests {
     }
 
     #[test]
-    fn sense_refines_unhooked_waiting_and_post_stop_goal_continuation_in_weftd() {
+    fn a_hook_decides_a_panes_turn_and_sense_reads_only_an_unhooked_one() {
         let dir = tempfile::tempdir().unwrap();
         let weft_dir = dir.path().join(".fab7/weft");
         std::fs::create_dir_all(&weft_dir).unwrap();
@@ -2828,8 +2828,8 @@ mod tests {
             Call::Open { path: project.display().to_string(), rows: 40, cols: 120, raw: true },
         );
 
-        // 1. Spawn an Antigravity pane and emit `PreInvocation` ("working"), then print an
-        // un-hooked Antigravity permission prompt and verify weftd transitions it to Turn::Waiting.
+        // 1. An Antigravity pane no hook has spoken for yet shows a permission prompt: Sense
+        // reads it as waiting for the person.
         let token_file = dir.path().join("agy.token");
         let agy_script = dir.path().join("agy-mock.sh");
         std::fs::write(
@@ -2863,28 +2863,6 @@ mod tests {
         }
         let agy_token = std::fs::read_to_string(&token_file).unwrap();
 
-        let agy_transcript = dir.path().join("agy-transcript.jsonl");
-        std::fs::write(
-            &agy_transcript,
-            include_str!("../../../weft-core/tests/fixtures/conversation/antigravity.jsonl"),
-        )
-        .unwrap();
-
-        // Send PreInvocation hook ("working") tying session "s-agy-1"
-        weft_proto::send(
-            &mut writer,
-            &Line::Event(Out::Signal(Box::new(weft_core::signal::Sent {
-                pane: Some(agy_pane),
-                token: Some(agy_token.clone()),
-                harness: "antigravity".into(),
-                session: "s-agy-1".into(),
-                state: Some("working".into()),
-                ..Default::default()
-            })))
-            .encode(),
-        )
-        .unwrap();
-
         let perm_prompt = concat!(
             "\x1b[2J\x1b[H",
             "◈ Propose command: rm -f /tmp/hostlab-perm-probe && touch /tmp/hostlab-perm-probe\r\n",
@@ -2909,13 +2887,35 @@ mod tests {
                 saw_waiting = true;
             }
         }
-        assert!(
-            saw_waiting,
-            "un-hooked Antigravity permission prompt transitions effective Turn to Turn::Waiting after 150ms settle"
-        );
+        assert!(saw_waiting, "a permission prompt on a pane no hook spoke for reads as waiting");
 
-        // 2. Spawn a Claude Code pane, print a post-Stop /goal continuation check screen,
-        // emit Stop ("turn_ended"), and verify weftd keeps Turn::Working and refuses direct send (D10.2 / D4.11).
+        // Its hook then says working: the hook decides, whatever the screen shows.
+        weft_proto::send(
+            &mut writer,
+            &Line::Event(Out::Signal(Box::new(weft_core::signal::Sent {
+                pane: Some(agy_pane),
+                token: Some(agy_token.clone()),
+                harness: "antigravity".into(),
+                session: "s-agy-1".into(),
+                state: Some("working".into()),
+                ..Default::default()
+            })))
+            .encode(),
+        )
+        .unwrap();
+        let mut saw_working = false;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < until && !saw_working {
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
+                && panes.first().copied().flatten() == Some(Turn::Working)
+            {
+                saw_working = true;
+            }
+        }
+        assert!(saw_working, "the hook's working stands over the prompt Sense read");
+
+        // 2. A Claude Code pane whose screen reads as still working gets its Stop hook: its turn
+        // has ended, as the hook says.
         let claude_token_file = dir.path().join("claude.token");
         let claude_script = dir.path().join("claude-mock.sh");
         std::fs::write(
@@ -2977,49 +2977,22 @@ mod tests {
         )
         .unwrap();
 
-        // Even though the Stop ("turn_ended") hook arrived, WorkingPostHook keeps effective Turn::Working!
-        let mut saw_claude_working = false;
+        let mut ended_at = None;
+        let mut working_after = false;
         let until = std::time::Instant::now() + std::time::Duration::from_secs(3);
         while std::time::Instant::now() < until {
-            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
-                && panes.get(claude_pane as usize).copied().flatten() == Some(Turn::Working)
-            {
-                saw_claude_working = true;
-                break;
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next() {
+                match panes.get(claude_pane as usize).copied().flatten() {
+                    Some(Turn::TurnEnded) => {
+                        ended_at = ended_at.or(Some(std::time::Instant::now()))
+                    }
+                    Some(Turn::Working) if ended_at.is_some() => working_after = true,
+                    _ => {}
+                }
             }
         }
-        assert!(
-            saw_claude_working,
-            "post-Stop /goal continuation check keeps effective Turn::Working in weftd"
-        );
-
-        // Once the screen settles to IdleReady, effective Turn transitions to Turn::TurnEnded.
-        let idle_screen = concat!(
-            "\x1b[2J\x1b[38;1H",
-            "● Done.\r\n",
-            "❯ \r\n",
-            "  ⏵⏵ bypass permissions on · 42% context"
-        );
-        call(
-            &mut writer,
-            &mut reader,
-            7,
-            Call::Input { pane: claude_pane, bytes: idle_screen.as_bytes().to_vec() },
-        );
-        let mut saw_claude_ended = false;
-        let until2 = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while std::time::Instant::now() < until2 {
-            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
-                && panes.get(claude_pane as usize).copied().flatten() == Some(Turn::TurnEnded)
-            {
-                saw_claude_ended = true;
-                break;
-            }
-        }
-        assert!(
-            saw_claude_ended,
-            "once screen settles to IdleReady after WorkingPostHook, effective Turn transitions to TurnEnded"
-        );
+        assert!(ended_at.is_some(), "the Stop hook ends the turn");
+        assert!(!working_after, "a screen Sense reads as working never takes it back");
 
         weft_proto::send(&mut writer, &Line::Call { id: 99, call: Call::Shutdown }.encode())
             .unwrap();

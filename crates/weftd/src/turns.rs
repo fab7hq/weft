@@ -107,28 +107,20 @@ pub fn turn_hook_name(turn: Option<Turn>) -> Option<&'static str> {
     }
 }
 
-/// Refine a pane's hook `Turn` (Rank 1) with `weft-sense` Head 1's calibrated
-/// `SurfaceState` (Rank 3) per ADR-0001 / spec §3.1.
+/// A pane's turn: the harness's own hook decides it, whatever the screen
+/// shows. Sense reads the screen only for a pane no hook has spoken for yet,
+/// where a prompt on it waits for the person.
 pub fn refine_turn_with_sense(
     hook_turn: Option<Turn>,
     surface: Option<weft_sense::SurfaceState>,
 ) -> Option<Turn> {
     use weft_sense::SurfaceState::*;
     match (hook_turn, surface) {
-        // Rank 1: Hook waiting is authoritative.
-        (Some(Turn::Waiting), _) => Some(Turn::Waiting),
-        // Un-hooked interactive prompt while Hook is Working or None -> Turn::Waiting.
-        (
-            Some(Turn::Working) | None,
-            Some(WaitingPermission | WaitingQuestion | WaitingTrustOrAuth),
-        ) => Some(Turn::Waiting),
-        // Post-Stop /goal continuation check while Hook is TurnEnded or Ready -> Turn::Working until IdleReady.
-        (
-            Some(Turn::TurnEnded | Turn::Ready),
-            Some(WorkingPostHook | WorkingGenerating | WorkingTool),
-        ) => Some(Turn::Working),
-        // Any other state leaves Hook Turn unchanged.
-        (turn, _) => turn,
+        (Some(turn), _) => Some(turn),
+        (None, Some(WaitingPermission | WaitingQuestion | WaitingTrustOrAuth)) => {
+            Some(Turn::Waiting)
+        }
+        (None, _) => None,
     }
 }
 
@@ -167,40 +159,30 @@ mod tests {
     }
 
     #[test]
-    fn refine_turn_with_sense_follows_authority_hierarchy() {
+    fn a_hook_decides_and_sense_speaks_only_when_no_hook_has() {
         use weft_sense::SurfaceState::*;
-        // Rank 1: Hook Waiting is always authoritative.
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::Waiting), Some(IdleReady)),
-            Some(Turn::Waiting)
-        );
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::Waiting), Some(WorkingGenerating)),
-            Some(Turn::Waiting)
-        );
-        // Un-hooked waiting prompt (e.g. Antigravity permission prompt) while Hook is Working or None -> Turn::Waiting.
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::Working), Some(WaitingPermission)),
-            Some(Turn::Waiting)
-        );
-        assert_eq!(refine_turn_with_sense(None, Some(WaitingQuestion)), Some(Turn::Waiting));
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::Working), Some(WaitingTrustOrAuth)),
-            Some(Turn::Waiting)
-        );
-        // Post-Stop /goal continuation check while Hook is TurnEnded or Ready -> Turn::Working until IdleReady.
+        // Whatever the screen reads as, the harness's own hook decides.
+        for hook in [Turn::Ready, Turn::Working, Turn::Waiting, Turn::TurnEnded, Turn::Ended] {
+            for read in
+                [IdleReady, WorkingPostHook, WorkingGenerating, WorkingTool, WaitingPermission]
+            {
+                assert_eq!(
+                    refine_turn_with_sense(Some(hook), Some(read)),
+                    Some(hook),
+                    "{hook:?} read as {read:?}"
+                );
+            }
+        }
+        // A finished Claude Code screen Sense read as still working stays ended.
         assert_eq!(
             refine_turn_with_sense(Some(Turn::TurnEnded), Some(WorkingPostHook)),
-            Some(Turn::Working)
-        );
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::Ready), Some(WorkingGenerating)),
-            Some(Turn::Working)
-        );
-        assert_eq!(
-            refine_turn_with_sense(Some(Turn::TurnEnded), Some(IdleReady)),
             Some(Turn::TurnEnded)
         );
-        assert_eq!(refine_turn_with_sense(Some(Turn::TurnEnded), None), Some(Turn::TurnEnded));
+        // No hook yet: a prompt on the screen is the person's to answer.
+        assert_eq!(refine_turn_with_sense(None, Some(WaitingQuestion)), Some(Turn::Waiting));
+        assert_eq!(refine_turn_with_sense(None, Some(WaitingPermission)), Some(Turn::Waiting));
+        assert_eq!(refine_turn_with_sense(None, Some(WaitingTrustOrAuth)), Some(Turn::Waiting));
+        assert_eq!(refine_turn_with_sense(None, Some(WorkingGenerating)), None);
+        assert_eq!(refine_turn_with_sense(None, None), None);
     }
 }
