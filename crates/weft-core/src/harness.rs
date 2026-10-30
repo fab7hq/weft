@@ -247,7 +247,7 @@ impl Harness {
         for (value, flags, name) in
             [(model, &launch.model, "{model}"), (effort, &launch.effort, "{effort}")]
         {
-            if let Some(value) = value.filter(|v| crate::sessions::is_id(v)) {
+            if let Some(value) = value.filter(|v| launch_word(v)) {
                 words.extend(flags.iter().map(|w| w.replace(name, value)));
             }
         }
@@ -259,6 +259,19 @@ impl Harness {
     pub fn argv(&self, command: &[String]) -> Vec<String> {
         self.args.iter().chain(command).cloned().collect()
     }
+}
+
+/// A judge's model or effort, as its launch words take it: one word that is
+/// no flag, of letters, digits and `.` `_` `-` `:` `/`, so a model by its tag
+/// (`qwen3.6:35b`) or by its provider's path (`openrouter/vendor/model-1`)
+/// goes in, and nothing that would read as words of its own.
+pub fn launch_word(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.starts_with('-')
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | ':' | '/'))
 }
 
 /// The words a command line runs as, with turbo mode's flags after the
@@ -662,6 +675,18 @@ mod tests {
         );
         assert_eq!(judge("grok", Some("grok-4.7"), None), "grok -m grok-4.7");
         assert_eq!(judge("grok", Some("two words"), Some("")), "grok", "neither is a word");
+        // A model by its tag, or by its provider's path, is one word too.
+        assert_eq!(
+            judge("antigravity", Some("hostlab-e2e:35b"), None),
+            "agy --model hostlab-e2e:35b"
+        );
+        assert_eq!(
+            judge("grok", Some("openrouter/x-ai/grok-4.7"), None),
+            "grok -m openrouter/x-ai/grok-4.7"
+        );
+        for not_a_word in ["--yolo", "$(id)", "a;b", "a b"] {
+            assert_eq!(judge("grok", Some(not_a_word), None), "grok", "{not_a_word}");
+        }
 
         let mut p = file("codex");
         p["eval"].as_object_mut().unwrap().remove("launch");

@@ -440,6 +440,14 @@ impl Session {
         bench.seen.insert(task.role.clone(), launch.clone());
         let (client, eval_id) = (bench.client, bench.eval_id.clone());
         let (harness, model, effort) = launch.clone();
+        for value in [&model, &effort].into_iter().flatten() {
+            if !weft_core::harness::launch_word(value) {
+                eprintln!(
+                    "weft: a judge of {eval_id} starts without '{value}': not one word its \
+                     harness can take, so it runs on {harness}'s own"
+                );
+            }
+        }
         let spec = self.projects[at]
             .harnesses
             .find(&harness)
