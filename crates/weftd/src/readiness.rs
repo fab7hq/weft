@@ -47,7 +47,7 @@ pub const UNVERSIONED: &str = "unversioned";
 fn ask(outside: &dyn Outside, h: &Harness) -> Option<Value> {
     let argv = h.argv(&h.list);
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
-    let out = outside.run(&h.program, &args, None).ok()?;
+    let out = outside.run(&h.program, &args, None, crate::outside::ANSWERS_WITHIN).ok()?;
     if !out.status.success() {
         return None;
     }

@@ -332,6 +332,7 @@ fn fetch_sense_from(
                         &from,
                     ],
                     None,
+                    crate::outside::SETS_UP_WITHIN,
                 )?
                 .status
                 .success();

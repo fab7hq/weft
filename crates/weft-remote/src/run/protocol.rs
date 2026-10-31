@@ -135,10 +135,18 @@ impl Remote {
                     Carries::Settings => ok["settings"] = v,
                     Carries::Sealed(what) => ok[what.as_str()] = v,
                     Carries::Starts | Carries::Part(..) | Carries::Follow(..) => {}
+                    Carries::Resolve(_) => {}
                 }
                 self.send(asked.conn, ok);
             }
-            Err((code, message)) => self.error(asked.conn, &asked.req, &code, &message),
+            Err((code, message)) => {
+                if let Carries::Resolve(id) = asked.carries
+                    && code == "not_ready"
+                {
+                    self.not_ready.insert(id);
+                }
+                self.error(asked.conn, &asked.req, &code, &message)
+            }
         }
     }
 
@@ -494,7 +502,7 @@ impl Remote {
             Call::Resolve { pending: id.into(), yes, force: force && yes, to, start },
             conn,
             req,
-            Carries::Nothing,
+            Carries::Resolve(id.into()),
         )
     }
 

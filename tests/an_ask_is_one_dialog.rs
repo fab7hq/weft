@@ -1,7 +1,8 @@
 //! An Ask from Weft is one dialog: the Ask shows the exact prompt, Send
 //! compiles it through RingFrame's crate and types it, and the harness is
 //! sent nothing else, so its agent makes no tool call before the work. Cancel
-//! records nothing.
+//! records nothing. A Send while the agent works is refused at once and
+//! records nothing either: the dialog stays for a Send once it is ready.
 //!
 //! The harness is made up: `claude-code`'s RingFrame profile, with an agent
 //! that writes each line it takes to a file. Its own test binary because it
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use weft::protocol::{self, Call, Event, Line, Lines, PROTOCOL};
 use weft::server;
+use weft_core::turns::Turn;
 
 const WORDS: &str = "Build Phase 1 of plans/uptime/plan.md.";
 
@@ -40,13 +42,15 @@ prompt = ["said.text"]
 on = [
   {{ hook = "Began",     state = "ready" }},
   {{ hook = "Submitted", state = "working", forward = "prompt" }},
+  {{ hook = "Busy",      state = "working" }},
 ]
 "#
     )
 }
 
 /// An agent that says it is ready, then writes every line it takes to
-/// `<dir>/took` and reports it through the real `weft signal`.
+/// `<dir>/took` and reports it through the real `weft signal`. A line `work`
+/// starts a turn of its own; `rest` ends it.
 fn agent(dir: &Path, home: &Path) -> String {
     std::fs::create_dir_all(dir).unwrap();
     let weft = env!("CARGO_BIN_EXE_weft");
@@ -57,6 +61,10 @@ fn agent(dir: &Path, home: &Path) -> String {
          sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
          printf '> '\n\
          while IFS= read -r line; do\n\
+           case \"$line\" in\n\
+             work) sig Busy \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\" ;;\n\
+             rest) sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\" ;;\n\
+           esac\n\
            printf '%s\\n' \"$line\" >> '{d}/took'\n\
          done\n"
     );
@@ -198,8 +206,38 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(compiled(&root).is_empty(), "a Cancel records nothing");
 
-    // Send: compiled, confirmed by Weft, and typed as shown.
+    // Send while the agent works: refused at once, nothing recorded or
+    // typed, and the dialog stays.
     let (pending, _, _, _) = ask(&mut c);
+    let turn = |c: &mut Client, line: &str, want: Option<Turn>| {
+        let id = c.call(Call::Input { pane, bytes: format!("{line}\r").into_bytes() });
+        c.wait(id, |e| match e {
+            Event::Agents { panes, .. } if panes.first().copied().flatten() == want => Some(()),
+            _ => None,
+        })
+        .expect("the agent's turn");
+    };
+    turn(&mut c, "work", Some(Turn::Working));
+    let busy = c.call(Call::Resolve {
+        pending: pending.clone(),
+        yes: true,
+        force: false,
+        to: None,
+        start: None,
+    });
+    let why = "Weft did not type it: the agent is working.";
+    let said = c.wait(busy, |e| match e {
+        Event::Injected { refusal, .. } => Some(refusal),
+        _ => None,
+    });
+    assert_eq!(said, Ok(Some(why.into())), "everyone watching is told");
+    assert_eq!(c.wait(busy, |_| None::<()>), Err(why.into()), "and the Send is refused");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(compiled(&root).is_empty(), "a refused Send records nothing");
+    assert!(!std::fs::read_to_string(dir.join("took")).unwrap().contains("/goal"), "nor types");
+
+    // Send once it is ready: compiled, confirmed by Weft, and typed as shown.
+    turn(&mut c, "rest", Some(Turn::Ready));
     let yes = c.call(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
     let refusal = c.wait(yes, |e| match e {
         Event::Injected { refusal, .. } => Some(refusal),
@@ -209,6 +247,7 @@ fn an_ask_shows_its_exact_prompt_and_send_types_only_that() {
     let asks = compiled(&root);
     assert_eq!(asks.len(), 1, "{asks:?}");
     assert_eq!(asks[0]["data"]["host"]["surface"], "weft");
+    assert_eq!(asks[0]["data"]["host"]["session_ref"], "s1", "the session it is typed into");
     let confirmed: Vec<_> =
         events(&root).into_iter().filter(|e| e["type"] == "ask.confirmed").collect();
     assert_eq!(confirmed[0]["data"]["confirmation"]["via"], "weft");

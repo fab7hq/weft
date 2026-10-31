@@ -21,6 +21,8 @@ pub struct BottomBarProps<'a> {
     pub suggested: Option<weft_core::board::Act>,
     /// The staged send's SEND TO.
     pub staged_to: Option<&'a crate::sheets::send_to::SendTo>,
+    /// What Weft reads of the setup of the harness the dialog's act goes to.
+    pub warning: Option<&'a str>,
 }
 
 /// The bar: what waits on the person, or the tree's acts.
@@ -32,7 +34,7 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
     if let Some((client, staged)) =
         props.clients.iter().find_map(|c| c.waiting.last().map(|s| (c, s)))
     {
-        return render_staged_bar(client, staged, props.staged_to);
+        return render_staged_bar(client, staged, props.staged_to, props.warning);
     }
     match props.state {
         BottomBarState::QuitConfirm => render_quit_bar(),
@@ -45,7 +47,8 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
         BottomBarState::CloseProjectConfirm { project } => render_close_project_bar(project),
         BottomBarState::SealDisposition { project, eval, selected, reason } => {
             let client = props.clients.iter().find(|c| &c.root == project);
-            render_seal_disposition_bar(client, project, eval, selected, reason.as_deref())
+            let picked = (selected.as_str(), reason.as_deref());
+            render_seal_disposition_bar(client, project, eval, picked, props.warning)
         }
         BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
         BottomBarState::Undo { commits, picked, .. } => render_undo_bar(commits, *picked),
@@ -58,10 +61,17 @@ fn title(text: impl Into<String>) -> Element {
     div().font_weight(600).font_size(15).text(text)
 }
 
+/// What Weft reads of a harness's setup, in amber where the act is: a
+/// warning, never a stop, since the reading may be wrong.
+pub(crate) fn warned(said: &str) -> Element {
+    div().layer("setup warning").font_size(13).color(palette::AMBER).text(said.to_string())
+}
+
 fn render_staged_bar(
     client: &ProjectClient,
     staged: &Staged,
     send_to: Option<&crate::sheets::send_to::SendTo>,
+    warning: Option<&str>,
 ) -> Element {
     let pane = client.view(staged.pane);
     let resolve = |answer| BarAct::Resolve {
@@ -167,6 +177,7 @@ fn render_staged_bar(
         .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
         .children(payload)
         .children(choice)
+        .children(warning.map(warned))
         .child(bar_acts(vec![cancel, yes_button(staged.go.as_ref(), resolve(Answer::Yes))]))
 }
 
@@ -321,8 +332,8 @@ fn render_seal_disposition_bar(
     client: Option<&ProjectClient>,
     project: &std::path::Path,
     eval: &str,
-    selected: &str,
-    picked_reason: Option<&str>,
+    (selected, picked_reason): (&str, Option<&str>),
+    warning: Option<&str>,
 ) -> Element {
     let chip = |layer: String, said: String, picked: bool, act: BarAct| {
         div()
@@ -411,6 +422,7 @@ fn render_seal_disposition_bar(
                 .children(reasons.iter().map(|r| reason(r)))
                 .child(span(word("dialog.seal.optional")).font_size(12).color(palette::DIM))
         }))
+        .children(warning.map(warned))
         .child(
             div()
                 .flex_row()

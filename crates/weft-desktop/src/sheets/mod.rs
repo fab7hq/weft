@@ -42,6 +42,10 @@ pub struct SheetProps<'a> {
     pub ask_choices: &'a ask::AskChoices,
     /// The words the open Ask's sheet was made for.
     pub ask_sheet_for: Option<&'a str>,
+    /// Why RingFrame would not read the open Ask's sheet.
+    pub ask_refused: Option<&'a str>,
+    /// What Weft reads of the setup of the harness SEND TO picks.
+    pub ask_warning: Option<&'a str>,
     /// The tunnel picked in Remote, not yet used.
     pub remote_pick: Option<&'a str>,
     /// The open Ask's SEND TO.

@@ -591,20 +591,17 @@ fn a_prompt_recorded_only_in_a_transcript_arrives_with_a_later_hook() {
     assert!(!b.calls().contains("ask submitted"), "{}", b.calls());
 }
 
-/// An agent whose turn is running is not typed into: the send waits until
-/// its hooks say the turn ended, then goes, and is proven as any other.
+/// An agent whose turn is running is not typed into: the Send is refused at
+/// once, with why, and nothing is typed.
 #[test]
-fn a_busy_agent_is_waited_for() {
+fn a_busy_agent_is_refused_at_send() {
     let mut b = Bench::new("weft-proven-busy", "loom", "busy");
     let asked = Instant::now();
-    assert_eq!(b.send(), Ok(None), "typed once the turn ended");
-    assert!(
-        asked.elapsed() >= Duration::from_secs(2),
-        "not while it worked: {:?}",
-        asked.elapsed()
-    );
-    assert_eq!(b.notice(Duration::from_secs(2)), None, "and it arrived as the Ask");
-    assert_eq!(b.took(), format!("{WORDING}\n"));
+    let said = b.send();
+    assert_eq!(said, Ok(Some("Weft did not type it: the agent is working.".into())));
+    assert!(asked.elapsed() < Duration::from_secs(2), "at once: {:?}", asked.elapsed());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.took(), "", "nothing typed");
 }
 
 #[test]

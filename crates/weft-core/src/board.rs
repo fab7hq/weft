@@ -272,12 +272,7 @@ impl Board<'_> {
         {
             return Some(gap.to_string());
         }
-        let why = self.why_not(act)?;
-        let mut said = why.say();
-        if why.key == "why.not_set_up" {
-            said.push_str(" Updates… in ☰ sets it up.");
-        }
-        Some(said)
+        Some(self.why_not(act)?.warning())
     }
 
     /// Why an action is not available now, as a `words` key and what its

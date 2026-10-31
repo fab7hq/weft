@@ -493,6 +493,33 @@ mod tests {
         assert_eq!(s.sent("claude-code", "PreToolUse", &other), None, "nothing to send");
     }
 
+    /// Every way a Claude Code turn ends reaches a state Weft types into: its
+    /// Stop; an API error, where Stop never comes; and its prompt left idle,
+    /// which is all an interrupt leaves.
+    #[test]
+    fn a_claude_turn_ends_on_stop_an_api_error_or_an_idle_prompt() {
+        let s = signal("claude-code");
+        let state = |hook: &str, extra: Value| {
+            let mut p = json!({"session_id": "s1", "cwd": "/w"});
+            p.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            s.sent("claude-code", hook, &p).and_then(|m| m.state)
+        };
+        assert_eq!(state("Stop", json!({})).as_deref(), Some("turn_ended"));
+        assert_eq!(
+            state("StopFailure", json!({"error": "rate_limit"})).as_deref(),
+            Some("turn_ended")
+        );
+        assert_eq!(
+            state("Notification", json!({"notification_type": "idle_prompt"})).as_deref(),
+            Some("turn_ended")
+        );
+        assert_eq!(
+            state("Notification", json!({"notification_type": "auth_success"})),
+            None,
+            "another notice says nothing of the turn"
+        );
+    }
+
     /// A hook from inside a sub-agent is not the pane's session: it sets no
     /// state and forwards nothing, except on a row the parent fires about it.
     #[test]

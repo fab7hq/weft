@@ -699,7 +699,8 @@ impl Project {
                     (_, Some(e)) => self.seal_why(e),
                     _ => self.unit_seal_why(u),
                 };
-                if let Some(why) = why {
+                // What Weft reads of the harness's setup only warns.
+                if let Some(why) = why.filter(|w| !w.is_setup()) {
                     return Err(said(why));
                 }
                 if act == Act::Seal {
@@ -723,7 +724,7 @@ impl Project {
             return Err(("bad_request", "an Ask needs its words".into()));
         }
         if matches!(act, Act::Ask | Act::FollowUp | Act::Proceed)
-            && let Some(why) = self.board(unit, pane, |b| b.why_not(act))
+            && let Some(why) = self.board(unit, pane, |b| b.why_not(act)).filter(|w| !w.is_setup())
         {
             return Err(said(why));
         }
@@ -1012,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn a_harness_not_set_up_is_why_eval_and_ask_cannot_run() {
+    fn a_harness_not_set_up_is_said_where_eval_and_ask_are() {
         let mut p = opened();
         assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
         let tree = p.tree();
@@ -1221,6 +1222,8 @@ mod tests {
             refused(&s, json!({"act": "eval", "unit": "ask_1"})),
             ("why.closed", "fix login is closed. Follow up asks again.".into())
         );
+        // What Weft reads of a harness's setup stops no act: the device
+        // warns, and the reading may be wrong.
         let mut p = judged();
         assert!(p.heard(&Event::Readiness { states: json!({"claude": "no_plugin"}) }));
         for m in [
@@ -1228,10 +1231,7 @@ mod tests {
             json!({"act": "seal", "eval": "evl_1"}),
             json!({"act": "ask", "text": "x"}),
         ] {
-            assert_eq!(
-                refused(&p, m),
-                ("why.not_set_up", "claude is not set up for RingFrame.".into())
-            );
+            assert!(matches!(act(&p, m.clone()), Ok(Call::Act { .. })), "{m}");
         }
     }
 

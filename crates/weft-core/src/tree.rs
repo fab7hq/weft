@@ -227,6 +227,22 @@ impl Why {
         Some(Why { key, harness: named.then(|| harness.to_string()), title: None })
     }
 
+    /// Whether this is what Weft reads of the harness's setup: a warning
+    /// shown where the act is, never a stop, since the reading may be wrong.
+    pub fn is_setup(&self) -> bool {
+        matches!(self.key, "why.not_set_up" | "why.cannot_ask")
+    }
+
+    /// The setup warning as said on this machine: its sentence and, for a
+    /// harness not set up, where to set it up.
+    pub fn warning(&self) -> String {
+        let said = self.say();
+        match self.key {
+            "why.not_set_up" => format!("{said} {}", crate::words::word("why.set_up_here")),
+            _ => said,
+        }
+    }
+
     pub fn say(&self) -> String {
         let named = |v: &Option<String>| v.clone().unwrap_or_default();
         crate::words::fill(
@@ -401,6 +417,18 @@ pub fn state_word(a: &Agent, clock: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What Weft reads of a harness's setup is a warning where the act is,
+    /// never a stop: the reading may be wrong. Every other why stops the act.
+    #[test]
+    fn a_setup_why_warns_and_every_other_stops_the_act() {
+        assert!(Why::not_ready(Readiness::Missing(Gap::Plugin), "codex").unwrap().is_setup());
+        assert!(Why::not_ready(Readiness::Missing(Gap::Marketplace), "codex").unwrap().is_setup());
+        assert!(Why::not_ready(Readiness::Unknown, "codex").unwrap().is_setup());
+        for key in ["why.closed", "why.no_eval", "why.judging", "why.ended", "why.elsewhere"] {
+            assert!(!Why::new(key).is_setup(), "{key}");
+        }
+    }
+
     use super::*;
     use crate::ledger::{Sent, Verdict};
     use crate::sessions::Row;

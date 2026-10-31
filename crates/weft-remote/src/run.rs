@@ -158,6 +158,9 @@ enum Carries {
     /// A read of sealed work, under its name: a follow-up's words
     /// (`remedy`) or the commits Undo offers (`commits`).
     Sealed(String),
+    /// A yes to a pending, by its id: one the daemon finds its agent not
+    /// ready for may then be sent anyway.
+    Resolve(String),
 }
 
 /// The daemon's reads one device read is gathered from.

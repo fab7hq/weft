@@ -228,6 +228,11 @@ pub struct WeftDesktopApp {
     /// The words the shown sheet was made for: while they differ from the
     /// field's, the words are being read.
     pub ask_sheet_for: Option<String>,
+    /// Why RingFrame would not read the open Ask's sheet, when it would not.
+    pub ask_refused: Option<String>,
+    /// What Weft reads of the setup of the harness an Eval or a Seal goes
+    /// to, said in its dialog: a warning, never a stop.
+    pub act_warning: Option<String>,
     /// Where the keyboard goes.
     pub focus: Focus,
     pub active_sheet: Option<ActiveSheet>,
@@ -295,6 +300,8 @@ impl WeftDesktopApp {
             ask_sheet: None,
             ask_choices: Default::default(),
             ask_sheet_for: None,
+            ask_refused: None,
+            act_warning: None,
             focus: Focus::Terminal,
             active_sheet: None,
             bottom_bar: BottomBarState::None,
@@ -779,8 +786,11 @@ impl WeftDesktopApp {
         if let Some(sheet) = c.read.get(&then) {
             self.ask_sheet = Some(sheet.clone());
             self.ask_sheet_for = Some(self.ask.text().to_string());
+            self.ask_refused = None;
             c.read.retain(|t, _| !asking(t) || *t == then);
-        } else if !c.refused.contains_key(&then) && !c.owes_any(asking) {
+        } else if let Some(why) = c.refused.get(&then) {
+            (self.ask_sheet, self.ask_refused) = (None, Some(why.clone()));
+        } else if !c.owes_any(asking) {
             let _ = c.read("ask", &query, None, then);
         }
     }
@@ -1326,6 +1336,20 @@ impl WeftDesktopApp {
             }
             _ => None,
         };
+        // What Weft reads of the setup of the harness SEND TO picks.
+        let ask_warning = match (&self.active_sheet, &ask_send_to) {
+            (Some(ActiveSheet::Ask { project, .. }), Some(to)) => {
+                let harness = to.picked_harness();
+                let client = self.clients.iter().find(|c| &c.root == project);
+                client
+                    .and_then(|c| {
+                        weft_core::tree::Why::not_ready(c.readiness_of(&harness), &harness)
+                    })
+                    .filter(|w| w.is_setup())
+                    .map(|w| w.warning())
+            }
+            _ => None,
+        };
         let preview = self.preview_unit();
         let harness = self.harness_shown();
         let sheet = self.active_sheet.as_ref().map(|sheet| {
@@ -1339,6 +1363,8 @@ impl WeftDesktopApp {
                 ask_sheet: self.ask_sheet.as_ref(),
                 ask_choices: &self.ask_choices,
                 ask_sheet_for: self.ask_sheet_for.as_deref(),
+                ask_refused: self.ask_refused.as_deref(),
+                ask_warning: ask_warning.as_deref(),
                 remote_pick: self.remote_pick.as_deref(),
                 send_to: ask_send_to.as_ref(),
                 back: self.sheet_back.last().map(|(_, name)| name.as_str()),
@@ -1409,6 +1435,7 @@ impl WeftDesktopApp {
                 clients: &self.clients,
                 selection: self.selection.as_ref(),
                 suggested: self.suggested_act(),
+                warning: self.act_warning.as_deref(),
             }))
     }
 }

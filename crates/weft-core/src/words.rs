@@ -125,6 +125,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("ask.pick_route", "Pick a route"),
     ("ask.route_rules_wait", "They show once you pick a route."),
     ("ask.pick_to_ask", "Pick a route to ask."),
+    ("ask.may_not", "This agent may not take an Ask: {why}"),
     ("dialog.ask.trimmed", "Left out to fit {harness}'s limit: {rules}."),
     // The one dialog an Eval has: the work, and who checks it.
     ("dialog.eval.title", "Eval this work?"),
@@ -278,6 +279,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ("eval_view.readings", "What the judges said"),
     ("eval_view.changes", "Changes ({n})"),
     // Why an act cannot run.
+    ("why.set_up_here", "Updates… in ☰ sets it up."),
     ("why.not_set_up", "{harness} is not set up for RingFrame."),
     ("why.cannot_ask", "Weft could not ask {harness} whether it is set up."),
     ("why.start_an_agent", "Start an agent first: + on a project."),

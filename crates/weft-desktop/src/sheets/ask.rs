@@ -9,6 +9,7 @@ use weft_core::words::{fill, word};
 
 use super::{SheetProps, send_to};
 use crate::action::{Focus, SheetAct};
+use crate::bottom_bar::warned;
 use crate::gpui::{Element, div, palette, span, textarea_el};
 use crate::ui::{Size, Tone, button};
 
@@ -305,6 +306,13 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         Some(sheet) => draft_rows(sheet, c, &harness),
         None => (Vec::new(), Vec::new()),
     };
+    // One warning, as 7.1 says it: Weft's reading of the harness's setup,
+    // else RingFrame's reason for not reading the sheet. Ask stays on.
+    let refused = props
+        .ask_refused
+        .filter(|_| props.ask_sheet.is_none())
+        .map(|why| format!("{}.", fill("ask.may_not", &[("why", why.trim_end_matches('.'))])));
+    let warning = props.ask_warning.map(str::to_string).or(refused).map(|w| warned(&w));
     let no_route = !reading && props.ask_sheet.is_some_and(|s| s["route"].is_null());
     let link = |layer: &str, act: SheetAct, key: &str| {
         div().layer(layer).on_click(act).font_size(13).color(palette::BLUE_BORDER).text(word(key))
@@ -385,6 +393,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 .children(pick_yourself)
                 .child(div().flex_1())
                 .children(hint)
+                .children(warning)
                 .child(button(
                     "btn Cancel",
                     word("act.cancel"),

@@ -709,6 +709,83 @@ fn the_ask_sheet_shows_the_words_read_and_waits_for_a_route_sense_left_open() {
     );
 }
 
+/// 7.1 and 17.24 are one warning: a harness Weft reads as not set up for
+/// RingFrame stops no act. The Ask sheet opens and says so in amber; Eval
+/// goes, and its dialog says so too. The reading may be wrong.
+#[test]
+fn a_harness_read_as_not_set_up_warns_in_the_dialog_and_never_stops_the_act() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    let gap = "no_plugin";
+    app.clients[0].readiness = json!({"claude": gap, "codex": gap, "antigravity": gap});
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    assert!(matches!(app.active_sheet, Some(ActiveSheet::Ask { .. })), "{:?}", app.bottom_bar);
+    let warning = "antigravity is not set up for RingFrame. Updates… in ☰ sets it up.";
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    assert!(drawn.contains(warning), "{drawn}");
+    app.dispatch(SheetAct::Close);
+
+    app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_1".into() });
+    app.dispatch(BarAct::Eval);
+    let eval = wire
+        .calls()
+        .into_iter()
+        .any(|(_, c)| matches!(c, Call::Act { ref act, .. } if act == "eval"));
+    assert!(eval, "Eval goes: {:?}", app.bottom_bar);
+    wire.event(Event::Pending {
+        id: "p1".into(),
+        pane,
+        what: "Eval this work?".into(),
+        why: String::new(),
+        payload: Vec::new(),
+        sends: None,
+        go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+    });
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    let said = app.render().find_layer("Cancel / Send bar").unwrap().all_text();
+    assert!(said.contains("is not set up for RingFrame. Updates… in ☰ sets it up."), "{said}");
+}
+
+/// 17.24: RingFrame refuses the sheet's read for the agent in SEND TO. The
+/// sheet warns with RingFrame's reason, and Ask stays on: a wrong reading
+/// never holds the person up.
+#[test]
+fn a_refused_ask_sheet_warns_with_the_reason_and_ask_still_sends() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    app.ask.set_text("show the build number");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut refused = Vec::new();
+    while app.ask_refused.is_none() {
+        assert!(Instant::now() < deadline, "the refusal is never kept");
+        app.pump();
+        for (id, c) in wire.calls() {
+            if matches!(c, Call::Read { ref what, .. } if what == "ask") && !refused.contains(&id) {
+                wire.refuse(id, "Codex is not set up for RingFrame.");
+                refused.push(id);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    let said = "This agent may not take an Ask: Codex is not set up for RingFrame.";
+    assert!(drawn.contains(said), "{said} in {drawn}");
+    app.dispatch(SheetAct::SubmitAsk);
+    assert!(
+        wire.calls()
+            .into_iter()
+            .any(|(_, c)| matches!(c, Call::Act { ref act, .. } if act == "ask")),
+        "asked anyway"
+    );
+}
+
 /// The Ask's draft (17.1): the daemon offers the route, plan and rules for the
 /// harness and the words; the person picks a route, takes a practice out, and
 /// Ask sends what they kept.

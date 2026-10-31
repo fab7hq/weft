@@ -14,7 +14,7 @@ pub fn proceed(out: &dyn Outside, steps: &mut [Step], mut show: impl FnMut(&[Ste
         show(steps);
         let step = &mut steps[i];
         let args: Vec<&str> = step.args.iter().map(String::as_str).collect();
-        match out.run(&step.program, &args, None) {
+        match out.run(&step.program, &args, None, crate::outside::SETS_UP_WITHIN) {
             Ok(o) if o.status.success() => step.mark = Mark::Done,
             Ok(o) => {
                 step.mark = Mark::Failed;

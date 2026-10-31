@@ -693,7 +693,19 @@ fn ask_draft(
         rules,
         link,
         sense,
+        session: None,
     })
+}
+
+/// The running agent a send types into, by pane: another one the person
+/// picked, else the one it was staged for; none for a new agent, or for a
+/// dialog that types nothing.
+fn typed_into(into: Option<&Elsewhere>, w: &Waiting) -> Option<u32> {
+    match into.map(|e| &e.to) {
+        Some(Into::Start(_)) => None,
+        Some(Into::Pane(pane)) => Some(*pane),
+        None => (!w.payload.is_empty()).then_some(w.pane),
+    }
 }
 
 /// RingFrame set up here, as `ringframe init` would, or what it still needs; and
@@ -2439,6 +2451,24 @@ impl Session {
                     }
                     _ => None,
                 };
+                // Send into an agent that has not said it is ready is refused
+                // at once: nothing is recorded or typed, and the dialog stays
+                // for a Send once it is, or for the person's send anyway.
+                let typed_into = typed_into(into.as_ref(), &self.projects[at].waiting[i]);
+                if yes && !force {
+                    let pane = typed_into;
+                    let p = &mut self.projects[at];
+                    let pane = pane.filter(|pane| p.slot(*pane).is_some_and(|s| s.pane.running()));
+                    if let Some(pane) = pane
+                        && let Err(why) = crate::turns::may_type(self.pane_state(at, pane))
+                    {
+                        let why = weft_core::words::fill("not_typed.why", &[("why", why)]);
+                        let said =
+                            Out::Injected { pane, refusal: Some(why.clone()), unrecorded: None };
+                        self.clients.broadcast(at, &said);
+                        return Ok(Answer::No("not_ready", why));
+                    }
+                }
                 let mut w = self.projects[at].waiting.remove(i);
                 self.clients.broadcast(at, &Out::Resolved { id: pending, yes });
                 if !yes {
@@ -2453,7 +2483,12 @@ impl Session {
                 }
                 // Send is the confirmation: the Ask is compiled as it was
                 // shown, and its prompt is what is typed.
-                if let Some(draft) = w.compile.take() {
+                if let Some(mut draft) = w.compile.take() {
+                    // The session it is typed into, so the agent's own act on
+                    // it is matched to it; a new agent has none yet.
+                    let slot = typed_into.and_then(|pane| self.projects[at].slot(pane));
+                    draft.session =
+                        slot.and_then(|s| s.map.session.as_ref()).map(|b| b.session.clone());
                     let over = self.projects[at].ringframe.clone();
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {
                         Ok(ask_id) => {

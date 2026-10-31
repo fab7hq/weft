@@ -11,10 +11,6 @@ use weft_core::sync::{Mark, Step};
 use crate::harness::{Harness, Harnesses};
 use crate::outside::Outside;
 
-/// How long a program has to answer `--version` before it counts as not
-/// starting.
-const STARTS_WITHIN: Duration = Duration::from_secs(15);
-
 /// How long an answer about the latest release is kept. The daemon asks when
 /// it starts and again this often (version checking
 /// should not be frequent); the view's looks, opening it, a row and Proceed read the
@@ -170,7 +166,7 @@ pub fn look_as_they_answer(
                 let answer = crate::readiness::look(out, h);
                 // The program's own version, as its `--version` says it.
                 let version = out
-                    .run(&h.program, &["--version"], None)
+                    .run(&h.program, &["--version"], None, crate::outside::ANSWERS_WITHIN)
                     .ok()
                     .filter(|o| o.status.success())
                     .and_then(|o| {
@@ -222,7 +218,7 @@ pub fn check_program(path: &str) -> Result<String, String> {
         match child.try_wait() {
             Ok(Some(s)) if s.success() => return Ok(path),
             Ok(Some(_)) => return Err(format!("{path} --version did not succeed")),
-            Ok(None) if started.elapsed() > STARTS_WITHIN => {
+            Ok(None) if started.elapsed() > crate::outside::ANSWERS_WITHIN => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("{path} --version did not answer"));

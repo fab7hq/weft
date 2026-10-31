@@ -297,12 +297,14 @@ impl WeftDesktopApp {
         listed.work_row(unit).cloned()
     }
 
-    /// Eval the unit of work, unless its row says why not.
+    /// Eval the unit of work, unless its row says why not. What Weft reads
+    /// of the harness's setup only warns, in the dialog.
     fn eval_work(&mut self, project: PathBuf, unit: String) {
-        let why = self.work_row(&project, &unit).and_then(|w| w.eval.map(|w| w.say()));
-        if let Some(why) = why {
-            return self.why_not(why);
+        let why = self.work_row(&project, &unit).and_then(|w| w.eval);
+        if let Some(why) = why.as_ref().filter(|w| !w.is_setup()) {
+            return self.why_not(why.say());
         }
+        self.act_warning = why.map(|w| w.warning());
         if let Some(c) = self.client_mut(&project) {
             let pane = c.panes.iter().find(|p| p.running).map(|p| p.id);
             if let Err(e) = c.act("eval", Some(&unit), pane, None, None, None) {
@@ -311,12 +313,14 @@ impl WeftDesktopApp {
         }
     }
 
-    /// The Seal's disposition bar for the unit of work, unless its row says why not.
+    /// The Seal's disposition bar for the unit of work, unless its row says
+    /// why not. What Weft reads of the harness's setup only warns, in the bar.
     fn seal_work(&mut self, project: PathBuf, unit: String) {
-        let why = self.work_row(&project, &unit).and_then(|w| w.seal.map(|w| w.say()));
-        if let Some(why) = why {
-            return self.why_not(why);
+        let why = self.work_row(&project, &unit).and_then(|w| w.seal);
+        if let Some(why) = why.as_ref().filter(|w| !w.is_setup()) {
+            return self.why_not(why.say());
         }
+        self.act_warning = why.map(|w| w.warning());
         let eval = self.client(&project).and_then(|c| {
             let u = c.work.of_ask(&unit)?;
             c.work.to_seal(u).map(|e| e.id.clone())
@@ -352,10 +356,11 @@ impl WeftDesktopApp {
                         .iter()
                         .find(|l| l.root == project)
                         .and_then(|l| l.project.agents.rows.iter().find(|r| r.session == session))
-                        .and_then(|r| r.ask.as_ref().map(|w| w.say()));
+                        .and_then(|r| r.ask.clone());
+                    // What Weft reads of the harness's setup is said in the sheet.
                     match why {
-                        Some(why) => self.why_not(why),
-                        None => self.open_ask(project, Some(session), None),
+                        Some(why) if !why.is_setup() => self.why_not(why.say()),
+                        _ => self.open_ask(project, Some(session), None),
                     }
                 }
                 // A project's: SEND TO chooses among its running agents.
@@ -376,7 +381,7 @@ impl WeftDesktopApp {
                 Some(TreeSelection::Work { project, unit }) => self.seal_work(project, unit),
                 _ => self.why_not_for(Act::Seal),
             },
-            BarAct::Cancel => self.bottom_bar = BottomBarState::None,
+            BarAct::Cancel => (self.bottom_bar, self.act_warning) = (BottomBarState::None, None),
             BarAct::PickCommit(at) => {
                 if let BottomBarState::Undo { commits, picked, .. } = &mut self.bottom_bar
                     && at < commits.len()
@@ -400,6 +405,7 @@ impl WeftDesktopApp {
                 self.bottom_bar = BottomBarState::None;
             }
             BarAct::Resolve { project, pending, answer } => {
+                self.act_warning = None;
                 let (yes, force) = (answer != Answer::No, answer == Answer::Anyway);
                 // Where the person sent it, when not where it was staged.
                 let staged = self
@@ -439,6 +445,7 @@ impl WeftDesktopApp {
                 };
             }
             BarAct::ConfirmSeal { project, eval, disposition, reason } => {
+                self.act_warning = None;
                 if let Some(c) = self.client_mut(&project) {
                     let _ = c.seal(&eval, &disposition, reason.as_deref());
                 }
@@ -567,6 +574,7 @@ impl WeftDesktopApp {
         });
         self.ask = TextField::new(Shape::Area);
         (self.ask_sheet, self.ask_choices, self.ask_sheet_for) = (None, Default::default(), None);
+        self.ask_refused = None;
         self.active_sheet =
             Some(ActiveSheet::Ask { project, send_to: pane.map(pane_key), follow_up_unit: unit });
         self.focus = Focus::Ask;

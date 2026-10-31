@@ -779,6 +779,7 @@ mod tests {
             rules: Vec::new(),
             link: None,
             sense: None,
+            session: None,
         };
         let ask = compile(&repo, &draft, None).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();

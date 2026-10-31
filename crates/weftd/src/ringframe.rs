@@ -131,6 +131,8 @@ pub struct AskDraft {
     pub link: Option<(String, String)>,
     /// What Sense set in the sheet, when it answered.
     pub sense: Option<SenseShown>,
+    /// The harness's session it is typed into, when Weft knows it.
+    pub session: Option<String>,
 }
 
 /// Sense's answer and the defaults the sheet showed from it.
@@ -183,7 +185,11 @@ impl AskDraft {
             self.sense.as_ref().map_or(api::Chooser::Person, |s| by(s, SenseShown::selected_by));
         api::Compile {
             source: &self.words,
-            harness: api::Harness { name: &self.harness, version: None, session_ref: None },
+            harness: api::Harness {
+                name: &self.harness,
+                version: None,
+                session_ref: self.session.as_deref(),
+            },
             capability: &self.route,
             classification: api::Classification {
                 task: vec![self.task.clone()],
@@ -695,6 +701,7 @@ pub(crate) mod tests {
             rules: vec!["practice.kiss".into()],
             link: None,
             sense: Some(shown.clone()),
+            session: None,
         };
         let sense = |c: &api::Chooser| matches!(c, api::Chooser::Sense { version, .. } if version == "0.3.0");
         assert!(sense(&shown.classified_by(&d)) && sense(&shown.selected_by(&d)));
@@ -762,6 +769,7 @@ pub(crate) mod tests {
             rules: Vec::new(),
             link: None,
             sense: None,
+            session: None,
         };
         compile(&repo, &draft, None).unwrap();
         let wrong = seal(&repo, "rejected", None, Some("finish_later"));
@@ -795,6 +803,7 @@ pub(crate) mod tests {
             rules: Vec::new(),
             link: None,
             sense: None,
+            session: None,
         };
         let ask = compile(&repo, &draft, None).unwrap();
         std::fs::create_dir_all(repo.join("src")).unwrap();

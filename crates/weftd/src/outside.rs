@@ -13,12 +13,28 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, ExitStatus, Output};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::harness::runnable;
 
+/// How long a program has to answer a question (its `--version`, its
+/// plugins) before it counts as not answering.
+pub const ANSWERS_WITHIN: Duration = Duration::from_secs(15);
+
+/// How long a setup step (a plugin's install, a download with its
+/// retries) may take.
+pub const SETS_UP_WITHIN: Duration = Duration::from_secs(30 * 60);
+
 pub trait Outside: Send + Sync {
-    /// Run a program to its end and hand back what it said.
-    fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<Output>;
+    /// Run a program to its end, or stop it at `within`, and hand back what
+    /// it said.
+    fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        cwd: Option<&Path>,
+        within: Duration,
+    ) -> std::io::Result<Output>;
     /// Run a program with `input` on its stdin, to its end.
     fn run_input(&self, program: &str, args: &[&str], input: &[u8]) -> std::io::Result<Output>;
     /// Whether a harness's program is on this machine: on `PATH`, or where
@@ -64,13 +80,51 @@ pub fn started_as() -> std::io::Result<std::path::PathBuf> {
 }
 
 impl Outside for Machine {
-    fn run(&self, program: &str, args: &[&str], cwd: Option<&Path>) -> std::io::Result<Output> {
+    fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        cwd: Option<&Path>,
+        within: Duration,
+    ) -> std::io::Result<Output> {
+        use std::os::unix::process::CommandExt as _;
+        use std::process::Stdio;
         let mut command = Command::new(program);
-        command.args(args);
+        command.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // Its own group, so stopping it stops whatever it started too.
+        command.process_group(0);
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
-        command.output()
+        let mut child = command.spawn()?;
+        // Read as it writes, so a full pipe never holds it up.
+        fn drain(
+            mut from: impl std::io::Read + Send + 'static,
+        ) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut said = Vec::new();
+                let _ = from.read_to_end(&mut said);
+                said
+            })
+        }
+        let stdout = drain(child.stdout.take().expect("piped"));
+        let stderr = drain(child.stderr.take().expect("piped"));
+        let until = Instant::now() + within;
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
+            if Instant::now() >= until {
+                // SAFETY: a signal to the group this child leads.
+                unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                let _ = child.wait();
+                let why = format!("{program} did not finish within {} s", within.as_secs());
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let said = |h: std::thread::JoinHandle<Vec<u8>>| h.join().unwrap_or_default();
+        Ok(Output { status, stdout: said(stdout), stderr: said(stderr) })
     }
 
     fn run_input(&self, program: &str, args: &[&str], input: &[u8]) -> std::io::Result<Output> {
@@ -255,7 +309,13 @@ fn holds(args: &[&str], words: &[String]) -> bool {
 }
 
 impl Outside for Fixed {
-    fn run(&self, program: &str, args: &[&str], _cwd: Option<&Path>) -> std::io::Result<Output> {
+    fn run(
+        &self,
+        program: &str,
+        args: &[&str],
+        _cwd: Option<&Path>,
+        _within: Duration,
+    ) -> std::io::Result<Output> {
         let Some(answers) = self.programs.get(program) else {
             return Err(std::io::Error::new(std::io::ErrorKind::NotFound, program.to_string()));
         };
@@ -271,7 +331,7 @@ impl Outside for Fixed {
     }
 
     fn run_input(&self, program: &str, args: &[&str], _input: &[u8]) -> std::io::Result<Output> {
-        self.run(program, args, None)
+        self.run(program, args, None, ANSWERS_WITHIN)
     }
 
     fn on_path(&self, program: &str) -> bool {
@@ -327,13 +387,40 @@ mod tests {
             .answers("ringframe", &["ledger", "verify"], 0, "{\"clean\":true}")
             .exists("codex");
         assert!(w.on_path("codex") && w.on_path("ringframe") && !w.on_path("claude"));
-        let said = w.run("ringframe", &["--workspace", "/p", "ledger", "verify", "--json"], None);
+        let said = w.run(
+            "ringframe",
+            &["--workspace", "/p", "ledger", "verify", "--json"],
+            None,
+            ANSWERS_WITHIN,
+        );
         let said = said.unwrap();
         assert!(said.status.success());
         assert_eq!(said.stdout, b"{\"clean\":true}");
-        assert!(!w.run("ringframe", &["ask", "list"], None).unwrap().status.success());
-        assert!(w.run("claude", &["--version"], None).is_err(), "no such program");
-        assert!(!w.run("codex", &["plugin", "list"], None).unwrap().status.success());
+        assert!(
+            !w.run("ringframe", &["ask", "list"], None, ANSWERS_WITHIN).unwrap().status.success()
+        );
+        assert!(w.run("claude", &["--version"], None, ANSWERS_WITHIN).is_err(), "no such program");
+        assert!(
+            !w.run("codex", &["plugin", "list"], None, ANSWERS_WITHIN).unwrap().status.success()
+        );
+    }
+
+    /// A program that never ends, or leaves a child holding its output, is
+    /// stopped at its limit rather than waited on.
+    #[test]
+    fn a_program_that_never_ends_is_stopped_at_its_limit() {
+        let started = std::time::Instant::now();
+        let limit = std::time::Duration::from_millis(300);
+        let said = Machine.run("/bin/sh", &["-c", "sleep 30"], None, limit);
+        assert_eq!(said.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+        let within = std::time::Duration::from_secs(5);
+        let said = Machine.run("/bin/sh", &["-c", "echo hi; echo no >&2; exit 3"], None, within);
+        let said = said.unwrap();
+        assert_eq!(
+            (said.status.code(), &said.stdout[..], &said.stderr[..]),
+            (Some(3), &b"hi\n"[..], &b"no\n"[..])
+        );
     }
 
     /// On the machine, a `*` folder is any one folder, and the most recently

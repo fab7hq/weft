@@ -863,9 +863,9 @@ fn a_device_never_resizes_the_agent_it_started() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt it types
-/// nothing and says why; after `ready` it types; told to type anyway, it
-/// types whatever the state.
+/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt, or while
+/// it works, a Send is refused at once with why; after `ready` it types; told
+/// to type anyway, it types whatever the state.
 #[test]
 fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     let (root, socket) = session("ready");
@@ -887,22 +887,25 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
             .to_string()
     };
 
-    // Not ready: the send waits for the agent rather than being refused at
-    // once, and is refused only when the wait is over.
+    // Not ready: the Send is refused at once, with why, and its dialog stays.
     let id = stage(&mut c, "not-yet");
-    let asked = Instant::now();
-    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
-    assert_eq!(c.injected_within(Duration::from_secs(2)), None, "waited for, not refused");
+    let resolve = |c: &mut Client, id: &str| {
+        let pending = id.to_string();
+        c.send(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
+        c.injected_within(Duration::from_secs(2)).expect("refused at once")
+    };
+    let said = resolve(&mut c, &id);
+    let unknown = "Weft did not type it: Weft can't tell whether the agent is ready.";
+    assert_eq!(said.as_deref(), Some(unknown));
 
     // The person types in it and presses Enter, and its hook says it is
-    // working: still not typed into, and refused once the wait is over.
+    // working: the same dialog's Send is refused again.
     c.send(Call::Input { pane: 0, bytes: b"go\r".to_vec() });
     std::thread::sleep(Duration::from_millis(50));
     agent_says(&socket, &root, "codex", 0, "c1", "working");
     c.wait_for_state(Some(Turn::Working));
-    let said = c.injected_within(Duration::from_secs(20)).expect("refused when the wait is over");
-    assert_eq!(said.as_deref(), Some("the agent is working"));
-    assert!(asked.elapsed() >= Duration::from_secs(14), "after the wait: {:?}", asked.elapsed());
+    let said = resolve(&mut c, &id);
+    assert_eq!(said.as_deref(), Some("Weft did not type it: the agent is working."));
 
     let id = stage(&mut c, "anyway-typed");
     c.send(Call::Resolve { pending: id, yes: true, force: true, to: None, start: None });
