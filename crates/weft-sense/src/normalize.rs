@@ -1,5 +1,5 @@
 //! Text as sense-d reads it (sense-d spec/bundle.md §4,
-//! `fab7.sense.decision.normalize/1`): a screen as its facts in words, then
+//! `fab7.sense.decision.normalize/2`): a screen as its facts in words, then
 //! its last lines, cleaned; a transcript entry as its harness and kind, then
 //! its text; then every character the manifest's table names replaced.
 
@@ -47,17 +47,6 @@ pub fn canonical_harness(raw: &str) -> &'static str {
         "grok" | "grok-build" => "grok",
         "antigravity" | "agy" => "antigravity",
         _ => "unknown",
-    }
-}
-
-pub fn canonical_hook_state(raw: Option<&str>) -> &'static str {
-    match raw.map(str::trim) {
-        Some("ready") => "ready",
-        Some("working") => "working",
-        Some("waiting") => "waiting",
-        Some("turn_ended") | Some("turn-ended") => "turn_ended",
-        Some("ended") | Some("exited") => "ended",
-        _ => "none",
     }
 }
 
@@ -273,18 +262,15 @@ pub fn normalize_terminal_line(line: &str) -> String {
     out
 }
 
-/// A screen as sense-d reads it: its facts in words (the harness, the hook
-/// state, the hook that fired last, the alternate screen, the cursor from
-/// the bottom, how long it has been quiet), then its last `last_lines`
-/// lines that hold anything, cleaned.
+/// A screen as sense-d reads it: its facts in words (the harness, the
+/// alternate screen, the cursor from the bottom, how long it has been
+/// quiet), then its last `last_lines` lines that hold anything, cleaned. No
+/// hook is a fact: Sense reads the screen alone, and weftd weighs that
+/// against the hooks.
 pub fn screen_text(snap: &PaneSnapshot<'_>, last_lines: usize, table: &Replacements) -> String {
     let rows = if snap.rows == 0 { 40 } else { snap.rows };
     let row_from_bottom = rows.saturating_sub(1).saturating_sub(snap.cursor_row).min(40);
-    let hook = canonical_hook_state(snap.hook_state).replace('_', " ");
-    let mut facts = vec![canonical_harness(snap.harness).to_string(), format!("hook {hook}")];
-    if let Some(last) = snap.last_hook.filter(|h| !h.is_empty()) {
-        facts.push(format!("last hook {}", spaced_words(last)));
-    }
+    let mut facts = vec![canonical_harness(snap.harness).to_string()];
     if snap.alt_screen {
         facts.push("alternate screen".into());
     }
@@ -305,18 +291,6 @@ pub fn entry_text(item: &TranscriptSnippet<'_>, table: &Replacements) -> String 
     let cleaned: String = item.snippet.chars().filter(|c| !is_control(*c)).collect();
     let text = truncate_utf8_bytes(&cleaned, ENTRY_BYTES);
     table.apply(&format!("{}, {kind}\n{text}", canonical_harness(item.harness)))
-}
-
-/// A hook event's name in lower-case words: `PostToolUse` is `post tool use`.
-fn spaced_words(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 4);
-    for (i, ch) in name.chars().enumerate() {
-        if i > 0 && ch.is_ascii_uppercase() {
-            out.push(' ');
-        }
-        out.extend(ch.to_lowercase());
-    }
-    out
 }
 
 fn is_control(ch: char) -> bool {
@@ -355,8 +329,6 @@ mod tests {
         ];
         let snap = PaneSnapshot {
             harness: "claude-code",
-            hook_state: Some("turn_ended"),
-            last_hook: Some("PostToolUse"),
             alt_screen: true,
             rows: 40,
             cols: 120,
@@ -368,13 +340,13 @@ mod tests {
         };
         assert_eq!(
             screen_text(&snap, 3, &table()),
-            "claude-code, hook turn ended, last hook post tool use, alternate screen, \
-             cursor 2 2, quiet 1 ↵ ─── ↵ ❯ ↵   [pause] manual mode on"
+            "claude-code, alternate screen, cursor 2 2, quiet 1 ↵ ─── ↵ ❯ ↵   [pause] manual mode on"
         );
-        let quiet = PaneSnapshot { last_hook: None, alt_screen: false, ..snap };
-        assert!(screen_text(&quiet, 15, &table()).starts_with(
-            "claude-code, hook turn ended, cursor 2 2, quiet 1 ↵ · Effecting... (<TIME>)"
-        ));
+        let plain = PaneSnapshot { alt_screen: false, ..snap };
+        assert!(
+            screen_text(&plain, 15, &table())
+                .starts_with("claude-code, cursor 2 2, quiet 1 ↵ · Effecting... (<TIME>)")
+        );
     }
 
     #[test]

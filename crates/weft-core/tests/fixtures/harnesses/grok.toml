@@ -52,6 +52,11 @@ want = ["rf"]
 [signal]
 session = "session_id"
 workspace = "cwd"
+# What it sends no hook for, each a move Sense may make on its pane once the
+# screen shows it (weft-rf-next ADR-0005; sense-d 0.1.1 reads its screens at
+# 0.995): Ctrl+C before the model's first token, which sends no
+# StopCancelled (grok 1.0.70, weft-turns-q04).
+gaps = ["interrupt"]
 prompt = [
   "prompt",
   { file = "transcript_path", newest = true, last = { method = "_x.ai/session/update", "params.update.sessionUpdate" = "goal_updated" }, field = "params.update.objective" },

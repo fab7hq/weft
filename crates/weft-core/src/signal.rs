@@ -37,6 +37,27 @@ pub struct Signal {
     #[serde(default)]
     pub child: Option<String>,
     pub on: Vec<Row>,
+    /// What the harness sends no hook for, each a move Sense may make on
+    /// its pane once the screen shows it (weftd's `turns::pane_turn`).
+    #[serde(default)]
+    pub gaps: Vec<Gap>,
+}
+
+/// A move a harness's hooks never report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Gap {
+    /// Before its first prompt: an idle screen is ready.
+    Start,
+    /// The person's interrupt: an idle screen ends the turn.
+    Interrupt,
+    /// A permission prompt or a question: the pane waits for the person.
+    Permission,
+    /// A failed model call: an error on screen ends the turn.
+    Error,
+    /// A gap a later Weft names: read, and never acted on.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Questions a harness asks its person without stopping the turn, kept in a
@@ -480,6 +501,15 @@ mod tests {
                 assert!(row.state.as_deref().is_none_or(|st| states.contains(&st)), "{row:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_harness_names_its_gaps_and_one_this_weft_does_not_know_is_read_as_none() {
+        assert!(signal("claude-code").gaps.is_empty(), "its hooks report every move");
+        let mut table = file("claude-code")["signal"].clone();
+        table["gaps"] = json!(["interrupt", "permission", "someday"]);
+        let s = Signal::of(&table).expect("an unknown gap leaves the table readable");
+        assert_eq!(s.gaps, [Gap::Interrupt, Gap::Permission, Gap::Unknown]);
     }
 
     #[test]

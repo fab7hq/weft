@@ -173,7 +173,7 @@ mod tests {
     use super::*;
 
     const MANIFEST: &str = r#"{"schema": "fab7.sense.decision/1", "version": "0.1.0",
-      "normalizer": "fab7.sense.decision.normalize/1",
+      "normalizer": "fab7.sense.decision.normalize/2",
       "normalize": {"replacements": {}, "screen_last_lines": 15}, "files": {},
       "heads": [
         {"name": "ask_task", "kind": "noul", "classes": ["question", "plan", "implement"],

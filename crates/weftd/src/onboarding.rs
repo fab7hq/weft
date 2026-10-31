@@ -431,7 +431,9 @@ mod tests {
         let out = Fixed::new().shared();
         let look = |latest: Option<&str>, waiting: bool| {
             let weft = WeftCheck { latest: latest.map(str::to_string), waiting };
-            look(out.as_ref(), &Harnesses::default(), &Ok(serde_json::json!({})), &weft).0
+            // Sense as this Weft pins it, whatever this machine has installed.
+            let check = Ok(serde_json::json!({"sense_installed": crate::versions::SENSE_VERSION}));
+            look(out.as_ref(), &Harnesses::default(), &check, &weft).0
         };
         let now = env!("CARGO_PKG_VERSION");
         let behind = look(Some("99.0.0"), false);

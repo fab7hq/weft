@@ -101,9 +101,6 @@ struct Slot {
     /// The harness's own transcript, as its hooks last named it: kept here
     /// and nowhere else, for its Conversation.
     transcript: Option<std::path::PathBuf>,
-    /// The hook event that fired last for this pane, as its harness names
-    /// it: a fact of the screen Sense reads.
-    last_hook: Option<String>,
     /// When the pane last printed output, and the PTY sequence and reading
     /// from `weft-sense` Head 1 once output settles for 150 ms or a hook arrives.
     last_output_at: std::time::Instant,
@@ -113,6 +110,9 @@ struct Slot {
     /// again. And whether a read is under way, off the run loop.
     sensed_text: Option<String>,
     sensing: bool,
+    /// The output sequence at which a still screen was told for a gap its
+    /// harness names: told once per screen.
+    gap_told: u64,
     /// Types this pane's sends one after another, off the run loop: made at
     /// its first send, ended with the pane.
     typer: Option<Sender<typing::Job>>,

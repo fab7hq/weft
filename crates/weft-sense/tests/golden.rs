@@ -1,4 +1,4 @@
-//! sense-d 0.1.0's golden vectors (sense-d spec/bundle.md §5), read by
+//! sense-d 0.1.1's golden vectors (sense-d spec/bundle.md §5), read by
 //! Weft's own tokenizer, normalizer and heads, on ONNX Runtime's graph.
 
 use serde_json::Value;
@@ -9,8 +9,8 @@ use weft_sense::manifest::{Manifest, bundle_for_tests};
 use weft_sense::normalize::{Replacements, entry_text, screen_text};
 use weft_sense::{PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
 
-/// sense-d 0.1.0's manifest, as published on Hugging Face `fab7hq/sense-d`.
-const SENSE_D_0_1_0: &str = "b611d83967761d4fc45890d47122ea428030f62d2bb9df758da90998d2fae286";
+/// sense-d 0.1.1's manifest, as published on Hugging Face `fab7hq/sense-d`.
+const SENSE_D_0_1_1: &str = "cdb5eaba726376f63743da8fbb1a53b5e46c2d5924501617b559be7bcfa59357";
 const TOLERANCE: f32 = 1e-4;
 const ASK_HEADS: [&str; 3] = ["ask_task", "ask_effects", "ask_route"];
 
@@ -22,7 +22,7 @@ struct Bundle {
 }
 
 fn bundle() -> Bundle {
-    let dir = bundle_for_tests(SENSE_D_0_1_0).unwrap();
+    let dir = bundle_for_tests(SENSE_D_0_1_1).unwrap();
     let bytes = std::fs::read(dir.join("manifest.json")).unwrap();
     let raw = std::fs::read_to_string(dir.join("golden_vectors.jsonl")).unwrap();
     Bundle {
@@ -168,8 +168,6 @@ fn the_golden_normalizing_vectors_match() {
                 let u16_of = |v: &Value| v.as_u64().unwrap() as u16;
                 let snap = PaneSnapshot {
                     harness: raw["harness"].as_str().unwrap(),
-                    hook_state: raw["hook"]["hook_state"].as_str(),
-                    last_hook: raw["hook"]["last_hook"].as_str(),
                     alt_screen: pty["alt_screen"].as_bool().unwrap(),
                     rows: u16_of(&raw["dims"]["rows"]),
                     cols: u16_of(&raw["dims"]["cols"]),

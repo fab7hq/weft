@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 use crate::harness::runnable;
 
 /// How long a program has to answer a question (its `--version`, its
-/// plugins) before it counts as not answering. Generous: Codex's first plugin
-/// listing in a new home takes about 40 s, and one stopped early starts cold
-/// again on the next ask.
+/// plugins) before it counts as not answering. Generous: a harness's first
+/// plugin listing in a new home can take about 40 s, and one stopped early
+/// starts cold again on the next ask.
 pub const ANSWERS_WITHIN: Duration = Duration::from_secs(120);
 
 /// How long a setup step (a plugin's install, a download with its

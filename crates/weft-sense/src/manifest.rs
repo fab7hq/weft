@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const SCHEMA: &str = "fab7.sense.decision/1";
-pub const NORMALIZER: &str = "fab7.sense.decision.normalize/1";
+pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -170,7 +170,7 @@ mod tests {
 
     const MANIFEST: &str = r#"{"schema": "fab7.sense.decision/1", "version": "0.1.0",
         "base_model": "microsoft/deberta-v3-xsmall",
-        "normalizer": "fab7.sense.decision.normalize/1",
+        "normalizer": "fab7.sense.decision.normalize/2",
         "normalize": {"replacements": {"\n": " ↵ "}, "screen_last_lines": 15},
         "heads": [
           {"name": "surface", "kind": "choice", "text": "screen", "classes": ["idle_ready"],
@@ -218,9 +218,9 @@ mod tests {
             let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
             assert!(err.contains(schema), "{err}");
         }
-        let json = MANIFEST.replace("normalize/1", "normalize/2");
+        let json = MANIFEST.replace("normalize/2", "normalize/1");
         let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
-        assert!(err.contains("normalize/2"), "{err}");
+        assert!(err.contains("normalize/1"), "{err}");
     }
 
     #[test]

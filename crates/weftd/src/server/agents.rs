@@ -95,10 +95,13 @@ impl Session {
                 if !slot.map.running {
                     return hook_turn;
                 }
-                crate::turns::refine_turn_with_sense(
-                    hook_turn,
-                    slot.sensed_surface.map(|r| r.state),
-                )
+                // Sense's reading counts only for the screen as it is now.
+                let read = slot
+                    .sensed_surface
+                    .filter(|r| r.seq == slot.pane.current_seq())
+                    .map(|r| r.state);
+                let gaps = gaps_of(&p.harnesses, &slot.map.harness);
+                crate::turns::pane_turn(hook_turn, read, slot.last_output_at.elapsed(), gaps)
             })
             .collect();
         (states, index)
@@ -131,7 +134,24 @@ impl Session {
             for pane in &quiet {
                 self.sense_pane(at, *pane);
             }
-            if !quiet.is_empty() {
+            // A screen still long enough for Sense to cover a gap its
+            // harness names is told once, as no output or hook will tell it.
+            let p = &mut self.projects[at];
+            let mut still = false;
+            for slot in p.panes.iter_mut() {
+                let seq = slot.pane.current_seq();
+                let current = slot.sensed_surface.is_some_and(|r| r.seq == seq);
+                let named = !gaps_of(&p.harnesses, &slot.map.harness).is_empty();
+                if named
+                    && current
+                    && slot.gap_told != seq
+                    && slot.last_output_at.elapsed() >= crate::turns::GAP_QUIET
+                {
+                    slot.gap_told = seq;
+                    still = true;
+                }
+            }
+            if !quiet.is_empty() || still {
                 self.tell_agents(at);
             }
         }
@@ -145,19 +165,14 @@ impl Session {
         self.sense_pane(at, pane);
     }
 
-    /// Evaluate `weft-sense` Head 1 on `pane`, by the turns as last read,
-    /// off the run loop: a read takes a fifth of a second. Nothing while
-    /// Sense has not loaded, while a read of this pane is under way, or when
-    /// its screen reads as the words Sense last read.
+    /// Evaluate `weft-sense` Head 1 on `pane`'s screen, off the run loop: a
+    /// read takes a fifth of a second. Nothing while Sense has not loaded,
+    /// while a read of this pane is under way, or when its screen reads as
+    /// the words Sense last read.
     fn sense_pane(&mut self, at: usize, pane: u32) {
         let model = Arc::clone(&self.sense);
         let p = &mut self.projects[at];
-        let sessions = p.turns.sessions();
-        let map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();
-        let raw_states = crate::turns::pane_states(&map, &sessions);
-        let Some(idx) = p.panes.iter().position(|s| s.map.pane == pane) else { return };
-        let hook_turn = raw_states.get(idx).copied().flatten();
-        let slot = &mut p.panes[idx];
+        let Some(slot) = p.panes.iter_mut().find(|s| s.map.pane == pane) else { return };
         if slot.sensing {
             return;
         }
@@ -172,8 +187,6 @@ impl Session {
         let text = model.read().ok().and_then(|guard| {
             Some(guard.as_ref()?.screen_text(&weft_sense::PaneSnapshot {
                 harness: &slot.map.harness,
-                hook_state: crate::turns::turn_hook_name(hook_turn),
-                last_hook: slot.last_hook.as_deref(),
                 alt_screen,
                 rows,
                 cols,
@@ -190,7 +203,11 @@ impl Session {
             slot.sensed_surface = None;
             return;
         }
+        // The same words read the same: the reading holds for this screen too.
         if slot.sensed_text.as_deref() == Some(text.as_str()) {
+            if let Some(reading) = slot.sensed_surface.as_mut() {
+                reading.seq = seq;
+            }
             return;
         }
         slot.sensing = true;
@@ -366,12 +383,12 @@ impl Session {
                     turbo,
                     token,
                     transcript: None,
-                    last_hook: None,
                     last_output_at: std::time::Instant::now(),
                     sense_settled_seq: 0,
                     sensed_surface: None,
                     sensed_text: None,
                     sensing: false,
+                    gap_told: 0,
                     typer: None,
                     judge: None,
                 });
@@ -458,20 +475,15 @@ impl Session {
                 (at, root)
             }
         };
-        // The transcript a hook names is its pane's, for its Conversation,
-        // and the hook is the last its pane's screen heard.
+        // The transcript a hook names is its pane's, for its Conversation.
         if let (Some(at), Some(pane)) = (at, sent.pane)
             && let Some(slot) = self.projects[at]
                 .panes
                 .iter_mut()
                 .find(|s| s.map.pane == pane && s.map.harness == sent.harness)
+            && let Some(path) = sent.transcript.take()
         {
-            if let Some(path) = sent.transcript.take() {
-                slot.transcript = Some(path.into());
-            }
-            if !sent.hook.is_empty() {
-                slot.last_hook = Some(sent.hook.clone());
-            }
+            slot.transcript = Some(path.into());
         }
         if let Some(at) = at {
             self.listen(at, &sent.harness);
@@ -722,6 +734,14 @@ fn once(forwarded: &mut std::collections::HashSet<String>, sent: &mut weft_core:
         sent.also.clear();
     }
     sent.also.retain_mut(|r| first(r.key.take()));
+}
+
+/// The gaps `harness`'s file names: the moves Sense may make on its panes.
+fn gaps_of<'a>(
+    harnesses: &'a crate::harness::Harnesses,
+    harness: &str,
+) -> &'a [weft_core::signal::Gap] {
+    harnesses.find(harness).and_then(|h| h.signal.as_ref()).map_or(&[], |s| s.gaps.as_slice())
 }
 
 #[cfg(test)]

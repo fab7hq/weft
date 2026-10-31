@@ -15,8 +15,8 @@ use std::path::Path;
 #[serde(rename_all = "snake_case")]
 pub enum SurfaceState {
     IdleReady,
-    WorkingGenerating,
-    WorkingTool,
+    /// At work on the turn: thinking, writing, or running a tool.
+    Working,
     WorkingPostHook,
     WaitingPermission,
     WaitingQuestion,
@@ -25,10 +25,9 @@ pub enum SurfaceState {
 }
 
 impl SurfaceState {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 7] = [
         Self::IdleReady,
-        Self::WorkingGenerating,
-        Self::WorkingTool,
+        Self::Working,
         Self::WorkingPostHook,
         Self::WaitingPermission,
         Self::WaitingQuestion,
@@ -43,8 +42,7 @@ impl SurfaceState {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::IdleReady => "idle_ready",
-            Self::WorkingGenerating => "working_generating",
-            Self::WorkingTool => "working_tool",
+            Self::Working => "working",
             Self::WorkingPostHook => "working_post_hook",
             Self::WaitingPermission => "waiting_permission",
             Self::WaitingQuestion => "waiting_question",
@@ -56,8 +54,7 @@ impl SurfaceState {
     pub fn from_class_str(s: &str) -> Option<Self> {
         match s {
             "idle_ready" => Some(Self::IdleReady),
-            "working_generating" => Some(Self::WorkingGenerating),
-            "working_tool" => Some(Self::WorkingTool),
+            "working" => Some(Self::Working),
             "working_post_hook" => Some(Self::WorkingPostHook),
             "waiting_permission" => Some(Self::WaitingPermission),
             "waiting_question" => Some(Self::WaitingQuestion),
@@ -131,9 +128,6 @@ pub struct ConversationReading {
 
 pub struct PaneSnapshot<'a> {
     pub harness: &'a str,
-    pub hook_state: Option<&'a str>,
-    /// The name of the hook event that fired last, as the harness names it.
-    pub last_hook: Option<&'a str>,
     pub alt_screen: bool,
     pub rows: u16,
     pub cols: u16,

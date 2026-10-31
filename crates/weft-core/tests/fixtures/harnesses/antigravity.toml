@@ -47,6 +47,11 @@ on = ["enabled"]
 [signal]
 session = "conversationId"
 workspace = "workspacePaths"
+# What it sends no hook for, each a move Sense may make on its pane once the
+# screen shows it (weft-rf-next ADR-0005; sense-d 0.1.1 reads its screens at
+# 0.975): before its first prompt; Esc, which interrupts with no Stop; its
+# permission prompt.
+gaps = ["start", "interrupt", "permission"]
 # No hook carries the prompt; the transcript the payload names holds it, and
 # when PreInvocation follows a typed prompt its last line is that prompt.
 prompt = { file = "transcriptPath", last = { type = "USER_INPUT" }, field = "content", between = ["<USER_REQUEST>\n", "\n</USER_REQUEST>"] }

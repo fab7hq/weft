@@ -263,10 +263,10 @@ pub fn hot_reload_sense(
 /// The Sense bundle this Weft was built with: the version, the tag on
 /// Hugging Face it is downloaded from, and its `manifest.json`'s SHA-256.
 /// The manifest names every other file's digest, so pinning it pins them all.
-pub const SENSE_VERSION: &str = "0.1.0";
-pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.0";
+pub const SENSE_VERSION: &str = "0.1.1";
+pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.1";
 pub const SENSE_MANIFEST_SHA256: &str =
-    "b611d83967761d4fc45890d47122ea428030f62d2bb9df758da90998d2fae286";
+    "cdb5eaba726376f63743da8fbb1a53b5e46c2d5924501617b559be7bcfa59357";
 
 /// Whether the bundle under `weft_dir` is missing, from before sense-d, or
 /// older than this Weft's.
@@ -471,9 +471,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn this_weft_pins_sense_d_0_1_0_on_hugging_face() {
-        assert_eq!(SENSE_VERSION, "0.1.0");
-        assert_eq!(SENSE_URL, "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.0");
+    fn this_weft_pins_sense_d_0_1_1_on_hugging_face() {
+        assert_eq!(SENSE_VERSION, "0.1.1");
+        assert_eq!(SENSE_URL, "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.1");
         let pinned = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
         let manifest = std::fs::read(pinned.join("manifest.json")).unwrap();
         let manifest = weft_sense::manifest::Manifest::parse(&manifest).unwrap();
