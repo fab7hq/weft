@@ -177,8 +177,17 @@ fn render_staged_bar(
         .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
         .children(payload)
         .children(choice)
-        .children(warning.map(warned))
-        .child(bar_acts(vec![cancel, yes_button(staged.go.as_ref(), resolve(Answer::Yes))]))
+        .child(
+            div()
+                .self_stretch()
+                .flex_row()
+                .gap(10)
+                .items_center()
+                .children(warning.map(warned))
+                .child(div().flex_1())
+                .child(cancel)
+                .child(yes_button(staged.go.as_ref(), resolve(Answer::Yes))),
+        )
 }
 
 /// A dialog's yes: Send, or the button it names, amber when it stops

@@ -391,9 +391,9 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 .items_center()
                 .children(add_rule)
                 .children(pick_yourself)
+                .children(warning)
                 .child(div().flex_1())
                 .children(hint)
-                .children(warning)
                 .child(button(
                     "btn Cancel",
                     word("act.cancel"),
