@@ -54,8 +54,9 @@ on = ["enabled"]
 # goal_status line, written again on every turn the goal is set
 # (claude-code 2.1.296).
 # A turn an API error ends sends `StopFailure`, not `Stop`; one the person
-# interrupts sends neither, and its prompt left idle 60 s is its end
-# (`Notification` `idle_prompt`).
+# interrupts sends no classic hook at all. The plugin's hooks module reports
+# every end of a turn, whatever ended it, as `TurnComplete`
+# (claude-code 2.1.314).
 [signal]
 session = "session_id"
 workspace = "cwd"
@@ -74,7 +75,7 @@ on = [
   { hook = "PostToolUseFailure",                       state = "working", forward = "tool", outcome = "failed" },
   { hook = "Stop",                                     state = "turn_ended" },
   { hook = "StopFailure",                              state = "turn_ended" },
-  { hook = "Notification", when = { notification_type = "idle_prompt" }, state = "turn_ended" },
+  { hook = "TurnComplete",                             state = "turn_ended" },
   { hook = "SessionEnd",                               state = "ended" },
 ]
 

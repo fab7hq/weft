@@ -494,10 +494,10 @@ mod tests {
     }
 
     /// Every way a Claude Code turn ends reaches a state Weft types into: its
-    /// Stop; an API error, where Stop never comes; and its prompt left idle,
-    /// which is all an interrupt leaves.
+    /// Stop; an API error, where Stop never comes; and its plugin's report of
+    /// any end, an interrupt's included.
     #[test]
-    fn a_claude_turn_ends_on_stop_an_api_error_or_an_idle_prompt() {
+    fn a_claude_turn_ends_on_stop_an_api_error_or_any_end_its_plugin_reports() {
         let s = signal("claude-code");
         let state = |hook: &str, extra: Value| {
             let mut p = json!({"session_id": "s1", "cwd": "/w"});
@@ -510,14 +510,10 @@ mod tests {
             Some("turn_ended")
         );
         assert_eq!(
-            state("Notification", json!({"notification_type": "idle_prompt"})).as_deref(),
+            state("TurnComplete", json!({"reason": "aborted"})).as_deref(),
             Some("turn_ended")
         );
-        assert_eq!(
-            state("Notification", json!({"notification_type": "auth_success"})),
-            None,
-            "another notice says nothing of the turn"
-        );
+        assert_eq!(state("Notification", json!({"notification_type": "idle_prompt"})), None);
     }
 
     /// A hook from inside a sub-agent is not the pane's session: it sets no

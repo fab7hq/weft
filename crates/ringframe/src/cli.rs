@@ -1670,7 +1670,7 @@ mod the_marketplace {
                 }
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
                 assert!(
-                    matches!(name, "hooks.json" | "weft-signal" | "plugin.json"),
+                    matches!(name, "hooks.json" | "weft-signal" | "plugin.json" | "turn.ts"),
                     "{} is not a hook",
                     path.display()
                 );
