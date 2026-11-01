@@ -74,7 +74,11 @@ jobs:
           PY
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-nextest
+      # Each test in a process of its own, as the tests that set HOME need.
+      - run: cargo nextest run --workspace
 
   release-build:
     # What release.yml builds, built on every push, so a tag never finds out
