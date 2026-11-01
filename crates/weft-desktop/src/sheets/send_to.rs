@@ -66,7 +66,8 @@ pub fn render(view: &SendTo, pick: impl Fn(String) -> Action) -> Element {
             .bg(palette::SURFACE)
             .border(palette::LINE)
             .font_size(15)
-            .child(span(view.label(&view.picked)))
+            .style("max-width", "320px")
+            .child(cut(span(view.label(&view.picked))))
             .child(span("▾").font_size(12).color(palette::MUTED));
     }
     let item = |key: &str, label: String| {
@@ -79,17 +80,30 @@ pub fn render(view: &SendTo, pick: impl Fn(String) -> Action) -> Element {
             .pad(0, 12)
             .h(37)
             .items_center()
-            .child(div().flex_1().text(label));
+            .shrink_0()
+            .child(cut(div().flex_1().text(label)));
         if on {
             row = row.bg(palette::SELECTED_BG).color(palette::BLUE_BORDER).child(span("✓"));
         }
         row
     };
+    // Any number of agents: past six rows or so it scrolls, the one picked
+    // in view.
+    let started = view.starts.iter().position(|h| start_key(h) == view.picked);
+    let picked = view
+        .agents
+        .iter()
+        .position(|(k, _)| *k == view.picked)
+        .or(started.map(|at| view.agents.len() + 1 + at))
+        .unwrap_or_default();
     let mut list = div()
         .layer("send to list")
         .w(220)
         .flex_col()
         .pad(4, 0)
+        .style("max-height", "240px")
+        .style("overflow-y", "auto")
+        .shows(picked)
         .bg(palette::SURFACE)
         .border(palette::BLUE_BORDER)
         .panel_corners()
@@ -100,6 +114,7 @@ pub fn render(view: &SendTo, pick: impl Fn(String) -> Action) -> Element {
     if !view.starts.is_empty() {
         list = list.child(
             div()
+                .shrink_0()
                 .style("padding", "8px 12px 4px 12px")
                 .border_top(palette::LINE)
                 .font_mono()
@@ -113,4 +128,33 @@ pub fn render(view: &SendTo, pick: impl Fn(String) -> Action) -> Element {
         }
     }
     list
+}
+
+/// A name of any length on one line, cut with … where it does not fit.
+fn cut(name: Element) -> Element {
+    name.style("min-width", "0px")
+        .style("white-space", "nowrap")
+        .style("overflow", "hidden")
+        .style("text-overflow", "ellipsis")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_open_list_of_any_length_scrolls_and_keeps_the_picked_one_in_view() {
+        let agents = (0..40)
+            .map(|i| (pane_key(i), format!("a project with a very long name {i} · harness")))
+            .collect();
+        let starts = vec!["claude".into(), "codex".into()];
+        let view = SendTo { agents, starts, picked: start_key("codex"), open: true };
+        let list = render(&view, |key| SheetAct::AskTo(key).into());
+        let style = |k: &str| list.styles.iter().find(|(s, _)| s == k).map(|(_, v)| v.clone());
+        assert_eq!(style("overflow-y").as_deref(), Some("auto"));
+        assert!(style("max-height").is_some(), "a bounded height");
+        // 40 agents, START AN AGENT, claude, then codex.
+        assert_eq!(list.shows, Some(42));
+        assert_eq!(list.children[42].layer_name.as_deref(), Some("send to start:codex"));
+    }
 }

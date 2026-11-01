@@ -332,6 +332,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
     let eyebrow = follow_up_unit.and_then(|unit| eyebrow(props, unit)).map(|said| {
         div()
             .layer("eyebrow")
+            .shrink_0()
             .font_mono()
             .font_weight(600)
             .font_size(11)
@@ -339,10 +340,33 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
             .text(said)
     });
 
+    // SEND TO open, its labels sit on its first row, beside the list.
+    let open = props.send_to.is_some_and(|v| v.open);
+    let lined = |l: Element| if open { l.style("padding-top", "10px") } else { l };
+    let picks = picks.into_iter().map(|p| if p.action.is_none() { lined(p) } else { p });
+    let to = div()
+        .self_stretch()
+        .shrink_0()
+        .flex_row()
+        .gap(12)
+        .child(lined(
+            div()
+                .font_mono()
+                .font_weight(600)
+                .font_size(11)
+                .color(palette::MUTED)
+                .text(word("ask.send_to")),
+        ))
+        .children(targets)
+        .children(picks);
+    let to = if open { to.items_start() } else { to.items_center() };
+
+    // However tall what is between the words and the acts grows, it
+    // scrolls, and the acts stay in view.
     div()
         .layer("sheet Ask")
         .self_stretch()
-        .shrink_0()
+        .style("min-height", "0px")
         .flex_col()
         .gap(12)
         .pad(16, 20)
@@ -350,11 +374,12 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         .bg(palette::SURFACE_ALT)
         .style("border-top", format!("2px solid {}", palette::BLUE_BORDER))
         .children(eyebrow)
-        .child(div().font_weight(600).font_size(15).text(title))
+        .child(div().shrink_0().font_weight(600).font_size(15).text(title))
         .child(
             textarea_el(Focus::Ask)
                 .layer("ask input")
                 .self_stretch()
+                .shrink_0()
                 .style("min-height", "78px")
                 .pad(10, 12)
                 .bg(palette::SURFACE)
@@ -367,25 +392,19 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         )
         .child(
             div()
+                .layer("ask body")
                 .self_stretch()
-                .flex_row()
+                .flex_col()
                 .gap(12)
-                .items_center()
-                .child(
-                    div()
-                        .font_mono()
-                        .font_weight(600)
-                        .font_size(11)
-                        .color(palette::MUTED)
-                        .text(word("ask.send_to")),
-                )
-                .children(targets)
-                .children(picks),
+                .style("min-height", "0px")
+                .style("overflow-y", "auto")
+                .child(to)
+                .children(rows.into_iter().map(Element::shrink_0)),
         )
-        .children(rows)
         .child(
             div()
                 .self_stretch()
+                .shrink_0()
                 .flex_row()
                 .gap(12)
                 .items_center()

@@ -2680,6 +2680,59 @@ fn a_dialog_that_stops_an_eval_says_stop_eval_in_amber() {
     );
 }
 
+/// A dialog that types nothing names its work in its head, beside its
+/// title, and says the rest in one line.
+#[test]
+fn a_dialog_that_types_nothing_names_its_work_in_its_head() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let why = "health endpoint · 2 Asks\nclaude checks the change against what you asked.\n\
+               Nothing is typed into the agent's pane.";
+    wire.event(Event::Pending {
+        id: "p1".into(),
+        pane: u32::MAX,
+        what: words::word("dialog.eval.title").into(),
+        why: why.into(),
+        payload: Vec::new(),
+        sends: None,
+        go: Some(weft_proto::Go { word: "act.eval".into(), warn: false }),
+    });
+    pumped(&mut app, |a| !a.clients[0].waiting.is_empty());
+    let dom = app.render();
+    let head = dom.find_layer("dialog head").expect("its head").all_text();
+    assert_eq!(head, "Eval this work? health endpoint · 2 Asks");
+    let bar = dom.find_layer("Cancel / Send bar").unwrap();
+    let lines: Vec<&Element> = bar.children.iter().filter(|c| c.text.is_some()).collect();
+    assert_eq!(lines.len(), 1, "the rest in one line: {lines:?}");
+    assert_eq!(
+        lines[0].text.as_deref(),
+        Some(
+            "claude checks the change against what you asked. Nothing is typed into the agent's pane."
+        )
+    );
+}
+
+/// The Seal's setup warning takes the acts' left, as the Ask's does; what
+/// the Seal records moves to its own line above them.
+#[test]
+fn a_seal_with_a_setup_warning_has_it_beside_its_acts() {
+    let (_tmp, mut app, _wire) = wired_app();
+    app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
+    let records = "Nothing is typed.";
+    let acts = app.render().find_layer("seal acts").expect("its acts").clone();
+    assert!(acts.all_text().contains(records), "no warning: the note beside the acts");
+    assert!(acts.find_layer("setup warning").is_none());
+
+    app.act_warning = Some("codex is not set up for RingFrame.".into());
+    let dom = app.render();
+    let acts = dom.find_layer("seal acts").expect("its acts");
+    let row: Vec<_> = acts.children.iter().map(|c| c.layer_name.clone()).collect();
+    assert_eq!(row.first().cloned().flatten().as_deref(), Some("setup warning"), "{row:?}");
+    assert!(acts.find_layer("btn Seal").is_some());
+    assert!(!acts.all_text().contains(records), "{}", acts.all_text());
+    let bar = dom.find_layer("Seal disposition bar").unwrap().all_text();
+    assert!(bar.contains(records), "{bar}");
+}
+
 /// The exact prompt reads from its first line, each line wrapped in the box,
 /// the route's command marked: one run of text, not words laid side by side.
 #[test]
@@ -2757,6 +2810,14 @@ fn send_to_is_a_list_of_its_agents_then_a_new_one_of_each_harness() {
     assert!(text.contains("weft · claude") && text.contains("weft · codex ✓"), "{text}");
     assert!(text.contains(&words::word("start.title").to_uppercase()), "{text}");
     assert!(list.find_layer("send to start:grok").is_some(), "{text}");
+    // Open, it scrolls with what is between the words and the acts: the
+    // acts stay in view.
+    let dom = app.render();
+    let sheet = dom.find_layer("sheet Ask").unwrap();
+    let body = sheet.find_layer("ask body").expect("what scrolls");
+    assert!(body.styles.iter().any(|(k, v)| k == "overflow-y" && v == "auto"), "{body:?}");
+    assert!(body.find_layer("send to list").is_some());
+    assert!(body.find_layer("btn Ask").is_none() && sheet.find_layer("btn Ask").is_some());
     // Picking is a choice: it closes the list, and sends nothing.
     app.dispatch(SheetAct::AskTo("start:grok".into()));
     // Only the new harness's sheet is read.

@@ -170,11 +170,35 @@ fn render_staged_bar(
     } else {
         palette::BLUE_BORDER
     };
+    // A dialog that types nothing names its work in its head, beside its
+    // title, and says the rest in one line.
+    let lines: Vec<&str> = staged.why.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let work = match lines.as_slice() {
+        [first, _, ..] if typed.is_empty() && !first.ends_with(['.', '?', '!', ':']) => {
+            Some(*first)
+        }
+        _ => None,
+    };
+    let said: Vec<String> = match work {
+        Some(_) => vec![lines[1..].join(" ")],
+        None if typed.is_empty() => {
+            (!lines.is_empty()).then(|| lines.join(" ")).into_iter().collect()
+        }
+        None => staged.why.lines().map(str::to_string).collect(),
+    };
+    let work = work.map(|w| div().font_size(13).color(palette::MUTED).text(w.to_string()));
     asking_bar("Cancel / Send bar", accent)
         .child(
-            div().flex_row().gap(8).items_center().child(title(staged.what.clone())).children(into),
+            div()
+                .layer("dialog head")
+                .flex_row()
+                .gap(8)
+                .items_center()
+                .child(title(staged.what.clone()))
+                .children(into)
+                .children(work),
         )
-        .children(staged.why.lines().map(|l| note(l.to_string(), palette::MUTED)))
+        .children(said.into_iter().map(|l| note(l, palette::MUTED)))
         .children(payload)
         .children(choice)
         .child(
@@ -431,13 +455,21 @@ fn render_seal_disposition_bar(
                 .children(reasons.iter().map(|r| reason(r)))
                 .child(span(word("dialog.seal.optional")).font_size(12).color(palette::DIM))
         }))
-        .children(warning.map(warned))
+        // A setup warning takes the acts' left, as in the Ask; what the Seal
+        // records then goes on its own line above them.
+        .children(warning.is_some().then(|| note(said.clone(), palette::MUTED)))
         .child(
             div()
+                .layer("seal acts")
+                .self_stretch()
                 .flex_row()
                 .gap(10)
                 .items_center()
-                .child(div().flex_1().font_size(13).color(palette::MUTED).text(said))
+                .children(warning.map(warned))
+                .child(match warning {
+                    Some(_) => div().flex_1(),
+                    None => div().flex_1().font_size(13).color(palette::MUTED).text(said),
+                })
                 .child(button(
                     "btn Cancel",
                     word("act.cancel"),
