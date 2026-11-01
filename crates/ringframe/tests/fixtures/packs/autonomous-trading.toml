@@ -1,0 +1,16 @@
+# A pack, as fab7 ships one: off until a layer switches it on.
+schema = "ringframe.deltas/1"
+scope = "practice"
+domain = "autonomous-trading"
+description = "Trading strategies and the systems that run them."
+render = { heading = "Rules:" }
+
+[[entries]]
+id = "practice.idempotent_orders"
+label = "Idempotent Orders"
+applies_to = { task = ["implement", "review"] }
+when = "The work submits, retries or recovers orders."
+family = "domain"
+text = """\
+Persist one identifier per logical order intent before submitting and reuse \
+it on every retry and during recovery."""

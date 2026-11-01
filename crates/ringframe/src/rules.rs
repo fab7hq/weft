@@ -293,6 +293,11 @@ mod tests {
             .join("../../../fab7/products/ringframe/config/deltas/practices")
     }
 
+    /// A pack beside the fixture bundle, which installs none.
+    fn pack_fixture() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/packs/autonomous-trading.toml")
+    }
+
     fn ids(list: &[Value]) -> Vec<String> {
         list.iter().map(|e| text(e, "id")).collect()
     }
@@ -376,7 +381,7 @@ mod tests {
     fn a_pack_is_off_until_a_layer_switches_it_on() {
         with_config_home(|_| {
             std::fs::copy(
-                shipped_practices().join("autonomous-trading.toml"),
+                pack_fixture(),
                 config::config_dir().join("deltas/practices/autonomous-trading.toml"),
             )
             .unwrap();
@@ -483,7 +488,7 @@ mod tests {
             assert!(e.0.contains("team.commits") && e.0.contains("when"), "{e}");
 
             std::fs::copy(
-                shipped_practices().join("autonomous-trading.toml"),
+                pack_fixture(),
                 config::config_dir().join("deltas/practices/autonomous-trading.toml"),
             )
             .unwrap();
