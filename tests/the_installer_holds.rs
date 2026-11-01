@@ -62,8 +62,12 @@ impl Release {
         let written = if corrupt_checksum { "0".repeat(64) } else { digest };
         std::fs::write(serve.join(format!("{archive}.sha256")), format!("{written}  {archive}\n"))
             .unwrap();
-        std::fs::write(serve.join("releases-latest"), format!("{{\"tag_name\": \"{tag}\"}}\n"))
-            .unwrap();
+        // Where GitHub's latest release page sends a browser.
+        std::fs::write(
+            serve.join("releases-latest"),
+            format!("https://github.com/fab7hq/weft/releases/tag/{tag}"),
+        )
+        .unwrap();
 
         // fab7 at that tag, as GitHub serves it: one directory, holding
         // Weft's harness files.
@@ -85,7 +89,9 @@ impl Release {
         ]);
 
         // A `curl -fsSL [-o OUT] URL` that reads from `serve/` by the last
-        // path segment, and fails on anything it was not given.
+        // path segment, and fails on anything it was not given. GitHub's API
+        // refuses it, as it refuses an address many people share; `-w` with
+        // the latest release page prints where it leads.
         let bin = dir.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         let curl = bin.join("curl");
@@ -95,15 +101,18 @@ set -eu
 serve='SERVE_DIR'
 out=''
 url=''
+written=''
 while [ $# -gt 0 ]; do
     case "$1" in
         -o) out=$2; shift 2 ;;
+        -w) written=$2; shift 2 ;;
         -*) shift ;;
         *) url=$1; shift ;;
     esac
 done
 case "$url" in
-    *releases/latest) name=releases-latest ;;
+    *api.github.com*) exit 22 ;;
+    *releases/latest) [ "$written" = '%{url_effective}' ] || exit 22; cat "$serve/releases-latest"; exit 0 ;;
     *) name=${url##*/} ;;
 esac
 [ -f "$serve/$name" ] || exit 22
@@ -120,8 +129,19 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
 
     /// Install `tag` from this release into another home and bin folder.
     fn install_into(&self, tag: &str, home: &Path, bin_dir: &Path) -> std::process::Output {
+        self.command(home, bin_dir).env("WEFT_VERSION", tag).output().expect("sh")
+    }
+
+    /// Install the latest release, as the documented command does.
+    fn install_latest(&self) -> std::process::Output {
+        let (home, bin_dir) = (self.dir.path().join("home"), self.dir.path().join("target-bin"));
+        self.command(&home, &bin_dir).output().expect("sh")
+    }
+
+    fn command(&self, home: &Path, bin_dir: &Path) -> Command {
         std::fs::create_dir_all(home).unwrap();
-        Command::new("sh")
+        let mut command = Command::new("sh");
+        command
             .arg(script())
             .env(
                 "PATH",
@@ -131,12 +151,10 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .env("WEFT_VERSION", tag)
             .env("WEFT_BIN_DIR", bin_dir)
             .env("WEFT_APPS_DIR", home.join("Applications"))
-            .env("HOME", home)
-            .output()
-            .expect("sh")
+            .env("HOME", home);
+        command
     }
 
     fn installed(&self, name: &str) -> PathBuf {
@@ -201,6 +219,16 @@ fn run(argv: &[&str]) {
 fn sha256_of(path: &Path) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+}
+
+#[test]
+fn the_latest_release_is_found_without_githubs_api() {
+    let release = Release::make("v0.1.0", false);
+    let out = release.install_latest();
+    let text =
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
+    assert!(release.installed("weft").exists(), "{text}");
 }
 
 #[test]

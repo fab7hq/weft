@@ -69,9 +69,10 @@ main() {
     if [ -n "${WEFT_VERSION:-}" ]; then
         tag=$WEFT_VERSION
     else
-        # The latest release, without needing a token or jq.
-        tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" |
-            sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)
+        # The latest release, from where its page leads: GitHub's API allows
+        # an address 60 calls an hour, which one shared by many soon uses up.
+        tag=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" |
+            sed -n 's|.*/releases/tag/\([^/?#]*\)$|\1|p')
         [ -n "$tag" ] || fail "Could not find the latest release of $REPO."
     fi
 
