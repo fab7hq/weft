@@ -649,10 +649,10 @@ fn sensed_for(last: &LastSensed, (harness, words): (&str, &str)) -> Option<weft_
 }
 
 /// The Ask the person drafted, with what they left unchosen at its default:
-/// Sense's, as the sheet showed it, or else the harness's first route, the
-/// task that route is for and every practice rule offered; and the plan
-/// their words are most about. A draft that was sent says its plan, or that
-/// there is none. A route Sense left unselected must be picked.
+/// Sense's, as the sheet showed it, or else the direct route, the task that
+/// route is for and every practice rule offered; and the plan their words
+/// are most about. A draft that was sent says its plan, or that there is
+/// none.
 fn ask_draft(
     root: &Path,
     over: Option<&str>,
@@ -682,11 +682,12 @@ fn ask_draft(
     let rules = chosen.rules.unwrap_or_else(|| offered.clone());
     let (route, task) = (text("route"), text("task"));
     if route.is_empty() {
-        return Err("Pick a route: Sense was not sure which this Ask needs.".into());
+        return Err(format!("Pick a route: {harness} offers none."));
     }
     let effects = ids("effects").unwrap_or_default();
+    // The route Sense picked, never the direct one the sheet fell back to.
     let sense = sensed.map(|answer| crate::ringframe::SenseShown {
-        route: sheet["route"].as_str().map(str::to_string),
+        route: answer.route.pick.as_ref().map(|pick| format!("native_{pick}")),
         task: sheet["task"].as_str().map(str::to_string),
         rules: offered.clone(),
         answer,
@@ -2579,6 +2580,28 @@ mod tests {
     use super::*;
 
     use crate::versions::tests::stage_sense_bundle as stage_sense_bundle_at;
+
+    /// A route Sense did not pick is sent direct, and the record says the
+    /// person chose it, not Sense.
+    #[test]
+    fn a_route_sense_did_not_pick_is_direct_and_the_person_s() {
+        crate::ringframe::tests::fixture_home();
+        let repo = crate::ringframe::tests::folder("draft-unsure", true);
+        let unsure: weft_sense::AskAnswer = serde_json::from_value(serde_json::json!({
+            "sense": "0.3.0",
+            "route": {"pick": null, "p": {"direct": 0.3, "plan": 0.3, "goal": 0.2, "review": 0.2}},
+            "task": {"on": ["implement"], "p": {"implement": 0.9}},
+            "effects": {"on": ["read", "write"], "p": {"read": 0.9, "write": 0.9}},
+            "result": "workspace_change",
+            "rules": [],
+        }))
+        .unwrap();
+        let words = ("claude-code".to_string(), "fix the typo".to_string());
+        let draft = ask_draft(&repo, None, words, (None, Some(unsure)), None).unwrap();
+        assert_eq!(draft.route, "native_direct");
+        assert_eq!(draft.sense.map(|s| s.route), Some(None), "Sense picked no route");
+        let _ = std::fs::remove_dir_all(repo);
+    }
 
     /// Updates' rows send only acts the daemon knows: RingFrame's row syncs
     /// its configuration; Weft's has none, since Weft is the person's to update.
