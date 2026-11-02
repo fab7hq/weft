@@ -2742,6 +2742,9 @@ mod tests {
         )
         .unwrap();
 
+        // Two Sense graphs are built in turn, the start's and this one: a
+        // slow runner takes seconds over each.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         let mut updated_to_v2 = false;
         while std::time::Instant::now() < deadline {
             if let Ok(Some(Line::Event(Out::Setup { view }))) = reader.next()
@@ -2765,6 +2768,7 @@ mod tests {
         )
         .unwrap();
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut pid_before = None;
         let mut pid_after = None;
         while std::time::Instant::now() < deadline && (pid_before.is_none() || pid_after.is_none())
