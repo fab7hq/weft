@@ -110,7 +110,7 @@ pub(super) fn render(props: &SheetProps) -> Element {
             "update row Sense".into(),
             v.sense_mark(),
             "Sense",
-            status(v.sense_mark()).to_string(),
+            with_version(&v.sense, status(v.sense_mark())),
             v.sense_behind.then(|| update("Sense", SheetAct::SetupRun("sense".into()))),
         ),
     ]);

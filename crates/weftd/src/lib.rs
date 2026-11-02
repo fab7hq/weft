@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod harness;
 pub mod ledger;
 pub mod listen;
+pub mod login_path;
 pub mod onboarding;
 pub mod outside;
 pub mod pane;

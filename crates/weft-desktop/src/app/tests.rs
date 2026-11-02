@@ -1326,8 +1326,8 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
         weft_behind: true,
         configuration: "0.4.4".into(),
         latest: Some("0.4.4".into()),
-        sense: "fab7-sense-v1".into(),
-        sense_latest: Some("fab7-sense-v2".into()),
+        sense: "0.1.0 → 0.1.1".into(),
+        sense_latest: Some("0.1.1".into()),
         sense_behind: true,
         rows: vec![
             row("claude", SetupState::Behind { have: "0.4.1".into(), latest: "0.4.4".into() }),
@@ -1343,6 +1343,9 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
     let weft_row = upd.find_layer("update row Weft").unwrap().all_text();
     assert!(weft_row.contains("0.4.3 → 0.4.4 · update available"), "{weft_row}");
     assert!(!weft_row.contains("0.4.4 → 0.4.4"), "{weft_row}");
+    // Sense's row says where it stands, as Weft's does.
+    let sense_row = upd.find_layer("update row Sense").unwrap().all_text();
+    assert!(sense_row.contains("0.1.0 → 0.1.1 · update available"), "{sense_row}");
     assert!(upd.find_layer("btn Find app… codex").is_some());
     assert!(upd.find_layer("btn Update all").is_some());
     // Weft is updated the way it was installed: its row says so, with no act.
@@ -1354,7 +1357,7 @@ fn updates_says_each_state_with_cores_own_mark_and_words() {
         assert!(r.contains(&state.words()), "{r}");
         assert!(!r.contains("Ready"), "{r}");
     }
-    for forbidden in ["fab7-sense-v1", "sha256:", "/Users/", ".onnx", "weft-sense"] {
+    for forbidden in ["sha256:", "/Users/", ".onnx", "weft-sense"] {
         assert!(!upd.all_text().contains(forbidden), "{forbidden}");
     }
 }

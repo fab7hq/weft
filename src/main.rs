@@ -118,6 +118,7 @@ fn main() -> Result<()> {
     // Started by the app to own the panes. One per machine, headless, and it
     // outlives whatever asked for it.
     if first.as_deref() == Some("--serve") {
+        weftd::login_path::adopt();
         set_up_home();
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&protocol::socket_path(), &weft::routing::file());
@@ -133,6 +134,7 @@ fn main() -> Result<()> {
             println!("weft: listening on {}", socket.display());
             return Ok(());
         }
+        weftd::login_path::adopt();
         set_up_home();
         write_config_if_absent(&weft::routing::file());
         return server::Session::serve(&socket, &weft::routing::file());
