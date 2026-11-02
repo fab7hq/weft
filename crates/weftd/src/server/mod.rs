@@ -910,7 +910,7 @@ impl Session {
         // is missing or older. Until then the one found reads, or none.
         let sense = Arc::new(std::sync::RwLock::new(None));
         let machine = harnesses.is_none();
-        let fetch = machine && crate::versions::sense_wanted(&weft_dir);
+        let fetch = machine && fetches_sense(config, &crate::routing::file(), &weft_dir);
         let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
         std::thread::spawn(move || {
             if let Some(model) = crate::versions::load_sense(&sense_dir)
@@ -2542,6 +2542,13 @@ impl Session {
     }
 }
 
+/// Whether this daemon downloads Sense: only into Weft's own folder, the one
+/// `weft --serve` serves, and only when the bundle there is missing or older.
+/// A daemon on another config, as a test's, downloads nothing.
+fn fetches_sense(config: &Path, own: &Path, weft_dir: &Path) -> bool {
+    config == own && crate::versions::sense_wanted(weft_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2609,6 +2616,15 @@ mod tests {
         let _ = UnixStream::connect(&sock).map(|mut s| {
             weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
         });
+    }
+
+    #[test]
+    fn sense_is_fetched_only_into_wefts_own_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let own = tmp.path().join(".fab7/weft/config.toml");
+        let elsewhere = tmp.path().join("scratch/config.toml");
+        assert!(fetches_sense(&own, &own, tmp.path()));
+        assert!(!fetches_sense(&elsewhere, &own, tmp.path()));
     }
 
     #[test]

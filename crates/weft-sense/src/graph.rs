@@ -46,6 +46,10 @@ impl Graph {
 
     /// The graph on `provider`; a GPU provider that cannot be had is an error.
     pub fn load_on(model: &[u8], provider: Provider) -> anyhow::Result<Self> {
+        // One graph built at a time in a process, so a reload never builds
+        // beside a load still running.
+        static BUILDING: Mutex<()> = Mutex::new(());
+        let _building = BUILDING.lock().unwrap_or_else(|e| e.into_inner());
         let builder = Session::builder(environment()?)
             .map_err(ort_error)?
             .with_auto_device(AutoDevicePolicy::PreferCPU)
