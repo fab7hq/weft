@@ -913,11 +913,15 @@ impl Session {
         let fetch = machine && fetches_sense(config, &crate::routing::file(), &weft_dir);
         let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
         std::thread::spawn(move || {
-            if let Some(model) = crate::versions::load_sense(&sense_dir)
-                && let Ok(mut guard) = slot.write()
             {
-                // A Sense the person installed meanwhile stays.
-                guard.get_or_insert(model);
+                // A Sense installed meanwhile stays, and none is loaded for nothing.
+                let _loading = crate::versions::loading();
+                if slot.read().is_ok_and(|guard| guard.is_none())
+                    && let Some(model) = crate::versions::load_sense(&sense_dir)
+                    && let Ok(mut guard) = slot.write()
+                {
+                    *guard = Some(model);
+                }
             }
             if fetch {
                 match crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot) {
@@ -1662,10 +1666,8 @@ impl Session {
                             proceed(out, step, |_| {})
                         {
                             note = Some(format!("{step} failed: {said}"));
-                        } else if let Some(model) = crate::versions::load_sense(&weft_dir)
-                            && let Ok(mut guard) = sense_slot.write()
-                        {
-                            *guard = Some(model);
+                        } else {
+                            crate::versions::load_into(&weft_dir, &sense_slot);
                         }
                     }
                 }
@@ -1686,10 +1688,8 @@ impl Session {
                                 proceed(out, step, |_| {})
                             {
                                 note = Some(format!("{step} failed: {said}"));
-                            } else if let Some(model) = crate::versions::load_sense(&weft_dir)
-                                && let Ok(mut guard) = sense_slot.write()
-                            {
-                                *guard = Some(model);
+                            } else {
+                                crate::versions::load_into(&weft_dir, &sense_slot);
                             }
                         }
                     } else {
@@ -1722,10 +1722,8 @@ impl Session {
                                     proceed(out, step, |_| {})
                                 {
                                     note = Some(format!("{step} failed: {said}"));
-                                } else if let Some(model) = crate::versions::load_sense(&weft_dir)
-                                    && let Ok(mut guard) = sense_slot.write()
-                                {
-                                    *guard = Some(model);
+                                } else {
+                                    crate::versions::load_into(&weft_dir, &sense_slot);
                                 }
                             }
                         }

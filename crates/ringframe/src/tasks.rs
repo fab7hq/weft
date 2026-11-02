@@ -4769,6 +4769,11 @@ mod tests {
                             if out["state"] == "done" {
                                 return;
                             }
+                            // Handed nothing, a judge asks again later, as a
+                            // real one does, not at once.
+                            if ids(&out).is_empty() {
+                                std::thread::sleep(std::time::Duration::from_millis(20));
+                            }
                             for t in ids(&out) {
                                 crate::testing::answer_task(ws, &t);
                                 let (code, said) = submit(ws, &t).unwrap();

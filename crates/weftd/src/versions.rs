@@ -138,6 +138,23 @@ pub fn load_sense(weft_dir: &Path) -> Option<weft_sense::SenseModel> {
         .or_else(|| weft_sense::SenseModel::load(&current.path).ok())
 }
 
+/// Held while Sense is loaded and put in its slot, so one load never runs
+/// behind another: the start's load is skipped once a newer one filled it.
+pub fn loading() -> std::sync::MutexGuard<'static, ()> {
+    static LOADING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOADING.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The Sense installed under `weft_dir`, loaded into `slot`.
+pub fn load_into(weft_dir: &Path, slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>) {
+    let _loading = loading();
+    if let Some(model) = load_sense(weft_dir)
+        && let Ok(mut guard) = slot.write()
+    {
+        *guard = Some(model);
+    }
+}
+
 /// Try this machine's GPU for the Sense in `slot`, once per Weft and Sense
 /// version, with `program` as the child that tries it; a GPU kept takes the
 /// slot's place.
@@ -146,6 +163,7 @@ pub fn sense_on_gpu(
     slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
     program: &Path,
 ) {
+    let _loading = loading();
     let Some(current) = sense_current(weft_dir) else { return };
     if crate::gpu::verdict(weft_dir, &current.version).is_some() {
         return;
@@ -253,6 +271,7 @@ pub fn hot_reload_sense(
     source_dir: &Path,
     slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
 ) -> anyhow::Result<SenseCurrent> {
+    let _loading = loading();
     let (current, model) = install_sense_bundle(weft_dir, source_dir)?;
     if let Ok(mut guard) = slot.write() {
         *guard = Some(model);
@@ -293,6 +312,7 @@ pub fn hot_reload_from_hub(
     out: &dyn crate::outside::Outside,
     slot: &std::sync::RwLock<Option<weft_sense::SenseModel>>,
 ) -> anyhow::Result<SenseCurrent> {
+    let _loading = loading();
     let current = fetch_sense(weft_dir, out)?;
     let model = weft_sense::SenseModel::load(&current.path)?;
     if let Ok(mut guard) = slot.write() {
