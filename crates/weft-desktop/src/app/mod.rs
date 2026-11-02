@@ -83,6 +83,9 @@ pub struct Notice {
 
 /// How long a why-not is said before it goes by itself.
 const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
+/// How long the Ask's words rest before they are read: Sense waits for the
+/// person to stop typing.
+pub(crate) const ASK_PAUSE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Right-pane sheet overlay or modal view.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +233,10 @@ pub struct WeftDesktopApp {
     pub ask_sheet_for: Option<String>,
     /// Why RingFrame would not read the open Ask's sheet, when it would not.
     pub ask_refused: Option<String>,
+    /// The Ask's words as last seen, and when they last changed.
+    ask_typed: Option<(String, std::time::Instant)>,
+    /// How long the words rest before they are read.
+    pub(crate) ask_pause: std::time::Duration,
     /// What Weft reads of the setup of the harness an Eval or a Seal goes
     /// to, said in its dialog: a warning, never a stop.
     pub act_warning: Option<String>,
@@ -306,6 +313,8 @@ impl WeftDesktopApp {
             ask_choices: Default::default(),
             ask_sheet_for: None,
             ask_refused: None,
+            ask_typed: None,
+            ask_pause: ASK_PAUSE,
             act_warning: None,
             focus: Focus::Terminal,
             active_sheet: None,
@@ -707,7 +716,7 @@ impl WeftDesktopApp {
 
     /// Take what every project's daemon link brought since; whether anything changed.
     pub fn pump(&mut self) -> bool {
-        self.want_ask_sheet();
+        self.want_ask_sheet_at(std::time::Instant::now());
         let (mut changed, mut moved) = (false, false);
         if let Some(m) = &mut self.own_link {
             changed |= m.pump().changed;
@@ -808,9 +817,17 @@ impl WeftDesktopApp {
     /// agent of each harness.
     /// Ask the daemon what the open Ask's sheet offers for its harness, words
     /// and route; keep its answer once it comes, and only the newest. One is
-    /// asked at a time: the words are read for each, so the next waits.
-    pub(crate) fn want_ask_sheet(&mut self) {
+    /// asked at a time: the words are read for each, so the next waits. New
+    /// words are read only once they have rested `ask_pause`, so Sense never
+    /// runs while the person types.
+    pub(crate) fn want_ask_sheet_at(&mut self, now: std::time::Instant) {
         let Some(ActiveSheet::Ask { project, send_to, .. }) = &self.active_sheet else { return };
+        let words = self.ask.text();
+        if self.ask_typed.as_ref().is_none_or(|(seen, _)| seen != words) {
+            self.ask_typed = Some((words.to_string(), now));
+        }
+        let rested = self.ask_typed.as_ref().is_some_and(|(_, at)| now - *at >= self.ask_pause);
+        let rested = rested || words.trim().is_empty();
         let (project, send_to) = (project.clone(), send_to.clone().unwrap_or_default());
         let Some(c) = self.clients.iter_mut().find(|c| c.root == project) else { return };
         let harness =
@@ -832,7 +849,7 @@ impl WeftDesktopApp {
             c.read.retain(|t, _| !asking(t) || *t == then);
         } else if let Some(why) = c.refused.get(&then) {
             (self.ask_sheet, self.ask_refused) = (None, Some(why.clone()));
-        } else if !c.owes_any(asking) {
+        } else if rested && !c.owes_any(asking) {
             let _ = c.read("ask", &query, None, then);
         }
     }

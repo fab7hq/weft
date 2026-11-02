@@ -248,6 +248,8 @@ pub(crate) fn sample_app(turbo: bool) -> (tempfile::TempDir, WeftDesktopApp) {
 /// The sample app, linked to a wire the test answers on.
 pub(crate) fn wired_app() -> (tempfile::TempDir, WeftDesktopApp, Wire) {
     let (tmp, mut app) = sample_app(false);
+    // Typing pauses are the one test's to wait out.
+    app.ask_pause = Duration::from_millis(20);
     let wire = Wire::on(&mut app.clients[0]);
     (tmp, app, wire)
 }
@@ -679,11 +681,10 @@ fn the_ask_sheet_shows_the_words_read_and_waits_for_a_route_sense_left_open() {
     answer_reads(&mut app, &mut wire, &|a| a.ask_sheet.is_some());
     app.ask.set_text("the health check says the build is unknown");
     let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
-    assert!(
-        drawn.contains("Sensing your best fit…") && drawn.contains("Pick a route yourself"),
-        "{drawn}"
-    );
-    assert!(!drawn.contains("PRACTICES"), "one panel while the words are read: {drawn}");
+    assert!(drawn.contains("Sensing your best fit…"), "{drawn}");
+    for hidden in ["SEND TO", "ROUTE", "PRACTICES", "Pick a route yourself"] {
+        assert!(!drawn.contains(hidden), "one panel while the words are read: {drawn}");
+    }
     answer_reads(&mut app, &mut wire, &|a| {
         a.ask_sheet_for.as_deref() == Some("the health check says the build is unknown")
     });
@@ -707,6 +708,59 @@ fn the_ask_sheet_shows_the_words_read_and_waits_for_a_route_sense_left_open() {
             .any(|(_, c)| matches!(c, Call::Act { ref act, .. } if act == "ask")),
         "nothing asked"
     );
+}
+
+/// The words are read once the person stops typing: until then the reading
+/// panel stands where SEND TO, the route and the rules will be, and nothing
+/// is asked of Sense.
+#[test]
+fn the_words_are_read_once_the_person_stops_typing() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    let sheet = json!({
+        "routes": ["native_direct"], "route": "native_direct", "tasks": ["implement"],
+        "task": "implement", "plan": null, "plans": [], "route_rules": [], "practices": [],
+        "proposed": [], "senses": true,
+    });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while app.ask_sheet.is_none() {
+        assert!(Instant::now() < deadline, "the sheet never came");
+        app.pump();
+        for (id, c) in wire.calls() {
+            if matches!(c, Call::Read { ref what, .. } if what == "ask") {
+                wire.answer(id, sheet.clone());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app.ask_pause = ASK_PAUSE;
+    let reads = |wire: &mut Wire| {
+        std::thread::sleep(Duration::from_millis(50));
+        let calls = wire.calls().into_iter();
+        calls
+            .filter_map(|(_, c)| match c {
+                Call::Read { what, unit, .. } if what == "ask" => Some(unit),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let t0 = Instant::now();
+    app.ask.set_text("fix the");
+    app.want_ask_sheet_at(t0);
+    app.ask.set_text("fix the login");
+    app.want_ask_sheet_at(t0 + Duration::from_millis(1000));
+    app.want_ask_sheet_at(t0 + Duration::from_millis(2000));
+    assert_eq!(reads(&mut wire), Vec::<String>::new(), "nothing is read while the person types");
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    assert!(drawn.contains("Sensing your best fit…"), "{drawn}");
+    assert!(!drawn.contains("SEND TO") && !drawn.contains("ROUTE"), "{drawn}");
+    app.want_ask_sheet_at(t0 + Duration::from_millis(2600));
+    let read = reads(&mut wire);
+    assert!(read.len() == 1 && read[0].contains("fix the login"), "{read:?}");
 }
 
 /// 7.1 and 17.24 are one warning: a harness Weft reads as not set up for

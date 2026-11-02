@@ -26,8 +26,6 @@ pub struct AskChoices {
     pub picked: BTreeMap<String, bool>,
     /// Every practice shown: the kept ones past the first few, and the rest.
     pub all: bool,
-    /// The person picks the route now, rather than wait while the words are read.
-    pub picking: bool,
     /// The ROUTE or PLAN list that is open.
     pub open: Option<String>,
 }
@@ -83,16 +81,15 @@ fn split_practices<'a>(sheet: &'a Value, c: &AskChoices) -> (Vec<&'a Value>, Vec
 }
 
 /// Whether the sheet shows the words being read (17.23): they are read at
-/// all, there are words, the sheet shown is for others, and the person has
-/// not picked a route or chosen to.
-pub fn sensing(sheet: Option<&Value>, sheet_for: Option<&str>, text: &str, c: &AskChoices) -> bool {
+/// all, there are words, and the sheet shown is for others. The person picks
+/// once Sense has answered, or failed to.
+pub fn sensing(sheet: Option<&Value>, sheet_for: Option<&str>, text: &str) -> bool {
     let senses = sheet.is_some_and(|s| s["senses"] == true);
-    let picks = c.picking || c.route.is_some();
-    senses && !picks && !text.trim().is_empty() && sheet_for != Some(text)
+    senses && !text.trim().is_empty() && sheet_for != Some(text)
 }
 
-/// The words being read (17.23): one panel where the route, its rules and
-/// the practices will be.
+/// The words being read (17.23): one panel where SEND TO, the route, its
+/// rules and the practices will be.
 fn sensing_panel() -> Element {
     // The window breathes `pulse` alone, so the dots breathe together.
     let dot = || {
@@ -300,7 +297,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
     let targets = props.send_to.map(|v| send_to::render(v, |key| SheetAct::AskTo(key).into()));
     let harness = props.send_to.map(|v| v.picked_harness()).unwrap_or_default();
     let c = props.ask_choices;
-    let reading = sensing(props.ask_sheet, props.ask_sheet_for, props.ask_draft, c);
+    let reading = sensing(props.ask_sheet, props.ask_sheet_for, props.ask_draft);
     let (picks, rows) = match props.ask_sheet {
         Some(_) if reading => (Vec::new(), vec![sensing_panel()]),
         Some(sheet) => draft_rows(sheet, c, &harness),
@@ -321,8 +318,6 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         let (_, not_kept) = split_practices(sheet, c);
         (!not_kept.is_empty()).then(|| link("add rule", SheetAct::AskAddRule, "ask.add_rule"))
     });
-    let pick_yourself =
-        reading.then(|| link("pick yourself", SheetAct::AskPickRoute, "ask.pick_yourself"));
     let hint = no_route.then(|| {
         div().layer("hint").font_size(13).color(palette::AMBER).text(word("ask.pick_to_ask"))
     });
@@ -398,7 +393,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 .gap(12)
                 .style("min-height", "0px")
                 .style("overflow-y", "auto")
-                .child(to)
+                .children((!reading).then_some(to))
                 .children(rows.into_iter().map(Element::shrink_0)),
         )
         .child(
@@ -409,7 +404,6 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
                 .gap(12)
                 .items_center()
                 .children(add_rule)
-                .children(pick_yourself)
                 .children(warning)
                 .child(div().flex_1())
                 .children(hint)
@@ -473,14 +467,9 @@ mod tests {
     #[test]
     fn the_words_show_as_read_while_the_sheet_is_for_others() {
         let s = json!({"senses": true});
-        let c = AskChoices::default();
-        assert!(sensing(Some(&s), Some("old"), "new", &c));
-        assert!(!sensing(Some(&s), Some("new"), "new", &c));
-        assert!(!sensing(Some(&s), Some("old"), "  ", &c));
-        assert!(!sensing(Some(&json!({"senses": false})), Some("old"), "new", &c));
-        let picking = AskChoices { picking: true, ..Default::default() };
-        assert!(!sensing(Some(&s), Some("old"), "new", &picking));
-        let routed = AskChoices { route: Some("native_goal".into()), ..Default::default() };
-        assert!(!sensing(Some(&s), Some("old"), "new", &routed));
+        assert!(sensing(Some(&s), Some("old"), "new"));
+        assert!(!sensing(Some(&s), Some("new"), "new"));
+        assert!(!sensing(Some(&s), Some("old"), "  "));
+        assert!(!sensing(Some(&json!({"senses": false})), Some("old"), "new"));
     }
 }

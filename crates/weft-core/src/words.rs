@@ -121,7 +121,6 @@ pub const WORDS: &[(&str, &str)] = &[
     // While the words are read to fill the sheet, and when the person picks.
     ("ask.sensing", "Sensing your best fit…"),
     ("ask.sensing_line", "Choosing the route and practices for these words."),
-    ("ask.pick_yourself", "Pick a route yourself"),
     ("ask.pick_route", "Pick a route"),
     ("ask.route_rules_wait", "They show once you pick a route."),
     ("ask.pick_to_ask", "Pick a route to ask."),

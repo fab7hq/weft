@@ -41,7 +41,7 @@ impl WeftDesktopApp {
             Action::Sheet(a) => self.sheet_act(a),
             Action::Pane(a) => self.pane_act(a),
         }
-        self.want_ask_sheet();
+        self.want_ask_sheet_at(std::time::Instant::now());
     }
 
     fn close_popovers(&mut self) {
@@ -574,7 +574,7 @@ impl WeftDesktopApp {
         });
         self.ask = TextField::new(Shape::Area);
         (self.ask_sheet, self.ask_choices, self.ask_sheet_for) = (None, Default::default(), None);
-        self.ask_refused = None;
+        (self.ask_refused, self.ask_typed) = (None, None);
         self.active_sheet =
             Some(ActiveSheet::Ask { project, send_to: pane.map(pane_key), follow_up_unit: unit });
         self.focus = Focus::Ask;
@@ -723,7 +723,6 @@ impl WeftDesktopApp {
                 self.ask_choices.picked.insert(id, true);
             }
             SheetAct::AskMore | SheetAct::AskAddRule => self.ask_choices.all = true,
-            SheetAct::AskPickRoute => self.ask_choices.picking = true,
             SheetAct::FollowUp { project, unit } => self.open_ask(project, None, Some(unit)),
             SheetAct::Offer { project, unit, offer } => self.offer(project, unit, offer),
             SheetAct::GitNote { project, on: true } => {

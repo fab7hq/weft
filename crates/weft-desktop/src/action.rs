@@ -239,8 +239,6 @@ pub enum SheetAct {
     AskMore,
     /// Show the practices not kept, to put one in.
     AskAddRule,
-    /// Pick the route now, rather than wait while the words are read.
-    AskPickRoute,
     SubmitAsk,
     FollowUp {
         project: PathBuf,
