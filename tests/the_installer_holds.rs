@@ -5,8 +5,8 @@
 //! detection, the checksum, the unpacking, the install — is the real script.
 //!
 //! What a release holds, per system: on macOS Weft.app, with `weft` and
-//! `ringframe` inside it; on Linux the three programs, the desktop entry and
-//! the icon.
+//! `ringframe` inside it and fab7's files in its Resources; on Linux the
+//! three programs, the desktop entry, the icon and fab7's files.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,13 +43,30 @@ impl Release {
             std::fs::write(&p, format!("#!/bin/sh\n{init}echo \"{name} {tag}\"\n")).unwrap();
             make_executable(&p);
         }
+        // fab7's files, as the release carries them: Weft's harness and
+        // tool files, and RingFrame's configuration.
+        let fab7 = if cfg!(target_os = "macos") {
+            staged.join("Weft.app/Contents/Resources/fab7")
+        } else {
+            staged.join("fab7")
+        };
+        for (dir, file, text) in [
+            ("weft/harnesses", "zed-agent.toml", "title = \"Zed Agent\"\n"),
+            ("weft/tools", "cloudflared.toml", "program = \"cloudflared\"\n"),
+            ("ringframe/config/harnesses", "zed-agent.toml", ""),
+        ] {
+            std::fs::create_dir_all(fab7.join(dir)).unwrap();
+            std::fs::write(fab7.join(dir).join(file), text).unwrap();
+        }
         let packed: &[&str] = if cfg!(target_os = "macos") {
+            std::fs::write(staged.join("Weft.app/Contents/Info.plist"), plist("com.getfab7.weft"))
+                .unwrap();
             &["Weft.app"]
         } else {
             let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
             std::fs::copy(assets.join("linux/weft.desktop"), staged.join("weft.desktop")).unwrap();
             std::fs::copy(assets.join("weft-mark.svg"), staged.join("weft.svg")).unwrap();
-            &["weft", "ringframe", "weft-desktop", "weft.desktop", "weft.svg"]
+            &["weft", "ringframe", "weft-desktop", "weft.desktop", "weft.svg", "fab7"]
         };
         let mut tar = vec!["tar".to_string(), "-czf".into()];
         tar.push(serve.join(&archive).to_string_lossy().into_owned());
@@ -68,25 +85,6 @@ impl Release {
             format!("https://github.com/fab7hq/weft/releases/tag/{tag}"),
         )
         .unwrap();
-
-        // fab7 at that tag, as GitHub serves it: one directory, holding
-        // Weft's harness files.
-        let fab7 = dir.path().join("fab7");
-        let harnesses = fab7.join(format!("fab7-{tag}/products/weft/harnesses"));
-        std::fs::create_dir_all(&harnesses).unwrap();
-        std::fs::write(harnesses.join("zed-agent.toml"), "title = \"Zed Agent\"\n").unwrap();
-        // And its tool files.
-        let tools = fab7.join(format!("fab7-{tag}/products/weft/tools"));
-        std::fs::create_dir_all(&tools).unwrap();
-        std::fs::write(tools.join("cloudflared.toml"), "program = \"cloudflared\"\n").unwrap();
-        run(&[
-            "tar",
-            "-czf",
-            &serve.join(tag).to_string_lossy(),
-            "-C",
-            &fab7.to_string_lossy(),
-            &format!("fab7-{tag}"),
-        ]);
 
         // A `curl -fsSL [-o OUT] URL` that reads from `serve/` by the last
         // path segment, and fails on anything it was not given. GitHub's API
@@ -153,6 +151,7 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
             )
             .env("WEFT_BIN_DIR", bin_dir)
             .env("WEFT_APPS_DIR", home.join("Applications"))
+            .env("WEFT_SYSTEM_PACKAGES", "0")
             .env("HOME", home);
         command
     }
@@ -160,6 +159,14 @@ if [ -n "$out" ]; then cp "$serve/$name" "$out"; else cat "$serve/$name"; fi
     fn installed(&self, name: &str) -> PathBuf {
         self.dir.path().join("target-bin").join(name)
     }
+}
+
+/// An app's Info.plist, naming the app `id`.
+fn plist(id: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict>\
+         <key>CFBundleIdentifier</key><string>{id}</string></dict></plist>\n"
+    )
 }
 
 fn script() -> PathBuf {
@@ -243,7 +250,7 @@ fn it_downloads_verifies_and_installs_both_binaries() {
     for name in ["weft", "ringframe"] {
         let p = release.installed(name);
         assert!(p.exists(), "{name} was not installed\n{text}");
-        assert!(p.is_symlink(), "{name} links into this version");
+        assert!(p.is_symlink(), "{name} links into the installed Weft");
         let shown = Command::new(&p).output().expect("the installed binary runs");
         assert_eq!(
             String::from_utf8_lossy(&shown.stdout).trim(),
@@ -252,22 +259,24 @@ fn it_downloads_verifies_and_installs_both_binaries() {
         );
     }
     assert!(text.contains("Downloading fab7hq/weft v0.1.0"), "{text}");
-    // Weft is in its version's folder, and `weft` is a link to it.
     let home = release.dir.path().join("home");
-    let version = home.join(".fab7/weft/versions/0.1.0");
-    assert!(version.join("weft").is_file(), "{text}");
-    assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), version.join("weft"));
     if cfg!(target_os = "macos") {
-        // The app is the version's; Applications holds a link to it, and the
-        // tools on PATH are the app's own.
-        let app = version.join("Weft.app");
+        // The app itself is in Applications, as Homebrew puts it, where
+        // Finder and Spotlight list it; the tools on PATH are its own.
+        let app = home.join("Applications/Weft.app");
+        assert!(!app.is_symlink(), "{text}");
         assert!(app.join("Contents/MacOS/weft-desktop").is_file(), "{text}");
-        assert_eq!(std::fs::read_link(home.join("Applications/Weft.app")).unwrap(), app);
-        assert_eq!(
-            std::fs::read_link(release.installed("ringframe")).unwrap(),
-            app.join("Contents/MacOS/ringframe")
-        );
+        for name in ["weft", "ringframe"] {
+            assert_eq!(
+                std::fs::read_link(release.installed(name)).unwrap(),
+                app.join("Contents/MacOS").join(name)
+            );
+        }
     } else {
+        // Weft is in its version's folder, and `weft` is a link to it.
+        let version = home.join(".fab7/weft/versions/0.1.0");
+        assert!(version.join("weft").is_file(), "{text}");
+        assert_eq!(std::fs::read_link(release.installed("weft")).unwrap(), version.join("weft"));
         assert_eq!(
             std::fs::read_link(release.installed("weft-desktop")).unwrap(),
             version.join("weft-desktop")
@@ -280,32 +289,28 @@ fn it_downloads_verifies_and_installs_both_binaries() {
     }
 }
 
-/// A newer version goes beside the older, whose file a running Weft still
-/// uses; `weft` then points at the newer.
+/// On Linux a newer version goes beside the older, whose file a running
+/// Weft still uses; on macOS it takes the older app's place. `weft` then
+/// runs the newer.
 #[test]
-fn a_newer_version_is_installed_beside_the_older() {
+fn a_newer_version_takes_over_from_the_older() {
     let old = Release::make("v0.1.0", false);
     let new = Release::make("v0.2.0", false);
     let (home, bin) = (old.dir.path().join("home"), old.dir.path().join("target-bin"));
     assert!(old.install("v0.1.0").status.success() || bin.join("weft").exists());
-    let before = std::fs::read(home.join(".fab7/weft/versions/0.1.0/weft")).unwrap();
     let out = new.install_into("v0.2.0", &home, &bin);
     let text = String::from_utf8_lossy(&out.stderr);
-    let versions = home.join(".fab7/weft/versions");
-    assert_eq!(std::fs::read(versions.join("0.1.0/weft")).unwrap(), before, "untouched: {text}");
-    assert_eq!(std::fs::read_link(bin.join("weft")).unwrap(), versions.join("0.2.0/weft"));
     let shown = Command::new(bin.join("weft")).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "weft v0.2.0");
-    // One app: the newer one.
+    assert_eq!(String::from_utf8_lossy(&shown.stdout).trim(), "weft v0.2.0", "{text}");
     if cfg!(target_os = "macos") {
         let apps: Vec<_> =
             std::fs::read_dir(home.join("Applications")).unwrap().flatten().collect();
-        assert_eq!(apps.len(), 1);
-        assert_eq!(
-            std::fs::read_link(home.join("Applications/Weft.app")).unwrap(),
-            versions.join("0.2.0/Weft.app")
-        );
+        assert_eq!(apps.len(), 1, "one app: the newer one");
     } else {
+        let versions = home.join(".fab7/weft/versions");
+        let before = std::fs::read(versions.join("0.1.0/weft")).unwrap();
+        assert!(String::from_utf8_lossy(&before).contains("v0.1.0"), "untouched: {text}");
+        assert_eq!(std::fs::read_link(bin.join("weft")).unwrap(), versions.join("0.2.0/weft"));
         assert_eq!(
             std::fs::read_link(bin.join("weft-desktop")).unwrap(),
             versions.join("0.2.0/weft-desktop")
@@ -313,10 +318,10 @@ fn a_newer_version_is_installed_beside_the_older() {
     }
 }
 
-/// Weft's harness files come with fab7 at the tag RingFrame's configuration
-/// came from, and replace whatever was there: they are never edited.
+/// Weft's harness files come with the release, and replace whatever was
+/// there: they are never edited.
 #[test]
-fn the_harness_files_are_installed_from_the_same_fab7_and_replace_the_old() {
+fn the_harness_files_come_with_the_release_and_replace_the_old() {
     let release = Release::make("v0.1.0", false);
     let installed = release.dir.path().join("home/.fab7/weft/harnesses");
     std::fs::create_dir_all(&installed).unwrap();
@@ -392,4 +397,66 @@ fn a_weft_app_weft_did_not_install_stops_the_install_first() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("not one Weft installed"));
     assert!(!release.installed("weft").exists(), "nothing linked");
     assert!(!home.join(".fab7/weft/versions/0.1.0").exists(), "nothing installed");
+}
+
+/// An earlier Weft in Applications, the app or the link an older installer
+/// made, is replaced by this one.
+#[test]
+#[cfg(target_os = "macos")]
+fn an_earlier_weft_app_is_replaced() {
+    for earlier_is_a_link in [false, true] {
+        let release = Release::make("v0.1.0", false);
+        let home = release.dir.path().join("home");
+        let app = home.join("Applications/Weft.app");
+        if earlier_is_a_link {
+            let old = home.join(".fab7/weft/versions/0.0.9/Weft.app");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::create_dir_all(home.join("Applications")).unwrap();
+            std::os::unix::fs::symlink(&old, &app).unwrap();
+        } else {
+            std::fs::create_dir_all(app.join("Contents")).unwrap();
+            std::fs::write(app.join("Contents/Info.plist"), plist("com.getfab7.weft")).unwrap();
+        }
+        let out = release.install("v0.1.0");
+        let text = String::from_utf8_lossy(&out.stderr);
+        assert!(!app.is_symlink(), "{text}");
+        assert!(app.join("Contents/MacOS/weft-desktop").is_file(), "{text}");
+    }
+}
+
+/// On Linux, what Weft needs of the system and does not find comes from its
+/// package manager: git, and the libraries the app draws with.
+#[test]
+fn linux_gets_what_weft_needs_from_its_package_manager() {
+    let release = Release::make("v0.1.0", false);
+    let bin = release.dir.path().join("bin");
+    let asked = release.dir.path().join("asked");
+    let stubs = [
+        ("uname", "case \"$1\" in -s) echo Linux ;; -m) echo x86_64 ;; esac".to_string()),
+        ("ldd", "echo 'ldd (Ubuntu GLIBC 2.39-0ubuntu8.6) 2.39'".to_string()),
+        // A system with none of the libraries, as a server or a container.
+        ("ldconfig", "echo '0 libs found in cache'".to_string()),
+        ("id", "echo 0".to_string()),
+        ("apt-get", format!("echo \"$*\" >> '{}'", asked.display())),
+        ("env", "shift; exec \"$@\"".to_string()),
+    ];
+    for (name, body) in stubs {
+        std::fs::write(bin.join(name), format!("#!/bin/sh\n{body}\n")).unwrap();
+        make_executable(&bin.join(name));
+    }
+    let home = release.dir.path().join("home");
+    let out = release
+        .command(&home, &release.dir.path().join("target-bin"))
+        .env("WEFT_VERSION", "v0.1.0")
+        .env_remove("WEFT_SYSTEM_PACKAGES")
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    let asked = std::fs::read_to_string(&asked).unwrap_or_default();
+    assert!(said.contains("Weft needs") && said.contains("libxkbcommon-x11.so.0"), "{said}");
+    assert!(asked.lines().any(|l| l == "update -q"), "{asked}");
+    let install = asked.lines().find(|l| l.starts_with("install -y")).unwrap_or_default();
+    for package in ["libxcb1", "libxkbcommon-x11-0", "libvulkan1", "mesa-vulkan-drivers"] {
+        assert!(install.split(' ').any(|p| p == package), "{package}: {install}");
+    }
 }

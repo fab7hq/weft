@@ -27,10 +27,10 @@ fn bundled(exe: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 
 /// Whether a home set up from this version's files (`seeded`, the version
-/// that last did) is set up again: one Homebrew updates is, once per
-/// version, since no installer refreshes it; Weft's installer refreshes its own.
+/// that last did) is set up again: an app replaced in place is, once per
+/// version; the versions Weft's installer keeps are refreshed by it.
 fn refresh(by: &Updater, seeded: Option<&str>, version: &str) -> bool {
-    *by == Updater::Homebrew && seeded != Some(version)
+    *by == Updater::InPlace && seeded != Some(version)
 }
 
 /// A first start with nothing set up, as when the app came from a package
@@ -307,19 +307,21 @@ fn start_program(
 /// What put the Weft at `exe` there.
 #[derive(Debug, PartialEq, Eq)]
 enum Updater {
-    /// Weft's own installer, which keeps each version in `~/.fab7/weft/versions`.
+    /// Weft's installer on Linux, which keeps each version in
+    /// `~/.fab7/weft/versions`.
     Installer,
-    /// Homebrew, whose cask put Weft.app where it is.
-    Homebrew,
+    /// Homebrew's cask, or Weft's installer on macOS: Weft.app replaced
+    /// where it is.
+    InPlace,
 }
 
-/// A Weft.app outside `~/.fab7/weft/versions` came from Homebrew; anything
-/// else is laid out as Weft's installer put it there.
+/// A Weft.app outside `~/.fab7/weft/versions` is replaced in place;
+/// anything else is laid out as Weft's installer puts it on Linux.
 fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
     let in_app = exe.parent().is_some_and(|d| d.ends_with("Contents/MacOS"));
     let versions = home.join(".fab7/weft/versions");
     let versions = versions.canonicalize().unwrap_or(versions);
-    if in_app && !exe.starts_with(versions) { Updater::Homebrew } else { Updater::Installer }
+    if in_app && !exe.starts_with(versions) { Updater::InPlace } else { Updater::Installer }
 }
 
 /// Weft is updated the way it was installed, never by itself.
@@ -344,25 +346,25 @@ fn update_sense() -> Result<()> {
 mod tests {
     use super::*;
 
-    /// What Homebrew installed is set up again from each new version: no
-    /// installer refreshes it. Weft's own installer refreshes its own.
+    /// An app replaced in place is set up again from each new version; the
+    /// versions Weft's installer keeps are refreshed by it.
     #[test]
-    fn a_homebrew_weft_sets_its_home_up_again_for_each_version() {
-        assert!(refresh(&Updater::Homebrew, None, "0.6.0"), "never set up by this route");
-        assert!(refresh(&Updater::Homebrew, Some("0.5.0"), "0.6.0"));
-        assert!(!refresh(&Updater::Homebrew, Some("0.6.0"), "0.6.0"));
+    fn an_app_replaced_in_place_sets_its_home_up_again_for_each_version() {
+        assert!(refresh(&Updater::InPlace, None, "0.6.0"), "never set up by this route");
+        assert!(refresh(&Updater::InPlace, Some("0.5.0"), "0.6.0"));
+        assert!(!refresh(&Updater::InPlace, Some("0.6.0"), "0.6.0"));
         assert!(!refresh(&Updater::Installer, Some("0.5.0"), "0.6.0"));
     }
 
     #[test]
-    fn a_weft_app_outside_the_versions_came_from_homebrew() {
+    fn a_weft_app_outside_the_versions_is_replaced_in_place() {
         let home = std::path::Path::new("/Users/p");
         let installed = home.join(".fab7/weft/versions/0.5.0/Weft.app/Contents/MacOS/weft");
         assert_eq!(updated_by(&installed, home), Updater::Installer);
         let linux = home.join(".fab7/weft/versions/0.5.0/weft");
         assert_eq!(updated_by(&linux, home), Updater::Installer);
         let cask = std::path::Path::new("/Applications/Weft.app/Contents/MacOS/weft");
-        assert_eq!(updated_by(cask, home), Updater::Homebrew);
+        assert_eq!(updated_by(cask, home), Updater::InPlace);
     }
 
     /// Weft says how it is updated, and updates nothing itself.
