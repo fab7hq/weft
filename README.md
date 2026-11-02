@@ -13,8 +13,10 @@
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
 Weft is the desktop workspace for the coding agents you already run: your
-sessions side by side, and every Ask in one list beside them. It has no model
-of its own. RingFrame is the warp, the fixed record; Weft is the thread carried
+sessions side by side, and every Ask in one list beside them. It has no cloud
+model of its own: Sense, a small model that runs on your machine, proposes
+each Ask's route and rules and reads an agent's screen where its hooks are
+silent. RingFrame is the warp, the fixed record; Weft is the thread carried
 across it.
 
 ## What is here

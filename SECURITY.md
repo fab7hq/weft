@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes target the latest 0.2.x release. For unreleased changes, include
+Security fixes target the latest release. For unreleased changes, include
 the source commit when reporting an issue.
 
 ## Report privately
@@ -36,6 +36,12 @@ what an Eval will run before you start it. Skill instructions do not sandbox
 the host. Host permissions remain responsible for the agents' tool access and
 effects. Neither an Eval verdict nor an accepted Seal guarantees correctness
 or authorizes deployment.
+
+Sense, Weft's model, runs on your machine. It reads the Ask you type and
+an agent's screen, and sends nothing anywhere. The daemon downloads its
+pinned bundle from Hugging Face (`fab7hq/sense-d`) and checks every file
+against the bundle's manifest before loading it. Weft learns nothing from
+your choices.
 
 Weft types into agents only what can be said: a prompt or command read from
 a project's files that holds escape sequences or other control characters is
