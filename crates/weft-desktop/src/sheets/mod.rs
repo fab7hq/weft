@@ -33,6 +33,8 @@ pub struct SheetProps<'a> {
     pub sheet: &'a ActiveSheet,
     pub projects: &'a [Listed],
     pub clients: &'a [ProjectClient],
+    /// What is installed, as the daemon last said.
+    pub setup: Option<&'a weft_core::onboarding::View>,
     pub harnesses: &'a Harnesses,
     pub bottom_bar: &'a BottomBarState,
     /// What the open Ask's field holds.

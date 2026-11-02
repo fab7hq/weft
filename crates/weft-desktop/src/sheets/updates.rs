@@ -63,7 +63,7 @@ fn with_version(version: &str, said: &str) -> String {
 }
 
 pub(super) fn render(props: &SheetProps) -> Element {
-    let Some(v) = props.clients.iter().find_map(|c| c.setup.clone()) else {
+    let Some(v) = props.setup.cloned() else {
         return sheet(
             "sheet Updates",
             sheet_head(word("desktop.updates.title"), None),

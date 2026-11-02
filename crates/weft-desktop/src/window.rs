@@ -118,10 +118,20 @@ fn keep_connected(shared: Arc<Mutex<SharedState>>) {
     let mut waits: HashMap<PathBuf, (std::time::Instant, Duration)> = HashMap::new();
     let mut lost_since: Option<std::time::Instant> = None;
     loop {
-        let targets = match shared.lock() {
-            Ok(guard) if !guard.app.quit_requested => guard.app.disconnected(),
+        let (targets, own) = match shared.lock() {
+            Ok(guard) if !guard.app.quit_requested => {
+                (guard.app.disconnected(), guard.app.wants_own_link())
+            }
             _ => return,
         };
+        // With no project listed, Weft's own link: Updates needs no project.
+        if let Some(start) = own
+            && let Ok(client) = ProjectClient::machine(&weft_proto::socket_path(), start)
+            && let Ok(mut guard) = shared.lock()
+        {
+            guard.app.integrate_own_link(client);
+            guard.dirty = true;
+        }
         if !targets.iter().any(|(_, lost)| *lost) {
             lost_since = None;
         }

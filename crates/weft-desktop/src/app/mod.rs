@@ -261,6 +261,11 @@ pub struct WeftDesktopApp {
     notices: Vec<Notice>,
     /// Why each project last failed to open, as told.
     not_opened: HashMap<PathBuf, String>,
+    /// Weft's own link to the daemon, made while no project is listed:
+    /// what is installed is the machine's, and Updates shows it.
+    pub(crate) own_link: Option<ProjectClient>,
+    /// The link was made once: a daemon that went is not started again.
+    own_link_made: bool,
 }
 
 impl WeftDesktopApp {
@@ -316,6 +321,8 @@ impl WeftDesktopApp {
             allow_answered: None,
             notices: Vec::new(),
             not_opened: HashMap::new(),
+            own_link: None,
+            own_link_made: false,
         };
         for p in app.state.open_projects.clone() {
             app.add_project(&p);
@@ -665,10 +672,46 @@ impl WeftDesktopApp {
         std::mem::take(&mut self.unsaved).then(|| (self.home.clone(), self.state.clone()))
     }
 
+    /// Whether Weft's own link is wanted: no project is listed, and none is
+    /// made; and whether making it may start the daemon.
+    pub fn wants_own_link(&self) -> Option<bool> {
+        (self.clients.is_empty() && self.own_link.as_ref().is_none_or(|m| !m.is_connected()))
+            .then_some(!self.own_link_made)
+    }
+
+    /// Weft's own link is made: what is installed is asked at once.
+    pub fn integrate_own_link(&mut self, mut client: ProjectClient) {
+        let _ = client.setup("look", "", "");
+        self.own_link = Some(client);
+        self.own_link_made = true;
+    }
+
+    /// What is installed, as the daemon last said: through a project, or
+    /// through Weft's own link when none is open.
+    pub fn setup_view(&self) -> Option<&weft_core::onboarding::View> {
+        self.clients
+            .iter()
+            .find_map(|c| c.setup.as_ref())
+            .or_else(|| self.own_link.as_ref()?.setup.as_ref())
+    }
+
+    /// The links a setup act goes through: every project's, or Weft's own
+    /// when no project is connected.
+    pub(crate) fn setup_links(&mut self) -> Vec<&mut ProjectClient> {
+        if self.clients.iter().any(ProjectClient::is_connected) {
+            self.clients.iter_mut().collect()
+        } else {
+            self.own_link.iter_mut().collect()
+        }
+    }
+
     /// Take what every project's daemon link brought since; whether anything changed.
     pub fn pump(&mut self) -> bool {
         self.want_ask_sheet();
         let (mut changed, mut moved) = (false, false);
+        if let Some(m) = &mut self.own_link {
+            changed |= m.pump().changed;
+        }
         let mut answers = Vec::new();
         for c in &mut self.clients {
             let p = c.pump();
@@ -754,8 +797,7 @@ impl WeftDesktopApp {
     /// Nothing is set up and something could be: Updates opens by itself,
     /// once, when nothing else is open.
     fn offer_updates(&mut self) {
-        let wants =
-            self.clients.iter().any(|c| c.setup.as_ref().is_some_and(|v| v.wants_setting_up()));
+        let wants = self.setup_view().is_some_and(|v| v.wants_setting_up());
         if wants && !self.updates_offered && self.active_sheet.is_none() {
             self.updates_offered = true;
             self.active_sheet = Some(ActiveSheet::Updates);
@@ -1179,7 +1221,7 @@ impl WeftDesktopApp {
     /// How many things the setup view says are behind, or one when only
     /// the daemon's update note says so.
     pub fn updates_available_count(&self) -> usize {
-        match self.clients.iter().find_map(|c| c.setup.as_ref()) {
+        match self.setup_view() {
             Some(view) => crate::sheets::behind(view),
             None => usize::from(self.clients.iter().any(|c| c.update.is_some())),
         }
@@ -1357,6 +1399,7 @@ impl WeftDesktopApp {
                 sheet,
                 projects: &projects,
                 clients: &self.clients,
+                setup: self.setup_view(),
                 harnesses: &harnesses,
                 bottom_bar: &self.bottom_bar,
                 ask_draft: self.ask.text(),

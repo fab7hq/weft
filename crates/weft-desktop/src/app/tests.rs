@@ -1306,6 +1306,37 @@ fn an_eval_shows_no_verdict_or_agreement_the_record_does_not_give() {
 }
 
 #[test]
+fn updates_with_no_project_shows_what_weft_s_own_link_was_told() {
+    let tmp = home_with(WeftState::default());
+    let mut app = WeftDesktopApp::new(tmp.path().to_path_buf(), "studio");
+    assert!(app.clients.is_empty());
+    assert_eq!(app.wants_own_link(), Some(true), "made, starting the daemon");
+    app.dispatch(WindowAct::OpenUpdates);
+    let asking = app.render().find_layer("sheet Updates").unwrap().all_text();
+    assert!(asking.contains(words::word("desktop.updates.asking")), "{asking}");
+
+    let mut own = ProjectClient::disconnected(PathBuf::new(), String::new());
+    own.setup = Some(SetupView {
+        rows: vec![SetupRow {
+            name: "claude".into(),
+            title: "Claude Code".into(),
+            program: "claude".into(),
+            state: SetupState::NotSetUp,
+            version: Some("2.1.316".into()),
+        }],
+        ..Default::default()
+    });
+    app.integrate_own_link(own);
+    let upd = app.render();
+    let row = upd.find_layer("update row Claude Code").unwrap().all_text();
+    assert!(row.contains("2.1.316") || row.contains(&SetupState::NotSetUp.words()), "{row}");
+    assert!(upd.find_layer("btn Set up claude").is_some());
+    // This one is not connected: it is made again, without starting a daemon
+    // the person may have stopped.
+    assert_eq!(app.wants_own_link(), Some(false));
+}
+
+#[test]
 fn updates_says_each_state_with_cores_own_mark_and_words() {
     let (_tmp, mut app) = sample_app(false);
     app.dispatch(WindowAct::OpenUpdates);

@@ -28,12 +28,7 @@ fn link(layer: &str, act: impl Into<crate::action::Action>, text: &str) -> Eleme
 }
 
 pub(super) fn render(props: &SheetProps) -> Element {
-    let rows = props
-        .clients
-        .iter()
-        .find_map(|c| c.setup.as_ref())
-        .map(|v| v.rows.clone())
-        .unwrap_or_default();
+    let rows = props.setup.map(|v| v.rows.clone()).unwrap_or_default();
     let state_of = |name: &str| rows.iter().find(|r| r.name == name).map(|r| r.state.clone());
     let version_of =
         |name: &str| rows.iter().find(|r| r.name == name).and_then(|r| r.version.clone());

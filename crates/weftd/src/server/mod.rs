@@ -340,6 +340,14 @@ impl Clients {
 
 /// What the accept loop and the pane readers hand to the one thread that owns
 /// the panes, so nothing needs a lock held across a blocking read.
+/// Who is shown the RingFrame view: a project's clients, or the one client
+/// that asked with no project open.
+#[derive(Clone, Copy)]
+enum Viewer {
+    Project(usize),
+    Client(u64),
+}
+
 enum Wake {
     Client(UnixStream),
     /// A client's connection ended, with or without saying Detach.
@@ -385,7 +393,7 @@ enum Wake {
     Checked,
     /// The RingFrame view moved.
     Setup {
-        project: usize,
+        to: Viewer,
         view: serde_json::Value,
     },
     /// The person said where a harness's program is: every project runs it
@@ -1035,7 +1043,7 @@ impl Session {
                     let open: Vec<usize> =
                         (0..self.projects.len()).filter(|&at| !self.projects[at].closed).collect();
                     for at in open {
-                        self.setup(at, "look", "", "");
+                        self.setup(Viewer::Project(at), "look", "", "");
                     }
                 }
                 Wake::Readiness { project, harness, state } => {
@@ -1049,8 +1057,11 @@ impl Session {
                     }
                     self.tell_readiness(project);
                 }
-                Wake::Setup { project, view } => {
-                    self.clients.broadcast(project, &Out::Setup { view })
+                Wake::Setup { to: Viewer::Project(at), view } => {
+                    self.clients.broadcast(at, &Out::Setup { view })
+                }
+                Wake::Setup { to: Viewer::Client(id), view } => {
+                    self.clients.send_to(id, &Line::Event(Out::Setup { view }))
                 }
                 Wake::Program { harness, program } => {
                     for p in &mut self.projects {
@@ -1588,11 +1599,14 @@ impl Session {
     /// harness by title). Off the run loop: asking a harness costs processes,
     /// and its commands can take a minute. Every change goes to the clients as
     /// `Event::Setup`, and each harness's readiness is told as it is asked.
-    fn setup(&mut self, at: usize, act: &str, harness: &str, path: &str) -> Answer {
+    fn setup(&mut self, to: Viewer, act: &str, harness: &str, path: &str) -> Answer {
         let tx = self.tx.clone();
         let config_path = self.config.clone();
         let sense_slot = Arc::clone(&self.sense);
-        let harnesses = self.projects[at].harnesses.clone();
+        let harnesses = match to {
+            Viewer::Project(at) => self.projects[at].harnesses.clone(),
+            Viewer::Client(_) => self.harness_files(),
+        };
         let (act, harness, path) = (act.to_string(), harness.to_string(), path.to_string());
         let out = self.outside.clone();
         let waits = self.update.as_ref().map(|u| u.version.clone());
@@ -1614,7 +1628,7 @@ impl Session {
             let weft_dir = config_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
             let show = |v: &weft_core::onboarding::View| {
                 let view = serde_json::to_value(v).unwrap_or_default();
-                let _ = tx.send(Wake::Setup { project: at, view });
+                let _ = tx.send(Wake::Setup { to, view });
             };
             let out = out.as_ref();
             // Opening the view draws it at once: each harness found reads as
@@ -1766,8 +1780,10 @@ impl Session {
             if let Some((name, state)) = failed {
                 v = with(v, &name, state);
             }
-            for (harness, state) in states {
-                let _ = tx.send(Wake::Readiness { project: at, harness, state });
+            if let Viewer::Project(at) = to {
+                for (harness, state) in states {
+                    let _ = tx.send(Wake::Readiness { project: at, harness, state });
+                }
             }
             show(&v);
         });
@@ -2004,6 +2020,21 @@ impl Session {
     }
 
     /// The project this client is watching, if it has opened one.
+    /// The harnesses Weft has a file for, each at the program the person
+    /// said it is, when not on PATH; and the files that could not be read.
+    fn harness_files_read(&self) -> (weft_core::harness::Harnesses, Vec<String>) {
+        let (harnesses, unread) = match &self.harnesses {
+            Some(h) => (h.clone(), Vec::new()),
+            None => crate::harness::installed(&self.config.with_file_name("harnesses")),
+        };
+        let config = crate::routing::read_at(&self.config, &harnesses);
+        (harnesses.with_programs(|n| config.program(n).map(str::to_string)), unread)
+    }
+
+    fn harness_files(&self) -> weft_core::harness::Harnesses {
+        self.harness_files_read().0
+    }
+
     fn project_of(&self, client: u64) -> Option<usize> {
         self.clients.watching.get(&client).copied()
     }
@@ -2070,13 +2101,8 @@ impl Session {
             }
             None => {
                 let ledger = crate::ledger::Ledger::at(&root);
-                let (harnesses, unread) = match &self.harnesses {
-                    Some(h) => (h.clone(), Vec::new()),
-                    None => crate::harness::installed(&self.config.with_file_name("harnesses")),
-                };
+                let (harnesses, unread) = self.harness_files_read();
                 let config = crate::routing::read_at(&self.config, &harnesses);
-                // Where the person said a harness's program is, when not on PATH.
-                let harnesses = harnesses.with_programs(|n| config.program(n).map(str::to_string));
                 let judged = judges::sessions(&root);
                 let unseated = judges::benched(&root);
                 self.projects.push(Project {
@@ -2353,8 +2379,9 @@ impl Session {
                 return Ok(self.read(client, call_id, at, &what, &unit));
             }
             Call::Setup { act, harness, path } => {
-                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
-                return Ok(self.setup(at, &act, &harness, &path));
+                // What is installed is the machine's: no project is needed.
+                let to = self.project_of(client).map_or(Viewer::Client(client), Viewer::Project);
+                return Ok(self.setup(to, &act, &harness, &path));
             }
             Call::Available => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
@@ -2611,6 +2638,60 @@ mod tests {
         }
         assert_eq!(refused.as_deref(), Some("unknown_harness"), "Weft's row has no act");
         assert!(synced, "RingFrame's row ran its configuration sync");
+        let _ = UnixStream::connect(&sock).map(|mut s| {
+            weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
+        });
+    }
+
+    /// Updates answers a client with no project open, from Weft's own
+    /// harness files: what is installed is the machine's, not a project's.
+    #[test]
+    fn updates_answers_with_no_project_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join("weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let (sock, cfg) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&cfg, "").unwrap();
+        let world = crate::outside::Fixed::new()
+            .with_release(Err("no release in this world".into()))
+            .shared();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let titles: Vec<String> = harnesses.iter().map(|h| h.title.clone()).collect();
+        let (sock_srv, cfg_srv) = (sock.clone(), cfg.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_in(&sock_srv, &cfg_srv, Some(harnesses), world);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&sock) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&sock).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut call = |id: u64, call: Call| {
+            weft_proto::send(&mut writer, &Line::Call { id, call }.encode()).unwrap();
+        };
+        call(1, Call::Hello { client: "test".into(), protocol: PROTOCOL });
+        call(2, Call::Setup { act: "look".into(), harness: String::new(), path: String::new() });
+
+        let (mut refused, mut rows) = (None, Vec::new());
+        while std::time::Instant::now() < deadline && refused.is_none() && rows.is_empty() {
+            match reader.next() {
+                Ok(Some(Line::Error { id: 2, code, .. })) => refused = Some(code),
+                Ok(Some(Line::Event(Out::Setup { view }))) => {
+                    rows = view["rows"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|r| r["title"].as_str().map(str::to_string))
+                        .collect();
+                }
+                Ok(None) => break,
+                _ => {}
+            }
+        }
+        assert_eq!(refused, None, "no project is needed");
+        assert_eq!(rows, titles, "every harness Weft has a file for");
         let _ = UnixStream::connect(&sock).map(|mut s| {
             weft_proto::send(&mut s, &Line::Call { id: 1, call: Call::Shutdown }.encode())
         });

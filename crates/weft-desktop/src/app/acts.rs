@@ -98,7 +98,7 @@ impl WeftDesktopApp {
             // The window asks the system for the folder, then calls `open_project_path`.
             WindowAct::OpenProject => {}
             WindowAct::OpenUpdates => {
-                for c in &mut self.clients {
+                for c in self.setup_links() {
                     let _ = c.setup("look", "", "");
                 }
                 self.active_sheet = Some(ActiveSheet::Updates);
@@ -594,7 +594,7 @@ impl WeftDesktopApp {
                 self.choice = None;
                 // How each harness stands, as Updates asks it.
                 if tab == crate::action::SettingsTab::Harnesses {
-                    for c in &mut self.clients {
+                    for c in self.setup_links() {
                         let _ = c.setup("look", "", "");
                     }
                 }
@@ -844,7 +844,8 @@ impl WeftDesktopApp {
 
     /// A setup act, asked of every connected project; said when none is connected.
     fn setup_everywhere(&mut self, act: &str, harness: &str) {
-        let asked: Vec<_> = self.clients.iter_mut().map(|c| c.setup(act, harness, "")).collect();
+        let asked: Vec<_> =
+            self.setup_links().into_iter().map(|c| c.setup(act, harness, "")).collect();
         if let Some(Err(e)) = asked.into_iter().reduce(|a, b| if a.is_ok() { a } else { b }) {
             self.why_not(e.to_string());
         }
@@ -853,7 +854,7 @@ impl WeftDesktopApp {
     /// The program the person found for `harness`, told to the daemon.
     pub fn locate(&mut self, harness: &str, path: &Path) {
         let path = path.to_string_lossy();
-        for c in &mut self.clients {
+        for c in self.setup_links() {
             let _ = c.setup("locate", harness, &path);
         }
     }

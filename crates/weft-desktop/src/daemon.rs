@@ -473,6 +473,35 @@ impl ProjectClient {
         Self::connect(&socket, root, rows, cols)
     }
 
+    /// Weft's own link to the daemon, with no project: what is installed is
+    /// the machine's. It starts the daemon when `start` and none listens.
+    pub fn machine(socket: &Path, start: bool) -> Result<Self> {
+        if !is_live(socket) {
+            if !start {
+                return Err(anyhow!("no session at {}", socket.display()));
+            }
+            clear_dead(socket);
+            start_server()?;
+        }
+        let stream = UnixStream::connect(socket)
+            .map_err(|e| anyhow!("no session at {}: {e}", socket.display()))?;
+        let mut client = Self::disconnected(PathBuf::new(), String::new());
+        client.link = Some(Link::over(stream)?);
+        let hello = client.send(Call::Hello {
+            client: concat!("weft-desktop/", env!("CARGO_PKG_VERSION")).to_string(),
+            protocol: PROTOCOL,
+        })?;
+        match client.wait(hello)? {
+            Ok(_) => Ok(client),
+            Err(no) => {
+                if let Some(link) = client.link.take() {
+                    link.cut();
+                }
+                Err(OtherVersion(no).into())
+            }
+        }
+    }
+
     /// Open `root` again on whatever daemon listens at `socket` now, starting
     /// none: the one this project was on went, and the person may have
     /// stopped it.
