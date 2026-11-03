@@ -204,6 +204,11 @@ impl Pane {
         f(&term)
     }
 
+    /// The window title its program last set.
+    pub fn title(&self) -> Option<String> {
+        self.with_term(|t| t.title().map(str::to_string))
+    }
+
     /// The screen as escape codes that redraw it on a fresh terminal of its
     /// size, with up to `history` lines behind it, the number of the last
     /// chunk in it and that size, read under one lock.

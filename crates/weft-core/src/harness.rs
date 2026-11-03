@@ -92,6 +92,10 @@ pub struct Harness {
     /// Without it, Settings offers the common efforts and a typed model.
     #[serde(default)]
     pub eval: Option<Eval>,
+    /// The item that makes it name its session in its window's title
+    /// (`[window_title]`), added to its configuration before a pane starts.
+    #[serde(default)]
+    pub window_title: Option<crate::window_title::WindowTitle>,
 }
 
 /// What an Eval judge in a harness takes, for Settings to offer.
@@ -207,6 +211,7 @@ impl Harness {
             },
             // One that does not read leaves the harness offered, without it.
             eval: serde_json::from_value(p["eval"].clone()).ok(),
+            window_title: crate::window_title::WindowTitle::of(&p["window_title"]),
         })
     }
 
@@ -389,6 +394,9 @@ mod tests {
     fn codex_listens_to_what_its_server_said() {
         let codex = Harness::of("codex", &fixture::file("codex")).expect("codex");
         assert!(codex.resume_joins, "a resume joins the session its server runs");
+        let title = codex.window_title.as_ref().expect("a [window_title]");
+        let added = title.added("[tui]\n").expect("the item added");
+        assert!(added.contains("terminal_title = [\"activity\", \"project\", \"thread-id\"]"));
         let l = codex.listen.expect("a [listen]");
         let said = |line: &str| {
             l.heard(&serde_json::from_str(line).unwrap()).map(|h| (h.session, h.state, h.workspace))

@@ -129,6 +129,7 @@ fn sample_harnesses() -> Harnesses {
         listen: None,
         resume_joins: false,
         server_args: Vec::new(),
+        window_title: None,
         conversation: None,
         eval: None,
     };

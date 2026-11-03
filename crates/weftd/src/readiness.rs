@@ -100,6 +100,7 @@ mod tests {
             listen: None,
             resume_joins: false,
             server_args: Vec::new(),
+            window_title: None,
         }
     }
 

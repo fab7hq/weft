@@ -51,3 +51,15 @@ fn rows_are_the_cells_on_view() {
         assert_eq!(t.row(r), all[r as usize]);
     }
 }
+
+/// The window title is the last one the program set, by either escape and
+/// either ending.
+#[test]
+fn the_window_title_is_the_last_one_set() {
+    let mut t = quiet(4, 20);
+    assert_eq!(t.title(), None);
+    t.feed(b"\x1b]0;gl | 01a1a1a4-c5df...\x07");
+    assert_eq!(t.title(), Some("gl | 01a1a1a4-c5df..."));
+    t.feed(b"\x1b]2;gl | 01a1a1a5-0257...\x1b\\");
+    assert_eq!(t.title(), Some("gl | 01a1a1a5-0257..."));
+}

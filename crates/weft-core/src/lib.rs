@@ -36,6 +36,7 @@ pub mod sync;
 pub mod text_keys;
 pub mod tree;
 pub mod turns;
+pub mod window_title;
 pub mod words;
 pub mod work;
 pub mod workspace;

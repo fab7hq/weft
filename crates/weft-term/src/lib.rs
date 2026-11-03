@@ -46,6 +46,9 @@ pub struct Term {
     /// short of a whole marker, where one may have been cut in two.
     update_since: Option<Instant>,
     tail: Vec<u8>,
+    /// The window title the program last set. The emulator raises nothing
+    /// when a full reset clears its own, so this keeps the last one set.
+    title: Option<String>,
 }
 
 /// Where a terminal's answers go.
@@ -98,6 +101,7 @@ impl Term {
             repaint: true,
             update_since: None,
             tail: Vec::new(),
+            title: None,
         }
     }
 
@@ -106,6 +110,11 @@ impl Term {
         self.parser.advance(&mut self.term, bytes);
         self.answer_questions();
         self.follow_updates(bytes);
+    }
+
+    /// The window title the program last set (OSC 0 or 2), if it set one.
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
     }
 
     /// Whether the program is in the middle of a synchronized update begun
@@ -282,6 +291,14 @@ impl Term {
         let events = std::mem::take(&mut *self.events.0.lock().expect("terminal events"));
         for event in events {
             let reply = match event {
+                Event::Title(title) => {
+                    self.title = Some(title);
+                    continue;
+                }
+                Event::ResetTitle => {
+                    self.title = None;
+                    continue;
+                }
                 Event::PtyWrite(text) => text,
                 Event::ColorRequest(index, format) => format(
                     self.term.colors()[index].unwrap_or_else(|| palette::color(index).into()),

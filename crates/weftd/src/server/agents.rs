@@ -353,6 +353,9 @@ impl Session {
             self.clients.broadcast(project, &Out::Injected { pane: id, refusal, unrecorded: None });
             return None;
         };
+        if let Some(h) = p.harnesses.find(harness) {
+            crate::harness::name_session_in_title(h);
+        }
         let unset = p.harnesses.find(harness).map(|h| h.unset_env.clone()).unwrap_or_default();
         let mut env: Vec<(&str, Option<String>)> =
             unset.iter().map(|k| (k.as_str(), None)).collect();
@@ -471,6 +474,10 @@ impl Session {
                         return;
                     }
                     sent.pane = Some(slot.map.pane);
+                } else if sent.shared
+                    && let Some(at) = at
+                {
+                    sent.pane = self.titled(at, &sent.harness, &sent.session);
                 }
                 (at, root)
             }
@@ -536,6 +543,24 @@ impl Session {
             self.write_map(at);
         }
         self.judge_session(at, pane, session);
+    }
+
+    /// The pane whose window title names `session`, tied to it: under a
+    /// harness's shared server no hook names its pane, and a pane that began
+    /// another session in place (Codex's `/clear`) says so only there.
+    fn titled(&mut self, at: usize, harness: &str, session: &str) -> Option<u32> {
+        let p = &mut self.projects[at];
+        let panes: Vec<_> = p
+            .panes
+            .iter_mut()
+            .filter(|s| s.judge.is_none())
+            .map(|s| weft_core::turns::Started { running: s.pane.running(), ..s.map.clone() })
+            .collect();
+        let p = &self.projects[at];
+        let title = |pane: u32| p.panes.iter().find(|s| s.map.pane == pane)?.pane.title();
+        let pane = weft_core::turns::titled(&panes, harness, session, &title)?;
+        self.tie(at, pane, session);
+        Some(pane)
     }
 
     /// Open a harness's own stream, once, when its harness file names one
@@ -610,6 +635,7 @@ impl Session {
         let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
         let holds = |s: &&Slot| s.map.session.as_ref().is_some_and(|b| b.session == session);
         let held_pane = self.projects[at].panes.iter().find(holds).map(|s| s.map.pane);
+        let held_pane = held_pane.or_else(|| self.titled(at, &sent.harness, &session));
         if let Some(pane) = held_pane {
             self.sense_pane_now(at, pane);
         }

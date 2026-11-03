@@ -22,6 +22,17 @@ turbo = ["--dangerously-bypass-approvals-and-sandbox"]
 # there. That server is no session's process.
 server_args = ["app-server"]
 
+# Under that server no hook names its pane, and a pane that begins another
+# session in place (`/clear`, `/new`, `/fork`, `/resume`) says so only in its
+# window title, when its `thread-id` title item is on: the thread's first 29
+# characters and `...` (codex 0.166). Weft adds the item before it starts a
+# pane, keeping the person's own; unset, Codex shows `activity` and `project`.
+[window_title]
+file = "config.toml"
+key = "tui.terminal_title"
+add = "thread-id"
+default = ["activity", "project"]
+
 [config]   # where it keeps its configuration
 env = "CODEX_HOME"
 default = ".codex"

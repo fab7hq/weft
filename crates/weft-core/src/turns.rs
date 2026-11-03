@@ -242,6 +242,24 @@ pub fn signalled(panes: &mut [Started], pane: u32, session: &str) -> bool {
     true
 }
 
+/// The running pane of `harness` whose window title names `session`
+/// (`window_title::names`): a pane that runs it now, though no signal of the
+/// pane's said so. Two that name it is none.
+pub fn titled(
+    panes: &[Started],
+    harness: &str,
+    session: &str,
+    title: &dyn Fn(u32) -> Option<String>,
+) -> Option<u32> {
+    let mut named = panes.iter().filter(|p| {
+        p.running
+            && p.harness == harness
+            && title(p.pane).is_some_and(|t| crate::window_title::names(&t, session))
+    });
+    let pane = named.next()?.pane;
+    named.next().is_none().then_some(pane)
+}
+
 /// The pane a prompt for this unit goes to (ask-flow.md step 4): the running
 /// pane that runs the session its prompt arrived in, else the one it was asked
 /// in; with none, the first pane of its harness.
@@ -463,6 +481,25 @@ mod tests {
         assert!(signalled(&mut panes, 0, "a"));
         assert!(signalled(&mut panes, 0, "c"));
         assert_eq!(bound(&panes[0]), Some(("c", How::Signalled)));
+    }
+
+    /// A pane whose title names a session runs it, whatever it ran before;
+    /// one that has exited, of another harness, or one of two runs none.
+    #[test]
+    fn the_pane_whose_title_names_a_session_runs_it() {
+        let id = "01a1a1a5-0257-70c0-adc8-937538f1d2c4";
+        let mut panes = [started(0, 1000), started(1, 1010)];
+        signalled(&mut panes, 0, "old");
+        let titles = |p: u32| match p {
+            0 => Some("gl | 01a1a1a5-0257-70c0-adc8-93753...".to_string()),
+            _ => Some("gl | 01a19c15-649d-7ed1-a377-83b17...".to_string()),
+        };
+        assert_eq!(titled(&panes, "claude-code", id, &titles), Some(0));
+        assert_eq!(titled(&panes, "codex", id, &titles), None, "another harness");
+        assert_eq!(titled(&panes, "claude-code", id, &|_| None), None, "no title");
+        assert_eq!(titled(&panes, "claude-code", id, &|_| titles(0)), None, "two name it");
+        panes[0].running = false;
+        assert_eq!(titled(&panes, "claude-code", id, &titles), None, "exited");
     }
 
     #[test]
