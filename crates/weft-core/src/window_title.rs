@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(codex().added("not = = toml"), None);
     }
 
-    /// Codex shows a thread's first 29 characters and `...` (codex 0.166).
+    /// A harness that shortens a long id shows its start and `...`.
     #[test]
     fn a_title_names_a_session_by_its_id_or_a_long_enough_start_of_it() {
         let id = "01a1a1a5-0257-70c0-adc8-937538f1d2c4";

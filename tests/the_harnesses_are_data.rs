@@ -60,6 +60,7 @@ const SCREEN_READS: &[&str] = &[
     "gone_quiet",          // whether the screen changed and has gone still
     "bracketed_paste",     // the paste mode the agent asked for, not its words
     "with_pane_screen_in", // drawing a pane for the person
+    "title",               // the window title its program set, which may name its session
 ];
 
 /// Every harness a Weft fixture harness file defines: its id, its title and

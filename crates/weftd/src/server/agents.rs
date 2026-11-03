@@ -547,7 +547,7 @@ impl Session {
 
     /// The pane whose window title names `session`, tied to it: under a
     /// harness's shared server no hook names its pane, and a pane that began
-    /// another session in place (Codex's `/clear`) says so only there.
+    /// another session in place says so only there.
     fn titled(&mut self, at: usize, harness: &str, session: &str) -> Option<u32> {
         let p = &mut self.projects[at];
         let panes: Vec<_> = p
