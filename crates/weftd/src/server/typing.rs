@@ -212,6 +212,39 @@ impl Session {
         }
     }
 
+    /// A message the person wrote, typed by the pane's worker as Weft types
+    /// a send: pasted, and Enter only once the pane has taken the paste. Written
+    /// with its Enter in one go, or Enter a fixed moment after, a harness
+    /// still taking the text reads that Enter as a new line, and the message
+    /// sits unsent. A message that opens with a command has it typed, so the
+    /// harness reads it as one.
+    pub(super) fn say(&mut self, project: usize, pane: u32, text: String) -> Answer {
+        let how = match weft_core::inject::leading_command(text.as_bytes()) {
+            Some(command) => {
+                let start = text.len() - text.trim_start().len() + command.len();
+                let at = start + usize::from(text.as_bytes().get(start) == Some(&b' '));
+                weft_core::inject::Handoff::TypeCommand { command, at }
+            }
+            None => weft_core::inject::Handoff::Whole,
+        };
+        let tx = self.tx.clone();
+        let Some(slot) = self.projects[project].slot(pane) else {
+            return Answer::No("no_pane", "there is no such pane here".into());
+        };
+        let job = Job {
+            typist: slot.pane.typist(),
+            payload: text.into_bytes(),
+            how,
+            project,
+            pane,
+            sends: None,
+        };
+        match slot.typer.get_or_insert_with(|| typer(tx)).send(job) {
+            Ok(()) => Answer::Ok(serde_json::json!({})),
+            Err(_) => Answer::No("not_running", format!("agent {pane} is not running")),
+        }
+    }
+
     /// A pane's worker finished typing a send. One it could not submit waits
     /// for no report.
     pub(super) fn typed(

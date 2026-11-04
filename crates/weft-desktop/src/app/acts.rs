@@ -933,9 +933,7 @@ impl WeftDesktopApp {
             PaneAct::SendMessage => {
                 let text = self.message_field().text().to_string();
                 let Some(tab) = self.active_tab().filter(|_| !text.is_empty()) else { return };
-                let mut payload = text.into_bytes();
-                payload.push(b'\r');
-                let sent = self.client_mut(&tab.project).map(|c| c.input(tab.pane, &payload));
+                let sent = self.client_mut(&tab.project).map(|c| c.say(tab.pane, &text));
                 match sent {
                     // Kept in the field until it is sent.
                     Some(Err(e)) => self.why_not(e.to_string()),

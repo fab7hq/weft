@@ -891,6 +891,15 @@ impl ProjectClient {
         self.send(Call::Input { pane, bytes: bytes.to_vec() }).map(|_| ())
     }
 
+    /// A message the person wrote: the daemon pastes it and presses Enter
+    /// once the pane has taken it.
+    pub fn say(&mut self, pane: u32, text: &str) -> Result<()> {
+        if let Some(p) = self.view_mut(pane) {
+            p.scroll_to_bottom();
+        }
+        self.send(Call::Say { pane, text: text.to_string() }).map(|_| ())
+    }
+
     pub fn scroll(&mut self, pane: u32, delta: i32) {
         if let Some(p) = self.view_mut(pane) {
             p.scroll(delta);

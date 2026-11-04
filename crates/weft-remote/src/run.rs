@@ -62,11 +62,6 @@ pub enum Wake {
     Tunnel(TunnelEvent),
     SignIn(SignIn),
     Tick,
-    /// Enter, after a message's paste (remote.md §4).
-    Enter {
-        at: usize,
-        pane: u32,
-    },
     /// A push service said a device's subscription is gone.
     PushGone(crate::push::Gone),
     /// The service said this machine is no longer on an account.
@@ -406,10 +401,6 @@ impl Remote {
                 }
                 Wake::Left => {
                     self.left();
-                    true
-                }
-                Wake::Enter { at, pane } => {
-                    self.call(at, Call::Input { pane, bytes: b"\r".to_vec() });
                     true
                 }
             };

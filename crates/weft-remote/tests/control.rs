@@ -15,7 +15,9 @@ fn keys(text: &str) -> String {
 }
 
 /// §14 test 7: a `text` message is the bracketed paste, then Enter in a
-/// write of its own.
+/// write of its own, once the program has taken the paste: Enter in the
+/// paste's burst is read as a new line by a harness, and the message sits
+/// unsent.
 #[test]
 fn a_message_is_a_bracketed_paste_then_a_separate_enter() {
     let mut h = Harness::start("text");
@@ -25,8 +27,8 @@ fn a_message_is_a_bracketed_paste_then_a_separate_enter() {
     let log = shell.project.join("reads.log");
     // Each read the program gets, with when, as hex.
     let recorder = format!(
-        "exec python3 -u -c \"import os,sys,time,tty; tty.setraw(0); f=open('{}','w')\n\
-         while True:\n b=os.read(0,4096)\n f.write('%.3f %s\\\\n'%(time.time(),b.hex())); f.flush()\"\r",
+        "exec python3 -u -c \"import os,sys,time,tty; tty.setraw(0); f=open('{}','w'); os.write(1,(chr(27)+'[?2004hready').encode())\n\
+         while True:\n b=os.read(0,4096)\n f.write('%.3f %s\\\\n'%(time.time(),b.hex())); f.flush(); os.write(1,b'.')\"\r",
         log.display()
     );
     d.send(json!({"type": "keys", "agent": agent, "bytes": keys(&recorder), "req": 1}));
@@ -59,7 +61,8 @@ fn a_message_is_a_bracketed_paste_then_a_separate_enter() {
     assert_eq!(all, format!("{paste}0d"), "the paste, then Enter, and nothing else");
     let enter = reads.iter().find(|(_, h)| h == "0d").unwrap();
     let pasted = reads.iter().find(|(_, h)| h.ends_with(&hex(b"\x1b[201~"))).unwrap();
-    assert!(enter.0 - pasted.0 >= 0.05, "Enter came on its own, {:.3} s later", enter.0 - pasted.0);
+    // The paste drew on the screen, which then held still before Enter.
+    assert!(enter.0 - pasted.0 >= 0.3, "Enter came on its own, {:.3} s later", enter.0 - pasted.0);
 }
 
 fn hex(b: &[u8]) -> String {

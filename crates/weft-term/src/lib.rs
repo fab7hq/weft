@@ -61,6 +61,9 @@ pub struct Modes {
     pub app_keypad: bool,
     pub mouse: Mouse,
     pub mouse_encoding: MouseEncoding,
+    /// The program asked for keys a plain terminal cannot tell apart, such
+    /// as Shift+Enter, in the kitty keyboard protocol's form.
+    pub kitty_keys: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,7 +93,8 @@ impl Term {
         history: usize,
         answer: impl FnMut(&[u8]) + Send + 'static,
     ) -> Term {
-        let config = Config { scrolling_history: history, ..Config::default() };
+        let config =
+            Config { scrolling_history: history, kitty_keyboard: true, ..Config::default() };
         let events = Events::default();
         let term = alacritty_terminal::Term::new(config, &Size::new(rows, cols), events.clone());
         Term {
@@ -170,6 +174,7 @@ impl Term {
             app_keypad: mode.contains(TermMode::APP_KEYPAD),
             mouse,
             mouse_encoding,
+            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
         }
     }
 

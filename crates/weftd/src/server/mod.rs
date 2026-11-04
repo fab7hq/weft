@@ -2287,6 +2287,14 @@ impl Session {
                     let _ = slot.pane.send(&bytes);
                 }
             }
+            Call::Say { pane, text } => {
+                self.clients.typed(client);
+                let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
+                if let Some(slot) = self.projects[at].slot(pane) {
+                    slot.follow(client);
+                }
+                return Ok(self.say(at, pane, text));
+            }
             Call::StartAgent { harness, spec, session } => {
                 let Some(at) = self.project_of(client) else { return Ok(Answer::no_project()) };
                 // A resume names a session the index holds, and runs that id

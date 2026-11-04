@@ -6,14 +6,12 @@ use base64ct::{Base64, Encoding};
 use serde_json::{Value, json};
 use weft_proto::{Call, Event};
 
-use super::{Asked, Carries, Gather, Gathering, PANES, Part, Remote, Wake};
+use super::{Asked, Carries, Gather, Gathering, PANES, Part, Remote};
 use crate::agents;
 use crate::socket::Screen;
 
 /// How many lines of history a device is sent.
 const HISTORY: u64 = 2_000;
-/// Between a message's paste and its Enter (remote.md §4).
-const ENTER_AFTER: std::time::Duration = std::time::Duration::from_millis(60);
 
 /// Why a request was refused, for the app.
 use crate::agents::Refusal;
@@ -280,25 +278,17 @@ impl Remote {
         self.ask(at, Call::Input { pane, bytes }, conn, req, Carries::Nothing)
     }
 
-    /// A message: pasted, then Enter on its own a moment later, the way a
-    /// person's paste and Enter arrive (remote.md §4).
+    /// A message: the daemon pastes it and presses Enter once the agent has
+    /// taken it, as it does for the machine's own message field.
     fn text(&mut self, conn: u64, m: &Value, req: &Value) -> Result<bool, Refusal> {
         let (at, pane) = self.agent(m)?;
         let text = m["text"]
             .as_str()
             .filter(|t| !t.is_empty())
-            .ok_or(("bad_request", "no text".to_string()))?;
-        let mut bytes = b"\x1b[200~".to_vec();
-        bytes.extend_from_slice(text.as_bytes());
-        bytes.extend_from_slice(b"\x1b[201~");
+            .ok_or(("bad_request", "no text".to_string()))?
+            .to_string();
         self.drive(conn, at, pane);
-        let went = self.ask(at, Call::Input { pane, bytes }, conn, req, Carries::Nothing)?;
-        let tx = self.tx.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(ENTER_AFTER);
-            let _ = tx.send(Wake::Enter { at, pane });
-        });
-        Ok(went)
+        self.ask(at, Call::Say { pane, text }, conn, req, Carries::Nothing)
     }
 
     /// The person typed on the machine: every agent a device was driving is the

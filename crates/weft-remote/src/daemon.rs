@@ -138,7 +138,7 @@ pub fn allowed(call: &Call) -> bool {
         Call::Hello { .. } | Call::RemoteView { .. } => true,
         Call::Open { raw, .. } => !raw,
         Call::Attach { form, .. } => form == "screen" || form == "none",
-        Call::Input { .. } | Call::Resize { .. } => true,
+        Call::Input { .. } | Call::Say { .. } | Call::Resize { .. } => true,
         Call::Available => true,
         // Every setting but which program runs, for a harness or the tunnel:
         // that is set on the machine only (weft-after-desktop ADR-0003 D6).

@@ -1792,7 +1792,7 @@ fn each_agent_keeps_its_own_draft_and_switching_never_carries_one_across() {
     app.dispatch(PaneAct::SendMessage);
     assert_eq!(app.message_field().text(), "", "sent");
     let sent: Vec<_> =
-        wire.calls().into_iter().filter(|(_, c)| matches!(c, Call::Input { .. })).collect();
+        wire.calls().into_iter().filter(|(_, c)| matches!(c, Call::Say { .. })).collect();
     assert_eq!(sent.len(), 1);
     app.dispatch(PaneAct::SelectTab { group: 0, tab: 0 });
     assert_eq!(app.message_field().text(), "run the tests");

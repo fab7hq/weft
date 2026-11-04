@@ -433,6 +433,15 @@ impl Typist {
         inject::check(&state)?;
         self.injecting.store(true, Ordering::SeqCst);
         let bracketed = self.term.lock().expect("pane terminal").bracketed_paste();
+        if payload.is_empty() {
+            // A command typed alone: nothing to paste, so nothing to see land.
+            // Enter waits out the burst the command was typed in.
+            std::thread::sleep(inject::SUBMIT_SETTLE);
+            let sent = self.send(b"\r");
+            self.injecting.store(false, Ordering::SeqCst);
+            sent.map_err(|_| Refusal::NoProcess)?;
+            return Ok(Attempt { bytes: 0, bracketed, submitted: true });
+        }
         let steps = inject::compose(payload, bracketed);
         // The screen before the paste, to tell whether the paste changed it.
         let mut before = (std::time::Instant::now(), String::new());
@@ -661,6 +670,36 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let text = pane.with_term(|t| t.contents());
         assert!(text.contains("SUBMITTED[ship it]"), "the body was dropped: {text:?}");
+        pane.stop();
+    }
+
+    /// A command alone has no body to paste and so nothing to see land: it is
+    /// typed, and Enter follows on its own once the typing has settled.
+    #[test]
+    fn a_command_alone_is_typed_and_submitted() {
+        let host = r#"import os, sys, tty
+fd = sys.stdin.fileno()
+tty.setraw(fd)
+os.write(1, b'ready\r\n')
+buf = ''
+while True:
+    c = os.read(fd, 1).decode()
+    if c == '\r':
+        os.write(1, ('\r\nSUBMITTED[' + buf + ']\r\n').encode())
+        buf = ''
+    else:
+        buf += c
+        os.write(1, c.encode())
+"#;
+        let mut pane =
+            Pane::spawn_args("test", "python3", &["-c", host], "/tmp", &[], 24, 80).expect("spawn");
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        let how = Handoff::TypeCommand { command: "/clear".into(), at: "/clear".len() };
+        let attempt = pane.inject_as(b"/clear", &how).expect("typed");
+        assert!(attempt.submitted, "{attempt:?}");
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let text = pane.with_term(|t| t.contents());
+        assert!(text.contains("SUBMITTED[/clear ]"), "not submitted: {text:?}");
         pane.stop();
     }
 

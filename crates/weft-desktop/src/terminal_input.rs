@@ -36,7 +36,7 @@ pub fn key(key: &str, typed: Option<&str>, held: Held, modes: Modes) -> Option<V
         }
     };
     let bytes = match key {
-        "enter" => b"\r".to_vec(),
+        "enter" => enter(modifier, held, modes),
         "backspace" => vec![0x7f],
         "tab" if held.shift => b"\x1b[Z".to_vec(),
         "tab" => b"\t".to_vec(),
@@ -54,6 +54,23 @@ pub fn key(key: &str, typed: Option<&str>, held: Held, modes: Modes) -> Option<V
         _ => return text_key(key, typed, held),
     };
     Some(bytes)
+}
+
+/// Enter, told apart from Shift, Ctrl or Alt with it, which ask a harness
+/// for a new line rather than a send. A program that asked for the kitty
+/// keyboard protocol gets the key and its modifiers; one that did not gets
+/// Alt+Enter as a terminal sends it, and Shift or Ctrl with Enter as Ctrl+J,
+/// the line feed that harnesses read as a new line.
+fn enter(modifier: u8, held: Held, modes: Modes) -> Vec<u8> {
+    if modifier == 1 {
+        b"\r".to_vec()
+    } else if modes.kitty_keys {
+        format!("\x1b[13;{modifier}u").into_bytes()
+    } else if held.shift || held.control {
+        b"\n".to_vec()
+    } else {
+        b"\x1b\r".to_vec()
+    }
 }
 
 /// The byte Ctrl with `key` sends, as a terminal sends it.
@@ -191,6 +208,22 @@ mod tests {
         assert_eq!(sent("c", ctrl_alt), Some(vec![0x1b, 3]));
         assert_eq!(sent("]", ctrl_alt), Some(vec![0x1b, 0x1d]));
         assert_eq!(sent("1", ctrl), None, "no control byte, nothing sent");
+    }
+
+    #[test]
+    fn enter_with_a_modifier_is_a_new_line_not_a_send() {
+        let sent = |held, modes| key("enter", None, held, modes);
+        let shift = Held { shift: true, ..Held::default() };
+        let ctrl = Held { control: true, ..Held::default() };
+        let alt = Held { alt: true, ..Held::default() };
+        let kitty = Modes { kitty_keys: true, ..modes() };
+        assert_eq!(sent(Held::default(), kitty), Some(b"\r".to_vec()), "plain Enter sends");
+        assert_eq!(sent(shift, kitty), Some(b"\x1b[13;2u".to_vec()));
+        assert_eq!(sent(ctrl, kitty), Some(b"\x1b[13;5u".to_vec()));
+        assert_eq!(sent(alt, kitty), Some(b"\x1b[13;3u".to_vec()));
+        assert_eq!(sent(shift, modes()), Some(b"\n".to_vec()));
+        assert_eq!(sent(ctrl, modes()), Some(b"\n".to_vec()));
+        assert_eq!(sent(alt, modes()), Some(b"\x1b\r".to_vec()));
     }
 
     #[test]

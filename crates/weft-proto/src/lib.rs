@@ -21,7 +21,7 @@ use weft_core::turns::Turn;
 
 /// What this daemon speaks. A client that asks for another is refused with a
 /// number rather than left to guess.
-pub const PROTOCOL: u64 = 7;
+pub const PROTOCOL: u64 = 8;
 
 /// Refuse anything absurd rather than allocating on a corrupt length.
 pub const MAX_LINE: usize = 16 * 1024 * 1024;
@@ -62,6 +62,12 @@ pub enum Call {
     Input {
         pane: u32,
         bytes: Vec<u8>,
+    },
+    /// A message the person wrote, typed into a pane as a paste and sent
+    /// with Enter once the pane has taken it. Not an act.
+    Say {
+        pane: u32,
+        text: String,
     },
     Resize {
         pane: u32,
@@ -434,6 +440,7 @@ impl Call {
             Call::Input { pane, bytes } => {
                 ("pane.input", json!({"pane": pane, "bytes": b64(bytes)}))
             }
+            Call::Say { pane, text } => ("pane.say", json!({"pane": pane, "text": text})),
             Call::Resize { pane, rows, cols } => {
                 ("pane.resize", json!({"pane": pane, "rows": rows, "cols": cols}))
             }
@@ -501,6 +508,7 @@ impl Call {
             }
             "agent.close" => Call::CloseAgent { pane: n("pane")? as u32 },
             "pane.input" => Call::Input { pane: n("pane")? as u32, bytes: bytes("bytes")? },
+            "pane.say" => Call::Say { pane: n("pane")? as u32, text: s("text")? },
             "pane.resize" => Call::Resize {
                 pane: n("pane")? as u32,
                 rows: n("rows")? as u16,
@@ -1010,6 +1018,7 @@ mod tests {
             Call::CloseAgent { pane: 3 },
             // Arbitrary bytes, including what JSON cannot hold as text.
             Call::Input { pane: 2, bytes: vec![0x00, 0x1b, 0xff, b'a'] },
+            Call::Say { pane: 2, text: "one\ntwo".into() },
             Call::Resize { pane: 1, rows: 24, cols: 80 },
             Call::Attach { pane: 1, form: "screen".into() },
             Call::Attach { pane: 1, form: "none".into() },

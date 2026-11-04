@@ -27,7 +27,8 @@ const CARRIED: TermMode = TermMode::SHOW_CURSOR
     .union(TermMode::MOUSE_DRAG)
     .union(TermMode::MOUSE_MOTION)
     .union(TermMode::UTF8_MOUSE)
-    .union(TermMode::SGR_MOUSE);
+    .union(TermMode::SGR_MOUSE)
+    .union(TermMode::KITTY_KEYBOARD_PROTOCOL);
 
 /// Each carried mode and its private mode number, in the order written.
 const MODE_NUMBERS: [(TermMode, u16); 8] = [
@@ -204,6 +205,12 @@ fn write_modes(out: &mut String, was: TermMode, now: TermMode) {
             let set = if now.contains(mode) { 'h' } else { 'l' };
             let _ = write!(out, "\x1b[?{number}{set}");
         }
+    }
+    // The keys the program asked to be told apart (the kitty keyboard
+    // protocol), set whole: its flags sit side by side from DISAMBIGUATE.
+    let keyboard = |m: TermMode| (m & TermMode::KITTY_KEYBOARD_PROTOCOL).bits() >> 18;
+    if keyboard(was) != keyboard(now) {
+        let _ = write!(out, "\x1b[={};1u", keyboard(now));
     }
 }
 
