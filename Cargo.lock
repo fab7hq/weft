@@ -4976,7 +4976,7 @@ dependencies = [
 
 [[package]]
 name = "ringframe"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "libc",
  "serde_json",
@@ -6575,7 +6575,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "weft"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "ringframe",
@@ -6592,7 +6592,7 @@ dependencies = [
 
 [[package]]
 name = "weft-core"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "pulldown-cmark",
  "serde",
@@ -6604,7 +6604,7 @@ dependencies = [
 
 [[package]]
 name = "weft-desktop"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -6622,7 +6622,7 @@ dependencies = [
 
 [[package]]
 name = "weft-proto"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "serde_json",
  "weft-core",
@@ -6630,7 +6630,7 @@ dependencies = [
 
 [[package]]
 name = "weft-remote"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "base64ct",
@@ -6652,7 +6652,7 @@ dependencies = [
 
 [[package]]
 name = "weft-sense"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "ort",
@@ -6665,7 +6665,7 @@ dependencies = [
 
 [[package]]
 name = "weft-term"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "alacritty_terminal",
  "serde_json",
@@ -6674,7 +6674,7 @@ dependencies = [
 
 [[package]]
 name = "weftd"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "libc",
