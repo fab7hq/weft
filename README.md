@@ -6,14 +6,14 @@
 </p>
 
 <p align="center">
-  <img alt="Weft's walkthrough of one change: each one-line request becomes the prompt RingFrame prepared from it, a Plan, a /goal and a fix, Eval checks the work against the Asks, and Seal records the decision." src="assets/weft-sdlc.gif" width="880">
+  <img alt="Weft's walkthrough of one change: each one-line request goes out unchanged with its rules, a Plan, a /goal and a fix, Eval checks the work against the Asks, and Seal records the decision." src="assets/weft-sdlc.gif" width="880">
 </p>
-<p align="center"><sub>Weft's own screens, drawn from one recorded session; no agent runs.
+<p align="center"><sub>Weft's own screens, illustrative, with sample data.
 <a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
-Weft is the desktop workspace for the coding agents you already run: your
-sessions side by side, and every Ask in one list beside them. It has no cloud
+Weft is the workspace for your coding agents. Everything your agents do, in
+one place: the work stays clear, and every decision stays yours. It has no cloud
 model of its own: Sense, a small model that runs on your machine, proposes
 each Ask's route and rules and reads an agent's screen where its hooks are
 silent. RingFrame is the warp, the fixed record; Weft is the thread carried
