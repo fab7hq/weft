@@ -4,9 +4,9 @@
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Instant;
-use weft_sense::heads::choice;
+use weft_sense::heads::{choice, plan_default, turn_end};
 use weft_sense::manifest::{Manifest, bundle_for_tests};
-use weft_sense::normalize::{Replacements, entry_text, screen_text};
+use weft_sense::normalize::{Replacements, candidate_text, entry_text, reply_text, screen_text};
 use weft_sense::{PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
 
 /// sense-d 0.1.1's manifest, as published on Hugging Face `fab7hq/sense-d`.
@@ -21,8 +21,13 @@ struct Bundle {
     rows: Vec<Value>,
 }
 
+/// The pinned bundle, or `SENSE_D_BUNDLE`'s folder: a release candidate
+/// checked before it is pinned.
 fn bundle() -> Bundle {
-    let dir = bundle_for_tests(SENSE_D_0_1_1).unwrap();
+    let dir = match std::env::var_os("SENSE_D_BUNDLE") {
+        Some(dir) => PathBuf::from(dir),
+        None => bundle_for_tests(SENSE_D_0_1_1).unwrap(),
+    };
     let bytes = std::fs::read(dir.join("manifest.json")).unwrap();
     let raw = std::fs::read_to_string(dir.join("golden_vectors.jsonl")).unwrap();
     Bundle {
@@ -38,6 +43,11 @@ impl Bundle {
         let rows: Vec<&Value> = self.rows.iter().filter(|r| r["head"] == head).collect();
         assert!(!rows.is_empty(), "no golden {head} rows");
         rows
+    }
+
+    /// The rows of `head`, none when the bundle predates it.
+    fn rows_of(&self, head: &str) -> Vec<&Value> {
+        self.rows.iter().filter(|r| r["head"] == head).collect()
     }
 
     fn questions(&self, head: &str) -> Vec<String> {
@@ -65,6 +75,21 @@ impl Bundle {
                 let template = recall["question_template"].as_str().unwrap();
                 let q = template.replace("{requirement}", row["requirement"].as_str().unwrap());
                 (text("window"), vec![q], vec![row["logit"].as_f64().unwrap() as f32])
+            }
+            "turn_end" => (
+                text("text"),
+                self.questions("turn_end"),
+                vec![row["logit"].as_f64().unwrap() as f32],
+            ),
+            "plan" => {
+                let template =
+                    self.manifest.head("plan").unwrap().question_template.clone().unwrap();
+                let candidates = row["candidates"].as_object().unwrap();
+                let qs = candidates
+                    .values()
+                    .map(|c| template.replace("{candidate}", c.as_str().unwrap()));
+                let logits = candidates.keys().map(|s| row["logits"][s].as_f64().unwrap() as f32);
+                (text("text"), qs.collect(), logits.collect())
             }
             head => (text("text"), self.questions(head), floats(&row["logits"])),
         }
@@ -156,6 +181,26 @@ fn each_golden_ask_gives_its_task_effects_route_result_and_rules() {
 }
 
 #[test]
+fn each_golden_turn_end_and_plan_pick_gives_its_answer() {
+    let b = bundle();
+    let model = SenseModel::load(&b.dir).unwrap();
+    for row in b.rows_of("turn_end") {
+        let (text, questions, _) = b.call(row);
+        let logit = model.logits(&model.rows(&text, &refs(&questions)).unwrap()).unwrap()[0];
+        let asks = turn_end(b.manifest.head("turn_end").unwrap(), logit).asks;
+        assert_eq!(asks, row["expected"]["asks"].as_bool().unwrap(), "turn end of {text:?}");
+    }
+    for row in b.rows_of("plan") {
+        let (text, questions, _) = b.call(row);
+        let logits = model.logits(&model.rows(&text, &refs(&questions)).unwrap()).unwrap();
+        let slugs = row["candidates"].as_object().unwrap().keys().cloned();
+        let default =
+            plan_default(b.manifest.head("plan").unwrap(), &slugs.zip(logits).collect::<Vec<_>>());
+        assert_eq!(default.as_deref(), row["expected"].as_str(), "plan of {text:?}");
+    }
+}
+
+#[test]
 fn the_golden_normalizing_vectors_match() {
     let b = bundle();
     let table = Replacements::new(&b.manifest.normalize.replacements).unwrap();
@@ -179,6 +224,8 @@ fn the_golden_normalizing_vectors_match() {
                 };
                 screen_text(&snap, b.manifest.normalize.screen_last_lines, &table)
             }
+            "reply" => reply_text(raw.as_str().unwrap(), &table),
+            "candidate" => candidate_text(raw.as_str().unwrap(), &table),
             _ => entry_text(
                 &TranscriptSnippet {
                     harness: raw["harness"].as_str().unwrap(),

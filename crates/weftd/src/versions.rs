@@ -293,7 +293,8 @@ pub fn sense_wanted(weft_dir: &Path) -> bool {
     let Some(current) = sense_current(weft_dir) else { return true };
     let manifest = std::fs::read(current.path.join("manifest.json")).unwrap_or_default();
     let schema = serde_json::from_slice::<serde_json::Value>(&manifest).ok();
-    let sense_d = schema.is_some_and(|m| m["schema"] == weft_sense::manifest::SCHEMA);
+    let sense_d =
+        schema.is_some_and(|m| weft_sense::manifest::SCHEMAS.iter().any(|s| m["schema"] == *s));
     !sense_d || weft_core::sync::older(&current.version, SENSE_VERSION)
 }
 

@@ -1,13 +1,14 @@
 //! A sense-d bundle's `manifest.json` (sense-d spec/bundle.md §2): its
-//! files, its normalizing table and the heads it describes. Only
-//! `fab7.sense.decision/1` is read.
+//! files, its normalizing table and the heads it describes.
+//! `fab7.sense.decision/1` and `/2` are read; `/2` adds the `turn_end` and
+//! `plan` heads.
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMA: &str = "fab7.sense.decision/1";
+pub const SCHEMAS: [&str; 2] = ["fab7.sense.decision/1", "fab7.sense.decision/2"];
 pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -41,6 +42,12 @@ pub struct Head {
     pub flag_below: Option<f32>,
     /// For a `choice` head: "unsure" below it.
     pub unsure_below: Option<f32>,
+    /// Bundle 2's `turn_end` and `plan` heads: the probability an answer must reach.
+    pub sure: Option<f32>,
+    /// Bundle 2's `plan` head: how far the top candidate must lead the runner-up.
+    pub margin: Option<f32>,
+    /// For a `noul_per_item` head whose question comes from its item.
+    pub question_template: Option<String>,
     pub cut: Option<Cut>,
     /// For `rule_relevance`: the rules decided by the Ask's task and effects.
     #[serde(default)]
@@ -93,7 +100,7 @@ impl Manifest {
         let schema: serde_json::Value =
             serde_json::from_slice(bytes).context("parse manifest.json")?;
         match schema["schema"].as_str() {
-            Some(SCHEMA) => {}
+            Some(s) if SCHEMAS.contains(&s) => {}
             other => bail!("unsupported Sense bundle schema: {}", other.unwrap_or("none")),
         }
         let manifest: Self = serde_json::from_value(schema).context("read manifest.json")?;
@@ -212,8 +219,26 @@ mod tests {
     }
 
     #[test]
+    fn bundle_2_is_read_with_its_turn_end_and_plan_heads() {
+        let heads = r#""heads": [
+          {"name": "turn_end", "kind": "noul", "text": "reply", "questions": ["asks"], "temperature": 0.75, "sure": 0.8},
+          {"name": "plan", "kind": "noul_per_item", "question_from": "plan.candidate",
+           "question_template": "belongs: {candidate}", "temperature": 0.3, "sure": 0.7, "margin": 0.15},"#;
+        let json = MANIFEST.replace("fab7.sense.decision/1", "fab7.sense.decision/2").replacen(
+            r#""heads": ["#,
+            heads,
+            1,
+        );
+        let m = Manifest::parse(json.as_bytes()).unwrap();
+        assert_eq!(m.head("turn_end").unwrap().sure, Some(0.8));
+        let plan = m.head_of("plan", HeadKind::NoulPerItem).unwrap();
+        assert_eq!((plan.sure, plan.margin), (Some(0.7), Some(0.15)));
+        assert_eq!(plan.question_template.as_deref(), Some("belongs: {candidate}"));
+    }
+
+    #[test]
     fn an_earlier_bundle_or_an_unknown_normalizer_is_refused() {
-        for schema in ["fab7.sense.bundle/2", "fab7.sense.bundle/3", "fab7.sense.decision/2"] {
+        for schema in ["fab7.sense.bundle/2", "fab7.sense.bundle/3", "fab7.sense.decision/3"] {
             let json = MANIFEST.replace("fab7.sense.decision/1", schema);
             let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
             assert!(err.contains(schema), "{err}");

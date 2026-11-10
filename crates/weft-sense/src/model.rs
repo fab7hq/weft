@@ -1,8 +1,8 @@
 use crate::ask::{AskAnswer, AskHeads, Rule};
 use crate::graph::{Graph, Provider};
-use crate::heads::choice;
+use crate::heads::{TurnEnd, choice};
 use crate::manifest::{Head, HeadKind, Manifest};
-use crate::normalize::{Replacements, entry_text, screen_text};
+use crate::normalize::{Replacements, candidate_text, entry_text, reply_text, screen_text};
 use crate::tokenizer::Tokenizer;
 use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
@@ -154,6 +154,9 @@ pub struct SenseModel {
     conversation: Head,
     conversation_kinds: Vec<ConversationEntry>,
     ask: AskHeads,
+    /// Bundle 2's heads, absent from a `/1` bundle.
+    turn_end: Option<Head>,
+    plan: Option<Head>,
     tokenizer: Tokenizer,
     graph: Graph,
 }
@@ -186,6 +189,8 @@ impl SenseModel {
             conversation_kinds: head_classes(&conversation, ConversationEntry::from_class_str)?,
             conversation,
             ask: AskHeads::from_manifest(&manifest)?,
+            turn_end: manifest.head("turn_end").ok().filter(|h| h.kind == HeadKind::Noul).cloned(),
+            plan: manifest.head("plan").ok().filter(|h| h.kind == HeadKind::NoulPerItem).cloned(),
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
             graph: Graph::load_on(&read("model")?, provider)?,
         })
@@ -204,6 +209,41 @@ impl SenseModel {
         let n = logits.len() - asked.len();
         let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits[n..].iter().copied()).collect();
         self.ask.answer(&logits[..n], routes, &asked)
+    }
+
+    /// Whether a turn's last reply asks its person (bundle 2), or `None`
+    /// when the bundle has no `turn_end` head or the graph fails.
+    pub fn turn_end(&self, reply: &str) -> Option<TurnEnd> {
+        let head = self.turn_end.as_ref()?;
+        let rows =
+            self.rows(&reply_text(reply, &self.table), &[head.questions.first()?.as_str()]).ok()?;
+        Some(crate::heads::turn_end(head, *self.graph.logits(&rows).ok()?.first()?))
+    }
+
+    /// The plan an Ask's sheet holds by default among `candidates` (each a
+    /// slug and its `<slug>: <title>: <paragraph>` text), or none (bundle 2).
+    /// An error when the bundle has no `plan` head or the graph fails.
+    pub fn plan(
+        &self,
+        ask: &str,
+        candidates: &[(String, String)],
+    ) -> anyhow::Result<Option<String>> {
+        let head = self.plan.as_ref().context("this Sense bundle has no plan head")?;
+        let template =
+            head.question_template.as_deref().context("the plan head has no question template")?;
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let questions: Vec<String> = candidates
+            .iter()
+            .map(|(_, text)| template.replace("{candidate}", &candidate_text(text, &self.table)))
+            .collect();
+        let logits = self
+            .graph
+            .logits(&self.rows(ask, &questions.iter().map(String::as_str).collect::<Vec<_>>())?)?;
+        let scored: Vec<(String, f32)> =
+            candidates.iter().map(|(slug, _)| slug.clone()).zip(logits).collect();
+        Ok(crate::heads::plan_default(head, &scored))
     }
 
     /// Return the loaded bundle's version string from manifest.json.
