@@ -360,8 +360,8 @@ pub fn observed_limits(ws: &Workspace, ask_ids: &[String]) -> Result<Vec<String>
     Ok(out)
 }
 
-/// How many prompts that were not observed Ask submissions bear on this
-/// Eval.
+/// How many prompts that were neither an Ask as typed nor read as one of
+/// `later` bear on this Eval.
 ///
 /// Measured from the anchor, which is where the delta is measured from, so
 /// the two facts describe one span. Prompts between the anchor and the first
@@ -371,32 +371,21 @@ fn unrecorded_prompts(
     ws: &Workspace,
     asks: &[Value],
     since: Option<&str>,
+    later: &[Vec<sessions::Prompt>],
 ) -> Result<(usize, Vec<usize>), EvalError> {
-    let submitted: BTreeSet<String> = store::events(ws)?
+    let events = store::events(ws)?;
+    let mut submitted: BTreeSet<String> = events
         .iter()
         .filter(|e| e["type"] == "ask.submission")
         .map(|e| str_of(&e["data"], "prompt_sha256"))
         .collect();
-    let mut times: Vec<String> = Vec::new();
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let base = ws.rf_dir().join("sessions");
-    for host in std::fs::read_dir(&base).into_iter().flatten().flatten() {
-        for session in std::fs::read_dir(host.path()).into_iter().flatten().flatten() {
-            let p = session.path().join("prompts.jsonl");
-            if p.is_file() {
-                paths.push(p);
-            }
-        }
-    }
-    paths.sort();
-    for path in paths {
-        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
-            let rec: Value = serde_json::from_str(line).unwrap_or(Value::Null);
-            if rec.get("prompt").is_none() && !submitted.contains(&str_of(&rec, "sha256")) {
-                times.push(str_of(&rec, "time"));
-            }
-        }
-    }
+    submitted.extend(typed_digests(ws, &events, asks));
+    let read: Vec<&sessions::Prompt> = later.iter().flatten().collect();
+    let times: Vec<String> = sessions::read_prompts(ws)
+        .into_iter()
+        .filter(|p| !submitted.contains(&p.sha256) && !read.contains(&p))
+        .map(|p| p.time)
+        .collect();
     let count_in =
         |start: &str, end: &str| times.iter().filter(|t| &***t >= start && &***t < end).count();
     let before = match (since, asks.first()) {
@@ -412,6 +401,71 @@ fn unrecorded_prompts(
         })
         .collect();
     Ok((before, per_ask))
+}
+
+/// The digests of these Asks' prompts as they were typed: each seen
+/// submission, and the prompt with and without its last newline.
+fn typed_digests(ws: &Workspace, events: &[Value], asks: &[Value]) -> BTreeSet<String> {
+    let mut typed = BTreeSet::new();
+    for a in asks {
+        let id = str_of(a, "ask_id");
+        typed.extend(
+            events
+                .iter()
+                .filter(|e| e["type"] == "ask.submission" && str_of(e, "id") == id)
+                .map(|e| str_of(&e["data"], "prompt_sha256")),
+        );
+        if let Ok(text) = crate::ask::prompt_text(ws, &id) {
+            typed.insert(digest::sha256_bytes(text.as_bytes()));
+            typed.insert(digest::sha256_bytes(text.trim_end_matches('\n').as_bytes()));
+        }
+    }
+    typed
+}
+
+/// Where and when an Ask arrived: the host session its prompt was seen
+/// submitted in, else the one it was asked in.
+fn arrival(events: &[Value], ask_id: &str) -> Option<(String, String, String)> {
+    let of = |kind: &str| {
+        events.iter().find(|e| {
+            e["type"] == kind
+                && str_of(e, "id") == ask_id
+                && (kind == "ask.compiled" || e["data"]["state"] == "observed")
+        })
+    };
+    let e = of("ask.submission").or_else(|| of("ask.compiled"))?;
+    let host = &e["data"]["host"];
+    let (name, session) = (str_of(host, "name"), str_of(host, "session_ref"));
+    (!name.is_empty() && !session.is_empty()).then(|| (name, session, str_of(e, "time")))
+}
+
+/// The prompts the person typed after the unit's Asks, read as part of what
+/// it asks: those in a session where one of its Asks arrived, from the first
+/// arrival on, that are not one of its Asks as typed. Each goes with the last
+/// Ask that arrived before it. A judge's session holds no Ask, so none of its
+/// prompts is read; a prompt kept without its text is only counted.
+fn later_prompts(ws: &Workspace, asks: &[Value]) -> Result<Vec<Vec<sessions::Prompt>>, EvalError> {
+    let events = store::events(ws)?;
+    let arrived: Vec<Option<(String, String, String)>> =
+        asks.iter().map(|a| arrival(&events, &str_of(a, "ask_id"))).collect();
+    let typed = typed_digests(ws, &events, asks);
+    let mut out: Vec<Vec<sessions::Prompt>> = vec![Vec::new(); asks.len()];
+    let mut prompts: Vec<sessions::Prompt> = sessions::read_prompts(ws)
+        .into_iter()
+        .filter(|p| p.text.is_some() && !typed.contains(&p.sha256))
+        .collect();
+    prompts.sort_by(|x, y| x.time.cmp(&y.time));
+    for p in prompts {
+        let follows = arrived.iter().rposition(|a| {
+            a.as_ref().is_some_and(|(host, session, time)| {
+                *host == p.host && *session == p.session && *time <= p.time
+            })
+        });
+        if let Some(i) = follows {
+            out[i].push(p);
+        }
+    }
+    Ok(out)
 }
 
 /// When the anchor happened, for the prompts to be counted from. Only a Seal
@@ -545,7 +599,9 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             ledger("eval.anchor_missing", format!("{anchor_ref} is not a commit in this workspace"))
         })?;
     let eval_id = ids::new_id("evl");
-    let (before, counts) = unrecorded_prompts(ws, &asks, anchor_time(ws, &anchor).as_deref())?;
+    let later = later_prompts(ws, &asks)?;
+    let (before, counts) =
+        unrecorded_prompts(ws, &asks, anchor_time(ws, &anchor).as_deref(), &later)?;
     let shares = |r: &Value| {
         array_of(&r["basis"], "asks").iter().any(|a| ask_ids.contains(&str_of_value(a)))
     };
@@ -967,6 +1023,87 @@ mod tests {
         });
     }
 
+    fn say(ws: &Workspace, session: &str, text: &str) {
+        sessions::observe_prompt(ws, "claude-code", session, text, None, "weft").unwrap();
+    }
+
+    /// Records a millisecond apart, so "before" and "after" are not a tie.
+    fn tick() {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+
+    /// An Ask Weft typed into session s1, its submission seen there, then
+    /// the person's own prompts in s1, in another session and in a judge's.
+    fn ask_then_said(ws: &Workspace) -> String {
+        say(ws, "s1", "said before any Ask");
+        tick();
+        let a = str_of(&crate::testing::confirm_ask(ws, b"Fix the login bug.\n"), "ask_id");
+        tick();
+        let typed = crate::ask::prompt_text(ws, &a).unwrap();
+        say(ws, "s1", &typed);
+        let sha = digest::sha256_bytes(typed.as_bytes());
+        crate::ask::submission_from_capture(ws, "claude-code", "s1", &sha, "hook:UserPromptSubmit")
+            .unwrap()
+            .unwrap();
+        // The same Ask typed again, as a composer that drops the last newline.
+        say(ws, "s1", typed.trim_end_matches('\n'));
+        tick();
+        say(ws, "s1", "also handle empty input");
+        say(ws, "s9", "a prompt in another session");
+        say(ws, "j1", "a judge's task line");
+        a
+    }
+
+    fn texts(later: &[Vec<sessions::Prompt>]) -> Vec<Vec<String>> {
+        later.iter().map(|l| l.iter().filter_map(|p| p.text.clone()).collect()).collect()
+    }
+
+    #[test]
+    fn a_units_later_prompts_are_those_typed_where_its_asks_arrived() {
+        eval_bench(|ws| {
+            ask_then_said(ws);
+            let asks = crate::ask::open_asks(ws).unwrap();
+            let later = later_prompts(ws, &asks).unwrap();
+            // Not the one said before the Ask, not the Ask as Weft typed it,
+            // not another session's, not a judge's.
+            assert_eq!(texts(&later), [vec!["also handle empty input".to_string()]]);
+        });
+    }
+
+    #[test]
+    fn a_later_prompt_is_read_not_counted_and_an_older_row_is_counted() {
+        eval_bench(|ws| {
+            ask_then_said(ws);
+            let old = json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
+            sessions::log(ws, "claude-code", "s1", "prompts.jsonl", &old).unwrap();
+            let asks = crate::ask::open_asks(ws).unwrap();
+            let later = later_prompts(ws, &asks).unwrap();
+            let (before, after) = unrecorded_prompts(ws, &asks, None, &later).unwrap();
+            assert_eq!(before, 0);
+            // Another session's, a judge's, and the row without its text.
+            assert_eq!(after, [3]);
+        });
+    }
+
+    #[test]
+    fn a_later_prompt_follows_the_last_ask_that_arrived_before_it() {
+        eval_bench(|ws| {
+            let a = str_of(&crate::testing::confirm_ask(ws, b"Add X.\n"), "ask_id");
+            tick();
+            say(ws, "s1", "after A");
+            tick();
+            let b = str_of(&crate::testing::confirm_ask(ws, b"Add Z.\n"), "ask_id");
+            tick();
+            say(ws, "s1", "after B");
+            let asks = crate::ask::open_asks(ws).unwrap();
+            assert_eq!(asks.iter().map(|x| str_of(x, "ask_id")).collect::<Vec<_>>(), [a, b]);
+            assert_eq!(
+                texts(&later_prompts(ws, &asks).unwrap()),
+                [vec!["after A".to_string()], vec!["after B".to_string()]]
+            );
+        });
+    }
+
     #[test]
     fn open_refuses_without_an_open_ask() {
         eval_bench(|ws| {
@@ -987,8 +1124,9 @@ mod tests {
         eval_bench(|ws| {
             let base = head(&ws.root);
             let (a, b, sha) = two_asks_and_work(ws);
-            // Three plain prompts after Ask B and one observed submission of
-            // A's prompt (not counted).
+            // Two plain prompts after Ask B, then A's prompt seen submitted
+            // in s9 (not counted), then one more there: A's later prompt,
+            // read rather than counted.
             let say = |text: &str| {
                 crate::sessions::observe_prompt(ws, "claude-code", "s9", text, None, "weft")
                     .unwrap()
@@ -1014,7 +1152,7 @@ mod tests {
             let out = open_eval(ws, Open::default()).unwrap();
             assert!(str_of(&out, "eval_id").starts_with("evl_"));
             assert_eq!(out["basis"]["asks"], json!([a, b]));
-            assert_eq!(out["basis"]["unrecorded_prompts"], 3);
+            assert_eq!(out["basis"]["unrecorded_prompts"], 2);
             assert_eq!(out["anchor"], json!({"kind": "ask_base", "ref": base, "seal_id": null}));
             assert_eq!(out["subject"]["kind"], "git_commit");
             assert_eq!(out["subject"]["ref"], sha);
@@ -1034,7 +1172,7 @@ mod tests {
                     .iter()
                     .map(|x| x["unrecorded_prompts_after"].clone())
                     .collect::<Vec<_>>(),
-                [json!(0), json!(3)]
+                [json!(0), json!(2)]
             );
             assert_eq!(
                 array_of(&brief["changes"], "files")

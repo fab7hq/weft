@@ -124,8 +124,8 @@ pub fn log(
     f.write_all(&line)
 }
 
-/// Store a prompt someone observed (`ringframe observe prompt`) as its digest
-/// and byte count only, never its text. `by` is whoever observed it.
+/// Store a prompt someone observed (`ringframe observe prompt`): its text,
+/// digest and byte count, in the local ledger only. `by` is whoever observed it.
 pub fn observe_prompt(
     ws: &Workspace,
     host: &str,
@@ -143,11 +143,55 @@ pub fn observe_prompt(
         "session_id": session,
         "sha256": digest::sha256_bytes(data),
         "bytes": data.len(),
+        "text": prompt,
         "host_version": version.map_or(Value::Null, |v| Value::String(v.to_string())),
         "observed_by": by,
     });
     log(ws, host, session, "prompts.jsonl", &rec)?;
     Ok(Some(rec))
+}
+
+/// One observed prompt. `text` is None for a row from before prompts kept
+/// their text: such a prompt is counted, never read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prompt {
+    pub host: String,
+    pub session: String,
+    pub time: String,
+    pub sha256: String,
+    pub text: Option<String>,
+}
+
+/// Every prompt observed in this workspace, session by session, each
+/// session's in the order they were observed.
+pub fn read_prompts(ws: &Workspace) -> Vec<Prompt> {
+    let mut paths: Vec<(String, String, PathBuf)> = Vec::new();
+    let base = ws.rf_dir().join("sessions");
+    for host in std::fs::read_dir(&base).into_iter().flatten().flatten() {
+        for session in std::fs::read_dir(host.path()).into_iter().flatten().flatten() {
+            let p = session.path().join("prompts.jsonl");
+            if p.is_file() {
+                let name = |e: &std::fs::DirEntry| e.file_name().to_string_lossy().to_string();
+                paths.push((name(&host), name(&session), p));
+            }
+        }
+    }
+    paths.sort();
+    let mut out = Vec::new();
+    for (host, session, path) in paths {
+        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
+            let Ok(rec) = serde_json::from_str::<Value>(line) else { continue };
+            let field = |k: &str| rec[k].as_str().unwrap_or_default().to_string();
+            out.push(Prompt {
+                host: host.clone(),
+                session: session.clone(),
+                time: field("time"),
+                sha256: field("sha256"),
+                text: rec["text"].as_str().map(str::to_string),
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -174,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_is_kept_as_its_digest_size_and_host_version_never_its_text() {
+    fn a_prompt_is_kept_with_its_text_digest_size_and_host_version() {
         // Profiles are read from the config home, which is per process.
         crate::testing::with_config_home(|_| {
             let repo = repo();
@@ -187,13 +231,30 @@ mod tests {
                         .unwrap();
                 assert!(rec["sha256"].is_string());
                 assert_eq!(rec["bytes"], prompt.len());
+                assert_eq!(rec["text"], prompt);
                 assert_eq!(rec["host_version"], "2.1.263 (Claude Code)");
-                assert!(rec.get("prompt").is_none(), "the text must never be stored");
-                let kept = prompts(&ws, "claude-code", "s1");
-                assert_eq!(kept.lines().count(), n + 1);
-                assert!(!kept.contains(prompt), "{kept}");
+                assert_eq!(prompts(&ws, "claude-code", "s1").lines().count(), n + 1);
             }
+            let read = read_prompts(&ws);
+            assert_eq!(read.len(), 2);
+            assert_eq!(read[0].text.as_deref(), Some("hello there"));
+            assert_eq!((read[0].host.as_str(), read[0].session.as_str()), ("claude-code", "s1"));
+            assert_eq!(read[0].sha256, digest::sha256_bytes(b"hello there"));
             assert!(store::events(&ws).unwrap().is_empty(), "a prompt records no Ask");
+        });
+    }
+
+    #[test]
+    fn an_older_row_without_text_reads_as_counted_only() {
+        crate::testing::with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            let old = json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
+            log(&ws, "codex", "s1", "prompts.jsonl", &old).unwrap();
+            let read = read_prompts(&ws);
+            assert_eq!(read.len(), 1);
+            assert_eq!(read[0].text, None);
+            assert_eq!(read[0].sha256, "ab");
         });
     }
 

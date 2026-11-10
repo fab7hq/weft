@@ -10,7 +10,7 @@ use crate::workspace::Workspace;
 use crate::{ask, evaluate, profiles, sessions};
 
 /// `observe prompt`: one prompt's bytes, seen submitted in `session`. Kept in
-/// `prompts.jsonl` as its digest; a prompt that equals a compiled one is that
+/// `prompts.jsonl` with its digest; a prompt that equals a compiled one is that
 /// Ask's observed submission.
 pub fn prompt(
     ws: &Workspace,
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_is_kept_as_a_digest_only() {
+    fn a_prompt_is_kept_with_its_text_and_nothing_else_of_the_hook() {
         bench(|ws| {
             let out = prompt(ws, "weft", "claude-code", "s1", "hello there", None).unwrap();
             assert_eq!(out["recorded"], true);
@@ -169,12 +169,11 @@ mod tests {
             assert_eq!(out["recorded"], true);
             let lines = prompts(ws, "claude-code", "s1");
             assert_eq!(lines.len(), 2);
-            assert!(lines[0].get("prompt").is_none(), "a plain prompt's text is never kept");
+            assert_eq!(lines[0]["text"], "hello there");
             assert_eq!(lines[0]["bytes"], 11);
             assert_eq!(lines[0]["sha256"], crate::digest::sha256_bytes(b"hello there"));
             assert_eq!(lines[0]["observed_by"], "weft");
             for line in &lines {
-                assert!(line.get("prompt").is_none(), "a prompt's text is never kept");
                 assert!(line.get("cwd").is_none() && line.get("permission_mode").is_none());
             }
             assert!(events(ws).is_empty(), "a prompt alone records no Ask");
