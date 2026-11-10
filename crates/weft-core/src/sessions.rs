@@ -115,6 +115,9 @@ pub struct Row {
     pub pane: Option<u32>,
     /// It held a conversation, so there is something to resume.
     pub resumable: bool,
+    /// Its turn ended with a reply that asks its person.
+    #[serde(default)]
+    pub asked: bool,
 }
 
 impl Row {
@@ -131,6 +134,7 @@ impl Row {
             asks: 0,
             pane: None,
             resumable: true,
+            asked: false,
         }
     }
 }
@@ -188,6 +192,7 @@ pub fn index(
             asks: 0,
             pane: None,
             resumable: used.is_some(),
+            asked: s.asked,
         });
     }
     // A Weft pane bound to a session is a fact about it: running while the
@@ -209,6 +214,7 @@ pub fn index(
                     asks: 0,
                     pane: Some(p.pane),
                     resumable: false,
+                    asked: false,
                 });
             }
             continue;
@@ -228,6 +234,7 @@ pub fn index(
                     asks: 0,
                     pane: None,
                     resumable: false,
+                    asked: false,
                 });
                 rows.last_mut().expect("just pushed")
             }
@@ -344,7 +351,7 @@ mod tests {
     use crate::turns::{Session, Turn};
 
     fn turns(first: i64, latest: Turn, at: i64) -> Session {
-        Session { harness: "codex".into(), id: "s".into(), first, latest, at }
+        Session { harness: "codex".into(), id: "s".into(), first, latest, at, asked: false }
     }
 
     #[test]
@@ -464,6 +471,7 @@ mod tests {
                 asks: 2,
                 pane: None,
                 resumable: true,
+                asked: false,
             }]
         );
         assert!(index(&[], &[], &units, &alive).is_empty(), "no receipt, no pane: no row");
@@ -538,6 +546,7 @@ mod tests {
                 asks: 0,
                 pane: Some(5),
                 resumable: false,
+                asked: false,
             }]
         );
         assert!(index(&[], &[fresh(5, false)], &[], DEAD).is_empty(), "exited: no row");

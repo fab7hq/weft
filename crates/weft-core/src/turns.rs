@@ -75,6 +75,9 @@ pub struct Session {
     pub latest: Turn,
     /// The latest event's time, in milliseconds since the epoch.
     pub at: i64,
+    /// The turn ended with a reply that asks its person: NEEDS YOU, though
+    /// Weft may still type (sense-harden ADR-0002).
+    pub asked: bool,
 }
 
 /// One `turns.jsonl`, read tolerantly: a line that is torn, unreadable, or
@@ -92,6 +95,7 @@ pub fn read(harness: &str, id: &str, text: &str) -> Option<Session> {
         // harness is asking its person, whatever its turn is doing.
         let asking = v.get("asking") == Some(&Value::Bool(true));
         let turn = if asking && turn != Turn::Ended { Turn::Waiting } else { turn };
+        let asked = turn == Turn::TurnEnded && v.get("asked") == Some(&Value::Bool(true));
         match &mut out {
             None => {
                 out = Some(Session {
@@ -100,6 +104,7 @@ pub fn read(harness: &str, id: &str, text: &str) -> Option<Session> {
                     first: at,
                     latest: turn,
                     at,
+                    asked,
                 })
             }
             Some(s) => {
@@ -107,6 +112,7 @@ pub fn read(harness: &str, id: &str, text: &str) -> Option<Session> {
                 if at >= s.at {
                     s.latest = turn;
                     s.at = at;
+                    s.asked = asked;
                 }
             }
         }
@@ -122,17 +128,30 @@ pub fn is_asking(state: Option<Turn>) -> bool {
     state == Some(Turn::Waiting)
 }
 
-/// NEEDS YOU: how many of these panes' agents are asking their person, of
-/// one harness or of all. `states` is one per pane, in the same order.
+/// NEEDS YOU: an agent asking for input, or a turn that ended with a reply
+/// asking its person (`asked`). Weft may still type into the second.
+pub fn needs_you(state: Option<Turn>, asked: bool) -> bool {
+    is_asking(state) || (asked && state == Some(Turn::TurnEnded))
+}
+
+/// Whether each pane's session ended its turn asking, by the session rows.
+pub fn asked_panes(panes: &[crate::board::PaneInfo], rows: &[crate::sessions::Row]) -> Vec<bool> {
+    panes.iter().map(|p| rows.iter().any(|r| r.pane == Some(p.pane) && r.asked)).collect()
+}
+
+/// NEEDS YOU: how many of these panes' agents need their person, of one
+/// harness or of all. `states` and `asked` are one per pane, in order.
 pub fn asking(
     panes: &[crate::board::PaneInfo],
     states: &[Option<Turn>],
+    asked: &[bool],
     harness: Option<&str>,
 ) -> usize {
-    panes
-        .iter()
-        .zip(states)
-        .filter(|(p, s)| is_asking(**s) && harness.is_none_or(|h| p.harness == h))
+    let asked = |i: usize| asked.get(i).copied().unwrap_or(false);
+    (0..panes.len().min(states.len()))
+        .filter(|&i| {
+            needs_you(states[i], asked(i)) && harness.is_none_or(|h| panes[i].harness == h)
+        })
         .count()
 }
 
@@ -354,7 +373,7 @@ mod tests {
     }
 
     fn session(harness: &str, id: &str, first: i64, latest: Turn) -> Session {
-        Session { harness: harness.into(), id: id.into(), first, latest, at: first }
+        Session { harness: harness.into(), id: id.into(), first, latest, at: first, asked: false }
     }
 
     fn asked(id: &str, session: &str) -> Value {
@@ -441,7 +460,14 @@ mod tests {
     }
 
     fn receipt(id: &str, latest: Turn, at: i64) -> Session {
-        Session { harness: "claude-code".into(), id: id.into(), first: at, latest, at }
+        Session {
+            harness: "claude-code".into(),
+            id: id.into(),
+            first: at,
+            latest,
+            at,
+            asked: false,
+        }
     }
 
     fn bound(p: &Started) -> Option<(&str, How)> {
@@ -552,13 +578,21 @@ mod tests {
         };
         let panes = [pane("codex", true), pane("claude-code", true), pane("codex", false)];
         let states = [Some(Turn::Waiting), Some(Turn::TurnEnded), Some(Turn::Waiting)];
-        assert_eq!(asking(&panes, &states, None), 2);
-        assert_eq!(asking(&panes, &states, Some("codex")), 2);
+        assert_eq!(asking(&panes, &states, &[], None), 2);
+        assert_eq!(asking(&panes, &states, &[], Some("codex")), 2);
         assert_eq!(
-            asking(&panes, &states, Some("claude-code")),
+            asking(&panes, &states, &[], Some("claude-code")),
             0,
             "a turn that ended asks nothing"
         );
+        let asked = [false, true, false];
+        assert_eq!(
+            asking(&panes, &states, &asked, Some("claude-code")),
+            1,
+            "unless its reply asks"
+        );
+        assert!(may_type(Some(Turn::TurnEnded)).is_ok(), "and Weft may still type into it");
+        assert!(!needs_you(Some(Turn::Working), true), "a turn that started again asks nothing");
         assert_eq!(open(&panes), 2);
         assert!(
             is_asking(Some(Turn::Waiting)) && !is_asking(None) && !is_asking(Some(Turn::Ready))

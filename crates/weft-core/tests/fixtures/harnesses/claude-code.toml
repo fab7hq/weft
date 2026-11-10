@@ -59,6 +59,8 @@ on = ["enabled"]
 # (claude-code 2.1.314).
 [signal]
 session = "session_id"
+# A hook that ends a turn has the agent's last reply.
+said = "last_assistant_message"
 workspace = "cwd"
 prompt = [
   "prompt",

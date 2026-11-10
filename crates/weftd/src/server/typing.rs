@@ -8,8 +8,9 @@ use super::*;
 /// Weft waits for an agent to be ready.
 pub(super) const STARTED_QUIET: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// A fresh agent can take this long to say it is ready: Antigravity's ready
-/// came 14.6 s after its start, read by Sense once its screen held still.
+/// A fresh agent can take this long to say it is ready: the slowest harness
+/// measured said so 14.6 s after its start, read by Sense once its screen held
+/// still.
 pub(super) const STARTED_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// A send waiting for its agent to be ready, until it may be typed or its

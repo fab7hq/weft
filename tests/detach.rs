@@ -863,9 +863,10 @@ fn a_device_never_resizes_the_agent_it_started() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt, or while
-/// it works, a Send is refused at once with why; after `ready` it types; told
-/// to type anyway, it types whatever the state.
+/// turn-state.md §6 tests 3 and 4, at the daemon: with no receipt, a Send
+/// waits for the agent to say it is ready, then types; while it works, a Send
+/// is refused at once with why; after `turn_ended` it types; told to type
+/// anyway, it types whatever the state.
 #[test]
 fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     let (root, socket) = session("ready");
@@ -887,23 +888,26 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
             .to_string()
     };
 
-    // Not ready: the Send is refused at once, with why, and its dialog stays.
+    // A fresh agent that has said nothing yet: the Send waits for it to say
+    // it is ready, and types then.
+    let id = stage(&mut c, "first-typed");
+    c.send(Call::Resolve { pending: id, yes: true, force: false, to: None, start: None });
+    assert_eq!(c.injected_within(Duration::from_millis(800)), None, "it waits");
+    agent_says(&socket, &root, "codex", 0, "c1", "ready");
+    assert_eq!(c.wait_for_refusal(), None, "typed once the agent said it is ready");
+
+    // The person types in it and presses Enter, and its hook says it is
+    // working: a Send is refused at once, with why, and its dialog stays.
+    c.send(Call::Input { pane: 0, bytes: b"go\r".to_vec() });
+    std::thread::sleep(Duration::from_millis(50));
+    agent_says(&socket, &root, "codex", 0, "c1", "working");
+    c.wait_for_state(Some(Turn::Working));
     let id = stage(&mut c, "not-yet");
     let resolve = |c: &mut Client, id: &str| {
         let pending = id.to_string();
         c.send(Call::Resolve { pending, yes: true, force: false, to: None, start: None });
         c.injected_within(Duration::from_secs(2)).expect("refused at once")
     };
-    let said = resolve(&mut c, &id);
-    let unknown = "Weft did not type it: Weft can't tell whether the agent is ready.";
-    assert_eq!(said.as_deref(), Some(unknown));
-
-    // The person types in it and presses Enter, and its hook says it is
-    // working: the same dialog's Send is refused again.
-    c.send(Call::Input { pane: 0, bytes: b"go\r".to_vec() });
-    std::thread::sleep(Duration::from_millis(50));
-    agent_says(&socket, &root, "codex", 0, "c1", "working");
-    c.wait_for_state(Some(Turn::Working));
     let said = resolve(&mut c, &id);
     assert_eq!(said.as_deref(), Some("Weft did not type it: the agent is working."));
 
@@ -920,7 +924,10 @@ fn the_daemon_types_on_its_own_only_into_an_agent_that_said_it_is_ready() {
     let mut stop = Client::attach(&socket, &root);
     let replay = stop.replay();
     assert!(!replay.contains("not-yet"), "{replay}");
-    assert!(replay.contains("anyway-typed") && replay.contains("now-typed"), "{replay}");
+    assert!(
+        ["first-typed", "anyway-typed", "now-typed"].iter().all(|t| replay.contains(t)),
+        "{replay}"
+    );
     stop.send(Call::Shutdown);
     std::fs::remove_dir_all(&root).ok();
 }

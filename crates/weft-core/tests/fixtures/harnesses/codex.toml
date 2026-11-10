@@ -72,6 +72,8 @@ on = ["enabled", "installed"]
 # goal-hooks, codex 0.162.0; Weft ADR-0033 D7).
 [signal]
 session = "session_id"
+# A hook that ends a turn has the agent's last reply.
+said = "last_assistant_message"
 workspace = "cwd"
 prompt = [
   "prompt",

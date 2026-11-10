@@ -51,6 +51,8 @@ want = ["rf"]
 # `subagentType` and its own session: they are not the pane's.
 [signal]
 session = "session_id"
+# A hook that ends a turn has the agent's last reply.
+said = "last_assistant_message"
 workspace = "cwd"
 # What it sends no hook for, each a move Sense may make on its pane once the
 # screen shows it (weft-rf-next ADR-0005; sense-d 0.1.1 reads its screens at

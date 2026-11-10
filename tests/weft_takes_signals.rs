@@ -227,3 +227,69 @@ fn a_signal_moves_only_the_pane_whose_token_it_carries_and_outlives_the_daemon()
     });
     again.send(Call::Shutdown);
 }
+
+/// A turn that ends with a reply asking its person is NEEDS YOU, by Sense's
+/// turn-end head, while Weft may still type into it; one that only reports
+/// stays a turn that ended. Needs a bundle with that head: `SENSE_D_BUNDLE`.
+#[test]
+fn a_turn_that_ends_asking_needs_you_and_one_that_reports_does_not() {
+    let Some(bundle) = std::env::var_os("SENSE_D_BUNDLE") else {
+        eprintln!("skipped: SENSE_D_BUNDLE names no bundle with a turn_end head");
+        return;
+    };
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    std::fs::create_dir_all(home.path().join("sense")).unwrap();
+    let current = serde_json::json!({"version": "0.2.0", "path": bundle.to_string_lossy()});
+    std::fs::write(home.path().join("sense/current.json"), current.to_string()).unwrap();
+    let root = home.path().join("project");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let socket = protocol::private_socket("weft-asked");
+    let agents = support::agents_dir(&socket);
+    serve(&socket, &config);
+    let mut c = Client::attach(&socket, &root);
+    let spec = support::agent(&agents);
+    c.answer(Call::StartAgent { harness: "codex".into(), spec, session: None });
+    let ended = |said: &str| Sent {
+        said: Some(said.into()),
+        pane: Some(0),
+        token: Some(support::token_of(&agents, 0)),
+        ..state("turn_ended", "s1", &root)
+    };
+    let asked = |sessions: &[weft_core::sessions::Row]| {
+        sessions.iter().find(|s| s.id == "s1").map(|s| s.asked)
+    };
+    // Sense loads in the background: the turn is asked about until it answers.
+    let asking = "Should I also update the docs? Please confirm before I continue.";
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        support::pane_says(&socket, &agents, &root, "codex", 0, "s1", "working");
+        support::signal(&socket, ended(asking));
+        let lines = std::fs::read_to_string(receipt(&config, &root, "s1")).unwrap_or_default();
+        if lines.contains("\"asked\":true") {
+            break;
+        }
+        assert!(Instant::now() < until, "Sense never read the reply: {lines}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    c.agents_until(|panes, sessions| {
+        panes.first() == Some(&Some(Turn::TurnEnded)) && asked(sessions) == Some(true)
+    });
+    assert!(weft_core::turns::may_type(Some(Turn::TurnEnded)).is_ok(), "Weft may still type");
+    // The person types an answer into the pane: it no longer needs them.
+    c.send(Call::Input { pane: 0, bytes: b"y".to_vec() });
+    c.agents_until(|panes, sessions| {
+        panes.first() == Some(&Some(Turn::TurnEnded)) && asked(sessions) == Some(false)
+    });
+    // Asked again; then the next turn starts, then one that only reports.
+    support::signal(&socket, ended(asking));
+    c.agents_until(|_, sessions| asked(sessions) == Some(true));
+    support::pane_says(&socket, &agents, &root, "codex", 0, "s1", "working");
+    c.agents_until(|_, sessions| asked(sessions) == Some(false));
+    support::signal(&socket, ended("Done. The tests pass and the change is committed."));
+    c.agents_until(|panes, sessions| {
+        panes.first() == Some(&Some(Turn::TurnEnded)) && asked(sessions) == Some(false)
+    });
+    c.send(Call::Shutdown);
+}

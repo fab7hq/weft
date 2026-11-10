@@ -2317,6 +2317,9 @@ impl Session {
                     slot.follow(client);
                     let _ = slot.pane.send(&bytes);
                 }
+                if let Some(at) = self.project_of(client) {
+                    self.answered(at, pane);
+                }
             }
             Call::Say { pane, text } => {
                 self.clients.typed(client);
@@ -2324,6 +2327,7 @@ impl Session {
                 if let Some(slot) = self.projects[at].slot(pane) {
                     slot.follow(client);
                 }
+                self.answered(at, pane);
                 return Ok(self.say(at, pane, text));
             }
             Call::StartAgent { harness, spec, session } => {

@@ -79,6 +79,8 @@ fn sent(harness: &str, hook: &str, payload: &[u8], at: &Where) -> Option<weft_co
     }
     // A question asked without stopping the turn, read on every hook.
     sent.asking = signal.asking(&payload, &end);
+    // The agent's last reply, when this hook ended its turn: Sense reads it.
+    sent.said = signal.said(hook, &payload, &end);
     sent.transcript = table["conversation"]["path"]
         .as_str()
         .and_then(|p| weft_core::signal::text_at(&payload, p));

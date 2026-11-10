@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use weft_core::harness::Harnesses;
 use weft_core::sessions::State;
 use weft_core::tree::{self, Agent, Project, WorkRow};
-use weft_core::turns::{self, Turn};
+use weft_core::turns;
 use weft_core::words;
 use weft_core::work::Status;
 
@@ -106,6 +106,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                         title: r.title.clone(),
                         state: r.state,
                         turn: None,
+                        asked: false,
                         at: r.last,
                         asks: r.asks,
                         ask: None,
@@ -248,6 +249,7 @@ pub fn render_tree(props: &TreeProps) -> Element {
                         title: r.title.clone(),
                         state: r.state,
                         turn: None,
+                        asked: false,
                         at: r.last,
                         asks: r.asks,
                         ask: None,
@@ -649,10 +651,10 @@ fn render_section_header(layer: &str, title: &str) -> Element {
 }
 
 /// The status an agent's row leads with: a circle while it runs, a square
-/// while it waits for you, a hollow square once it has ended.
-pub fn status_shape(state: State, turn: Option<Turn>) -> (&'static str, &'static str) {
-    match (state, turn) {
-        (State::Running, turn) if turns::is_asking(turn) => ("■", palette::AMBER),
+/// while it needs you, a hollow square once it has ended.
+pub fn status_shape(state: State, needs_you: bool) -> (&'static str, &'static str) {
+    match (state, needs_you) {
+        (State::Running, true) => ("■", palette::AMBER),
         (State::Running, _) => ("●", palette::TEAL),
         _ => ("□", palette::DIM),
     }
@@ -666,7 +668,7 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
         Some(t) => format!("row agent {} {t}", a.harness),
         None => format!("row agent {}", a.harness),
     };
-    let (shape, shape_color) = status_shape(a.state, a.turn);
+    let (shape, shape_color) = status_shape(a.state, turns::needs_you(a.turn, a.asked));
     let running = a.state == State::Running;
 
     let name_colour = match (&a.title, running) {
@@ -718,7 +720,9 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
 fn agent_about(a: &Agent, zone: i64) -> String {
     let time = clock(a.at, zone);
     let state = match a.state {
-        State::Running if turns::is_asking(a.turn) => words::word("turn.waiting").to_string(),
+        State::Running if turns::needs_you(a.turn, a.asked) => {
+            words::word("turn.waiting").to_string()
+        }
         State::Running => words::word("state.running").to_string(),
         State::Ended => words::word("state.ended").to_string(),
         _ => words::fill("state.last_active", &[("time", &time)]),

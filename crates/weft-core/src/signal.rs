@@ -32,6 +32,10 @@ pub struct Signal {
     /// Questions the harness asks without stopping the turn.
     #[serde(default)]
     pub questions: Option<Questions>,
+    /// Where a hook that ends a turn has the agent's last reply: a payload
+    /// path, or a line of the file the payload names.
+    #[serde(default)]
+    pub said: Option<Place>,
     /// The payload path that marks a hook as fired inside a sub-agent, in
     /// the sub-agent's own session: such a hook is not the pane's.
     #[serde(default)]
@@ -289,7 +293,17 @@ pub struct Sent {
     /// kept per pane in weftd's memory, never recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transcript: Option<String>,
+    /// The agent's last reply, its end, when this hook ended a turn: read
+    /// by weftd's Sense, never recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
+    /// Whether that reply asks its person: weftd's, from Sense.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asked: Option<bool>,
 }
+
+/// How much of a reply's end a turn's signal carries: what Sense reads.
+pub const SAID_CHARS: usize = 1200;
 
 impl Signal {
     /// A harness file's `[signal]`, when it has one that reads.
@@ -406,6 +420,28 @@ impl Signal {
         Some(q.pending(&end))
     }
 
+    /// The agent's last reply, its last [`SAID_CHARS`] characters, when this
+    /// hook ends a turn and the table says where the reply is.
+    pub fn said(
+        &self,
+        hook: &str,
+        payload: &Value,
+        tail: &dyn Fn(&str) -> Option<(u64, String)>,
+    ) -> Option<String> {
+        if self.row(hook, payload)?.state.as_deref() != Some("turn_ended") {
+            return None;
+        }
+        let text = match self.said.as_ref()? {
+            Place::At(path) => text_at(payload, path)?,
+            Place::InFile(f) => {
+                let (_, end) = tail(&text_at(payload, &f.file)?)?;
+                f.text(&f.line(&end)?.1)?
+            }
+        };
+        let skip = text.chars().count().saturating_sub(SAID_CHARS);
+        Some(text.chars().skip(skip).collect())
+    }
+
     /// What this hook prints: its row's reply, else the table's.
     pub fn reply(&self, hook: &str, payload: &Value) -> Option<&str> {
         self.row(hook, payload).and_then(|r| r.reply.as_deref()).or(self.reply.as_deref())
@@ -489,6 +525,47 @@ mod tests {
 
     fn signal(name: &str) -> Signal {
         Signal::of(&file(name)["signal"]).expect("a [signal] that reads")
+    }
+
+    #[test]
+    fn a_turn_that_ends_says_its_last_reply_where_each_harness_keeps_it() {
+        let reply = |name: &str, hook: &str, payload: Value, tail: &str| {
+            let tail = tail.to_string();
+            signal(name).said(hook, &payload, &move |_| Some((0, tail.clone())))
+        };
+        for name in ["claude-code", "codex", "grok"] {
+            let stop = json!({"session_id": "s1", "hook_event_name": "Stop", "reason": "end_turn",
+                              "last_assistant_message": "Should I also update the docs?"});
+            assert_eq!(
+                reply(name, "Stop", stop, ""),
+                Some("Should I also update the docs?".into()),
+                "{name}"
+            );
+        }
+        let lines = [
+            json!({"type": "USER_INPUT", "content": "<USER_REQUEST>\nplan it\n</USER_REQUEST>"}),
+            json!({"type": "PLANNER_RESPONSE", "content": "1. Parse. 2. Test. Approve?"}),
+            json!({"type": "GENERIC", "content": "Created At: …"}),
+        ];
+        let tail: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        let stop = json!({"conversationId": "c1", "transcriptPath": "/t.jsonl"});
+        assert_eq!(
+            reply("antigravity", "Stop", stop, &tail),
+            Some("1. Parse. 2. Test. Approve?".into())
+        );
+        let working = json!({"session_id": "s1", "last_assistant_message": "x"});
+        assert_eq!(
+            reply("claude-code", "UserPromptSubmit", working, ""),
+            None,
+            "only a turn that ends"
+        );
+        let long = json!({"session_id": "s1", "last_assistant_message": format!("{}end", "é".repeat(2000))});
+        let got = reply("codex", "Stop", long, "").unwrap();
+        assert_eq!(
+            (got.chars().count(), got.ends_with("end")),
+            (SAID_CHARS, true),
+            "its end, kept"
+        );
     }
 
     #[test]

@@ -46,6 +46,8 @@ on = ["enabled"]
 # first of `workspacePaths`; there is no session_id.
 [signal]
 session = "conversationId"
+# No hook carries the reply: the transcript's newest planner response does.
+said = { file = "transcriptPath", newest = true, last = { type = "PLANNER_RESPONSE" }, field = "content" }
 workspace = "workspacePaths"
 # What it sends no hook for, each a move Sense may make on its pane once the
 # screen shows it (weft-rf-next ADR-0005; sense-d 0.1.1 reads its screens at

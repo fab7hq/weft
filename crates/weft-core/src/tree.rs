@@ -78,6 +78,9 @@ pub struct Agent {
     pub harness: String,
     pub state: State,
     pub turn: Option<Turn>,
+    /// Its turn ended with a reply asking its person: NEEDS YOU.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub asked: bool,
     /// Its latest Ask's title; none reads "no Ask yet".
     pub title: Option<String>,
     /// When it was last used, in milliseconds since the epoch.
@@ -280,6 +283,7 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
         routing: f.routing,
         workspace_gap: None,
         agents: f.agents,
+        asked: &[],
     };
     let running = |r: &&crate::sessions::Row| r.state == State::Running;
     let (shown, earlier) = crate::sessions::split(f.sessions);
@@ -295,7 +299,7 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
             .sessions
             .iter()
             .filter(running)
-            .filter(|s| turn_now(f, s) == Some(Turn::Waiting))
+            .filter(|s| crate::turns::needs_you(turn_now(f, s), s.asked))
             .count(),
         ask: board(None).why_not(Act::Ask),
         setup: f.setup,
@@ -352,11 +356,13 @@ pub fn agent(f: &Facts, s: &crate::sessions::Row) -> Agent {
         (State::Ended, _) => Some(Why::of("why.ended", &s.harness)),
         (State::Quiet, _) => Some(Why::of("why.quiet", &s.harness)),
     };
+    let turn = turn_now(f, s);
     Agent {
         session: s.id.clone(),
         harness: s.harness.clone(),
         state: s.state,
-        turn: turn_now(f, s),
+        turn,
+        asked: s.asked && turn == Some(Turn::TurnEnded),
         title: s.title.clone(),
         at: s.last,
         asks: s.asks,
@@ -595,6 +601,20 @@ mod tests {
         let t = build(&w, READY, AS_DRAWN);
         assert_eq!(t.agents.rows[0].turn, Some(Turn::Waiting));
         assert_eq!(t.needs, 2, "k1 and c1");
+    }
+
+    /// A turn that ended with a reply asking its person is NEEDS YOU, and
+    /// says so on its row; once its turn moves on, it is not.
+    #[test]
+    fn a_turn_that_ended_asking_needs_you() {
+        let mut w = weft();
+        w.3[2].asked = true;
+        let t = build(&w, READY, AS_DRAWN);
+        assert_eq!(t.needs, 2, "k1 and c2");
+        let c2 = t.agents.rows.iter().find(|r| r.session == "c2").unwrap();
+        assert_eq!((c2.turn, c2.asked), (Some(Turn::TurnEnded), true));
+        w.3[2].turn = Some(Turn::Working);
+        assert_eq!(build(&w, READY, AS_DRAWN).needs, 1, "answered: only k1");
     }
 
     /// Each agent row says why an Ask cannot go to it: an ended one (D12.4),

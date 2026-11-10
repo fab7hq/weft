@@ -224,9 +224,13 @@ impl Project {
         if !self.panes[i].running {
             return "ended";
         }
-        match self.turns.get(i).copied().flatten() {
-            Some(Turn::Working) => "working",
+        let turn = self.turns.get(i).copied().flatten();
+        let asked = weft_core::turns::asked_panes(&self.panes[i..=i], &self.sessions)[0];
+        match turn {
+            // A turn that ended with a reply asking its person needs them too.
             Some(Turn::Waiting) => "waiting",
+            _ if weft_core::turns::needs_you(turn, asked) => "waiting",
+            Some(Turn::Working) => "working",
             Some(Turn::TurnEnded | Turn::Ended) => "ended",
             // Started and heard nothing yet, or said it is at its input.
             Some(Turn::Ready) | None => "ready",
@@ -239,7 +243,8 @@ impl Project {
         use weft_core::board::Act;
         let p = &self.panes[i];
         let session = self.sessions.iter().find(|r| r.pane == Some(p.pane))?;
-        let turn = self.turns.get(i).copied().flatten();
+        // A turn that ended asking its person waits on them, not on an Eval.
+        let turn = self.turns.get(i).copied().flatten().filter(|_| !session.asked);
         match weft_core::board::suggested_for(&self.units, &session.id, turn)? {
             Act::Eval => Some("eval"),
             Act::Seal => Some("seal"),
@@ -495,6 +500,7 @@ impl Project {
     /// A rule's answer about this board, with `unit` selected and `pane` in front.
     fn board<T>(&self, unit: Option<usize>, pane: Option<u32>, f: impl FnOnce(Board) -> T) -> T {
         let ready = |h: &str| Readiness::of_word(self.readiness[h].as_str());
+        let asked = weft_core::turns::asked_panes(&self.panes, &self.sessions);
         f(Board {
             units: &self.units,
             selected: unit.unwrap_or(usize::MAX),
@@ -504,6 +510,7 @@ impl Project {
             routing: &self.routing,
             workspace_gap: None,
             agents: &self.turns,
+            asked: &asked,
         })
     }
 
@@ -515,6 +522,7 @@ impl Project {
             harness: r.harness.clone(),
             state: r.state,
             turn: r.turn,
+            asked: r.asked && r.turn == Some(Turn::TurnEnded),
             title: r.title.clone(),
             at: r.last,
             asks: r.asks,
@@ -930,6 +938,16 @@ mod tests {
         });
         let ended = Project::opened(Path::new("/work/weft"), &answer);
         assert_eq!(ended.rows()[0]["next"], "eval");
+        // A turn that ended with a reply asking its person needs them: no Eval yet.
+        let mut asking = answer.clone();
+        asking["agents"]["sessions"][0]["asked"] = json!(true);
+        let asking = Project::opened(Path::new("/work/weft"), &asking);
+        assert_eq!(
+            (asking.rows()[0]["turn"].clone(), asking.rows()[0]["next"].clone()),
+            (json!("waiting"), Value::Null)
+        );
+        assert_eq!(asking.tree()["needs"], 1);
+        assert_eq!(asking.tree()["agents"]["rows"][0]["asked"], true);
     }
 
     /// remote.md §6: AGENTS with each session's agent, and WORK's units.

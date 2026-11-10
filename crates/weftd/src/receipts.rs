@@ -27,7 +27,7 @@ pub fn project_dir(base: &Path, root: &Path) -> PathBuf {
 /// Append the line this signal makes, when its event, its process or
 /// whether a question is pending differs from the session's last line. A
 /// signal with no event keeps the last line's, when it says whether a
-/// question is pending; a line keeps the last line's `asking` unless its
+/// question is pending or the turn's reply asks; a line keeps the last line's `asking` unless its
 /// signal says, and an ended session asks nothing. A harness or session that
 /// is not only an id names no file. True when a line was added.
 pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Result<bool> {
@@ -39,32 +39,49 @@ pub fn record(base: &Path, root: &Path, sent: &Sent, now: i64) -> std::io::Resul
     let path = dir.join(format!("{}.jsonl", sent.session));
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let last: Option<Value> = text.lines().last().and_then(|l| serde_json::from_str(l).ok());
-    let event = match (sent.state.as_deref(), sent.asking, &last) {
+    let says = sent.asking.is_some() || sent.asked.is_some();
+    let event = match (sent.state.as_deref(), says, &last) {
         (Some(event), _, _) => event.to_string(),
-        (None, Some(_), Some(l)) if l["event"].is_string() => {
+        (None, true, Some(l)) if l["event"].is_string() => {
             l["event"].as_str().unwrap_or_default().to_string()
         }
         _ => return Ok(false),
     };
     let was_asking = last.as_ref().is_some_and(|l| l["asking"] == true);
     let asking = event != "ended" && sent.asking.unwrap_or(was_asking);
+    // Whether the turn's last reply asks its person: said by the hook that
+    // ended it, kept by another for the same end, dropped by the next event.
+    let was_asked =
+        last.as_ref().is_some_and(|l| l["event"] == event.as_str() && l["asked"] == true);
+    let asked = event == "turn_ended" && sent.asked.unwrap_or(was_asked);
+    // A signal with no event is about the turn the last line holds, and its process.
+    let (pid, pid_start) = match (&sent.state, &last) {
+        (None, Some(l)) => {
+            (l["pid"].as_u64().map(|p| p as u32), l["pid_start"].as_str().map(str::to_string))
+        }
+        _ => (sent.pid, sent.pid_start.clone()),
+    };
     let same = last.is_some_and(|l| {
         l["event"] == event.as_str()
-            && l["pid"] == json!(sent.pid)
-            && l["pid_start"] == json!(sent.pid_start)
+            && l["pid"] == json!(pid)
+            && l["pid_start"] == json!(pid_start)
             && was_asking == asking
+            && was_asked == asked
     });
     if same {
         return Ok(false);
     }
     let mut line = json!({"event": event, "session": sent.session,
                           "time": weft_core::turns::stamp(now), "harness": sent.harness});
-    if let (Some(pid), Some(start)) = (sent.pid, &sent.pid_start) {
+    if let (Some(pid), Some(start)) = (pid, &pid_start) {
         line["pid"] = json!(pid);
         line["pid_start"] = json!(start);
     }
     if asking {
         line["asking"] = json!(true);
+    }
+    if asked {
+        line["asked"] = json!(true);
     }
     std::fs::create_dir_all(&dir)?;
     let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
@@ -190,6 +207,43 @@ mod tests {
         // No line yet and no event: nothing to keep.
         let fresh = tempfile::tempdir().unwrap();
         assert!(!record(fresh.path(), root, &asked(None, Some(true)), 1).unwrap());
+    }
+
+    #[test]
+    fn a_turn_that_ended_asking_is_kept_until_the_next_event() {
+        let base = tempfile::tempdir().unwrap();
+        let (base, root) = (base.path(), Path::new("/work/thing"));
+        let ended = |asked: Option<bool>| Sent { asked, ..sent("turn_ended", None) };
+        let read = |base: &Path| {
+            let text =
+                std::fs::read_to_string(project_dir(base, root).join("claude-code/s1.jsonl"));
+            weft_core::turns::read("claude-code", "s1", &text.unwrap()).map(|s| (s.latest, s.asked))
+        };
+        use weft_core::turns::Turn;
+        assert!(record(base, root, &ended(Some(true)), 1000).unwrap());
+        assert_eq!(lines(base, root)[0]["asked"], true);
+        assert_eq!(read(base), Some((Turn::TurnEnded, true)), "a turn that ended, asking");
+        // Another hook for the same end, which read no reply, keeps it.
+        assert!(!record(base, root, &ended(None), 1500).unwrap(), "a repeat");
+        assert!(record(base, root, &sent("working", None), 2000).unwrap());
+        assert!(lines(base, root)[1].get("asked").is_none());
+        assert_eq!(read(base), Some((Turn::Working, false)), "the person answered");
+        assert!(record(base, root, &ended(Some(false)), 3000).unwrap());
+        assert_eq!(read(base), Some((Turn::TurnEnded, false)), "a turn that only reports");
+        // Asked again; the person types into the pane: no event, the turn's
+        // process kept, and the question answered.
+        assert!(
+            record(base, root, &Sent { asked: Some(true), ..sent("turn_ended", Some(41)) }, 4000)
+                .unwrap()
+        );
+        let typed = Sent { state: None, asked: Some(false), ..sent("turn_ended", None) };
+        assert!(record(base, root, &typed, 5000).unwrap());
+        let last = lines(base, root).pop().unwrap();
+        assert_eq!(
+            (last["event"].as_str(), last["pid"].as_u64(), last.get("asked")),
+            (Some("turn_ended"), Some(41), None)
+        );
+        assert!(!record(base, root, &typed, 6000).unwrap(), "typing again writes nothing");
     }
 
     #[test]

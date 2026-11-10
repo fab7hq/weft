@@ -1000,6 +1000,8 @@ impl WeftDesktopApp {
         let client = self.client(&t.project)?;
         let row = client.sessions.iter().find(|r| r.pane == Some(t.pane))?;
         let turn = client.view(t.pane).and_then(|v| v.turn).or(row.turn);
+        // A turn that ended asking its person waits on them, not on an Eval.
+        let turn = turn.filter(|_| !row.asked);
         weft_core::board::suggested_for(&client.units, &row.id, turn)
     }
 

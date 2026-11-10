@@ -510,6 +510,11 @@ impl Session {
         if let Some(at) = at {
             self.listen(at, &sent.harness);
         }
+        // A turn that ended: whether its last reply asks the person, by Sense.
+        if let Some(said) = sent.said.take() {
+            let model = self.sense.read().ok();
+            sent.asked = model.as_ref().and_then(|m| m.as_ref()?.turn_end(&said)).map(|t| t.asks);
+        }
         let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
         // A shared server's open stream speaks of every session it holds,
         // this one too, even if its turn began before the stream opened.
@@ -548,6 +553,30 @@ impl Session {
 
 impl Session {
     /// Tie a pane to the session it runs, in Weft's pane map.
+    /// The person typed into a pane whose turn ended asking them: the
+    /// question is being answered, so it no longer needs them.
+    pub(super) fn answered(&mut self, at: usize, pane: u32) {
+        let p = &self.projects[at];
+        let Some(slot) = p.panes.iter().find(|s| s.map.pane == pane) else { return };
+        let Some(bound) = slot.map.session.as_ref() else { return };
+        let (harness, session) = (slot.map.harness.clone(), bound.session.clone());
+        let asked =
+            p.turns.sessions().iter().any(|s| s.harness == harness && s.id == session && s.asked);
+        if !asked {
+            return;
+        }
+        let sent = weft_core::signal::Sent {
+            harness,
+            hook: "typed".into(),
+            session,
+            asked: Some(false),
+            ..Default::default()
+        };
+        let root = p.root.clone();
+        let _ = crate::receipts::record(&self.receipts, &root, &sent, crate::turns::now_millis());
+        self.tell_agents(at);
+    }
+
     pub(super) fn tie(&mut self, at: usize, pane: u32, session: &str) {
         let p = &mut self.projects[at];
         let mut map: Vec<_> = p.panes.iter().map(|s| s.map.clone()).collect();

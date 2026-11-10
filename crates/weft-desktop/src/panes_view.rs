@@ -408,13 +408,13 @@ fn tab_label(
     match resolve_tab_info(props.clients, tab) {
         Some(i) => {
             let state = if i.running { State::Running } else { State::Ended };
-            let shape = crate::tree_view::status_shape(state, i.turn);
+            let shape = crate::tree_view::status_shape(state, turns::needs_you(i.turn, i.asked));
             (format!("{} · {}", i.project, i.harness), Some(shape), i.turbo && i.running)
         }
         // An agent no longer known here has ended, as far as Weft can tell.
         None => {
             let proj = ProjectClient::name_of(&tab.project);
-            let shape = crate::tree_view::status_shape(State::Ended, None);
+            let shape = crate::tree_view::status_shape(State::Ended, false);
             (proj, Some(shape), false)
         }
     }
@@ -742,7 +742,7 @@ fn render_conversation_viewport(
 ) -> Element {
     let info = resolve_tab_info(props.clients, tab);
     let harness = info.as_ref().map(|i| i.harness.clone()).unwrap_or_default();
-    let turn = info.as_ref().and_then(|i| i.turn);
+    let needs_you = info.as_ref().is_some_and(|i| turns::needs_you(i.turn, i.asked));
     let zone = props.clients.iter().find(|c| c.root == tab.project).map_or(0, |c| c.zone);
 
     let has_items = props.conversations.contains_key(&(tab.project.clone(), tab.pane));
@@ -775,12 +775,12 @@ fn render_conversation_viewport(
             &tab.project,
             tab.pane,
             props.unfolded_steps,
-            turns::is_asking(turn),
+            needs_you,
             zone,
         ));
     }
 
-    if turns::is_asking(turn) {
+    if needs_you {
         let waiting_prefix = words::say("web.waiting.for_you", &harness);
         let waiting_cta = words::word("web.waiting.answer");
         chat_col.push(
@@ -1073,17 +1073,21 @@ struct TabInfo {
     project: String,
     harness: String,
     turn: Option<Turn>,
+    /// Its turn ended with a reply asking the person.
+    asked: bool,
     turbo: bool,
     running: bool,
 }
 
 fn resolve_tab_info(clients: &[ProjectClient], tab: &SavedPaneTab) -> Option<TabInfo> {
     let client = clients.iter().find(|c| c.root == tab.project)?;
+    let asked = client.sessions.iter().any(|s| s.pane == Some(tab.pane) && s.asked);
     if let Some(p) = client.view(tab.pane) {
         return Some(TabInfo {
             project: client.name.clone(),
             harness: p.harness.clone(),
             turn: p.turn,
+            asked,
             turbo: p.turbo,
             running: p.running,
         });
@@ -1093,6 +1097,7 @@ fn resolve_tab_info(clients: &[ProjectClient], tab: &SavedPaneTab) -> Option<Tab
         project: client.name.clone(),
         harness: s.harness.clone(),
         turn: s.turn,
+        asked,
         turbo: client.turbo,
         running: s.state == weft_core::sessions::State::Running,
     })

@@ -1250,6 +1250,7 @@ mod tests {
                     asks: 0,
                     pane: None,
                     resumable: true,
+                    asked: true,
                 }],
                 zone: 7 * 3_600_000,
             },

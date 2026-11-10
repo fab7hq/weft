@@ -168,6 +168,8 @@ pub struct Board<'a> {
     /// What each pane's agent last reported, in the order of `panes`, when
     /// Weft can tell.
     pub agents: &'a [Option<crate::turns::Turn>],
+    /// Whether each pane's turn ended with a reply asking its person.
+    pub asked: &'a [bool],
 }
 
 impl Board<'_> {
@@ -195,7 +197,7 @@ impl Board<'_> {
     /// is the person's to pick up when they choose, and a finished turn
     /// says nothing about whether the work is done.
     pub fn needs_you(&self) -> usize {
-        crate::turns::asking(self.panes, self.agents, None)
+        crate::turns::asking(self.panes, self.agents, self.asked, None)
     }
 
     /// The harness whose readiness decides what the person can do now: the one
@@ -456,6 +458,7 @@ mod tests {
             routing,
             workspace_gap: None,
             agents: &[],
+            asked: &[],
         }
     }
 
