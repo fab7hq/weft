@@ -125,6 +125,9 @@ struct Ctx {
     /// The Asks whose own sentences RingFrame sorted into requirements: the
     /// requirements task lists theirs from the person's words.
     sentence_asks: Vec<String>,
+    /// What the person typed after each Ask, in its session, in order: read
+    /// with the Ask as one thread.
+    later: BTreeMap<String, Vec<String>>,
     /// How many findings concern each window, as `findings_on` finds them,
     /// without the checks' warnings: what ranks the map's leaves and picks a
     /// requirement's evidence, so every task holds the same whether or not
@@ -192,10 +195,26 @@ impl Ctx {
             )
         })?;
         let mut changes = changes;
+        let later: BTreeMap<String, Vec<String>> = array_of(&brief, "asks")
+            .iter()
+            .map(|a| {
+                let said = array_of(a, "later").iter().map(|p| str_of(p, "text")).collect();
+                (str_of(a, "ask_id"), said)
+            })
+            .filter(|(_, said): &(String, Vec<String>)| !said.is_empty())
+            .collect();
         let mut sentence_asks: Vec<String> = Vec::new();
-        for r in array_of(&changes, "requirements").iter().filter(|r| is_sentence(&str_of(r, "id")))
-        {
-            let ask = str_of(r, "ask");
+        let sentences = array_of(&changes, "requirements")
+            .iter()
+            .filter(|r| is_sentence(&str_of(r, "id")))
+            .map(|r| str_of(r, "ask"));
+        // An Ask followed by the person's own prompts is listed too: they may
+        // ask for more than its words hold.
+        let followed = array_of(&brief, "asks")
+            .iter()
+            .map(|a| str_of(a, "ask_id"))
+            .filter(|a| later.contains_key(a));
+        for ask in sentences.chain(followed) {
             if !sentence_asks.contains(&ask) {
                 sentence_asks.push(ask);
             }
@@ -235,6 +254,7 @@ impl Ctx {
             windows,
             changes,
             sentence_asks,
+            later,
             flagged,
         })
     }
@@ -1379,6 +1399,12 @@ steps an Ask names, with their Done-when rows, and the paths it names. List \
 the rest, one requirement per thing asked, each with a quote of the words it \
 comes from.
 
+Under an Ask, each `--- later` is a prompt the person typed to its agent \
+after it, in order. Read the Ask and its later prompts as one thread: a later \
+prompt may add a requirement, change one or cancel one, and the later words \
+win. List a requirement as the thread leaves it, under that Ask, and leave \
+out one the person cancelled.
+
 Write your output file:
 
 ```json
@@ -1392,15 +1418,15 @@ Write your output file:
 rule every part of the change must keep; `process` for how the work is done or \
 reported (commits, notes, the order of the work), which the change itself \
 cannot show.
-- `quote`: 8 to 300 characters copied exactly from that Ask: the words this \
-requirement comes from.
+- `quote`: 8 to 300 characters copied exactly from that Ask or one of its \
+later prompts: the words this requirement comes from.
 - `text`: the requirement in one sentence, at most 200 characters.
 - Leave out words that only name what to build (the plan or its phase): its \
 steps are already requirements.
 
 Do your task yourself: never hand it, or a part of it, to another agent. Write \
 your output file yourself, not with a script: RingFrame checks every quote \
-against its Ask.
+against its Ask and its later prompts.
 
 When your output is written, run `ringframe eval submit --task <task id> --file \
 <your output file>`. If it refuses, fix exactly what it names and submit again. \
@@ -1479,6 +1505,9 @@ fn brief(t: &Task, file: &Value, windows: &str, deny: &[String]) -> String {
         b.push_str("\n## Asks\n\n");
         for a in array_of(file, "asks") {
             let _ = writeln!(b, "=== {}\n{}\n", str_of(a, "id"), str_of(a, "text").trim_end());
+            for said in array_of(a, "later") {
+                let _ = writeln!(b, "--- later\n{}\n", str_of_value(said).trim_end());
+            }
         }
         b.push_str("=== end of brief ===\n");
         return b;
@@ -1619,7 +1648,10 @@ fn task_file(ctx: &Ctx, t: &Task, role: &str, facts: &[Value]) -> (Value, String
             let asks: Vec<Value> = ctx
                 .sentence_asks
                 .iter()
-                .map(|a| json!({"id": a, "text": ask_words(&ctx.ws, a)}))
+                .map(|a| {
+                    let later = ctx.later.get(a).cloned().unwrap_or_default();
+                    json!({"id": a, "text": ask_words(&ctx.ws, a), "later": later})
+                })
                 .collect();
             v["asks"] = json!(asks);
         }
@@ -2255,12 +2287,16 @@ fn check_requirements(ch: &mut Checker, out: &Value) {
         }
         let quote = str_of(r, "quote");
         let n = quote.trim().chars().count();
+        let quote = squash(&quote);
+        let later = ch.ctx.later.get(&ask).into_iter().flatten();
         let found = (QUOTE_MIN..=QUOTE_MAX).contains(&n)
-            && squash(&ask_words(&ch.ctx.ws, &ask)).contains(&squash(&quote));
+            && std::iter::once(ask_words(&ch.ctx.ws, &ask))
+                .chain(later.cloned())
+                .any(|said| squash(&said).contains(&quote));
         if listed && !found {
             ch.error(
                 &format!("{at}.quote"),
-                "8 to 300 characters copied exactly from that Ask's words",
+                "8 to 300 characters copied exactly from that Ask's words or a later prompt of it",
             );
         }
     }
@@ -3868,6 +3904,91 @@ mod tests {
                 let w = window_for(ws, &second, path);
                 assert_eq!(kept[&w]["map"]["serves"], json!([ids2[words]]), "{path}");
             }
+        });
+    }
+
+    /// An Ask in session s1, then the person's own prompt there, the work,
+    /// and the Eval over them; with the requirements task and its Ask.
+    fn ask_then_later(ws: &Workspace, words: &str, later: &str) -> (String, String, String) {
+        let ask = confirm_ask_as(ws, format!("/goal {words}\n").as_bytes(), "native_goal");
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        crate::sessions::observe_prompt(ws, "claude-code", "s1", later, None, "weft").unwrap();
+        commit(
+            &ws.root,
+            &[("src/a.js", Some("export const alpha_count = (xs) => xs.length;\n"))],
+            "work",
+        );
+        let e = str_of(&open_eval(ws, Open::default()).unwrap(), "eval_id");
+        let q1 = str_of(&take(ws, &e, Some("requirements")).unwrap()["task"], "task_id");
+        (e, q1, str_of(&ask, "ask_id"))
+    }
+
+    #[test]
+    fn the_requirements_task_reads_an_asks_later_prompt_and_a_quote_of_it_holds() {
+        eval_bench(|ws| {
+            let later = "also make alpha_count handle an empty list";
+            let (_, q1, ask) = ask_then_later(ws, "Add alpha_count for the counter.", later);
+            let file = task_of(ws, &q1);
+            let listed = &array_of(&file, "asks")[0];
+            assert_eq!(str_of(listed, "id"), ask);
+            assert_eq!(listed["later"], json!([later]));
+            let e = eval_of(&q1).unwrap();
+            let md =
+                std::fs::read_to_string(tmp(ws, e).join(format!("tasks/{q1}.brief.md"))).unwrap();
+            assert!(md.contains(later), "the judge reads it: {md}");
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [
+                {"ask": ask, "kind": "local", "text": "alpha_count counts", "quote": "alpha_count for the counter"},
+                {"ask": ask, "kind": "local", "text": "an empty list is handled", "quote": "handle an empty list"}]}),
+            );
+            let said = submit(ws, &q1).unwrap();
+            assert_eq!(said.0, 0, "{}", said.1);
+        });
+    }
+
+    #[test]
+    fn a_quote_from_neither_the_ask_nor_a_later_prompt_is_refused() {
+        eval_bench(|ws| {
+            let (_, q1, ask) =
+                ask_then_later(ws, "Add alpha_count for the counter.", "also handle an empty list");
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [
+                {"ask": ask, "kind": "local", "text": "it logs", "quote": "log every call to stderr"}]}),
+            );
+            let said = submit(ws, &q1).unwrap();
+            assert_ne!(said.0, 0, "refused");
+            assert!(said.1.to_string().contains("quote"), "{}", said.1);
+        });
+    }
+
+    #[test]
+    fn a_requirement_a_later_prompt_cancels_is_not_listed() {
+        eval_bench(|ws| {
+            let (e, q1, ask) = ask_then_later(
+                ws,
+                "Add alpha_count for the counter and beta_total for the sums.",
+                "skip beta_total for now, only alpha_count",
+            );
+            // The judge reads the thread, the later words winning: beta_total is
+            // not asked for any more, so it lists alpha_count alone.
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [
+                {"ask": ask, "kind": "local", "text": "alpha_count counts", "quote": "alpha_count for the counter"}]}),
+            );
+            assert_eq!(submit(ws, &q1).unwrap().0, 0);
+            let texts: Vec<String> = Ctx::load(ws, &e)
+                .unwrap()
+                .requirements()
+                .iter()
+                .map(|r| str_of(r, "text"))
+                .collect();
+            assert!(texts.iter().all(|t| !t.contains("beta_total")), "{texts:?}");
         });
     }
 

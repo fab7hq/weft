@@ -615,7 +615,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         .collect();
     let mut limitations = vec![
         "the brief describes the ledger and the Git delta only; RingFrame runs none of the project's commands".to_string(),
-        "plain prompts are counted, never stored; changes no Ask explains may follow an unrecorded instruction".to_string(),
+        "prompts typed outside the unit's sessions are counted, never read; changes no Ask explains may follow one of them".to_string(),
     ];
     if kind == "worktree" {
         limitations.push("subject is the uncommitted worktree".into());
@@ -717,6 +717,8 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
             "ask_id": a["ask_id"], "order": i + 1, "title": a["title"],
             "prompt_path": a["prompt"]["path"], "compiled": a["time"],
             "confirmed": a["confirmed_at"], "submission": a["submission"], "links": a["links"],
+            "later": later[i].iter().map(|p| json!({"at": p.time, "text": p.text}))
+                .collect::<Vec<_>>(),
             "unrecorded_prompts_after": counts[i],
         })).collect::<Vec<_>>(),
         "changes": changes(ws, &anchor_ref, &subject)?,
@@ -1083,6 +1085,20 @@ mod tests {
             assert_eq!(before, 0);
             // Another session's, a judge's, and the row without its text.
             assert_eq!(after, [3]);
+        });
+    }
+
+    #[test]
+    fn the_brief_holds_each_asks_later_prompts() {
+        eval_bench(|ws| {
+            ask_then_said(ws);
+            commit(&ws.root, &[("src/a.js", Some("a\n"))], "work");
+            let brief = brief_of(ws, &open_eval(ws, Open::default()).unwrap());
+            let later = array_of(&array_of(&brief, "asks")[0], "later");
+            assert_eq!(later.len(), 1);
+            assert_eq!(later[0]["text"], "also handle empty input");
+            assert!(later[0]["at"].is_string());
+            assert_eq!(array_of(&brief, "asks")[0]["unrecorded_prompts_after"], 2);
         });
     }
 

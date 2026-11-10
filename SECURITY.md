@@ -15,8 +15,8 @@ public issue for an unpatched vulnerability.
 ## Data and trust
 
 RingFrame stores Ask text, compiled prompts, evaluations, decisions, and hook
-metadata under `.fab7/rf/`. An Ask is kept in full; a prompt typed straight
-into an agent keeps only its digest, byte count, and metadata.
+metadata under `.fab7/rf/`. An Ask is kept in full, and so is a prompt typed
+straight into an agent, so an Eval can read it with the Ask it follows.
 Git-ignore is a sharing default, not encryption. Review records before export.
 
 The CLI uses digests and an append-only ledger to check local consistency.
