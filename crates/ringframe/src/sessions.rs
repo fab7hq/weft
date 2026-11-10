@@ -162,10 +162,9 @@ pub struct Prompt {
     pub text: Option<String>,
 }
 
-/// Every prompt observed in this workspace, session by session, each
-/// session's in the order they were observed.
-pub fn read_prompts(ws: &Workspace) -> Vec<Prompt> {
-    let mut paths: Vec<(String, String, PathBuf)> = Vec::new();
+/// Every session's `prompts.jsonl`, with its host and session, in order.
+fn prompt_files(ws: &Workspace) -> Vec<(String, String, PathBuf)> {
+    let mut paths = Vec::new();
     let base = ws.rf_dir().join("sessions");
     for host in std::fs::read_dir(&base).into_iter().flatten().flatten() {
         for session in std::fs::read_dir(host.path()).into_iter().flatten().flatten() {
@@ -177,21 +176,64 @@ pub fn read_prompts(ws: &Workspace) -> Vec<Prompt> {
         }
     }
     paths.sort();
+    paths
+}
+
+/// One row of a `prompts.jsonl`, if it reads.
+fn prompt_of(host: &str, session: &str, line: &str) -> Option<Prompt> {
+    let rec = serde_json::from_str::<Value>(line).ok()?;
+    let field = |k: &str| rec[k].as_str().unwrap_or_default().to_string();
+    Some(Prompt {
+        host: host.to_string(),
+        session: session.to_string(),
+        time: field("time"),
+        sha256: field("sha256"),
+        text: rec["text"].as_str().map(str::to_string),
+    })
+}
+
+/// Every prompt observed in this workspace, session by session, each
+/// session's in the order they were observed.
+pub fn read_prompts(ws: &Workspace) -> Vec<Prompt> {
     let mut out = Vec::new();
-    for (host, session, path) in paths {
-        for line in std::fs::read_to_string(&path).unwrap_or_default().lines() {
-            let Ok(rec) = serde_json::from_str::<Value>(line) else { continue };
-            let field = |k: &str| rec[k].as_str().unwrap_or_default().to_string();
-            out.push(Prompt {
-                host: host.clone(),
-                session: session.clone(),
-                time: field("time"),
-                sha256: field("sha256"),
-                text: rec["text"].as_str().map(str::to_string),
-            });
+    for (host, session, path) in prompt_files(ws) {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        out.extend(text.lines().filter_map(|l| prompt_of(&host, &session, l)));
+    }
+    out
+}
+
+/// Each session's first prompt that says something, by session id, titled as
+/// an Ask is: its first line, cut to 72 characters, without a leading command
+/// such as `/goal`. A prompt that is only a command, or kept without its text,
+/// names nothing.
+/// Each file is read only up to that prompt.
+pub fn first_prompts(ws: &Workspace) -> std::collections::BTreeMap<String, String> {
+    use std::io::BufRead;
+    let mut out = std::collections::BTreeMap::new();
+    for (host, session, path) in prompt_files(ws) {
+        let Ok(file) = std::fs::File::open(&path) else { continue };
+        let first = std::io::BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .filter_map(|l| prompt_of(&host, &session, &l)?.text)
+            .find_map(|t| words_of(&t));
+        if let Some(words) = first {
+            out.insert(session, crate::ask::requested_title(words.as_bytes()));
         }
     }
     out
+}
+
+/// A prompt's words: without a leading `/command`; none when nothing is left.
+fn words_of(text: &str) -> Option<String> {
+    let text = text.trim();
+    let words = match text.strip_prefix('/') {
+        Some(command) => command.split_once(char::is_whitespace).map_or("", |(_, rest)| rest),
+        None => text,
+    };
+    let words = words.trim();
+    (!words.is_empty()).then(|| words.to_string())
 }
 
 #[cfg(test)]
@@ -256,6 +298,29 @@ mod tests {
             assert_eq!(read.len(), 1);
             assert_eq!(read[0].text, None);
             assert_eq!(read[0].sha256, "ab");
+        });
+    }
+
+    #[test]
+    fn each_sessions_first_prompt_with_words_names_it() {
+        crate::testing::with_config_home(|_| {
+            let repo = repo();
+            let ws = ws_for(repo.path());
+            capture(&ws, "claude-code", "/clear", "s1", None).unwrap();
+            capture(&ws, "claude-code", "fix the login redirect\nand its test", "s1", None)
+                .unwrap();
+            capture(&ws, "claude-code", "then the docs", "s1", None).unwrap();
+            capture(&ws, "codex", "/goal why does CI fail on main", "s2", None).unwrap();
+            capture(&ws, "grok", &"word ".repeat(30), "s4", None).unwrap();
+            let old =
+                json!({"session_id": "s3", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
+            log(&ws, "agy", "s3", "prompts.jsonl", &old).unwrap();
+            let firsts = first_prompts(&ws);
+            assert_eq!(firsts["s1"], "fix the login redirect", "a command alone is skipped");
+            assert_eq!(firsts["s2"], "why does CI fail on main", "its command dropped");
+            assert!(!firsts.contains_key("s3"), "a prompt kept without its text names nothing");
+            assert_eq!(firsts["s4"].chars().count(), 72, "cut as an Ask's title is");
+            assert!(firsts["s4"].ends_with('…'));
         });
     }
 

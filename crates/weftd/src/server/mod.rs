@@ -184,6 +184,9 @@ struct Project {
     /// The record, followed here rather than in every client. One reader, and
     /// clients are told what it says.
     ledger: crate::ledger::Ledger,
+    /// Each session's first prompt, as RingFrame titles it, and when it was
+    /// read: what names an agent no Ask has titled.
+    first_prompts: (Option<std::time::Instant>, std::collections::BTreeMap<String, String>),
     waiting: Vec<Waiting>,
     /// Which harness takes which act here, and what each harness answers
     /// about itself. Both are the machine's, so both are asked here.
@@ -2116,6 +2119,7 @@ impl Session {
                     panes: Vec::new(),
                     next_pane: 0,
                     ledger,
+                    first_prompts: Default::default(),
                     waiting: Vec::new(),
                     // Harnesses a test hands over are its fixture of a machine
                     // set up for RingFrame; the files' harnesses are asked.

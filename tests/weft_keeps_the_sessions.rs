@@ -111,6 +111,30 @@ fn panes(root: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(root.join(".fab7/weft/panes.json")).unwrap()).unwrap()
 }
 
+/// A session no Ask has titled is named by the first prompt typed in it.
+#[test]
+fn a_session_no_ask_titled_is_named_by_its_first_prompt() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join("config.toml");
+    let root = home.path().join("gl");
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    // As RingFrame keeps a prompt the hook saw.
+    let kept = root.join(".fab7/rf/sessions/codex/s_named");
+    std::fs::create_dir_all(&kept).unwrap();
+    let line = serde_json::json!({"session_id": "s_named", "text": "/goal fix the login redirect\nand its test"});
+    std::fs::write(kept.join("prompts.jsonl"), format!("{line}\n")).unwrap();
+    let socket = protocol::private_socket("weft-named");
+    serve(&socket, &config, serde_json::json!({}));
+    let mut c = Client::attach(&socket, &root);
+    support::signal(&socket, outside(&root, "s_named", "working", None));
+    support::signal(&socket, outside(&root, "s_bare", "working", None));
+    let index = c.index_until(|i| row(i, "s_named").is_some() && row(i, "s_bare").is_some());
+    assert_eq!(row(&index, "s_named").unwrap().title.as_deref(), Some("fix the login redirect"));
+    assert_eq!(row(&index, "s_bare").unwrap().title, None, "nothing typed: its harness alone");
+    let _ = c.call(Call::Shutdown);
+}
+
 #[test]
 fn every_session_is_kept_and_a_resume_names_exactly_its_id() {
     let home = tempfile::tempdir().unwrap();

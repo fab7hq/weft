@@ -264,6 +264,14 @@ pub fn index(
     rows
 }
 
+/// Rows no Ask has titled take their session's first prompt, as RingFrame
+/// titles it (`firsts`, by session id).
+pub fn first_prompt_titles(rows: &mut [Row], firsts: &std::collections::BTreeMap<String, String>) {
+    for row in rows.iter_mut().filter(|r| r.title.is_none()) {
+        row.title = firsts.get(&row.id).cloned();
+    }
+}
+
 /// How many ended sessions the tree shows after the running ones.
 pub const ENDED_IN_TREE: usize = 3;
 
@@ -459,6 +467,27 @@ mod tests {
             }]
         );
         assert!(index(&[], &[], &units, &alive).is_empty(), "no receipt, no pane: no row");
+    }
+
+    #[test]
+    fn a_session_no_ask_titled_is_titled_by_its_first_prompt() {
+        let units = [asked("ask_1", "fix login", "s1", "2026-10-08T12:01:00Z")];
+        let mut rows = index(
+            &[
+                heard("claude-code", "s1", NOON, Turn::Ready, NOON),
+                heard("codex", "c1", NOON, Turn::Ready, NOON),
+            ],
+            &[],
+            &units,
+            DEAD,
+        );
+        let firsts = [("s1", "the first prompt"), ("c1", "why does CI fail on main")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into();
+        first_prompt_titles(&mut rows, &firsts);
+        let title = |id: &str| rows.iter().find(|r| r.id == id).and_then(|r| r.title.clone());
+        assert_eq!(title("s1").as_deref(), Some("fix login"), "an Ask's title wins");
+        assert_eq!(title("c1").as_deref(), Some("why does CI fail on main"));
     }
 
     #[test]

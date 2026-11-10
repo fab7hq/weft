@@ -23,6 +23,19 @@ impl Session {
     }
 
     /// This project's panes, as everything outside the daemon sees them.
+    /// Each session's first prompt, read again at most every few seconds: a
+    /// prompt typed now names its agent soon enough.
+    fn read_first_prompts(&mut self, at: usize) {
+        const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+        let p = &mut self.projects[at];
+        if p.first_prompts.0.is_some_and(|read| read.elapsed() < EVERY) {
+            return;
+        }
+        let firsts =
+            ringframe::api::workspace(&p.root).map(|ws| ringframe::api::first_prompts(&ws));
+        p.first_prompts = (Some(std::time::Instant::now()), firsts.unwrap_or_default());
+    }
+
     pub(super) fn pane_infos(&mut self, project: usize) -> Vec<PaneInfo> {
         let Some(p) = self.projects.get_mut(project) else { return Vec::new() };
         p.panes
@@ -44,6 +57,7 @@ impl Session {
     /// session no pane holds runs while the process its receipts name does,
     /// or while its harness's open stream says a turn runs.
     pub(super) fn agents_of(&mut self, at: usize) -> Agents {
+        self.read_first_prompts(at);
         let dir = crate::receipts::project_dir(&self.receipts, &self.projects[at].root);
         let p = &mut self.projects[at];
         p.turns.refresh(&dir);
@@ -86,7 +100,8 @@ impl Session {
             heard.iter().filter(|h| !p.judged.contains(&h.session.id)).cloned().collect();
         let agents: Vec<_> =
             p.panes.iter().filter(|s| s.judge.is_none()).map(|s| s.map.clone()).collect();
-        let index = weft_core::sessions::index(&theirs, &agents, &p.ledger.units(), &alive);
+        let mut index = weft_core::sessions::index(&theirs, &agents, &p.ledger.units(), &alive);
+        weft_core::sessions::first_prompt_titles(&mut index, &p.first_prompts.1);
         let raw_states = crate::turns::pane_states(&map, &sessions);
         let states = raw_states
             .into_iter()

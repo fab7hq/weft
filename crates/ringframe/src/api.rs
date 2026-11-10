@@ -131,6 +131,12 @@ pub fn config_sync() -> Result<Value, Error> {
     crate::workspace::install_config(None).map_err(workspace_error)
 }
 
+/// Each session's first prompt that says something, by session id: what
+/// names an agent no Ask has titled.
+pub fn first_prompts(ws: &Workspace) -> std::collections::BTreeMap<String, String> {
+    crate::sessions::first_prompts(ws)
+}
+
 // ---- What a harness was seen doing ------------------------------------------------
 
 /// Who saw it, in which harness and session.
