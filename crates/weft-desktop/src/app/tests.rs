@@ -1700,25 +1700,28 @@ fn every_sheet_closes_with_the_same_button() {
     assert!(closes.windows(2).all(|w| w[0] == w[1]), "{closes:#?}");
 }
 
+/// Each agent row is two lines (card 11.12): its status shape and name, then
+/// its harness, state and time. An agent nothing has named shows its harness,
+/// and its second line leaves the harness out.
 #[test]
-fn the_tree_rows_are_one_line_with_the_status_shape() {
+fn the_agent_rows_are_the_name_then_harness_state_and_time() {
     let (_tmp, app) = sample_app(true);
     let dom = app.render();
     let tree = dom.find_layer("tree").expect("tree");
     assert_eq!(style(tree, "width"), Some("340px"));
-    for (layer, shape) in [
-        ("row agent antigravity fix login", "■"),
-        ("row agent codex", "●"),
-        ("row agent claude health endpoint", "●"),
-        ("row agent claude readme fix", "□"),
+    for (layer, shape, name, about) in [
+        ("row agent antigravity fix login", "■", "fix login", "antigravity · needs you · "),
+        ("row agent codex", "●", "codex", "running · "),
+        ("row agent claude health endpoint", "●", "health endpoint", "claude · running · "),
+        ("row agent claude readme fix", "□", "readme fix", "claude · ended · "),
     ] {
         let row = tree.find_layer(layer).unwrap_or_else(|| panic!("{layer}"));
-        assert_eq!(style(row, "height"), Some("36px"), "{layer}");
+        assert_eq!(style(row, "height"), Some("52px"), "{layer}");
         assert_eq!(row.children[0].all_text(), shape, "{layer}");
-        let text = row.all_text();
-        for word in ["working", "needs you", "ended", "No Ask yet"] {
-            assert!(!text.contains(word), "{layer} says {word:?}: {text}");
-        }
+        assert_eq!(row.find_layer("agent name").unwrap().all_text(), name, "{layer}");
+        let said = row.find_layer("agent about").unwrap().all_text();
+        assert!(said.starts_with(about), "{layer}: {said}");
+        assert!(said.ends_with(|c: char| c.is_ascii_digit()), "{layer} ends with its time: {said}");
     }
     assert!(tree.find_layer("row agent codex").unwrap().all_text().contains('⚡'));
     assert!(!tree.find_layer("row agent claude readme fix").unwrap().all_text().contains('⚡'));

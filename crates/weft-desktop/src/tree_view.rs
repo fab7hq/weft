@@ -658,6 +658,9 @@ pub fn status_shape(state: State, turn: Option<Turn>) -> (&'static str, &'static
     }
 }
 
+/// An agent's row (card 11.12): its status shape and name, the latest Ask's
+/// title or its first prompt, else its harness; then its harness, state and
+/// time.
 fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone: i64) -> Element {
     let layer_name = match &a.title {
         Some(t) => format!("row agent {} {t}", a.harness),
@@ -666,58 +669,69 @@ fn render_agent_row(project: &Path, a: &Agent, selected: bool, turbo: bool, zone
     let (shape, shape_color) = status_shape(a.state, a.turn);
     let running = a.state == State::Running;
 
-    let mut title =
-        div().flex_1().style("overflow", "hidden").flex_row().gap(6).items_baseline().child(
-            div()
-                .shrink_0()
-                .font_size(13)
-                .font_weight(if selected { 600 } else { 500 })
-                .style("white-space", "nowrap")
-                .color(if running { palette::TEXT } else { palette::MUTED })
-                .text(a.harness.clone()),
-        );
+    let name_colour = match (&a.title, running) {
+        (None, _) => palette::DIM,
+        (Some(_), true) => palette::TEXT,
+        (Some(_), false) => palette::MUTED,
+    };
+    let mut first = div().self_stretch().flex_row().gap(6).items_center().child(
+        line(a.title.clone().unwrap_or_else(|| a.harness.clone()))
+            .layer("agent name")
+            .font_size(13)
+            .font_weight(if selected { 600 } else { 400 })
+            .color(name_colour),
+    );
     if turbo && running {
-        title = title.child(div().shrink_0().font_size(11).color(palette::AMBER).text("⚡"));
+        first = first.child(div().shrink_0().font_size(11).color(palette::AMBER).text("⚡"));
     }
-    if let Some(t) = &a.title {
-        title = title.child(div().shrink_0().color(palette::DIM).text("·")).child(
-            line(t.clone()).font_size(13).color(if running {
-                palette::MUTED
-            } else {
-                palette::DIM
-            }),
-        );
-    }
+    let about = line(agent_about(a, zone))
+        .layer("agent about")
+        .font_mono()
+        .font_size(11)
+        .color(palette::DIM);
+    let text = div().flex_1().style("min-width", "0").flex_col().gap(2).child(first).child(about);
 
-    let el = row(layer_name, 36, 32, selected)
+    let mark = div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape);
+    // A waiting agent's ■ says why it waits.
+    let mark = if running && turns::is_asking(a.turn) {
+        mark.layer(format!("why waiting {}", a.session)).on_click(TreeAct::WhyWaiting {
+            project: project.to_path_buf(),
+            session: a.session.clone(),
+        })
+    } else {
+        mark
+    };
+    row(layer_name, 52, 32, selected)
+        .style("align-items", "flex-start")
+        .style("padding", "8px 16px 8px 32px")
         .on_click(TreeAct::SelectAgent {
             project: project.to_path_buf(),
             session: a.session.clone(),
             pane: a.pane,
         })
-        .child({
-            let mark =
-                div().shrink_0().w(10).font_mono().font_size(11).color(shape_color).text(shape);
-            // A waiting agent's ■ says why it waits.
-            if running && turns::is_asking(a.turn) {
-                mark.layer(format!("why waiting {}", a.session)).on_click(TreeAct::WhyWaiting {
-                    project: project.to_path_buf(),
-                    session: a.session.clone(),
-                })
-            } else {
-                mark
-            }
-        })
-        .child(title);
+        .child(mark)
+        .child(text)
+}
 
-    el.child(
-        div()
-            .shrink_0()
-            .font_mono()
-            .font_size(11)
-            .color(if selected { palette::MUTED } else { palette::DIM })
-            .text(clock(a.at, zone)),
-    )
+/// An agent's second line: its harness (when its name is not), its state
+/// and its time.
+fn agent_about(a: &Agent, zone: i64) -> String {
+    let time = clock(a.at, zone);
+    let state = match a.state {
+        State::Running if turns::is_asking(a.turn) => words::word("turn.waiting").to_string(),
+        State::Running => words::word("state.running").to_string(),
+        State::Ended => words::word("state.ended").to_string(),
+        _ => words::fill("state.last_active", &[("time", &time)]),
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if a.title.is_some() {
+        parts.push(a.harness.clone());
+    }
+    parts.push(state);
+    if matches!(a.state, State::Running | State::Ended) {
+        parts.push(time);
+    }
+    parts.join(" · ")
 }
 
 /// The colour a unit's status is said in.
