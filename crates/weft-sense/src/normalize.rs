@@ -1,7 +1,8 @@
 //! Text as sense-d reads it (sense-d spec/bundle.md §4,
 //! `fab7.sense.decision.normalize/2`): a screen as its facts in words, then
 //! its last lines, cleaned; a transcript entry as its harness and kind, then
-//! its text; then every character the manifest's table names replaced.
+//! its text; since `fab7.sense.decision/2`, a turn's last reply and a plan
+//! candidate; then every character the manifest's table names replaced.
 
 use crate::model::{PaneSnapshot, TranscriptSnippet};
 use anyhow::bail;
@@ -9,6 +10,9 @@ use std::collections::{BTreeMap, HashMap};
 
 /// An entry keeps this many bytes of its text.
 const ENTRY_BYTES: usize = 512;
+
+/// A turn's last reply keeps this many of its last characters.
+const REPLY_CHARS: usize = 1200;
 
 /// The manifest's normalizing table: each character and what it becomes.
 #[derive(Debug, Clone, Default)]
@@ -293,6 +297,20 @@ pub fn entry_text(item: &TranscriptSnippet<'_>, table: &Replacements) -> String 
     table.apply(&format!("{}, {kind}\n{text}", canonical_harness(item.harness)))
 }
 
+/// A turn's last agent reply as the turn-end head reads it: its last 1,200
+/// characters, without control characters, through the table.
+pub fn reply_text(reply: &str, table: &Replacements) -> String {
+    let cleaned: Vec<char> = reply.chars().filter(|c| !is_control(*c)).collect();
+    let last: String = cleaned[cleaned.len().saturating_sub(REPLY_CHARS)..].iter().collect();
+    table.apply(&last)
+}
+
+/// A plan candidate (`<slug>: <title>: <paragraph>`) as the plan head reads
+/// it: without control characters, through the table.
+pub fn candidate_text(candidate: &str, table: &Replacements) -> String {
+    table.apply(&candidate.chars().filter(|c| !is_control(*c)).collect::<String>())
+}
+
 fn is_control(ch: char) -> bool {
     matches!(ch as u32, 0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f)
 }
@@ -371,6 +389,24 @@ mod tests {
             snippet: "ok\x07\x00\u{fffd}…",
         };
         assert_eq!(entry_text(&item, &table()), "antigravity, planner response ↵ ok...");
+    }
+
+    #[test]
+    fn bundle_2_reads_a_reply_by_its_last_1200_characters() {
+        // fab7.sense.decision/2: the turn-end head's text, as Python's decision_reply_text.
+        let reply = format!("{}\x07\nWhich do you want…?", "x".repeat(1300));
+        let text = reply_text(&reply, &table());
+        assert!(text.ends_with("x ↵ Which do you want...?"));
+        assert_eq!(text.replace(" ↵ ", "\n").replace("...", "…").chars().count(), 1200);
+    }
+
+    #[test]
+    fn bundle_2_reads_a_plan_candidate_through_the_table() {
+        // fab7.sense.decision/2: the plan head's question text, as Python's decision_candidate_text.
+        assert_eq!(
+            candidate_text("site: Site: The homepage…\x00", &table()),
+            "site: Site: The homepage..."
+        );
     }
 
     #[test]
