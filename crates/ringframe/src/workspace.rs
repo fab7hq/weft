@@ -144,9 +144,21 @@ pub fn plans(ws: &Workspace) -> Vec<serde_json::Value> {
             let title = text.as_deref().and_then(|t| {
                 t.lines().find_map(|l| l.strip_prefix("# ")).map(|h| h.trim().to_string())
             });
-            serde_json::json!({"slug": slug, "path": text.is_some().then_some(rel), "title": title})
+            let paragraph = text.as_deref().map(first_paragraph);
+            serde_json::json!({"slug": slug, "path": text.is_some().then_some(rel), "title": title,
+                               "paragraph": paragraph})
         })
         .collect()
+}
+
+/// A plan's first paragraph after its title, its lines joined, in at most
+/// 300 characters: what Sense reads of a plan beside its slug and title.
+fn first_paragraph(text: &str) -> String {
+    // As sense's labels read it: with no title, from the top.
+    let title = text.lines().position(|l| l.starts_with("# "));
+    let after = text.lines().skip(title.map_or(0, |i| i + 1));
+    let lines = after.skip_while(|l| l.trim().is_empty()).take_while(|l| !l.trim().is_empty());
+    lines.map(str::trim).collect::<Vec<_>>().join(" ").chars().take(300).collect()
 }
 
 /// Absolute, with symlinks followed. A workspace root reached two ways has to
@@ -663,6 +675,25 @@ mod tests {
         let held = plans(&ws);
         let slugs: Vec<&str> = held.iter().filter_map(|p| p["slug"].as_str()).collect();
         assert_eq!(slugs, ["crypto-trading-agent", "ringframe"]);
+    }
+
+    #[test]
+    fn a_plan_comes_with_its_title_and_first_paragraph() {
+        let dir = crate::testing::tmp_dir();
+        let ws = resolve(Some(dir.path()), None).unwrap();
+        std::fs::create_dir_all(ws.root.join("plans/sync")).unwrap();
+        let md = "<!-- x -->\n# Offline sync\n\n  Notes sync between devices\n  when they reconnect.\n\n## Phase 1\n";
+        std::fs::write(ws.root.join("plans/sync/plan.md"), md).unwrap();
+        std::fs::create_dir_all(ws.root.join("plans/long")).unwrap();
+        std::fs::write(
+            ws.root.join("plans/long/plan.md"),
+            format!("# Long\n{}\n", "é".repeat(400)),
+        )
+        .unwrap();
+        let held = plans(&ws);
+        assert_eq!(held[1]["title"], "Offline sync");
+        assert_eq!(held[1]["paragraph"], "Notes sync between devices when they reconnect.");
+        assert_eq!(held[0]["paragraph"].as_str().unwrap().chars().count(), 300);
     }
 
     #[test]

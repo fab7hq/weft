@@ -230,24 +230,48 @@ pub enum Sensed {
     Answered(Box<weft_sense::AskAnswer>),
 }
 
-/// Sense on the words, given the harness's routes it may pick and the
-/// practice rules it may propose.
-pub type Sensing<'a> = &'a dyn Fn(&[&str], &[weft_sense::Rule]) -> Sensed;
+/// What Sense is asked to read: the words, and the route and plan the sheet
+/// holds when the person picked a route or there is a plan (the plan as its
+/// candidate text); the routes it may pick and the practice rules it may
+/// propose.
+pub struct Reading<'a> {
+    pub words: &'a str,
+    pub route: Option<&'a str>,
+    pub plan: Option<&'a str>,
+    pub routes: &'a [&'a str],
+    pub rules: &'a [weft_sense::Rule],
+}
+
+/// Sense on a reading of the words.
+pub type Sensing<'a> = &'a dyn Fn(&Reading) -> Sensed;
+
+/// The plan Sense's plan head defaults to among `(slug, candidate)` pairs,
+/// or none: unsure, no plan head, or past its deadline.
+pub type PlanPicking<'a> = &'a dyn Fn(&str, &[(String, String)]) -> Option<String>;
+
+/// How many plans the plan head reads at most, the word shortlist's size.
+pub const PLAN_SHORTLIST: usize = 8;
+
+/// The chosen route and plan, the person's: a plan path, or `Some(None)` for
+/// no plan.
+pub type Picked<'a> = (Option<&'a str>, Option<&'a str>, Option<Option<&'a str>>);
 
 /// What the Ask sheet offers for `harness` and these words: every route of
-/// its profile; the kinds of work; the plan the words are most about, of the
-/// plans held here; and, for the route and task given or their defaults, the
-/// practice rules to choose from and the route's rules. With Sense, its
-/// answer sets the defaults and proposes practices. A route Sense does not
-/// pick is direct, or the first where the harness has none: plan, goal and
-/// review are the person's to ask for. When Sense fails no practice is
-/// chosen; without Sense every practice is offered.
+/// its profile; the kinds of work; the plans held here and the one Sense's
+/// plan head defaults to; and, for the route and task given or their
+/// defaults, the practice rules to choose from and the route's rules. With
+/// Sense, its answer sets the defaults and proposes practices; a route the
+/// person picked, or a plan the sheet holds, is read again with the words. A
+/// route Sense does not pick is direct, or the first where the harness has
+/// none: plan, goal and review are the person's to ask for. When Sense fails
+/// no practice is chosen; without Sense every practice is offered.
 pub fn sheet(
     project: &Path,
     layers: Option<&str>,
     (harness, words): (&str, &str),
-    (route, task): (Option<&str>, Option<&str>),
+    (route, task, plan): Picked,
     sense: Sensing,
+    pick_plan: PlanPicking,
 ) -> Result<Value, Error> {
     let ws = workspace(project)?;
     let profile = api::profile(&ws, harness).map_err(refused)?;
@@ -260,25 +284,21 @@ pub fn sheet(
     let overrides = overrides(layers)?;
     let candidates = candidate_rules(&ws, harness, routes.first().copied(), &overrides)?;
     let classes: Vec<&str> = routes.iter().filter_map(|r| r.strip_prefix("native_")).collect();
-    let sensed = sense(&classes, &candidates);
-    let failed = sensed == Sensed::Failed;
-    let answer = match sensed {
+    let reading = Reading { words, route: None, plan: None, routes: &classes, rules: &candidates };
+    let first = sense(&reading);
+    let failed = first == Sensed::Failed;
+    let first = match first {
         Sensed::Answered(a) => Some(*a),
         Sensed::Off | Sensed::Failed => None,
     };
-    let defaults = answer.as_ref().map(SenseDefaults::of);
     let fallback = routes.iter().find(|r| **r == "native_direct").or(routes.first());
+    let picked_route = route;
     let route = route
         .map(str::to_string)
-        .or_else(|| defaults.as_ref().and_then(|d| d.route.clone()))
+        .or_else(|| first.as_ref().and_then(|a| SenseDefaults::of(a).route))
         .or_else(|| fallback.map(|r| r.to_string()))
         .unwrap_or_default();
     let route = route.as_str();
-    let sensed_task = defaults.as_ref().and_then(|d| d.task.as_deref());
-    let task = task.or(sensed_task);
-    let task = task.unwrap_or(if route.contains("plan") { "plan" } else { "implement" });
-    let effects =
-        defaults.as_ref().map_or(vec!["read".into(), "write".into()], |d| d.effects.clone());
     // A plan folder with no plan.md has no path, and is no plan to work.
     let plans: Vec<weft_core::ask::Plan> = profile["plans"]
         .as_array()
@@ -287,11 +307,58 @@ pub fn sheet(
         .filter_map(|p| {
             let slug = p["slug"].as_str()?.to_string();
             let title = p["title"].as_str().unwrap_or(&slug).to_string();
-            Some(weft_core::ask::Plan { path: p["path"].as_str()?.into(), title, slug })
+            let paragraph = p["paragraph"].as_str().unwrap_or_default().to_string();
+            Some(weft_core::ask::Plan { path: p["path"].as_str()?.into(), title, slug, paragraph })
         })
         .collect();
-    let plan = weft_core::ask::plan_for(words, &plans).cloned();
-    let result = if task == "plan" { "plan" } else { "workspace_change" };
+    let plan = match plan {
+        Some(path) => plans.iter().find(|p| Some(p.path.as_str()) == path).cloned(),
+        None => {
+            let shortlist = weft_core::ask::shortlist(words, &plans, PLAN_SHORTLIST);
+            let candidates: Vec<(String, String)> =
+                shortlist.iter().map(|p| (p.slug.clone(), p.candidate())).collect();
+            let slug = pick_plan(words, &candidates);
+            plans.iter().find(|p| Some(&p.slug) == slug.as_ref()).cloned()
+        }
+    };
+    // Sense again within what the sheet holds: the person's route, the plan.
+    let class = route.strip_prefix("native_").filter(|r| classes.contains(r));
+    let answer = match first {
+        Some(first) if picked_route.is_some() || plan.is_some() => {
+            let candidate = plan.as_ref().map(weft_core::ask::Plan::candidate);
+            let only: Vec<&str> = class.into_iter().collect();
+            let routes = if only.is_empty() { &classes } else { &only };
+            let reading = Reading {
+                words,
+                route: class,
+                plan: candidate.as_deref(),
+                routes,
+                rules: &candidates,
+            };
+            match sense(&reading) {
+                // Sense's own route stays the one it read from the words.
+                Sensed::Answered(within) => {
+                    Some(weft_sense::AskAnswer { route: first.route, ..*within })
+                }
+                Sensed::Off | Sensed::Failed => Some(first),
+            }
+        }
+        first => first,
+    };
+    let defaults = answer.as_ref().map(SenseDefaults::of);
+    let sensed_task = defaults.as_ref().and_then(|d| d.task.as_deref());
+    let picked_task = task;
+    let task = task.or(sensed_task);
+    let task = task.unwrap_or(if route.contains("plan") { "plan" } else { "implement" });
+    let effects =
+        defaults.as_ref().map_or(vec!["read".into(), "write".into()], |d| d.effects.clone());
+    // Sense's tasks, unless the person picked one.
+    let tasks = match (&answer, picked_task) {
+        (Some(a), None) if !a.task.on.is_empty() => a.task.on.clone(),
+        _ => vec![task.to_string()],
+    };
+    let result =
+        weft_sense::ask::derive_result(class.unwrap_or(route), &tasks, &effects, plan.is_some());
     let classification =
         api::Classification { task: vec![task.into()], result: result.into(), effects };
     let rules = api::rules(&ws, harness, route, &classification, &overrides).map_err(refused)?;
@@ -567,14 +634,26 @@ pub(crate) mod tests {
         let repo = folder("sheet", true);
         std::fs::create_dir_all(repo.join("plans/uptime")).unwrap();
         std::fs::write(repo.join("plans/uptime/plan.md"), "# Uptime endpoint\n").unwrap();
-        let said =
-            sheet(&repo, None, ("claude-code", "add the uptime endpoint"), (None, None), &no_sense);
+        let said = sheet(
+            &repo,
+            None,
+            ("claude-code", "add the uptime endpoint"),
+            (None, None, None),
+            &no_sense,
+            &no_plan,
+        );
         let said = said.unwrap();
         assert_eq!(said["route"], "native_direct", "direct is the default");
-        assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
+        assert_eq!(said["plan"], Value::Null, "words alone pick no plan: the plan head does");
         assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
-        let goal =
-            sheet(&repo, None, ("claude-code", "fix it"), (Some("native_goal"), None), &no_sense);
+        let goal = sheet(
+            &repo,
+            None,
+            ("claude-code", "fix it"),
+            (Some("native_goal"), None, None),
+            &no_sense,
+            &no_plan,
+        );
         let goal = goal.unwrap();
         assert_eq!((&goal["route"], &goal["task"]), (&"native_goal".into(), &"implement".into()));
         assert_eq!(goal["plan"], Value::Null, "no plan named");
@@ -584,11 +663,15 @@ pub(crate) mod tests {
             .iter()
             .filter_map(|r| r["label"].as_str())
             .collect();
-        assert_eq!(labels, ["Step Loop", "Done Check"]);
+        assert_eq!(labels, ["Done Check"], "a goal with no plan has no steps to loop");
         let _ = std::fs::remove_dir_all(repo);
     }
 
-    fn no_sense(_: &[&str], _: &[weft_sense::Rule]) -> Sensed {
+    fn no_plan(_: &str, _: &[(String, String)]) -> Option<String> {
+        None
+    }
+
+    fn no_sense(_: &Reading) -> Sensed {
         Sensed::Off
     }
 
@@ -627,7 +710,9 @@ pub(crate) mod tests {
         fixture_home();
         let repo = folder("sense-defaults", true);
         let words = ("claude-code", "plan the export");
-        let plain = sheet(&repo, None, words, (Some("native_plan"), None), &no_sense).unwrap();
+        let plain =
+            sheet(&repo, None, words, (Some("native_plan"), None, None), &no_sense, &no_plan)
+                .unwrap();
         let offered: Vec<String> = plain["practices"]
             .as_array()
             .unwrap()
@@ -636,10 +721,10 @@ pub(crate) mod tests {
             .collect();
         assert!(offered.len() >= 2, "{plain}");
         let asked = std::cell::RefCell::new(Vec::new());
-        let sense = |routes: &[&str], rules: &[weft_sense::Rule]| {
+        let sense = |r: &Reading| {
             asked
                 .borrow_mut()
-                .push((routes.iter().map(|r| r.to_string()).collect::<Vec<_>>(), rules.len()));
+                .push((r.routes.iter().map(|r| r.to_string()).collect::<Vec<_>>(), r.rules.len()));
             answered(
                 Some("plan"),
                 &["plan"],
@@ -647,8 +732,15 @@ pub(crate) mod tests {
                 &[&offered[1], "practice.unoffered"],
             )
         };
-        let said =
-            sheet(&repo, None, ("claude-code", "plan the export"), (None, None), &sense).unwrap();
+        let said = sheet(
+            &repo,
+            None,
+            ("claude-code", "plan the export"),
+            (None, None, None),
+            &sense,
+            &no_plan,
+        )
+        .unwrap();
         assert_eq!((&said["route"], &said["task"]), (&"native_plan".into(), &"plan".into()));
         assert_eq!(said["effects"], serde_json::json!(["read", "write"]));
         assert_eq!(
@@ -665,9 +757,135 @@ pub(crate) mod tests {
         assert_eq!(routes, ["plan", "direct", "goal"], "Sense picks among this harness's routes");
         assert!(candidates >= offered.len(), "every practice is a candidate");
         // A route the person picked stays theirs.
-        let goal =
-            sheet(&repo, None, ("claude-code", "x"), (Some("native_goal"), None), &sense).unwrap();
+        let goal = sheet(
+            &repo,
+            None,
+            ("claude-code", "x"),
+            (Some("native_goal"), None, None),
+            &sense,
+            &no_plan,
+        )
+        .unwrap();
         assert_eq!(goal["route"], "native_goal");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// A project of 25 plans, each with a title and a first paragraph.
+    fn many_plans(name: &str) -> std::path::PathBuf {
+        let repo = folder(name, true);
+        for i in 0..24 {
+            let dir = repo.join(format!("plans/p{i:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("plan.md"), format!("# Plan {i}\n\nWork item {i}.\n")).unwrap();
+        }
+        std::fs::create_dir_all(repo.join("plans/uptime")).unwrap();
+        let md = "# Uptime endpoint\n\nServe /uptime with the process start time.\n";
+        std::fs::write(repo.join("plans/uptime/plan.md"), md).unwrap();
+        repo
+    }
+
+    /// The plan head reads a shortlist of the plans, never all of them, and
+    /// its pick, or none, is the sheet's plan.
+    #[test]
+    fn the_plan_head_reads_a_shortlist_and_its_pick_is_the_sheets_plan() {
+        fixture_home();
+        let repo = many_plans("plan-head");
+        let read = std::cell::RefCell::new(Vec::new());
+        let head = |_: &str, c: &[(String, String)]| {
+            read.borrow_mut().push(c.to_vec());
+            c.iter().find(|(slug, _)| slug == "uptime").map(|(slug, _)| slug.clone())
+        };
+        let words = ("claude-code", "implement plans/uptime");
+        let said = sheet(&repo, None, words, (None, None, None), &no_sense, &head).unwrap();
+        assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
+        let candidates = read.borrow()[0].clone();
+        assert_eq!(candidates.len(), PLAN_SHORTLIST, "a shortlist of 25 plans");
+        assert_eq!(
+            candidates[0],
+            (
+                "uptime".into(),
+                "uptime: Uptime endpoint: Serve /uptime with the process start time.".into()
+            )
+        );
+        let unsure = |_: &str, _: &[(String, String)]| None;
+        let words = ("claude-code", "add a work item counter");
+        let said = sheet(&repo, None, words, (None, None, None), &no_sense, &unsure).unwrap();
+        assert_eq!(said["plan"], Value::Null, "an unrelated Ask that shares words gets no plan");
+        let mine = (None, None, Some(Some("plans/p03/plan.md")));
+        let said = sheet(&repo, None, words, mine, &no_sense, &head).unwrap();
+        assert_eq!(said["plan"]["slug"], "p03", "the person's plan stays theirs");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// A route the person picks, and a plan the sheet holds, reach Sense as
+    /// the chosen line; its answer within them sets the task and the
+    /// proposed rules, while Sense's own route stays the one it read.
+    #[test]
+    fn a_route_picked_by_hand_is_read_again_by_sense_within_it() {
+        fixture_home();
+        let repo = many_plans("chosen-line");
+        let plain = sheet(
+            &repo,
+            None,
+            ("claude-code", "x"),
+            (Some("native_plan"), None, None),
+            &no_sense,
+            &no_plan,
+        );
+        let plan_rule = plain.unwrap()["practices"][0]["id"].as_str().unwrap().to_string();
+        let readings = std::cell::RefCell::new(Vec::new());
+        let sense = |r: &Reading| {
+            let routes: Vec<String> = r.routes.iter().map(|c| c.to_string()).collect();
+            readings.borrow_mut().push((
+                r.route.map(str::to_string),
+                r.plan.map(str::to_string),
+                routes,
+            ));
+            match r.route {
+                None => answered(Some("direct"), &["implement"], &["read", "write"], &[]),
+                Some(_) => answered(Some("plan"), &["plan"], &["read", "write"], &[&plan_rule]),
+            }
+        };
+        let words = ("claude-code", "add rate limiting to login");
+        let picked = (Some("native_plan"), None, Some(None));
+        let said = sheet(&repo, None, words, picked, &sense, &no_plan).unwrap();
+        let readings = readings.borrow().clone();
+        assert_eq!(readings[0], (None, None, vec!["plan".into(), "direct".into(), "goal".into()]));
+        assert_eq!(
+            readings[1],
+            (Some("plan".into()), None, vec!["plan".into()]),
+            "only the chosen route"
+        );
+        assert_eq!((&said["route"], &said["task"]), (&"native_plan".into(), &"plan".into()));
+        assert_eq!(said["proposed"], serde_json::json!([plan_rule]));
+        assert_eq!(said["sense"]["route"]["pick"], "direct", "Sense's own reading of the words");
+        // A plan the sheet holds is read with them, as its candidate text.
+        let held = |_: &str, _: &[(String, String)]| Some("uptime".to_string());
+        let _ = sheet(&repo, None, words, (None, None, None), &sense, &held).unwrap();
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// A goal that works a plan gets its step loop; a goal without one does
+    /// not, and still asks nothing of a plan.
+    #[test]
+    fn a_goal_with_a_plan_works_it_step_by_step_and_one_without_does_not() {
+        fixture_home();
+        let repo = many_plans("goal-plan");
+        let labels = |picked| -> Vec<String> {
+            let said =
+                sheet(&repo, None, ("claude-code", "keep going"), picked, &no_sense, &no_plan)
+                    .unwrap();
+            said["route_rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["label"].as_str().unwrap().into())
+                .collect()
+        };
+        let with = labels((Some("native_goal"), None, Some(Some("plans/uptime/plan.md"))));
+        assert!(with.contains(&"Step Loop".to_string()), "{with:?}");
+        let without = labels((Some("native_goal"), None, Some(None)));
+        assert!(!without.contains(&"Step Loop".to_string()) && !without.is_empty(), "{without:?}");
         let _ = std::fs::remove_dir_all(repo);
     }
 
@@ -706,9 +924,16 @@ pub(crate) mod tests {
     fn when_sense_fails_the_route_is_direct_and_the_person_picks_practices() {
         fixture_home();
         let repo = folder("sense-failed", true);
-        let failed = |_: &[&str], _: &[weft_sense::Rule]| Sensed::Failed;
-        let said =
-            sheet(&repo, None, ("claude-code", "fix the typo"), (None, None), &failed).unwrap();
+        let failed = |_: &Reading| Sensed::Failed;
+        let said = sheet(
+            &repo,
+            None,
+            ("claude-code", "fix the typo"),
+            (None, None, None),
+            &failed,
+            &no_plan,
+        )
+        .unwrap();
         assert_eq!(said["route"], "native_direct");
         assert_eq!(said["proposed"], serde_json::json!([]));
         assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
@@ -723,14 +948,12 @@ pub(crate) mod tests {
         fixture_home();
         let repo = folder("sense-unsure", true);
         let words = ("claude-code", "fix the typo");
-        let unsure =
-            |_: &[&str], _: &[weft_sense::Rule]| answered(None, &["implement"], &["read"], &[]);
-        let said = sheet(&repo, None, words, (None, None), &unsure).unwrap();
+        let unsure = |_: &Reading| answered(None, &["implement"], &["read"], &[]);
+        let said = sheet(&repo, None, words, (None, None, None), &unsure, &no_plan).unwrap();
         assert_eq!((&said["route"], &said["task"]), (&"native_direct".into(), &"implement".into()));
-        let writes = |_: &[&str], _: &[weft_sense::Rule]| {
-            answered(Some("direct"), &["implement"], &["read", "write"], &[])
-        };
-        let said = sheet(&repo, None, words, (None, None), &writes).unwrap();
+        let writes =
+            |_: &Reading| answered(Some("direct"), &["implement"], &["read", "write"], &[]);
+        let said = sheet(&repo, None, words, (None, None, None), &writes, &no_plan).unwrap();
         assert_eq!(said["route"], "native_direct");
         let _ = std::fs::remove_dir_all(repo);
     }

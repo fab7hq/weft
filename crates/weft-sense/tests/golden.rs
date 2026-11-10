@@ -6,7 +6,9 @@ use std::path::PathBuf;
 use std::time::Instant;
 use weft_sense::heads::{choice, plan_default, turn_end};
 use weft_sense::manifest::{Manifest, bundle_for_tests};
-use weft_sense::normalize::{Replacements, candidate_text, entry_text, reply_text, screen_text};
+use weft_sense::normalize::{
+    Replacements, candidate_text, chosen_text, entry_text, reply_text, screen_text,
+};
 use weft_sense::{PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
 
 /// sense-d 0.1.1's manifest, as published on Hugging Face `fab7hq/sense-d`.
@@ -226,6 +228,12 @@ fn the_golden_normalizing_vectors_match() {
             }
             "reply" => reply_text(raw.as_str().unwrap(), &table),
             "candidate" => candidate_text(raw.as_str().unwrap(), &table),
+            "chosen" => chosen_text(
+                raw["words"].as_str().unwrap(),
+                raw["route"].as_str(),
+                raw["plan"].as_str(),
+                &table,
+            ),
             _ => entry_text(
                 &TranscriptSnippet {
                     harness: raw["harness"].as_str().unwrap(),

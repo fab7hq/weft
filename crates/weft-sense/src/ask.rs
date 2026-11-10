@@ -101,7 +101,8 @@ impl AskHeads {
         let (task_on, task_p) = noul(&self.task, &logits[..n_task]);
         let (effects_on, effects_p) = noul(&self.effects, &logits[n_task..n_task + n_effects]);
         let route = choice(&self.route, &logits[n_task + n_effects..], routes);
-        let result = derive_result(top(&route.p), &task_on, &effects_on).to_string();
+        // From the top route even when it shows "unsure"; the plan is not known yet.
+        let result = derive_result(top(&route.p), &task_on, &effects_on, false).to_string();
         let rules = self.propose(&task_on, &effects_on, asked);
         Ok(AskAnswer {
             sense: self.version.clone(),
@@ -140,11 +141,16 @@ impl AskHeads {
 }
 
 /// What the turn delivers, by the labelling rule (sense-d spec/labels.md
-/// §7), from the top route even when it shows "unsure".
-pub fn derive_result(route: &str, tasks: &[String], effects: &[String]) -> &'static str {
+/// §7): a goal with a plan works that plan.
+pub fn derive_result(
+    route: &str,
+    tasks: &[String],
+    effects: &[String],
+    has_plan: bool,
+) -> &'static str {
     let has = |list: &[String], names: &[&str]| list.iter().any(|c| names.contains(&c.as_str()));
     if route == "goal" {
-        return "continuing_objective";
+        return if has_plan { "workspace_change" } else { "continuing_objective" };
     }
     let plan_only = has(tasks, &["plan"]) && !has(tasks, &["implement", "operate", "document"]);
     if route == "plan" || plan_only {
@@ -254,15 +260,16 @@ mod tests {
     #[test]
     fn the_result_follows_the_labelling_rule() {
         let s = |v: &[&str]| v.iter().map(|c| c.to_string()).collect::<Vec<_>>();
-        assert_eq!(derive_result("goal", &s(&["plan"]), &[]), "continuing_objective");
-        assert_eq!(derive_result("direct", &s(&["plan"]), &[]), "plan");
+        assert_eq!(derive_result("goal", &s(&["plan"]), &[], false), "continuing_objective");
+        assert_eq!(derive_result("goal", &s(&["implement"]), &[], true), "workspace_change");
+        assert_eq!(derive_result("direct", &s(&["plan"]), &[], false), "plan");
         assert_eq!(
-            derive_result("direct", &s(&["plan", "implement"]), &s(&["write"])),
+            derive_result("direct", &s(&["plan", "implement"]), &s(&["write"]), false),
             "workspace_change"
         );
-        assert_eq!(derive_result("review", &[], &s(&["write"])), "evidence");
-        assert_eq!(derive_result("direct", &s(&["diagnose"]), &s(&["read"])), "evidence");
-        assert_eq!(derive_result("direct", &s(&["question"]), &s(&["read"])), "answer");
+        assert_eq!(derive_result("review", &[], &s(&["write"]), false), "evidence");
+        assert_eq!(derive_result("direct", &s(&["diagnose"]), &s(&["read"]), false), "evidence");
+        assert_eq!(derive_result("direct", &s(&["question"]), &s(&["read"]), false), "answer");
     }
 
     #[test]

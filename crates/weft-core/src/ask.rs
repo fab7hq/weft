@@ -1,5 +1,5 @@
-//! The Ask sheet: what the person chooses before Send, and the plan line it
-//! offers for their words.
+//! The Ask sheet: what the person chooses before Send, and the plans Sense
+//! reads for their words.
 
 use serde::{Deserialize, Serialize};
 
@@ -37,17 +37,33 @@ pub struct Plan {
     pub slug: String,
     pub path: String,
     pub title: String,
+    /// The first paragraph after the title.
+    #[serde(default)]
+    pub paragraph: String,
 }
 
-/// The plan the words are most about, by BM25 over each plan's slug and
-/// title; none when no word of theirs is in any.
-pub fn plan_for<'a>(said: &str, plans: &'a [Plan]) -> Option<&'a Plan> {
-    let docs = plans.iter().map(|p| words(&format!("{} {}", p.slug, p.title))).collect();
-    let bm25 = Bm25::new(docs);
+impl Plan {
+    /// The plan as Sense's plan head reads it: `<slug>: <title>: <paragraph>`.
+    pub fn candidate(&self) -> String {
+        format!("{}: {}: {}", self.slug, self.title, self.paragraph)
+    }
+}
+
+/// The plans Sense's plan head reads for these words, at most `keep`: those
+/// the words name by slug, then the rest by BM25 over slug, title and first
+/// paragraph. A cheap filter, so the head's cost stays flat however many
+/// plans the project holds; it picks nothing itself.
+pub fn shortlist<'a>(said: &str, plans: &'a [Plan], keep: usize) -> Vec<&'a Plan> {
+    let docs = plans.iter().map(|p| words(&format!("{} {} {}", p.slug, p.title, p.paragraph)));
+    let bm25 = Bm25::new(docs.collect());
     let query = words(said);
-    let scored = (0..plans.len()).map(|i| (i, bm25.score(i, &query)));
-    let (best, score) = scored.max_by(|a, b| a.1.total_cmp(&b.1))?;
-    (score > 0.0).then(|| &plans[best])
+    // A slug as a whole word: `ui` is not named by "build".
+    let said_words: Vec<&str> = said.split(|c: char| !(c.is_alphanumeric() || c == '-')).collect();
+    let names = |p: &Plan| said_words.contains(&p.slug.as_str());
+    let mut ranked: Vec<(usize, bool, f64)> =
+        (0..plans.len()).map(|i| (i, names(&plans[i]), bm25.score(i, &query))).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.total_cmp(&a.2)).then(a.0.cmp(&b.0)));
+    ranked.into_iter().take(keep).map(|(i, _, _)| &plans[i]).collect()
 }
 
 #[cfg(test)]
@@ -55,7 +71,8 @@ mod tests {
     use super::*;
 
     fn plan(slug: &str, title: &str) -> Plan {
-        Plan { slug: slug.into(), path: format!("plans/{slug}/plan.md"), title: title.into() }
+        let path = format!("plans/{slug}/plan.md");
+        Plan { slug: slug.into(), path, title: title.into(), paragraph: String::new() }
     }
 
     #[test]
@@ -66,16 +83,28 @@ mod tests {
     }
 
     #[test]
-    fn the_plan_line_is_the_plan_the_words_name_and_none_for_other_words() {
-        let plans = [
-            plan("weft-rf-next", "Weft for RingFrame next: implementation sequence"),
-            plan("sense", "Sense model implementation sequence"),
-            plan("toile", "Toile implementation sequence"),
-        ];
-        let got = |said: &str| plan_for(said, &plans).map(|p| p.slug.as_str());
-        assert_eq!(got("implement plans/weft-rf-next phase 1"), Some("weft-rf-next"));
-        assert_eq!(got("retrain the Sense model"), Some("sense"));
-        assert_eq!(got("fix the login bug"), None);
-        assert_eq!(plan_for("toile", &[]), None, "no plans, no line");
+    fn the_shortlist_keeps_named_plans_first_then_the_closest_words() {
+        let mut plans: Vec<Plan> =
+            (0..25).map(|i| plan(&format!("p{i:02}"), &format!("Plan number {i}"))).collect();
+        plans.push(plan("sense", "Sense model implementation sequence"));
+        plans.push(plan("toile", "Toile mockups"));
+        plans.push(plan("ui", "Interface"));
+        plans[3].paragraph = "Retrain the model on fresh labels.".into();
+        let got = |said: &str, keep| -> Vec<String> {
+            shortlist(said, &plans, keep).iter().map(|p| p.slug.clone()).collect()
+        };
+        assert_eq!(got("implement plans/toile phase 1", 8)[0], "toile", "named first");
+        assert_eq!(got("retrain the sense model", 2), ["sense", "p03"]);
+        assert_eq!(got("fix the login bug", 8).len(), 8, "never more than it keeps");
+        assert_eq!(got("anything", 100).len(), plans.len());
+        assert_ne!(got("rebuild the cache", 1), ["ui"], "a slug inside a word is not named");
+        assert_eq!(shortlist("toile", &[], 8), Vec::<&Plan>::new(), "no plans, none");
+    }
+
+    #[test]
+    fn a_plan_reads_as_its_slug_title_and_paragraph() {
+        let mut p = plan("sync", "Offline sync");
+        p.paragraph = "Notes sync when devices reconnect.".into();
+        assert_eq!(p.candidate(), "sync: Offline sync: Notes sync when devices reconnect.");
     }
 }

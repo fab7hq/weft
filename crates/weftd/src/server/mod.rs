@@ -610,38 +610,50 @@ type LastSensed = Arc<std::sync::Mutex<Option<((String, String), weft_sense::Ask
 /// How long the Ask sheet waits for Sense before the person picks.
 const SENSE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// Sense on `words` for `harness`, its answer kept in `last` for their
-/// Send. Off without words or a bundle that answers an Ask; failed when it
-/// errs or takes past [`SENSE_DEADLINE`].
-fn sense_ask(
-    model: &Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
-    last: &LastSensed,
-    (harness, words): (&str, &str),
-    (routes, rules): (&[&str], &[weft_sense::Rule]),
-) -> crate::ringframe::Sensed {
-    use crate::ringframe::Sensed;
-    let answers = model.read().ok().is_some_and(|m| m.is_some());
-    if words.trim().is_empty() || !answers {
-        return Sensed::Off;
-    }
+type SenseModelCell = Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>;
+
+/// `read` on the loaded model, on a thread of its own: `None` when it gives
+/// nothing or takes past [`SENSE_DEADLINE`].
+fn in_time<T: Send + 'static>(
+    model: &SenseModelCell,
+    read: impl FnOnce(&weft_sense::SenseModel) -> Option<T> + Send + 'static,
+) -> Option<T> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let (model, text) = (Arc::clone(model), words.to_string());
-    let (routes, rules): (Vec<String>, Vec<weft_sense::Rule>) =
-        (routes.iter().map(|r| r.to_string()).collect(), rules.to_vec());
+    let model = Arc::clone(model);
     std::thread::spawn(move || {
         let guard = model.read().ok();
-        let routes: Vec<&str> = routes.iter().map(String::as_str).collect();
-        let answer = guard.as_ref().and_then(|m| m.as_ref()?.ask(&text, &routes, &rules).ok());
-        let _ = tx.send(answer);
+        let _ = tx.send(guard.as_ref().and_then(|m| read(m.as_ref()?)));
     });
-    match rx.recv_timeout(SENSE_DEADLINE) {
-        Ok(Some(answer)) => {
-            let key = (harness.to_string(), words.to_string());
-            *last.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, answer.clone()));
-            Sensed::Answered(Box::new(answer))
-        }
-        Ok(None) | Err(_) => Sensed::Failed,
+    rx.recv_timeout(SENSE_DEADLINE).ok().flatten()
+}
+
+/// Sense on a reading of the sheet's words. Off without words or a bundle
+/// that answers an Ask; failed when it errs or takes past [`SENSE_DEADLINE`].
+fn sense_ask(model: &SenseModelCell, r: &crate::ringframe::Reading) -> crate::ringframe::Sensed {
+    use crate::ringframe::Sensed;
+    let answers = model.read().ok().is_some_and(|m| m.is_some());
+    if r.words.trim().is_empty() || !answers {
+        return Sensed::Off;
     }
+    let (words, route, plan) =
+        (r.words.to_string(), r.route.map(str::to_string), r.plan.map(str::to_string));
+    let routes: Vec<String> = r.routes.iter().map(|c| c.to_string()).collect();
+    let rules = r.rules.to_vec();
+    let answer = in_time(model, move |m| {
+        let text = m.chosen_text(&words, route.as_deref(), plan.as_deref());
+        m.ask(&text, &routes.iter().map(String::as_str).collect::<Vec<_>>(), &rules).ok()
+    });
+    answer.map_or(Sensed::Failed, |a| Sensed::Answered(Box::new(a)))
+}
+
+/// The plan Sense's plan head defaults to among the candidates, or none.
+fn sense_plan(
+    model: &SenseModelCell,
+    words: &str,
+    candidates: &[(String, String)],
+) -> Option<String> {
+    let (words, candidates) = (words.to_string(), candidates.to_vec());
+    in_time(model, move |m| m.plan(&words, &candidates).ok().flatten())
 }
 
 /// The answer Sense gave these words on the sheet, if it was the last.
@@ -662,14 +674,18 @@ fn ask_draft(
     (harness, words): (String, String),
     (draft, sensed): (Option<&weft_core::ask::Draft>, Option<weft_sense::AskAnswer>),
     link: Option<(String, String)>,
+    pick_plan: crate::ringframe::PlanPicking,
 ) -> Result<crate::ringframe::AskDraft, String> {
     let chosen = draft.cloned().unwrap_or_default();
-    let picked = (chosen.route.as_deref(), chosen.task.as_deref());
-    let sense = |_: &[&str], _: &[weft_sense::Rule]| match &sensed {
+    // A draft says its plan, or that there is none.
+    let plan = draft.map(|_| chosen.plan.as_deref());
+    let picked = (chosen.route.as_deref(), chosen.task.as_deref(), plan);
+    // The answer the sheet showed, for each of its reads.
+    let sense = |_: &crate::ringframe::Reading| match &sensed {
         Some(answer) => crate::ringframe::Sensed::Answered(Box::new(answer.clone())),
         None => crate::ringframe::Sensed::Off,
     };
-    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked, &sense)
+    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked, &sense, pick_plan)
         .map_err(|crate::ringframe::Error::Refused { message, .. }| message)?;
     let text = |key: &str| sheet[key].as_str().unwrap_or_default().to_string();
     let plan = match draft {
@@ -1258,11 +1274,14 @@ impl Session {
                 let words = text.unwrap_or_default().to_string();
                 let sensed = sensed_for(&self.sensed, (&harness, &words));
                 let drafted = (draft, sensed);
-                let draft = match ask_draft(&root, over.as_deref(), (harness, words), drafted, link)
-                {
-                    Ok(draft) => draft,
-                    Err(why) => return Answer::No("refused", why),
-                };
+                let model = Arc::clone(&self.sense);
+                let pick_plan = |w: &str, c: &[(String, String)]| sense_plan(&model, w, c);
+                let asked = (harness, words);
+                let draft =
+                    match ask_draft(&root, over.as_deref(), asked, drafted, link, &pick_plan) {
+                        Ok(draft) => draft,
+                        Err(why) => return Answer::No("refused", why),
+                    };
                 match crate::acts::ask(&root, draft, over.as_deref(), &title) {
                     Ok(built) => (built, pane),
                     Err(why) => return Answer::No("refused", why),
@@ -1484,7 +1503,8 @@ impl Session {
                 Answer::Later
             }
             // What the Ask sheet offers: `unit` is `{"harness", "words"}`, and
-            // the `route` and `task` picked so far, when any.
+            // the `route`, `task` and `plan` picked so far, when any (a plan
+            // of "" is none).
             "ask" => {
                 let asked: serde_json::Value = serde_json::from_str(unit).unwrap_or_default();
                 let text = |key: &str| asked[key].as_str().map(str::to_string);
@@ -1493,13 +1513,15 @@ impl Session {
                 };
                 let over = self.projects[at].ringframe.clone();
                 let tx = self.tx.clone();
-                let (words, picked) =
-                    (text("words").unwrap_or_default(), (text("route"), text("task")));
+                let (words, picked) = (
+                    text("words").unwrap_or_default(),
+                    (text("route"), text("task"), text("plan")),
+                );
                 let (model, sensed) = (Arc::clone(&self.sense), Arc::clone(&self.sensed));
                 std::thread::spawn(move || {
-                    let sense = |routes: &[&str], rules: &[weft_sense::Rule]| {
-                        sense_ask(&model, &sensed, (&harness, &words), (routes, rules))
-                    };
+                    let sense = |r: &crate::ringframe::Reading| sense_ask(&model, r);
+                    let pick_plan = |w: &str, c: &[(String, String)]| sense_plan(&model, w, c);
+                    let plan = picked.2.as_deref().map(|p| Some(p).filter(|p| !p.is_empty()));
                     // Whether Sense reads the words at all: the sheet shows it
                     // working only then.
                     let senses = model.read().ok().is_some_and(|m| m.is_some());
@@ -1507,11 +1529,16 @@ impl Session {
                         &root,
                         over.as_deref(),
                         (&harness, &words),
-                        (picked.0.as_deref(), picked.1.as_deref()),
+                        (picked.0.as_deref(), picked.1.as_deref(), plan),
                         &sense,
+                        &pick_plan,
                     )
                     .map(|mut sheet| {
                         sheet["senses"] = serde_json::json!(senses);
+                        // What the sheet showed, for the Send that follows.
+                        let shown = serde_json::from_value(sheet["sense"].clone()).ok();
+                        let key = (harness.clone(), words.clone());
+                        *sensed.lock().unwrap_or_else(|e| e.into_inner()) = shown.map(|a| (key, a));
                         sheet
                     })
                     .map_or_else(ringframe_error, Answer::Ok);
@@ -2612,7 +2639,8 @@ mod tests {
         }))
         .unwrap();
         let words = ("claude-code".to_string(), "fix the typo".to_string());
-        let draft = ask_draft(&repo, None, words, (None, Some(unsure)), None).unwrap();
+        let draft =
+            ask_draft(&repo, None, words, (None, Some(unsure)), None, &|_, _| None).unwrap();
         assert_eq!(draft.route, "native_direct");
         assert_eq!(draft.sense.map(|s| s.route), Some(None), "Sense picked no route");
         let _ = std::fs::remove_dir_all(repo);

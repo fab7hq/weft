@@ -305,6 +305,19 @@ pub fn reply_text(reply: &str, table: &Replacements) -> String {
     table.apply(&last)
 }
 
+/// An Ask's words after what the sheet holds (bundle 2): its route, then its
+/// plan as the plan head's candidate text, `<slug>: <title>: <paragraph>`.
+pub fn chosen_text(
+    words: &str,
+    route: Option<&str>,
+    plan: Option<&str>,
+    table: &Replacements,
+) -> String {
+    let route = route.map(|r| format!("Chosen route: {r}. "));
+    let plan = plan.map(|p| format!("Chosen plan: {}. ", candidate_text(p, table)));
+    format!("{}{}{words}", route.unwrap_or_default(), plan.unwrap_or_default())
+}
+
 /// A plan candidate (`<slug>: <title>: <paragraph>`) as the plan head reads
 /// it: without control characters, through the table.
 pub fn candidate_text(candidate: &str, table: &Replacements) -> String {
@@ -329,6 +342,21 @@ pub fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sheets_route_and_plan_come_before_the_words() {
+        let t = Replacements::new(&BTreeMap::new()).unwrap();
+        let words = "add rate limiting to login";
+        assert_eq!(chosen_text(words, None, None, &t), words);
+        assert_eq!(
+            chosen_text(words, Some("plan"), None, &t),
+            "Chosen route: plan. add rate limiting to login"
+        );
+        assert_eq!(
+            chosen_text(words, Some("goal"), Some("auth: Harden sign-in: Lockouts.\u{0}"), &t),
+            "Chosen route: goal. Chosen plan: auth: Harden sign-in: Lockouts.. add rate limiting to login"
+        );
+    }
 
     fn table() -> Replacements {
         let pairs = [("\n", " ↵ "), ("…", "..."), ("⏸", "[pause]"), ("\u{fffd}", "")];

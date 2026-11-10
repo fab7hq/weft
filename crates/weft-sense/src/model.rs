@@ -211,6 +211,12 @@ impl SenseModel {
         self.ask.answer(&logits[..n], routes, &asked)
     }
 
+    /// An Ask's words as Sense reads them under what the sheet holds: the
+    /// route and the plan's candidate text before them (bundle 2).
+    pub fn chosen_text(&self, words: &str, route: Option<&str>, plan: Option<&str>) -> String {
+        crate::normalize::chosen_text(words, route, plan, &self.table)
+    }
+
     /// Whether a turn's last reply asks its person (bundle 2), or `None`
     /// when the bundle has no `turn_end` head or the graph fails.
     pub fn turn_end(&self, reply: &str) -> Option<TurnEnd> {

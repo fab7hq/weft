@@ -55,9 +55,11 @@ impl AskChoices {
     }
 }
 
-/// What the sheet is asked for: the harness, the words and the route picked.
+/// What the sheet is asked for: the harness, the words, and the route and
+/// plan picked, "" for no plan; Sense reads the words again within them.
 pub fn query(harness: &str, words: &str, choices: &AskChoices) -> String {
-    json!({"harness": harness, "words": words, "route": choices.route}).to_string()
+    let plan = choices.plan.as_ref().map(|p| p.clone().unwrap_or_default());
+    json!({"harness": harness, "words": words, "route": choices.route, "plan": plan}).to_string()
 }
 
 fn practices(sheet: &Value) -> &[Value] {
@@ -431,6 +433,23 @@ fn eyebrow(props: &SheetProps, unit: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sheet_is_asked_again_with_the_route_and_plan_picked() {
+        let mut c = AskChoices::default();
+        let q = |c: &AskChoices| {
+            serde_json::from_str::<serde_json::Value>(&query("codex", "x", c)).unwrap()
+        };
+        assert_eq!(q(&c)["plan"], serde_json::Value::Null, "the plan offered");
+        c.route = Some("native_plan".into());
+        c.plan = Some(Some("plans/a/plan.md".into()));
+        assert_eq!(
+            (q(&c)["route"].clone(), q(&c)["plan"].clone()),
+            ("native_plan".into(), "plans/a/plan.md".into())
+        );
+        c.plan = Some(None);
+        assert_eq!(q(&c)["plan"], "", "no plan");
+    }
 
     /// A sheet of 14 practices, of which the first `n` were proposed.
     fn sheet(n: Option<usize>) -> Value {
