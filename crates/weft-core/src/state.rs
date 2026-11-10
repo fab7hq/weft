@@ -114,6 +114,10 @@ pub struct SavedPanesLayout {
     pub focused_group: usize,
     #[serde(default)]
     pub groups: Vec<SavedTabGroup>,
+    /// Tabs the person closed: their agents run on, and stay out of the
+    /// panes until picked in the tree.
+    #[serde(default)]
+    pub hidden: Vec<SavedPaneTab>,
 }
 
 impl Default for SavedPanesLayout {
@@ -124,6 +128,7 @@ impl Default for SavedPanesLayout {
             secondary_ratio: 0.5,
             focused_group: 0,
             groups: Vec::new(),
+            hidden: Vec::new(),
         }
     }
 }

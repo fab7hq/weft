@@ -946,7 +946,7 @@ impl WeftDesktopApp {
     fn close_tab(&mut self, group: usize, tab: usize) {
         let panes = &mut self.state.panes;
         let Some(g) = panes.groups.get_mut(group).filter(|g| tab < g.tabs.len()) else { return };
-        g.tabs.remove(tab);
+        panes.hidden.push(g.tabs.remove(tab));
         if g.active_tab >= g.tabs.len() {
             g.active_tab = g.tabs.len().saturating_sub(1);
         }

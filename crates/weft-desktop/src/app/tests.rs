@@ -1763,6 +1763,58 @@ fn once_the_turn_has_ended_the_bar_outlines_the_next_act_for_the_agent_in_fronts
     assert!(outlined(&app).is_empty());
 }
 
+fn tab_panes(app: &WeftDesktopApp) -> Vec<u32> {
+    app.state.panes.groups.iter().flat_map(|g| &g.tabs).map(|t| t.pane).collect()
+}
+
+#[test]
+fn every_tab_has_a_close_and_it_hides_the_tab_while_its_agent_runs_on() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let claude = start(&mut app, &mut wire, "claude");
+    let codex = start(&mut app, &mut wire, "codex");
+    let strip = app.render().find_layer("tab strip").expect("tab strip").clone();
+    let closes = every(&strip)
+        .into_iter()
+        .filter(|e| e.layer_name.as_deref().is_some_and(|n| n.starts_with("close ")))
+        .count();
+    assert_eq!(closes, 2, "a ✕ on every tab, not only the one in front");
+
+    let sent = wire.calls().len();
+    app.dispatch(PaneAct::CloseTab { group: 0, tab: 1 });
+    assert_eq!(tab_panes(&app), [claude]);
+    let calls = wire.calls();
+    assert!(
+        !calls[sent..].iter().any(|(_, c)| matches!(c, Call::CloseAgent { .. })),
+        "the ✕ stops no agent: {calls:?}"
+    );
+    assert!(app.clients[0].panes.iter().any(|p| p.id == codex && p.running), "it runs on");
+
+    let root = app.clients[0].root.clone();
+    app.dispatch(TreeAct::SelectAgent { project: root, session: String::new(), pane: Some(codex) });
+    assert_eq!(tab_panes(&app), [claude, codex], "selected in the tree, its tab shows again");
+    assert!(app.state.panes.hidden.is_empty());
+}
+
+#[test]
+fn a_hidden_tab_stays_hidden_when_its_project_connects_again() {
+    let tab = |pane| SavedPaneTab { project: weft(), pane, view: PaneViewMode::Terminal };
+    let mut initial = WeftState { open_projects: vec![weft()], ..Default::default() };
+    initial.panes.groups = vec![SavedTabGroup { active_tab: 0, tabs: vec![tab(0)] }];
+    initial.panes.hidden = vec![tab(1), tab(7)];
+    let tmp = home_with(initial);
+    let mut app = WeftDesktopApp::new(tmp.path().to_path_buf(), "studio");
+    let mut client = ProjectClient::disconnected(weft(), "weft");
+    client.panes = vec![
+        PaneView::new(0, "sh".into(), "sh".into()),
+        PaneView::new(1, "sh".into(), "sh".into()),
+        PaneView::new(2, "sh".into(), "sh".into()),
+    ];
+    app.integrate_connected_client(client);
+    assert_eq!(tab_panes(&app), [0, 2], "the hidden one stays hidden, a new one shows");
+    assert_eq!(app.state.panes.hidden, [tab(1)], "an agent no longer running is forgotten");
+}
+
 #[test]
 fn a_tab_whose_agent_is_gone_leads_with_the_ended_shape() {
     let (_tmp, mut app) = sample_app(false);

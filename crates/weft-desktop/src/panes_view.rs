@@ -516,16 +516,16 @@ fn render_pane_group(
     let active_tab = group.tabs.get(active_idx);
     let focused = props.panes.focused_group == g_idx;
 
-    let mut tab_strip = div()
-        .layer("tab strip")
+    // The tabs scroll sideways and never shrink below their label; the one
+    // in front is kept in view, and the view controls stay at the right.
+    let mut tabs = div()
+        .layer("tabs")
         .self_stretch()
-        .h(if split { 30 } else { 38 })
-        .shrink_0()
+        .flex_1()
         .flex_row()
-        .style("padding", "0 12px 0 0")
-        .bg(palette::SURFACE_ALT)
-        .border_bottom(palette::LINE);
-
+        .style("min-width", "0")
+        .style("overflow-x", "auto")
+        .shows(active_idx);
     for (t_idx, tab) in group.tabs.iter().enumerate() {
         let is_active = t_idx == active_idx;
         let (label, shape, turbo) = tab_label(props, tab);
@@ -535,13 +535,15 @@ fn render_pane_group(
             .drag(TabDrag { group: g_idx, tab: t_idx, label: label.clone(), shape })
             .drop_on(DropTarget::TabBar { group: g_idx, index: t_idx })
             .self_stretch()
+            .shrink_0()
             .flex_row()
             .gap(6)
             .pad(0, if split { 12 } else { 16 })
             .items_center()
             .border_right(palette::LINE)
             .font_size(if split { 12 } else { 13 });
-        el = if is_active && (focused || !split) {
+        let in_front = is_active && (focused || !split);
+        el = if in_front {
             el.style("position", "relative")
                 .bg(palette::SELECTED_BG)
                 .child(edge_bar("top", 2, palette::BLUE_BORDER))
@@ -556,31 +558,41 @@ fn render_pane_group(
         if let Some((glyph, colour)) = shape {
             el = el.child(span(glyph).font_mono().font_size(10).color(colour));
         }
-        el = el.child(div().style("white-space", "nowrap").text(label));
+        el = el.child(div().style("white-space", "nowrap").text(label.clone()));
         if turbo {
             el = el.child(span("⚡").font_size(11).color(palette::AMBER));
         }
-        // Its close shows on the tab in front, in the pane you are in.
-        if is_active && (focused || !split) {
-            el = el.child(
-                span("✕")
-                    .layer("close tab")
-                    .on_click(PaneAct::CloseTab { group: g_idx, tab: t_idx })
-                    .font_size(11)
-                    .color(palette::DIM),
-            );
-        }
-        tab_strip = tab_strip.child(el);
+        // Every tab's ✕ hides it; its agent runs on.
+        el = el.child(
+            span("✕")
+                .layer(format!("close {label}"))
+                .on_click(PaneAct::CloseTab { group: g_idx, tab: t_idx })
+                .font_size(11)
+                .color(if in_front { palette::MUTED } else { palette::DIM }),
+        );
+        tabs = tabs.child(el);
     }
-    tab_strip = tab_strip.child(div().flex_1());
+    let mut tab_strip = div()
+        .layer("tab strip")
+        .self_stretch()
+        .h(if split { 30 } else { 38 })
+        .shrink_0()
+        .flex_row()
+        .bg(palette::SURFACE_ALT)
+        .border_bottom(palette::LINE)
+        .child(tabs);
     if !split {
         let view = active_tab.map(|t| t.view).unwrap_or(PaneViewMode::Terminal);
         tab_strip = tab_strip.child(
             div()
+                .layer("view controls")
                 .self_stretch()
+                .shrink_0()
                 .flex_row()
                 .gap(8)
+                .pad(0, 12)
                 .items_center()
+                .border_left(palette::LINE)
                 .children(render_view_controls(g_idx, active_idx, view)),
         );
     }

@@ -328,6 +328,10 @@ impl Element {
         self.style("border-right", format!("1px solid {color}"))
     }
 
+    pub fn border_left(self, color: &str) -> Self {
+        self.style("border-left", format!("1px solid {color}"))
+    }
+
     pub fn text(mut self, t: impl Into<String>) -> Self {
         self.text = Some(t.into());
         self

@@ -650,15 +650,20 @@ impl WeftDesktopApp {
         let running: Vec<u32> =
             client.panes.iter().filter(|v| v.running && v.judge.is_none()).map(|v| v.id).collect();
         self.clients[pos] = client;
+        let here = |t: &SavedPaneTab| weft_core::state::normalize_project_path(&t.project) == p;
+        // A hidden agent that has stopped is forgotten.
+        self.state.panes.hidden.retain(|t| !here(t) || running.contains(&t.pane));
         // An agent already in some pane stays where it is: one agent in two
-        // panes would be sized by both.
+        // panes would be sized by both. One whose tab was closed stays hidden.
         for pane in running {
-            let shown = self.state.panes.groups.iter().any(|g| {
-                g.tabs.iter().any(|t| {
-                    weft_core::state::normalize_project_path(&t.project) == p && t.pane == pane
-                })
-            });
-            if !shown {
+            let shown = self
+                .state
+                .panes
+                .groups
+                .iter()
+                .any(|g| g.tabs.iter().any(|t| here(t) && t.pane == pane));
+            let hidden = self.state.panes.hidden.iter().any(|t| here(t) && t.pane == pane);
+            if !shown && !hidden {
                 self.ensure_tab_in_active_pane(SavedPaneTab {
                     project: p.clone(),
                     pane,
@@ -1319,6 +1324,7 @@ impl WeftDesktopApp {
     }
 
     pub fn ensure_tab_in_active_pane(&mut self, tab: SavedPaneTab) {
+        self.state.panes.hidden.retain(|h| h.project != tab.project || h.pane != tab.pane);
         if self.state.panes.groups.is_empty() {
             self.state.panes.groups.push(SavedTabGroup { active_tab: 0, tabs: vec![tab] });
             self.state.panes.focused_group = 0;

@@ -814,7 +814,7 @@ impl GpuiDesktopView {
         let mut has_explicit_width = false;
         let mut has_explicit_height = false;
         let mut is_self_stretch = false;
-        let mut is_scroll_y = false;
+        let (scroll_x, scroll_y) = scroll_axes(&el.styles);
 
         for (k, v) in &el.styles {
             match k.as_str() {
@@ -843,7 +843,6 @@ impl GpuiDesktopView {
                 "width" => has_explicit_width = true,
                 "height" => has_explicit_height = true,
                 "align-self" => is_self_stretch = v == "stretch",
-                "overflow-y" => is_scroll_y = v == "auto" || v == "scroll",
                 _ => {}
             }
         }
@@ -852,6 +851,10 @@ impl GpuiDesktopView {
             .text_color(text_style.color)
             .text_size(px(text_style.font_size))
             .font_weight(text_style.font_weight);
+        // A test finds an element's bounds by its layer's name.
+        if let Some(name) = &el.layer_name {
+            d = d.debug_selector(|| name.clone());
+        }
         let mut child_is_row = false;
 
         if text_style.font_mono {
@@ -991,13 +994,16 @@ impl GpuiDesktopView {
         }
 
         // Stateful elements: scrollable containers, clickable actions, dragged tabs
-        if is_scroll_y || el.action.is_some() || el.drag.is_some() {
+        if scroll_x || scroll_y || el.action.is_some() || el.drag.is_some() {
             let id_str = match &el.layer_name {
                 Some(ln) => format!("layer:{ln}:{path}"),
                 None => format!("node:{path}"),
             };
             let mut stateful = d.id(ElementId::Name(SharedString::from(id_str.clone())));
-            if is_scroll_y {
+            if scroll_x {
+                stateful = stateful.overflow_x_scroll();
+            }
+            if scroll_y {
                 stateful = stateful.overflow_y_scroll();
             }
             if let Some(at) = el.shows {
@@ -1059,14 +1065,16 @@ impl GpuiDesktopView {
     }
 
     /// The scroll of an element that keeps its child `at` in view: scrolled
-    /// to it when it first shows and whenever another is picked, and left
-    /// where the person scrolls it otherwise.
+    /// to it when it first shows, whenever another is picked and whenever
+    /// the element's width changes, and left where the person scrolls it
+    /// otherwise.
     fn shown_scroll(&self, key: &str, at: usize) -> ScrollHandle {
         let mut scrolls = self.scrolls.borrow_mut();
         let (handle, shown) = scrolls.entry(key.to_string()).or_default();
-        if shown.as_deref() != Some(at.to_string().as_str()) {
+        let now = format!("{at} {:?}", handle.bounds().size.width);
+        if shown.as_deref() != Some(now.as_str()) {
             handle.scroll_to_item(at);
-            *shown = Some(at.to_string());
+            *shown = Some(now);
         }
         handle.clone()
     }
@@ -1124,6 +1132,7 @@ pub(crate) const STYLES: &[&str] = &[
     "background",
     "border",
     "border-bottom",
+    "border-left",
     "border-radius",
     "border-right",
     "border-top",
@@ -1160,6 +1169,14 @@ pub(crate) const STYLES: &[&str] = &[
     "width",
     "z-index",
 ];
+
+/// The axes an element scrolls on, `(x, y)`: its `overflow-x` and
+/// `overflow-y` of `auto` or `scroll`.
+fn scroll_axes(styles: &[(String, String)]) -> (bool, bool) {
+    let scrolls =
+        |axis: &str| styles.iter().any(|(k, v)| k == axis && (v == "auto" || v == "scroll"));
+    (scrolls("overflow-x"), scrolls("overflow-y"))
+}
 
 /// One style on a div; the div untouched, as an error, for one the window
 /// does not draw.
@@ -1263,6 +1280,10 @@ fn style(d: Div, k: &str, v: &str) -> std::result::Result<Div, Div> {
         },
         "border-right" => match parse_border_color(v) {
             Some(c) => d.border_r_1().border_color(c),
+            None => d,
+        },
+        "border-left" => match parse_border_color(v) {
+            Some(c) => d.border_l_1().border_color(c),
             None => d,
         },
         "position" => match v {
@@ -1543,7 +1564,9 @@ fn parse_color(s: &str) -> Rgba {
 mod tests {
     use super::*;
     use crate::app::tests::{Wire, start, wired_app};
+    use crate::daemon::PaneView;
     use ::gpui::{TestAppContext, VisualTestContext};
+    use weft_core::state::SavedPaneTab;
     use weft_core::text_keys::Edit;
 
     /// A Linux desktop binds the window to Weft's entry, and its icon, by the
@@ -1748,6 +1771,71 @@ mod tests {
                 .filter(|(_, c)| matches!(c, weft_proto::Call::Input { .. }));
             assert_eq!(sent.count(), 0, "not sent while composing");
         });
+    }
+
+    /// Twelve agents in one pane of a 960-px window: the strip scrolls
+    /// rather than squeezing them, and the tab in front is in view.
+    #[test]
+    fn twelve_tabs_keep_their_labels_whole_and_the_controls_inside_the_pane() {
+        windowed(|cx| {
+            let (_tmp, shared, cx) = opened(cx);
+            let labels: Vec<String> = {
+                let mut g = shared.lock().unwrap();
+                let app = &mut g.app;
+                let root = app.clients[0].root.clone();
+                for n in 1..=11 {
+                    let pane = 100 + n;
+                    let harness = format!("agent-{n:02}");
+                    app.clients[0].panes.push(PaneView::new(pane, harness, "sh".into()));
+                    app.ensure_tab_in_active_pane(SavedPaneTab {
+                        project: root.clone(),
+                        pane,
+                        view: Default::default(),
+                    });
+                }
+                g.dirty = true;
+                let strip = g.app.render().find_layer("tabs").expect("the tabs").clone();
+                strip.children.iter().filter_map(|t| t.layer_name.clone()).collect()
+            };
+            assert_eq!(labels.len(), 12);
+            cx.simulate_resize(size(px(960.0), px(640.0)));
+            for _ in 0..2 {
+                cx.update(|window, _| window.refresh());
+                cx.run_until_parked();
+            }
+            let mut at = |name: &str| {
+                let name: &'static str = Box::leak(name.to_string().into_boxed_str());
+                cx.debug_bounds(name).unwrap_or_else(|| panic!("{name} was not drawn"))
+            };
+            let (pane, tabs, controls) = (at("pane group 0"), at("tabs"), at("view controls"));
+            assert!(controls.right() <= pane.right(), "{controls:?} inside {pane:?}");
+            assert!(controls.left() >= tabs.right(), "the tabs end where the controls begin");
+            let mut width = px(0.0);
+            for label in &labels {
+                let tab = at(label);
+                let close = at(&label.replacen("tab ", "close ", 1));
+                assert!(
+                    close.right() <= tab.right(),
+                    "{label}: its ✕ is inside it, its label whole"
+                );
+                width += tab.size.width;
+            }
+            assert!(width > tabs.size.width, "twelve tabs are wider than the strip");
+            let front = at(labels.last().unwrap());
+            assert!(
+                front.left() >= tabs.left() && front.right() <= tabs.right(),
+                "the tab in front {front:?} is in view in {tabs:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn overflow_auto_or_scroll_scrolls_on_its_axis() {
+        let axes = |k: &str, v: &str| scroll_axes(&[(k.to_string(), v.to_string())]);
+        assert_eq!(axes("overflow-x", "auto"), (true, false), "a horizontal scroll");
+        assert_eq!(axes("overflow-x", "scroll"), (true, false));
+        assert_eq!(axes("overflow-y", "auto"), (false, true));
+        assert_eq!(axes("overflow-x", "hidden"), (false, false));
     }
 
     #[test]
