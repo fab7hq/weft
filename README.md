@@ -12,12 +12,16 @@
 <a href="https://docs.getfab7.com/weft/getting-started">Get started</a> ·
 <a href="https://docs.getfab7.com/weft/sdlc">Map your SDLC</a></sub></p>
 
-Weft is the workspace for your coding agents. Everything your agents do, in
-one place: the work stays clear, and every decision stays yours. It has no cloud
-model of its own: Sense, a small model that runs on your machine, proposes
-each Ask's route and rules and reads an agent's screen where its hooks are
-silent. RingFrame is the warp, the fixed record; Weft is the thread carried
-across it.
+Weft checks what your coding agents call "done". Judges that did none of
+the work read each thing you asked against the change, and code gives the
+verdict: aligned, drifted or not enough proof. It is advice, not a gate:
+the call stays yours, and Seal keeps your decision with its reason.
+
+Around the check, every agent is in one place, at your desk or on your
+phone. It has no cloud model of its own: Sense, a small model that runs
+on your machine, proposes each Ask's route and rules and reads an agent's
+screen where its hooks are silent. RingFrame is the warp, the fixed
+record; Weft is the thread carried across it.
 
 ## What is here
 
