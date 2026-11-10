@@ -551,6 +551,8 @@ mod tests {
                 "agent: ok",
                 "person: Run the shell command `sleep 30` and then reply with done.",
                 "step: Bash sleep 30 ✗",
+                // Typed while it worked: the harness queued it.
+                "person: Also tell me how long it slept.",
             ]
         );
         assert!(!format!("{:?}", read.items).contains("one\\ntwo"), "a tool's output");

@@ -90,7 +90,11 @@ path = "transcript_path"
 find = "projects/*/{session}.jsonl"
 time = "timestamp"
 skip = ["isSidechain", "isMeta"]
-person = { when = { type = "user", "origin.kind" = "human" }, text = "message.content" }
+# A message typed while it works is queued: an attachment, not a user entry.
+person = [
+  { when = { type = "user", "origin.kind" = "human" }, text = "message.content" },
+  { when = { type = "attachment", "attachment.type" = "queued_command", "attachment.origin.kind" = "human" }, text = "attachment.prompt" },
+]
 agent = { when = { type = "assistant" }, text = "message.content" }
 steps = { when = { type = "assistant" }, in = "message.content", kind = "tool_use", call = "id", tool = "name", input = "input" }
 outcomes = { when = { type = "user" }, in = "message.content", kind = "tool_result", call = "tool_use_id", failed = { is_error = true } }
