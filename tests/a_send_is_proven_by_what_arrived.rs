@@ -135,6 +135,7 @@ fn agent(dir: &Path, home: &Path, harness: &str, mode: &str) -> String {
     let script = format!(
         "#!/bin/sh\n\
          sig() {{ [ {mode} = shared ] || printf '%s' \"$2\" | HOME='{h}' '{weft}' signal {harness} \"$1\"; }}\n\
+         [ {mode} = late ] && sleep 3\n\
          [ {mode} = quiet ] || sig Began \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
          if [ {mode} = busy ]; then\n\
            sig Busy \"{{\\\"session_id\\\":\\\"s1\\\",\\\"cwd\\\":\\\"$PWD\\\"}}\"\n\
@@ -284,7 +285,7 @@ impl Bench {
         // One whose hooks are its server's has said nothing yet.
         let state = if mode == "busy" { Turn::Working } else { Turn::Ready };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while mode != "shared" && !b.agents_are(state) {
+        while mode != "shared" && mode != "late" && !b.agents_are(state) {
             assert!(Instant::now() < deadline, "the agent never said it was {state:?}");
         }
         b
@@ -602,6 +603,15 @@ fn a_busy_agent_is_refused_at_send() {
     assert!(asked.elapsed() < Duration::from_secs(2), "at once: {:?}", asked.elapsed());
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(b.took(), "", "nothing typed");
+}
+
+/// A send said yes to before a fresh agent has said anything waits until it
+/// says it is ready, then types: a fresh pane is never refused for starting.
+#[test]
+fn a_send_to_a_fresh_agent_waits_until_it_says_it_is_ready() {
+    let mut b = Bench::new("weft-proven-late", "loom", "late");
+    assert_eq!(b.send(), Ok(None), "typed once ready, not refused");
+    assert_eq!(b.took(), format!("{WORDING}\n"), "typed once");
 }
 
 #[test]

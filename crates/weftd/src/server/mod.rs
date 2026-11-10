@@ -2489,16 +2489,19 @@ impl Session {
                     }
                     _ => None,
                 };
-                // Send into an agent that has not said it is ready is refused
+                // Send into an agent that says it is busy or asking is refused
                 // at once: nothing is recorded or typed, and the dialog stays
-                // for a Send once it is, or for the person's send anyway.
+                // for a Send once it is ready, or for the person's send anyway.
+                // An agent that has said nothing yet is starting: the send
+                // waits for it to say it is ready, as `type_it` does.
                 let typed_into = typed_into(into.as_ref(), &self.projects[at].waiting[i]);
                 if yes && !force {
                     let pane = typed_into;
                     let p = &mut self.projects[at];
                     let pane = pane.filter(|pane| p.slot(*pane).is_some_and(|s| s.pane.running()));
-                    if let Some(pane) = pane
-                        && let Err(why) = crate::turns::may_type(self.pane_state(at, pane))
+                    let state = pane.and_then(|pane| self.pane_state(at, pane));
+                    if let (Some(pane), Some(_)) = (pane, state)
+                        && let Err(why) = crate::turns::may_type(state)
                     {
                         let why = weft_core::words::fill("not_typed.why", &[("why", why)]);
                         let said =
