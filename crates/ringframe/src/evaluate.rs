@@ -1074,7 +1074,8 @@ mod tests {
     fn a_later_prompt_is_read_not_counted_and_an_older_row_is_counted() {
         eval_bench(|ws| {
             ask_then_said(ws);
-            let old = json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
+            let old =
+                json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
             sessions::log(ws, "claude-code", "s1", "prompts.jsonl", &old).unwrap();
             let asks = crate::ask::open_asks(ws).unwrap();
             let later = later_prompts(ws, &asks).unwrap();

@@ -122,6 +122,7 @@ mod tests {
                         view: PaneViewMode::Conversation,
                     }],
                 }],
+                hidden: Vec::new(),
             },
         };
 

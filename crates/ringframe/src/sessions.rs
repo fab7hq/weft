@@ -249,7 +249,8 @@ mod tests {
         crate::testing::with_config_home(|_| {
             let repo = repo();
             let ws = ws_for(repo.path());
-            let old = json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
+            let old =
+                json!({"session_id": "s1", "sha256": "ab", "bytes": 2, "observed_by": "weft"});
             log(&ws, "codex", "s1", "prompts.jsonl", &old).unwrap();
             let read = read_prompts(&ws);
             assert_eq!(read.len(), 1);

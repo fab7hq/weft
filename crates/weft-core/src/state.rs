@@ -277,6 +277,11 @@ mod tests {
                         }],
                     },
                 ],
+                hidden: vec![SavedPaneTab {
+                    project: PathBuf::from("/work/alpha"),
+                    pane: 3,
+                    view: PaneViewMode::Terminal,
+                }],
             },
         };
 
