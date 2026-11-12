@@ -85,6 +85,8 @@ pub struct Notice {
 const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
 /// How long the Ask's words rest before they are read: Sense waits for the
 /// person to stop typing.
+/// How often a shown conversation reads what its file added.
+pub(crate) const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 pub(crate) const ASK_PAUSE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Right-pane sheet overlay or modal view.
@@ -215,6 +217,8 @@ pub struct WeftDesktopApp {
     pub sheet_back: Vec<(ActiveSheet, String)>,
     /// When the bar's why-not was first shown.
     why_not_since: Option<std::time::Instant>,
+    /// When the shown conversations were last read for what their files added.
+    followed_at: Option<std::time::Instant>,
     pub conversations: HashMap<(PathBuf, u32), Vec<Item>>,
     /// Where each conversation held ends: the page before its first item,
     /// when there is one, and what the file adds after its last.
@@ -304,6 +308,7 @@ impl WeftDesktopApp {
             unfolded_earlier: HashSet::new(),
             sheet_back: Vec::new(),
             why_not_since: None,
+            followed_at: None,
             conversations: HashMap::new(),
             conversation_cursors: HashMap::new(),
             unfolded_steps: HashSet::new(),
@@ -750,7 +755,25 @@ impl WeftDesktopApp {
             self.drop_gone_tabs();
         }
         let now = std::time::Instant::now();
+        self.follow_conversations(now);
         self.expire_why_not(now) || changed
+    }
+
+    /// Once a second, read what each shown conversation's file added, one
+    /// read at a time for each: a message reaches the file after the agent
+    /// moves, so a read on the move alone can miss it.
+    pub fn follow_conversations(&mut self, now: std::time::Instant) {
+        if self.followed_at.is_some_and(|at| now - at < FOLLOW_EVERY) {
+            return;
+        }
+        self.followed_at = Some(now);
+        for (root, pane) in self.shown_conversations() {
+            let owed = self.client(&root).is_none_or(|c| c.owes(&Then::Conversation { pane }));
+            // Read whole once: until then, its first read is still to come.
+            if !owed && self.conversation_cursors.contains_key(&(root.clone(), pane)) {
+                self.read_conversation(&root, pane);
+            }
+        }
     }
 
     /// A why-not is said for a while, then goes: what it was about may have
@@ -1007,18 +1030,23 @@ impl WeftDesktopApp {
 
     /// Read again the conversation of each pane showing one.
     pub fn refresh_active_conversations(&mut self) {
-        let mut targets = Vec::new();
-        for group in &self.state.panes.groups {
-            if let Some(tab) =
-                group.tabs.get(group.active_tab.min(group.tabs.len().saturating_sub(1)))
-                && tab.view == PaneViewMode::Conversation
-            {
-                targets.push((tab.project.clone(), tab.pane));
-            }
-        }
-        for (proj, pane) in targets {
+        for (proj, pane) in self.shown_conversations() {
             self.read_conversation(&proj, pane);
         }
+    }
+
+    /// The conversations shown: each pane's tab in front, in Conversation.
+    fn shown_conversations(&self) -> Vec<(PathBuf, u32)> {
+        let groups = &self.state.panes.groups;
+        let front = |g: &SavedTabGroup| {
+            g.tabs.get(g.active_tab.min(g.tabs.len().saturating_sub(1))).cloned()
+        };
+        groups
+            .iter()
+            .filter_map(front)
+            .filter(|t| t.view == PaneViewMode::Conversation)
+            .map(|t| (t.project, t.pane))
+            .collect()
     }
 
     /// Read a pane's conversation: what was added since it was last read,

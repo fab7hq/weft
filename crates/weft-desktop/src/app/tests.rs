@@ -3537,3 +3537,38 @@ fn harnesses_show_how_ringframe_sends_and_switch_a_route_rule_s_status() {
         }
     }
 }
+
+#[test]
+fn a_shown_conversation_reads_what_its_file_added_each_second_one_read_at_a_time() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.state.panes.groups.clear();
+    let pane = start(&mut app, &mut wire, "claude");
+    let key = (weft(), pane);
+    app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Conversation });
+    let (id, _) = wire.call();
+    wire.answer(id, json!({"conversation": {"items": [], "after": "1:10"}}));
+    pumped(&mut app, |a| a.conversations.contains_key(&key));
+
+    // The person's message reaches the file after the agent moved: with
+    // nothing else asking, the shown conversation reads what was added.
+    let later = std::time::Instant::now() + Duration::from_secs(2);
+    app.follow_conversations(later);
+    let (id, call) = wire.call();
+    assert!(matches!(call, Call::Read { ref after, .. } if after.as_deref() == Some("1:10")));
+    app.follow_conversations(later + Duration::from_secs(5));
+    assert!(wire.calls().is_empty(), "one read at a time");
+    let said = vec![item("10.0", Kind::Person, None, Some("also add a test"))];
+    wire.answer(id, json!({"conversation": {"items": said, "after": "1:40"}}));
+    pumped(&mut app, |a| a.conversations[&key].len() == 1);
+    app.follow_conversations(later + Duration::from_millis(5500));
+    assert!(wire.calls().is_empty(), "not again within the second");
+    app.follow_conversations(later + Duration::from_secs(6));
+    let (_, call) = wire.call();
+    assert!(matches!(call, Call::Read { ref after, .. } if after.as_deref() == Some("1:40")));
+
+    // In Terminal, nothing is read.
+    app.dispatch(PaneAct::SetView { group: 0, tab: 0, view: PaneViewMode::Terminal });
+    wire.calls();
+    app.follow_conversations(later + Duration::from_secs(20));
+    assert!(wire.calls().is_empty(), "a conversation not shown is not read");
+}
