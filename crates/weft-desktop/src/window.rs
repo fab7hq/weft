@@ -995,9 +995,13 @@ impl GpuiDesktopView {
 
         // Stateful elements: scrollable containers, clickable actions, dragged tabs
         if scroll_x || scroll_y || el.action.is_some() || el.drag.is_some() {
-            let id_str = match &el.layer_name {
-                Some(ln) => format!("layer:{ln}:{path}"),
-                None => format!("node:{path}"),
+            // A scroll with an id keeps its place under that id, not its
+            // place on screen: one pane shows many agents in turn.
+            let id_str = match (&el.layer_name, el.id.as_ref().filter(|_| scroll_x || scroll_y)) {
+                (Some(ln), Some(id)) => format!("layer:{ln}:{id}"),
+                (Some(ln), None) => format!("layer:{ln}:{path}"),
+                (None, Some(id)) => format!("id:{id}"),
+                (None, None) => format!("node:{path}"),
             };
             let mut stateful = d.id(ElementId::Name(SharedString::from(id_str.clone())));
             if scroll_x {
@@ -1051,14 +1055,17 @@ impl GpuiDesktopView {
     }
 
     /// The scroll of an element that reads more above its top, kept from
-    /// frame to frame. When more went in above the child that was first,
-    /// that child is kept at the top.
+    /// frame to frame. It opens at its end and stays there as more comes,
+    /// until the person scrolls up. When more went in above the child that
+    /// was first, that child is kept at the top.
     fn kept_scroll(&self, key: &str, el: &Element) -> ScrollHandle {
         let mut scrolls = self.scrolls.borrow_mut();
         let (handle, first) = scrolls.entry(key.to_string()).or_default();
         let at = el.children.iter().position(|c| c.id.is_some() && c.id == *first);
         if let Some(at) = at.filter(|&at| at > 0) {
             handle.scroll_to_top_of_item(at);
+        } else if at_end(handle) {
+            handle.scroll_to_bottom();
         }
         *first = el.children.first().and_then(|c| c.id.clone());
         handle.clone()
@@ -1169,6 +1176,12 @@ pub(crate) const STYLES: &[&str] = &[
     "width",
     "z-index",
 ];
+
+/// Whether a scroll is at its end, or was never drawn: within a few pixels,
+/// as a wheel leaves it.
+pub(crate) fn at_end(handle: &ScrollHandle) -> bool {
+    -handle.offset().y >= handle.max_offset().y - px(24.0)
+}
 
 /// The axes an element scrolls on, `(x, y)`: its `overflow-x` and
 /// `overflow-y` of `auto` or `scroll`.
@@ -1770,6 +1783,90 @@ mod tests {
                 .into_iter()
                 .filter(|(_, c)| matches!(c, weft_proto::Call::Input { .. }));
             assert_eq!(sent.count(), 0, "not sent while composing");
+        });
+    }
+
+    /// Two agents' conversations in one pane: each opens at its end and
+    /// keeps where the person left it while the other is shown.
+    #[test]
+    fn each_tab_keeps_its_own_place_in_its_conversation() {
+        windowed(|cx| {
+            let (_tmp, shared, view, _wire, cx) = opened_view(cx);
+            let panes = {
+                let mut g = shared.lock().unwrap();
+                let app = &mut g.app;
+                let root = app.clients[0].root.clone();
+                app.state.panes.groups[0].tabs.clear();
+                let mut panes = Vec::new();
+                for n in 0..2u32 {
+                    let pane = 200 + n;
+                    app.clients[0].panes.push(PaneView::new(pane, "claude".into(), "sh".into()));
+                    app.ensure_tab_in_active_pane(SavedPaneTab {
+                        project: root.clone(),
+                        pane,
+                        view: weft_core::state::PaneViewMode::Conversation,
+                    });
+                    let items = (0..40)
+                        .map(|i| weft_core::conversation::Item {
+                            id: format!("{n}.{i}"),
+                            kind: weft_core::conversation::Kind::Person,
+                            at: None,
+                            text: Some(format!("message {i} of agent {n}")),
+                            tool: None,
+                            arg: None,
+                            call: None,
+                            failed: None,
+                        })
+                        .collect();
+                    app.conversations.insert((root.clone(), pane), items);
+                    panes.push(pane);
+                }
+                g.dirty = true;
+                panes
+            };
+            let show = |cx: &mut VisualTestContext, tab: Option<usize>| {
+                if let Some(tab) = tab {
+                    let mut g = shared.lock().unwrap();
+                    g.app.dispatch(PaneAct::SelectTab { group: 0, tab });
+                    g.dirty = true;
+                }
+                for _ in 0..3 {
+                    cx.update(|window, _| window.refresh());
+                    cx.run_until_parked();
+                }
+            };
+            let handle = |cx: &mut VisualTestContext, pane: u32| {
+                view.read_with(cx, |v, _| {
+                    let scrolls = v.scrolls.borrow();
+                    let mine: Vec<_> = scrolls
+                        .iter()
+                        .filter(|(k, _)| {
+                            k.contains("pane conversation") && k.ends_with(&format!(" {pane}"))
+                        })
+                        .map(|(_, (h, _))| h.clone())
+                        .collect();
+                    assert_eq!(mine.len(), 1, "one scroll for pane {pane}: {:?}", scrolls.keys());
+                    mine[0].clone()
+                })
+            };
+            let at_end = |h: &ScrollHandle| {
+                h.max_offset().y > px(0.0) && h.offset().y <= -h.max_offset().y + px(1.0)
+            };
+
+            show(cx, None);
+            let (first, second) = (panes[0], panes[1]);
+            assert_eq!(shared.lock().unwrap().app.state.panes.groups[0].active_tab, 1);
+            assert!(at_end(&handle(cx, second)), "the conversation opens at its end");
+            // Read further up the second, then show the first.
+            handle(cx, second).set_offset(point(px(0.0), px(-100.0)));
+            show(cx, Some(0));
+            assert!(at_end(&handle(cx, first)), "the first opens at its own end");
+            show(cx, Some(1));
+            assert_eq!(
+                handle(cx, second).offset().y,
+                px(-100.0),
+                "the second is where it was left"
+            );
         });
     }
 

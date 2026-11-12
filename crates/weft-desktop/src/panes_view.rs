@@ -807,6 +807,7 @@ fn render_conversation_viewport(
 
     div()
         .layer("pane conversation")
+        .id(format!("{} {}", tab.project.display(), tab.pane))
         .self_stretch()
         .flex_1()
         .flex_col()
