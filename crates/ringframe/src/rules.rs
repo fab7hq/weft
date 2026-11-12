@@ -410,11 +410,13 @@ mod tests {
         .unwrap();
         with_config_home(|_| {
             let installed = config::config_dir().join("deltas/practices");
-            for file in ["software-development.toml", "autonomous-trading.toml"] {
-                std::fs::copy(dir.join(file), installed.join(file)).unwrap();
+            let packs = ["software-development", "autonomous-trading", "machine-learning"];
+            for domain in packs {
+                let file = format!("{domain}.toml");
+                std::fs::copy(dir.join(&file), installed.join(&file)).unwrap();
             }
             let mut named = Vec::new();
-            for domain in ["software-development", "autonomous-trading"] {
+            for domain in packs {
                 let cat = deltas::load_practice_catalog(domain, &Overrides::default())
                     .unwrap_or_else(|e| panic!("{domain}: {e}"));
                 for e in cat["entries"].as_array().unwrap() {
@@ -422,6 +424,9 @@ mod tests {
                     named.push(text(e, "id"));
                 }
             }
+            // A rule's pack is found by its id, so no id is in two packs.
+            let distinct: std::collections::BTreeSet<&String> = named.iter().collect();
+            assert_eq!(distinct.len(), named.len(), "an id is shipped twice");
             let missing: Vec<&str> = gold
                 .lines()
                 .filter(|l| !l.starts_with('#') && !l.is_empty())
