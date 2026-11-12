@@ -767,6 +767,7 @@ pub const WORDS: &[(&str, &str)] = &[
     ),
     ("desktop.plus.title", "New agent in {project}"),
     ("panes.n", "{n} PANES"),
+    ("panes.to_end", "Scroll to end"),
     ("panes.focused", "· FOCUSED:"),
     ("desktop.message.placeholder", "Message {project} · {harness}…"),
     ("desktop.quit.title", "Quit Weft?"),

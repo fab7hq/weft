@@ -924,6 +924,12 @@ impl WeftDesktopApp {
                 let _ = self.save_state();
             }
             PaneAct::Older { project, pane } => self.read_older(&project, pane),
+            // The conversation's scroll is the window's; it scrolls that too.
+            PaneAct::ToEnd { project, pane } => {
+                if let Some(view) = self.pane_view_mut(&project, pane) {
+                    view.scroll_to_bottom();
+                }
+            }
             PaneAct::ToggleSteps { project, pane, block } => {
                 let key = (project, pane, block);
                 if !self.unfolded_steps.remove(&key) {

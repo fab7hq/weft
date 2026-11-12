@@ -442,6 +442,15 @@ impl GpuiDesktopView {
             }
             // Only a web page: a guide is a tool file's, which the person
             // installed but did not write.
+            // A conversation's scroll is the window's; the terminal's is the app's.
+            Action::Pane(PaneAct::ToEnd { project, pane }) => {
+                let id = crate::panes_view::conversation_id(project, *pane);
+                let key = crate::gpui::scroll_key("pane conversation", &id);
+                if let Some((handle, _)) = self.scrolls.borrow().get(&key) {
+                    handle.scroll_to_bottom();
+                }
+                cx.notify();
+            }
             Action::Sheet(SheetAct::OpenGuide(url)) => {
                 if url.starts_with("https://") {
                     cx.open_url(url);
@@ -804,6 +813,12 @@ impl GpuiDesktopView {
         path: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Only while its scroll is away from its end.
+        if let Some(key) = &el.ends
+            && self.scrolls.borrow().get(key).is_none_or(|(h, _)| at_end(h))
+        {
+            return gpui_div().into_any_element();
+        }
         if el.tag == "img" {
             if el.styles.iter().any(|(k, v)| k == "animation" && v == "spin") {
                 return spinning(el, path);
@@ -998,7 +1013,7 @@ impl GpuiDesktopView {
             // A scroll with an id keeps its place under that id, not its
             // place on screen: one pane shows many agents in turn.
             let id_str = match (&el.layer_name, el.id.as_ref().filter(|_| scroll_x || scroll_y)) {
-                (Some(ln), Some(id)) => format!("layer:{ln}:{id}"),
+                (Some(ln), Some(id)) => crate::gpui::scroll_key(ln, id),
                 (Some(ln), None) => format!("layer:{ln}:{path}"),
                 (None, Some(id)) => format!("id:{id}"),
                 (None, None) => format!("node:{path}"),
@@ -1016,7 +1031,9 @@ impl GpuiDesktopView {
             if let Some(action) = el.at_top.clone() {
                 let handle = self.kept_scroll(&id_str, el);
                 stateful = stateful.track_scroll(&handle).on_scroll_wheel(cx.listener(
-                    move |this, e: &ScrollWheelEvent, _window, _cx| {
+                    move |this, e: &ScrollWheelEvent, _window, cx| {
+                        // Whether it is at its end decides what is drawn over it.
+                        cx.notify();
                         let up = e.delta.pixel_delta(px(1.0)).y > px(0.0);
                         if up
                             && handle.offset().y >= px(0.0)
@@ -1857,6 +1874,7 @@ mod tests {
             let (first, second) = (panes[0], panes[1]);
             assert_eq!(shared.lock().unwrap().app.state.panes.groups[0].active_tab, 1);
             assert!(at_end(&handle(cx, second)), "the conversation opens at its end");
+            assert!(cx.debug_bounds("scroll to end").is_none(), "at its end, no button");
             // Read further up the second, then show the first.
             handle(cx, second).set_offset(point(px(0.0), px(-100.0)));
             show(cx, Some(0));
@@ -1867,6 +1885,16 @@ mod tests {
                 px(-100.0),
                 "the second is where it was left"
             );
+            // Away from its end, the way back to it; one press, and it is gone.
+            assert!(cx.debug_bounds("scroll to end").is_some(), "scrolled up, the button");
+            let project = shared.lock().unwrap().app.clients[0].root.clone();
+            view.update_in(cx, |v, window, cx| {
+                v.dispatch_action(PaneAct::ToEnd { project, pane: second }.into(), window, cx)
+            });
+            shared.lock().unwrap().dirty = true;
+            show(cx, None);
+            assert!(at_end(&handle(cx, second)), "at its end");
+            assert!(cx.debug_bounds("scroll to end").is_none(), "at its end, no button");
         });
     }
 

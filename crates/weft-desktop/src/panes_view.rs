@@ -731,7 +731,42 @@ fn render_terminal_viewport(
         );
     }
     // The window paints the pane's own terminal here.
-    pane.child(terminal_el(&tab.project, tab.pane).layer("terminal").self_stretch().flex_1())
+    let back = props
+        .clients
+        .iter()
+        .find(|c| c.root == tab.project)
+        .and_then(|c| c.view(tab.pane))
+        .is_some_and(|v| v.scroll_offset() > 0);
+    let pane = pane
+        .style("position", "relative")
+        .child(terminal_el(&tab.project, tab.pane).layer("terminal").self_stretch().flex_1());
+    if back { pane.child(to_end(&tab.project, tab.pane)) } else { pane }
+}
+
+/// The id a pane's conversation scroll is kept under.
+pub(crate) fn conversation_id(project: &std::path::Path, pane: u32) -> String {
+    format!("{} {}", project.display(), pane)
+}
+
+/// Over a pane scrolled away from its newest line, bottom right: the way back to it.
+fn to_end(project: &std::path::Path, pane: u32) -> Element {
+    div()
+        .layer("scroll to end")
+        .aria_label(words::word("panes.to_end"))
+        .on_click(PaneAct::ToEnd { project: project.to_path_buf(), pane })
+        .style("position", "absolute")
+        .style("right", "20px")
+        .style("bottom", "20px")
+        .style("width", "32px")
+        .style("height", "32px")
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .bg(palette::SURFACE)
+        .border(palette::LINE_HOVER)
+        .font_size(16)
+        .color(palette::TEXT)
+        .text("↓")
 }
 
 fn render_conversation_viewport(
@@ -805,9 +840,10 @@ fn render_conversation_viewport(
         );
     }
 
-    div()
+    let id = conversation_id(&tab.project, tab.pane);
+    let scroll = div()
         .layer("pane conversation")
-        .id(format!("{} {}", tab.project.display(), tab.pane))
+        .id(id.clone())
         .self_stretch()
         .flex_1()
         .flex_col()
@@ -819,7 +855,16 @@ fn render_conversation_viewport(
         .style("overflow-y", "auto")
         .style("overflow-x", "hidden")
         .at_top(PaneAct::Older { project: tab.project.clone(), pane: tab.pane })
-        .children(chat_col.into_iter().map(|block| block.style("max-width", "740px")))
+        .children(chat_col.into_iter().map(|block| block.style("max-width", "740px")));
+    div()
+        .layer("pane conversation box")
+        .self_stretch()
+        .flex_1()
+        .flex_col()
+        .style("min-height", "0")
+        .style("position", "relative")
+        .child(scroll)
+        .child(to_end(&tab.project, tab.pane).ends("pane conversation", &id))
 }
 
 /// The conversation's blocks, in order.

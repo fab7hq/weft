@@ -323,6 +323,7 @@
   "offer.undo": "Undo",
   "panes.focused": "· FOCUSED:",
   "panes.n": "{n} PANES",
+  "panes.to_end": "Scroll to end",
   "resume.either_way": "Your work is in the record either way.",
   "resume.how": "Weft starts {harness} again on this session, in a new pane.",
   "resume.nothing": "Nothing to resume: this session never held a conversation.",

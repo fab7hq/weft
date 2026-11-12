@@ -327,6 +327,7 @@ pub enum PaneAct {
     SetView { group: usize, tab: usize, view: PaneViewMode },
     ToggleSteps { project: PathBuf, pane: u32, block: usize },
     Older { project: PathBuf, pane: u32 },
+    ToEnd { project: PathBuf, pane: u32 },
     SendMessage,
 }
 

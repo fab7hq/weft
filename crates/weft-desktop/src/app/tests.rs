@@ -3572,3 +3572,19 @@ fn a_shown_conversation_reads_what_its_file_added_each_second_one_read_at_a_time
     app.follow_conversations(later + Duration::from_secs(20));
     assert!(wire.calls().is_empty(), "a conversation not shown is not read");
 }
+
+#[test]
+fn a_terminal_scrolled_back_shows_the_way_to_its_end_and_one_press_goes_there() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    let lines: String = (0..200).map(|n| format!("line {n}\r\n")).collect();
+    app.pane_view_mut(&weft(), pane).unwrap().feed(lines.as_bytes());
+    assert!(app.render().find_layer("scroll to end").is_none(), "at its end, none");
+    app.pane_view_mut(&weft(), pane).unwrap().scroll(10);
+    let button =
+        app.render().find_layer("scroll to end").cloned().expect("scrolled back, the button");
+    assert_eq!(button.action, Some(PaneAct::ToEnd { project: weft(), pane }.into()));
+    app.dispatch(PaneAct::ToEnd { project: weft(), pane });
+    assert_eq!(app.pane_view_mut(&weft(), pane).unwrap().scroll_offset(), 0);
+    assert!(app.render().find_layer("scroll to end").is_none(), "at its end again, none");
+}

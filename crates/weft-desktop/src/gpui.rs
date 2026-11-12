@@ -51,6 +51,8 @@ pub struct Element {
     pub at_top: Option<Action>,
     /// A scroll: the child it keeps in view, scrolled to whenever it changes.
     pub shows: Option<usize>,
+    /// Drawn only while the scroll keyed so is away from its end.
+    pub ends: Option<String>,
     /// A text field: which one.
     pub field: Option<Focus>,
     /// A tab that can be dragged.
@@ -76,6 +78,11 @@ pub struct Run {
     pub background: Option<&'static str>,
 }
 
+/// The key the window keeps a scroll's place under: its layer and its id.
+pub fn scroll_key(layer: &str, id: &str) -> String {
+    format!("layer:{layer}:{id}")
+}
+
 pub fn div() -> Element {
     Element {
         tag: "div",
@@ -91,6 +98,7 @@ pub fn div() -> Element {
         action: None,
         at_top: None,
         shows: None,
+        ends: None,
         field: None,
         drag: None,
         drop: None,
@@ -354,6 +362,12 @@ impl Element {
 
     pub fn on_click(mut self, action: impl Into<Action>) -> Self {
         self.action = Some(action.into());
+        self
+    }
+
+    /// Drawn only while the scroll with this layer and id is away from its end.
+    pub fn ends(mut self, layer: &str, id: &str) -> Self {
+        self.ends = Some(scroll_key(layer, id));
         self
     }
 
