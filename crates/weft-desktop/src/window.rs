@@ -440,8 +440,6 @@ impl GpuiDesktopView {
                 let prompt = weft_core::words::word("desktop.pick.project");
                 return self.pick(true, prompt, cx, WeftDesktopApp::open_project_path);
             }
-            // Only a web page: a guide is a tool file's, which the person
-            // installed but did not write.
             // A conversation's scroll is the window's; the terminal's is the app's.
             Action::Pane(PaneAct::ToEnd { project, pane }) => {
                 let id = crate::panes_view::conversation_id(project, *pane);
@@ -451,6 +449,8 @@ impl GpuiDesktopView {
                 }
                 cx.notify();
             }
+            // Only a web page: a guide is a tool file's, which the person
+            // installed but did not write.
             Action::Sheet(SheetAct::OpenGuide(url)) => {
                 if url.starts_with("https://") {
                     cx.open_url(url);

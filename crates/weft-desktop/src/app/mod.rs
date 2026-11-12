@@ -83,10 +83,10 @@ pub struct Notice {
 
 /// How long a why-not is said before it goes by itself.
 const WHY_NOT_FOR: std::time::Duration = std::time::Duration::from_secs(6);
-/// How long the Ask's words rest before they are read: Sense waits for the
-/// person to stop typing.
 /// How often a shown conversation reads what its file added.
 pub(crate) const FOLLOW_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long the Ask's words rest before they are read: Sense waits for the
+/// person to stop typing.
 pub(crate) const ASK_PAUSE: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Right-pane sheet overlay or modal view.
