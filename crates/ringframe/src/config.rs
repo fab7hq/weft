@@ -399,11 +399,11 @@ mod tests {
                     ),
                     (
                         "config/deltas/practices/autonomous-trading.toml",
-                        "efb51999de42f9d3dfeaa1c07bb26bb5233e1cf4c8eb98590ed117695ff92acc",
+                        "aaaa920ee8df99c27f76e81076553eceee17e4e47c67bd2fea9d5880560e0e97",
                     ),
                     (
                         "config/deltas/practices/software-development.toml",
-                        "ece8a0360b9fa982eb463fd345299b9faed15624b2a1671005b30bb6299ee3e6",
+                        "cdd8830b97b65cc3d9de4a1aa399afdcab150918fd32cfa712a1b66190c8f75c",
                     ),
                     (
                         "config/harnesses/antigravity.toml",
