@@ -159,7 +159,8 @@ fn each_golden_screen_and_entry_reads_as_its_class() {
 fn each_golden_ask_gives_its_task_effects_route_result_and_rules() {
     let b = bundle();
     let model = SenseModel::load(&b.dir).unwrap();
-    for row in b.of("ask") {
+    // A state-only bundle (`fab7.sense.decision/3`) has no Ask rows: the Ask model answers Asks.
+    for row in b.rows_of("ask") {
         let a = model.ask(row["text"].as_str().unwrap(), &[], &[]).unwrap();
         let want = &row["expected"];
         assert_eq!(a.task.on, strings(&want["ask_task"]), "{}", row["text"]);
@@ -167,7 +168,7 @@ fn each_golden_ask_gives_its_task_effects_route_result_and_rules() {
         assert_eq!(a.route.pick.as_deref().unwrap_or("unsure"), want["ask_route"]);
         assert_eq!(a.result, want["ask_result"].as_str().unwrap());
     }
-    for row in b.of("rule_relevance") {
+    for row in b.rows_of("rule_relevance") {
         let rules: Vec<Rule> = row["rules"]
             .as_object()
             .unwrap()
@@ -200,6 +201,17 @@ fn each_golden_turn_end_and_plan_pick_gives_its_answer() {
             plan_default(b.manifest.head("plan").unwrap(), &slugs.zip(logits).collect::<Vec<_>>());
         assert_eq!(default.as_deref(), row["expected"].as_str(), "plan of {text:?}");
     }
+}
+
+#[test]
+fn a_bundle_without_ask_heads_reads_screens_and_refuses_an_ask_naming_the_head() {
+    let b = bundle();
+    if b.manifest.head("ask_task").is_ok() {
+        return;
+    }
+    let model = SenseModel::load(&b.dir).unwrap();
+    let err = model.ask("add a test", &[], &[]).unwrap_err().to_string();
+    assert!(err.contains("ask_task"), "{err}");
 }
 
 #[test]
@@ -256,7 +268,7 @@ fn p50_per_screen_entry_and_ask() {
     let model = SenseModel::load(&b.dir).unwrap();
     for head in ["surface", "conversation", "ask"] {
         let calls: Vec<Vec<Vec<u32>>> = b
-            .of(head)
+            .rows_of(head)
             .iter()
             .map(|r| {
                 let (text, questions, _) = b.call(r);

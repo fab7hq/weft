@@ -153,7 +153,8 @@ pub struct SenseModel {
     surface_states: Vec<SurfaceState>,
     conversation: Head,
     conversation_kinds: Vec<ConversationEntry>,
-    ask: AskHeads,
+    /// None for a state-only bundle (`/3`).
+    ask: Option<AskHeads>,
     /// Bundle 2's heads, absent from a `/1` bundle.
     turn_end: Option<Head>,
     plan: Option<Head>,
@@ -188,7 +189,11 @@ impl SenseModel {
             surface,
             conversation_kinds: head_classes(&conversation, ConversationEntry::from_class_str)?,
             conversation,
-            ask: AskHeads::from_manifest(&manifest)?,
+            ask: manifest
+                .head("ask_task")
+                .is_ok()
+                .then(|| AskHeads::from_manifest(&manifest))
+                .transpose()?,
             turn_end: manifest.head("turn_end").ok().filter(|h| h.kind == HeadKind::Noul).cloned(),
             plan: manifest.head("plan").ok().filter(|h| h.kind == HeadKind::NoulPerItem).cloned(),
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
@@ -201,14 +206,18 @@ impl SenseModel {
     /// it proposes. One batch: the Ask's questions, then a row for each
     /// rule the convention does not decide.
     pub fn ask(&self, text: &str, routes: &[&str], rules: &[Rule]) -> anyhow::Result<AskAnswer> {
+        let heads = self
+            .ask
+            .as_ref()
+            .with_context(|| format!("Sense bundle {} has no ask_task head", self.version))?;
         let ids = self.tokenizer.encode(text);
-        let asked: Vec<&Rule> = rules.iter().filter(|r| !self.ask.decided(&r.id)).collect();
-        let questions = self.ask.questions().chain(asked.iter().map(|r| r.when.as_str()));
+        let asked: Vec<&Rule> = rules.iter().filter(|r| !heads.decided(&r.id)).collect();
+        let questions = heads.questions().chain(asked.iter().map(|r| r.when.as_str()));
         let rows = questions.map(|q| self.tokenizer.question_row(&ids, q));
         let logits = self.graph.logits(&rows.collect::<anyhow::Result<Vec<_>>>()?)?;
         let n = logits.len() - asked.len();
         let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits[n..].iter().copied()).collect();
-        self.ask.answer(&logits[..n], routes, &asked)
+        heads.answer(&logits[..n], routes, &asked)
     }
 
     /// An Ask's words as Sense reads them under what the sheet holds: the

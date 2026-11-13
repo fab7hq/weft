@@ -1,14 +1,16 @@
 //! A sense-d bundle's `manifest.json` (sense-d spec/bundle.md §2): its
 //! files, its normalizing table and the heads it describes.
-//! `fab7.sense.decision/1` and `/2` are read; `/2` adds the `turn_end` and
-//! `plan` heads.
+//! `fab7.sense.decision/1` to `/3` are read; `/2` adds the `turn_end` and
+//! `plan` heads, and `/3` holds the state heads alone (`surface`,
+//! `conversation`, `turn_end`): the Ask model answers Asks.
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMAS: [&str; 2] = ["fab7.sense.decision/1", "fab7.sense.decision/2"];
+pub const SCHEMAS: [&str; 3] =
+    ["fab7.sense.decision/1", "fab7.sense.decision/2", "fab7.sense.decision/3"];
 pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -237,8 +239,16 @@ mod tests {
     }
 
     #[test]
+    fn bundle_3_is_read_with_the_state_heads_alone() {
+        let json = MANIFEST.replace("fab7.sense.decision/1", "fab7.sense.decision/3");
+        let m = Manifest::parse(json.as_bytes()).unwrap();
+        assert_eq!(m.schema, "fab7.sense.decision/3");
+        assert!(m.head_of("surface", HeadKind::Choice).is_ok());
+    }
+
+    #[test]
     fn an_earlier_bundle_or_an_unknown_normalizer_is_refused() {
-        for schema in ["fab7.sense.bundle/2", "fab7.sense.bundle/3", "fab7.sense.decision/3"] {
+        for schema in ["fab7.sense.bundle/2", "fab7.sense.bundle/3", "fab7.sense.decision/4"] {
             let json = MANIFEST.replace("fab7.sense.decision/1", schema);
             let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
             assert!(err.contains(schema), "{err}");
