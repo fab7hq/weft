@@ -51,8 +51,6 @@ pub struct Signal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Gap {
-    /// Before its first prompt: an idle screen is ready.
-    Start,
     /// The person's interrupt: an idle screen ends the turn.
     Interrupt,
     /// A permission prompt or a question: the pane waits for the person.

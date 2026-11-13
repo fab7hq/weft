@@ -149,16 +149,15 @@ impl Session {
             for pane in &quiet {
                 self.sense_pane(at, *pane);
             }
-            // A screen still long enough for Sense to cover a gap its
-            // harness names is told once, as no output or hook will tell it.
+            // A screen still long enough for Sense to speak (a gap its
+            // harness names, or a pane no hook has spoken for) is told once,
+            // as no output or hook will tell it.
             let p = &mut self.projects[at];
             let mut still = false;
             for slot in p.panes.iter_mut() {
                 let seq = slot.pane.current_seq();
                 let current = slot.sensed_surface.is_some_and(|r| r.seq == seq);
-                let named = !gaps_of(&p.harnesses, &slot.map.harness).is_empty();
-                if named
-                    && current
+                if current
                     && slot.gap_told != seq
                     && slot.last_output_at.elapsed() >= crate::turns::GAP_QUIET
                 {

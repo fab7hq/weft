@@ -107,15 +107,19 @@ pub fn turn_hook_name(turn: Option<Turn>) -> Option<&'static str> {
     }
 }
 
-/// How long a pane must be still before Sense may cover a gap its harness
-/// names: a harness that shows work moves its screen (a spinner, a timer).
+/// How long a pane must be still before Sense may let Weft type into it, or
+/// cover a gap its harness names: a harness that shows work moves its screen
+/// (a spinner, a timer).
 pub const GAP_QUIET: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// A pane's turn: the harness's own hook decides it (ADR-0005). Sense's
-/// reading of the screen as it is now speaks only where no hook has yet,
-/// where a prompt on it waits for the person, and for the moves the harness
-/// file names as its gaps, once the pane has been still for [`GAP_QUIET`]:
-/// it never starts work, and the next hook replaces what it said.
+/// A pane's turn. Sense reads the screen as a person's eyes would; the hooks
+/// are the harness telling the machine, so where both speak the hook wins.
+/// - No hook has spoken: Sense's reading of the screen as it is now is the
+///   state. Ready and ended, which let Weft type, wait until the pane has
+///   been still for [`GAP_QUIET`].
+/// - A hook has: it decides, except for the moves the harness file names as
+///   its gaps, once the pane has been still for [`GAP_QUIET`]. There Sense
+///   never starts work, and the next hook replaces what it said.
 pub fn pane_turn(
     hook: Option<Turn>,
     read: Option<weft_sense::SurfaceState>,
@@ -127,10 +131,12 @@ pub fn pane_turn(
     let still = quiet >= GAP_QUIET;
     let named = |gap: Gap| still && gaps.contains(&gap);
     match (hook, read) {
+        (None, Some(Working | WorkingPostHook)) => Some(Turn::Working),
         (None, Some(WaitingPermission | WaitingQuestion | WaitingTrustOrAuth)) => {
             Some(Turn::Waiting)
         }
-        (None, Some(IdleReady)) if named(Gap::Start) => Some(Turn::Ready),
+        (None, Some(IdleReady)) if still => Some(Turn::Ready),
+        (None, Some(ErrorOrLimit)) if still => Some(Turn::TurnEnded),
         (Some(Turn::Working), Some(IdleReady)) if named(Gap::Interrupt) => Some(Turn::TurnEnded),
         (Some(Turn::Working), Some(WaitingPermission | WaitingQuestion))
             if named(Gap::Permission) =>
@@ -177,12 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_decides_and_sense_covers_only_the_gaps_its_harness_names() {
+    fn a_hook_decides_sense_covers_its_gaps_and_without_a_hook_sense_decides() {
         use std::time::Duration;
         use weft_core::signal::Gap;
         use weft_sense::SurfaceState::*;
         let (still, moving) = (GAP_QUIET, GAP_QUIET - Duration::from_millis(1));
-        let every = [Gap::Start, Gap::Interrupt, Gap::Permission, Gap::Error];
+        let every = [Gap::Interrupt, Gap::Permission, Gap::Error];
         // A harness that names no gap: whatever the screen reads as, the hook decides.
         for hook in [Turn::Ready, Turn::Working, Turn::Waiting, Turn::TurnEnded, Turn::Ended] {
             for read in [IdleReady, WorkingPostHook, Working, WaitingPermission, ErrorOrLimit] {
@@ -193,14 +199,13 @@ mod tests {
                 );
             }
         }
-        // Sense never starts work, nor moves a turn a hook ended.
+        // Where a hook has spoken, Sense never starts work, nor moves a turn it ended.
         for read in [Working, WorkingPostHook] {
             assert_eq!(
                 pane_turn(Some(Turn::TurnEnded), Some(read), still, &every),
                 Some(Turn::TurnEnded)
             );
             assert_eq!(pane_turn(Some(Turn::Ready), Some(read), still, &every), Some(Turn::Ready));
-            assert_eq!(pane_turn(None, Some(read), still, &every), None);
         }
         // An interrupt no hook reported: a still, idle screen ends the turn.
         assert_eq!(
@@ -232,13 +237,20 @@ mod tests {
         );
         // Unsure, Sense says nothing.
         assert_eq!(pane_turn(Some(Turn::Working), None, still, &every), Some(Turn::Working));
-        // Before any hook: a prompt on the screen waits for the person; an idle
-        // screen is ready only where the harness says nothing before its first prompt.
+        // No hook has spoken: Sense's reading is the state, on every harness.
+        // Work and a prompt for the person at once; ready or ended, which let
+        // Weft type, once the screen has been still.
+        for read in [Working, WorkingPostHook] {
+            assert_eq!(pane_turn(None, Some(read), moving, &[]), Some(Turn::Working));
+        }
         for read in [WaitingQuestion, WaitingPermission, WaitingTrustOrAuth] {
             assert_eq!(pane_turn(None, Some(read), moving, &[]), Some(Turn::Waiting));
         }
-        assert_eq!(pane_turn(None, Some(IdleReady), still, &[Gap::Start]), Some(Turn::Ready));
-        assert_eq!(pane_turn(None, Some(IdleReady), still, &[]), None);
+        assert_eq!(pane_turn(None, Some(IdleReady), still, &[]), Some(Turn::Ready));
+        assert_eq!(pane_turn(None, Some(IdleReady), moving, &[]), None);
+        assert_eq!(pane_turn(None, Some(ErrorOrLimit), still, &[]), Some(Turn::TurnEnded));
+        assert_eq!(pane_turn(None, Some(ErrorOrLimit), moving, &[]), None);
+        // Unsure, nothing.
         assert_eq!(pane_turn(None, None, still, &every), None);
     }
 }
