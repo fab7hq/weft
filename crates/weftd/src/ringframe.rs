@@ -833,6 +833,41 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(repo);
     }
 
+    /// A person's own rule with no `when` is not Sense's to score: it is no
+    /// candidate, so it gets no counts, and the sheet lists it after every
+    /// rule Sense scored.
+    #[test]
+    fn a_persons_rule_with_no_when_is_listed_after_the_scored_and_never_read() {
+        fixture_home();
+        let repo = folder("own-no-when", true);
+        let layers = serde_json::json!([{"layer": "weft", "ringframe": {"deltas": {
+            "practices/software-development": {"entries": [
+                {"id": "own.1", "text": "One commit per item.",
+                 "applies_to": {"task": ["implement"]}}]}}}}])
+        .to_string();
+        let words = ("claude-code", "Fix the login bug.");
+        let read = std::cell::RefCell::new(Vec::new());
+        let sense = |r: &Reading| {
+            *read.borrow_mut() = r.rules.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+            let mut a = sensed(Some("direct"), &["implement"], &["read", "write"], &[]);
+            let scored = r.rules.iter().filter(|r| r.id != "practice.kiss");
+            a.unticked = scored
+                .map(|r| weft_sense::ask::RuleScore { id: r.id.clone(), p: Some(0.2) })
+                .collect();
+            Sensed::Answered(Box::new(a))
+        };
+        let picked = (Some("native_direct"), Some("implement"), None);
+        let said = sheet(&repo, Some(&layers), words, picked, &sense, &no_plan).unwrap();
+        assert!(!read.borrow().is_empty() && !read.borrow().contains(&"own.1".to_string()));
+        let ids: Vec<&str> =
+            said["practices"].as_array().unwrap().iter().filter_map(|r| r["id"].as_str()).collect();
+        assert!(ids.contains(&"own.1"), "{ids:?}");
+        let own = ids.iter().position(|id| *id == "own.1").unwrap();
+        let scored = |id: &str| read.borrow().iter().any(|r| r == id) && id != "practice.kiss";
+        assert!(ids[own + 1..].iter().all(|id| !scored(id)), "every scored rule first: {ids:?}");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
     /// A project of 25 plans, each with a title and a first paragraph.
     fn many_plans(name: &str) -> std::path::PathBuf {
         let repo = folder(name, true);
