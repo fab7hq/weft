@@ -55,11 +55,20 @@ impl AskChoices {
     }
 }
 
-/// What the sheet is asked for: the harness, the words, and the route and
-/// plan picked, "" for no plan; Sense reads the words again within them.
-pub fn query(harness: &str, words: &str, choices: &AskChoices) -> String {
+/// What the sheet is asked for at `stage`, `heads` or `full`: the harness,
+/// the words, and the route and plan picked, "" for no plan; Sense reads the
+/// words again within them.
+pub fn query(harness: &str, words: &str, choices: &AskChoices, stage: &str) -> String {
     let plan = choices.plan.as_ref().map(|p| p.clone().unwrap_or_default());
-    json!({"harness": harness, "words": words, "route": choices.route, "plan": plan}).to_string()
+    json!({"harness": harness, "words": words, "route": choices.route, "plan": plan,
+           "stage": stage})
+    .to_string()
+}
+
+/// Whether the sheet holds Sense's heads alone: its rules and plan are
+/// still being read, and Ask waits for them.
+pub fn rules_pending(sheet: Option<&Value>) -> bool {
+    sheet.is_some_and(|s| s["stage"] == "heads")
 }
 
 fn practices(sheet: &Value) -> &[Value] {
@@ -169,6 +178,17 @@ fn rules_box(heading: Element, lines: Vec<Element>) -> Element {
         .items_start()
         .child(div().w(64).child(heading))
         .child(div().flex_1().flex_col().bg(palette::SURFACE).border(palette::LINE).children(lines))
+}
+
+/// The sheet at Sense's heads: the ROUTE pick and its rules, and the panel
+/// of words being read where the plan and the practices will be.
+fn heads_rows(sheet: &Value, c: &AskChoices, harness: &str) -> (Vec<Element>, Vec<Element>) {
+    let open = c.open.clone().filter(|o| o == "route");
+    let (mut picks, mut rows) = draft_rows(sheet, &AskChoices { open, ..c.clone() }, harness);
+    picks.truncate(2);
+    rows.pop();
+    rows.push(sensing_panel());
+    (picks, rows)
 }
 
 /// The draft's ROUTE and PLAN picks, their open list, and the route's rules
@@ -300,8 +320,10 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
     let harness = props.send_to.map(|v| v.picked_harness()).unwrap_or_default();
     let c = props.ask_choices;
     let reading = sensing(props.ask_sheet, props.ask_sheet_for, props.ask_draft);
+    let pending = !reading && rules_pending(props.ask_sheet);
     let (picks, rows) = match props.ask_sheet {
         Some(_) if reading => (Vec::new(), vec![sensing_panel()]),
+        Some(sheet) if pending => heads_rows(sheet, c, &harness),
         Some(sheet) => draft_rows(sheet, c, &harness),
         None => (Vec::new(), Vec::new()),
     };
@@ -316,7 +338,7 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
     let link = |layer: &str, act: SheetAct, key: &str| {
         div().layer(layer).on_click(act).font_size(13).color(palette::BLUE_BORDER).text(word(key))
     };
-    let add_rule = props.ask_sheet.filter(|_| !reading && !c.all).and_then(|sheet| {
+    let add_rule = props.ask_sheet.filter(|_| !reading && !pending && !c.all).and_then(|sheet| {
         let (_, not_kept) = split_practices(sheet, c);
         (!not_kept.is_empty()).then(|| link("add rule", SheetAct::AskAddRule, "ask.add_rule"))
     });
@@ -324,8 +346,11 @@ pub(super) fn render(props: &SheetProps, follow_up_unit: Option<&str>) -> Elemen
         div().layer("hint").font_size(13).color(palette::AMBER).text(word("ask.pick_to_ask"))
     });
     let ask_button = button("btn Ask", act, SheetAct::SubmitAsk, Tone::Primary, Size::Sheet);
-    let ask_button =
-        if no_route || reading { ask_button.style("opacity", "0.4") } else { ask_button };
+    let ask_button = if no_route || reading || pending {
+        ask_button.style("opacity", "0.4")
+    } else {
+        ask_button
+    };
     let eyebrow = follow_up_unit.and_then(|unit| eyebrow(props, unit)).map(|said| {
         div()
             .layer("eyebrow")
@@ -438,9 +463,10 @@ mod tests {
     fn the_sheet_is_asked_again_with_the_route_and_plan_picked() {
         let mut c = AskChoices::default();
         let q = |c: &AskChoices| {
-            serde_json::from_str::<serde_json::Value>(&query("codex", "x", c)).unwrap()
+            serde_json::from_str::<serde_json::Value>(&query("codex", "x", c, "full")).unwrap()
         };
         assert_eq!(q(&c)["plan"], serde_json::Value::Null, "the plan offered");
+        assert_eq!(q(&c)["stage"], "full");
         c.route = Some("native_plan".into());
         c.plan = Some(Some("plans/a/plan.md".into()));
         assert_eq!(

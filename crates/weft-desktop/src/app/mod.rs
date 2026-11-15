@@ -867,18 +867,34 @@ impl WeftDesktopApp {
                 },
                 (None, None) => return,
             };
-        let query = crate::sheets::ask::query(&harness, self.ask.text(), &self.ask_choices);
-        let then = crate::daemon::Then::AskSheet { query: query.clone() };
+        // Sense's heads first, shown at once; then the full sheet, its plan
+        // and rules. An answer for other words is never shown.
+        let query =
+            |stage| crate::sheets::ask::query(&harness, self.ask.text(), &self.ask_choices, stage);
+        let (heads, full) = (query("heads"), query("full"));
+        let then = |query: &String| crate::daemon::Then::AskSheet { query: query.clone() };
+        let (heads_then, full_then) = (then(&heads), then(&full));
         let asking = |t: &crate::daemon::Then| matches!(t, crate::daemon::Then::AskSheet { .. });
-        if let Some(sheet) = c.read.get(&then) {
+        let shown = c.read.get(&full_then).or_else(|| c.read.get(&heads_then));
+        if let Some(sheet) = shown {
             self.ask_sheet = Some(sheet.clone());
             self.ask_sheet_for = Some(self.ask.text().to_string());
             self.ask_refused = None;
-            c.read.retain(|t, _| !asking(t) || *t == then);
-        } else if let Some(why) = c.refused.get(&then) {
+            c.read.retain(|t, _| !asking(t) || *t == heads_then || *t == full_then);
+        }
+        let refused = c.refused.get(&full_then).or_else(|| c.refused.get(&heads_then));
+        if let Some(why) = refused {
             (self.ask_sheet, self.ask_refused) = (None, Some(why.clone()));
-        } else if rested && !c.owes_any(asking) {
-            let _ = c.read("ask", &query, None, then);
+        } else if !c.read.contains_key(&full_then) {
+            // A read still running for other words is not waited for: its
+            // answer is never shown.
+            let next = match c.read.contains_key(&heads_then) {
+                true => Some((full, full_then)),
+                false => rested.then_some((heads, heads_then)),
+            };
+            if let Some((query, then)) = next {
+                let _ = c.read("ask", &query, None, then);
+            }
         }
     }
 

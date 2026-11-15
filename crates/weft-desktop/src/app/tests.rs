@@ -764,6 +764,85 @@ fn the_words_are_read_once_the_person_stops_typing() {
     assert!(read.len() == 1 && read[0].contains("fix the login"), "{read:?}");
 }
 
+/// Sense's heads come first (17.1 with 17.23 where the rules go): SEND TO,
+/// the route and its rules show while the plan and the practices are read,
+/// and Ask waits for them. An answer for words the person changed is never
+/// shown.
+#[test]
+fn the_sheet_shows_the_route_at_senses_heads_and_the_rules_once_read() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let pane = start(&mut app, &mut wire, "claude");
+    app.clients[0].view_mut(pane).unwrap().turn = Some(Turn::Ready);
+    app.clients[0].sessions[2].pane = Some(pane);
+    app.selection = Some(TreeSelection::Agent { project: weft(), session: "s3".into() });
+    app.dispatch(BarAct::Ask);
+    let rule =
+        |id: &str| json!({"id": id, "label": id, "text": "", "family": null, "layer": "shipped"});
+    let sheet = |stage: &str, route: &str| {
+        json!({
+            "routes": ["native_plan", "native_goal"], "route": route, "tasks": ["plan"],
+            "task": "plan", "plan": null, "plans": [], "route_rules": [rule("route.step_loop")],
+            "practices": [rule("practice.kiss")], "proposed": if stage == "full" { json!(["practice.kiss"]) } else { json!(null) },
+            "senses": true, "stage": stage,
+        })
+    };
+    app.ask_pause = Duration::ZERO;
+    // The read of `stage` for `words`, once the desktop asks for it.
+    let read = |app: &mut WeftDesktopApp, wire: &mut Wire, words: &str, stage: &str| {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            assert!(Instant::now() < deadline, "no {stage} read of {words:?}");
+            app.want_ask_sheet_at(Instant::now());
+            app.pump();
+            let found = wire.calls().into_iter().find_map(|(id, c)| match c {
+                Call::Read { what, unit, .. } if what == "ask" => {
+                    let q: Value = serde_json::from_str(&unit).unwrap();
+                    (q["words"] == words && q["stage"] == stage).then_some(id)
+                }
+                _ => None,
+            });
+            if let Some(id) = found {
+                return id;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    app.ask.set_text("plan the export");
+    let heads = read(&mut app, &mut wire, "plan the export", "heads");
+    wire.answer(heads, sheet("heads", "native_plan"));
+    let full = read(&mut app, &mut wire, "plan the export", "full");
+    assert!(app.ask_sheet.as_ref().is_some_and(|s| s["stage"] == "heads"));
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    for said in
+        ["SEND TO", "ROUTE", "Plan", "ROUTE RULES", "route.step_loop", "Sensing your best fit…"]
+    {
+        assert!(drawn.contains(said), "{said} in {drawn}");
+    }
+    for later in ["PLAN", "PRACTICES"] {
+        assert!(!drawn.contains(later), "{later} waits for the rules: {drawn}");
+    }
+    app.dispatch(SheetAct::SubmitAsk);
+    let asked = |wire: &mut Wire| {
+        wire.calls()
+            .into_iter()
+            .any(|(_, c)| matches!(c, Call::Act { ref act, .. } if act == "ask"))
+    };
+    assert!(!asked(&mut wire), "Ask waits for the rules");
+
+    // The words change while the full read runs: its answer is never shown.
+    app.ask.set_text("plan the import");
+    let _ = read(&mut app, &mut wire, "plan the import", "heads");
+    wire.answer(full, sheet("full", "native_goal"));
+    for _ in 0..20 {
+        app.want_ask_sheet_at(Instant::now());
+        app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(app.ask_sheet.as_ref().unwrap()["route"], "native_goal", "the old words' answer");
+    let drawn = app.render().find_layer("sheet Ask").unwrap().all_text();
+    assert!(drawn.contains("Sensing your best fit…"), "{drawn}");
+}
+
 /// 7.1 and 17.24 are one warning: a harness Weft reads as not set up for
 /// RingFrame stops no act. The Ask sheet opens and says so in amber; Eval
 /// goes, and its dialog says so too. The reading may be wrong.
@@ -864,8 +943,8 @@ fn the_ask_sheet_offers_a_route_a_plan_and_rules_and_sends_what_was_kept() {
             "route_rules": [rule("route.step_loop", "Step Loop")],
         })
     };
-    // The sheet is read for the harness and the words, one read at a time,
-    // and drawn when it comes: a read for the words before is answered first.
+    // The sheet is read for the harness and the words, and drawn when it
+    // comes: a read for the words before is answered, and never drawn.
     let answered = |app: &mut WeftDesktopApp, wire: &mut Wire, route: &str| {
         let mut answered_before = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(3);

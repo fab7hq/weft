@@ -7,6 +7,7 @@ use ort::session::builder::{AutoDevicePolicy, GraphOptimizationLevel};
 use ort::session::{Adapter, RunOptions, Session};
 use ort::value::TensorRef;
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// The ONNX Runtime Sense's golden logits are made with: they hold to 1e-4
@@ -38,6 +39,8 @@ pub struct Graph {
     /// Per adapter, the options that switch it on. Each holds its adapter
     /// alive, as every run that names it needs.
     adapters: BTreeMap<String, RunOptions>,
+    /// Every row read so far.
+    rows_read: AtomicUsize,
 }
 
 impl Graph {
@@ -82,7 +85,7 @@ impl Graph {
             run.add_adapter(&adapter).map_err(ort_error)?;
             options.insert(name.clone(), run);
         }
-        Ok(Self { session: Mutex::new(session), adapters: options })
+        Ok(Self { session: Mutex::new(session), adapters: options, rows_read: AtomicUsize::new(0) })
     }
 
     /// Each row's logit read with `adapter`, in passes of
@@ -90,11 +93,17 @@ impl Graph {
     pub fn logits(&self, rows: &[Vec<u32>], adapter: &str) -> anyhow::Result<Vec<f32>> {
         let options = (self.adapters.get(adapter))
             .with_context(|| format!("Sense has no {adapter} adapter"))?;
+        self.rows_read.fetch_add(rows.len(), Ordering::Relaxed);
         let mut logits = Vec::with_capacity(rows.len());
         for pass in rows.chunks(ROWS_PER_PASS) {
             logits.extend(self.pass(pass, options)?);
         }
         Ok(logits)
+    }
+
+    /// How many rows it has read.
+    pub fn rows_read(&self) -> usize {
+        self.rows_read.load(Ordering::Relaxed)
     }
 
     fn pass(&self, rows: &[Vec<u32>], options: &RunOptions) -> anyhow::Result<Vec<f32>> {

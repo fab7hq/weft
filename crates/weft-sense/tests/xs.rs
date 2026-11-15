@@ -119,3 +119,28 @@ fn an_adapter_not_the_one_its_manifest_names_is_refused_naming_it() {
     let err = SenseModel::load(dir.path()).err().unwrap().to_string();
     assert!(err.contains("ask"), "{err}");
 }
+
+#[test]
+fn an_ask_after_its_heads_alone_reads_only_its_rule_rows_and_answers_the_same() {
+    let dir = tempfile::tempdir().unwrap();
+    bundle(dir.path());
+    let model = SenseModel::load(dir.path()).unwrap();
+    let rules = [
+        Rule { id: "a".into(), label: "A".into(), when: "w".into(), counts: None },
+        Rule { id: "b".into(), label: "B".into(), when: "x".into(), counts: None },
+    ];
+    let whole = model.ask("Fix the login bug.", &[], &rules).unwrap();
+    let heads = model.ask("Add a test.", &[], &[]).unwrap();
+    assert!(heads.rules.is_empty() && heads.unticked.is_empty(), "the heads alone");
+    let before = model.rows_read();
+    let full = model.ask("Add a test.", &[], &rules).unwrap();
+    assert_eq!(model.rows_read() - before, 2, "one row per rule, no head row again");
+    assert_eq!((full.route, full.task, full.effects), (heads.route, heads.task, heads.effects));
+    let before = model.rows_read();
+    assert_eq!(
+        model.ask("Fix the login bug.", &[], &rules).unwrap(),
+        whole,
+        "other words: read again"
+    );
+    assert_eq!(model.rows_read() - before, 1 + 1 + 4 + 2, "every head row and every rule row");
+}

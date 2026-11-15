@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// What a pane's screen shows: the `surface` head's classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +163,9 @@ pub struct SenseModel {
     plan: Option<Head>,
     tokenizer: Tokenizer,
     graph: Graph,
+    /// The last Ask's text and its head logits: reading its rules next
+    /// reads no head row again.
+    last_heads: Mutex<Option<(String, Vec<f32>)>>,
 }
 
 impl SenseModel {
@@ -206,28 +210,49 @@ impl SenseModel {
             plan: manifest.head("plan").ok().filter(|h| h.kind == HeadKind::Document).cloned(),
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
             graph: Graph::load_on(&read("model")?, &adapters, provider)?,
+            last_heads: Mutex::new(None),
         })
     }
 
     /// Sense's answer to an Ask: its defaults, with the route among the
     /// harness's `routes` (any, when none are given) and which of `rules`
-    /// it proposes. One batch: the Ask's questions, then a row for each
-    /// rule the convention does not decide.
+    /// it proposes, a row for each the convention does not decide. Without
+    /// rules it reads the Ask's heads alone; the same text read again with
+    /// its rules reads only theirs.
     pub fn ask(&self, text: &str, routes: &[&str], rules: &[Rule]) -> anyhow::Result<AskAnswer> {
         let heads = self
             .ask
             .as_ref()
             .with_context(|| format!("Sense bundle {} has no ask_task head", self.version))?;
-        let ids = self.tokenizer.encode(&self.ask_text(text));
+        let text = self.ask_text(text);
+        let ids = self.tokenizer.encode(&text);
+        let read = |questions: &mut dyn Iterator<Item = String>| -> anyhow::Result<Vec<f32>> {
+            let rows = questions.map(|q| self.tokenizer.question_row(&ids, &q));
+            let rows = rows.collect::<anyhow::Result<Vec<_>>>()?;
+            self.graph.logits(&rows, heads.adapter())
+        };
+        let mut last = self.last_heads.lock().unwrap_or_else(|e| e.into_inner());
+        let head_logits = match last.as_ref().filter(|(seen, _)| *seen == text) {
+            Some((_, logits)) => logits.clone(),
+            None => {
+                let logits = read(&mut heads.questions().map(str::to_string))?;
+                *last = Some((text.clone(), logits.clone()));
+                logits
+            }
+        };
+        drop(last);
         let asked: Vec<&Rule> = rules.iter().filter(|r| !heads.decided(&r.id)).collect();
-        let rules = asked.iter().map(|r| heads.question(r, &self.table));
-        let questions: Vec<String> = heads.questions().map(str::to_string).chain(rules).collect();
-        let rows = questions.iter().map(|q| self.tokenizer.question_row(&ids, q));
-        let rows = rows.collect::<anyhow::Result<Vec<_>>>()?;
-        let logits = self.graph.logits(&rows, heads.adapter())?;
-        let n = logits.len() - asked.len();
-        let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits[n..].iter().copied()).collect();
-        heads.answer(&logits[..n], routes, &asked)
+        let logits = match asked.is_empty() {
+            true => Vec::new(),
+            false => read(&mut asked.iter().map(|r| heads.question(r, &self.table)))?,
+        };
+        let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits).collect();
+        heads.answer(&head_logits, routes, &asked)
+    }
+
+    /// How many rows the graph has read: for tests that count them.
+    pub fn rows_read(&self) -> usize {
+        self.graph.rows_read()
     }
 
     /// An Ask's words as Sense reads them: through the table.

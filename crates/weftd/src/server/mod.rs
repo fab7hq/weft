@@ -524,8 +524,8 @@ pub struct Session {
     update: Option<Newer>,
     /// Active `weft-sense` model bundle, hot-reloaded in place (`ADR-0003`).
     sense: Arc<std::sync::RwLock<Option<weft_sense::SenseModel>>>,
-    /// Sense's last answer on the Ask sheet, for its harness and words: what
-    /// a Send of those words was shown.
+    /// Sense's last answers on the Ask sheet, for their harness and words:
+    /// what a Send of those words was shown.
     sensed: LastSensed,
     /// This daemon's own version, held while it runs so it is never removed
     /// from under it.
@@ -604,8 +604,13 @@ fn routing_json(routing: &weft_core::routing::Routing) -> serde_json::Value {
     })
 }
 
-/// Sense's last answer on the Ask sheet, with the harness and words it was for.
-type LastSensed = Arc<std::sync::Mutex<Option<((String, String), weft_sense::AskAnswer)>>>;
+/// Sense's last answers on the Ask sheet, each with the harness and words it
+/// was for: the last few, as a reading for words since changed may finish
+/// after the newest.
+type LastSensed = Arc<std::sync::Mutex<Vec<((String, String), weft_sense::AskAnswer)>>>;
+
+/// How many of Sense's last answers on the sheet are kept.
+const SENSED_KEPT: usize = 8;
 
 /// How long the Ask sheet waits for Sense before the person picks.
 const SENSE_DEADLINE: std::time::Duration = std::time::Duration::from_millis(1500);
@@ -661,11 +666,21 @@ fn sense_plan(
     in_time(model, move |m| m.plan(&words, &candidates).ok().flatten())
 }
 
-/// The answer Sense gave these words on the sheet, if it was the last.
+/// Sense's answer for `key` as the newest, or none; the oldest go past
+/// [`SENSED_KEPT`].
+fn remember(last: &LastSensed, key: (String, String), shown: Option<weft_sense::AskAnswer>) {
+    let mut last = last.lock().unwrap_or_else(|e| e.into_inner());
+    last.retain(|(k, _)| *k != key);
+    last.extend(shown.map(|a| (key, a)));
+    let over = last.len().saturating_sub(SENSED_KEPT);
+    last.drain(..over);
+}
+
+/// The answer Sense gave these words on the sheet, if it is one of the last.
 fn sensed_for(last: &LastSensed, (harness, words): (&str, &str)) -> Option<weft_sense::AskAnswer> {
     let last = last.lock().unwrap_or_else(|e| e.into_inner());
-    let ((h, w), answer) = last.as_ref()?;
-    (h == harness && w == words).then(|| answer.clone())
+    let found = last.iter().rev().find(|((h, w), _)| h == harness && w == words);
+    found.map(|(_, answer)| answer.clone())
 }
 
 /// The Ask the person drafted, with what they left unchosen at its default:
@@ -1509,7 +1524,8 @@ impl Session {
             }
             // What the Ask sheet offers: `unit` is `{"harness", "words"}`, and
             // the `route`, `task` and `plan` picked so far, when any (a plan
-            // of "" is none).
+            // of "" is none). A `"stage": "heads"` read is Sense's heads alone,
+            // at once; the full read that follows adds the plan and the rules.
             "ask" => {
                 let asked: serde_json::Value = serde_json::from_str(unit).unwrap_or_default();
                 let text = |key: &str| asked[key].as_str().map(str::to_string);
@@ -1522,6 +1538,7 @@ impl Session {
                     text("words").unwrap_or_default(),
                     (text("route"), text("task"), text("plan")),
                 );
+                let heads = asked["stage"] == "heads";
                 let (model, sensed) = (Arc::clone(&self.sense), Arc::clone(&self.sensed));
                 let weft_dir = self.weft_dir();
                 std::thread::spawn(move || {
@@ -1531,23 +1548,38 @@ impl Session {
                     // Whether Sense reads the words at all: the sheet shows it
                     // working only then.
                     let senses = model.read().ok().is_some_and(|m| m.is_some());
-                    let answer = crate::ringframe::sheet(
-                        &root,
-                        over.as_deref(),
-                        (&harness, &words),
+                    let (asked, picked) = (
+                        (harness.as_str(), words.as_str()),
                         (picked.0.as_deref(), picked.1.as_deref(), plan),
-                        &sense,
-                        &pick_plan,
-                    )
-                    .map(|mut sheet| {
-                        sheet["senses"] = serde_json::json!(senses);
-                        // What the sheet showed, for the Send that follows.
-                        let shown = serde_json::from_value(sheet["sense"].clone()).ok();
-                        let key = (harness.clone(), words.clone());
-                        *sensed.lock().unwrap_or_else(|e| e.into_inner()) = shown.map(|a| (key, a));
-                        sheet
-                    })
-                    .map_or_else(ringframe_error, Answer::Ok);
+                    );
+                    let answer = match heads {
+                        true => crate::ringframe::heads_sheet(
+                            &root,
+                            over.as_deref(),
+                            asked,
+                            picked,
+                            &sense,
+                        ),
+                        false => crate::ringframe::sheet(
+                            &root,
+                            over.as_deref(),
+                            asked,
+                            picked,
+                            &sense,
+                            &pick_plan,
+                        ),
+                    };
+                    let answer = answer
+                        .map(|mut sheet| {
+                            sheet["senses"] = serde_json::json!(senses);
+                            // What the full sheet showed, for the Send that follows.
+                            if !heads {
+                                let shown = serde_json::from_value(sheet["sense"].clone()).ok();
+                                remember(&sensed, (harness.clone(), words.clone()), shown);
+                            }
+                            sheet
+                        })
+                        .map_or_else(ringframe_error, Answer::Ok);
                     let _ = tx.send(Wake::Answer { client, call_id, answer });
                 });
                 Answer::Later
@@ -3219,6 +3251,105 @@ mod tests {
             .unwrap();
         let _ = srv.join();
     }
+    /// A reading for words since changed may finish after the newest: the
+    /// answer each Send was shown is still found by its words.
+    #[test]
+    fn sense_s_answer_for_the_newest_words_survives_a_later_one_for_older_words() {
+        let last = LastSensed::default();
+        let answer = |v: &str| weft_sense::AskAnswer {
+            sense: v.into(),
+            route: weft_sense::ask::RouteAnswer { pick: None, p: Default::default() },
+            task: weft_sense::ask::ClassesOn { on: vec![], p: Default::default() },
+            effects: weft_sense::ask::ClassesOn { on: vec![], p: Default::default() },
+            result: String::new(),
+            rules: vec![],
+            unticked: vec![],
+        };
+        let key = |w: &str| ("codex".to_string(), w.to_string());
+        remember(&last, key("fix the login"), Some(answer("new")));
+        remember(&last, key("fix the"), Some(answer("old")));
+        let found = |w| sensed_for(&last, ("codex", w)).map(|a| a.sense);
+        assert_eq!(found("fix the login").as_deref(), Some("new"));
+        assert_eq!(found("fix the").as_deref(), Some("old"));
+        remember(&last, key("fix the"), None);
+        assert_eq!(found("fix the"), None, "no answer for those words now");
+        for i in 0..SENSED_KEPT {
+            remember(&last, key(&i.to_string()), Some(answer("more")));
+        }
+        assert_eq!(found("fix the login"), None, "the oldest go");
+    }
+
+    /// On the pinned bundle the sheet reads in two stages: Sense's heads at
+    /// once, with no rule proposed, then the plan and the rules.
+    #[test]
+    fn the_ask_sheet_reads_sense_heads_first_then_the_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let weft_dir = dir.path().join(".fab7/weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let (socket, config) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&config, "").unwrap();
+        crate::ringframe::tests::fixture_home();
+        let project = crate::ringframe::tests::folder("sheet-stages", true);
+        let bundle = dir.path().join("bundle");
+        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_with(&srv_sock, &srv_cfg, Some(harnesses));
+        });
+        while !weft_proto::is_live(&socket) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut id = 0;
+        let mut call = |c: Call| {
+            id += 1;
+            weft_proto::send(&mut writer, &Line::Call { id, call: c }.encode()).unwrap();
+            while let Ok(Some(line)) = reader.next() {
+                match line {
+                    Line::Result { id: r, result } if r == id => return Ok(result),
+                    Line::Error { id: r, message, .. } if r == id => return Err(message),
+                    _ => {}
+                }
+            }
+            panic!("no answer to call {id}");
+        };
+        call(Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL }).unwrap();
+        let path = project.display().to_string();
+        call(Call::Open { path, rows: 40, cols: 120, raw: true }).unwrap();
+        let read = |stage: &str| Call::Read {
+            what: "ask".into(),
+            unit: serde_json::json!({"harness": "claude-code", "words": "Fix the login bug.",
+                                     "stage": stage})
+            .to_string(),
+            pane: None,
+            lines: None,
+            before: None,
+            after: None,
+        };
+        // Sense loads in the background once weftd starts.
+        let started = std::time::Instant::now();
+        let heads = loop {
+            let heads = call(read("heads")).unwrap();
+            if heads["senses"] == true || started.elapsed().as_secs() > 20 {
+                break heads;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        assert_eq!((&heads["stage"], &heads["senses"]), (&"heads".into(), &true.into()));
+        assert!(heads["route"].is_string() && heads["sense"]["route"].is_object(), "{heads}");
+        assert_eq!(heads["proposed"], serde_json::Value::Null, "no rule proposed yet");
+        let full = call(read("full")).unwrap();
+        assert_eq!(full["stage"], "full");
+        assert!(full["proposed"].is_array(), "{full}");
+        assert_eq!(full["sense"]["route"], heads["sense"]["route"], "the same heads");
+        let _ = std::fs::remove_dir_all(project);
+    }
+
     /// Four panes whose spinner turns and whose seconds count, which Sense
     /// reads as the same words: each is read once, and off the run loop, so
     /// the daemon answers at once while Sense reads.

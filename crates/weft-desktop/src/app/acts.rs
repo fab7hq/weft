@@ -690,6 +690,10 @@ impl WeftDesktopApp {
                     self.active_sheet.clone()
                 {
                     let draft = self.ask.text().to_string();
+                    // Ask waits for the rules Sense is still reading.
+                    if crate::sheets::ask::rules_pending(self.ask_sheet.as_ref()) {
+                        return;
+                    }
                     if self.ask_sheet.as_ref().is_some_and(|s| s["route"].is_null()) {
                         self.why_not(weft_core::words::word("ask.pick_to_ask"));
                         return;

@@ -147,7 +147,10 @@ pub fn with_counts(
     weft_dir: &Path,
     rules: &[weft_sense::Rule],
 ) -> Vec<weft_sense::Rule> {
-    let Some(convention) = convention(model) else { return rules.to_vec() };
+    // Sense's heads alone read no rule: the table is not read for them.
+    let Some(convention) = convention(model).filter(|_| !rules.is_empty()) else {
+        return rules.to_vec();
+    };
     let roots = crate::state::load(weft_dir).open_projects;
     let table = table(&dir(weft_dir), &roots, &convention);
     rules.iter().map(|r| weft_sense::Rule { counts: table.get(&r.id), ..r.clone() }).collect()

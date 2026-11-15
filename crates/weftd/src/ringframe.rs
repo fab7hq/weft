@@ -272,6 +272,39 @@ pub type Picked<'a> = (Option<&'a str>, Option<&'a str>, Option<Option<&'a str>>
 pub fn sheet(
     project: &Path,
     layers: Option<&str>,
+    words: (&str, &str),
+    picked: Picked,
+    sense: Sensing,
+    pick_plan: PlanPicking,
+) -> Result<Value, Error> {
+    sheet_at(Stage::Full, project, layers, words, picked, sense, pick_plan)
+}
+
+/// The sheet as Sense's heads alone fill it, `"stage": "heads"`: its route,
+/// task and effects, the plan only when the person picked one, and no rule
+/// ranked or proposed. The full [`sheet`] follows with the rest.
+pub fn heads_sheet(
+    project: &Path,
+    layers: Option<&str>,
+    words: (&str, &str),
+    picked: Picked,
+    sense: Sensing,
+) -> Result<Value, Error> {
+    let no_plan = |_: &str, _: &[(String, String)]| None;
+    sheet_at(Stage::Heads, project, layers, words, picked, sense, &no_plan)
+}
+
+/// How much of the sheet Sense fills: its heads alone, or everything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Heads,
+    Full,
+}
+
+fn sheet_at(
+    stage: Stage,
+    project: &Path,
+    layers: Option<&str>,
     (harness, words): (&str, &str),
     (route, task, plan): Picked,
     sense: Sensing,
@@ -288,7 +321,8 @@ pub fn sheet(
     let overrides = overrides(layers)?;
     let candidates = candidate_rules(&ws, harness, routes.first().copied(), &overrides)?;
     let classes: Vec<&str> = routes.iter().filter_map(|r| r.strip_prefix("native_")).collect();
-    let reading = Reading { words, route: None, plan: None, routes: &classes, rules: &candidates };
+    // The heads on the words alone first: Sense's own route.
+    let reading = Reading { words, route: None, plan: None, routes: &classes, rules: &[] };
     let first = sense(&reading);
     let failed = first == Sensed::Failed;
     let first = match first {
@@ -317,6 +351,7 @@ pub fn sheet(
         .collect();
     let plan = match plan {
         Some(path) => plans.iter().find(|p| Some(p.path.as_str()) == path).cloned(),
+        None if stage == Stage::Heads => None,
         None => {
             let shortlist = weft_core::ask::shortlist(words, &plans, PLAN_SHORTLIST);
             let candidates: Vec<(String, String)> =
@@ -325,24 +360,25 @@ pub fn sheet(
             plans.iter().find(|p| Some(&p.slug) == slug.as_ref()).cloned()
         }
     };
-    // Sense again within what the sheet holds: the person's route, the plan.
+    // Then the rules, within what the sheet holds: the person's route, the plan.
     let class = route.strip_prefix("native_").filter(|r| classes.contains(r));
     let answer = match first {
-        Some(first) if picked_route.is_some() || plan.is_some() => {
+        Some(first) if stage == Stage::Full => {
+            let within = picked_route.is_some() || plan.is_some();
             let candidate = plan.as_ref().map(weft_core::ask::Plan::candidate);
-            let only: Vec<&str> = class.into_iter().collect();
+            let only: Vec<&str> = class.into_iter().filter(|_| within).collect();
             let routes = if only.is_empty() { &classes } else { &only };
             let reading = Reading {
                 words,
-                route: class,
+                route: class.filter(|_| within),
                 plan: candidate.as_deref(),
                 routes,
                 rules: &candidates,
             };
             match sense(&reading) {
                 // Sense's own route stays the one it read from the words.
-                Sensed::Answered(within) => {
-                    Some(weft_sense::AskAnswer { route: first.route, ..*within })
+                Sensed::Answered(rules) => {
+                    Some(weft_sense::AskAnswer { route: first.route, ..*rules })
                 }
                 Sensed::Off | Sensed::Failed => Some(first),
             }
@@ -372,6 +408,7 @@ pub fn sheet(
     };
     let offered = |id: &&String| rules.practices.iter().any(|r| &r.id == *id);
     let proposed: Option<Vec<&String>> = match &defaults {
+        _ if stage == Stage::Heads => None,
         Some(d) => Some(d.rules.iter().filter(offered).collect()),
         None => failed.then(Vec::new),
     };
@@ -396,6 +433,7 @@ pub fn sheet(
         "proposed": proposed,
         "route_rules": rules.route.iter().map(rule).collect::<Vec<_>>(),
         "sense": answer,
+        "stage": match stage { Stage::Heads => "heads", Stage::Full => "full" },
     }))
 }
 
@@ -785,7 +823,10 @@ pub(crate) mod tests {
         assert_eq!(said["sense"]["sense"], "0.3.0");
         let (routes, candidates) = asked.borrow()[0].clone();
         assert_eq!(routes, ["plan", "direct", "goal"], "Sense picks among this harness's routes");
-        assert!(candidates >= offered.len(), "every practice is a candidate");
+        assert_eq!(candidates, 0, "the heads first, alone");
+        let (_, candidates) = asked.borrow()[1].clone();
+        assert!(candidates >= offered.len(), "then every practice is a candidate");
+        assert_eq!(asked.borrow().len(), 2, "the rules read once");
         // A route the person picked stays theirs.
         let goal = sheet(
             &repo,
@@ -797,6 +838,37 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(goal["route"], "native_goal");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// The heads stage reads Sense's heads alone, never a rule or a plan:
+    /// its route, task and effects are set, and no rule is proposed yet.
+    #[test]
+    fn the_heads_stage_sets_route_task_and_effects_and_reads_no_rule_or_plan() {
+        fixture_home();
+        let repo = folder("sense-heads", true);
+        std::fs::create_dir_all(repo.join("plans/export")).unwrap();
+        std::fs::write(repo.join("plans/export/plan.md"), "# Export\n\nThe export.\n").unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        let sense = |r: &Reading| {
+            asked.borrow_mut().push(r.rules.len());
+            answered(Some("plan"), &["plan"], &["read", "write"], &[])
+        };
+        let words = ("claude-code", "plan the export");
+        let said = heads_sheet(&repo, None, words, (None, None, None), &sense).unwrap();
+        assert_eq!(said["stage"], "heads");
+        assert_eq!((&said["route"], &said["task"]), (&"native_plan".into(), &"plan".into()));
+        assert_eq!(said["effects"], serde_json::json!(["read", "write"]));
+        assert_eq!((&said["proposed"], &said["plan"]), (&Value::Null, &Value::Null));
+        assert_eq!(*asked.borrow(), [0], "one reading, of the heads alone");
+        let picking = std::cell::Cell::new(0);
+        let pick = |_: &str, c: &[(String, String)]| {
+            picking.set(picking.get() + 1);
+            c.first().map(|(slug, _)| slug.clone())
+        };
+        let full = sheet(&repo, None, words, (None, None, None), &sense, &pick).unwrap();
+        assert_eq!((full["stage"].as_str(), picking.get()), (Some("full"), 1));
+        assert_eq!(full["plan"]["slug"], "export", "the full read picks the plan");
         let _ = std::fs::remove_dir_all(repo);
     }
 
