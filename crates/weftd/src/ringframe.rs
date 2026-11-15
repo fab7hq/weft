@@ -375,10 +375,24 @@ pub fn sheet(
         Some(d) => Some(d.rules.iter().filter(offered).collect()),
         None => failed.then(Vec::new),
     };
+    // Sense's ticked practices first, then the rest by its score, best first.
+    let mut practices: Vec<&api::Rule> = rules.practices.iter().collect();
+    if let (Some(a), Some(ticked)) = (&answer, &proposed) {
+        let score = |r: &api::Rule| a.unticked.iter().find(|s| s.id == r.id).and_then(|s| s.p);
+        let rank = |r: &api::Rule| match (ticked.contains(&&r.id), score(r)) {
+            (true, _) => (0, 0.0),
+            (false, Some(p)) => (1, -p),
+            (false, None) => (2, 0.0),
+        };
+        practices.sort_by(|a, b| {
+            let (a, b) = (rank(a), rank(b));
+            a.0.cmp(&b.0).then(a.1.total_cmp(&b.1))
+        });
+    }
     Ok(serde_json::json!({
         "routes": routes, "route": (!route.is_empty()).then_some(route), "tasks": api::tasks(), "task": task,
         "effects": classification.effects, "plan": plan, "plans": plans,
-        "practices": rules.practices.iter().map(rule).collect::<Vec<_>>(),
+        "practices": practices.into_iter().map(rule).collect::<Vec<_>>(),
         "proposed": proposed,
         "route_rules": rules.route.iter().map(rule).collect::<Vec<_>>(),
         "sense": answer,
@@ -783,6 +797,39 @@ pub(crate) mod tests {
         )
         .unwrap();
         assert_eq!(goal["route"], "native_goal");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// The sheet lists the practices Sense ticks first, then every other one
+    /// it scored, best first, then those it did not, in shipped order: the
+    /// order desktop and web show `+ rule` in.
+    #[test]
+    fn the_sheet_lists_the_ticked_practices_first_then_the_rest_best_first() {
+        fixture_home();
+        let repo = folder("sense-ranks", true);
+        let words = ("claude-code", "plan the export");
+        let ids = |sheet: &Value| -> Vec<String> {
+            let practices = sheet["practices"].as_array().unwrap().iter();
+            practices.filter_map(|r| r["id"].as_str().map(str::to_string)).collect()
+        };
+        let plain =
+            sheet(&repo, None, words, (Some("native_plan"), None, None), &no_sense, &no_plan)
+                .unwrap();
+        let offered = ids(&plain);
+        let n = offered.len();
+        assert!(n >= 4, "{plain}");
+        let sense = |_: &Reading| {
+            let mut a = sensed(Some("plan"), &["plan"], &["read", "write"], &[&offered[2]]);
+            let score = |i: usize, p| weft_sense::ask::RuleScore { id: offered[i].clone(), p };
+            a.unticked = vec![score(0, Some(0.1)), score(n - 1, Some(0.4))];
+            Sensed::Answered(Box::new(a))
+        };
+        let said = sheet(&repo, None, words, (None, None, None), &sense, &no_plan).unwrap();
+        let first = [&offered[2], &offered[n - 1], &offered[0]];
+        let rest = offered.iter().filter(|id| !first.contains(id));
+        let want: Vec<&String> = first.into_iter().chain(rest).collect();
+        assert_eq!(ids(&said).iter().collect::<Vec<_>>(), want);
+        assert_eq!(ids(&plain), offered, "without Sense, shipped order");
         let _ = std::fs::remove_dir_all(repo);
     }
 
