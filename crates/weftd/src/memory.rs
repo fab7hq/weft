@@ -12,12 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-/// One rule's counts: the Asks it was offered on, and those it was sent with.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Counts {
-    pub candidate: u32,
-    pub kept: u32,
-}
+pub use weft_sense::Counts;
 
 /// Every rule's counts, and the Asks counted, so each counts once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

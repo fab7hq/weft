@@ -144,7 +144,8 @@ pub struct TranscriptSnippet<'a> {
     pub snippet: &'a str,
 }
 
-/// sense-d, loaded: one graph that answers every head.
+/// Sense, loaded: one graph that answers every head, sense-xs's with the
+/// adapter of each head's job.
 pub struct SenseModel {
     version: String,
     table: Replacements,
@@ -163,7 +164,7 @@ pub struct SenseModel {
 }
 
 impl SenseModel {
-    /// The sense-d bundle in `bundle_dir`, each file checked against the
+    /// The Sense bundle in `bundle_dir`, each file checked against the
     /// digest its manifest names.
     pub fn load(bundle_dir: &Path) -> anyhow::Result<Self> {
         Self::load_on(bundle_dir, Provider::Cpu)
@@ -179,6 +180,11 @@ impl SenseModel {
             let entry = manifest.file(key)?;
             read_verified(&bundle_dir.join(&entry.path), &entry.sha256, key)
         };
+        let adapters = manifest.adapters.iter().map(|a| {
+            let bytes = read_verified(&bundle_dir.join(&a.file), &a.sha256, &a.name)?;
+            Ok((a.name.clone(), bytes))
+        });
+        let adapters = adapters.collect::<anyhow::Result<Vec<_>>>()?;
         let surface = manifest.head_of("surface", HeadKind::Choice)?.clone();
         let conversation = manifest.head_of("conversation", HeadKind::Choice)?.clone();
         Ok(Self {
@@ -195,9 +201,13 @@ impl SenseModel {
                 .then(|| AskHeads::from_manifest(&manifest))
                 .transpose()?,
             turn_end: manifest.head("turn_end").ok().filter(|h| h.kind == HeadKind::Noul).cloned(),
-            plan: manifest.head("plan").ok().filter(|h| h.kind == HeadKind::NoulPerItem).cloned(),
+            plan: manifest
+                .head("plan")
+                .ok()
+                .filter(|h| matches!(h.kind, HeadKind::NoulPerItem | HeadKind::Document))
+                .cloned(),
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
-            graph: Graph::load_on(&read("model")?, provider)?,
+            graph: Graph::load_on(&read("model")?, &adapters, provider)?,
         })
     }
 
@@ -212,9 +222,11 @@ impl SenseModel {
             .with_context(|| format!("Sense bundle {} has no ask_task head", self.version))?;
         let ids = self.tokenizer.encode(text);
         let asked: Vec<&Rule> = rules.iter().filter(|r| !heads.decided(&r.id)).collect();
-        let questions = heads.questions().chain(asked.iter().map(|r| r.when.as_str()));
-        let rows = questions.map(|q| self.tokenizer.question_row(&ids, q));
-        let logits = self.graph.logits(&rows.collect::<anyhow::Result<Vec<_>>>()?)?;
+        let rules = asked.iter().map(|r| heads.question(r));
+        let questions: Vec<String> = heads.questions().map(str::to_string).chain(rules).collect();
+        let rows = questions.iter().map(|q| self.tokenizer.question_row(&ids, q));
+        let rows = rows.collect::<anyhow::Result<Vec<_>>>()?;
+        let logits = self.graph.logits(&rows, heads.adapter())?;
         let n = logits.len() - asked.len();
         let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits[n..].iter().copied()).collect();
         heads.answer(&logits[..n], routes, &asked)
@@ -232,7 +244,8 @@ impl SenseModel {
         let head = self.turn_end.as_ref()?;
         let rows =
             self.rows(&reply_text(reply, &self.table), &[head.questions.first()?.as_str()]).ok()?;
-        Some(crate::heads::turn_end(head, *self.graph.logits(&rows).ok()?.first()?))
+        let logits = self.graph.logits(&rows, head.adapter.as_deref()).ok()?;
+        Some(crate::heads::turn_end(head, *logits.first()?))
     }
 
     /// The plan an Ask's sheet holds by default among `candidates` (each a
@@ -244,18 +257,21 @@ impl SenseModel {
         candidates: &[(String, String)],
     ) -> anyhow::Result<Option<String>> {
         let head = self.plan.as_ref().context("this Sense bundle has no plan head")?;
-        let template =
-            head.question_template.as_deref().context("the plan head has no question template")?;
+        let template = (head.question_template.as_deref())
+            .or(head.question.as_deref())
+            .context("the plan head has no question")?;
         if candidates.is_empty() {
             return Ok(None);
         }
         let questions: Vec<String> = candidates
             .iter()
-            .map(|(_, text)| template.replace("{candidate}", &candidate_text(text, &self.table)))
+            .map(|(_, text)| {
+                let text = candidate_text(text, &self.table);
+                template.replace("{candidate}", &text).replace("{document}", &text)
+            })
             .collect();
-        let logits = self
-            .graph
-            .logits(&self.rows(ask, &questions.iter().map(String::as_str).collect::<Vec<_>>())?)?;
+        let rows = self.rows(ask, &questions.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let logits = self.graph.logits(&rows, head.adapter.as_deref())?;
         let scored: Vec<(String, f32)> =
             candidates.iter().map(|(slug, _)| slug.clone()).zip(logits).collect();
         Ok(crate::heads::plan_default(head, &scored))
@@ -303,7 +319,8 @@ impl SenseModel {
     /// probability in basis points.
     fn read(&self, head: &Head, ids: Vec<u32>) -> Option<(usize, u16)> {
         let rows = head.questions.iter().map(|q| self.tokenizer.question_row(&ids, q));
-        let logits = self.graph.logits(&rows.collect::<anyhow::Result<Vec<_>>>().ok()?).ok()?;
+        let rows = rows.collect::<anyhow::Result<Vec<_>>>().ok()?;
+        let logits = self.graph.logits(&rows, head.adapter.as_deref()).ok()?;
         let read = choice(head, &logits, &[]);
         let idx = head.classes.iter().position(|c| Some(c) == read.pick.as_ref())?;
         Some((idx, (read.top_p * 10000.0).round().clamp(0.0, 10000.0) as u16))
@@ -311,7 +328,7 @@ impl SenseModel {
 
     /// Each row's logit, as the graph gives it: for tests that hold golden rows.
     pub fn logits(&self, rows: &[Vec<u32>]) -> anyhow::Result<Vec<f32>> {
-        self.graph.logits(rows)
+        self.graph.logits(rows, None)
     }
 
     /// The question rows for `text` and `questions`, as Sense builds them.

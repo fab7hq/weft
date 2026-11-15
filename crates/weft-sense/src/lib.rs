@@ -7,7 +7,7 @@ pub mod normalize;
 pub mod tokenizer;
 pub mod trial;
 
-pub use ask::{AskAnswer, Rule};
+pub use ask::{AskAnswer, Counts, Rule};
 pub use model::{
     ConversationEntry, ConversationReading, PaneSnapshot, SenseModel, SurfaceReading, SurfaceState,
     TranscriptSnippet, sha256_hex,

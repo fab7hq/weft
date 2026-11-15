@@ -423,7 +423,9 @@ fn candidate_rules(
     let practices = every_practice(ws, harness, route, overrides)?;
     Ok(practices
         .into_iter()
-        .filter_map(|r| Some(weft_sense::Rule { id: r.id, when: r.when? }))
+        .filter_map(|r| {
+            Some(weft_sense::Rule { id: r.id, label: r.label, when: r.when?, counts: None })
+        })
         .collect())
 }
 

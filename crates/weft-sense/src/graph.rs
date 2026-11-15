@@ -1,11 +1,13 @@
-//! sense-d's one graph, `sense.int8.onnx`, on ONNX Runtime through `ort`
-//! (sense-d spec/bundle.md §1): each question row read as one logit.
+//! Sense's one graph on ONNX Runtime through `ort`: each question row read
+//! as one logit. sense-xs's base reads with the adapter a run names, one per
+//! job; sense-d's graph reads alone.
 
 use anyhow::{Context, anyhow};
 use ort::environment::Environment;
-use ort::session::Session;
 use ort::session::builder::{AutoDevicePolicy, GraphOptimizationLevel};
+use ort::session::{Adapter, RunOptions, Session};
 use ort::value::TensorRef;
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
 /// The ONNX Runtime Sense's golden logits are made with: they hold to 1e-4
@@ -34,6 +36,9 @@ impl Provider {
 
 pub struct Graph {
     session: Mutex<Session>,
+    /// Per adapter, the options that switch it on. Each holds its adapter
+    /// alive, as every run that names it needs.
+    adapters: BTreeMap<String, RunOptions>,
 }
 
 impl Graph {
@@ -41,11 +46,16 @@ impl Graph {
     /// performance core, and each weight's quantization kept apart from the
     /// activations, so a row's logit does not move with its batch mates.
     pub fn load(model: &[u8]) -> anyhow::Result<Self> {
-        Self::load_on(model, Provider::Cpu)
+        Self::load_on(model, &[], Provider::Cpu)
     }
 
-    /// The graph on `provider`; a GPU provider that cannot be had is an error.
-    pub fn load_on(model: &[u8], provider: Provider) -> anyhow::Result<Self> {
+    /// The graph on `provider` with its `adapters`, each a name and its
+    /// file's bytes; a GPU provider that cannot be had is an error.
+    pub fn load_on(
+        model: &[u8],
+        adapters: &[(String, Vec<u8>)],
+        provider: Provider,
+    ) -> anyhow::Result<Self> {
         // One graph built at a time in a process, so a reload never builds
         // beside a load still running.
         static BUILDING: Mutex<()> = Mutex::new(());
@@ -67,20 +77,36 @@ impl Graph {
             .map_err(ort_error)?
             .commit_from_memory(model)
             .map_err(ort_error)
-            .context("load sense.int8.onnx")?;
-        Ok(Self { session: Mutex::new(session) })
+            .context("load Sense's graph")?;
+        let mut options = BTreeMap::new();
+        for (name, bytes) in adapters {
+            let adapter = Adapter::from_memory(bytes, None)
+                .map_err(ort_error)
+                .with_context(|| format!("load the {name} adapter"))?;
+            let mut run = RunOptions::new().map_err(ort_error)?;
+            run.add_adapter(&adapter).map_err(ort_error)?;
+            options.insert(name.clone(), run);
+        }
+        Ok(Self { session: Mutex::new(session), adapters: options })
     }
 
-    /// Each row's logit, in passes of [`ROWS_PER_PASS`] rows padded with 0.
-    pub fn logits(&self, rows: &[Vec<u32>]) -> anyhow::Result<Vec<f32>> {
+    /// Each row's logit read with `adapter` (the graph alone when none), in
+    /// passes of [`ROWS_PER_PASS`] rows padded with 0.
+    pub fn logits(&self, rows: &[Vec<u32>], adapter: Option<&str>) -> anyhow::Result<Vec<f32>> {
+        let options = match adapter {
+            Some(name) => Some(
+                self.adapters.get(name).with_context(|| format!("Sense has no {name} adapter"))?,
+            ),
+            None => None,
+        };
         let mut logits = Vec::with_capacity(rows.len());
         for pass in rows.chunks(ROWS_PER_PASS) {
-            logits.extend(self.pass(pass)?);
+            logits.extend(self.pass(pass, options)?);
         }
         Ok(logits)
     }
 
-    fn pass(&self, rows: &[Vec<u32>]) -> anyhow::Result<Vec<f32>> {
+    fn pass(&self, rows: &[Vec<u32>], options: Option<&RunOptions>) -> anyhow::Result<Vec<f32>> {
         let width = rows.iter().map(Vec::len).max().unwrap_or(0);
         let (mut ids, mut mask): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
         for row in rows {
@@ -93,7 +119,11 @@ impl Graph {
         let mask = TensorRef::from_array_view((shape, mask.as_slice())).map_err(ort_error)?;
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let inputs = ort::inputs!["input_ids" => ids, "attention_mask" => mask];
-        let outputs = session.run(inputs).map_err(ort_error)?;
+        let outputs = match options {
+            Some(options) => session.run_with_options(inputs, options),
+            None => session.run(inputs),
+        };
+        let outputs = outputs.map_err(ort_error)?;
         let (_, logit) = outputs["logit"].try_extract_tensor::<f32>().map_err(ort_error)?;
         Ok(logit.to_vec())
     }
@@ -174,6 +204,28 @@ mod tests {
             version.starts_with(&format!("{ONNX_RUNTIME}.")),
             "ONNX Runtime {version} is linked, not {ONNX_RUNTIME}"
         );
+    }
+
+    /// The fixture's base reads `scale · Σ ids + bias`; `state` sets them
+    /// to 1 and 0, `ask` to −1 and 0.5 (`tests/fixtures/xs/make.py`).
+    fn fixture() -> Graph {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xs");
+        let read = |p: &str| std::fs::read(dir.join(p)).unwrap();
+        let adapters =
+            ["state", "ask"].map(|a| (a.to_string(), read(&format!("adapters/{a}.onnx_adapter"))));
+        Graph::load_on(&read("sense-xs.int8.onnx"), &adapters, Provider::Cpu).unwrap()
+    }
+
+    #[test]
+    fn each_run_reads_with_the_adapter_it_names_and_switching_back_answers_the_same() {
+        let graph = fixture();
+        let rows = vec![vec![1, 2, 3], vec![4]];
+        assert_eq!(graph.logits(&rows, Some("state")).unwrap(), [6.0, 4.0]);
+        assert_eq!(graph.logits(&rows, Some("ask")).unwrap(), [-5.5, -3.5]);
+        assert_eq!(graph.logits(&rows, Some("state")).unwrap(), [6.0, 4.0]);
+        assert_eq!(graph.logits(&rows, None).unwrap(), [0.0, 0.0], "the base's own zeros");
+        let err = graph.logits(&rows, Some("eval")).unwrap_err().to_string();
+        assert!(err.contains("eval"), "{err}");
     }
 
     #[test]

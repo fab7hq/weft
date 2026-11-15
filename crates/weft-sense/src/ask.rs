@@ -1,6 +1,6 @@
-//! What sense-d answers for an Ask (sense-d spec/bundle.md §6): its route,
-//! task, effects and result, and the practice rules it proposes. Every
-//! answer is a default the person changes.
+//! What Sense answers for an Ask: its route, task, effects and result, the
+//! practice rules it ticks and every other one best first. Every answer is
+//! a default the person changes.
 
 use crate::heads::{choice, noul, sigmoid};
 use crate::manifest::{Head, HeadKind, Manifest};
@@ -14,7 +14,11 @@ pub struct AskAnswer {
     pub task: ClassesOn,
     pub effects: ClassesOn,
     pub result: String,
+    /// The rules it ticks: the convention's, and each at or above the cut.
     pub rules: Vec<RuleScore>,
+    /// Every other rule asked, highest probability first.
+    #[serde(default)]
+    pub unticked: Vec<RuleScore>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -38,11 +42,22 @@ pub struct RuleScore {
     pub p: Option<f32>,
 }
 
-/// A practice rule Sense may propose: its question is its `when` line.
+/// A practice rule Sense may propose. sense-xs reads it as `<label>:
+/// <when>`, sense-d as its `when` line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {
     pub id: String,
+    pub label: String,
     pub when: String,
+    /// How often the person was offered it and kept it, when ever.
+    pub counts: Option<Counts>,
+}
+
+/// A rule's Asks: those it was offered on, and those it was sent with.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Counts {
+    pub candidate: u32,
+    pub kept: u32,
 }
 
 /// The heads that answer an Ask, as the manifest describes them.
@@ -58,9 +73,11 @@ impl AskHeads {
     /// The bundle's Ask heads; an error names a head it lacks.
     pub fn from_manifest(manifest: &Manifest) -> anyhow::Result<Self> {
         manifest.head_of("ask_result", HeadKind::Derived)?;
-        let rule = manifest.head_of("rule_relevance", HeadKind::NoulPerItem)?;
-        if rule.threshold.is_none() {
-            anyhow::bail!("the rule_relevance head has no threshold");
+        let rule = manifest.head("rule_relevance")?;
+        match rule.kind {
+            HeadKind::NoulPerItem if rule.threshold.is_some() => {}
+            HeadKind::Document if rule.sure.is_some() && rule.question.is_some() => {}
+            _ => anyhow::bail!("the rule_relevance head has no question or cut"),
         }
         Ok(Self {
             version: manifest.version.clone(),
@@ -77,6 +94,19 @@ impl AskHeads {
         [&self.task, &self.effects, &self.route]
             .into_iter()
             .flat_map(|h| h.questions.iter().map(String::as_str))
+    }
+
+    /// The adapter the Ask's rows are read with; none for sense-d.
+    pub fn adapter(&self) -> Option<&str> {
+        self.rule.adapter.as_deref()
+    }
+
+    /// The row's question for `rule`.
+    pub fn question(&self, rule: &Rule) -> String {
+        match &self.rule.question {
+            Some(q) => q.replace("{document}", &format!("{}: {}", rule.label, rule.when)),
+            None => rule.when.clone(),
+        }
     }
 
     /// Whether the convention decides `rule`, so it is never asked.
@@ -103,7 +133,7 @@ impl AskHeads {
         let route = choice(&self.route, &logits[n_task + n_effects..], routes);
         // From the top route even when it shows "unsure"; the plan is not known yet.
         let result = derive_result(top(&route.p), &task_on, &effects_on, false).to_string();
-        let rules = self.propose(&task_on, &effects_on, asked);
+        let (rules, unticked) = self.propose(&task_on, &effects_on, asked);
         Ok(AskAnswer {
             sense: self.version.clone(),
             route: RouteAnswer { pick: route.pick, p: route.p },
@@ -111,17 +141,19 @@ impl AskHeads {
             effects: ClassesOn { on: effects_on, p: effects_p },
             result,
             rules,
+            unticked,
         })
     }
 
-    /// The convention's rules for this task and effects, and each rule
-    /// asked whose probability reaches the threshold, by id.
+    /// The convention's rules for this task and effects and each rule asked
+    /// whose probability reaches the cut, by id; then every other rule asked,
+    /// best first.
     fn propose(
         &self,
         task: &[String],
         effects: &[String],
         asked: &[(&Rule, f32)],
-    ) -> Vec<RuleScore> {
+    ) -> (Vec<RuleScore>, Vec<RuleScore>) {
         let has = |list: &[String], c: &String| list.contains(c);
         let decided = self.rule.convention.iter().filter(|c| {
             c.task.iter().all(|t| has(task, t))
@@ -129,14 +161,26 @@ impl AskHeads {
         });
         let mut rules: BTreeMap<String, Option<f32>> =
             decided.flat_map(|c| c.rules.iter().map(|r| (r.clone(), None))).collect();
-        let threshold = self.rule.threshold.unwrap_or(1.0);
+        let cut = self.rule.threshold.or(self.rule.sure).unwrap_or(1.0);
+        let mut unticked = Vec::new();
         for (rule, logit) in asked.iter().filter(|(r, _)| !self.decided(&r.id)) {
-            let p = sigmoid(logit / self.rule.temperature);
-            if p >= threshold {
-                rules.insert(rule.id.clone(), Some(p));
+            let p = sigmoid(logit / self.rule.temperature + self.memory(rule.counts));
+            match p >= cut {
+                true => drop(rules.insert(rule.id.clone(), Some(p))),
+                false => unticked.push(RuleScore { id: rule.id.clone(), p: Some(p) }),
             }
         }
-        rules.into_iter().map(|(id, p)| RuleScore { id, p }).collect()
+        unticked.sort_by(|a, b| b.p.unwrap_or(0.0).total_cmp(&a.p.unwrap_or(0.0)));
+        (rules.into_iter().map(|(id, p)| RuleScore { id, p }).collect(), unticked)
+    }
+
+    /// What a rule's counts add to its logit: `w · m`, where
+    /// `m = ln((kept + a) / (candidate − kept + a))`; none without counts or
+    /// a `memory` on the head.
+    fn memory(&self, counts: Option<Counts>) -> f32 {
+        let (Some(c), Some(memory)) = (counts, self.rule.memory) else { return 0.0 };
+        let (kept, left) = (c.kept as f32, c.candidate.saturating_sub(c.kept) as f32);
+        memory.w * ((kept + memory.a) / (left + memory.a)).ln()
     }
 }
 
@@ -200,7 +244,7 @@ mod tests {
     }
 
     fn rule(id: &str) -> Rule {
-        Rule { id: id.into(), when: format!("when {id}") }
+        Rule { id: id.into(), label: id.into(), when: format!("when {id}"), counts: None }
     }
 
     #[test]
@@ -270,6 +314,51 @@ mod tests {
         assert_eq!(derive_result("review", &[], &s(&["write"]), false), "evidence");
         assert_eq!(derive_result("direct", &s(&["diagnose"]), &s(&["read"]), false), "evidence");
         assert_eq!(derive_result("direct", &s(&["question"]), &s(&["read"]), false), "answer");
+    }
+
+    /// sense-xs's Ask heads: the rule head a `document`, its question a
+    /// template, its rules weighed by their counts.
+    fn xs_heads() -> AskHeads {
+        let json = MANIFEST.replace(
+            r#"{"name": "rule_relevance", "kind": "noul_per_item", "threshold": 0.5,"#,
+            r#"{"name": "rule_relevance", "kind": "document", "question": "applies? {document}",
+                "sure": 0.6, "memory": {"w": 0.5, "a": 1.0},"#,
+        );
+        AskHeads::from_manifest(&Manifest::parse(json.as_bytes()).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_documents_question_is_its_template_around_the_rules_label_and_when() {
+        let r = Rule { label: "Keep it simple".into(), ..rule("practice.kiss") };
+        assert_eq!(xs_heads().question(&r), "applies? Keep it simple: when practice.kiss");
+        assert_eq!(heads().question(&r), "when practice.kiss", "sense-d asks the when line");
+    }
+
+    #[test]
+    fn a_rule_kept_on_every_ask_scores_higher_and_the_rest_are_listed_best_first() {
+        let question_only = [8.0, -8.0, -8.0, -8.0, -8.0, 0.0, 0.0, 0.0, 0.0];
+        let kept = Rule { counts: Some(Counts { candidate: 3, kept: 3 }), ..rule("mine") };
+        let (fresh, never) = (
+            rule("fresh"),
+            Rule { counts: Some(Counts { candidate: 3, kept: 0 }), ..rule("never") },
+        );
+        let low = rule("low");
+        let asked = [(&low, -1.0), (&never, 0.0), (&fresh, 0.0), (&kept, 0.0)];
+        let a = xs_heads().answer(&question_only, &[], &asked).unwrap();
+        // m = ln(4/1) for mine, ln(1/4) for never: p = σ(±0.5 · 1.386).
+        let mine = sigmoid(0.5 * 4f32.ln());
+        assert_eq!(a.rules, [RuleScore { id: "mine".into(), p: Some(mine) }], "over 0.6");
+        let unticked: Vec<&str> = a.unticked.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(unticked, ["fresh", "never", "low"], "0.5, then 0.33, then 0.27");
+        assert_eq!(a.unticked[0].p, Some(0.5), "no counts, no term");
+    }
+
+    #[test]
+    fn a_head_without_memory_ignores_counts() {
+        let question_only = [8.0, -8.0, -8.0, -8.0, -8.0, 0.0, 0.0, 0.0, 0.0];
+        let kept = Rule { counts: Some(Counts { candidate: 3, kept: 3 }), ..rule("mine") };
+        let a = heads().answer(&question_only, &[], &[(&kept, -0.1)]).unwrap();
+        assert_eq!(a.unticked, [RuleScore { id: "mine".into(), p: Some(sigmoid(-0.1)) }]);
     }
 
     #[test]

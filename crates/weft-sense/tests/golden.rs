@@ -173,7 +173,12 @@ fn each_golden_ask_gives_its_task_effects_route_result_and_rules() {
             .as_object()
             .unwrap()
             .iter()
-            .map(|(id, when)| Rule { id: id.clone(), when: when.as_str().unwrap().into() })
+            .map(|(id, when)| Rule {
+                id: id.clone(),
+                label: id.clone(),
+                when: when.as_str().unwrap().into(),
+                counts: None,
+            })
             .collect();
         let a = model.ask(row["text"].as_str().unwrap(), &[], &rules).unwrap();
         assert_eq!(a.task.on, strings(&row["task"]));

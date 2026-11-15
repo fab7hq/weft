@@ -1,16 +1,16 @@
-//! A sense-d bundle's `manifest.json` (sense-d spec/bundle.md §2): its
-//! files, its normalizing table and the heads it describes.
-//! `fab7.sense.decision/1` to `/3` are read; `/2` adds the `turn_end` and
-//! `plan` heads, and `/3` holds the state heads alone (`surface`,
-//! `conversation`, `turn_end`): the Ask model answers Asks.
+//! A Sense bundle's `manifest.json`: its files, its normalizing table and
+//! the heads it describes. sense-xs (`fab7.sense.xs/1`) lists its heads
+//! under the adapter that reads them. sense-d's `fab7.sense.decision/1` to
+//! `/3` list them alone: `/2` adds the `turn_end` and `plan` heads, and `/3`
+//! holds the state heads alone.
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMAS: [&str; 3] =
-    ["fab7.sense.decision/1", "fab7.sense.decision/2", "fab7.sense.decision/3"];
+pub const SCHEMAS: [&str; 4] =
+    ["fab7.sense.decision/1", "fab7.sense.decision/2", "fab7.sense.decision/3", "fab7.sense.xs/1"];
 pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -20,6 +20,9 @@ pub enum HeadKind {
     Choice,
     NoulPerItem,
     Derived,
+    /// One row per candidate, its question the head's `question` with the
+    /// candidate's text in it (sense-xs).
+    Document,
     /// A kind this runtime does not know: the head is ignored.
     #[serde(other)]
     Unknown,
@@ -28,6 +31,9 @@ pub enum HeadKind {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Head {
     pub name: String,
+    /// The adapter that reads it (sense-xs); none for sense-d's graph.
+    #[serde(skip)]
+    pub adapter: Option<String>,
     pub kind: HeadKind,
     #[serde(default)]
     pub classes: Vec<String>,
@@ -50,6 +56,10 @@ pub struct Head {
     pub margin: Option<f32>,
     /// For a `noul_per_item` head whose question comes from its item.
     pub question_template: Option<String>,
+    /// For a `document` head: its question, `{document}` the candidate's text.
+    pub question: Option<String>,
+    /// For `rule_relevance` (sense-xs): how much a rule's counts weigh.
+    pub memory: Option<Memory>,
     pub cut: Option<Cut>,
     /// For `rule_relevance`: the rules decided by the Ask's task and effects.
     #[serde(default)]
@@ -58,6 +68,13 @@ pub struct Head {
 
 fn one() -> f32 {
     1.0
+}
+
+/// A rule's counts add `w · ln((kept + a) / (candidate − kept + a))` to its logit.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+pub struct Memory {
+    pub w: f32,
+    pub a: f32,
 }
 
 /// A head's text keeps its `first` tokens.
@@ -87,13 +104,26 @@ pub struct FileEntry {
     pub sha256: String,
 }
 
+/// A sense-xs adapter: its file and the heads it reads.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AdapterFile {
+    pub name: String,
+    pub file: String,
+    pub sha256: String,
+    pub heads: Vec<Head>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Manifest {
     pub schema: String,
     pub version: String,
     pub normalizer: String,
     pub normalize: Normalize,
+    /// Every head, each with its adapter's name when it has one.
+    #[serde(default)]
     pub heads: Vec<Head>,
+    #[serde(default)]
+    pub adapters: Vec<AdapterFile>,
     pub files: BTreeMap<String, FileEntry>,
 }
 
@@ -105,7 +135,11 @@ impl Manifest {
             Some(s) if SCHEMAS.contains(&s) => {}
             other => bail!("unsupported Sense bundle schema: {}", other.unwrap_or("none")),
         }
-        let manifest: Self = serde_json::from_value(schema).context("read manifest.json")?;
+        let mut manifest: Self = serde_json::from_value(schema).context("read manifest.json")?;
+        for adapter in &manifest.adapters {
+            let heads = adapter.heads.iter().cloned();
+            manifest.heads.extend(heads.map(|h| Head { adapter: Some(adapter.name.clone()), ..h }));
+        }
         if manifest.normalizer != NORMALIZER {
             bail!("unsupported Sense normalizer: {}", manifest.normalizer);
         }
@@ -136,6 +170,25 @@ impl Manifest {
             bail!("the {name} head has {} thresholds for {classes} classes", head.thresholds.len());
         }
         Ok(head)
+    }
+
+    /// The adapter named `name`, or an error that names it.
+    pub fn adapter(&self, name: &str) -> anyhow::Result<&AdapterFile> {
+        self.adapters
+            .iter()
+            .find(|a| a.name == name)
+            .with_context(|| format!("Sense bundle {} has no {name} adapter", self.version))
+    }
+
+    /// Every rule the `rule_relevance` head's convention decides: never
+    /// scored by the model, never counted. None without the head.
+    pub fn convention_rules(&self) -> Vec<String> {
+        let head = self.head("rule_relevance").ok();
+        let rules = head.into_iter().flat_map(|h| &h.convention).flat_map(|c| &c.rules);
+        let mut rules: Vec<String> = rules.cloned().collect();
+        rules.sort();
+        rules.dedup();
+        rules
     }
 
     /// The file the manifest lists under `key`, or an error that names it.
@@ -193,6 +246,39 @@ mod tests {
            "threshold": 0.52},
           {"name": "someday", "kind": "hologram"}],
         "files": {"model": {"path": "sense.int8.onnx", "sha256": "ab"}}}"#;
+
+    const XS: &str = r#"{"schema": "fab7.sense.xs/1", "version": "0.0.1",
+        "base_model": "microsoft/deberta-v3-xsmall",
+        "normalizer": "fab7.sense.decision.normalize/2",
+        "normalize": {"replacements": {"\n": " ↵ "}, "screen_last_lines": 15},
+        "adapters": [
+          {"name": "state", "file": "adapters/state.onnx_adapter", "sha256": "aa",
+           "heads": [{"name": "surface", "kind": "choice", "classes": ["idle_ready"],
+                      "questions": ["idle"], "unsure_below": 0.6}]},
+          {"name": "ask", "file": "adapters/ask.onnx_adapter", "sha256": "bb",
+           "heads": [{"name": "rule_relevance", "kind": "document", "document": "rule",
+                      "question": "{document}", "sure": 0.6, "memory": {"w": 0.05, "a": 1.0},
+                      "convention": [{"rules": ["practice.kiss"], "task": ["implement"],
+                                      "effects": ["write"]}]}]}],
+        "files": {"model": {"path": "sense-xs.int8.onnx", "sha256": "ab"}}}"#;
+
+    #[test]
+    fn a_sense_xs_manifest_reads_each_head_with_its_adapter() {
+        let m = Manifest::parse(XS.as_bytes()).unwrap();
+        let surface = m.head_of("surface", HeadKind::Choice).unwrap();
+        assert_eq!(surface.adapter.as_deref(), Some("state"));
+        let rule = m.head_of("rule_relevance", HeadKind::Document).unwrap();
+        assert_eq!(rule.adapter.as_deref(), Some("ask"));
+        assert_eq!((rule.question.as_deref(), rule.sure), (Some("{document}"), Some(0.6)));
+        assert_eq!(rule.memory, Some(Memory { w: 0.05, a: 1.0 }));
+        assert_eq!(m.convention_rules(), ["practice.kiss"]);
+        let ask = m.adapter("ask").unwrap();
+        assert_eq!((ask.file.as_str(), ask.sha256.as_str()), ("adapters/ask.onnx_adapter", "bb"));
+        let err = m.adapter("eval").unwrap_err().to_string();
+        assert!(err.contains("eval"), "{err}");
+        let sense_d = Manifest::parse(MANIFEST.as_bytes()).unwrap();
+        assert_eq!(sense_d.head("surface").unwrap().adapter, None, "sense-d reads with none");
+    }
 
     #[test]
     fn a_sense_d_manifest_reads_every_head_it_lists() {
