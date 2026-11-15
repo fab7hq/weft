@@ -22,6 +22,8 @@ pub struct Request<'a> {
     pub plan: Option<&'a str>,
     /// The practice rules chosen, by id.
     pub practices: Vec<String>,
+    /// Every practice rule the person was offered, by id, the chosen ones too.
+    pub offered: Vec<String>,
     /// Who classified it and who chose the rules: `{"by": "person"}`, or
     /// `{"by": "sense@<version>", "probabilities": {…}}`.
     pub classified_by: Value,
@@ -217,7 +219,7 @@ pub fn compile(ws: &Workspace, req: Request<'_>) -> Result<Value, AskError> {
         "delivery": delivery,
         "compiler": {
             "source": "verbatim", "plan": req.plan, "practices": ids_of(&practices),
-            "trimmed": trimmed, "route": ids_of(&route),
+            "offered": req.offered, "trimmed": trimmed, "route": ids_of(&route),
         },
         "base_commit": head(ws), "baselines": baselines,
     });
@@ -265,6 +267,9 @@ mod tests {
             classification: implement(),
             plan: None,
             practices: vec!["practice.kiss".into(), "practice.yagni".into()],
+            offered: ["practice.kiss", "practice.yagni", "practice.gall"]
+                .map(String::from)
+                .to_vec(),
             classified_by: json!({"by": "person"}),
             selected_by: json!({"by": "sense@0.3.0",
                                 "probabilities": {"practice.kiss": 0.9, "practice.yagni": 0.7}}),
@@ -308,6 +313,9 @@ mod tests {
             assert_eq!(d["source_verified"], "exact");
             assert_eq!(d["compiler"]["source"], "verbatim");
             assert_eq!(d["compiler"]["practices"], json!(["practice.kiss", "practice.yagni"]));
+            // Every rule the sheet offered, the unticked ones too.
+            let offered = json!(["practice.kiss", "practice.yagni", "practice.gall"]);
+            assert_eq!(d["compiler"]["offered"], offered);
             // The Ask reads as confirmed.
             let listed = crate::ask::list_asks(ws).unwrap();
             assert_eq!(listed[0]["outcome"], "confirmed", "{listed:?}");

@@ -176,7 +176,7 @@ impl SenseShown {
 }
 
 impl AskDraft {
-    fn request<'a>(&'a self, overrides: &'a Overrides) -> api::Compile<'a> {
+    fn request<'a>(&'a self, overrides: &'a Overrides, offered: Vec<String>) -> api::Compile<'a> {
         let result = if self.task == "plan" { "plan" } else { "workspace_change" };
         let by = |s: &SenseShown, f: fn(&SenseShown, &AskDraft) -> api::Chooser| f(s, self);
         let classified_by =
@@ -198,6 +198,7 @@ impl AskDraft {
             },
             plan: self.plan.as_deref(),
             practices: self.rules.clone(),
+            offered,
             classified_by,
             selected_by,
             links: self.link.iter().map(|(rel, id)| api::Link { rel, id }).collect(),
@@ -210,13 +211,16 @@ impl AskDraft {
 /// What Send would type for this Ask, recording nothing.
 pub fn compose(project: &Path, d: &AskDraft, layers: Option<&str>) -> Result<api::Composed, Error> {
     let overrides = overrides(layers)?;
-    api::compose(&workspace(project)?, &d.request(&overrides)).map_err(refused)
+    api::compose(&workspace(project)?, &d.request(&overrides, Vec::new())).map_err(refused)
 }
 
 /// Compile the Ask, confirmed by the person's Send in Weft, and say its id.
 pub fn compile(project: &Path, d: &AskDraft, layers: Option<&str>) -> Result<String, Error> {
     let overrides = overrides(layers)?;
-    let compiled = api::compile(&workspace(project)?, d.request(&overrides)).map_err(refused)?;
+    let ws = workspace(project)?;
+    let offered = every_practice(&ws, &d.harness, Some(&d.route), &overrides)?;
+    let offered = offered.into_iter().map(|r| r.id).collect();
+    let compiled = api::compile(&ws, d.request(&overrides, offered)).map_err(refused)?;
     Ok(compiled.ask_id)
 }
 
@@ -416,18 +420,28 @@ fn candidate_rules(
     route: Option<&str>,
     overrides: &Overrides,
 ) -> Result<Vec<weft_sense::Rule>, Error> {
+    let practices = every_practice(ws, harness, route, overrides)?;
+    Ok(practices
+        .into_iter()
+        .filter_map(|r| Some(weft_sense::Rule { id: r.id, when: r.when? }))
+        .collect())
+}
+
+/// Every practice rule the layers hold, for any task: the ones an Ask is
+/// offered, the person's own among them.
+fn every_practice(
+    ws: &ringframe::workspace::Workspace,
+    harness: &str,
+    route: Option<&str>,
+    overrides: &Overrides,
+) -> Result<Vec<api::Rule>, Error> {
     let all = api::Classification {
         task: api::tasks().iter().map(|t| t.to_string()).collect(),
         result: "workspace_change".into(),
         effects: vec!["read".into(), "write".into()],
     };
     let rules = api::rules(ws, harness, route.unwrap_or_default(), &all, overrides);
-    let rules = rules.map_err(refused)?;
-    Ok(rules
-        .practices
-        .into_iter()
-        .filter_map(|r| Some(weft_sense::Rule { id: r.id, when: r.when? }))
-        .collect())
+    Ok(rules.map_err(refused)?.practices)
 }
 
 /// Whether this workspace could finish an Ask at all, asked of RingFrame.
@@ -955,6 +969,59 @@ pub(crate) mod tests {
             |_: &Reading| answered(Some("direct"), &["implement"], &["read", "write"], &[]);
         let said = sheet(&repo, None, words, (None, None, None), &writes, &no_plan).unwrap();
         assert_eq!(said["route"], "native_direct");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// An Ask sent from Weft records every practice rule it was offered, for
+    /// any task and unticked too: what Sense counts each rule's keeps against.
+    #[test]
+    fn an_ask_records_every_rule_it_was_offered() {
+        fixture_home();
+        let repo = folder("offered", true);
+        assert_eq!(set_up(&repo), None);
+        let words = ("claude-code", "Fix the login bug.");
+        let read = std::cell::RefCell::new(Vec::new());
+        let sense = |r: &Reading| {
+            *read.borrow_mut() = r.rules.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+            Sensed::Off
+        };
+        let said = sheet(&repo, None, words, (None, None, None), &sense, &no_plan).unwrap();
+        let shown: Vec<String> = said["practices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap().into())
+            .collect();
+        assert!(shown.len() > 1, "{shown:?}");
+        let draft = AskDraft {
+            words: words.1.into(),
+            harness: words.0.into(),
+            route: "native_direct".into(),
+            task: "implement".into(),
+            effects: vec!["read".into(), "write".into()],
+            plan: None,
+            rules: vec![shown[0].clone()],
+            link: None,
+            sense: None,
+            session: None,
+        };
+        compile(&repo, &draft, None).unwrap();
+        let ledger = std::fs::read_to_string(repo.join(".fab7/rf/ledger.jsonl")).unwrap();
+        let compiled: Value = ledger
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .find(|e| e["type"] == "ask.compiled")
+            .unwrap();
+        let offered: Vec<String> = compiled["data"]["compiler"]["offered"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.as_str().unwrap().into())
+            .collect();
+        // The rules Sense scores, and the ones listed for the task.
+        let missing = |of: &[String]| of.iter().filter(|id| !offered.contains(id)).count();
+        assert_eq!((missing(&read.borrow()), missing(&shown)), (0, 0), "{offered:?}");
+        assert!(offered.len() > shown.len(), "rules for other tasks too: {offered:?}");
         let _ = std::fs::remove_dir_all(repo);
     }
 

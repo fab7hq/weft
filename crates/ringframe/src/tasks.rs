@@ -5275,6 +5275,7 @@ mod tests {
                                            "effects": ["write"]}),
                     plan: Some("plans/uptime/plan.md"),
                     practices: vec!["practice.kiss".into()],
+                    offered: Vec::new(),
                     classified_by: json!({"by": "person"}),
                     selected_by: json!({"by": "person"}),
                     links: Vec::new(),

@@ -788,6 +788,7 @@ mod tests {
                 classification,
                 plan: None,
                 practices: Vec::new(),
+                offered: Vec::new(),
                 classified_by: json!({"by": "person"}),
                 selected_by: json!({"by": "person"}),
                 links,

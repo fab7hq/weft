@@ -231,6 +231,8 @@ pub struct Compile<'a> {
     pub plan: Option<&'a str>,
     /// The practice rules chosen, by id.
     pub practices: Vec<String>,
+    /// Every practice rule the person was offered, by id, the chosen ones too.
+    pub offered: Vec<String>,
     pub classified_by: Chooser,
     /// Sense's probabilities are the scores trimming drops by; a rule the
     /// person added scores above all of them.
@@ -261,6 +263,7 @@ fn compile_request<'a>(req: &'a Compile<'a>) -> crate::compile::Request<'a> {
         classification: json!({"task": c.task, "result": c.result, "effects": c.effects}),
         plan: req.plan,
         practices: req.practices.clone(),
+        offered: req.offered.clone(),
         classified_by: req.classified_by.recorded(),
         selected_by: req.selected_by.recorded(),
         links: req.links.iter().map(|l| json!({"rel": l.rel, "id": l.id})).collect(),
@@ -722,6 +725,7 @@ mod tests {
             },
             plan: Some("plans/uptime/plan.md"),
             practices: Vec::new(),
+            offered: Vec::new(),
             classified_by: Chooser::Person,
             selected_by: Chooser::Person,
             links: Vec::new(),

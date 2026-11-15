@@ -152,6 +152,7 @@ fn confirm_ask_with(ws: &Workspace, words: &[u8], capability: &str, links: Vec<V
             classification,
             plan: None,
             practices: Vec::new(),
+            offered: Vec::new(),
             classified_by: json!({"by": "person"}),
             selected_by: json!({"by": "person"}),
             links,
