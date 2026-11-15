@@ -27,7 +27,7 @@ impl SenseModel {
         let mut times = Vec::new();
         for row in golden.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         {
-            let Some(text) = row["text"].as_str().filter(|_| row["head"] == "ask") else {
+            let Some(text) = row["text"].as_str().filter(|_| row["head"] == "ask_heads") else {
                 continue;
             };
             let mut answer = None;

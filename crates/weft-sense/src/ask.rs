@@ -43,8 +43,7 @@ pub struct RuleScore {
     pub p: Option<f32>,
 }
 
-/// A practice rule Sense may propose. sense-xs reads it as `<label>:
-/// <when>`, sense-d as its `when` line.
+/// A practice rule Sense may propose, read as `<label>: <when>`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Rule {
     pub id: String,
@@ -68,19 +67,23 @@ pub struct AskHeads {
     effects: Head,
     route: Head,
     rule: Head,
+    /// The rule head's question, `{document}` the rule's text.
+    question: String,
+    /// A rule is ticked at or above it.
+    sure: f32,
 }
 
 impl AskHeads {
     /// The bundle's Ask heads; an error names a head it lacks.
     pub fn from_manifest(manifest: &Manifest) -> anyhow::Result<Self> {
         manifest.head_of("ask_result", HeadKind::Derived)?;
-        let rule = manifest.head("rule_relevance")?;
-        match rule.kind {
-            HeadKind::NoulPerItem if rule.threshold.is_some() => {}
-            HeadKind::Document if rule.sure.is_some() && rule.question.is_some() => {}
-            _ => anyhow::bail!("the rule_relevance head has no question or cut"),
-        }
+        let rule = manifest.head_of("rule_relevance", HeadKind::Document)?;
+        let (Some(question), Some(sure)) = (rule.question.clone(), rule.sure) else {
+            anyhow::bail!("the rule_relevance head has no question or cut");
+        };
         Ok(Self {
+            question,
+            sure,
             version: manifest.version.clone(),
             task: manifest.head_of("ask_task", HeadKind::Noul)?.clone(),
             effects: manifest.head_of("ask_effects", HeadKind::Noul)?.clone(),
@@ -97,21 +100,16 @@ impl AskHeads {
             .flat_map(|h| h.questions.iter().map(String::as_str))
     }
 
-    /// The adapter the Ask's rows are read with; none for sense-d.
-    pub fn adapter(&self) -> Option<&str> {
-        self.rule.adapter.as_deref()
+    /// The adapter the Ask's rows are read with.
+    pub fn adapter(&self) -> &str {
+        &self.rule.adapter
     }
 
-    /// The row's question for `rule`: a document head's template around
-    /// its `<label>: <when>`, through `table`.
+    /// The row's question for `rule`: the head's template around its
+    /// `<label>: <when>`, through `table`.
     pub fn question(&self, rule: &Rule, table: &Replacements) -> String {
-        match &self.rule.question {
-            Some(q) => {
-                let document = candidate_text(&format!("{}: {}", rule.label, rule.when), table);
-                q.replace("{document}", &document)
-            }
-            None => rule.when.clone(),
-        }
+        let document = candidate_text(&format!("{}: {}", rule.label, rule.when), table);
+        self.question.replace("{document}", &document)
     }
 
     /// Whether the convention decides `rule`, so it is never asked.
@@ -166,11 +164,10 @@ impl AskHeads {
         });
         let mut rules: BTreeMap<String, Option<f32>> =
             decided.flat_map(|c| c.rules.iter().map(|r| (r.clone(), None))).collect();
-        let cut = self.rule.threshold.or(self.rule.sure).unwrap_or(1.0);
         let mut unticked = Vec::new();
         for (rule, logit) in asked.iter().filter(|(r, _)| !self.decided(&r.id)) {
             let p = sigmoid(logit / self.rule.temperature + self.memory(rule.counts));
-            match p >= cut {
+            match p >= self.sure {
                 true => drop(rules.insert(rule.id.clone(), Some(p))),
                 false => unticked.push(RuleScore { id: rule.id.clone(), p: Some(p) }),
             }
@@ -227,10 +224,10 @@ fn top(p: &BTreeMap<String, f32>) -> &str {
 mod tests {
     use super::*;
 
-    const MANIFEST: &str = r#"{"schema": "fab7.sense.decision/1", "version": "0.1.0",
+    const MANIFEST: &str = r#"{"schema": "fab7.sense.xs/1", "version": "0.1.0",
       "normalizer": "fab7.sense.decision.normalize/2",
       "normalize": {"replacements": {}, "screen_last_lines": 15}, "files": {},
-      "heads": [
+      "adapters": [{"name": "ask", "file": "ask.onnx_adapter", "sha256": "aa", "heads": [
         {"name": "ask_task", "kind": "noul", "classes": ["question", "plan", "implement"],
          "questions": ["q1", "q2", "q3"], "temperature": 2.0, "thresholds": [0.5, 0.5, 0.9]},
         {"name": "ask_effects", "kind": "noul", "classes": ["read", "write"],
@@ -238,11 +235,12 @@ mod tests {
         {"name": "ask_route", "kind": "choice", "classes": ["direct", "plan", "goal", "review"],
          "questions": ["r1", "r2", "r3", "r4"], "unsure_below": 0.6},
         {"name": "ask_result", "kind": "derived", "classes": ["answer", "plan"]},
-        {"name": "rule_relevance", "kind": "noul_per_item", "threshold": 0.5,
+        {"name": "rule_relevance", "kind": "document", "question": "applies? {document}",
+         "sure": 0.5,
          "convention": [{"rules": ["practice.kiss", "practice.yagni"], "task": ["implement"],
                          "effects": ["write"]},
                         {"rules": ["practice.pesticide"], "task": ["plan", "implement"],
-                         "effects": []}]}]}"#;
+                         "effects": []}]}]}]}"#;
 
     fn heads() -> AskHeads {
         AskHeads::from_manifest(&Manifest::parse(MANIFEST.as_bytes()).unwrap()).unwrap()
@@ -282,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn rules_are_the_conventions_and_each_rule_asked_at_its_threshold_with_no_limit() {
+    fn rules_are_the_conventions_and_each_rule_asked_at_its_cut_with_no_limit() {
         // At T = 2 the task is implement alone (σ(4) = 0.98), the effects read and write.
         let implement_and_write = [-4.0, -4.0, 8.0, 0.0, 4.0, 0.0, 0.0, 0.0, 0.0];
         let (a, b, c, kiss) = (rule("a"), rule("b"), rule("c"), rule("practice.kiss"));
@@ -321,14 +319,10 @@ mod tests {
         assert_eq!(derive_result("direct", &s(&["question"]), &s(&["read"]), false), "answer");
     }
 
-    /// sense-xs's Ask heads: the rule head a `document`, its question a
-    /// template, its rules weighed by their counts.
-    fn xs_heads() -> AskHeads {
-        let json = MANIFEST.replace(
-            r#"{"name": "rule_relevance", "kind": "noul_per_item", "threshold": 0.5,"#,
-            r#"{"name": "rule_relevance", "kind": "document", "question": "applies? {document}",
-                "sure": 0.6, "memory": {"w": 0.5, "a": 1.0},"#,
-        );
+    /// The Ask heads with the rules weighed by their counts, cut at 0.6.
+    fn remembering() -> AskHeads {
+        let json =
+            MANIFEST.replace(r#""sure": 0.5,"#, r#""sure": 0.6, "memory": {"w": 0.5, "a": 1.0},"#);
         AskHeads::from_manifest(&Manifest::parse(json.as_bytes()).unwrap()).unwrap()
     }
 
@@ -336,10 +330,8 @@ mod tests {
     fn a_documents_question_is_its_template_around_the_rules_label_and_when_through_the_table() {
         let table = Replacements::new(&[("\n".to_string(), " ↵ ".to_string())].into()).unwrap();
         let r = Rule { label: "Keep it\nsimple".into(), ..rule("practice.kiss") };
-        let q = xs_heads().question(&r, &table);
+        let q = heads().question(&r, &table);
         assert_eq!(q, "applies? Keep it ↵ simple: when practice.kiss");
-        let r = Rule { label: "Keep it simple".into(), ..rule("practice.kiss") };
-        assert_eq!(heads().question(&r, &table), "when practice.kiss", "sense-d asks the when");
     }
 
     #[test]
@@ -352,7 +344,7 @@ mod tests {
         );
         let low = rule("low");
         let asked = [(&low, -1.0), (&never, 0.0), (&fresh, 0.0), (&kept, 0.0)];
-        let a = xs_heads().answer(&question_only, &[], &asked).unwrap();
+        let a = remembering().answer(&question_only, &[], &asked).unwrap();
         // m = ln(4/1) for mine, ln(1/4) for never: p = σ(±0.5 · 1.386).
         let mine = sigmoid(0.5 * 4f32.ln());
         assert_eq!(a.rules, [RuleScore { id: "mine".into(), p: Some(mine) }], "over 0.6");

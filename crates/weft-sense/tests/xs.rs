@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use weft_sense::manifest::bundle_for_tests;
 use weft_sense::{Rule, SenseModel, sha256_hex};
 
-/// sense-d 0.1.1's manifest: the bundle whose tokenizer the fixture borrows.
-const SENSE_D_0_1_1: &str = "cdb5eaba726376f63743da8fbb1a53b5e46c2d5924501617b559be7bcfa59357";
+/// sense-xs 0.0.1's manifest: the bundle whose tokenizer the fixture borrows.
+const SENSE_XS_0_0_1: &str = "33971ef7666281d62f74584b08fdedfd0a10e6d8c1e30947e92276f211d09112";
 
 const SURFACE: [&str; 7] = [
     "idle_ready",
@@ -30,7 +30,7 @@ fn questions(classes: &[&str]) -> Vec<String> {
 /// The fixture bundle in `dir`, every file under the digest its manifest names.
 fn bundle(dir: &Path) {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/xs");
-    let tokenizer = bundle_for_tests(SENSE_D_0_1_1).unwrap().join("tokenizer.json");
+    let tokenizer = bundle_for_tests(SENSE_XS_0_0_1).unwrap().join("tokenizer.json");
     std::fs::create_dir_all(dir.join("adapters")).unwrap();
     let copy = |from: PathBuf, to: &str| {
         std::fs::copy(from, dir.join(to)).unwrap();

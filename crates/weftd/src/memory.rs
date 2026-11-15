@@ -168,7 +168,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::ringframe::tests::{fixture_home, folder};
     use crate::ringframe::{AskDraft, compile, set_up};
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(with_counts(&none, &weft_dir, &rules), rules);
 
         let bundle = tmp.path().join("bundle");
-        crate::versions::tests::stage_sense_bundle(&bundle, "0.1.1");
+        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::SENSE_VERSION);
         let loaded = Loaded::new(Some(weft_sense::SenseModel::load(&bundle).unwrap()));
         for i in 1..3 {
             compile(&root, &draft(&format!("Fix bug {i}."), &["practice.dry"]), None).unwrap();
@@ -265,7 +265,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    fn draft(words: &str, rules: &[&str]) -> AskDraft {
+    pub(crate) fn draft(words: &str, rules: &[&str]) -> AskDraft {
         AskDraft {
             words: words.into(),
             harness: "claude-code".into(),

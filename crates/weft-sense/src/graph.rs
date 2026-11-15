@@ -1,6 +1,5 @@
 //! Sense's one graph on ONNX Runtime through `ort`: each question row read
-//! as one logit. sense-xs's base reads with the adapter a run names, one per
-//! job; sense-d's graph reads alone.
+//! as one logit, by the base with the adapter a run names, one per job.
 
 use anyhow::{Context, anyhow};
 use ort::environment::Environment;
@@ -42,15 +41,11 @@ pub struct Graph {
 }
 
 impl Graph {
-    /// The graph in `model`, on the CPU: every optimization, one thread per
-    /// performance core, and each weight's quantization kept apart from the
-    /// activations, so a row's logit does not move with its batch mates.
-    pub fn load(model: &[u8]) -> anyhow::Result<Self> {
-        Self::load_on(model, &[], Provider::Cpu)
-    }
-
-    /// The graph on `provider` with its `adapters`, each a name and its
-    /// file's bytes; a GPU provider that cannot be had is an error.
+    /// The graph in `model` on `provider`, with its `adapters`, each a name
+    /// and its file's bytes: every optimization, one thread per performance
+    /// core, and each weight's quantization kept apart from the activations,
+    /// so a row's logit does not move with its batch mates. A GPU provider
+    /// that cannot be had is an error.
     pub fn load_on(
         model: &[u8],
         adapters: &[(String, Vec<u8>)],
@@ -90,15 +85,11 @@ impl Graph {
         Ok(Self { session: Mutex::new(session), adapters: options })
     }
 
-    /// Each row's logit read with `adapter` (the graph alone when none), in
-    /// passes of [`ROWS_PER_PASS`] rows padded with 0.
-    pub fn logits(&self, rows: &[Vec<u32>], adapter: Option<&str>) -> anyhow::Result<Vec<f32>> {
-        let options = match adapter {
-            Some(name) => Some(
-                self.adapters.get(name).with_context(|| format!("Sense has no {name} adapter"))?,
-            ),
-            None => None,
-        };
+    /// Each row's logit read with `adapter`, in passes of
+    /// [`ROWS_PER_PASS`] rows padded with 0.
+    pub fn logits(&self, rows: &[Vec<u32>], adapter: &str) -> anyhow::Result<Vec<f32>> {
+        let options = (self.adapters.get(adapter))
+            .with_context(|| format!("Sense has no {adapter} adapter"))?;
         let mut logits = Vec::with_capacity(rows.len());
         for pass in rows.chunks(ROWS_PER_PASS) {
             logits.extend(self.pass(pass, options)?);
@@ -106,7 +97,7 @@ impl Graph {
         Ok(logits)
     }
 
-    fn pass(&self, rows: &[Vec<u32>], options: Option<&RunOptions>) -> anyhow::Result<Vec<f32>> {
+    fn pass(&self, rows: &[Vec<u32>], options: &RunOptions) -> anyhow::Result<Vec<f32>> {
         let width = rows.iter().map(Vec::len).max().unwrap_or(0);
         let (mut ids, mut mask): (Vec<i64>, Vec<i64>) = (Vec::new(), Vec::new());
         for row in rows {
@@ -119,11 +110,7 @@ impl Graph {
         let mask = TensorRef::from_array_view((shape, mask.as_slice())).map_err(ort_error)?;
         let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
         let inputs = ort::inputs!["input_ids" => ids, "attention_mask" => mask];
-        let outputs = match options {
-            Some(options) => session.run_with_options(inputs, options),
-            None => session.run(inputs),
-        };
-        let outputs = outputs.map_err(ort_error)?;
+        let outputs = session.run_with_options(inputs, options).map_err(ort_error)?;
         let (_, logit) = outputs["logit"].try_extract_tensor::<f32>().map_err(ort_error)?;
         Ok(logit.to_vec())
     }
@@ -220,11 +207,10 @@ mod tests {
     fn each_run_reads_with_the_adapter_it_names_and_switching_back_answers_the_same() {
         let graph = fixture();
         let rows = vec![vec![1, 2, 3], vec![4]];
-        assert_eq!(graph.logits(&rows, Some("state")).unwrap(), [6.0, 4.0]);
-        assert_eq!(graph.logits(&rows, Some("ask")).unwrap(), [-5.5, -3.5]);
-        assert_eq!(graph.logits(&rows, Some("state")).unwrap(), [6.0, 4.0]);
-        assert_eq!(graph.logits(&rows, None).unwrap(), [0.0, 0.0], "the base's own zeros");
-        let err = graph.logits(&rows, Some("eval")).unwrap_err().to_string();
+        assert_eq!(graph.logits(&rows, "state").unwrap(), [6.0, 4.0]);
+        assert_eq!(graph.logits(&rows, "ask").unwrap(), [-5.5, -3.5]);
+        assert_eq!(graph.logits(&rows, "state").unwrap(), [6.0, 4.0]);
+        let err = graph.logits(&rows, "eval").unwrap_err().to_string();
         assert!(err.contains("eval"), "{err}");
     }
 

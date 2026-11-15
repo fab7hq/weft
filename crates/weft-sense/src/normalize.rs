@@ -1,8 +1,7 @@
-//! Text as sense-d reads it (sense-d spec/bundle.md §4,
-//! `fab7.sense.decision.normalize/2`): a screen as its facts in words, then
-//! its last lines, cleaned; a transcript entry as its harness and kind, then
-//! its text; since `fab7.sense.decision/2`, a turn's last reply and a plan
-//! candidate; then every character the manifest's table names replaced.
+//! Text as Sense reads it (`fab7.sense.decision.normalize/2`): a screen as
+//! its facts in words, then its last lines, cleaned; a transcript entry as
+//! its harness and kind, then its text; a turn's last reply, an Ask and a
+//! document; then every character the manifest's table names replaced.
 
 use crate::model::{PaneSnapshot, TranscriptSnippet};
 use anyhow::bail;
@@ -266,7 +265,7 @@ pub fn normalize_terminal_line(line: &str) -> String {
     out
 }
 
-/// A screen as sense-d reads it: its facts in words (the harness, the
+/// A screen as Sense reads it: its facts in words (the harness, the
 /// alternate screen, the cursor from the bottom, how long it has been
 /// quiet), then its last `last_lines` lines that hold anything, cleaned. No
 /// hook is a fact: Sense reads the screen alone, and weftd weighs that
@@ -287,7 +286,7 @@ pub fn screen_text(snap: &PaneSnapshot<'_>, last_lines: usize, table: &Replaceme
     table.apply(&text.join("\n"))
 }
 
-/// A transcript entry as sense-d reads it: its harness and kind in words,
+/// A transcript entry as Sense reads it: its harness and kind in words,
 /// then its text without control characters, cut to 512 bytes.
 pub fn entry_text(item: &TranscriptSnippet<'_>, table: &Replacements) -> String {
     let kind = item.entry_type.trim();
@@ -305,7 +304,7 @@ pub fn reply_text(reply: &str, table: &Replacements) -> String {
     table.apply(&last)
 }
 
-/// An Ask's words after what the sheet holds (bundle 2): its route, then its
+/// An Ask's words after what the sheet holds: its route, then its
 /// plan as the plan head's candidate text, `<slug>: <title>: <paragraph>`.
 pub fn chosen_text(
     words: &str,

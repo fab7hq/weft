@@ -1,7 +1,7 @@
-//! How a head reads its rows' logits, by its kind (sense-d spec/bundle.md
-//! §3): a `choice` head by a softmax across its options, a `noul` head by
-//! each class's own sigmoid and threshold; since bundle 2, a turn end by its
-//! `sure` cut and a plan pick by `sure` and `margin` (§6).
+//! How a head reads its rows' logits, by its kind: a `choice` head by a
+//! softmax across its options, a `noul` head by each class's own sigmoid and
+//! threshold, a turn end by its `sure` cut and a plan pick by `sure` and
+//! `margin`.
 
 use crate::manifest::Head;
 use std::collections::BTreeMap;
@@ -38,7 +38,7 @@ pub fn noul(head: &Head, logits: &[f32]) -> (Vec<String>, BTreeMap<String, f32>)
     (on, head.classes.iter().cloned().zip(p).collect())
 }
 
-/// A turn end's answer (bundle 2): the probability that the reply asks its
+/// A turn end's answer: the probability that the reply asks its
 /// person, and whether it does, at or above the head's `sure` cut.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TurnEnd {
@@ -106,15 +106,15 @@ mod tests {
         assert!(c.p["b"] > 0.6, "b's probability stays the head's");
     }
 
-    fn bundle_2_head(sure: f32, margin: Option<f32>) -> Head {
-        let json = serde_json::json!({"name": "h", "kind": "noul_per_item", "temperature": 1.0,
+    fn sure_head(sure: f32, margin: Option<f32>) -> Head {
+        let json = serde_json::json!({"name": "h", "kind": "document", "temperature": 1.0,
             "sure": sure, "margin": margin});
         serde_json::from_value(json).unwrap()
     }
 
     #[test]
     fn a_turn_end_asks_at_or_above_its_sure_cut_and_says_nothing_below() {
-        let h = bundle_2_head(0.8, None);
+        let h = sure_head(0.8, None);
         let asks = turn_end(&h, 3.0);
         assert!(asks.asks && (asks.probability - 0.952_574).abs() < 1e-5);
         assert!(!turn_end(&h, 0.0).asks);
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn the_plan_default_is_the_top_candidate_only_when_sure_and_ahead() {
-        let h = bundle_2_head(0.7, Some(0.15));
+        let h = sure_head(0.7, Some(0.15));
         let pick = |logits: &[(&str, f32)]| {
             let owned: Vec<(String, f32)> =
                 logits.iter().map(|(s, z)| (s.to_string(), *z)).collect();

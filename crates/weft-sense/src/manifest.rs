@@ -1,16 +1,12 @@
-//! A Sense bundle's `manifest.json`: its files, its normalizing table and
-//! the heads it describes. sense-xs (`fab7.sense.xs/1`) lists its heads
-//! under the adapter that reads them. sense-d's `fab7.sense.decision/1` to
-//! `/3` list them alone: `/2` adds the `turn_end` and `plan` heads, and `/3`
-//! holds the state heads alone.
+//! A Sense bundle's `manifest.json` (`fab7.sense.xs/1`): its files, its
+//! normalizing table, its adapters and, under each, the heads it reads.
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-pub const SCHEMAS: [&str; 4] =
-    ["fab7.sense.decision/1", "fab7.sense.decision/2", "fab7.sense.decision/3", "fab7.sense.xs/1"];
+pub const SCHEMA: &str = "fab7.sense.xs/1";
 pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -18,7 +14,6 @@ pub const NORMALIZER: &str = "fab7.sense.decision.normalize/2";
 pub enum HeadKind {
     Noul,
     Choice,
-    NoulPerItem,
     Derived,
     /// One row per candidate, its question the head's `question` with the
     /// candidate's text in it (sense-xs).
@@ -31,9 +26,9 @@ pub enum HeadKind {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Head {
     pub name: String,
-    /// The adapter that reads it (sense-xs); none for sense-d's graph.
+    /// The adapter that reads it.
     #[serde(skip)]
-    pub adapter: Option<String>,
+    pub adapter: String,
     pub kind: HeadKind,
     #[serde(default)]
     pub classes: Vec<String>,
@@ -44,21 +39,15 @@ pub struct Head {
     /// Per class, for a `noul` head.
     #[serde(default)]
     pub thresholds: Vec<f32>,
-    /// For a `noul_per_item` head that proposes at or above it.
-    pub threshold: Option<f32>,
-    /// For a `noul_per_item` head that flags at or below it.
-    pub flag_below: Option<f32>,
     /// For a `choice` head: "unsure" below it.
     pub unsure_below: Option<f32>,
-    /// Bundle 2's `turn_end` and `plan` heads: the probability an answer must reach.
+    /// For `turn_end` and a `document` head: the probability an answer must reach.
     pub sure: Option<f32>,
-    /// Bundle 2's `plan` head: how far the top candidate must lead the runner-up.
+    /// For the `plan` head: how far the top candidate must lead the runner-up.
     pub margin: Option<f32>,
-    /// For a `noul_per_item` head whose question comes from its item.
-    pub question_template: Option<String>,
     /// For a `document` head: its question, `{document}` the candidate's text.
     pub question: Option<String>,
-    /// For `rule_relevance` (sense-xs): how much a rule's counts weigh.
+    /// For `rule_relevance`: how much a rule's counts weigh.
     pub memory: Option<Memory>,
     pub cut: Option<Cut>,
     /// For `rule_relevance`: the rules decided by the Ask's task and effects.
@@ -119,10 +108,9 @@ pub struct Manifest {
     pub version: String,
     pub normalizer: String,
     pub normalize: Normalize,
-    /// Every head, each with its adapter's name when it has one.
-    #[serde(default)]
+    /// Every head, each with its adapter's name.
+    #[serde(skip)]
     pub heads: Vec<Head>,
-    #[serde(default)]
     pub adapters: Vec<AdapterFile>,
     pub files: BTreeMap<String, FileEntry>,
 }
@@ -132,13 +120,13 @@ impl Manifest {
         let schema: serde_json::Value =
             serde_json::from_slice(bytes).context("parse manifest.json")?;
         match schema["schema"].as_str() {
-            Some(s) if SCHEMAS.contains(&s) => {}
+            Some(SCHEMA) => {}
             other => bail!("unsupported Sense bundle schema: {}", other.unwrap_or("none")),
         }
         let mut manifest: Self = serde_json::from_value(schema).context("read manifest.json")?;
         for adapter in &manifest.adapters {
             let heads = adapter.heads.iter().cloned();
-            manifest.heads.extend(heads.map(|h| Head { adapter: Some(adapter.name.clone()), ..h }));
+            manifest.heads.extend(heads.map(|h| Head { adapter: adapter.name.clone(), ..h }));
         }
         if manifest.normalizer != NORMALIZER {
             bail!("unsupported Sense normalizer: {}", manifest.normalizer);
@@ -211,16 +199,16 @@ pub fn bundle_with_digest(dir: &Path, sha256: &str) -> anyhow::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// The sense-d bundle tests read: the sense repository's export beside this
-/// checkout, or where CI puts the pinned one (`~/.fab7/sense/sense-d`), and
+/// The Sense bundle tests read: the sense repository's export beside this
+/// checkout, or where CI puts the pinned one (`~/.fab7/sense/sense-xs`), and
 /// only if its manifest is the one whose SHA-256 is `sha256`.
 pub fn bundle_for_tests(sha256: &str) -> anyhow::Result<PathBuf> {
-    let beside = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../sense/sense/dist/sense-d");
+    let beside = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../sense/sense/dist/sense-xs");
     let dir = match beside.exists() {
         true => beside,
         false => {
             let home = std::env::var_os("HOME").context("HOME is not set")?;
-            PathBuf::from(home).join(".fab7/sense/sense-d")
+            PathBuf::from(home).join(".fab7/sense/sense-xs")
         }
     };
     bundle_with_digest(&dir, sha256)
@@ -230,23 +218,6 @@ pub fn bundle_for_tests(sha256: &str) -> anyhow::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    const MANIFEST: &str = r#"{"schema": "fab7.sense.decision/1", "version": "0.1.0",
-        "base_model": "microsoft/deberta-v3-xsmall",
-        "normalizer": "fab7.sense.decision.normalize/2",
-        "normalize": {"replacements": {"\n": " ↵ "}, "screen_last_lines": 15},
-        "heads": [
-          {"name": "surface", "kind": "choice", "text": "screen", "classes": ["idle_ready"],
-           "questions": ["idle"], "temperature": 0.5, "unsure_below": 0.51},
-          {"name": "conversation", "kind": "choice", "text": "entry", "cut": {"first": 96},
-           "classes": ["agent_reply"], "questions": ["reply"]},
-          {"name": "ask_effects", "kind": "noul", "classes": ["read"], "questions": ["reads"],
-           "thresholds": [0.7]},
-          {"name": "rule_relevance", "kind": "noul_per_item", "question_from": "rule.when",
-           "convention": [{"rules": ["practice.kiss"], "task": ["implement"], "effects": ["write"]}],
-           "threshold": 0.52},
-          {"name": "someday", "kind": "hologram"}],
-        "files": {"model": {"path": "sense.int8.onnx", "sha256": "ab"}}}"#;
-
     const XS: &str = r#"{"schema": "fab7.sense.xs/1", "version": "0.0.1",
         "base_model": "microsoft/deberta-v3-xsmall",
         "normalizer": "fab7.sense.decision.normalize/2",
@@ -254,92 +225,64 @@ mod tests {
         "adapters": [
           {"name": "state", "file": "adapters/state.onnx_adapter", "sha256": "aa",
            "heads": [{"name": "surface", "kind": "choice", "classes": ["idle_ready"],
-                      "questions": ["idle"], "unsure_below": 0.6}]},
+                      "questions": ["idle"], "temperature": 0.5, "unsure_below": 0.6},
+                     {"name": "conversation", "kind": "choice", "text": "entry",
+                      "cut": {"first": 96}, "classes": ["agent_reply"], "questions": ["reply"]},
+                     {"name": "someday", "kind": "hologram"}]},
           {"name": "ask", "file": "adapters/ask.onnx_adapter", "sha256": "bb",
-           "heads": [{"name": "rule_relevance", "kind": "document", "document": "rule",
+           "heads": [{"name": "ask_effects", "kind": "noul", "classes": ["read"],
+                      "questions": ["reads"], "thresholds": [0.7]},
+                     {"name": "rule_relevance", "kind": "document", "document": "rule",
                       "question": "{document}", "sure": 0.6, "memory": {"w": 0.05, "a": 1.0},
                       "convention": [{"rules": ["practice.kiss"], "task": ["implement"],
-                                      "effects": ["write"]}]}]}],
+                                      "effects": ["write"]}]},
+                     {"name": "plan", "kind": "document", "question": "belongs: {document}",
+                      "temperature": 0.3, "sure": 0.7, "margin": 0.15}]}],
         "files": {"model": {"path": "sense-xs.int8.onnx", "sha256": "ab"}}}"#;
 
     #[test]
-    fn a_sense_xs_manifest_reads_each_head_with_its_adapter() {
+    fn a_manifest_reads_each_head_with_its_adapter() {
         let m = Manifest::parse(XS.as_bytes()).unwrap();
         let surface = m.head_of("surface", HeadKind::Choice).unwrap();
-        assert_eq!(surface.adapter.as_deref(), Some("state"));
+        assert_eq!(surface.adapter, "state");
+        assert_eq!((surface.temperature, surface.unsure_below), (0.5, Some(0.6)));
+        assert_eq!(m.head("conversation").unwrap().cut.unwrap().first, 96);
+        assert_eq!(m.head_of("ask_effects", HeadKind::Noul).unwrap().thresholds, [0.7]);
         let rule = m.head_of("rule_relevance", HeadKind::Document).unwrap();
-        assert_eq!(rule.adapter.as_deref(), Some("ask"));
+        assert_eq!(rule.adapter, "ask");
         assert_eq!((rule.question.as_deref(), rule.sure), (Some("{document}"), Some(0.6)));
         assert_eq!(rule.memory, Some(Memory { w: 0.05, a: 1.0 }));
         assert_eq!(m.convention_rules(), ["practice.kiss"]);
-        let ask = m.adapter("ask").unwrap();
-        assert_eq!((ask.file.as_str(), ask.sha256.as_str()), ("adapters/ask.onnx_adapter", "bb"));
-        let err = m.adapter("eval").unwrap_err().to_string();
-        assert!(err.contains("eval"), "{err}");
-        let sense_d = Manifest::parse(MANIFEST.as_bytes()).unwrap();
-        assert_eq!(sense_d.head("surface").unwrap().adapter, None, "sense-d reads with none");
-    }
-
-    #[test]
-    fn a_sense_d_manifest_reads_every_head_it_lists() {
-        let m = Manifest::parse(MANIFEST.as_bytes()).unwrap();
-        let surface = m.head_of("surface", HeadKind::Choice).unwrap();
-        assert_eq!((surface.temperature, surface.unsure_below), (0.5, Some(0.51)));
-        assert_eq!(m.head("conversation").unwrap().cut.unwrap().first, 96);
-        assert_eq!(m.head_of("ask_effects", HeadKind::Noul).unwrap().thresholds, [0.7]);
-        let rule = m.head_of("rule_relevance", HeadKind::NoulPerItem).unwrap();
-        assert_eq!(rule.threshold, Some(0.52));
-        assert_eq!(rule.convention[0].rules, ["practice.kiss"]);
+        let plan = m.head_of("plan", HeadKind::Document).unwrap();
+        assert_eq!((plan.sure, plan.margin), (Some(0.7), Some(0.15)));
         assert_eq!(m.head("someday").unwrap().kind, HeadKind::Unknown, "ignored, not refused");
         assert_eq!(m.normalize.replacements["\n"], " ↵ ");
-        assert_eq!(m.file("model").unwrap().path, "sense.int8.onnx");
+        assert_eq!(m.file("model").unwrap().path, "sense-xs.int8.onnx");
+        let ask = m.adapter("ask").unwrap();
+        assert_eq!((ask.file.as_str(), ask.sha256.as_str()), ("adapters/ask.onnx_adapter", "bb"));
     }
 
     #[test]
-    fn a_missing_head_or_file_is_an_error_that_names_it() {
-        let m = Manifest::parse(MANIFEST.as_bytes()).unwrap();
+    fn a_missing_head_adapter_or_file_is_an_error_that_names_it() {
+        let m = Manifest::parse(XS.as_bytes()).unwrap();
         let err = m.head("ask_task").unwrap_err().to_string();
         assert!(err.contains("ask_task"), "{err}");
         let err = m.file("tokenizer").unwrap_err().to_string();
         assert!(err.contains("tokenizer"), "{err}");
         let err = m.head_of("surface", HeadKind::Noul).unwrap_err().to_string();
         assert!(err.contains("surface"), "{err}");
+        let err = m.adapter("eval").unwrap_err().to_string();
+        assert!(err.contains("eval"), "{err}");
     }
 
     #[test]
-    fn bundle_2_is_read_with_its_turn_end_and_plan_heads() {
-        let heads = r#""heads": [
-          {"name": "turn_end", "kind": "noul", "text": "reply", "questions": ["asks"], "temperature": 0.75, "sure": 0.8},
-          {"name": "plan", "kind": "noul_per_item", "question_from": "plan.candidate",
-           "question_template": "belongs: {candidate}", "temperature": 0.3, "sure": 0.7, "margin": 0.15},"#;
-        let json = MANIFEST.replace("fab7.sense.decision/1", "fab7.sense.decision/2").replacen(
-            r#""heads": ["#,
-            heads,
-            1,
-        );
-        let m = Manifest::parse(json.as_bytes()).unwrap();
-        assert_eq!(m.head("turn_end").unwrap().sure, Some(0.8));
-        let plan = m.head_of("plan", HeadKind::NoulPerItem).unwrap();
-        assert_eq!((plan.sure, plan.margin), (Some(0.7), Some(0.15)));
-        assert_eq!(plan.question_template.as_deref(), Some("belongs: {candidate}"));
-    }
-
-    #[test]
-    fn bundle_3_is_read_with_the_state_heads_alone() {
-        let json = MANIFEST.replace("fab7.sense.decision/1", "fab7.sense.decision/3");
-        let m = Manifest::parse(json.as_bytes()).unwrap();
-        assert_eq!(m.schema, "fab7.sense.decision/3");
-        assert!(m.head_of("surface", HeadKind::Choice).is_ok());
-    }
-
-    #[test]
-    fn an_earlier_bundle_or_an_unknown_normalizer_is_refused() {
-        for schema in ["fab7.sense.bundle/2", "fab7.sense.bundle/3", "fab7.sense.decision/4"] {
-            let json = MANIFEST.replace("fab7.sense.decision/1", schema);
+    fn sense_d_or_an_unknown_schema_or_normalizer_is_refused() {
+        for schema in ["fab7.sense.decision/2", "fab7.sense.decision/3", "fab7.sense.xs/2"] {
+            let json = XS.replace("fab7.sense.xs/1", schema);
             let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
             assert!(err.contains(schema), "{err}");
         }
-        let json = MANIFEST.replace("normalize/2", "normalize/1");
+        let json = XS.replace("normalize/2", "normalize/1");
         let err = Manifest::parse(json.as_bytes()).unwrap_err().to_string();
         assert!(err.contains("normalize/1"), "{err}");
     }
@@ -347,8 +290,8 @@ mod tests {
     #[test]
     fn a_bundle_whose_manifest_is_not_the_one_expected_fails_naming_folder_and_digest() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("manifest.json"), MANIFEST).unwrap();
-        let found = crate::sha256_hex(MANIFEST.as_bytes());
+        std::fs::write(dir.path().join("manifest.json"), XS).unwrap();
+        let found = crate::sha256_hex(XS.as_bytes());
         assert_eq!(bundle_with_digest(dir.path(), &found).unwrap(), dir.path());
         let err = bundle_with_digest(dir.path(), &"0".repeat(64)).unwrap_err().to_string();
         assert!(err.contains(&dir.path().display().to_string()), "{err}");

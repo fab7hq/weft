@@ -868,6 +868,53 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(repo);
     }
 
+    /// A rule from the person's own layer reaches Sense with its `when`, is
+    /// scored by the pinned bundle, and scores higher once kept on three Asks.
+    #[test]
+    fn a_persons_rule_is_scored_and_scores_higher_kept_on_three_asks() {
+        fixture_home();
+        let repo = folder("own-kept", true);
+        assert_eq!(set_up(&repo), None);
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join(".fab7/weft");
+        let state =
+            weft_core::state::WeftState { open_projects: vec![repo.clone()], ..Default::default() };
+        crate::state::save(&weft_dir, &state).unwrap();
+        let layers = serde_json::json!([{"layer": "weft", "ringframe": {"deltas": {
+            "practices/software-development": {"entries": [
+                {"id": "own.commits", "label": "Small Commits", "text": "One commit per item.",
+                 "when": "The change touches several separate items of work.",
+                 "applies_to": {"task": ["implement"]}}]}}}}])
+        .to_string();
+        let ws = workspace(&repo).unwrap();
+        let rules =
+            candidate_rules(&ws, "claude-code", None, &overrides(Some(&layers)).unwrap()).unwrap();
+        assert!(rules.iter().any(|r| r.id == "own.commits"), "a candidate with its when");
+        let bundle = tmp.path().join("bundle");
+        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::SENSE_VERSION);
+        let loaded =
+            crate::memory::Loaded::new(Some(weft_sense::SenseModel::load(&bundle).unwrap()));
+        let p = |rules: &[weft_sense::Rule]| {
+            let guard = loaded.read().unwrap();
+            let a = guard.as_ref().unwrap().ask("Fix the login bug.", &[], rules).unwrap();
+            let own = a.rules.iter().chain(&a.unticked).find(|r| r.id == "own.commits");
+            own.and_then(|r| r.p).expect("own.commits is scored")
+        };
+        let before = p(&crate::memory::with_counts(&loaded, &weft_dir, &rules));
+        let mut d = crate::memory::tests::draft("", &["own.commits"]);
+        for i in 0..3 {
+            d.words = format!("Fix bug {i}.");
+            compile(&repo, &d, Some(&layers)).unwrap();
+            crate::memory::after_compile(&loaded, &weft_dir, &repo);
+        }
+        let counted = crate::memory::with_counts(&loaded, &weft_dir, &rules);
+        let own = counted.iter().find(|r| r.id == "own.commits").unwrap();
+        assert_eq!(own.counts, Some(weft_sense::Counts { candidate: 3, kept: 3 }));
+        let after = p(&counted);
+        assert!(after > before, "kept on three Asks: {before} then {after}");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
     /// A project of 25 plans, each with a title and a first paragraph.
     fn many_plans(name: &str) -> std::path::PathBuf {
         let repo = folder(name, true);

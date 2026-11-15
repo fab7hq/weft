@@ -293,20 +293,19 @@ pub fn hot_reload_sense(
 /// The Sense bundle this Weft was built with: the version, the tag on
 /// Hugging Face it is downloaded from, and its `manifest.json`'s SHA-256.
 /// The manifest names every other file's digest, so pinning it pins them all.
-pub const SENSE_VERSION: &str = "0.1.1";
-pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.1";
+pub const SENSE_VERSION: &str = "0.0.1";
+pub const SENSE_URL: &str = "https://huggingface.co/fab7hq/sense-xs/resolve/v0.0.1";
 pub const SENSE_MANIFEST_SHA256: &str =
-    "cdb5eaba726376f63743da8fbb1a53b5e46c2d5924501617b559be7bcfa59357";
+    "33971ef7666281d62f74584b08fdedfd0a10e6d8c1e30947e92276f211d09112";
 
-/// Whether the bundle under `weft_dir` is missing, from before sense-d, or
-/// older than this Weft's.
+/// Whether the bundle under `weft_dir` is missing, not one this Weft reads
+/// (sense-d's, whatever its version), or older than this Weft's.
 pub fn sense_wanted(weft_dir: &Path) -> bool {
     let Some(current) = sense_current(weft_dir) else { return true };
     let manifest = std::fs::read(current.path.join("manifest.json")).unwrap_or_default();
     let schema = serde_json::from_slice::<serde_json::Value>(&manifest).ok();
-    let sense_d =
-        schema.is_some_and(|m| weft_sense::manifest::SCHEMAS.iter().any(|s| m["schema"] == *s));
-    !sense_d || weft_core::sync::older(&current.version, SENSE_VERSION)
+    let read = schema.is_some_and(|m| m["schema"] == weft_sense::manifest::SCHEMA);
+    !read || weft_core::sync::older(&current.version, SENSE_VERSION)
 }
 
 /// Download this Weft's Sense bundle with `curl`, as `out` runs it, and
@@ -487,14 +486,14 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(versions.parent().unwrap());
     }
 
-    /// The pinned sense-d bundle, copied to `dst` as `version`, with every
-    /// file its manifest names.
+    /// The pinned bundle, copied to `dst` as `version`, with every file its
+    /// manifest names.
     pub(crate) fn stage_sense_bundle(dst: &Path, version: &str) {
         let src = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
-        std::fs::create_dir_all(dst).unwrap();
         let bytes = std::fs::read(src.join("manifest.json")).unwrap();
         let golden = [weft_sense::trial::GOLDEN.to_string()];
         for name in bundle_files(&bytes).unwrap().iter().chain(&golden) {
+            std::fs::create_dir_all(dst.join(name).parent().unwrap()).unwrap();
             std::fs::copy(src.join(name), dst.join(name)).unwrap();
         }
         let mut manifest: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
@@ -504,9 +503,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn this_weft_pins_sense_d_0_1_1_on_hugging_face() {
-        assert_eq!(SENSE_VERSION, "0.1.1");
-        assert_eq!(SENSE_URL, "https://huggingface.co/fab7hq/sense-d/resolve/v0.1.1");
+    fn this_weft_pins_sense_xs_0_0_1_on_hugging_face() {
+        assert_eq!(SENSE_VERSION, "0.0.1");
+        assert_eq!(SENSE_URL, "https://huggingface.co/fab7hq/sense-xs/resolve/v0.0.1");
         let pinned = weft_sense::manifest::bundle_for_tests(SENSE_MANIFEST_SHA256).unwrap();
         let manifest = std::fs::read(pinned.join("manifest.json")).unwrap();
         let manifest = weft_sense::manifest::Manifest::parse(&manifest).unwrap();
@@ -514,17 +513,21 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_bundle_from_before_sense_d_is_wanted_whatever_its_version() {
+    fn a_bundle_this_weft_does_not_read_is_wanted_whatever_its_version() {
         let tmp = tempfile::tempdir().unwrap();
         let weft_dir = tmp.path().join(".fab7/weft");
-        let old = weft_dir.join("sense/versions/0.2.0");
-        std::fs::create_dir_all(&old).unwrap();
-        let manifest = r#"{"schema": "fab7.sense.bundle/2", "version": "0.2.0", "files": {}}"#;
-        std::fs::write(old.join("manifest.json"), manifest).unwrap();
-        let pointer = serde_json::json!({"version": "0.2.0", "path": old});
-        std::fs::write(weft_dir.join("sense/current.json"), pointer.to_string()).unwrap();
-        assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.2.0"));
-        assert!(sense_wanted(&weft_dir), "0.2.0 is not older, but it is not sense-d");
+        for (schema, version) in
+            [("fab7.sense.bundle/2", "0.2.0"), ("fab7.sense.decision/2", "0.1.1")]
+        {
+            let old = weft_dir.join("sense/versions").join(version);
+            std::fs::create_dir_all(&old).unwrap();
+            let manifest = serde_json::json!({"schema": schema, "version": version, "files": {}});
+            std::fs::write(old.join("manifest.json"), manifest.to_string()).unwrap();
+            let pointer = serde_json::json!({"version": version, "path": old});
+            std::fs::write(weft_dir.join("sense/current.json"), pointer.to_string()).unwrap();
+            assert_eq!(sense_version(&weft_dir).as_deref(), Some(version));
+            assert!(sense_wanted(&weft_dir), "{schema} {version} is not older, but not sense-xs");
+        }
     }
 
     #[test]

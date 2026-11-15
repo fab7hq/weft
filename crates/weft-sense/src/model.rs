@@ -156,9 +156,8 @@ pub struct SenseModel {
     surface_states: Vec<SurfaceState>,
     conversation: Head,
     conversation_kinds: Vec<ConversationEntry>,
-    /// None for a state-only bundle (`/3`).
+    /// None when the bundle lacks a head the Ask needs.
     ask: Option<AskHeads>,
-    /// Bundle 2's heads, absent from a `/1` bundle.
     turn_end: Option<Head>,
     plan: Option<Head>,
     tokenizer: Tokenizer,
@@ -204,11 +203,7 @@ impl SenseModel {
                 .then(|| AskHeads::from_manifest(&manifest))
                 .transpose()?,
             turn_end: manifest.head("turn_end").ok().filter(|h| h.kind == HeadKind::Noul).cloned(),
-            plan: manifest
-                .head("plan")
-                .ok()
-                .filter(|h| matches!(h.kind, HeadKind::NoulPerItem | HeadKind::Document))
-                .cloned(),
+            plan: manifest.head("plan").ok().filter(|h| h.kind == HeadKind::Document).cloned(),
             tokenizer: Tokenizer::from_bytes(&read("tokenizer")?)?,
             graph: Graph::load_on(&read("model")?, &adapters, provider)?,
         })
@@ -241,23 +236,23 @@ impl SenseModel {
     }
 
     /// An Ask's words as Sense reads them under what the sheet holds: the
-    /// route and the plan's candidate text before them (bundle 2).
+    /// route and the plan's candidate text before them.
     pub fn chosen_text(&self, words: &str, route: Option<&str>, plan: Option<&str>) -> String {
         crate::normalize::chosen_text(words, route, plan, &self.table)
     }
 
-    /// Whether a turn's last reply asks its person (bundle 2), or `None`
+    /// Whether a turn's last reply asks its person, or `None`
     /// when the bundle has no `turn_end` head or the graph fails.
     pub fn turn_end(&self, reply: &str) -> Option<TurnEnd> {
         let head = self.turn_end.as_ref()?;
         let rows =
             self.rows(&reply_text(reply, &self.table), &[head.questions.first()?.as_str()]).ok()?;
-        let logits = self.graph.logits(&rows, head.adapter.as_deref()).ok()?;
+        let logits = self.graph.logits(&rows, &head.adapter).ok()?;
         Some(crate::heads::turn_end(head, *logits.first()?))
     }
 
     /// The plan an Ask's sheet holds by default among `candidates` (each a
-    /// slug and its `<slug>: <title>: <paragraph>` text), or none (bundle 2).
+    /// slug and its `<slug>: <title>: <paragraph>` text), or none.
     /// An error when the bundle has no `plan` head or the graph fails.
     pub fn plan(
         &self,
@@ -265,9 +260,7 @@ impl SenseModel {
         candidates: &[(String, String)],
     ) -> anyhow::Result<Option<String>> {
         let head = self.plan.as_ref().context("this Sense bundle has no plan head")?;
-        let template = (head.question_template.as_deref())
-            .or(head.question.as_deref())
-            .context("the plan head has no question")?;
+        let template = head.question.as_deref().context("the plan head has no question")?;
         if candidates.is_empty() {
             return Ok(None);
         }
@@ -275,12 +268,12 @@ impl SenseModel {
             .iter()
             .map(|(_, text)| {
                 let text = candidate_text(text, &self.table);
-                template.replace("{candidate}", &text).replace("{document}", &text)
+                template.replace("{document}", &text)
             })
             .collect();
         let questions: Vec<&str> = questions.iter().map(String::as_str).collect();
         let rows = self.rows(&self.ask_text(ask), &questions)?;
-        let logits = self.graph.logits(&rows, head.adapter.as_deref())?;
+        let logits = self.graph.logits(&rows, &head.adapter)?;
         let scored: Vec<(String, f32)> =
             candidates.iter().map(|(slug, _)| slug.clone()).zip(logits).collect();
         Ok(crate::heads::plan_default(head, &scored))
@@ -334,7 +327,7 @@ impl SenseModel {
     fn read(&self, head: &Head, ids: Vec<u32>) -> Option<(usize, u16)> {
         let rows = head.questions.iter().map(|q| self.tokenizer.question_row(&ids, q));
         let rows = rows.collect::<anyhow::Result<Vec<_>>>().ok()?;
-        let logits = self.graph.logits(&rows, head.adapter.as_deref()).ok()?;
+        let logits = self.graph.logits(&rows, &head.adapter).ok()?;
         let read = choice(head, &logits, &[]);
         let idx = head.classes.iter().position(|c| Some(c) == read.pick.as_ref())?;
         Some((idx, (read.top_p * 10000.0).round().clamp(0.0, 10000.0) as u16))
@@ -342,7 +335,7 @@ impl SenseModel {
 
     /// Each row's logit, as the graph gives it with `adapter`: for tests
     /// that hold golden rows.
-    pub fn logits(&self, rows: &[Vec<u32>], adapter: Option<&str>) -> anyhow::Result<Vec<f32>> {
+    pub fn logits(&self, rows: &[Vec<u32>], adapter: &str) -> anyhow::Result<Vec<f32>> {
         self.graph.logits(rows, adapter)
     }
 

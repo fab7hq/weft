@@ -1,42 +1,41 @@
-//! sense-d 0.1.1's golden vectors (sense-d spec/bundle.md §5), read by
-//! Weft's own tokenizer, normalizer and heads, on ONNX Runtime's graph.
+//! sense-xs 0.0.1's golden vectors, read by Weft's own tokenizer,
+//! normalizer and heads on ONNX Runtime's graph, each row with the adapter
+//! its job names.
 
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::time::Instant;
-use weft_sense::heads::{choice, plan_default, turn_end};
+use weft_sense::heads::{choice, turn_end};
 use weft_sense::manifest::{Manifest, bundle_for_tests};
-use weft_sense::normalize::{
-    Replacements, candidate_text, chosen_text, entry_text, reply_text, screen_text,
-};
-use weft_sense::{PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
+use weft_sense::normalize::{Replacements, candidate_text, entry_text, reply_text, screen_text};
+use weft_sense::{Counts, PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
 
-/// sense-d 0.1.1's manifest, as published on Hugging Face `fab7hq/sense-d`.
-const SENSE_D_0_1_1: &str = "cdb5eaba726376f63743da8fbb1a53b5e46c2d5924501617b559be7bcfa59357";
+/// sense-xs 0.0.1's manifest, as published on Hugging Face `fab7hq/sense-xs`.
+const SENSE_XS_0_0_1: &str = "33971ef7666281d62f74584b08fdedfd0a10e6d8c1e30947e92276f211d09112";
 const TOLERANCE: f32 = 1e-4;
 const ASK_HEADS: [&str; 3] = ["ask_task", "ask_effects", "ask_route"];
 
 struct Bundle {
-    dir: PathBuf,
     manifest: Manifest,
-    raw_manifest: Value,
+    table: Replacements,
+    model: SenseModel,
     rows: Vec<Value>,
 }
 
-/// The pinned bundle, or `SENSE_D_BUNDLE`'s folder: a release candidate
+/// The pinned bundle, or `SENSE_XS_BUNDLE`'s folder: a release candidate
 /// checked before it is pinned.
 fn bundle() -> Bundle {
-    let dir = match std::env::var_os("SENSE_D_BUNDLE") {
+    let dir = match std::env::var_os("SENSE_XS_BUNDLE") {
         Some(dir) => PathBuf::from(dir),
-        None => bundle_for_tests(SENSE_D_0_1_1).unwrap(),
+        None => bundle_for_tests(SENSE_XS_0_0_1).unwrap(),
     };
-    let bytes = std::fs::read(dir.join("manifest.json")).unwrap();
+    let manifest = Manifest::parse(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
     let raw = std::fs::read_to_string(dir.join("golden_vectors.jsonl")).unwrap();
     Bundle {
-        manifest: Manifest::parse(&bytes).unwrap(),
-        raw_manifest: serde_json::from_slice(&bytes).unwrap(),
+        table: Replacements::new(&manifest.normalize.replacements).unwrap(),
+        model: SenseModel::load(&dir).unwrap(),
         rows: raw.lines().map(|l| serde_json::from_str(l).unwrap()).collect(),
-        dir,
+        manifest,
     }
 }
 
@@ -47,54 +46,39 @@ impl Bundle {
         rows
     }
 
-    /// The rows of `head`, none when the bundle predates it.
-    fn rows_of(&self, head: &str) -> Vec<&Value> {
-        self.rows.iter().filter(|r| r["head"] == head).collect()
-    }
-
     fn questions(&self, head: &str) -> Vec<String> {
         self.manifest.head(head).unwrap().questions.clone()
     }
 
-    /// A golden row's text, its questions and its logits.
-    fn call(&self, row: &Value) -> (String, Vec<String>, Vec<f32>) {
-        let text = |key: &str| row[key].as_str().unwrap().to_string();
-        match row["head"].as_str().unwrap() {
-            "ask" => {
+    /// A golden row's question rows, as Weft builds them, and its logits.
+    fn call(&self, row: &Value) -> (Vec<Vec<u32>>, Vec<f32>) {
+        let text = row["text"].as_str().unwrap();
+        let (text, questions) = match row["head"].as_str().unwrap() {
+            "ask_heads" => {
                 let qs = ASK_HEADS.iter().flat_map(|h| self.questions(h)).collect();
-                let logits = ASK_HEADS.iter().flat_map(|h| floats(&row["logits"][h])).collect();
-                (text("text"), qs, logits)
+                (self.model.ask_text(text), qs)
             }
-            "rule_relevance" => {
-                let rules = row["rules"].as_object().unwrap();
-                let qs = rules.values().map(|w| w.as_str().unwrap().to_string()).collect();
-                let logits = rules.keys().map(|id| row["logits"][id].as_f64().unwrap() as f32);
-                (text("text"), qs, logits.collect())
+            head @ ("rule_relevance" | "plan") => {
+                let template = self.manifest.head(head).unwrap().question.clone().unwrap();
+                let documents = strings(&row["documents"]);
+                let qs = documents
+                    .iter()
+                    .map(|d| template.replace("{document}", &candidate_text(d, &self.table)));
+                (self.model.ask_text(text), qs.collect())
             }
-            "recall_net" => {
-                let heads = self.raw_manifest["heads"].as_array().unwrap();
-                let recall = heads.iter().find(|h| h["name"] == "recall_net").unwrap();
-                let template = recall["question_template"].as_str().unwrap();
-                let q = template.replace("{requirement}", row["requirement"].as_str().unwrap());
-                (text("window"), vec![q], vec![row["logit"].as_f64().unwrap() as f32])
-            }
-            "turn_end" => (
-                text("text"),
-                self.questions("turn_end"),
-                vec![row["logit"].as_f64().unwrap() as f32],
-            ),
-            "plan" => {
-                let template =
-                    self.manifest.head("plan").unwrap().question_template.clone().unwrap();
-                let candidates = row["candidates"].as_object().unwrap();
-                let qs = candidates
-                    .values()
-                    .map(|c| template.replace("{candidate}", c.as_str().unwrap()));
-                let logits = candidates.keys().map(|s| row["logits"][s].as_f64().unwrap() as f32);
-                (text("text"), qs.collect(), logits.collect())
-            }
-            head => (text("text"), self.questions(head), floats(&row["logits"])),
-        }
+            head => (text.to_string(), self.questions(head)),
+        };
+        let qs: Vec<&str> = questions.iter().map(String::as_str).collect();
+        let rows = match self.manifest.head(row["head"].as_str().unwrap()).ok().and_then(|h| h.cut)
+        {
+            Some(cut) => self.model.cut_rows(&text, cut.first, &qs).unwrap(),
+            None => self.model.rows(&text, &qs).unwrap(),
+        };
+        let logits = match &row["logits"] {
+            Value::Null => vec![row["logit"].as_f64().unwrap() as f32],
+            v => floats(v),
+        };
+        (rows, logits)
     }
 }
 
@@ -109,123 +93,134 @@ fn strings(v: &Value) -> Vec<String> {
 fn assert_close(got: &[f32], want: &[f32], what: &str) -> f32 {
     assert_eq!(got.len(), want.len(), "{what}");
     let worst = got.iter().zip(want).map(|(g, w)| (g - w).abs()).fold(0.0, f32::max);
-    assert!(worst <= TOLERANCE, "{what}: off the golden logits by {worst}");
+    assert!(worst <= TOLERANCE, "{what}: off the golden by {worst}");
     worst
 }
 
-fn refs(v: &[String]) -> Vec<&str> {
-    v.iter().map(String::as_str).collect()
+/// A golden document `<label>: <when>` as the rule it stands for.
+fn rule(id: usize, document: &str, counts: &Value) -> Rule {
+    let (label, when) = document.split_once(": ").unwrap();
+    let counts = counts.as_array().map(|c| Counts {
+        kept: c[0].as_u64().unwrap() as u32,
+        candidate: c[1].as_u64().unwrap() as u32,
+    });
+    Rule { id: format!("r{id}"), label: label.into(), when: when.into(), counts }
 }
 
 #[test]
-fn every_golden_row_holds_to_1e_4_alone_as_its_call_and_in_one_batch_of_all() {
+fn every_golden_row_holds_to_1e_4_with_its_adapter_alone_and_in_one_batch_per_adapter() {
     let b = bundle();
-    let model = SenseModel::load(&b.dir).unwrap();
-    let (mut every, mut want, mut worst) = (Vec::new(), Vec::new(), 0.0_f32);
+    let mut batches: BTreeMap<String, (Vec<Vec<u32>>, Vec<f32>)> = BTreeMap::new();
+    let mut worst = 0.0_f32;
     for row in b.rows.iter().filter(|r| r["head"] != "normalize") {
-        let (text, questions, logits) = b.call(row);
-        let rows = model.rows(&text, &refs(&questions)).unwrap();
+        let (head, adapter) = (row["head"].as_str().unwrap(), row["adapter"].as_str().unwrap());
+        let (rows, logits) = b.call(row);
         let expected: Vec<Vec<u32>> = serde_json::from_value(row["input_ids"].clone()).unwrap();
-        assert_eq!(rows, expected, "{} rows of {text:?}", row["head"]);
+        assert_eq!(rows, expected, "{head} rows of {}", row["text"]);
         let alone: Vec<f32> = rows
             .iter()
-            .flat_map(|r| model.logits(std::slice::from_ref(r), None).unwrap())
+            .flat_map(|r| b.model.logits(std::slice::from_ref(r), adapter).unwrap())
             .collect();
-        worst = worst.max(assert_close(&alone, &logits, &format!("{} alone", row["head"])));
-        let call = model.logits(&rows, None).unwrap();
-        worst = worst.max(assert_close(&call, &logits, &format!("{} as one call", row["head"])));
-        every.extend(rows);
-        want.extend(logits);
+        worst = worst.max(assert_close(&alone, &logits, &format!("{head} alone")));
+        let call = b.model.logits(&rows, adapter).unwrap();
+        worst = worst.max(assert_close(&call, &logits, &format!("{head} as one call")));
+        let batch = batches.entry(adapter.to_string()).or_default();
+        batch.0.extend(rows);
+        batch.1.extend(logits);
     }
-    let batched = model.logits(&every, None).unwrap();
-    worst = worst.max(assert_close(&batched, &want, "every golden row in one batch"));
-    println!("{} golden rows; the most any is off: {worst:.2e}", every.len());
+    assert_eq!(batches.keys().collect::<Vec<_>>(), ["ask", "state"]);
+    for (adapter, (rows, want)) in &batches {
+        let got = b.model.logits(rows, adapter).unwrap();
+        worst = worst.max(assert_close(&got, want, &format!("every {adapter} row in one batch")));
+    }
+    println!("the most any golden row is off: {worst:.2e}");
 }
 
 #[test]
-fn each_golden_screen_and_entry_reads_as_its_class() {
+fn each_golden_screen_entry_and_reply_reads_as_its_class() {
     let b = bundle();
-    let model = SenseModel::load(&b.dir).unwrap();
     for head in ["surface", "conversation"] {
         for row in b.of(head) {
-            let (text, questions, _) = b.call(row);
-            let logits =
-                model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap();
+            let (rows, _) = b.call(row);
+            let logits = b.model.logits(&rows, "state").unwrap();
             let read = choice(b.manifest.head(head).unwrap(), &logits, &[]);
-            let pick = read.pick.unwrap_or("unsure".into());
-            assert_eq!(pick, row["expected"].as_str().unwrap(), "{head} of {text:?}");
+            assert_eq!(read.pick.as_deref().unwrap_or("unsure"), row["expected"], "{head}");
         }
+    }
+    for row in b.of("turn_end") {
+        let asks = b.model.turn_end(row["text"].as_str().unwrap()).unwrap().asks;
+        assert_eq!(asks, row["expected"]["asks"].as_bool().unwrap(), "{}", row["text"]);
+        let (rows, _) = b.call(row);
+        let logit = b.model.logits(&rows, "state").unwrap()[0];
+        assert_eq!(turn_end(b.manifest.head("turn_end").unwrap(), logit).asks, asks);
     }
 }
 
 #[test]
-fn each_golden_ask_gives_its_task_effects_route_result_and_rules() {
+fn each_golden_ask_gives_its_task_effects_route_and_result() {
     let b = bundle();
-    let model = SenseModel::load(&b.dir).unwrap();
-    // A state-only bundle (`fab7.sense.decision/3`) has no Ask rows: the Ask model answers Asks.
-    for row in b.rows_of("ask") {
-        let a = model.ask(row["text"].as_str().unwrap(), &[], &[]).unwrap();
+    for row in b.of("ask_heads") {
+        let a = b.model.ask(row["text"].as_str().unwrap(), &[], &[]).unwrap();
         let want = &row["expected"];
         assert_eq!(a.task.on, strings(&want["ask_task"]), "{}", row["text"]);
         assert_eq!(a.effects.on, strings(&want["ask_effects"]), "{}", row["text"]);
         assert_eq!(a.route.pick.as_deref().unwrap_or("unsure"), want["ask_route"]);
         assert_eq!(a.result, want["ask_result"].as_str().unwrap());
     }
-    for row in b.rows_of("rule_relevance") {
-        let rules: Vec<Rule> = row["rules"]
-            .as_object()
-            .unwrap()
+}
+
+#[test]
+fn each_golden_rule_scores_as_sense_does_with_and_without_its_counts_and_the_sure_are_ticked() {
+    let b = bundle();
+    for row in b.of("rule_relevance") {
+        let text = row["text"].as_str().unwrap();
+        let documents = strings(&row["documents"]);
+        for (counts, p) in [(&row["counts"], &row["p_counts"]), (&Value::Null, &row["p"])] {
+            let rules: Vec<Rule> =
+                documents.iter().enumerate().map(|(i, d)| rule(i, d, &counts[i])).collect();
+            let a = b.model.ask(text, &[], &rules).unwrap();
+            let scored: BTreeMap<&str, f32> = (a.rules.iter().chain(&a.unticked))
+                .filter_map(|r| Some((r.id.as_str(), r.p?)))
+                .collect();
+            let got: Vec<f32> = rules.iter().map(|r| scored[r.id.as_str()]).collect();
+            assert_close(&got, &floats(p), &format!("rule p with counts {counts}"));
+            if counts.is_null() {
+                continue;
+            }
+            let ticked: Vec<&str> = (a.rules.iter().filter(|r| r.p.is_some()))
+                .map(|r| documents[r.id[1..].parse::<usize>().unwrap()].as_str())
+                .collect();
+            assert_eq!(
+                ticked,
+                row["ticked"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|t| t.as_str().unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn each_golden_plan_pick_gives_its_plan() {
+    let b = bundle();
+    for row in b.of("plan") {
+        let documents = strings(&row["documents"]);
+        let candidates: Vec<(String, String)> = documents
             .iter()
-            .map(|(id, when)| Rule {
-                id: id.clone(),
-                label: id.clone(),
-                when: when.as_str().unwrap().into(),
-                counts: None,
-            })
+            .map(|d| (d.split_once(": ").unwrap().0.to_string(), d.clone()))
             .collect();
-        let a = model.ask(row["text"].as_str().unwrap(), &[], &rules).unwrap();
-        assert_eq!(a.task.on, strings(&row["task"]));
-        assert_eq!(a.effects.on, strings(&row["effects"]));
-        let ids: Vec<&str> = a.rules.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, refs(&strings(&row["expected"])));
+        let pick = b.model.plan(row["text"].as_str().unwrap(), &candidates).unwrap();
+        let want = row["pick"].as_u64().map(|i| candidates[i as usize].0.clone());
+        assert_eq!(pick, want, "plan of {}", row["text"]);
     }
-}
-
-#[test]
-fn each_golden_turn_end_and_plan_pick_gives_its_answer() {
-    let b = bundle();
-    let model = SenseModel::load(&b.dir).unwrap();
-    for row in b.rows_of("turn_end") {
-        let (text, questions, _) = b.call(row);
-        let logit = model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap()[0];
-        let asks = turn_end(b.manifest.head("turn_end").unwrap(), logit).asks;
-        assert_eq!(asks, row["expected"]["asks"].as_bool().unwrap(), "turn end of {text:?}");
-    }
-    for row in b.rows_of("plan") {
-        let (text, questions, _) = b.call(row);
-        let logits = model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap();
-        let slugs = row["candidates"].as_object().unwrap().keys().cloned();
-        let default =
-            plan_default(b.manifest.head("plan").unwrap(), &slugs.zip(logits).collect::<Vec<_>>());
-        assert_eq!(default.as_deref(), row["expected"].as_str(), "plan of {text:?}");
-    }
-}
-
-#[test]
-fn a_bundle_without_ask_heads_reads_screens_and_refuses_an_ask_naming_the_head() {
-    let b = bundle();
-    if b.manifest.head("ask_task").is_ok() {
-        return;
-    }
-    let model = SenseModel::load(&b.dir).unwrap();
-    let err = model.ask("add a test", &[], &[]).unwrap_err().to_string();
-    assert!(err.contains("ask_task"), "{err}");
 }
 
 #[test]
 fn the_golden_normalizing_vectors_match() {
     let b = bundle();
-    let table = Replacements::new(&b.manifest.normalize.replacements).unwrap();
     for row in b.of("normalize") {
         let raw = &row["raw"];
         let text = match row["kind"].as_str().unwrap() {
@@ -244,54 +239,26 @@ fn the_golden_normalizing_vectors_match() {
                     bottom_lines: &lines,
                     seq: 0,
                 };
-                screen_text(&snap, b.manifest.normalize.screen_last_lines, &table)
+                screen_text(&snap, b.manifest.normalize.screen_last_lines, &b.table)
             }
-            "reply" => reply_text(raw.as_str().unwrap(), &table),
-            "candidate" => candidate_text(raw.as_str().unwrap(), &table),
-            "chosen" => chosen_text(
-                raw["words"].as_str().unwrap(),
-                raw["route"].as_str(),
-                raw["plan"].as_str(),
-                &table,
-            ),
-            _ => entry_text(
+            "reply" => reply_text(raw.as_str().unwrap(), &b.table),
+            "entry" => entry_text(
                 &TranscriptSnippet {
                     harness: raw["harness"].as_str().unwrap(),
                     entry_type: raw["entry_type"].as_str().unwrap(),
                     snippet: raw["entry_snippet"].as_str().unwrap(),
                 },
-                &table,
+                &b.table,
             ),
+            "ask" => b.model.ask_text(raw.as_str().unwrap()),
+            "chosen" => b.model.ask_text(&b.model.chosen_text(
+                raw["words"].as_str().unwrap(),
+                raw["route"].as_str(),
+                raw["plan"].as_str(),
+            )),
+            "rule" | "plan" => candidate_text(raw.as_str().unwrap(), &b.table),
+            kind => panic!("a golden {kind} row Weft does not read"),
         };
         assert_eq!(text, row["normalized"].as_str().unwrap(), "{} normalized", row["kind"]);
-    }
-}
-
-/// Not a check: the CPU time of a screen, an entry and an Ask, printed for
-/// the plan's record. Run with `--ignored --nocapture` on a quiet machine.
-#[test]
-#[ignore]
-fn p50_per_screen_entry_and_ask() {
-    let b = bundle();
-    let model = SenseModel::load(&b.dir).unwrap();
-    for head in ["surface", "conversation", "ask"] {
-        let calls: Vec<Vec<Vec<u32>>> = b
-            .rows_of(head)
-            .iter()
-            .map(|r| {
-                let (text, questions, _) = b.call(r);
-                model.rows(&text, &refs(&questions)).unwrap()
-            })
-            .collect();
-        let mut times = Vec::new();
-        for _ in 0..10 {
-            for rows in &calls {
-                let start = Instant::now();
-                model.logits(rows, None).unwrap();
-                times.push(start.elapsed().as_secs_f64() * 1e3);
-            }
-        }
-        times.sort_by(f64::total_cmp);
-        println!("{head}: p50 {:.1} ms over {} calls", times[times.len() / 2], times.len());
     }
 }

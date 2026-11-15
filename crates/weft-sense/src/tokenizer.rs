@@ -1,4 +1,4 @@
-//! sense-d's tokenizer: DeBERTa-v3's SentencePiece Unigram, read from
+//! Sense's tokenizer: DeBERTa-v3's SentencePiece Unigram, read from
 //! `tokenizer.json` and run as the reference `tokenizers` runs it, without
 //! special tokens or truncation. Its normalizer turns two or more blanks, or
 //! a newline, return or tab, into one space, composes (NFC) and strips the
@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 
-/// A question row fits this many tokens (sense-d spec/bundle.md §4).
+/// A question row fits this many tokens.
 pub const MAX_ROW: usize = 256;
 /// A question keeps up to its first this many tokens.
 const MAX_QUESTION: usize = 128;
