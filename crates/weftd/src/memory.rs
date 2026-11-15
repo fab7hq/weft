@@ -82,9 +82,9 @@ impl Table {
     }
 }
 
-/// Where the table lives under the person's home.
-pub fn dir(home: &Path) -> PathBuf {
-    home.join(".fab7/sense/memory")
+/// Where the table lives: `sense/memory` beside Weft's own folder.
+pub fn dir(weft_dir: &Path) -> PathBuf {
+    weft_dir.with_file_name("sense").join("memory")
 }
 
 /// Count every workspace's ledger from the start. A workspace whose ledger
@@ -97,16 +97,60 @@ pub fn rebuild(roots: &[PathBuf], convention: &[String]) -> Table {
     table
 }
 
-/// After an Ask is compiled in `root`: count what its ledger holds that the
-/// table has not, counting every workspace again first when the table is
-/// missing or unreadable, and keep the table.
-pub fn learn(dir: &Path, roots: &[PathBuf], root: &Path, convention: &[String]) -> Table {
+/// The table kept in `dir`; when it is missing or unreadable, every
+/// workspace counted again, and kept.
+pub fn table(dir: &Path, roots: &[PathBuf], convention: &[String]) -> Table {
     let path = dir.join("counts.json");
-    let kept = std::fs::read_to_string(&path).ok().and_then(|t| Table::read(&t));
-    let mut table = kept.unwrap_or_else(|| rebuild(roots, convention));
-    table.count(&events(root), convention);
+    if let Some(kept) = std::fs::read_to_string(&path).ok().and_then(|t| Table::read(&t)) {
+        return kept;
+    }
+    let table = rebuild(roots, convention);
     let _ = write_atomic(&path, &table.write());
     table
+}
+
+/// After an Ask is compiled in `root`: count what its ledger holds that the
+/// table has not, and keep the table.
+pub fn learn(dir: &Path, roots: &[PathBuf], root: &Path, convention: &[String]) -> Table {
+    let mut table = table(dir, roots, convention);
+    table.count(&events(root), convention);
+    let _ = write_atomic(&dir.join("counts.json"), &table.write());
+    table
+}
+
+/// Let the table go, so it is counted again from the ledgers when next read:
+/// a new bundle may decide other rules by convention.
+pub fn forget(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join("counts.json"));
+}
+
+/// Sense as weftd keeps it: the bundle loaded, if any.
+pub type Loaded = std::sync::RwLock<Option<weft_sense::SenseModel>>;
+
+/// The loaded bundle's convention; none without a bundle, and then nothing
+/// is counted or scored.
+fn convention(model: &Loaded) -> Option<Vec<String>> {
+    Some(model.read().ok()?.as_ref()?.convention().to_vec())
+}
+
+/// After an Ask is compiled in `root`, off the person's send: count it over
+/// the open workspaces, when a bundle is loaded.
+pub fn after_compile(model: &Loaded, weft_dir: &Path, root: &Path) {
+    let Some(convention) = convention(model) else { return };
+    let roots = crate::state::load(weft_dir).open_projects;
+    learn(&dir(weft_dir), &roots, root, &convention);
+}
+
+/// `rules`, each with the person's counts for it, when a bundle is loaded.
+pub fn with_counts(
+    model: &Loaded,
+    weft_dir: &Path,
+    rules: &[weft_sense::Rule],
+) -> Vec<weft_sense::Rule> {
+    let Some(convention) = convention(model) else { return rules.to_vec() };
+    let roots = crate::state::load(weft_dir).open_projects;
+    let table = table(&dir(weft_dir), &roots, &convention);
+    rules.iter().map(|r| weft_sense::Rule { counts: table.get(&r.id), ..r.clone() }).collect()
 }
 
 fn events(root: &Path) -> Vec<Value> {
@@ -177,6 +221,50 @@ mod tests {
         assert_eq!(Table::read(&table.write()), Some(table), "the file reads back");
     }
 
+    /// With a bundle loaded, each compiled Ask is counted over the open
+    /// workspaces and the next Ask's rules carry their counts; without one,
+    /// nothing is counted and the rules carry none.
+    #[test]
+    fn a_loaded_bundle_counts_each_ask_and_gives_sense_the_rules_counts() {
+        fixture_home();
+        let root = folder("memory-wired", true);
+        let tmp = tempfile::tempdir().unwrap();
+        let weft_dir = tmp.path().join(".fab7/weft");
+        let state =
+            weft_core::state::WeftState { open_projects: vec![root.clone()], ..Default::default() };
+        crate::state::save(&weft_dir, &state).unwrap();
+        let rule = |id: &str| weft_sense::Rule {
+            id: id.into(),
+            label: id.into(),
+            when: "w".into(),
+            counts: None,
+        };
+        let rules = [rule("practice.dry"), rule("practice.kiss"), rule("practice.occam")];
+        let none = Loaded::new(None);
+        assert_eq!(set_up(&root), None);
+        compile(&root, &draft("Fix bug 0.", &["practice.dry"]), None).unwrap();
+        after_compile(&none, &weft_dir, &root);
+        assert!(!dir(&weft_dir).exists(), "without a bundle nothing is counted");
+        assert_eq!(with_counts(&none, &weft_dir, &rules), rules);
+
+        let bundle = tmp.path().join("bundle");
+        crate::versions::tests::stage_sense_bundle(&bundle, "0.1.1");
+        let loaded = Loaded::new(Some(weft_sense::SenseModel::load(&bundle).unwrap()));
+        for i in 1..3 {
+            compile(&root, &draft(&format!("Fix bug {i}."), &["practice.dry"]), None).unwrap();
+            after_compile(&loaded, &weft_dir, &root);
+        }
+        let counts = |id| with_counts(&loaded, &weft_dir, &rules).into_iter().find(|r| r.id == id);
+        let kept = Counts { candidate: 3, kept: 3 };
+        assert_eq!(counts("practice.dry").unwrap().counts, Some(kept), "the one before too");
+        assert_eq!(
+            counts("practice.occam").unwrap().counts,
+            Some(Counts { candidate: 3, kept: 0 })
+        );
+        assert_eq!(counts("practice.kiss").unwrap().counts, None, "the convention's");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     fn draft(words: &str, rules: &[&str]) -> AskDraft {
         AskDraft {
             words: words.into(),
@@ -199,7 +287,8 @@ mod tests {
         fixture_home();
         let roots = vec![folder("memory-a", true), folder("memory-b", true)];
         let home = tempfile::tempdir().unwrap();
-        let dir = dir(home.path());
+        let dir = dir(&home.path().join(".fab7/weft"));
+        assert_eq!(dir, home.path().join(".fab7/sense/memory"));
         let sends =
             [(0, &["practice.kiss"][..]), (1, &["practice.kiss", "practice.yagni"]), (0, &[])];
         let mut learnt = Table::default();
@@ -215,7 +304,10 @@ mod tests {
         // A table that is not one is counted again, the same.
         std::fs::write(dir.join("counts.json"), "{not json").unwrap();
         assert_eq!(learn(&dir, &roots, &roots[0], &convention()), learnt);
-        std::fs::remove_file(dir.join("counts.json")).unwrap();
+        forget(&dir);
+        assert!(!dir.join("counts.json").exists());
+        assert_eq!(table(&dir, &roots, &convention()), learnt, "read again, counted again");
+        assert!(dir.join("counts.json").exists(), "and kept");
         assert_eq!(learn(&dir, &roots, &roots[1], &convention()), learnt);
         for root in roots {
             let _ = std::fs::remove_dir_all(root);

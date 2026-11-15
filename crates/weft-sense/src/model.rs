@@ -148,6 +148,8 @@ pub struct TranscriptSnippet<'a> {
 /// adapter of each head's job.
 pub struct SenseModel {
     version: String,
+    /// The rules its convention decides: never scored, never counted.
+    convention: Vec<String>,
     table: Replacements,
     screen_last_lines: usize,
     surface: Head,
@@ -189,6 +191,7 @@ impl SenseModel {
         let conversation = manifest.head_of("conversation", HeadKind::Choice)?.clone();
         Ok(Self {
             version: manifest.version.clone(),
+            convention: manifest.convention_rules(),
             table: Replacements::new(&manifest.normalize.replacements)?,
             screen_last_lines: manifest.normalize.screen_last_lines,
             surface_states: head_classes(&surface, SurfaceState::from_class_str)?,
@@ -275,6 +278,11 @@ impl SenseModel {
         let scored: Vec<(String, f32)> =
             candidates.iter().map(|(slug, _)| slug.clone()).zip(logits).collect();
         Ok(crate::heads::plan_default(head, &scored))
+    }
+
+    /// The rules its convention decides, which the counts leave out.
+    pub fn convention(&self) -> &[String] {
+        &self.convention
     }
 
     /// Return the loaded bundle's version string from manifest.json.

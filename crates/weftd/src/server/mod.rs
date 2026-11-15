@@ -629,7 +629,11 @@ fn in_time<T: Send + 'static>(
 
 /// Sense on a reading of the sheet's words. Off without words or a bundle
 /// that answers an Ask; failed when it errs or takes past [`SENSE_DEADLINE`].
-fn sense_ask(model: &SenseModelCell, r: &crate::ringframe::Reading) -> crate::ringframe::Sensed {
+fn sense_ask(
+    model: &SenseModelCell,
+    weft_dir: &Path,
+    r: &crate::ringframe::Reading,
+) -> crate::ringframe::Sensed {
     use crate::ringframe::Sensed;
     let answers = model.read().ok().is_some_and(|m| m.is_some());
     if r.words.trim().is_empty() || !answers {
@@ -638,7 +642,8 @@ fn sense_ask(model: &SenseModelCell, r: &crate::ringframe::Reading) -> crate::ri
     let (words, route, plan) =
         (r.words.to_string(), r.route.map(str::to_string), r.plan.map(str::to_string));
     let routes: Vec<String> = r.routes.iter().map(|c| c.to_string()).collect();
-    let rules = r.rules.to_vec();
+    // The counts are read, or counted again, before Sense's deadline starts.
+    let rules = crate::memory::with_counts(model, weft_dir, r.rules);
     let answer = in_time(model, move |m| {
         let text = m.chosen_text(&words, route.as_deref(), plan.as_deref());
         m.ask(&text, &routes.iter().map(String::as_str).collect::<Vec<_>>(), &rules).ok()
@@ -1518,8 +1523,9 @@ impl Session {
                     (text("route"), text("task"), text("plan")),
                 );
                 let (model, sensed) = (Arc::clone(&self.sense), Arc::clone(&self.sensed));
+                let weft_dir = self.weft_dir();
                 std::thread::spawn(move || {
-                    let sense = |r: &crate::ringframe::Reading| sense_ask(&model, r);
+                    let sense = |r: &crate::ringframe::Reading| sense_ask(&model, &weft_dir, r);
                     let pick_plan = |w: &str, c: &[(String, String)]| sense_plan(&model, w, c);
                     let plan = picked.2.as_deref().map(|p| Some(p).filter(|p| !p.is_empty()));
                     // Whether Sense reads the words at all: the sheet shows it
@@ -1903,6 +1909,11 @@ impl Session {
 
     /// Ask RingFrame, off the run loop, to set a project up, and why an Ask
     /// could not finish there.
+    /// Weft's own folder, where its config lives.
+    fn weft_dir(&self) -> PathBuf {
+        self.config.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    }
+
     fn ask_set_up(&mut self, at: usize) {
         let p = &mut self.projects[at];
         p.asking = true;
@@ -2565,6 +2576,12 @@ impl Session {
                     match crate::ringframe::compile(&root, &draft, over.as_deref()) {
                         Ok(ask_id) => {
                             w.sends = Some(ask_id);
+                            // Counted off the send: what the person kept teaches Sense.
+                            let (model, root) = (Arc::clone(&self.sense), root.clone());
+                            let weft_dir = self.weft_dir();
+                            std::thread::spawn(move || {
+                                crate::memory::after_compile(&model, &weft_dir, &root)
+                            });
                         }
                         Err(crate::ringframe::Error::Refused { message, .. }) => {
                             let why = format!(

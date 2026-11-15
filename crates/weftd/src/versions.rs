@@ -181,15 +181,21 @@ pub fn sense_on_gpu(
     }
 }
 
-/// The files a bundle's manifest names, each a plain name in its folder.
+/// The files a bundle's manifest names, sense-xs's adapters among them,
+/// each a path inside its folder.
 fn bundle_files(manifest: &[u8]) -> anyhow::Result<Vec<String>> {
     let manifest: serde_json::Value = serde_json::from_slice(manifest)?;
     let files = manifest["files"].as_object().into_iter().flatten();
+    let files = files.map(|(key, f)| (key.as_str(), &f["path"]));
+    let adapters = manifest["adapters"].as_array().into_iter().flatten();
+    let adapters = adapters.map(|a| (a["name"].as_str().unwrap_or("adapter"), &a["file"]));
     files
-        .map(|(key, f)| {
-            let name = f["path"].as_str().unwrap_or_default();
-            let plain = !name.is_empty() && name != ".." && !name.contains(['/', '\\']);
-            anyhow::ensure!(plain, "Sense's manifest names its {key} file {name:?}");
+        .chain(adapters)
+        .map(|(key, path)| {
+            let name = path.as_str().unwrap_or_default();
+            let inside = !name.contains('\\')
+                && name.split('/').all(|part| !matches!(part, "" | "." | ".."));
+            anyhow::ensure!(inside, "Sense's manifest names its {key} file {name:?}");
             Ok(name.to_string())
         })
         .collect()
@@ -225,6 +231,9 @@ pub fn install_sense_bundle(
 
     let names = bundle_files(manifest_text.as_bytes())?;
     for name in std::iter::once("manifest.json").chain(names.iter().map(String::as_str)) {
+        if let Some(folder) = tmp_dir.join(name).parent() {
+            std::fs::create_dir_all(folder)?;
+        }
         std::fs::copy(source_dir.join(name), tmp_dir.join(name))?;
     }
     // The golden vectors, which a GPU is tried on, when the bundle has them.
@@ -261,6 +270,8 @@ pub fn install_sense_bundle(
     std::fs::rename(&current_tmp, &current_path)?;
 
     prune(&versions_dir, std::slice::from_ref(&final_dir));
+    // Its convention may decide other rules: the counts are counted again.
+    crate::memory::forget(&crate::memory::dir(weft_dir));
     Ok((current, model))
 }
 
@@ -346,6 +357,7 @@ fn fetch_sense_from(
                         "--retry",
                         "3",
                         "--retry-all-errors",
+                        "--create-dirs",
                         "--max-time",
                         "300",
                         "-o",
@@ -517,10 +529,31 @@ pub(crate) mod tests {
 
     #[test]
     fn a_manifest_naming_a_file_outside_its_folder_is_refused() {
-        for path in ["../sense.int8.onnx", "a/b.onnx", "", ".."] {
+        for path in ["../sense.int8.onnx", "a/../b.onnx", "/b.onnx", "a//b", "a\\b", "", ".."] {
             let manifest = serde_json::json!({"files": {"model": {"path": path, "sha256": "ab"}}});
             assert!(bundle_files(manifest.to_string().as_bytes()).is_err(), "{path:?}");
+            let adapter = serde_json::json!({"files": {}, "adapters": [{"file": path}]});
+            assert!(bundle_files(adapter.to_string().as_bytes()).is_err(), "{path:?}");
         }
+    }
+
+    #[test]
+    fn a_sense_xs_bundle_names_its_adapters_files_in_their_folder() {
+        let manifest = serde_json::json!({
+            "files": {"model": {"path": "sense-xs.int8.onnx"}, "tokenizer": {"path": "tokenizer.json"}},
+            "adapters": [{"name": "state", "file": "adapters/state.onnx_adapter"},
+                         {"name": "ask", "file": "adapters/ask.onnx_adapter"}]});
+        let mut files = bundle_files(manifest.to_string().as_bytes()).unwrap();
+        files.sort();
+        assert_eq!(
+            files,
+            [
+                "adapters/ask.onnx_adapter",
+                "adapters/state.onnx_adapter",
+                "sense-xs.int8.onnx",
+                "tokenizer.json"
+            ]
+        );
     }
 
     #[test]
@@ -567,12 +600,19 @@ pub(crate) mod tests {
         assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.1.0"));
         assert!(weft_dir.join("sense/versions/0.1.0/manifest.json").is_file());
 
+        let rules = slot.read().unwrap().as_ref().map(|m| m.convention().to_vec()).unwrap();
+        assert!(rules.contains(&"practice.kiss".to_string()), "its convention's rules: {rules:?}");
+        let counts = crate::memory::dir(&weft_dir).join("counts.json");
+        std::fs::create_dir_all(counts.parent().unwrap()).unwrap();
+        std::fs::write(&counts, "{}").unwrap();
+
         // 2. Tamper with a candidate bundle and verify SHA-256 rejection leaves 0.1.0 active
         let bad_src = tmp.path().join("src_bad");
         stage_sense_bundle(&bad_src, "0.1.5");
         std::fs::write(bad_src.join("tokenizer.json"), b"{}").unwrap();
         assert!(hot_reload_sense(&weft_dir, &bad_src, &slot).is_err());
         assert_eq!(sense_version(&weft_dir).as_deref(), Some("0.1.0"));
+        assert!(counts.exists(), "a refused bundle keeps the counts");
         assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.1.0"));
 
         // 3. Hot-reload 0.2.0 in place and verify 0.1.0 is pruned while 0.2.0 is active
@@ -582,5 +622,6 @@ pub(crate) mod tests {
         assert_eq!(slot.read().unwrap().as_ref().map(|m| m.version()), Some("0.2.0"));
         assert!(weft_dir.join("sense/versions/0.2.0/manifest.json").is_file());
         assert!(!weft_dir.join("sense/versions/0.1.0").exists(), "old Sense version pruned");
+        assert!(!counts.exists(), "a new bundle has the counts counted again");
     }
 }
