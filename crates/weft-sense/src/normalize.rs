@@ -32,7 +32,7 @@ impl Replacements {
         Ok(Self(out))
     }
 
-    fn apply(&self, text: &str) -> String {
+    pub(crate) fn apply(&self, text: &str) -> String {
         let mut out = String::with_capacity(text.len());
         for ch in text.chars() {
             match self.0.get(&ch) {

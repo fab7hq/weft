@@ -4,6 +4,7 @@
 
 use crate::heads::{choice, noul, sigmoid};
 use crate::manifest::{Head, HeadKind, Manifest};
+use crate::normalize::{Replacements, candidate_text};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -101,10 +102,14 @@ impl AskHeads {
         self.rule.adapter.as_deref()
     }
 
-    /// The row's question for `rule`.
-    pub fn question(&self, rule: &Rule) -> String {
+    /// The row's question for `rule`: a document head's template around
+    /// its `<label>: <when>`, through `table`.
+    pub fn question(&self, rule: &Rule, table: &Replacements) -> String {
         match &self.rule.question {
-            Some(q) => q.replace("{document}", &format!("{}: {}", rule.label, rule.when)),
+            Some(q) => {
+                let document = candidate_text(&format!("{}: {}", rule.label, rule.when), table);
+                q.replace("{document}", &document)
+            }
             None => rule.when.clone(),
         }
     }
@@ -328,10 +333,13 @@ mod tests {
     }
 
     #[test]
-    fn a_documents_question_is_its_template_around_the_rules_label_and_when() {
+    fn a_documents_question_is_its_template_around_the_rules_label_and_when_through_the_table() {
+        let table = Replacements::new(&[("\n".to_string(), " ↵ ".to_string())].into()).unwrap();
+        let r = Rule { label: "Keep it\nsimple".into(), ..rule("practice.kiss") };
+        let q = xs_heads().question(&r, &table);
+        assert_eq!(q, "applies? Keep it ↵ simple: when practice.kiss");
         let r = Rule { label: "Keep it simple".into(), ..rule("practice.kiss") };
-        assert_eq!(xs_heads().question(&r), "applies? Keep it simple: when practice.kiss");
-        assert_eq!(heads().question(&r), "when practice.kiss", "sense-d asks the when line");
+        assert_eq!(heads().question(&r, &table), "when practice.kiss", "sense-d asks the when");
     }
 
     #[test]

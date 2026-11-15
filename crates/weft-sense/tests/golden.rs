@@ -127,15 +127,17 @@ fn every_golden_row_holds_to_1e_4_alone_as_its_call_and_in_one_batch_of_all() {
         let rows = model.rows(&text, &refs(&questions)).unwrap();
         let expected: Vec<Vec<u32>> = serde_json::from_value(row["input_ids"].clone()).unwrap();
         assert_eq!(rows, expected, "{} rows of {text:?}", row["head"]);
-        let alone: Vec<f32> =
-            rows.iter().flat_map(|r| model.logits(std::slice::from_ref(r)).unwrap()).collect();
+        let alone: Vec<f32> = rows
+            .iter()
+            .flat_map(|r| model.logits(std::slice::from_ref(r), None).unwrap())
+            .collect();
         worst = worst.max(assert_close(&alone, &logits, &format!("{} alone", row["head"])));
-        let call = model.logits(&rows).unwrap();
+        let call = model.logits(&rows, None).unwrap();
         worst = worst.max(assert_close(&call, &logits, &format!("{} as one call", row["head"])));
         every.extend(rows);
         want.extend(logits);
     }
-    let batched = model.logits(&every).unwrap();
+    let batched = model.logits(&every, None).unwrap();
     worst = worst.max(assert_close(&batched, &want, "every golden row in one batch"));
     println!("{} golden rows; the most any is off: {worst:.2e}", every.len());
 }
@@ -147,7 +149,8 @@ fn each_golden_screen_and_entry_reads_as_its_class() {
     for head in ["surface", "conversation"] {
         for row in b.of(head) {
             let (text, questions, _) = b.call(row);
-            let logits = model.logits(&model.rows(&text, &refs(&questions)).unwrap()).unwrap();
+            let logits =
+                model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap();
             let read = choice(b.manifest.head(head).unwrap(), &logits, &[]);
             let pick = read.pick.unwrap_or("unsure".into());
             assert_eq!(pick, row["expected"].as_str().unwrap(), "{head} of {text:?}");
@@ -194,13 +197,13 @@ fn each_golden_turn_end_and_plan_pick_gives_its_answer() {
     let model = SenseModel::load(&b.dir).unwrap();
     for row in b.rows_of("turn_end") {
         let (text, questions, _) = b.call(row);
-        let logit = model.logits(&model.rows(&text, &refs(&questions)).unwrap()).unwrap()[0];
+        let logit = model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap()[0];
         let asks = turn_end(b.manifest.head("turn_end").unwrap(), logit).asks;
         assert_eq!(asks, row["expected"]["asks"].as_bool().unwrap(), "turn end of {text:?}");
     }
     for row in b.rows_of("plan") {
         let (text, questions, _) = b.call(row);
-        let logits = model.logits(&model.rows(&text, &refs(&questions)).unwrap()).unwrap();
+        let logits = model.logits(&model.rows(&text, &refs(&questions)).unwrap(), None).unwrap();
         let slugs = row["candidates"].as_object().unwrap().keys().cloned();
         let default =
             plan_default(b.manifest.head("plan").unwrap(), &slugs.zip(logits).collect::<Vec<_>>());
@@ -284,7 +287,7 @@ fn p50_per_screen_entry_and_ask() {
         for _ in 0..10 {
             for rows in &calls {
                 let start = Instant::now();
-                model.logits(rows).unwrap();
+                model.logits(rows, None).unwrap();
                 times.push(start.elapsed().as_secs_f64() * 1e3);
             }
         }

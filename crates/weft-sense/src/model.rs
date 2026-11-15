@@ -223,9 +223,9 @@ impl SenseModel {
             .ask
             .as_ref()
             .with_context(|| format!("Sense bundle {} has no ask_task head", self.version))?;
-        let ids = self.tokenizer.encode(text);
+        let ids = self.tokenizer.encode(&self.ask_text(text));
         let asked: Vec<&Rule> = rules.iter().filter(|r| !heads.decided(&r.id)).collect();
-        let rules = asked.iter().map(|r| heads.question(r));
+        let rules = asked.iter().map(|r| heads.question(r, &self.table));
         let questions: Vec<String> = heads.questions().map(str::to_string).chain(rules).collect();
         let rows = questions.iter().map(|q| self.tokenizer.question_row(&ids, q));
         let rows = rows.collect::<anyhow::Result<Vec<_>>>()?;
@@ -233,6 +233,11 @@ impl SenseModel {
         let n = logits.len() - asked.len();
         let asked: Vec<(&Rule, f32)> = asked.into_iter().zip(logits[n..].iter().copied()).collect();
         heads.answer(&logits[..n], routes, &asked)
+    }
+
+    /// An Ask's words as Sense reads them: through the table.
+    pub fn ask_text(&self, text: &str) -> String {
+        self.table.apply(text)
     }
 
     /// An Ask's words as Sense reads them under what the sheet holds: the
@@ -273,7 +278,8 @@ impl SenseModel {
                 template.replace("{candidate}", &text).replace("{document}", &text)
             })
             .collect();
-        let rows = self.rows(ask, &questions.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let questions: Vec<&str> = questions.iter().map(String::as_str).collect();
+        let rows = self.rows(&self.ask_text(ask), &questions)?;
         let logits = self.graph.logits(&rows, head.adapter.as_deref())?;
         let scored: Vec<(String, f32)> =
             candidates.iter().map(|(slug, _)| slug.clone()).zip(logits).collect();
@@ -334,14 +340,26 @@ impl SenseModel {
         Some((idx, (read.top_p * 10000.0).round().clamp(0.0, 10000.0) as u16))
     }
 
-    /// Each row's logit, as the graph gives it: for tests that hold golden rows.
-    pub fn logits(&self, rows: &[Vec<u32>]) -> anyhow::Result<Vec<f32>> {
-        self.graph.logits(rows, None)
+    /// Each row's logit, as the graph gives it with `adapter`: for tests
+    /// that hold golden rows.
+    pub fn logits(&self, rows: &[Vec<u32>], adapter: Option<&str>) -> anyhow::Result<Vec<f32>> {
+        self.graph.logits(rows, adapter)
     }
 
     /// The question rows for `text` and `questions`, as Sense builds them.
     pub fn rows(&self, text: &str, questions: &[&str]) -> anyhow::Result<Vec<Vec<u32>>> {
-        let ids = self.tokenizer.encode(text);
+        self.cut_rows(text, usize::MAX, questions)
+    }
+
+    /// The question rows for `text`'s first `first` tokens and `questions`.
+    pub fn cut_rows(
+        &self,
+        text: &str,
+        first: usize,
+        questions: &[&str],
+    ) -> anyhow::Result<Vec<Vec<u32>>> {
+        let mut ids = self.tokenizer.encode(text);
+        ids.truncate(first);
         questions.iter().map(|q| self.tokenizer.question_row(&ids, q)).collect()
     }
 }
