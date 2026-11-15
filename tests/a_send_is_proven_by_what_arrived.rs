@@ -107,6 +107,7 @@ fn compiled(root: &Path, harness: &str) -> String {
         },
         plan: None,
         practices: Vec::new(),
+        offered: Vec::new(),
         classified_by: api::Chooser::Person,
         selected_by: api::Chooser::Person,
         links: Vec::new(),

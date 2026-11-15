@@ -164,6 +164,7 @@ fn each_offer_types_what_its_dialog_shows() {
             },
             plan: None,
             practices: Vec::new(),
+            offered: Vec::new(),
             classified_by: api::Chooser::Person,
             selected_by: api::Chooser::Person,
             links: Vec::new(),

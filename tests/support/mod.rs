@@ -144,6 +144,7 @@ pub fn real_ask_of(
             },
             plan: None,
             practices: Vec::new(),
+            offered: Vec::new(),
             classified_by: api::Chooser::Person,
             selected_by: api::Chooser::Person,
             links: Vec::new(),
