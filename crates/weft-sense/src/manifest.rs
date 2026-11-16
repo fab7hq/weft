@@ -199,11 +199,12 @@ pub fn bundle_with_digest(dir: &Path, sha256: &str) -> anyhow::Result<PathBuf> {
     Ok(dir.to_path_buf())
 }
 
-/// The Sense bundle tests read: the sense repository's export beside this
+/// The Sense bundle tests read: the published bundle in the sense repository beside this
 /// checkout, or where CI puts the pinned one (`~/.fab7/sense/sense-xs`), and
 /// only if its manifest is the one whose SHA-256 is `sha256`.
 pub fn bundle_for_tests(sha256: &str) -> anyhow::Result<PathBuf> {
-    let beside = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../sense/sense/dist/sense-xs");
+    let beside = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../sense/.trained-data/bundles/sense-xs-0.0.1");
     let dir = match beside.exists() {
         true => beside,
         false => {
