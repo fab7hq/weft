@@ -111,7 +111,7 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// The plans this project already holds, by slug, sorted.
+/// The plans this project already holds, by name, sorted.
 ///
 /// `plans/<slug>/` is the layout each host's Plan As Files rule writes, and a
 /// plan that is already written is a terminal condition: the Ask that names
@@ -120,6 +120,10 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 /// agent" — is not something the record can settle, so RingFrame reports what
 /// is on disk and the routing reads it from there.
 ///
+/// A workspace of several projects keeps each one's plans under
+/// `plans/<project>/<slug>/`: a folder with no `plan.md` whose own folders
+/// hold one is a project, and its plans are named `<project>/<slug>`.
+///
 /// A project that keeps its plans somewhere else simply has none to report,
 /// which is what this said before there was a list at all.
 ///
@@ -127,25 +131,44 @@ pub fn discover(start: &Path) -> Option<PathBuf> {
 /// a slug alone left the model to guess that "the --json flag" meant
 /// `cli-json-greeting` (q01, Codex), and the path is what the next Ask names.
 pub fn plans(ws: &Workspace) -> Vec<serde_json::Value> {
-    let mut slugs: Vec<String> = std::fs::read_dir(ws.root.join("plans"))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().to_str().map(str::to_string))
-        .filter(|name| !name.starts_with('.'))
-        .collect();
-    slugs.sort();
-    slugs
-        .into_iter()
-        .map(|slug| {
-            let rel = format!("plans/{slug}/plan.md");
+    let folders = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|name| !name.starts_with('.'))
+            .collect();
+        names.sort();
+        names
+    };
+    let root = ws.root.join("plans");
+    let mut held: Vec<(Option<String>, String)> = Vec::new();
+    for name in folders(&root) {
+        let plans_within: Vec<String> = match root.join(&name).join("plan.md").exists() {
+            true => Vec::new(),
+            false => folders(&root.join(&name))
+                .into_iter()
+                .filter(|slug| root.join(&name).join(slug).join("plan.md").exists())
+                .collect(),
+        };
+        match plans_within.is_empty() {
+            true => held.push((None, name)),
+            false => held.extend(plans_within.into_iter().map(|slug| (Some(name.clone()), slug))),
+        }
+    }
+    held.into_iter()
+        .map(|(project, slug)| {
+            let name = project.as_ref().map_or(slug.clone(), |p| format!("{p}/{slug}"));
+            let rel = format!("plans/{name}/plan.md");
             let text = std::fs::read_to_string(ws.root.join(&rel)).ok();
             let title = text.as_deref().and_then(|t| {
                 t.lines().find_map(|l| l.strip_prefix("# ")).map(|h| h.trim().to_string())
             });
             let paragraph = text.as_deref().map(first_paragraph);
-            serde_json::json!({"slug": slug, "path": text.is_some().then_some(rel), "title": title,
+            serde_json::json!({"name": name, "project": project, "slug": slug,
+                               "path": text.is_some().then_some(rel), "title": title,
                                "paragraph": paragraph})
         })
         .collect()
@@ -675,6 +698,34 @@ mod tests {
         let held = plans(&ws);
         let slugs: Vec<&str> = held.iter().filter_map(|p| p["slug"].as_str()).collect();
         assert_eq!(slugs, ["crypto-trading-agent", "ringframe"]);
+    }
+
+    #[test]
+    fn a_projects_plans_are_listed_with_their_project_beside_the_flat_ones() {
+        let dir = crate::testing::tmp_dir();
+        let ws = resolve(Some(dir.path()), None).unwrap();
+        for plan in ["weft/harden", "weft/launch", "sense/harden", "site"] {
+            std::fs::create_dir_all(ws.root.join("plans").join(plan)).unwrap();
+            std::fs::write(ws.root.join("plans").join(plan).join("plan.md"), "# T\n").unwrap();
+        }
+        // A plan's own folders (its ADRs) are not plans of a project.
+        std::fs::create_dir_all(ws.root.join("plans/site/adr")).unwrap();
+        std::fs::write(ws.root.join("plans/site/adr/plan.md"), "# Not a plan\n").unwrap();
+        let held = plans(&ws);
+        let names: Vec<(&str, &str, &Value)> = held
+            .iter()
+            .map(|p| (p["name"].as_str().unwrap(), p["path"].as_str().unwrap(), &p["project"]))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("sense/harden", "plans/sense/harden/plan.md", &json!("sense")),
+                ("site", "plans/site/plan.md", &Value::Null),
+                ("weft/harden", "plans/weft/harden/plan.md", &json!("weft")),
+                ("weft/launch", "plans/weft/launch/plan.md", &json!("weft")),
+            ]
+        );
+        assert_eq!(held[0]["slug"], "harden");
     }
 
     #[test]

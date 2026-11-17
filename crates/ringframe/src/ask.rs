@@ -742,6 +742,17 @@ fn summary(ws: &Workspace, ask_id: &str, rec: &AskRecord, sealed: &BTreeSet<Stri
     })
 }
 
+/// The plan, by its path, of the newest Ask confirmed on `host`, if it
+/// named one.
+pub fn last_plan(ws: &Workspace, host: &str) -> Result<Option<String>, AskError> {
+    let asks = by_id(ws)?;
+    let newest = asks.iter().rev().filter(|(_, r)| r.confirmed.is_some()).find_map(|(_, r)| {
+        let d = &r.compiled.as_ref()?["data"];
+        (d["host"]["name"] == host).then(|| d["compiler"]["plan"].as_str().map(str::to_string))
+    });
+    Ok(newest.flatten())
+}
+
 /// Every compiled Ask in this workspace, oldest first: what Eval and a person
 /// choose from.
 pub fn list_asks(ws: &Workspace) -> Result<Vec<Value>, AskError> {

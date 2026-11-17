@@ -323,6 +323,26 @@ mod tests {
     }
 
     #[test]
+    fn a_harness_last_ask_says_the_plan_it_used() {
+        eval_bench(|ws| {
+            commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");
+            let over = Overrides::default();
+            assert_eq!(crate::ask::last_plan(ws, "claude-code").unwrap(), None, "no Ask yet");
+            let mut req = request(b"Build the uptime plan.", &over);
+            req.plan = Some("plans/uptime/plan.md");
+            compile(ws, req).unwrap();
+            let mut other = request(b"Fix the login bug.", &over);
+            other.host = json!({"name": "codex"});
+            compile(ws, other).unwrap();
+            let last = |host| crate::ask::last_plan(ws, host).unwrap();
+            assert_eq!(last("claude-code").as_deref(), Some("plans/uptime/plan.md"));
+            assert_eq!(last("codex"), None, "its own last Ask used none");
+            compile(ws, request(b"Answer a question.", &over)).unwrap();
+            assert_eq!(last("claude-code"), None, "the newest Ask, not the newest with a plan");
+        });
+    }
+
+    #[test]
     fn the_prompt_is_typed_with_its_command_in_front() {
         eval_bench(|ws| {
             commit(&ws.root, &[("plans/uptime/plan.md", Some(PLAN))], "plan");

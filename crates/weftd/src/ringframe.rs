@@ -249,12 +249,13 @@ pub struct Reading<'a> {
 /// Sense on a reading of the words.
 pub type Sensing<'a> = &'a dyn Fn(&Reading) -> Sensed;
 
-/// The plan Sense's plan head defaults to among `(slug, candidate)` pairs,
+/// The plan Sense's plan head defaults to among `(name, candidate)` pairs,
 /// or none: unsure, no plan head, or past its deadline.
 pub type PlanPicking<'a> = &'a dyn Fn(&str, &[(String, String)]) -> Option<String>;
 
-/// How many plans the plan head reads at most, the word shortlist's size.
-pub const PLAN_SHORTLIST: usize = 8;
+/// How many plans BM25 shortlists for the plan head; the last-used plan
+/// may make one more.
+pub const PLAN_SHORTLIST: usize = 5;
 
 /// The chosen route and plan, the person's: a plan path, or `Some(None)` for
 /// no plan.
@@ -346,19 +347,25 @@ fn sheet_at(
             let slug = p["slug"].as_str()?.to_string();
             let title = p["title"].as_str().unwrap_or(&slug).to_string();
             let paragraph = p["paragraph"].as_str().unwrap_or_default().to_string();
-            Some(weft_core::ask::Plan { path: p["path"].as_str()?.into(), title, slug, paragraph })
+            let project = p["project"].as_str().map(str::to_string);
+            let path = p["path"].as_str()?.into();
+            Some(weft_core::ask::Plan { project, path, title, slug, paragraph })
         })
         .collect();
     let plan = match plan {
         Some(path) => plans.iter().find(|p| Some(p.path.as_str()) == path).cloned(),
         None if stage == Stage::Heads => None,
-        None => {
-            let shortlist = weft_core::ask::shortlist(words, &plans, PLAN_SHORTLIST);
+        // The plan the words name, with no model; else Sense's pick among
+        // BM25's shortlist and the plan this harness's last Ask used.
+        None => weft_core::ask::named(words, &plans).cloned().or_else(|| {
+            let last = api::last_plan(&ws, harness).ok().flatten();
+            let shortlist =
+                weft_core::ask::shortlist(words, &plans, PLAN_SHORTLIST, last.as_deref());
             let candidates: Vec<(String, String)> =
-                shortlist.iter().map(|p| (p.slug.clone(), p.candidate())).collect();
-            let slug = pick_plan(words, &candidates);
-            plans.iter().find(|p| Some(&p.slug) == slug.as_ref()).cloned()
-        }
+                shortlist.iter().map(|p| (p.name(), p.candidate())).collect();
+            let name = pick_plan(words, &candidates);
+            plans.iter().find(|p| Some(p.name()) == name).cloned()
+        }),
     };
     // Then the rules, within what the sheet holds: the person's route, the plan.
     let class = route.strip_prefix("native_").filter(|r| classes.contains(r));
@@ -705,14 +712,14 @@ pub(crate) mod tests {
         let said = sheet(
             &repo,
             None,
-            ("claude-code", "add the uptime endpoint"),
+            ("claude-code", "add the health endpoint"),
             (None, None, None),
             &no_sense,
             &no_plan,
         );
         let said = said.unwrap();
         assert_eq!(said["route"], "native_direct", "direct is the default");
-        assert_eq!(said["plan"], Value::Null, "words alone pick no plan: the plan head does");
+        assert_eq!(said["plan"], Value::Null, "words naming no plan pick none: the plan head does");
         assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
         let goal = sheet(
             &repo,
@@ -866,7 +873,9 @@ pub(crate) mod tests {
             picking.set(picking.get() + 1);
             c.first().map(|(slug, _)| slug.clone())
         };
-        let full = sheet(&repo, None, words, (None, None, None), &sense, &pick).unwrap();
+        let full =
+            sheet(&repo, None, ("claude-code", "plan it"), (None, None, None), &sense, &pick);
+        let full = full.unwrap();
         assert_eq!((full["stage"].as_str(), picking.get()), (Some("full"), 1));
         assert_eq!(full["plan"]["slug"], "export", "the full read picks the plan");
         let _ = std::fs::remove_dir_all(repo);
@@ -1001,22 +1010,35 @@ pub(crate) mod tests {
         repo
     }
 
-    /// The plan head reads a shortlist of the plans, never all of them, and
-    /// its pick, or none, is the sheet's plan.
+    /// A plan the words name is the sheet's plan with no model; else the plan
+    /// head reads BM25's shortlist and the plan this harness's last Ask used,
+    /// never all of them, and its pick, or none, is the sheet's plan.
     #[test]
-    fn the_plan_head_reads_a_shortlist_and_its_pick_is_the_sheets_plan() {
+    fn the_plan_is_the_one_named_or_the_plan_heads_pick_from_a_shortlist() {
         fixture_home();
         let repo = many_plans("plan-head");
+        std::fs::create_dir_all(repo.join("plans/app/sync")).unwrap();
+        let md = "# Offline sync\n\nNotes sync when devices reconnect.\n";
+        std::fs::write(repo.join("plans/app/sync/plan.md"), md).unwrap();
         let read = std::cell::RefCell::new(Vec::new());
         let head = |_: &str, c: &[(String, String)]| {
             read.borrow_mut().push(c.to_vec());
-            c.iter().find(|(slug, _)| slug == "uptime").map(|(slug, _)| slug.clone())
+            c.first().map(|(name, _)| name.clone())
         };
-        let words = ("claude-code", "implement plans/uptime");
-        let said = sheet(&repo, None, words, (None, None, None), &no_sense, &head).unwrap();
+        let ask = |words: &str, head: PlanPicking| {
+            let words = ("claude-code", words);
+            sheet(&repo, None, words, (None, None, None), &no_sense, head).unwrap()
+        };
+        let said = ask("implement plans/uptime", &head);
         assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
+        assert!(read.borrow().is_empty(), "a named plan needs no model");
+        assert_eq!(ask("go on with the sync plan", &head)["plan"]["project"], "app");
+        assert!(read.borrow().is_empty());
+
+        let said = ask("serve the process start time", &head);
+        assert_eq!(said["plan"]["path"], "plans/uptime/plan.md", "the head's pick");
         let candidates = read.borrow()[0].clone();
-        assert_eq!(candidates.len(), PLAN_SHORTLIST, "a shortlist of 25 plans");
+        assert_eq!(candidates.len(), PLAN_SHORTLIST, "a shortlist of 26 plans");
         assert_eq!(
             candidates[0],
             (
@@ -1024,13 +1046,29 @@ pub(crate) mod tests {
                 "uptime: Uptime endpoint: Serve /uptime with the process start time.".into()
             )
         );
-        let unsure = |_: &str, _: &[(String, String)]| None;
-        let words = ("claude-code", "add a work item counter");
-        let said = sheet(&repo, None, words, (None, None, None), &no_sense, &unsure).unwrap();
-        assert_eq!(said["plan"], Value::Null, "an unrelated Ask that shares words gets no plan");
+        let said = ask("devices that reconnect", &head);
+        assert_eq!(said["plan"]["path"], "plans/app/sync/plan.md");
+        let read_last = read.borrow()[1][0].clone();
+        assert_eq!(read_last.1, "app / sync: Offline sync: Notes sync when devices reconnect.");
+
+        // The plan the last Ask used is read too, whatever the words.
+        let mut d = crate::memory::tests::draft("Work on it.", &[]);
+        d.plan = Some("plans/p20/plan.md".into());
+        assert_eq!(set_up(&repo), None);
+        compile(&repo, &d, None).unwrap();
+        let unsure = |_: &str, c: &[(String, String)]| {
+            read.borrow_mut().push(c.to_vec());
+            None
+        };
+        let said = ask("add a counter", &unsure);
+        assert_eq!(said["plan"], Value::Null, "an unsure head gives no plan");
+        let last = read.borrow().last().unwrap().clone();
+        assert_eq!(last.len(), PLAN_SHORTLIST + 1);
+        assert_eq!(last[PLAN_SHORTLIST].0, "p20");
+
         let mine = (None, None, Some(Some("plans/p03/plan.md")));
-        let said = sheet(&repo, None, words, mine, &no_sense, &head).unwrap();
-        assert_eq!(said["plan"]["slug"], "p03", "the person's plan stays theirs");
+        let said = sheet(&repo, None, ("claude-code", "add a counter"), mine, &no_sense, &head);
+        assert_eq!(said.unwrap()["plan"]["slug"], "p03", "the person's plan stays theirs");
         let _ = std::fs::remove_dir_all(repo);
     }
 

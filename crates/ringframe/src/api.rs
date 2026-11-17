@@ -677,6 +677,11 @@ pub fn asks(ws: &Workspace) -> Result<Vec<Value>, Error> {
     Ok(ask::list_asks(ws)?)
 }
 
+/// The plan, by its path, of the newest Ask on `host`, if it named one.
+pub fn last_plan(ws: &Workspace, host: &str) -> Result<Option<String>, Error> {
+    Ok(ask::last_plan(ws, host)?)
+}
+
 /// Every Eval, as `eval list` lists them.
 pub fn evals(ws: &Workspace) -> Result<Vec<Value>, Error> {
     Ok(evaluate::list_records(ws)?)
