@@ -256,9 +256,11 @@ pub enum Then {
     Profile {
         host: String,
     },
-    /// What the open Ask's sheet offers, for `{"harness", "words", "route"}`.
+    /// What the open Ask's sheet offers, for `{"harness", "words", "route"}`
+    /// and the agent's pane it goes to, if it runs.
     AskSheet {
         query: String,
+        pane: Option<u32>,
     },
     /// A follow-up's words for rejected work, from what its Eval found.
     Remedy {

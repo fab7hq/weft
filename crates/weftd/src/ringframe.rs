@@ -278,7 +278,32 @@ pub fn sheet(
     sense: Sensing,
     pick_plan: PlanPicking,
 ) -> Result<Value, Error> {
-    sheet_at(Stage::Full, project, layers, words, picked, sense, pick_plan)
+    sheet_scoped(project, layers, words, picked, sense, pick_plan, None)
+}
+
+/// The [`sheet`] for an agent working in a project's folder (`scope`, see
+/// [`plan_scope`]): Sense's plan head reads that project's plans and the
+/// flat ones. A plan the words name is found among every plan.
+pub fn sheet_scoped(
+    project: &Path,
+    layers: Option<&str>,
+    words: (&str, &str),
+    picked: Picked,
+    sense: Sensing,
+    pick_plan: PlanPicking,
+    scope: Option<&str>,
+) -> Result<Value, Error> {
+    sheet_at((Stage::Full, scope), project, layers, words, picked, sense, pick_plan)
+}
+
+/// The project whose plans an agent working in `folder` reads: the first
+/// folder of its path under `root`, when `plans/<that>/` is there. At the
+/// root, or anywhere else, none: every plan.
+pub fn plan_scope(root: &Path, folder: &Path) -> Option<String> {
+    let (root, folder) = (root.canonicalize().ok()?, folder.canonicalize().ok()?);
+    let first = folder.strip_prefix(&root).ok()?.components().next()?;
+    let name = first.as_os_str().to_str()?;
+    root.join("plans").join(name).is_dir().then(|| name.to_string())
 }
 
 /// The sheet as Sense's heads alone fill it, `"stage": "heads"`: its route,
@@ -292,7 +317,7 @@ pub fn heads_sheet(
     sense: Sensing,
 ) -> Result<Value, Error> {
     let no_plan = |_: &str, _: &[(String, String)]| None;
-    sheet_at(Stage::Heads, project, layers, words, picked, sense, &no_plan)
+    sheet_at((Stage::Heads, None), project, layers, words, picked, sense, &no_plan)
 }
 
 /// How much of the sheet Sense fills: its heads alone, or everything.
@@ -303,7 +328,7 @@ enum Stage {
 }
 
 fn sheet_at(
-    stage: Stage,
+    (stage, scope): (Stage, Option<&str>),
     project: &Path,
     layers: Option<&str>,
     (harness, words): (&str, &str),
@@ -359,8 +384,12 @@ fn sheet_at(
         // BM25's shortlist and the plan this harness's last Ask used.
         None => weft_core::ask::named(words, &plans).cloned().or_else(|| {
             let last = api::last_plan(&ws, harness).ok().flatten();
+            let ours =
+                |p: &&weft_core::ask::Plan| p.project.is_none() || p.project.as_deref() == scope;
+            let scoped: Vec<weft_core::ask::Plan> =
+                plans.iter().filter(|p| scope.is_none() || ours(p)).cloned().collect();
             let shortlist =
-                weft_core::ask::shortlist(words, &plans, PLAN_SHORTLIST, last.as_deref());
+                weft_core::ask::shortlist(words, &scoped, PLAN_SHORTLIST, last.as_deref());
             let candidates: Vec<(String, String)> =
                 shortlist.iter().map(|p| (p.name(), p.candidate())).collect();
             let name = pick_plan(words, &candidates);
@@ -435,7 +464,7 @@ fn sheet_at(
     }
     Ok(serde_json::json!({
         "routes": routes, "route": (!route.is_empty()).then_some(route), "tasks": api::tasks(), "task": task,
-        "effects": classification.effects, "plan": plan, "plans": plans,
+        "effects": classification.effects, "plan": plan, "plans": plans, "scope": scope,
         "practices": practices.into_iter().map(rule).collect::<Vec<_>>(),
         "proposed": proposed,
         "route_rules": rules.route.iter().map(rule).collect::<Vec<_>>(),
@@ -1067,6 +1096,46 @@ pub(crate) mod tests {
         let mine = (None, None, Some(Some("plans/p03/plan.md")));
         let said = sheet(&repo, None, ("claude-code", "add a counter"), mine, &no_sense, &head);
         assert_eq!(said.unwrap()["plan"]["slug"], "p03", "the person's plan stays theirs");
+        let _ = std::fs::remove_dir_all(repo);
+    }
+
+    /// A pane working in a project's folder is offered that project's plans
+    /// and the flat ones; naming another project's plan still picks it.
+    #[test]
+    fn a_pane_in_a_projects_folder_reads_that_projects_plans() {
+        fixture_home();
+        let repo = folder("plan-scope", true);
+        for plan in ["app/sync", "app/login", "web/sync-ui", "uptime"] {
+            std::fs::create_dir_all(repo.join("plans").join(plan)).unwrap();
+            let md = format!("# {plan}\n\nSync the {plan} pieces.\n");
+            std::fs::write(repo.join("plans").join(plan).join("plan.md"), md).unwrap();
+        }
+        std::fs::create_dir_all(repo.join("app/src")).unwrap();
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        assert_eq!(plan_scope(&repo, &repo.join("app/src")).as_deref(), Some("app"));
+        assert_eq!(plan_scope(&repo, &repo.join("docs")), None, "no plans/docs: every plan");
+        assert_eq!(plan_scope(&repo, &repo), None, "the root reads every plan");
+        assert_eq!(plan_scope(&repo, Path::new("/elsewhere")), None);
+
+        let read = std::cell::RefCell::new(Vec::new());
+        let head = |_: &str, c: &[(String, String)]| {
+            let mut names: Vec<String> = c.iter().map(|(n, _)| n.clone()).collect();
+            names.sort();
+            read.borrow_mut().push(names);
+            None
+        };
+        let ask = |words: &str, scope: Option<&str>| {
+            let asked = ("claude-code", words);
+            sheet_scoped(&repo, None, asked, (None, None, None), &no_sense, &head, scope).unwrap()
+        };
+        let said = ask("sync the pieces", Some("app"));
+        assert_eq!(said["scope"], "app");
+        assert_eq!(read.borrow()[0], ["app/login", "app/sync", "uptime"]);
+        ask("sync the pieces", None);
+        assert_eq!(read.borrow()[1].len(), 4, "the root reads every plan");
+        let said = ask("go on with `sync-ui`", Some("app"));
+        assert_eq!(said["plan"]["path"], "plans/web/sync-ui/plan.md", "named, from any folder");
+        assert_eq!(said["plans"].as_array().unwrap().len(), 4, "the person may pick any plan");
         let _ = std::fs::remove_dir_all(repo);
     }
 

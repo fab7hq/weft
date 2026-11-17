@@ -795,8 +795,10 @@ fn the_sheet_shows_the_route_at_senses_heads_and_the_rules_once_read() {
             app.want_ask_sheet_at(Instant::now());
             app.pump();
             let found = wire.calls().into_iter().find_map(|(id, c)| match c {
-                Call::Read { what, unit, .. } if what == "ask" => {
+                Call::Read { what, unit, pane: to, .. } if what == "ask" => {
                     let q: Value = serde_json::from_str(&unit).unwrap();
+                    // For the agent it goes to: the plans of its folder.
+                    assert_eq!(to, Some(pane), "the read names the agent's pane");
                     (q["words"] == words && q["stage"] == stage).then_some(id)
                 }
                 _ => None,

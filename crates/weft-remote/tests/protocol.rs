@@ -315,9 +315,18 @@ fn a_device_reads_and_changes_the_machine_s_settings() {
     });
     let _shell = h.shell("work");
     let (mut d, _) = h.allowed("d_1");
-    d.agents(1);
+    let agent = d.agents(1)[0]["agent"].clone();
     let (mut other, _) = h.allowed("d_2");
     other.agents(1);
+    // An Ask sheet read names the agent it goes to: its plans are those of
+    // the folder that agent works in.
+    let unit = json!({"harness": "claude-code", "words": "Fix it.", "stage": "full"}).to_string();
+    for (req, to) in [(40, agent), (41, json!("nope-9"))] {
+        d.send(json!({"type": "settings", "project": "work", "what": "ask", "unit": unit,
+                      "agent": to, "req": req}));
+        let unknown = d.answer(req)["code"] == "no_agent";
+        assert_eq!(unknown, req == 41, "only an agent not here is refused before the daemon");
+    }
     d.send(json!({"type": "settings", "project": "work", "req": 1}));
     let got = d.answer(1);
     assert_eq!(got["type"], "ok", "{got}");

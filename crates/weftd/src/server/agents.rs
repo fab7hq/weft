@@ -415,6 +415,7 @@ impl Session {
                     gap_told: 0,
                     typer: None,
                     judge: None,
+                    folder: None,
                 });
                 self.write_map(project);
                 self.listen(project, &harness_name);
@@ -470,6 +471,12 @@ impl Session {
                     .any(|s| s.map.pane == pane && s.map.harness == sent.harness);
                 if ours {
                     self.tie(at, pane, &sent.session);
+                    // Where its agent says it works: its Ask sheet's plans.
+                    if let Some(dir) = &sent.workspace
+                        && let Some(slot) = self.projects[at].slot(pane)
+                    {
+                        slot.folder = Some(dir.into());
+                    }
                 }
                 (Some(at), self.projects[at].root.clone())
             }
@@ -721,6 +728,16 @@ impl Session {
         let [pane] = fresh[..] else { return None };
         self.tie(at, pane, session);
         Some(at)
+    }
+}
+
+impl Session {
+    /// The project whose plans `pane`'s agent reads: the folder it last said
+    /// it works in, under this project's root ([`crate::ringframe::plan_scope`]).
+    pub(super) fn plan_scope(&self, at: usize, pane: u32) -> Option<String> {
+        let p = &self.projects[at];
+        let slot = p.panes.iter().find(|s| s.map.pane == pane)?;
+        crate::ringframe::plan_scope(&p.root, slot.folder.as_deref()?)
     }
 }
 

@@ -365,7 +365,11 @@ impl Remote {
             Some(what @ ("rules" | "preview" | "profile" | "ask")) => Call::Read {
                 what: what.to_string(),
                 unit: m["unit"].as_str().unwrap_or_default().to_string(),
-                pane: None,
+                // The agent an Ask sheet is for, by its pane.
+                pane: match m["agent"].is_null() {
+                    true => None,
+                    false => Some(self.agent(m)?.1),
+                },
                 lines: None,
                 before: None,
                 after: None,

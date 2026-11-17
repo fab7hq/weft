@@ -118,6 +118,8 @@ struct Slot {
     typer: Option<Sender<typing::Job>>,
     /// The Eval it judges, for a judge pane Weft started.
     judge: Option<String>,
+    /// The folder its agent last said it works in, by its hooks.
+    folder: Option<PathBuf>,
 }
 
 impl Slot {
@@ -691,7 +693,7 @@ fn sensed_for(last: &LastSensed, (harness, words): (&str, &str)) -> Option<weft_
 fn ask_draft(
     root: &Path,
     over: Option<&str>,
-    (harness, words): (String, String),
+    (harness, words, scope): (String, String, Option<String>),
     (draft, sensed): (Option<&weft_core::ask::Draft>, Option<weft_sense::AskAnswer>),
     link: Option<(String, String)>,
     pick_plan: crate::ringframe::PlanPicking,
@@ -705,7 +707,9 @@ fn ask_draft(
         Some(answer) => crate::ringframe::Sensed::Answered(Box::new(answer.clone())),
         None => crate::ringframe::Sensed::Off,
     };
-    let sheet = crate::ringframe::sheet(root, over, (&harness, &words), picked, &sense, pick_plan)
+    let asked = (harness.as_str(), words.as_str());
+    let scope = scope.as_deref();
+    let sheet = crate::ringframe::sheet_scoped(root, over, asked, picked, &sense, pick_plan, scope)
         .map_err(|crate::ringframe::Error::Refused { message, .. }| message)?;
     let text = |key: &str| sheet[key].as_str().unwrap_or_default().to_string();
     let plan = match draft {
@@ -1296,7 +1300,7 @@ impl Session {
                 let drafted = (draft, sensed);
                 let model = Arc::clone(&self.sense);
                 let pick_plan = |w: &str, c: &[(String, String)]| sense_plan(&model, w, c);
-                let asked = (harness, words);
+                let asked = (harness, words, self.plan_scope(at, pane));
                 let draft =
                     match ask_draft(&root, over.as_deref(), asked, drafted, link, &pick_plan) {
                         Ok(draft) => draft,
@@ -1482,7 +1486,14 @@ impl Session {
 
     /// The exact wording, or an Eval record, as RingFrame wrote them; and
     /// for Settings, RingFrame's rules and a route's Rules block.
-    fn read(&mut self, client: u64, call_id: u64, at: usize, what: &str, unit: &str) -> Answer {
+    fn read(
+        &mut self,
+        client: u64,
+        call_id: u64,
+        (at, pane): (usize, Option<u32>),
+        what: &str,
+        unit: &str,
+    ) -> Answer {
         let root = self.projects[at].root.clone();
         match what {
             // Rules through every project's layer (`unit` `machine`) or this
@@ -1539,6 +1550,8 @@ impl Session {
                     (text("route"), text("task"), text("plan")),
                 );
                 let heads = asked["stage"] == "heads";
+                // The agent it goes to: the plans of the folder it works in.
+                let scope = pane.and_then(|p| self.plan_scope(at, p));
                 let (model, sensed) = (Arc::clone(&self.sense), Arc::clone(&self.sensed));
                 let weft_dir = self.weft_dir();
                 std::thread::spawn(move || {
@@ -1560,13 +1573,14 @@ impl Session {
                             picked,
                             &sense,
                         ),
-                        false => crate::ringframe::sheet(
+                        false => crate::ringframe::sheet_scoped(
                             &root,
                             over.as_deref(),
                             asked,
                             picked,
                             &sense,
                             &pick_plan,
+                            scope.as_deref(),
                         ),
                     };
                     let answer = answer
@@ -2463,7 +2477,7 @@ impl Session {
                 if what == "conversation" {
                     return Ok(self.conversation(at, pane, before, after));
                 }
-                return Ok(self.read(client, call_id, at, &what, &unit));
+                return Ok(self.read(client, call_id, (at, pane), &what, &unit));
             }
             Call::Setup { act, harness, path } => {
                 // What is installed is the machine's: no project is needed.
@@ -2691,7 +2705,7 @@ mod tests {
             "rules": [],
         }))
         .unwrap();
-        let words = ("claude-code".to_string(), "fix the typo".to_string());
+        let words = ("claude-code".to_string(), "fix the typo".to_string(), None);
         let draft =
             ask_draft(&repo, None, words, (None, Some(unsure)), None, &|_, _| None).unwrap();
         assert_eq!(draft.route, "native_direct");
@@ -3418,6 +3432,109 @@ mod tests {
         assert_eq!(full["stage"], "full");
         assert!(full["proposed"].is_array(), "{full}");
         assert_eq!(full["sense"]["route"], heads["sense"]["route"], "the same heads");
+        let _ = std::fs::remove_dir_all(project);
+    }
+
+    /// An agent whose hooks say it works in a project's folder: the Ask
+    /// sheet for its pane reads that project's plans.
+    #[test]
+    fn an_agent_working_in_a_projects_folder_scopes_its_ask_sheets_plans() {
+        let dir = tempfile::tempdir().unwrap();
+        let weft_dir = dir.path().join(".fab7/weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let (socket, config) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&config, "").unwrap();
+        crate::ringframe::tests::fixture_home();
+        let project = crate::ringframe::tests::folder("sheet-scope", true);
+        std::fs::create_dir_all(project.join("plans/app/sync")).unwrap();
+        std::fs::write(project.join("plans/app/sync/plan.md"), "# Sync\n").unwrap();
+        std::fs::create_dir_all(project.join("app/src")).unwrap();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
+        std::thread::spawn(move || {
+            let _ = Session::serve_with(&srv_sock, &srv_cfg, Some(harnesses));
+        });
+        while !weft_proto::is_live(&socket) {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(20))).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut id = 0;
+        let mut send = |line: Line| weft_proto::send(&mut writer, &line.encode()).unwrap();
+        let mut call = |c: Call| {
+            id += 1;
+            send(Line::Call { id, call: c });
+            while let Ok(Some(line)) = reader.next() {
+                if let Line::Result { id: r, result } = line
+                    && r == id
+                {
+                    return result;
+                }
+            }
+            panic!("no answer to call {id}");
+        };
+        call(Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL });
+        let path = project.display().to_string();
+        call(Call::Open { path, rows: 40, cols: 120, raw: true });
+        let token_file = dir.path().join("token");
+        let script = dir.path().join("agent.sh");
+        let body = format!(
+            "#!/bin/sh\nprintf '%s' \"$WEFT_PANE_TOKEN\" > '{}'\nexec /bin/cat\n",
+            token_file.display()
+        );
+        std::fs::write(&script, body).unwrap();
+        let spec = format!("/bin/sh {}", script.display());
+        let started = call(Call::StartAgent { harness: "claude-code".into(), spec, session: None });
+        let pane = started["pane"].as_u64().unwrap() as u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !token_file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let read = |pane: u32| Call::Read {
+            what: "ask".into(),
+            unit: serde_json::json!({"harness": "claude-code", "words": "Sync it.",
+                                     "stage": "full"})
+            .to_string(),
+            pane: Some(pane),
+            lines: None,
+            before: None,
+            after: None,
+        };
+        assert_eq!(call(read(pane))["scope"], serde_json::Value::Null, "at the root");
+        let sent = weft_core::signal::Sent {
+            pane: Some(pane),
+            token: Some(std::fs::read_to_string(&token_file).unwrap()),
+            harness: "claude-code".into(),
+            session: "s-scope".into(),
+            workspace: Some(project.join("app/src").display().to_string()),
+            state: Some("working".into()),
+            ..Default::default()
+        };
+        weft_proto::send(
+            &mut UnixStream::connect(&socket).unwrap(),
+            &Line::Event(Out::Signal(Box::new(sent))).encode(),
+        )
+        .unwrap();
+        let mut call = |c: Call| {
+            id += 1;
+            weft_proto::send(&mut writer, &Line::Call { id, call: c }.encode()).unwrap();
+            while let Ok(Some(line)) = reader.next() {
+                if let Line::Result { id: r, result } = line
+                    && r == id
+                {
+                    return result;
+                }
+            }
+            panic!("no answer to call {id}");
+        };
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut scope = serde_json::Value::Null;
+        while scope.is_null() && std::time::Instant::now() < until {
+            scope = call(read(pane))["scope"].clone();
+        }
+        assert_eq!(scope, "app", "its hooks say it works in app/");
         let _ = std::fs::remove_dir_all(project);
     }
 

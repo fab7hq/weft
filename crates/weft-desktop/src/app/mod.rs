@@ -858,21 +858,21 @@ impl WeftDesktopApp {
         let rested = rested || words.trim().is_empty();
         let (project, send_to) = (project.clone(), send_to.clone().unwrap_or_default());
         let Some(c) = self.clients.iter_mut().find(|c| c.root == project) else { return };
-        let harness =
-            match (send_to.strip_prefix("start:"), crate::sheets::send_to::pane_in(&send_to)) {
-                (Some(h), _) => h.to_string(),
-                (None, Some(pane)) => match c.view(pane) {
-                    Some(p) => p.harness.clone(),
-                    None => return,
-                },
-                (None, None) => return,
-            };
+        let pane = crate::sheets::send_to::pane_in(&send_to);
+        let harness = match (send_to.strip_prefix("start:"), pane) {
+            (Some(h), _) => h.to_string(),
+            (None, Some(pane)) => match c.view(pane) {
+                Some(p) => p.harness.clone(),
+                None => return,
+            },
+            (None, None) => return,
+        };
         // Sense's heads first, shown at once; then the full sheet, its plan
         // and rules. An answer for other words is never shown.
         let query =
             |stage| crate::sheets::ask::query(&harness, self.ask.text(), &self.ask_choices, stage);
         let (heads, full) = (query("heads"), query("full"));
-        let then = |query: &String| crate::daemon::Then::AskSheet { query: query.clone() };
+        let then = |query: &String| crate::daemon::Then::AskSheet { query: query.clone(), pane };
         let (heads_then, full_then) = (then(&heads), then(&full));
         let asking = |t: &crate::daemon::Then| matches!(t, crate::daemon::Then::AskSheet { .. });
         let shown = c.read.get(&full_then).or_else(|| c.read.get(&heads_then));
@@ -893,7 +893,7 @@ impl WeftDesktopApp {
                 false => rested.then_some((heads, heads_then)),
             };
             if let Some((query, then)) = next {
-                let _ = c.read("ask", &query, None, then);
+                let _ = c.read("ask", &query, pane, then);
             }
         }
     }
