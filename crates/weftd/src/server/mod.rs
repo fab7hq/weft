@@ -3197,6 +3197,7 @@ mod tests {
             },
         );
         let claude_pane = res2["pane"].as_u64().unwrap() as u32;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !claude_token_file.exists() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -3246,6 +3247,76 @@ mod tests {
         }
         assert!(ended_at.is_some(), "the Stop hook ends the turn");
         assert!(!working_after, "a screen Sense reads as working never takes it back");
+
+        weft_proto::send(&mut writer, &Line::Call { id: 99, call: Call::Shutdown }.encode())
+            .unwrap();
+        let _ = srv.join();
+    }
+
+    /// A harness that never draws: its blank pane is not ready, until it has
+    /// stayed blank and still for five seconds.
+    #[test]
+    fn a_blank_pane_reads_as_ready_once_still_for_five_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let weft_dir = dir.path().join(".fab7/weft");
+        std::fs::create_dir_all(&weft_dir).unwrap();
+        let (socket, config) = (weft_dir.join("weft.sock"), weft_dir.join("config.toml"));
+        std::fs::write(&config, "").unwrap();
+        let project = dir.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let bundle = dir.path().join("bundle");
+        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
+        let harnesses = weft_core::harness::fixture::harnesses();
+        let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
+        let srv = std::thread::spawn(move || {
+            let _ = Session::serve_with(&srv_sock, &srv_cfg, Some(harnesses));
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !weft_proto::is_live(&socket) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let stream = UnixStream::connect(&socket).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(200))).unwrap();
+        let mut reader = Lines::new(stream.try_clone().unwrap());
+        let mut writer = stream;
+        let mut call = |id: u64, c: Call| {
+            weft_proto::send(&mut writer, &Line::Call { id, call: c }.encode()).unwrap();
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < until {
+                if let Ok(Some(Line::Result { id: rid, result })) = reader.next()
+                    && rid == id
+                {
+                    return result;
+                }
+            }
+            panic!("no result for call {id}");
+        };
+        call(1, Call::Hello { client: "weft-desktop".into(), protocol: PROTOCOL });
+        let path = project.display().to_string();
+        call(2, Call::Open { path, rows: 40, cols: 120, raw: true });
+        let script = dir.path().join("blank.sh");
+        std::fs::write(&script, "#!/bin/sh\nstty raw -echo 2>/dev/null || true\nexec /bin/cat\n")
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let started = std::time::Instant::now();
+        let spec = script.display().to_string();
+        call(3, Call::StartAgent { harness: "claude-code".into(), spec, session: None });
+
+        let mut ready_at = None;
+        while ready_at.is_none() && started.elapsed() < std::time::Duration::from_secs(9) {
+            if let Ok(Some(Line::Event(Out::Agents { panes, .. }))) = reader.next()
+                && panes.first().copied().flatten() == Some(Turn::Ready)
+            {
+                ready_at = Some(started.elapsed());
+            }
+        }
+        let ready_at = ready_at.expect("a blank, still pane reads as ready");
+        assert!(ready_at >= std::time::Duration::from_secs(5), "not before: {ready_at:?}");
 
         weft_proto::send(&mut writer, &Line::Call { id: 99, call: Call::Shutdown }.encode())
             .unwrap();

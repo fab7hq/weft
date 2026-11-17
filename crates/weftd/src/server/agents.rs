@@ -213,8 +213,14 @@ impl Session {
         });
         let Some(text) = text else { return };
         slot.sense_settled_seq = seq;
+        // A blank screen holds nothing to read: it reads as ready, which
+        // counts only once it has stayed still (a harness draws within a
+        // second), so a harness that never draws is not waited on forever.
         if bottom_lines.is_empty() {
-            slot.sensed_surface = None;
+            let state = weft_sense::SurfaceState::IdleReady;
+            slot.sensed_surface =
+                Some(weft_sense::SurfaceReading { state, confidence_bp: 10000, seq });
+            slot.sensed_text = None;
             return;
         }
         // The same words read the same: the reading holds for this screen too.
@@ -401,7 +407,8 @@ impl Session {
                     token,
                     transcript: None,
                     last_output_at: std::time::Instant::now(),
-                    sense_settled_seq: 0,
+                    // Read once settled, even a pane that never draws.
+                    sense_settled_seq: u64::MAX,
                     sensed_surface: None,
                     sensed_text: None,
                     sensing: false,
