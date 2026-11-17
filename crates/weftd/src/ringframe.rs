@@ -712,14 +712,14 @@ pub(crate) mod tests {
         let said = sheet(
             &repo,
             None,
-            ("claude-code", "add the health endpoint"),
+            ("claude-code", "add the uptime endpoint"),
             (None, None, None),
             &no_sense,
             &no_plan,
         );
         let said = said.unwrap();
         assert_eq!(said["route"], "native_direct", "direct is the default");
-        assert_eq!(said["plan"], Value::Null, "words naming no plan pick none: the plan head does");
+        assert_eq!(said["plan"], Value::Null, "words alone pick no plan: the plan head does");
         assert!(said["practices"].as_array().is_some_and(|p| !p.is_empty()), "{said}");
         let goal = sheet(
             &repo,
@@ -873,9 +873,7 @@ pub(crate) mod tests {
             picking.set(picking.get() + 1);
             c.first().map(|(slug, _)| slug.clone())
         };
-        let full =
-            sheet(&repo, None, ("claude-code", "plan it"), (None, None, None), &sense, &pick);
-        let full = full.unwrap();
+        let full = sheet(&repo, None, words, (None, None, None), &sense, &pick).unwrap();
         assert_eq!((full["stage"].as_str(), picking.get()), (Some("full"), 1));
         assert_eq!(full["plan"]["slug"], "export", "the full read picks the plan");
         let _ = std::fs::remove_dir_all(repo);
@@ -1032,7 +1030,7 @@ pub(crate) mod tests {
         let said = ask("implement plans/uptime", &head);
         assert_eq!(said["plan"]["path"], "plans/uptime/plan.md");
         assert!(read.borrow().is_empty(), "a named plan needs no model");
-        assert_eq!(ask("go on with the sync plan", &head)["plan"]["project"], "app");
+        assert_eq!(ask("go on with the `sync` plan", &head)["plan"]["project"], "app");
         assert!(read.borrow().is_empty());
 
         let said = ask("serve the process start time", &head);

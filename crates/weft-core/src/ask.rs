@@ -72,8 +72,8 @@ impl Plan {
 
 /// The one plan the words name, with no model: by its folder
 /// (`plans/<project>/<slug>`, `plans/<slug>`, its `plan.md` too) or a
-/// project's plan by `<project>/<slug>`, else by its slug as a whole word.
-/// Two plans named are none.
+/// project's plan by `<project>/<slug>`, else by its slug in backticks or,
+/// with a hyphen, as a whole word. Two plans named are none.
 pub fn named<'a>(said: &str, plans: &'a [Plan]) -> Option<&'a Plan> {
     let quoted = |c: char| c.is_whitespace() || "`\"'()[]<>,;".contains(c);
     let paths: Vec<&str> = said
@@ -90,9 +90,13 @@ pub fn named<'a>(said: &str, plans: &'a [Plan]) -> Option<&'a Plan> {
     if let Some(one) = by_path.next() {
         return by_path.next().is_none().then_some(one);
     }
-    // A slug as a whole word: `ui` is not named by "build".
+    // A slug in backticks, or one with a hyphen as a whole word: a one-word
+    // slug said bare ("add the uptime endpoint") shares words more often
+    // than it names the plan.
+    let quoted: Vec<&str> = said.split('`').skip(1).step_by(2).map(str::trim).collect();
     let words: Vec<&str> = said.split(|c: char| !(c.is_alphanumeric() || c == '-')).collect();
-    let mut by_slug = plans.iter().filter(|p| words.contains(&p.slug.as_str()));
+    let says = |slug: &str| quoted.contains(&slug) || slug.contains('-') && words.contains(&slug);
+    let mut by_slug = plans.iter().filter(|p| says(&p.slug));
     let one = by_slug.next()?;
     by_slug.next().is_none().then_some(one)
 }
@@ -161,10 +165,11 @@ mod tests {
         assert_eq!(got("go on with `weft-harden`, phase 5").as_deref(), Some("weft-harden"));
         assert_eq!(got("see plans/weft-harden/plan.md.").as_deref(), Some("weft-harden"));
         assert_eq!(got("implement plans/weft/harden").as_deref(), Some("weft/harden"));
-        assert_eq!(got("the launch plan").as_deref(), Some("weft/launch"));
+        assert_eq!(got("the `launch` plan").as_deref(), Some("weft/launch"));
+        assert_eq!(got("the launch plan"), None, "a one-word slug said bare names nothing");
         assert_eq!(got("implement weft/harden").as_deref(), Some("weft/harden"));
-        assert_eq!(got("harden it"), None, "two plans are named harden");
-        assert_eq!(got("weft-harden and the launch"), None, "two plans named");
+        assert_eq!(got("`harden` it"), None, "two plans are named harden");
+        assert_eq!(got("weft-harden and `launch`"), None, "two plans named");
         assert_eq!(got("rebuild the cache"), None, "a slug inside a word is not named");
         assert_eq!(got("fix the login bug"), None);
     }
