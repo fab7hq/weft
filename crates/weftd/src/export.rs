@@ -65,7 +65,8 @@ mod tests {
     fn receipt(commit: &str) -> Value {
         json!({
             "seal_id": "sel_1", "asks": [{"ask_id": "ask_1", "title": "health endpoint"}],
-            "eval": {"eval_id": "evl_1", "verdict": "aligned", "confidence": 1.0},
+            "eval": {"eval_id": "evl_1", "report": {"faults": 0, "cannot_settle": 0, "declared": 0,
+                     "against_decisions": 0}},
             "subject": {"kind": "git_commit", "ref": commit},
             "disposition": "accepted",
             "authority": {"kind": "human", "id": "local-user"},
@@ -92,7 +93,7 @@ mod tests {
         for said in [
             "RingFrame Seal sel_1",
             "Ask: health endpoint",
-            "Verdict: aligned 1.00, judged by codex",
+            "Eval: nothing found, read by codex",
             "Decision: accepted",
             "By: local-user",
             "At: 2026-10-25T11:32:04Z",

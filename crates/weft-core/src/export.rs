@@ -21,8 +21,8 @@ pub fn sealed_commit(receipt: &Value) -> Option<&str> {
     (subject["kind"] == "git_commit").then(|| subject["ref"].as_str()).flatten()
 }
 
-/// The note: the receipt's Ask titles, verdict, who judged, decision,
-/// reason, approver and time, one line each.
+/// The note: the receipt's Ask titles, what its Eval found and who read it,
+/// decision, reason, approver and time, one line each.
 pub fn git_note(receipt: &Value, judged_by: Option<&str>) -> String {
     let text = |v: &Value| v.as_str().unwrap_or_default().to_string();
     let mut lines = vec![format!("RingFrame Seal {}", text(&receipt["seal_id"]))];
@@ -31,14 +31,12 @@ pub fn git_note(receipt: &Value, judged_by: Option<&str>) -> String {
     }
     let eval = &receipt["eval"];
     if !eval.is_null() {
-        let mut verdict = format!("Verdict: {}", text(&eval["verdict"]));
-        if let Some(c) = eval["confidence"].as_f64() {
-            verdict.push_str(&format!(" {c:.2}"));
-        }
+        let found = crate::ledger::Report::of(eval).map(|r| r.plain()).unwrap_or_default();
+        let mut said = format!("Eval: {found}");
         if let Some(by) = judged_by.filter(|b| !b.is_empty()) {
-            verdict.push_str(&format!(", judged by {by}"));
+            said.push_str(&format!(", read by {by}"));
         }
-        lines.push(verdict);
+        lines.push(said);
     }
     lines.push(format!("Decision: {}", text(&receipt["disposition"])));
     if let Some(reason) = receipt["reason"].as_str() {
@@ -58,7 +56,8 @@ mod tests {
         json!({
             "schema": "ringframe.seal/1", "seal_id": "sel_8k2",
             "asks": [{"ask_id": "ask_1", "title": "health endpoint"}],
-            "eval": {"eval_id": "evl_2", "verdict": "aligned", "confidence": 0.92},
+            "eval": {"eval_id": "evl_2", "report": {"faults": 1, "cannot_settle": 0, "declared": 0,
+                     "against_decisions": 0}},
             "subject": {"kind": "git_commit", "ref": "4f2a9c1", "sha256": "x"},
             "disposition": "rejected", "reason": "broke_something",
             "authority": {"kind": "human", "id": "local-user", "authority": "interactive"},
@@ -71,14 +70,14 @@ mod tests {
         let note = git_note(&receipt(), Some("codex"));
         assert_eq!(
             note,
-            "RingFrame Seal sel_8k2\nAsk: health endpoint\nVerdict: aligned 0.92, judged by codex\n\
+            "RingFrame Seal sel_8k2\nAsk: health endpoint\nEval: 1 found, read by codex\n\
              Decision: rejected\nReason: broke something\nBy: local-user\nAt: 2026-10-25T11:32:04Z\n"
         );
         let mut bare = receipt();
         bare["eval"] = Value::Null;
         bare.as_object_mut().unwrap().remove("reason");
         let note = git_note(&bare, None);
-        assert!(!note.contains("Verdict") && !note.contains("Reason"), "{note}");
+        assert!(!note.contains("Eval") && !note.contains("Reason"), "{note}");
     }
 
     #[test]
