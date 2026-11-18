@@ -809,7 +809,7 @@ mod tests {
                 .unwrap();
             assert!(ok.success(), "git {args:?}");
         }
-        let eval_id = eval_open(&repo, &ask, None, None).unwrap();
+        let eval_id = eval_open(&repo, &ask, None, None, Vec::new()).unwrap();
         let ws = ringframe::api::workspace(&repo).unwrap();
         let debate = json!({"debate": {"harness": "sh-a", "question": {"harness": "sh-b"}}});
         let stage = weft_core::eval_stages::resolve(Some(&debate), None, "sh");

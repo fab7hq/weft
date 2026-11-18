@@ -133,6 +133,21 @@ fn classify_with_sense(
     })
 }
 
+/// What the agent said last in a transcript: the text of its newest reply,
+/// read back page by page from the end. None when it said nothing, or the
+/// file cannot be read.
+pub fn last_reply(c: &Conversation, path: Option<&Path>) -> Option<String> {
+    let mut before = None;
+    loop {
+        let Answer::Page { items, before: b, .. } = page(c, path, before) else { return None };
+        let said = items.iter().rev().find(|i| i.kind == weft_core::conversation::Kind::Agent);
+        if let Some(text) = said.and_then(|i| i.text.clone()).filter(|t| !t.trim().is_empty()) {
+            return Some(text);
+        }
+        before = Some(b?);
+    }
+}
+
 /// The newest page, or the page that ends where `before` starts.
 pub fn page(c: &Conversation, path: Option<&Path>, before: Option<Cursor>) -> Answer {
     page_with_sense(c, "unknown", path, before, None)
@@ -302,6 +317,44 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
         assert_eq!(file(&grok(), h.path(), "s1", Some(&link)), None, "a link out of the home");
         assert_eq!(file(&grok(), h.path(), "s1", path.parent()), None, "a folder");
+    }
+
+    /// Each harness's transcript gives the agent's last reply, read from
+    /// the end: the same as the last reply a reading of the whole file finds.
+    #[test]
+    fn the_last_reply_is_the_newest_thing_the_agent_said_on_every_harness() {
+        let fixtures = [
+            (
+                "claude-code",
+                include_str!("../../weft-core/tests/fixtures/conversation/claude-code.jsonl"),
+            ),
+            ("codex", include_str!("../../weft-core/tests/fixtures/conversation/codex.jsonl")),
+            ("grok", include_str!("../../weft-core/tests/fixtures/conversation/grok.jsonl")),
+            (
+                "antigravity",
+                include_str!("../../weft-core/tests/fixtures/conversation/antigravity.jsonl"),
+            ),
+        ];
+        for (harness, text) in fixtures {
+            let c = Conversation::of(&harness_file(harness)["conversation"]).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("t.jsonl");
+            std::fs::write(&path, text).unwrap();
+            let mut all = Vec::new();
+            let mut before = None;
+            while let Answer::Page { items, before: b, .. } = page(&c, Some(&path), before) {
+                all.splice(0..0, items);
+                match b {
+                    Some(b) => before = Some(b),
+                    None => break,
+                }
+            }
+            let want =
+                all.iter().rev().find(|i| i.kind == Kind::Agent).and_then(|i| i.text.clone());
+            assert!(want.is_some(), "{harness}'s fixture has a reply");
+            assert_eq!(last_reply(&c, Some(&path)), want, "{harness}");
+        }
+        assert_eq!(last_reply(&grok(), None), None, "no file");
     }
 
     #[test]

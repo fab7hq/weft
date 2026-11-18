@@ -1458,17 +1458,67 @@ impl Session {
         let project = &self.projects[at];
         let stage = weft_core::eval_stages::agents(&debate.stage);
         let (root, over, tx) = (project.root.clone(), project.ringframe.clone(), self.tx.clone());
+        let said = self.where_the_agent_said(at, &debate.unit.ask_id);
         std::thread::spawn(move || {
+            // What the agent said last in each of the unit's sessions: where
+            // a reader looks for a departure it declared.
+            let statements: Vec<serde_json::Value> = said
+                .into_iter()
+                .filter_map(|(session, map, home, named)| {
+                    let path = crate::conversation::file(&map, &home, &session, named.as_deref());
+                    let text = crate::conversation::last_reply(&map, path.as_deref())?;
+                    Some(serde_json::json!({"session": session, "text": text}))
+                })
+                .collect();
             let opened = crate::ringframe::eval_open(
                 &root,
                 &debate.unit.ask_id,
                 stage.as_ref(),
                 over.as_deref(),
+                statements,
             );
             let debate = Box::new(debate);
             let _ = tx.send(Wake::EvalOpened { client, call_id, project: at, debate, opened });
         });
         Answer::Later
+    }
+
+    /// Each session one of the unit's open Asks arrived in, once, with its
+    /// harness's transcript mapping, its configuration home, and the
+    /// transcript its hooks named while a pane holds it.
+    #[allow(clippy::type_complexity)]
+    fn where_the_agent_said(
+        &self,
+        at: usize,
+        ask: &str,
+    ) -> Vec<(String, weft_core::conversation::Conversation, PathBuf, Option<PathBuf>)> {
+        use crate::harness::OnThisMachine;
+        let p = &self.projects[at];
+        let units = p.ledger.units();
+        let work = weft_core::work::work(&units, &p.ledger.record());
+        let open = work.of_ask(ask).map(|u| u.open.clone()).unwrap_or_default();
+        let mut out: Vec<(
+            String,
+            weft_core::conversation::Conversation,
+            PathBuf,
+            Option<PathBuf>,
+        )> = Vec::new();
+        for arrived in
+            units.iter().filter(|u| open.contains(&u.ask_id)).filter_map(|u| u.arrived.as_ref())
+        {
+            if out.iter().any(|(s, ..)| *s == arrived.session) {
+                continue;
+            }
+            let Some(h) = p.harnesses.find(&arrived.host) else { continue };
+            let Some(map) = h.conversation.clone() else { continue };
+            let named = p
+                .panes
+                .iter()
+                .find(|s| s.map.session.as_ref().is_some_and(|b| b.session == arrived.session))
+                .and_then(|s| s.transcript.clone());
+            out.push((arrived.session.clone(), map, h.config_home(), named));
+        }
+        out
     }
 
     /// The person said Stop: RingFrame voids the Eval, off the run loop, and

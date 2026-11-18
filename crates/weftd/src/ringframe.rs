@@ -573,6 +573,7 @@ pub fn eval_open(
     ask: &str,
     agents: Option<&Value>,
     over: Option<&str>,
+    statements: Vec<Value>,
 ) -> Result<String, Error> {
     let ws = workspace(project)?;
     let overrides = overrides(over)?;
@@ -581,7 +582,7 @@ pub fn eval_open(
         host: "weft",
         agents: agents.cloned(),
         overrides: &overrides,
-        statements: Vec::new(),
+        statements,
     };
     match api::eval_open(&ws, open) {
         Ok(opened) => Ok(opened.eval_id),
@@ -1409,7 +1410,7 @@ pub(crate) mod tests {
         };
         git(&["add", "src"]);
         git(&["commit", "-q", "-m", "work"]);
-        let eval_id = eval_open(&repo, &ask, None, None).unwrap();
+        let eval_id = eval_open(&repo, &ask, None, None, Vec::new()).unwrap();
         let ws = workspace(&repo).unwrap();
         let mut kinds = std::collections::BTreeSet::new();
         for _ in 0..20 {
@@ -1557,7 +1558,7 @@ pub(crate) mod tests {
         let refused = |r: Result<_, Error>| matches!(r, Err(Error::Refused { code: 2, .. }));
         assert!(refused(ask_copy(&dir, "ask_none").map(|_| ())));
         assert!(refused(ask_for_host(&dir, "ask_none", "codex").map(|_| ())));
-        assert!(refused(eval_open(&dir, "ask_none", None, None).map(|_| ())));
+        assert!(refused(eval_open(&dir, "ask_none", None, None, Vec::new()).map(|_| ())));
         let checked = seal_checked(&dir, "sel_none").unwrap();
         assert_eq!(checked["codes"], serde_json::json!(["seal.receipt_missing"]));
         let _ = std::fs::remove_dir_all(&dir);
