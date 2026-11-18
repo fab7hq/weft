@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use weft::protocol;
 use weft::server;
@@ -191,7 +191,7 @@ fn main() -> Result<()> {
 const HELP: &str = "weft VERSION
 
 weft [project-dir]     open the Weft app, on that project if one is named
-weft update --sense    install the Sense model this Weft was built with
+weft update --sense    install the latest Sense model
 weft stop              end the session and its agents
 weft remote            Weft from another device (the session starts it)
 weft signal <harness> <hook>   what a harness's hooks run
@@ -328,16 +328,19 @@ fn updated_by(exe: &std::path::Path, home: &std::path::Path) -> Updater {
 const UPDATE_WEFT: &str = "Weft updates the way you installed it: brew upgrade --cask weft, \
 or the install.sh line again. weft update --sense installs the Sense model.";
 
-/// The Sense model this Weft was built with, downloaded from its tag and
-/// checked; a running daemon picks it up when its Updates step ends.
+/// The latest Sense release, downloaded from its tag and checked; a running
+/// daemon picks it up when its Updates step ends.
 fn update_sense() -> Result<()> {
     let home = std::env::var_os("HOME").ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
     let weft_dir = std::path::PathBuf::from(home).join(".fab7/weft");
-    if !weftd::versions::sense_wanted(&weft_dir) {
-        println!("Sense {} is installed", weftd::versions::SENSE_VERSION);
+    let out = weftd::outside::machine();
+    let latest = weftd::outside::Outside::sense_release(&*out, true)
+        .context("could not reach Sense's releases")?;
+    if !weftd::versions::sense_wanted(&weft_dir, Some(&latest)) {
+        println!("Sense {latest} is the latest, and installed");
         return Ok(());
     }
-    let current = weftd::versions::fetch_sense(&weft_dir, &*weftd::outside::machine())?;
+    let current = weftd::versions::fetch_sense(&weft_dir, &*out, &latest)?;
     println!("Sense {} installed", current.version);
     Ok(())
 }

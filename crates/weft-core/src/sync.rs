@@ -105,6 +105,14 @@ pub fn configuration(check: Option<&Value>) -> (String, Option<Step>) {
 /// Where Weft's releases are published.
 pub const WEFT_REPO: &str = "fab7hq/weft";
 
+/// Where the Sense model's releases are published, on Hugging Face.
+pub const SENSE_REPO: &str = "fab7hq/sense-xs";
+
+/// The newest release among `tags`, by version: what Weft downloads and uses.
+pub fn newest_release<'a>(tags: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    tags.into_iter().filter_map(release_version).reduce(|a, b| if older(a, b) { b } else { a })
+}
+
 /// A release tag's version: `v`, then numbers and dots, and nothing else.
 pub fn release_version(tag: &str) -> Option<&str> {
     let v = tag.strip_prefix('v')?;
@@ -154,6 +162,14 @@ pub fn sense(have: Option<&str>, latest: Option<&str>) -> (String, Option<Step>)
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_newest_release_is_the_highest_version_tag() {
+        let tags = ["v0.0.1", "main", "v0.0.10", "vnope", "v0.0.2", "0.9.0"];
+        assert_eq!(newest_release(tags), Some("0.0.10"));
+        assert_eq!(newest_release(["main"]), None);
+        assert_eq!(newest_release([]), None);
+    }
 
     fn find(name: &str) -> Option<crate::harness::Harness> {
         crate::harness::fixture::harnesses().find(name).cloned()

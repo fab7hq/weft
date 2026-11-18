@@ -65,6 +65,36 @@ fn ask_weft_release() -> Option<String> {
     weft_core::sync::release_version(tag).map(str::to_string)
 }
 
+static SENSE_CHECKED: std::sync::Mutex<Option<(Instant, Option<String>)>> =
+    std::sync::Mutex::new(None);
+
+/// The latest Sense release's version, or nothing when Hugging Face cannot
+/// be reached, kept for [`CHECK_EVERY`] like `weft_latest`.
+pub fn sense_latest(fresh: bool) -> Option<String> {
+    let mut kept = SENSE_CHECKED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, answer)) = kept.as_ref()
+        && !fresh
+        && at.elapsed() < CHECK_EVERY
+    {
+        return answer.clone();
+    }
+    let answer = ask_sense_release();
+    *kept = Some((Instant::now(), answer.clone()));
+    answer
+}
+
+/// The newest tag of Sense's model repository.
+fn ask_sense_release() -> Option<String> {
+    let out = Command::new("curl")
+        .args(["-fsSL", "--max-time", "10"])
+        .arg(format!("https://huggingface.co/api/models/{}/refs", weft_core::sync::SENSE_REPO))
+        .output()
+        .ok()?;
+    let refs: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let tags = refs["tags"].as_array()?.iter().filter_map(|t| t["name"].as_str());
+    weft_core::sync::newest_release(tags).map(str::to_string)
+}
+
 fn ask_check() -> Result<serde_json::Value, String> {
     // RingFrame says why, in its own words: the reason is the person's to read.
     ringframe::api::config_check().map_err(|e| match e {
@@ -152,7 +182,7 @@ pub fn look_as_they_answer(
             .as_deref()
             .is_some_and(|l| weft_core::sync::older(env!("CARGO_PKG_VERSION"), l));
     let sense_have = text("sense_installed").or_else(crate::versions::default_sense_version);
-    let sense_latest = text("sense_latest").or(Some(crate::versions::SENSE_VERSION.into()));
+    let sense_latest = text("sense_latest").or_else(|| out.sense_release(false));
     let (sense_line, sense_step) =
         weft_core::sync::sense(sense_have.as_deref(), sense_latest.as_deref());
     (view.sense, view.sense_behind, view.sense_latest) =
@@ -424,6 +454,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Sense's line stands against its latest release, whatever Weft's version.
+    #[test]
+    fn the_view_says_where_sense_stands_against_its_latest_release() {
+        use crate::outside::Fixed;
+        let check = Ok(serde_json::json!({"sense_installed": "0.0.2"}));
+        let look = |latest: Option<&str>| {
+            let out = Fixed::new().with_sense(latest).shared();
+            look(out.as_ref(), &Harnesses::default(), &check, &WeftCheck::default()).0
+        };
+        let behind = look(Some("0.0.3"));
+        assert_eq!((behind.sense.as_str(), behind.sense_behind), ("0.0.2 → 0.0.3", true));
+        assert_eq!(behind.sense_latest.as_deref(), Some("0.0.3"));
+        assert_eq!(look(Some("0.0.2")).sense, "0.0.2 is the latest");
+        assert_eq!(look(None).sense, "0.0.2 is installed");
+    }
+
     /// Weft's own line: behind, installed and waiting, or the latest.
     #[test]
     fn the_view_says_where_weft_stands() {
@@ -431,8 +477,8 @@ mod tests {
         let out = Fixed::new().shared();
         let look = |latest: Option<&str>, waiting: bool| {
             let weft = WeftCheck { latest: latest.map(str::to_string), waiting };
-            // Sense as this Weft pins it, whatever this machine has installed.
-            let check = Ok(serde_json::json!({"sense_installed": crate::versions::SENSE_VERSION}));
+            // Sense as the latest release, whatever this machine has installed.
+            let check = Ok(serde_json::json!({"sense_installed": "0.0.2"}));
             look(out.as_ref(), &Harnesses::default(), &check, &weft).0
         };
         let now = env!("CARGO_PKG_VERSION");

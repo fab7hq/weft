@@ -1,4 +1,4 @@
-//! sense-xs 0.0.1's golden vectors, read by Weft's own tokenizer,
+//! sense-xs 0.0.2's golden vectors, read by Weft's own tokenizer,
 //! normalizer and heads on ONNX Runtime's graph, each row with the adapter
 //! its job names.
 
@@ -10,8 +10,8 @@ use weft_sense::manifest::{Manifest, bundle_for_tests};
 use weft_sense::normalize::{Replacements, candidate_text, entry_text, reply_text, screen_text};
 use weft_sense::{Counts, PaneSnapshot, Rule, SenseModel, TranscriptSnippet};
 
-/// sense-xs 0.0.1's manifest, as published on Hugging Face `fab7hq/sense-xs`.
-const SENSE_XS_0_0_1: &str = "33971ef7666281d62f74584b08fdedfd0a10e6d8c1e30947e92276f211d09112";
+/// sense-xs 0.0.2's manifest, as published on Hugging Face `fab7hq/sense-xs`.
+const SENSE_XS_0_0_2: &str = "1f40648840e416d0f0319ef2fea0a5bf937cb8209be4b24d7027923c02a46818";
 const TOLERANCE: f32 = 1e-4;
 const ASK_HEADS: [&str; 3] = ["ask_task", "ask_effects", "ask_route"];
 
@@ -27,7 +27,7 @@ struct Bundle {
 fn bundle() -> Bundle {
     let dir = match std::env::var_os("SENSE_XS_BUNDLE") {
         Some(dir) => PathBuf::from(dir),
-        None => bundle_for_tests(SENSE_XS_0_0_1).unwrap(),
+        None => bundle_for_tests(SENSE_XS_0_0_2).unwrap(),
     };
     let manifest = Manifest::parse(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
     let raw = std::fs::read_to_string(dir.join("golden_vectors.jsonl")).unwrap();

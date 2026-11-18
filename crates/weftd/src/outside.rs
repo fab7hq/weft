@@ -50,6 +50,9 @@ pub trait Outside: Send + Sync {
     /// The latest Weft release, by version, or nothing when it cannot be
     /// reached; kept like `release`.
     fn weft_release(&self, fresh: bool) -> Option<String>;
+    /// The latest Sense release, by version, or nothing when it cannot be
+    /// reached; kept like `release`.
+    fn sense_release(&self, fresh: bool) -> Option<String>;
     /// The program the person pointed at, if it is one that starts.
     fn check_program(&self, path: &str) -> Result<String, String>;
     /// The text of the newest file at `pattern`, where a `*` folder stands
@@ -166,6 +169,10 @@ impl Outside for Machine {
         crate::onboarding::weft_latest(fresh)
     }
 
+    fn sense_release(&self, fresh: bool) -> Option<String> {
+        crate::onboarding::sense_latest(fresh)
+    }
+
     fn check_program(&self, path: &str) -> Result<String, String> {
         crate::onboarding::check_program(path)
     }
@@ -220,6 +227,7 @@ pub struct Fixed {
     sync: Result<(), String>,
     /// The latest Weft release.
     weft: Option<String>,
+    sense: Option<String>,
     files: Vec<(std::path::PathBuf, String)>,
     /// When `weft remote` was started. Each run ends at once, failing.
     remote_runs: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
@@ -234,6 +242,7 @@ impl Default for Fixed {
             release: Err("no release check in this world".into()),
             sync: Err("no sync in this world".into()),
             weft: None,
+            sense: None,
             files: Vec::new(),
             remote_runs: Arc::default(),
             service: None,
@@ -278,6 +287,12 @@ impl Fixed {
     /// The latest Weft release in this world.
     pub fn with_weft(mut self, latest: Option<&str>) -> Self {
         self.weft = latest.map(str::to_string);
+        self
+    }
+
+    /// The latest Sense release in this world.
+    pub fn with_sense(mut self, latest: Option<&str>) -> Self {
+        self.sense = latest.map(str::to_string);
         self
     }
 
@@ -350,6 +365,10 @@ impl Outside for Fixed {
 
     fn weft_release(&self, _fresh: bool) -> Option<String> {
         self.weft.clone()
+    }
+
+    fn sense_release(&self, _fresh: bool) -> Option<String> {
+        self.sense.clone()
     }
 
     fn check_program(&self, path: &str) -> Result<String, String> {

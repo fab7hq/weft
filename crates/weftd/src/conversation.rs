@@ -396,7 +396,7 @@ mod tests {
         let found = file(&agy, home.path(), "s-agy", None).expect("found by brain/{session} find");
         assert_eq!(found, path.canonicalize().unwrap());
 
-        let pinned = crate::versions::SENSE_MANIFEST_SHA256;
+        let pinned = crate::versions::tests::TESTED_SHA256;
         let bundle = weft_sense::manifest::bundle_for_tests(pinned).unwrap();
         let sense = weft_sense::SenseModel::load(&bundle).ok();
         let Answer::Page { items, .. } =

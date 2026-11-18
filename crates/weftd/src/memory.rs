@@ -251,7 +251,7 @@ pub(crate) mod tests {
         assert_eq!(with_counts(&none, &weft_dir, &rules), rules);
 
         let bundle = tmp.path().join("bundle");
-        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::SENSE_VERSION);
+        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::tests::TESTED);
         let loaded = Loaded::new(Some(weft_sense::SenseModel::load(&bundle).unwrap()));
         for i in 1..3 {
             compile(&root, &draft(&format!("Fix bug {i}."), &["practice.dry"]), None).unwrap();

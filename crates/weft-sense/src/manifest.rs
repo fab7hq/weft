@@ -204,7 +204,7 @@ pub fn bundle_with_digest(dir: &Path, sha256: &str) -> anyhow::Result<PathBuf> {
 /// only if its manifest is the one whose SHA-256 is `sha256`.
 pub fn bundle_for_tests(sha256: &str) -> anyhow::Result<PathBuf> {
     let beside = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../sense/.trained-data/bundles/sense-xs-0.0.1");
+        .join("../../../sense/.trained-data/bundles/sense-xs-0.0.2");
     let dir = match beside.exists() {
         true => beside,
         false => {

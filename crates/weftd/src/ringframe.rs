@@ -999,7 +999,7 @@ pub(crate) mod tests {
             candidate_rules(&ws, "claude-code", None, &overrides(Some(&layers)).unwrap()).unwrap();
         assert!(rules.iter().any(|r| r.id == "own.commits"), "a candidate with its when");
         let bundle = tmp.path().join("bundle");
-        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::SENSE_VERSION);
+        crate::versions::tests::stage_sense_bundle(&bundle, crate::versions::tests::TESTED);
         let loaded =
             crate::memory::Loaded::new(Some(weft_sense::SenseModel::load(&bundle).unwrap()));
         let p = |rules: &[weft_sense::Rule]| {

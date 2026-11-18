@@ -958,11 +958,11 @@ impl Session {
 
         let weft_dir = config.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
         // Sense loads in the background, as loading its graph takes a second;
-        // then the bundle this Weft was built with is downloaded once when it
-        // is missing or older. Until then the one found reads, or none.
+        // then the latest Sense release is downloaded when the bundle found is
+        // missing or older. Until then the one found reads, or none.
         let sense = Arc::new(std::sync::RwLock::new(None));
         let machine = harnesses.is_none();
-        let fetch = machine && fetches_sense(config, &crate::routing::file(), &weft_dir);
+        let fetch = machine && fetches_sense(config, &crate::routing::file());
         let (sense_dir, slot, out) = (weft_dir.clone(), sense.clone(), outside.clone());
         std::thread::spawn(move || {
             {
@@ -975,8 +975,11 @@ impl Session {
                     *guard = Some(model);
                 }
             }
-            if fetch {
-                match crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot) {
+            let latest = fetch.then(|| out.sense_release(true)).flatten();
+            if let Some(latest) =
+                latest.filter(|l| crate::versions::sense_wanted(&sense_dir, Some(l)))
+            {
+                match crate::versions::hot_reload_from_hub(&sense_dir, &*out, &slot, &latest) {
                     Ok(current) => eprintln!("weft: Sense {} installed", current.version),
                     Err(e) => eprintln!("weft: Sense not installed: {e}"),
                 }
@@ -2678,10 +2681,10 @@ impl Session {
 }
 
 /// Whether this daemon downloads Sense: only into Weft's own folder, the one
-/// `weft --serve` serves, and only when the bundle there is missing or older.
-/// A daemon on another config, as a test's, downloads nothing.
-fn fetches_sense(config: &Path, own: &Path, weft_dir: &Path) -> bool {
-    config == own && crate::versions::sense_wanted(weft_dir)
+/// `weft --serve` serves. A daemon on another config, as a test's, downloads
+/// nothing.
+fn fetches_sense(config: &Path, own: &Path) -> bool {
+    config == own
 }
 
 #[cfg(test)]
@@ -2835,8 +2838,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let own = tmp.path().join(".fab7/weft/config.toml");
         let elsewhere = tmp.path().join("scratch/config.toml");
-        assert!(fetches_sense(&own, &own, tmp.path()));
-        assert!(!fetches_sense(&elsewhere, &own, tmp.path()));
+        assert!(fetches_sense(&own, &own));
+        assert!(!fetches_sense(&elsewhere, &own));
     }
 
     #[test]
@@ -3044,7 +3047,7 @@ mod tests {
         std::fs::create_dir_all(&project).unwrap();
 
         let bundle = dir.path().join("bundle");
-        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        stage_sense_bundle_at(&bundle, crate::versions::tests::TESTED);
         crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
 
         let harnesses = weft_core::harness::fixture::harnesses();
@@ -3279,7 +3282,7 @@ mod tests {
         let project = dir.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let bundle = dir.path().join("bundle");
-        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        stage_sense_bundle_at(&bundle, crate::versions::tests::TESTED);
         crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
         let harnesses = weft_core::harness::fixture::harnesses();
         let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
@@ -3376,7 +3379,7 @@ mod tests {
         crate::ringframe::tests::fixture_home();
         let project = crate::ringframe::tests::folder("sheet-stages", true);
         let bundle = dir.path().join("bundle");
-        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        stage_sense_bundle_at(&bundle, crate::versions::tests::TESTED);
         crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
         let harnesses = weft_core::harness::fixture::harnesses();
         let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
@@ -3551,7 +3554,7 @@ mod tests {
         let project = dir.path().join("proj");
         std::fs::create_dir_all(&project).unwrap();
         let bundle = dir.path().join("bundle");
-        stage_sense_bundle_at(&bundle, crate::versions::SENSE_VERSION);
+        stage_sense_bundle_at(&bundle, crate::versions::tests::TESTED);
         crate::versions::install_sense_bundle(&weft_dir, &bundle).unwrap();
         let harnesses = weft_core::harness::fixture::harnesses();
         let (srv_sock, srv_cfg) = (socket.clone(), config.clone());
