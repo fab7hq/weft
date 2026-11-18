@@ -409,10 +409,14 @@ pub struct EvalOpen<'a> {
     pub ask: Option<&'a str>,
     /// Who opens it. RingFrame gathers the change as it opens.
     pub host: &'a str,
-    /// Model and effort per role, recorded as given.
+    /// The reader per role (`read`, `question`): harness, model and effort,
+    /// recorded as given.
     pub agents: Option<Value>,
-    /// Their `eval.deny` is what the judges must not do.
+    /// Their `eval.deny` is what the readers must not do.
     pub overrides: &'a Overrides,
+    /// What the agent said last in each of the unit's sessions,
+    /// `[{session, text}]`, as its harness recorded it.
+    pub statements: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -430,6 +434,7 @@ pub fn eval_open(ws: &Workspace, req: EvalOpen<'_>) -> Result<EvalOpened, Error>
             host: Some(req.host),
             ask: req.ask,
             deny: req.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
+            statements: req.statements,
             ..evaluate::Open::default()
         },
     )?;
@@ -443,9 +448,9 @@ pub fn eval_open(ws: &Workspace, req: EvalOpen<'_>) -> Result<EvalOpened, Error>
 #[derive(Debug, Clone, PartialEq)]
 pub struct Task {
     pub task_id: String,
-    /// `map` or `reduce`.
+    /// `requirements`, `read` or `reread`.
     pub kind: String,
-    /// `map`, `reduce` or `confirm`.
+    /// `read` or `question`.
     pub role: String,
     /// What to tell the judge.
     pub prompt: String,
@@ -464,13 +469,14 @@ pub enum EvalStep {
     /// A task handed out now.
     Task(Task),
     /// Every ready task of the role is out, or none is ready yet; `checks`
-    /// still running, which the verdict waits for.
+    /// still running, which the report waits for.
     Waiting { remaining: usize, checks: Vec<String> },
-    /// Every task is in, and the record is settled.
-    Settled { verdict: String, confidence: Option<f64> },
+    /// Every task is in, and the record is settled: its report's counts
+    /// (`tasks::report_counts`).
+    Settled { report: Value },
 }
 
-/// One ready task for a judge, of `role` (`map`, `reduce` or `confirm`)
+/// One ready task for a reader, of `role` (`read` or `question`)
 /// when given. A task out past its time goes out once more, then fails.
 /// Once every task is in, the Eval settles.
 pub fn eval_task(ws: &Workspace, eval_id: &str, role: Option<&str>) -> Result<EvalStep, Error> {
@@ -496,10 +502,7 @@ pub fn eval_task_for(
 fn eval_step(ws: &Workspace, eval_id: &str, out: Value) -> Result<EvalStep, Error> {
     if out["state"] == "done" {
         let record = evaluate::load_record(ws, eval_id)?.unwrap_or_default();
-        return Ok(EvalStep::Settled {
-            verdict: str_of(&record, "verdict"),
-            confidence: record["confidence"].as_f64(),
-        });
+        return Ok(EvalStep::Settled { report: tasks::report_counts(&record) });
     }
     if out["state"] == "waiting" {
         let checks = out["checks"].as_array().into_iter().flatten();
@@ -606,7 +609,7 @@ pub fn eval_void(ws: &Workspace, eval_id: &str, reason: &str) -> Result<(), Erro
 }
 
 /// The checks RingFrame still runs for an Eval, within their time: its
-/// verdict waits for them.
+/// report waits for them.
 pub fn eval_checks_running(ws: &Workspace, eval_id: &str) -> Vec<String> {
     checks::running(ws, eval_id)
 }
@@ -766,6 +769,7 @@ mod tests {
                     host: "weft",
                     agents: None,
                     overrides: &Overrides::default(),
+                    statements: Vec::new(),
                 };
                 eval_open(ws, req).unwrap().eval_id
             }
@@ -784,8 +788,8 @@ mod tests {
                     vec![out["task"]["task_id"].as_str().expect("a task").to_string()]
                 }
                 Via::Api => match eval_task(ws, eval_id, None).unwrap() {
-                    EvalStep::Settled { verdict, .. } => {
-                        assert!(!verdict.is_empty());
+                    EvalStep::Settled { report } => {
+                        assert!(report.is_object(), "{report}");
                         return;
                     }
                     EvalStep::Task(t) => vec![t.task_id],

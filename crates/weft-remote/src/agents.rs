@@ -1279,7 +1279,7 @@ mod tests {
             serde_json::to_value(files.find("claude-code").unwrap()).unwrap(), codex]});
         let rows = Project::opened(Path::new("/work/weft"), &answer).supported();
         assert_eq!(rows[0]["eval"]["effort"], "model");
-        assert_eq!(rows[0]["eval"]["default"]["map"], "low");
+        assert_eq!(rows[0]["eval"]["default"]["read"], "medium");
         assert_eq!(rows[1]["eval"], Value::Null);
     }
 

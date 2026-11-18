@@ -10,7 +10,7 @@ use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use crate::eval_stages::{DEBATE_ROLES, role_now};
+use crate::eval_stages::DEBATE_ROLES;
 use crate::routing::{ACTS, Routing};
 
 /// What `weft --serve` writes when there is no file, and never again.
@@ -432,7 +432,7 @@ impl Config {
         };
         for (key, value) in body {
             let path = format!("{at}.{key}");
-            let key = &role_now(key).to_string();
+            let key = &key.to_string();
             if key == "harness" {
                 if let Some(h) = harness(value, &path, known, self) {
                     kept.insert(key.clone(), Value::from(h));
@@ -819,16 +819,16 @@ routing = { ask = "claude-code" }
         assert_eq!(r.eval_stages, Some(json!({"debate": {"harness": "codex"}})));
     }
 
-    /// Weft gathers an Eval itself: a gather stage is no longer
-    /// read, and says so, and the old `drift` is read as `map`.
+    /// Weft gathers an Eval itself: a gather stage is no longer read, and
+    /// says so; an earlier role is reported as any unknown key.
     #[test]
-    fn a_gather_stage_is_reported_and_drift_is_map() {
+    fn a_gather_stage_and_an_earlier_role_are_reported() {
         let c = read_(
-            "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\ndrift = { effort = \"high\" }\ncontext = { effort = \"low\" }\n",
+            "[eval.gather]\nharness = \"codex\"\n\n[eval.debate]\nmap = { effort = \"high\" }\nread = { effort = \"low\" }\n",
         );
-        assert_eq!(c.ignored, ["eval.debate.context", "eval.gather"]);
+        assert_eq!(c.ignored, ["eval.debate.map", "eval.gather"]);
         let r = c.routing(Path::new(HERE));
-        assert_eq!(r.eval_stages, Some(json!({"debate": {"map": {"effort": "high"}}})));
+        assert_eq!(r.eval_stages, Some(json!({"debate": {"read": {"effort": "low"}}})));
     }
 
     /// How many judges an Eval runs at once is the debate's `judges`, a whole
@@ -854,16 +854,16 @@ routing = { ask = "claude-code" }
     fn a_role_names_its_own_harness() {
         let c = read_(
             "[eval.debate]\nharness = \"claude-code\"\n\
-             map = { harness = \"codex\", effort = \"low\" }\n\
-             confirm = { harness = \"aider\", effort = \"high\" }\n",
+             read = { harness = \"codex\", effort = \"low\" }\n\
+             question = { harness = \"aider\", effort = \"high\" }\n",
         );
-        assert_eq!(c.unknown, ["eval.debate.confirm.harness: aider"]);
+        assert_eq!(c.unknown, ["eval.debate.question.harness: aider"]);
         assert!(c.ignored.is_empty(), "{:?}", c.ignored);
         assert_eq!(
             c.routing(Path::new(HERE)).eval_stages,
             Some(json!({"debate": {"harness": "claude-code",
-                "map": {"harness": "codex", "effort": "low"},
-                "confirm": {"effort": "high"}}}))
+                "read": {"harness": "codex", "effort": "low"},
+                "question": {"effort": "high"}}}))
         );
     }
 
@@ -872,18 +872,18 @@ routing = { ask = "claude-code" }
         let text = r#"
 [eval.debate]
 harness = "claude-code"
-confirm = { model = "claude-opus-5-5", effort = "high" }
-drift = { effort = "high" }
+read = { model = "claude-opus-5-5", effort = "high" }
+question = { effort = "high" }
 
 [projects."/work/thing".eval.debate]
-adversary = { effort = "xhigh" }
+read = { effort = "xhigh" }
 "#;
         assert_eq!(
             at(text).eval_stages,
             Some(json!({"debate": {
                 "harness": "claude-code",
-                "confirm": {"model": "claude-opus-5-5", "effort": "xhigh"},
-                "map": {"effort": "high"}}}))
+                "read": {"model": "claude-opus-5-5", "effort": "xhigh"},
+                "question": {"effort": "high"}}}))
         );
     }
 
@@ -904,7 +904,7 @@ harness = "codex"
 [eval.debate]
 harness = "aider"
 judge = { model = "x" }
-drift = { effort = "high", temperature = "1" }
+read = { effort = "high", temperature = "1" }
 
 [projects."/work/thing".routing]
 eval = "loom"
@@ -922,15 +922,15 @@ eval = "loom"
             c.ignored,
             [
                 "colour",
-                "eval.debate.drift.temperature",
                 "eval.debate.judge",
+                "eval.debate.read.temperature",
                 "eval.review",
                 "routing.send"
             ]
         );
         let r = c.routing(Path::new(HERE));
         assert_eq!(r.each(), vec![("seal", "codex")], "and the rest still stands");
-        assert_eq!(r.eval_stages, Some(json!({"debate": {"map": {"effort": "high"}}})));
+        assert_eq!(r.eval_stages, Some(json!({"debate": {"read": {"effort": "high"}}})));
         assert_eq!(r.unknown, c.unknown);
         assert_eq!(r.ignored, c.ignored);
     }

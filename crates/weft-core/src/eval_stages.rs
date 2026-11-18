@@ -1,5 +1,5 @@
-//! Which harness an Eval's judges run in, which model and effort each role
-//! runs on, and how many judges run at once. The gather is Weft's own: it
+//! Which harness an Eval's readers run in, which model and effort each role
+//! runs on, and how many readers run at once. The gather is Weft's own: it
 //! opens the Eval through RingFrame's crate, which reads the change with Git
 //! and records it as gathered. Each judge is a session of that harness Weft
 //! starts; Weft calls no model and checks no model name — the harness owns
@@ -8,20 +8,10 @@
 
 use serde_json::{Map, Value, json};
 
-/// The debate's roles, in the order they run: RingFrame's judging tasks
-/// (map the change, reduce per requirement, confirm).
-pub const DEBATE_ROLES: [&str; 3] = ["map", "reduce", "confirm"];
-
-/// What a role was once called, read as what it is now called. `intent` and
-/// `context` no longer run, so they stay themselves and are reported.
-pub fn role_now(name: &str) -> &str {
-    match name {
-        "drift" | "trace" => "map",
-        "coverage" => "reduce",
-        "adversary" => "confirm",
-        _ => name,
-    }
-}
+/// The debate's roles, in the order they run: the whole reading of the
+/// change (with its re-reads and the requirements task), then the questions
+/// for the person.
+pub const DEBATE_ROLES: [&str; 2] = ["read", "question"];
 
 /// The debate, resolved: where it runs, and what each role that has a setting
 /// was asked to run on. A role with neither is left out.
@@ -37,9 +27,8 @@ pub struct Stage {
 
 impl Stage {
     /// The harness a task of `role` runs in: the role's own, else the
-    /// debate's. The requirements task runs in the reduce's.
+    /// debate's.
     pub fn harness_of(&self, role: &str) -> &str {
-        let role = if role == "requirements" { "reduce" } else { role };
         self.hosts.iter().find(|(r, _)| r == role).map_or(&self.harness, |(_, h)| h)
     }
 
@@ -138,49 +127,30 @@ mod tests {
 
     #[test]
     fn a_role_runs_on_what_the_debate_sets_and_nothing_else() {
-        let stages = json!({"debate": {"confirm": {"effort": "xhigh"}, "map": {"model": "m"}}});
+        let stages = json!({"debate": {"question": {"effort": "xhigh"}, "read": {"model": "m"}}});
         let d = resolve(Some(&stages), Some("codex"), "codex");
-        assert_eq!(role(&d, "confirm"), Some((None, Some("xhigh".into()))));
-        assert_eq!(role(&d, "map"), Some((Some("m".into()), None)));
-        assert_eq!(role(&d, "reduce"), None);
+        assert_eq!(role(&d, "question"), Some((None, Some("xhigh".into()))));
+        assert_eq!(role(&d, "read"), Some((Some("m".into()), None)));
         assert_eq!(
             agents(&d),
-            Some(json!({"map": {"model": "m"}, "confirm": {"effort": "xhigh"}}))
+            Some(json!({"read": {"model": "m"}, "question": {"effort": "xhigh"}}))
         );
-        assert_eq!(
-            agents(&resolve(None, None, "codex")),
-            None,
-            "nothing set: the plugin's tiers apply"
-        );
+        assert_eq!(agents(&resolve(None, None, "codex")), None, "nothing set");
+        let earlier = json!({"debate": {"map": {"model": "m"}, "confirm": {"effort": "high"}}});
+        assert_eq!(agents(&resolve(Some(&earlier), None, "codex")), None, "earlier roles are gone");
     }
 
     /// A role may run in a harness of its own; one that names none runs in
-    /// the debate's. The requirements task runs in the reduce's harness.
+    /// the debate's.
     #[test]
     fn a_role_runs_in_its_own_harness_else_the_debates() {
         let stages = json!({"debate": {"harness": "codex",
-            "map": {"harness": "antigravity"},
-            "confirm": {"harness": "claude-code", "effort": "high"}}});
+            "question": {"harness": "claude-code", "effort": "high"}}});
         let d = resolve(Some(&stages), None, "grok");
-        assert_eq!(d.harness_of("map"), "antigravity");
-        assert_eq!(d.harness_of("reduce"), "codex");
-        assert_eq!(d.harness_of("requirements"), "codex");
-        assert_eq!(d.harness_of("confirm"), "claude-code");
-        assert_eq!(d.harnesses(), ["codex", "antigravity", "claude-code"]);
-        assert_eq!(agents(&d), Some(json!({"confirm": {"effort": "high"}})), "no harness in it");
-        let reduce = json!({"debate": {"reduce": {"harness": "claude-code"}}});
-        let d = resolve(Some(&reduce), None, "codex");
-        assert_eq!(d.harness_of("requirements"), "claude-code");
-        assert_eq!(d.harness_of("map"), "codex");
+        assert_eq!(d.harness_of("read"), "codex");
+        assert_eq!(d.harness_of("question"), "claude-code");
+        assert_eq!(d.harnesses(), ["codex", "claude-code"]);
+        assert_eq!(agents(&d), Some(json!({"question": {"effort": "high"}})), "no harness in it");
         assert_eq!(resolve(None, None, "codex").harnesses(), ["codex"]);
-    }
-
-    #[test]
-    fn earlier_role_names_are_read_as_the_roles_now() {
-        assert_eq!(role_now("drift"), "map");
-        assert_eq!(role_now("trace"), "map");
-        assert_eq!(role_now("coverage"), "reduce");
-        assert_eq!(role_now("adversary"), "confirm");
-        assert_eq!(role_now("intent"), "intent", "no longer runs");
     }
 }

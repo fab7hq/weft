@@ -26,7 +26,7 @@ fn limitations() -> Vec<String> {
     vec![
         "a Seal is a decision record; it does not merge, publish, deploy, or certify correctness"
             .to_string(),
-        "the Eval it records is a judgement with a confidence, not a gate".to_string(),
+        "the Eval it records is an observation, not a gate".to_string(),
     ]
 }
 
@@ -99,7 +99,7 @@ fn eval_fact(ws: &Workspace, record: Option<&Value>, subject_sha: &Value) -> Val
     let age = sessions::parse_time(&str_of(record, "time"))
         .map_or(0, |t| (sessions::now_millis() - t) / 1000);
     json!({
-        "eval_id": eval_id, "verdict": record["verdict"], "confidence": record["confidence"],
+        "eval_id": eval_id, "report": crate::tasks::report_counts(record),
         "sha256": digest::sha256_file(&path).unwrap_or_default(),
         "subject_matches": record["subject"]["sha256"] == *subject_sha,
         "age_s": age,
@@ -223,7 +223,7 @@ pub fn create(
         limits.push("no Eval over these Asks; the decision rests on the person alone".into());
     } else if base["eval"]["subject_matches"] != json!(true) {
         limits.push(
-            "the subject changed after the Eval; its verdict describes an earlier state".into(),
+            "the subject changed after the Eval; its report describes an earlier state".into(),
         );
     }
     limits.extend(evaluate::observed_limits(ws, &ask_ids)?);
@@ -289,8 +289,7 @@ pub fn check(ws: &Workspace, seal_id: &str) -> Result<Value, SealError> {
         "seal_id": seal_id, "fresh": codes.is_empty(), "codes": codes,
         "disposition": receipt["disposition"], "basis": receipt["basis"],
         "eval": if fact.is_null() { Value::Null } else {
-            json!({"eval_id": fact["eval_id"], "verdict": fact["verdict"],
-                   "confidence": fact["confidence"]})
+            json!({"eval_id": fact["eval_id"], "report": fact["report"]})
         },
         "subject_matches": now_digest.is_some_and(|d| Value::String(d) == subject["sha256"]),
     }))
@@ -350,8 +349,9 @@ mod tests {
             assert_eq!(receipt["basis"], json!({"asks": [a, b]}));
             assert_eq!(receipt["disposition"], "accepted");
             assert_eq!(receipt["eval"]["eval_id"], rec["eval_id"]);
-            assert_eq!(receipt["eval"]["verdict"], "aligned");
-            assert_eq!(receipt["eval"]["confidence"], 1.0);
+            assert_eq!(receipt["eval"]["report"], crate::tasks::report_counts(&rec));
+            assert_eq!(receipt["eval"]["report"]["faults"], 0);
+            assert!(receipt["eval"].get("verdict").is_none());
             assert_eq!(receipt["eval"]["subject_matches"], true);
             assert_eq!(receipt["note"], "good enough for the demo");
             assert_eq!(receipt["authority"]["authority"], "interactive");
@@ -379,7 +379,7 @@ mod tests {
             let chk = check(ws, &str_of(&receipt, "seal_id")).unwrap();
             assert_eq!(chk["fresh"], true);
             assert_eq!(chk["subject_matches"], true);
-            assert_eq!(chk["eval"]["verdict"], "aligned");
+            assert_eq!(chk["eval"]["report"], receipt["eval"]["report"]);
             assert_eq!(chk["basis"], json!({"asks": [a, b]}));
         });
     }
@@ -420,12 +420,12 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_verdict_never_blocks_the_seal() {
+    fn faults_found_never_block_the_seal() {
         eval_bench(|ws| {
             let (_a, _b, rec) = judged(ws, false);
-            assert_eq!(rec["verdict"], "drifted");
+            assert!(!evaluate::array_of(&rec["report"], "faults").is_empty());
             let receipt = create(ws, "accepted", None, None, None, None).unwrap();
-            assert_eq!(receipt["eval"]["verdict"], "drifted");
+            assert_eq!(receipt["eval"]["report"], crate::tasks::report_counts(&rec));
             assert_eq!(receipt["disposition"], "accepted");
             assert_eq!(store::events(ws).unwrap().pop().unwrap()["type"], "seal.created");
         });

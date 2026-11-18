@@ -245,92 +245,109 @@ pub fn settled(ws: &Workspace, eval_id: &str, fine: bool) -> Value {
     panic!("the Eval did not settle");
 }
 
-/// A judge that finds nothing done: every window unexplained, quoting its
-/// first added line, and every requirement not met.
-pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
+/// The task file and brief RingFrame wrote for a task.
+fn task_parts(ws: &Workspace, task_id: &str) -> (Value, String) {
     let eval_id = task_id.split_once('~').expect("a task id").0;
     let dir = ws.rf_dir().join("tmp").join(format!("eval-{eval_id}"));
     let read = |p: &Path| std::fs::read_to_string(p).unwrap();
     let file: Value =
         serde_json::from_str(&read(&dir.join(format!("tasks/{task_id}.json")))).unwrap();
-    let windows = read(Path::new(file["windows_file"].as_str().unwrap()));
-    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+    let brief = read(&dir.join(format!("tasks/{task_id}.brief.md")));
+    (file, brief)
+}
+
+/// The items a task asks about, by kind: units, then requirements.
+fn asked(file: &Value) -> (Vec<String>, Vec<String>) {
+    let items: Vec<String> = file["items"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|i| i.as_str().map(str::to_string))
+        .collect();
+    let of = |q: &str| -> Vec<String> {
+        items.iter().filter_map(|i| i.strip_prefix(q).map(str::to_string)).collect()
+    };
+    (of("w|"), of("r|"))
+}
+
+/// A reader that finds nothing done: every unit unexplained, quoting its
+/// first added line, and every requirement not met.
+pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
+    let (file, brief) = task_parts(ws, task_id);
     let doc = if file["kind"] == "requirements" {
         listed_requirements(&file)
-    } else if file["kind"] == "map" {
-        let listed = list("windows");
-        let ids: Vec<&str> = listed.iter().map(|w| w["id"].as_str().unwrap()).collect();
-        let quotable = ids.iter().find(|w| quote_in(&windows, w).is_some()).copied();
-        json!({"windows": ids.iter().map(|id| match quote_in(&windows, id) {
-            Some(quote) => json!({"window": id, "unexplained": format!("no request asks for {id}"), "quote": quote}),
-            // Nothing to quote: it goes with a window that has.
-            None => json!({"window": id, "follows_from": quotable.unwrap_or(id)}),
-        }).collect::<Vec<_>>()})
     } else {
-        json!({"requirements": list("requirements").iter().map(|r| {
-            json!({"id": r["id"], "vote": "not_met", "reason": format!("{} is not done", r["id"]),
-                   "missing": "a change that does it"})
-        }).collect::<Vec<_>>()})
+        let (units, reqs) = asked(&file);
+        let quotable = units.iter().find(|w| quote_in(&brief, w).is_some()).cloned();
+        json!({
+            "windows": units.iter().map(|id| match quote_in(&brief, id) {
+                Some(quote) => json!({"id": id, "answer": "unexplained", "quote": quote,
+                                      "reason": format!("adds what no request asks for ({id})")}),
+                // Nothing to quote: it goes with a unit that has.
+                None => json!({"id": id, "answer": "follows_from",
+                               "source": quotable.clone().unwrap_or_else(|| id.clone())}),
+            }).collect::<Vec<_>>(),
+            "requirements": reqs.iter().map(|r| json!({
+                "id": r, "vote": "not_met", "reason": format!("{r} is not done"),
+                "missing": "a change that does it"})).collect::<Vec<_>>(),
+        })
     };
     std::fs::write(file["output"].as_str().unwrap(), doc.to_string()).unwrap();
 }
 
-/// A judge that finds everything done: every window serves every
-/// requirement, and every requirement is met, citing its first window.
-/// Written where RingFrame said the answer goes.
+/// A reader that finds everything done: every unit serves every
+/// requirement, and every requirement is met, citing the first unit it can
+/// quote. Written where RingFrame said the answer goes.
 pub fn answer_task(ws: &Workspace, task_id: &str) {
-    let eval_id = task_id.split_once('~').expect("a task id").0;
-    let dir = ws.rf_dir().join("tmp").join(format!("eval-{eval_id}"));
-    let read = |p: &Path| std::fs::read_to_string(p).unwrap();
-    let file: Value =
-        serde_json::from_str(&read(&dir.join(format!("tasks/{task_id}.json")))).unwrap();
-    let windows = read(Path::new(file["windows_file"].as_str().unwrap()));
-    let text = |key: &str| file[key].as_str().unwrap_or_default().to_string();
-    let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-    let ids = |key: &str, field: &str| -> Vec<String> {
-        list(key).iter().map(|v| v[field].as_str().unwrap().to_string()).collect()
-    };
-    let requirements = ids("requirements", "id");
-    let mut doc = json!({});
-    if text("kind") == "requirements" {
-        doc = listed_requirements(&file);
-    } else if text("kind") == "map" {
-        doc["windows"] = json!(
-            ids("windows", "id")
-                .iter()
-                .map(|w| json!({"window": w, "serves": requirements}))
-                .collect::<Vec<_>>()
-        );
+    let (file, brief) = task_parts(ws, task_id);
+    let doc = if file["kind"] == "requirements" {
+        listed_requirements(&file)
     } else {
-        doc["requirements"] = json!(
-            list("requirements")
-                .iter()
-                .map(|r| {
-                    let id = r["id"].as_str().unwrap();
-                    // A rule of the prompt that no change touches.
-                    let cited = r["windows"].as_array().into_iter().flatten().find_map(|w| {
-                        let w = w.as_str()?;
-                        quote_in(&windows, w).map(|q| (w.to_string(), q))
-                    });
-                    let Some((w, quote)) = cited else {
-                        return json!({"id": id, "vote": "unknown",
-                                      "reason": "no window bears on it",
-                                      "missing": "a change that shows it"});
-                    };
-                    json!({"id": id, "vote": "met",
-                           "reason": format!("{id} is done ({})", text("role")),
-                           "citations": [{"window": w, "quote": quote}]})
-                })
-                .collect::<Vec<_>>()
-        );
-        if !list("found").is_empty() {
-            doc["findings"] = json!([{"finding": "as listed", "means": "no change to the vote"}]);
-        }
-    }
-    std::fs::write(text("output"), doc.to_string()).unwrap();
+        let all = all_requirements(&brief);
+        let (units, reqs) = asked(&file);
+        let cited =
+            all_units(&brief).into_iter().find_map(|w| quote_in(&brief, &w).map(|q| (w, q)));
+        // With nothing asked of the change, no unit serves a request.
+        let unit = |w: &String| match (all.is_empty(), quote_in(&brief, w)) {
+            (false, _) => json!({"id": w, "answer": "serves", "serves": all}),
+            (true, Some(quote)) => json!({"id": w, "answer": "unexplained", "quote": quote,
+                                          "reason": format!("no request asks for {w}")}),
+            (true, None) => json!({"id": w, "answer": "follows_from",
+                                   "source": cited.as_ref().map_or(w.clone(), |c| c.0.clone())}),
+        };
+        json!({
+            "windows": units.iter().map(unit).collect::<Vec<_>>(),
+            "requirements": reqs.iter().map(|r| match &cited {
+                Some((w, quote)) => json!({"id": r, "vote": "met",
+                    "reason": format!("{r} is done"), "citations": [{"window": w, "quote": quote}]}),
+                None => json!({"id": r, "vote": "unknown", "reason": format!("nothing shows {r}"),
+                               "missing": "a change that shows it"}),
+            }).collect::<Vec<_>>(),
+        })
+    };
+    std::fs::write(file["output"].as_str().unwrap(), doc.to_string()).unwrap();
 }
 
-/// The start of the first added line of window `w` in a task's windows text.
+/// Every requirement id a brief lists.
+fn all_requirements(brief: &str) -> Vec<String> {
+    brief
+        .split("## The requirements\n")
+        .nth(1)
+        .unwrap_or_default()
+        .lines()
+        .take_while(|l| !l.starts_with("## "))
+        .filter_map(|l| l.strip_prefix("- `")?.split('`').next().map(str::to_string))
+        .collect()
+}
+
+/// Every asked unit id in a brief's change.
+fn all_units(brief: &str) -> Vec<String> {
+    brief
+        .lines()
+        .filter_map(|l| l.strip_prefix("=== w_")?.split(' ').next().map(|id| format!("w_{id}")))
+        .collect()
+}
+
 /// A requirements task's answer: one requirement for each Ask it lists,
 /// quoting the person's words.
 fn listed_requirements(file: &Value) -> Value {

@@ -112,7 +112,7 @@ names = { Edit = "Update", MultiEdit = "Update" }
 efforts = ["low", "medium", "high", "xhigh", "max"]
 effort = "model"
 models = ["haiku", "sonnet", "opus", "fable"]
-default = { map = "low", reduce = "medium", confirm = "medium" }
+default = { read = "medium", question = "medium" }
 
 [eval.launch]
 model = ["--model", "{model}"]

@@ -1,8 +1,8 @@
 //! An Eval's judges are sessions Weft starts: at most the debate's `judges`
 //! panes at once, in the project's folder, each typed one task's line at a
 //! time and nothing else. A judge whose answer is refused is given the same
-//! task again; one that exits has its task handed to another; a confirm, the
-//! second reading, never goes to a session that ran a map; no judge shows as
+//! task again; one that exits has its task handed to another; a re-read
+//! never goes to a session that read before; no judge shows as
 //! an agent; and nothing is typed into the work's own pane. Stop voids an
 //! Eval and closes its judges.
 //!
@@ -140,7 +140,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
     unsafe {
         std::env::set_var("HOME", &home);
     }
-    // Two files of 60 KB: more than one map's worth, so two maps at once.
+    // Two files of 60 KB: still one whole reading, whatever its size.
     let files = [("src/uptime.js", big("uptime", 60)), ("src/export.js", big("export", 60))];
     let ask = support::real_ask_of(
         &root,
@@ -287,12 +287,10 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
             let typed =
                 std::fs::read_to_string(dir.join(format!("typed-{pane}"))).unwrap_or_default();
             for (task, _, out) in support::task_lines(&typed).into_iter().skip(j.tasks.len()) {
-                if support::is_confirm(&task) {
+                if support::is_reread(&task) {
                     assert!(
-                        !j.tasks
-                            .iter()
-                            .any(|t| support::kind_of(t) == "map" && !support::is_confirm(t)),
-                        "the confirm {task} went to pane {pane}, which ran a map: {:?}",
+                        !j.tasks.iter().any(|t| support::kind_of(t) == "read"),
+                        "the re-read {task} went to pane {pane}, which read before: {:?}",
                         j.tasks
                     );
                 }
@@ -315,8 +313,8 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                             _ => None,
                         });
                     let screen = screen.expect("the judge's screen");
-                    assert!(screen.contains(&format!("Judge task {task}")), "{screen}");
-                    eprintln!("watched judge pane {pane}: its screen shows \"Judge task {task}\"");
+                    assert!(screen.contains(&format!("Eval task {task}")), "{screen}");
+                    eprintln!("watched judge pane {pane}: its screen shows \"Eval task {task}\"");
                     watched = true;
                 }
                 j.tasks.push(task.clone());
@@ -332,10 +330,10 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                     )
                 };
                 let kind = support::kind_of(&task);
-                let first_map = kind == "map" && !support::is_confirm(&task);
-                // The first map's first answer is refused; its judge is
-                // given the task again.
-                if first_map && refused.is_none() {
+                let reading = task.ends_with("~rd1");
+                // The reading's first answer is refused; its judge is given
+                // the task again.
+                if reading && refused.is_none() {
                     std::fs::write(&out, r#"{"not": "an answer"}"#).unwrap();
                     let said = api::eval_submit(&ws, &task, &out).expect("submitted");
                     assert_eq!(said.outcome, api::Outcome::Refused);
@@ -343,8 +341,8 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
                     says("turn_ended");
                     continue;
                 }
-                // The second map's judge exits mid-task.
-                if first_map && exited.is_none() && refused.as_ref() != Some(&task) {
+                // The first re-read's judge exits mid-task.
+                if support::is_reread(&task) && exited.is_none() {
                     let env = support::pane_env(&dir, pane);
                     let pid = env.iter().find(|(k, _)| k == "PID").expect("a pid").1.clone();
                     std::process::Command::new("kill").arg(&pid).status().unwrap();
@@ -375,9 +373,8 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
     let exited = exited.expect("a judge exited");
     let held = judges.values().filter(|j| j.tasks.contains(&exited)).count();
     assert_eq!(held, 2, "the task of the judge that exited went to another");
-    let confirms =
-        judges.values().flat_map(|j| &j.tasks).filter(|t| support::is_confirm(t)).count();
-    assert!(confirms > 0, "a second reading ran");
+    let rereads = judges.values().flat_map(|j| &j.tasks).filter(|t| support::is_reread(t)).count();
+    assert!(rereads > 0, "a second reading ran");
 
     // No judge is an agent; the work's own agent is.
     assert!(sessions_seen.contains("work-1"), "{sessions_seen:?}");
@@ -422,7 +419,7 @@ fn the_judges_of_an_eval_are_sessions_weft_starts() {
             _ => None,
         })
         .expect("the work pane's history");
-    assert!(!text.contains("Judge task") && !text.contains("/rf:eval"), "{text}");
+    assert!(!text.contains("Eval task") && !text.contains("/rf:eval"), "{text}");
     let _ = eval;
 
     // Stop: more work, a second Eval, and Stop while its first judge works.

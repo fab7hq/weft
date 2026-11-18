@@ -1,10 +1,12 @@
-//! Eval: a judged verdict with confidence over every open Ask.
+//! Eval: what the readers the person picked observe of the work against every
+//! open Ask of a unit.
 //!
 //! RingFrame records facts exactly: the open Asks, the anchor, the subject
 //! digest, the changed files, how many unrecorded prompts followed each Ask,
-//! which judgements were submitted. Judges, sessions started for the Eval, take
-//! one task at a time; RingFrame checks every answer and merges them into
-//! `verdict` and `confidence`.
+//! which readings were submitted. Readers, sessions started for the Eval, take
+//! one task at a time; RingFrame checks every answer and merges them into a
+//! report: the faults, what the agent declared, what cannot be settled, and
+//! how many faults to expect.
 //! RingFrame runs none of the project's commands and knows nothing about its
 //! stack.
 //!
@@ -45,12 +47,6 @@ pub(crate) fn str_of(v: &Value, key: &str) -> String {
 
 pub(crate) fn array_of<'a>(v: &'a Value, key: &str) -> &'a [Value] {
     v.get(key).and_then(Value::as_array).map_or(&[], Vec::as_slice)
-}
-
-/// Round to two decimal places, ties to even. The confidence goes into a
-/// published record, so it has to land on the same number every time.
-pub(crate) fn round2(x: f64) -> f64 {
-    (x * 100.0).round_ties_even() / 100.0
 }
 
 pub(crate) fn git(root: &Path, args: &[&str]) -> Result<String, EvalError> {
@@ -295,29 +291,25 @@ fn patch(anchor: &str, subject: &Value, ws: &Workspace) -> Result<(Vec<u8>, bool
     Ok((out, true))
 }
 
-/// The roles a caller may name: the current three, and the earlier names
-/// `tasks::current_roles` maps onto them.
-const ROLES: [&str; 9] =
-    ["map", "reduce", "confirm", "context", "intent", "coverage", "drift", "adversary", "trace"];
-
 /// What the caller asked each role to run on: its shape, never a catalogue.
 fn validate_agents(agents: &Value) -> Result<(), EvalError> {
     let code = "eval.agents";
+    let roles = crate::tasks::ROLES;
     let map = agents.as_object().ok_or_else(|| ledger(code, "agents must be an object"))?;
     for (role, keys) in map {
         need(
-            ROLES.contains(&role.as_str()),
+            roles.contains(&role.as_str()),
             code,
-            format!("agents.{role} is not a role; use one of {}", ROLES.join(", ")),
+            format!("agents.{role} is not a role; use one of {}", roles.join(", ")),
         )?;
         let keys = keys
             .as_object()
             .ok_or_else(|| ledger(code, format!("agents.{role} must be an object")))?;
         for (key, value) in keys {
             need(
-                key == "model" || key == "effort",
+                matches!(key.as_str(), "harness" | "model" | "effort"),
                 code,
-                format!("agents.{role}.{key} is not model or effort"),
+                format!("agents.{role}.{key} is not harness, model or effort"),
             )?;
             need(
                 value.as_str().is_some_and(|v| !v.is_empty()),
@@ -504,9 +496,13 @@ pub struct Open<'a> {
     pub subject_kind: Option<&'a str>,
     pub subject_ref: Option<&'a str>,
     pub actor: Option<Value>,
-    /// Model and effort per role, as the caller asked; recorded, never checked
-    /// against a harness.
+    /// The reader per role (`read`, `question`): harness, model and effort,
+    /// as the person picked them; recorded, never looked up.
     pub agents: Option<Value>,
+    /// What the agent said last in each of the unit's sessions, as its harness
+    /// recorded it: `[{session, text}]`. A reader quotes a declared departure
+    /// from it.
+    pub statements: Vec<Value>,
     /// Repositories no Ask named, `<path>[=<anchor>]`.
     pub repos: Vec<String>,
     /// The harness that opened it. Given, the Eval is gathered as it opens:
@@ -527,7 +523,6 @@ pub struct Open<'a> {
 pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let agents = args.agents.clone().unwrap_or_else(|| json!({}));
     validate_agents(&agents)?;
-    let agents = crate::tasks::current_roles(&agents);
     // `ask` does not import `evaluate`.
     let asks = crate::ask::open_asks(ws)?;
     let unit = args.ask.map(|id| crate::ask::unit_of(ws, id)).transpose()?;
@@ -608,10 +603,7 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
     let previous: Vec<Value> = list_records(ws)?
         .into_iter()
         .filter(|r| r["state"] == "completed" && shares(r))
-        .map(|r| {
-            json!({"eval_id": r["eval_id"], "verdict": r["verdict"],
-                        "confidence": r["confidence"], "time": r["completed_at"]})
-        })
+        .map(|r| json!({"eval_id": r["eval_id"], "report": r["report"], "time": r["completed_at"]}))
         .collect();
     let mut limitations = vec![
         "the brief describes the ledger and the Git delta only; RingFrame runs none of the project's commands".to_string(),
@@ -731,6 +723,9 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "previous_evals": previous, "facts": facts, "limitations": limitations,
         "agents": agents, "changes_patch": changes_patch, "evidence": evidence,
         "judges": crate::tasks::judges(args.deny.as_ref()),
+        "statements": args.statements.iter().map(|s| json!({
+            "session": s["session"], "text": s["text"],
+        })).collect::<Vec<_>>(),
     });
     let mut bytes = store::canonical(&brief);
     bytes.push(b'\n');
@@ -867,7 +862,7 @@ pub fn list_records(ws: &Workspace) -> Result<Vec<Value>, EvalError> {
             "basis": {"asks": array_of(&brief, "asks").iter()
                 .map(|a| a["ask_id"].clone()).collect::<Vec<_>>()},
             "anchor": brief["anchor"], "subject": brief["subject"],
-            "verdict": field("verdict"), "confidence": field("confidence"),
+            "report": rec.as_ref().map_or(Value::Null, crate::tasks::report_counts),
             "completed_at": field("time"),
             "brief": {"path": format!("evals/{eval_id}/brief.json"), "sha256": digest::sha256_bytes(&bytes)},
             "gathered": ws.rf_dir().join(format!("evals/{eval_id}/context.md")).exists(),
@@ -1625,20 +1620,11 @@ mod tests {
     fn open_records_the_agents_it_was_asked_for_and_refuses_what_is_not_a_role() {
         eval_bench(|ws| {
             two_asks_and_work(ws);
-            let asked = json!({"map": {"model": "claude-sonnet-5", "effort": "low"},
-                               "confirm": {"effort": "high"}});
+            let asked = json!({"read": {"harness": "codex", "model": "any-model", "effort": "low"},
+                               "question": {"effort": "high"}});
             let out = open_eval(ws, agents(asked.clone())).unwrap();
             assert_eq!(out["agents"], asked);
             assert_eq!(brief_of(ws, &out)["agents"], asked);
-        });
-        eval_bench(|ws| {
-            two_asks_and_work(ws);
-            // Earlier names land on their roles now; a role that no longer
-            // runs is dropped, and a current name wins.
-            let earlier = json!({"context": {"model": "a"}, "trace": {"effort": "low"},
-                                 "adversary": {"model": "b"}, "confirm": {"model": "c"}});
-            let out = open_eval(ws, agents(earlier)).unwrap();
-            assert_eq!(out["agents"], json!({"map": {"effort": "low"}, "confirm": {"model": "c"}}));
         });
         eval_bench(|ws| {
             two_asks_and_work(ws);
@@ -1647,16 +1633,19 @@ mod tests {
         });
         eval_bench(|ws| {
             two_asks_and_work(ws);
+            // The earlier roles are gone, with no reader for their names.
+            for gone in ["map", "reduce", "confirm", "trace", "judge"] {
+                refused(
+                    open_eval(ws, agents(json!({gone: {"model": "m"}}))).unwrap_err(),
+                    "eval.agents",
+                );
+            }
             refused(
-                open_eval(ws, agents(json!({"judge": {"model": "m"}}))).unwrap_err(),
+                open_eval(ws, agents(json!({"read": {"temperature": "1"}}))).unwrap_err(),
                 "eval.agents",
             );
             refused(
-                open_eval(ws, agents(json!({"drift": {"temperature": "1"}}))).unwrap_err(),
-                "eval.agents",
-            );
-            refused(
-                open_eval(ws, agents(json!({"drift": {"model": ""}}))).unwrap_err(),
+                open_eval(ws, agents(json!({"read": {"model": ""}}))).unwrap_err(),
                 "eval.agents",
             );
         });

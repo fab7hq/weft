@@ -112,7 +112,7 @@ exit_plan_mode = "Plan"
 [eval]
 efforts = ["low", "medium", "high", "xhigh"]
 effort = "model"
-default = { map = "low", reduce = "medium", confirm = "medium" }
+default = { read = "medium", question = "medium" }
 
 [eval.launch]
 model = ["-m", "{model}"]

@@ -90,7 +90,7 @@ names = { run_command = "Run", view_file = "Read", write_to_file = "Write", repl
 efforts = ["low", "medium", "high"]
 effort = "model"
 model_typed = true
-default = { map = "low", reduce = "medium", confirm = "medium" }
+default = { read = "medium", question = "medium" }
 
 [eval.launch]
 model = ["--model", "{model}"]

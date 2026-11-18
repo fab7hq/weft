@@ -120,7 +120,7 @@ mod tests {
         .routing(std::path::Path::new("/p"));
         assert_eq!(r.harnesses(), ["claude-code"], "a gather harness is no longer read");
         let r = crate::config::read(
-            "[eval.debate]\nharness = \"claude-code\"\nconfirm = { harness = \"codex\" }\n",
+            "[eval.debate]\nharness = \"claude-code\"\nquestion = { harness = \"codex\" }\n",
             &crate::harness::fixture::harnesses(),
         )
         .routing(std::path::Path::new("/p"));

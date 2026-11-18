@@ -621,7 +621,7 @@ impl WeftDesktopApp {
                     "thorough" => Some(serde_json::json!("high")),
                     _ => None,
                 };
-                for role in ["map", "reduce", "confirm"] {
+                for role in weft_core::eval_stages::DEBATE_ROLES {
                     let key = ["eval", "debate", role, "effort"].map(String::from);
                     self.set_setting(None, &key, effort.clone());
                 }

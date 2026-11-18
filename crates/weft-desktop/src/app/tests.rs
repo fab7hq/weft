@@ -3172,7 +3172,7 @@ fn settings_opens_on_general_and_its_switches_set_the_machine_s_settings() {
 fn workflow_sets_every_project_s_routing_and_debate() {
     let (_tmp, mut app, mut wire) = wired_app();
     app.clients[0].config = Some(json!({"machine": {"routing": {"eval": "claude"},
-        "eval": {"debate": {"harness": "codex", "map": {"effort": "low"}}}}, "project": null}));
+        "eval": {"debate": {"harness": "codex", "read": {"effort": "low"}}}}, "project": null}));
     app.dispatch(WindowAct::OpenSettings);
     app.dispatch(SheetAct::SettingsTab(SettingsTab::Workflow));
     app.dispatch(SheetAct::ShowJudges);
@@ -3192,7 +3192,7 @@ fn workflow_sets_every_project_s_routing_and_debate() {
     );
     assert_eq!(value("setting Eval"), "Claude Code ▾");
     assert_eq!(value("setting Judges run in"), "Codex ▾");
-    assert_eq!(value("setting Map effort"), "low ▾");
+    assert_eq!(value("setting Read effort"), "low ▾");
 
     let key = |k: &[&str]| k.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     app.dispatch(SheetAct::OpenChoice(key(&["routing", "seal"])));
@@ -3231,7 +3231,7 @@ fn workflow_sets_every_project_s_routing_and_debate() {
 
     app.dispatch(SheetAct::EditSetting {
         project: None,
-        key: key(&["eval", "debate", "reduce", "model"]),
+        key: key(&["eval", "debate", "question", "model"]),
     });
     assert_eq!(app.focus, Focus::Setting);
     app.setting_field.paste("gpt-6-luna");
@@ -3241,21 +3241,20 @@ fn workflow_sets_every_project_s_routing_and_debate() {
         call,
         Call::ConfigSet {
             scope: "machine".into(),
-            key: key(&["eval", "debate", "reduce", "model"]),
+            key: key(&["eval", "debate", "question", "model"]),
             value: Some(json!("gpt-6-luna"))
         }
     );
     assert_eq!(app.focus, Focus::Terminal);
 }
 
-/// Eval's judges: how hard they look is one choice for all three, what an
+/// Eval's readers: how hard they look is one choice for both, what an
 /// effort changes is the harness's, and each judge, once opened, shows its
 /// default effort by its value.
 #[test]
 fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     let (_tmp, mut app, mut wire) = wired_app();
-    let efforts =
-        |e: &str| json!({"map": {"effort": e}, "reduce": {"effort": e}, "confirm": {"effort": e}});
+    let efforts = |e: &str| json!({"read": {"effort": e}, "question": {"effort": e}});
     let mut debate = efforts("low");
     debate["harness"] = json!("codex");
     app.clients[0].config = Some(json!({"machine": {"eval": {"debate": debate}}, "project": null}));
@@ -3265,10 +3264,10 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
     let hard = dom.find_layer("setting How hard").expect("how hard");
     assert_eq!(hard.find_layer("how hard on").unwrap().all_text(), "Quick");
     assert!(hard.all_text().contains("In Codex, this sets each judge's reasoning"));
-    assert!(dom.find_layer("setting Map effort").is_none(), "each judge is closed until opened");
+    assert!(dom.find_layer("setting Read effort").is_none(), "each reader is closed until opened");
 
     app.dispatch(SheetAct::HowHard("thorough".into()));
-    for role in ["map", "reduce", "confirm"] {
+    for role in ["read", "question"] {
         let (_, call) = wire.call();
         let key = ["eval", "debate", role, "effort"].map(String::from).to_vec();
         assert_eq!(
@@ -3295,9 +3294,9 @@ fn eval_s_judges_look_as_hard_as_chosen_and_show_their_defaults() {
         dom.find_layer("setting How hard").unwrap().find_layer("how hard on").unwrap().all_text(),
         "Balanced"
     );
-    assert_eq!(value("setting Reduce effort"), "medium · default ▾");
+    assert_eq!(value("setting Questions effort"), "medium · default ▾");
     assert_eq!(
-        value("setting Map model"),
+        value("setting Read model"),
         words::word("desktop.settings.own_model"),
         "typed in Codex"
     );

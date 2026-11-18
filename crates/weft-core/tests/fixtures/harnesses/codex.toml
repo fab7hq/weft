@@ -150,7 +150,7 @@ steps = [
 efforts = ["low", "medium", "high", "xhigh"]
 effort = "model"
 model_typed = true
-default = { map = "low", reduce = "medium", confirm = "medium" }
+default = { read = "medium", question = "medium" }
 
 [eval.launch]
 model = ["-m", "{model}"]

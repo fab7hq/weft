@@ -1,8 +1,8 @@
-//! Each role of an Eval's debate may run in a harness of its own: its judges
+//! Each role of an Eval's debate may run in a harness of its own: its readers
 //! start in that harness, with its launch words, and are typed only that
-//! role's tasks. Here the map runs in the debate's harness, and the reduce
-//! and the second readings in another; the requirements task goes with the
-//! reduce. The record names the harness each judge ran in.
+//! role's tasks. Here the reading runs in a harness other than the debate's,
+//! with the requirements task and the re-reads. The record names the harness
+//! each reader ran in.
 //!
 //! The test is each judge's model, as in `the_judges_are_sessions`. Its own
 //! test binary because it sets `HOME`.
@@ -70,14 +70,10 @@ fn events(root: &Path, kind: &str) -> Vec<Value> {
         .collect()
 }
 
-/// The harness a task runs in, by its id: a second reading in the confirm's,
-/// a map in the debate's, the rest in the reduce's.
-fn expected(task: &str) -> &'static str {
-    match support::kind_of(task) {
-        _ if support::is_confirm(task) => "sh-b",
-        "map" => "sh-a",
-        _ => "sh-b",
-    }
+/// The harness a task runs in: every reading, the requirements task and the
+/// re-reads included, in the read role's.
+fn expected(_task: &str) -> &'static str {
+    "sh-b"
 }
 
 /// One judge pane: its harness, whether it said it is ready, and the tasks
@@ -108,7 +104,7 @@ fn each_judge_starts_in_its_roles_harness() {
     std::fs::write(
         &config,
         "[eval.debate]\nharness = \"sh-a\"\njudges = 2\n\
-         reduce = { harness = \"sh-b\", effort = \"high\" }\nconfirm = { harness = \"sh-b\" }\n",
+         read = { harness = \"sh-b\", effort = \"high\" }\n",
     )
     .expect("config");
     let listening = socket.clone();
@@ -201,31 +197,26 @@ fn each_judge_starts_in_its_roles_harness() {
     let ran: Vec<&String> = judges.values().flat_map(|j| &j.tasks).collect();
     for (what, found) in [
         ("requirements", ran.iter().any(|t| support::kind_of(t) == "requirements")),
-        ("a map", ran.iter().any(|t| support::kind_of(t) == "map" && !support::is_confirm(t))),
-        (
-            "a reduce",
-            ran.iter().any(|t| support::kind_of(t) == "reduce" && !support::is_confirm(t)),
-        ),
-        ("a second reading", ran.iter().any(|t| support::is_confirm(t))),
+        ("a reading", ran.iter().any(|t| t.ends_with("~rd1"))),
+        ("a re-read", ran.iter().any(|t| support::is_reread(t))),
     ] {
         assert!(found, "{what} ran: {ran:?}");
     }
-    // A judge for the reduce started with the reduce's effort.
+    // A reader started with the read role's effort.
     for (&pane, j) in &judges {
-        if j.tasks.iter().any(|t| support::kind_of(t) == "reduce" && !support::is_confirm(t)) {
+        if j.tasks.iter().any(|t| t.ends_with("~rd1")) {
             let env = support::pane_env(&dir, pane);
             let args = env.iter().find(|(k, _)| k == "ARGS").map(|(_, v)| v.clone());
             assert!(args.unwrap_or_default().contains("--effort high"), "pane {pane}");
         }
     }
 
-    // The record names the harness each judge ran in.
+    // The record names the harness each reader ran in.
     let record = api::eval_record(&ws, &eval).expect("read").expect("a record");
-    let named = record["judges"].as_array().cloned().unwrap_or_default();
+    let named = record["readers"].as_array().cloned().unwrap_or_default();
     assert!(!named.is_empty(), "{record}");
     for j in &named {
-        let want = if j["angle"] == "map" { "sh-a" } else { "sh-b" };
-        assert_eq!(j["host"], want, "{named:?}");
+        assert_eq!(j["host"], "sh-b", "{named:?}");
     }
 
     c.call(Call::Shutdown);

@@ -632,6 +632,7 @@ fn dispatch(
                     host: ns.one("--host"),
                     ask: ns.one("--ask"),
                     deny: ns.overrides.eval_deny().map(|(from, rules)| (from, rules.to_vec())),
+                    statements: Vec::new(),
                 },
             );
             match out {
@@ -1028,7 +1029,7 @@ mod tests {
             two_asks_and_work(ws);
             let (_, opened, _) = c.go(&["eval", "open"]);
             let eval_id = opened["eval_id"].as_str().unwrap().to_string();
-            let (code, got, _) = c.go(&["eval", "task", "--eval", &eval_id, "--role", "map"]);
+            let (code, got, _) = c.go(&["eval", "task", "--eval", &eval_id, "--role", "read"]);
             assert_eq!((code, got["state"].clone()), (0, json!("running")), "{got}");
             let task = got["task"]["task_id"].as_str().unwrap().to_string();
             assert!(Path::new(got["task"]["brief"].as_str().unwrap()).exists());
@@ -1059,8 +1060,8 @@ mod tests {
             assert_eq!(code, 0, "{next}");
             assert_eq!(next["state"], "running");
             let task = next["task"]["task_id"].as_str().unwrap().to_string();
-            assert!(task.ends_with("~m1"), "{task}");
-            // A judge's lookups.
+            assert!(task.ends_with("~rd1"), "{task}");
+            // A reader's lookups.
             let ev: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/evidence.json"))).unwrap(),
             )
@@ -1096,16 +1097,12 @@ mod tests {
             let c = Cli { root: ws.root.clone() };
             let (a, b, sha) = two_asks_and_work(ws);
             let (code, out, _) =
-                c.go(&["eval", "open", "--agents", r#"{"drift":{"effort":"high"}}"#]);
+                c.go(&["eval", "open", "--agents", r#"{"read":{"effort":"high"}}"#]);
             assert_eq!(code, 0);
             assert_eq!(out["subject"], "git_commit");
             assert!(out["brief_path"].as_str().unwrap().ends_with("brief.json"));
             assert!(out["changes_patch"].as_str().unwrap().ends_with("changes.patch"));
-            assert_eq!(
-                out["agents"],
-                json!({"map": {"effort": "high"}}),
-                "an earlier name is its role now"
-            );
+            assert_eq!(out["agents"], json!({"read": {"effort": "high"}}));
             let eval_id = out["eval_id"].as_str().unwrap().to_string();
             let brief: Value = serde_json::from_slice(
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/brief.json"))).unwrap(),
@@ -1143,7 +1140,8 @@ mod tests {
                 &std::fs::read(ws.rf_dir().join(format!("evals/{eval_id}/record.json"))).unwrap(),
             )
             .unwrap();
-            assert_eq!(record["verdict"], "drifted");
+            let faults = record["report"]["faults"].as_array().unwrap().len();
+            assert!(faults > 0, "{record}");
 
             let (_, listed, _) = c.go(&["eval", "list", "--json"]);
             assert_eq!(
@@ -1151,9 +1149,9 @@ mod tests {
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|e| e["verdict"].clone())
+                    .map(|e| e["report"]["faults"].clone())
                     .collect::<Vec<_>>(),
-                [json!("drifted")]
+                [json!(faults)]
             );
             // The report is RingFrame's, printed as it wrote it.
             let (code, shown, _) = c.go(&["eval", "show", "--eval", &eval_id]);
@@ -1172,7 +1170,7 @@ mod tests {
             ]);
             assert_eq!(code, 0);
             assert_eq!(receipt["disposition"], "accepted");
-            assert_eq!(receipt["eval"]["verdict"], "drifted");
+            assert_eq!(receipt["eval"]["report"]["faults"], json!(faults));
             assert!(receipt["receipt_path"].as_str().unwrap().ends_with(".json"));
             let seal_id = receipt["seal_id"].as_str().unwrap().to_string();
             let stored: Value = serde_json::from_slice(

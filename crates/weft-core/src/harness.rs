@@ -141,9 +141,8 @@ pub enum EffortReaches {
 /// An effort for each of Eval's judges.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JudgeEfforts {
-    pub map: String,
-    pub reduce: String,
-    pub confirm: String,
+    pub read: String,
+    pub question: String,
 }
 
 /// How a harness's plugin listing reads: the lists holding what it has
@@ -642,12 +641,8 @@ mod tests {
         assert_eq!(claude.models, ["haiku", "sonnet", "opus", "fable"]);
         assert!(!claude.model_typed);
         assert_eq!(
-            (
-                claude.default.map.as_str(),
-                claude.default.reduce.as_str(),
-                claude.default.confirm.as_str()
-            ),
-            ("low", "medium", "medium")
+            (claude.default.read.as_str(), claude.default.question.as_str()),
+            ("medium", "medium")
         );
         let codex = eval("codex").expect("codex's [eval]");
         assert!(codex.models.is_empty() && codex.model_typed, "any model is typed");

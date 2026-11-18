@@ -47,10 +47,9 @@ pub(super) struct Entry {
     pub kind: Kind,
 }
 
-const ROLES: [(&str, &str, &str); 3] = [
-    ("map", "Map", "desktop.settings.map"),
-    ("reduce", "Reduce", "desktop.settings.reduce"),
-    ("confirm", "Confirm", "desktop.settings.confirm"),
+const ROLES: [(&str, &str, &str); 2] = [
+    ("read", "Read", "desktop.settings.read"),
+    ("question", "Questions", "desktop.settings.question"),
 ];
 
 /// Every setting Workflow holds, in its order.
@@ -76,14 +75,12 @@ pub(super) fn entries() -> Vec<Entry> {
     ];
     for (role, name, key) in ROLES {
         let role_key: &'static [&'static str] = match role {
-            "map" => &["eval", "debate", "map", "model"],
-            "reduce" => &["eval", "debate", "reduce", "model"],
-            _ => &["eval", "debate", "confirm", "model"],
+            "read" => &["eval", "debate", "read", "model"],
+            _ => &["eval", "debate", "question", "model"],
         };
         let effort_key: &'static [&'static str] = match role {
-            "map" => &["eval", "debate", "map", "effort"],
-            "reduce" => &["eval", "debate", "reduce", "effort"],
-            _ => &["eval", "debate", "confirm", "effort"],
+            "read" => &["eval", "debate", "read", "effort"],
+            _ => &["eval", "debate", "question", "effort"],
         };
         let shown = word(key);
         out.push(Entry {
@@ -410,7 +407,7 @@ pub(super) fn now(props: &SheetProps, project: Option<&Path>, key: &[&str]) -> V
     v.clone()
 }
 
-/// The judge a setting's key is about: `map`, `reduce` or `confirm`.
+/// The reader a setting's key is about: `read` or `question`.
 fn key_role<'a>(key: &[&'a str]) -> &'a str {
     key.get(2).copied().unwrap_or_default()
 }
@@ -419,9 +416,8 @@ fn key_role<'a>(key: &[&'a str]) -> &'a str {
 fn default_of<'a>(judge: &'a weft_core::harness::Eval, role: &str) -> Option<&'a str> {
     let d = &judge.default;
     match role {
-        "map" => Some(&d.map),
-        "reduce" => Some(&d.reduce),
-        "confirm" => Some(&d.confirm),
+        "read" => Some(&d.read),
+        "question" => Some(&d.question),
         _ => None,
     }
     .map(String::as_str)

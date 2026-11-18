@@ -35,7 +35,7 @@ fn seal_view(data: &Value) -> Value {
     out["eval"] = if data["eval"].is_null() {
         Value::Null
     } else {
-        pick(&data["eval"], &["eval_id", "verdict", "confidence", "subject_matches"])
+        pick(&data["eval"], &["eval_id", "report", "subject_matches"])
     };
     out
 }
@@ -75,7 +75,7 @@ fn fetch_view(cmd: &str, sub: Option<&str>, d: &Value) -> Option<Value> {
         }
         ("eval", Some("list")) => json!({
             "evals": d["evals"].as_array().into_iter().flatten()
-                .map(|e| pick(e, &["eval_id", "verdict", "confidence", "state", "basis", "brief", "gathered", "voided"]))
+                .map(|e| pick(e, &["eval_id", "report", "state", "basis", "brief", "gathered", "voided"]))
                 .collect::<Vec<_>>()
         }),
         ("seal", Some("check")) => pick(d, &["seal_id", "fresh", "subject_matches", "codes"]),

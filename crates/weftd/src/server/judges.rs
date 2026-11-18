@@ -30,7 +30,7 @@ const TYPED_MAX: usize = 3;
 const SILENT_QUIET: Duration = Duration::from_secs(3);
 
 /// The roles whose tasks an idle judge asks for, in the order they run.
-const ROLES: [&str; 4] = ["requirements", "map", "reduce", "confirm"];
+const ROLES: [&str; 2] = weft_core::eval_stages::DEBATE_ROLES;
 
 /// The harness, model and effort a judge session was started on.
 type Launch = (String, Option<String>, Option<String>);
@@ -61,10 +61,8 @@ pub(super) struct Bench {
 struct Seat {
     pane: u32,
     launch: Launch,
-    /// It ran a map: a confirm, the second reading, never goes to it.
-    ran_map: bool,
-    /// The windows and requirements its tasks read: no task that reads one
-    /// of them again goes to it.
+    /// The units and requirements its tasks read: no task that reads one of
+    /// them again goes to it, so a re-read is always a fresh session.
     read: BTreeSet<String>,
     /// Its process exited.
     gone: bool,
@@ -74,15 +72,13 @@ struct Seat {
 impl Seat {
     /// A judge started on `launch` for `task`, which it holds.
     fn new(pane: u32, launch: Launch, task: api::Task, gone: bool) -> Self {
-        let mut seat =
-            Seat { pane, launch, ran_map: false, read: BTreeSet::new(), gone, held: None };
+        let mut seat = Seat { pane, launch, read: BTreeSet::new(), gone, held: None };
         seat.hold(task);
         seat
     }
 
     /// Give it a task: what the task reads is read in this session.
     fn hold(&mut self, task: api::Task) {
-        self.ran_map |= task.kind == "map";
         self.read.extend(task.reads.iter().cloned());
         self.held = Some(Held::new(task));
     }
@@ -136,7 +132,6 @@ pub(super) enum Did {
 struct SeatLook {
     pane: u32,
     launch: Launch,
-    ran_map: bool,
     read: Vec<String>,
     gone: bool,
     /// Its task, whether its turn is over or its lease has passed, and how
@@ -178,7 +173,6 @@ impl Bench {
                 .map(|s| SeatLook {
                     pane: s.pane,
                     launch: s.launch.clone(),
-                    ran_map: s.ran_map,
                     read: s.read.iter().cloned().collect(),
                     gone: s.gone,
                     held: s.held.as_ref().map(|h| {
@@ -292,7 +286,7 @@ fn step_or_refused(look: &Look) -> Result<Vec<Did>, crate::ringframe::Error> {
     'seats: for s in idle {
         for role in ROLES {
             let fits = look.seen.get(role) == Some(&s.launch);
-            if !fits || (role == "confirm" && s.ran_map) {
+            if !fits {
                 continue;
             }
             match eval_task(root, &look.eval_id, Some(role), &s.launch.0, &s.read)? {
@@ -694,45 +688,60 @@ mod tests {
     fn answer(task: &api::Task) {
         let file = task.brief.to_string_lossy().replace(".brief.md", ".json");
         let file: Value = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
-        let text = std::fs::read_to_string(file["windows_file"].as_str().unwrap()).unwrap();
+        let brief = std::fs::read_to_string(&task.brief).unwrap();
         let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-        // The first added line of a window, as a quote.
-        let quote = |w: &str| -> Option<String> {
+        // A unit's path, and the first added line of it as a quote.
+        let unit = |w: &str| -> (String, Option<String>) {
             let head = format!("=== {w} ");
-            let mut lines = text.lines().skip_while(|l| !l.starts_with(&head)).skip(1);
-            let line = lines.find(|l| l.starts_with('+') && l.len() > 12)?;
-            Some(line[1..].chars().take(24).collect())
+            let mut lines = brief.lines().skip_while(|l| !l.starts_with(&head));
+            let path = lines.next().map_or("", |l| &l[head.len()..]).to_string();
+            let line = lines.find(|l| l.starts_with('+') && l.len() > 12);
+            (path, line.map(|l| l[1..].chars().take(24).collect()))
         };
         let local = task.task_id.rsplit('~').next().unwrap();
+        let items: Vec<String> =
+            list("items").iter().filter_map(|i| i.as_str().map(str::to_string)).collect();
+        let of = |q: &str| -> Vec<String> {
+            items.iter().filter_map(|i| i.strip_prefix(q).map(str::to_string)).collect()
+        };
+        // The first unit with a line to quote, for a requirement's citation.
+        let cited = brief
+            .lines()
+            .filter_map(|l| l.strip_prefix("=== w_"))
+            .filter_map(|l| l.split(' ').next().map(|id| format!("w_{id}")))
+            .find_map(|w| unit(&w).1.map(|q| (w, q)));
         let doc = match task.kind.as_str() {
             "requirements" => json!({"requirements": list("asks").iter().map(|a| {
                 json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
                        "quote": a["text"].as_str().unwrap().trim()})
             }).collect::<Vec<_>>()}),
-            "map" => {
-                let first = list("requirements")[0]["id"].clone();
-                json!({"windows": list("windows").iter().map(|w| {
-                    let id = w["id"].as_str().unwrap();
-                    if w["path"] == "src/telemetry.js" && !local.starts_with("cw") {
-                        json!({"window": id, "unexplained": format!("posts outside ({local})"),
-                               "quote": quote(id).unwrap()})
-                    } else {
-                        json!({"window": id, "serves": [first]})
-                    }
-                }).collect::<Vec<_>>()})
+            _ => {
+                let reqs = of("r|");
+                // A re-read may ask about no requirement, and still lists them.
+                let first = brief
+                    .split("## The requirements\n")
+                    .nth(1)
+                    .and_then(|r| r.lines().find_map(|l| l.strip_prefix("- `")))
+                    .and_then(|l| l.split('`').next())
+                    .map(str::to_string);
+                json!({
+                    "windows": of("w|").iter().map(|w| {
+                        let (path, quote) = unit(w);
+                        // Unexplained at first, then a split: a third reading.
+                        if path == "src/telemetry.js" && local != "rr1" {
+                            json!({"id": w, "answer": "unexplained", "quote": quote.unwrap(),
+                                   "reason": format!("It posts outside ({local}).")})
+                        } else {
+                            json!({"id": w, "answer": "serves", "serves": [first.clone().unwrap()]})
+                        }
+                    }).collect::<Vec<_>>(),
+                    "requirements": reqs.iter().map(|r| {
+                        let (w, q) = cited.clone().unwrap();
+                        json!({"id": r, "vote": "met", "reason": format!("{r} is shown ({local})"),
+                               "citations": [{"window": w, "quote": q}]})
+                    }).collect::<Vec<_>>(),
+                })
             }
-            _ => json!({"requirements": list("requirements").iter().map(|r| {
-                let id = r["id"].as_str().unwrap();
-                let cited = r["windows"].as_array().into_iter().flatten()
-                    .filter_map(|w| Some((w.as_str()?, quote(w.as_str()?)?))).next();
-                match cited {
-                    Some((w, q)) if !local.starts_with('r') => json!({"id": id, "vote": "met",
-                        "reason": format!("{id} is shown ({local})"),
-                        "citations": [{"window": w, "quote": q}]}),
-                    _ => json!({"id": id, "vote": "not_met", "reason": format!("{id} is absent ({local})"),
-                                "missing": format!("a change doing {id} ({local})")}),
-                }
-            }).collect::<Vec<_>>()}),
         };
         std::fs::write(&task.answer, doc.to_string()).unwrap();
     }
@@ -760,10 +769,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Judges stepped as Weft steps them, each answering its task at once:
-    /// no idle session is given a reading of a window or a requirement it
-    /// has read, so no second or third reading comes from an earlier reader.
-    /// Each role runs in its own harness, and the record names it.
+    /// Readers stepped as Weft steps them, each answering its task at once:
+    /// no idle session is given a reading of a unit or a requirement it has
+    /// read, so every re-read is a fresh session. Each role runs in its own
+    /// harness, and the record names it.
     #[test]
     fn no_session_reads_an_item_twice() {
         fixture_home();
@@ -801,11 +810,10 @@ mod tests {
         }
         let eval_id = eval_open(&repo, &ask, None, None).unwrap();
         let ws = ringframe::api::workspace(&repo).unwrap();
-        let debate = json!({"debate": {"harness": "sh-a", "reduce": {"harness": "sh-b"},
-                                       "confirm": {"harness": "sh-b"}}});
+        let debate = json!({"debate": {"harness": "sh-a", "question": {"harness": "sh-b"}}});
         let stage = weft_core::eval_stages::resolve(Some(&debate), None, "sh");
         let mut bench = Bench::new(eval_id, hosts(&stage), 2, 0);
-        let host_of = |role: &str| if role == "map" { "sh-a" } else { "sh-b" };
+        let host_of = |role: &str| if role == "read" { "sh-a" } else { "sh-b" };
         let mut given: Vec<String> = Vec::new();
         let mut next = 0;
         for _ in 0..60 {
@@ -819,7 +827,6 @@ mod tests {
                         let again: Vec<&String> =
                             task.reads.iter().filter(|i| seat.read.contains(*i)).collect();
                         assert!(again.is_empty(), "{} read {again:?} again", task.task_id);
-                        assert!(task.role != "confirm" || !seat.ran_map, "{}", task.task_id);
                         given.push(task.task_id.clone());
                         answer(&task);
                         seat.hold(task);
@@ -841,16 +848,15 @@ mod tests {
             }
             if done {
                 let locals: Vec<&str> = given.iter().filter_map(|t| t.rsplit('~').next()).collect();
-                for stage in ["cr1", "ct1", "cw1", "cwt1"] {
+                for stage in ["rd1", "rr1", "rr2"] {
                     assert!(locals.contains(&stage), "{stage} ran: {locals:?}");
                 }
-                // The record names the harness every judge ran in.
+                // The record names the harness every reader ran in.
                 let record = api::eval_record(&ws, &bench.eval_id).unwrap().unwrap();
-                let judges = record["judges"].as_array().unwrap();
-                let roles: Vec<&str> = judges.iter().filter_map(|j| j["angle"].as_str()).collect();
-                assert!(roles.contains(&"map") && roles.contains(&"confirm"), "{judges:?}");
-                for j in judges {
-                    assert_eq!(j["host"], host_of(j["angle"].as_str().unwrap()), "{judges:?}");
+                let readers = record["readers"].as_array().unwrap();
+                assert!(!readers.is_empty());
+                for r in readers {
+                    assert_eq!(r["host"], host_of(r["role"].as_str().unwrap()), "{readers:?}");
                 }
                 let _ = std::fs::remove_dir_all(repo);
                 return;

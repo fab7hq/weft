@@ -48,7 +48,6 @@ fn enum_values(key: &str) -> &'static [&'static str] {
         "data.state" => &["delivery_failed", "handoff_ready", "native_accepted", "unavailable"],
         "data.submission" => &["not_applicable", "unobserved"],
         "submission.state" => &["attributed", "observed"],
-        "data.verdict" => &["aligned", "drifted", "incomplete"],
         "data.disposition" => &["abandoned", "accepted", "deferred", "rejected"],
         other => panic!("no enumeration for {other}"),
     }
@@ -121,14 +120,7 @@ fn required(event_type: &str) -> Option<Vec<&'static str>> {
         }
         "tool.fact" => return Some(vec!["command", "outcome", "subject", "host", "session_ref"]),
         "eval.completed" => {
-            return Some(vec![
-                "basis",
-                "subject",
-                "verdict",
-                "confidence",
-                "artifact",
-                "limitations",
-            ]);
+            return Some(vec!["basis", "subject", "report", "artifact", "limitations"]);
         }
         "seal.created" => {
             return Some(vec!["basis", "eval", "subject", "disposition", "authority", "artifact"]);
@@ -309,10 +301,8 @@ pub fn validate_event(ev: &Value) -> Result<(), LedgerError> {
             }
         }
         "eval.completed" => {
-            check_enum("data.verdict", "data.verdict", &data["verdict"])?;
-            let ok = data["confidence"].as_f64().is_some_and(|c| (0.0..=1.0).contains(&c));
-            if !ok {
-                return Err(fail("data.confidence", "must be a number in [0, 1]"));
+            if !data["report"].is_object() {
+                return Err(fail("data.report", "must be the report's counts"));
             }
             check_ref("data.artifact", &data["artifact"])?;
         }

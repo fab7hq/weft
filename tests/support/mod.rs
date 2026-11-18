@@ -202,7 +202,7 @@ fn stub_file(dir: &Path, script: &str, title: &str) -> String {
         "title = \"{title}\"\nprogram = \"/bin/sh\"\nargs = [\"{}\"]\nresume = [\"--resume\"]\n\
          [config]\ndefault = \".stub\"\n[plugin]\nlist = [\"list\"]\n\
          [eval]\nefforts = [\"low\", \"high\"]\neffort = \"model\"\n\
-         default = {{ map = \"low\", reduce = \"low\", confirm = \"low\" }}\n\
+         default = {{ read = \"low\", question = \"low\" }}\n\
          [eval.launch]\nmodel = [\"--model\", \"{{model}}\"]\neffort = [\"--effort\", \"{{effort}}\"]\n",
         path.display()
     )
@@ -212,9 +212,9 @@ fn stub_file(dir: &Path, script: &str, title: &str) -> String {
 /// answer goes.
 pub fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
     typed
-        .match_indices("Judge task ")
+        .match_indices("Eval task ")
         .filter_map(|(i, _)| {
-            let rest = &typed[i + "Judge task ".len()..];
+            let rest = &typed[i + "Eval task ".len()..];
             let (task, rest) = rest.split_once(": read ")?;
             let (brief, rest) = rest.split_once("; answer with ringframe eval submit --task ")?;
             let (_, rest) = rest.split_once(" --file ")?;
@@ -224,40 +224,42 @@ pub fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
         .collect()
 }
 
-/// What a task asks for, by its id: the person's requirements, a reading of
-/// windows (a map, or a window's second reading), or of requirements.
+/// What a task asks for, by its id: the person's requirements, or a reading
+/// of the change.
 pub fn kind_of(task: &str) -> &'static str {
     match task.rsplit('~').next().unwrap_or_default() {
         l if l.starts_with('q') => "requirements",
-        l if l.starts_with('m') || l.starts_with("cw") => "map",
-        _ => "reduce",
+        _ => "read",
     }
 }
 
-pub fn is_confirm(task: &str) -> bool {
-    task.rsplit('~').next().is_some_and(|l| l.starts_with('c'))
+/// Whether a task reads again what an earlier reading left open.
+pub fn is_reread(task: &str) -> bool {
+    task.rsplit('~').next().is_some_and(|l| l.starts_with("rr"))
 }
 
-/// A judge's answer to its task file: the requirements quoting the Ask's
-/// words; every window serving the first requirement; every requirement
-/// unknown, with what would settle it.
+/// A reader's answer to its task file: the requirements quoting the Ask's
+/// words; every unit serving the first requirement; every requirement
+/// unknown, with what would settle it, so each is read once more.
 pub fn answer(kind: &str, file: &Value) -> Value {
     let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-    match kind {
-        "requirements" => json!({"requirements": list("asks").iter().map(|a| {
+    if kind == "requirements" {
+        return json!({"requirements": list("asks").iter().map(|a| {
             json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
                    "quote": a["text"].as_str().unwrap().trim()})
-        }).collect::<Vec<_>>()}),
-        "map" => {
-            let first = list("requirements")[0]["id"].clone();
-            json!({"windows": list("windows").iter().map(|w| {
-                json!({"window": w["id"], "serves": [first]})
-            }).collect::<Vec<_>>()})
-        }
-        _ => json!({"requirements": list("requirements").iter().map(|r| {
-            json!({"id": r["id"], "vote": "unknown",
-                   "reason": format!("{} is not shown either way", r["id"]),
-                   "missing": format!("a test showing {}", r["id"])})
-        }).collect::<Vec<_>>()}),
+        }).collect::<Vec<_>>()});
     }
+    let items: Vec<String> =
+        list("items").iter().filter_map(|i| i.as_str().map(str::to_string)).collect();
+    let of = |q: &str| -> Vec<String> {
+        items.iter().filter_map(|i| i.strip_prefix(q).map(str::to_string)).collect()
+    };
+    let reqs = of("r|");
+    json!({
+        "windows": of("w|").iter().map(|w| json!({"id": w, "answer": "serves", "serves": [reqs[0]]}))
+            .collect::<Vec<_>>(),
+        "requirements": reqs.iter().map(|r| json!({"id": r, "vote": "unknown",
+            "reason": format!("{r} is not shown either way"),
+            "missing": format!("a test showing {r}")})).collect::<Vec<_>>(),
+    })
 }

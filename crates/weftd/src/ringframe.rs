@@ -581,6 +581,7 @@ pub fn eval_open(
         host: "weft",
         agents: agents.cloned(),
         overrides: &overrides,
+        statements: Vec::new(),
     };
     match api::eval_open(&ws, open) {
         Ok(opened) => Ok(opened.eval_id),
@@ -1411,9 +1412,9 @@ pub(crate) mod tests {
         let mut kinds = std::collections::BTreeSet::new();
         for _ in 0..20 {
             match api::eval_task(&ws, &eval_id, None).unwrap() {
-                api::EvalStep::Settled { verdict, .. } => {
-                    assert!(!verdict.is_empty());
-                    assert!(kinds.contains("requirements") && kinds.contains("map"), "{kinds:?}");
+                api::EvalStep::Settled { report } => {
+                    assert!(report.is_object(), "{report}");
+                    assert!(kinds.contains("requirements") && kinds.contains("read"), "{kinds:?}");
                     let _ = std::fs::remove_dir_all(repo);
                     return;
                 }
@@ -1432,28 +1433,30 @@ pub(crate) mod tests {
         panic!("the Eval did not settle");
     }
 
-    /// A judge's answer to a task file: the requirements quoting the Ask's
-    /// words; every window serving the first requirement; every requirement
+    /// A reader's answer to a task file: the requirements quoting the Ask's
+    /// words; every unit serving the first requirement; every requirement
     /// unknown, with what would settle it.
     fn answer(kind: &str, file: &Value) -> Value {
         let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
-        match kind {
-            "requirements" => serde_json::json!({"requirements": list("asks").iter().map(|a| {
+        if kind == "requirements" {
+            return serde_json::json!({"requirements": list("asks").iter().map(|a| {
                 serde_json::json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
                                    "quote": a["text"].as_str().unwrap().trim()})
-            }).collect::<Vec<_>>()}),
-            "map" => {
-                let first = list("requirements")[0]["id"].clone();
-                serde_json::json!({"windows": list("windows").iter().map(|w| {
-                    serde_json::json!({"window": w["id"], "serves": [first]})
-                }).collect::<Vec<_>>()})
-            }
-            _ => serde_json::json!({"requirements": list("requirements").iter().map(|r| {
-                serde_json::json!({"id": r["id"], "vote": "unknown",
-                                   "reason": format!("{} is not shown either way", r["id"]),
-                                   "missing": format!("a test showing {}", r["id"])})
-            }).collect::<Vec<_>>()}),
+            }).collect::<Vec<_>>()});
         }
+        let items: Vec<String> =
+            list("items").iter().filter_map(|i| i.as_str().map(str::to_string)).collect();
+        let of = |q: &str| -> Vec<String> {
+            items.iter().filter_map(|i| i.strip_prefix(q).map(str::to_string)).collect()
+        };
+        let (units, reqs) = (of("w|"), of("r|"));
+        serde_json::json!({
+            "windows": units.iter().map(|w| serde_json::json!({
+                "id": w, "answer": "serves", "serves": [reqs[0]]})).collect::<Vec<_>>(),
+            "requirements": reqs.iter().map(|r| serde_json::json!({
+                "id": r, "vote": "unknown", "reason": format!("{r} is not shown either way"),
+                "missing": format!("a test showing {r}")})).collect::<Vec<_>>(),
+        })
     }
 
     /// The reasons Weft offers are RingFrame's, each with its words.
