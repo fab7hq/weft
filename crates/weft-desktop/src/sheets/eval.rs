@@ -279,16 +279,25 @@ fn list_pane(v: &EvalView, crumb: &str, n: Option<usize>, picked: Option<&str>) 
                 .flex_row()
                 .items_center()
                 .style("padding", "0 20px 12px 20px")
+                // The work's title is the agent's words: it ends in an ellipsis before Eval n.
                 .child(
                     div()
                         .layer("eval crumb")
                         .on_click(SheetAct::EvalBack)
+                        .flex_1()
+                        .style("min-width", "0")
+                        .style("white-space", "nowrap")
+                        .style("overflow", "hidden")
+                        .style("text-overflow", "ellipsis")
                         .color(palette::BLUE_BORDER)
                         .text(format!("‹ {crumb}")),
                 )
-                .child(div().flex_1())
+                .children(n.map(|_| div().w(12).shrink_0()))
                 .children(n.map(|n| {
-                    div().color(palette::DIM).text(fill("tree.eval", &[("n", &n.to_string())]))
+                    div()
+                        .shrink_0()
+                        .color(palette::DIM)
+                        .text(fill("tree.eval", &[("n", &n.to_string())]))
                 })),
         );
     let (look, settled): (Vec<&Item>, Vec<&Item>) =

@@ -146,6 +146,7 @@ fn each_answer_is_picked_without_sending_and_next_waits_for_one() {
     // Next is not offered, and refused, until there is an answer.
     let next = dialog(&app).find_layer("btn Next").unwrap().clone();
     assert!(next.action.is_none(), "Next waits for an answer");
+    assert_eq!(next.all_text(), "Next", "the button says what it does, waiting or not");
     app.dispatch(BarAct::SealNext);
     assert!(dialog(&app).all_text().contains("Question 1 of 2"));
 
@@ -248,7 +249,13 @@ fn the_review_shows_every_answer_in_its_colour_and_seal_sends_them_all() {
     let d = dialog(&app);
     assert!(d.find_layer("answer pill 0").is_some(), "a decision keeps the answers");
     assert_eq!(background(d.find_layer("disposition rejected").unwrap()), Some(palette::RED));
+    assert_eq!(
+        d.find_layer("disposition rejected").unwrap().all_text(),
+        "● Rejected",
+        "a choice starts with a capital, as on the web"
+    );
     assert_eq!(colour(d.find_layer("reason not_what_i_asked").unwrap()), Some(palette::RED));
+    assert_eq!(d.find_layer("reason not_what_i_asked").unwrap().all_text(), "Not what I asked");
     assert_eq!(colour(d.find_layer("reason wrong_approach").unwrap()), Some(palette::MUTED));
     let seal = d.find_layer("btn Seal").expect("Seal, on the review").clone();
     assert!(wire.calls().is_empty(), "nothing sent before Seal");

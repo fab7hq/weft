@@ -88,9 +88,18 @@ fn head(props: &SealProps, counted: String, done: u32, width: u32) -> Vec<Elemen
             .items_center()
             .font_size(14)
             .color(palette::MUTED)
-            .child(span(fill("seal.q.title", &[("title", &title)])))
-            .child(div().flex_1())
-            .child(span(counted))
+            // A work's title is the agent's words, of any length: it ends in an ellipsis before the count.
+            .child(
+                div()
+                    .flex_1()
+                    .style("min-width", "0")
+                    .style("white-space", "nowrap")
+                    .style("overflow", "hidden")
+                    .style("text-overflow", "ellipsis")
+                    .text(fill("seal.q.title", &[("title", &title)])),
+            )
+            .child(div().w(24).shrink_0())
+            .child(span(counted).shrink_0())
             .child(div().w(24).shrink_0())
             .child(span(word("act.cancel")).layer("btn Cancel").on_click(BarAct::Cancel)),
         gap(12),
@@ -164,7 +173,8 @@ fn question(props: &SealProps, a: &Answering, q: &Question) -> Element {
         .pad(10, 24)
         .font_weight(600)
         .font_size(14)
-        .color(palette::CANVAS);
+        .color(palette::CANVAS)
+        .child(span(word("seal.q.next")));
     let next = if ready {
         next.on_click(BarAct::SealNext).bg(palette::BLUE).border(palette::BLUE_BORDER)
     } else {
@@ -398,6 +408,12 @@ fn review(props: &SealProps, a: &Answering) -> Element {
         )
 }
 
+/// A word as a choice starts it, as the web app's: `accepted` → `Accepted`.
+fn capital(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
 /// The decision, each in its own colour: the one picked fills with it, the
 /// others are outlined with a dot of theirs.
 pub fn decision_chips(project: &Path, eval: &str, selected: &str) -> Element {
@@ -422,7 +438,7 @@ pub fn decision_chips(project: &Path, eval: &str, selected: &str) -> Element {
             .font_weight(if on { 600 } else { 400 })
             .color(if on { palette::CANVAS } else { palette::MUTED })
             .child(dot(if on { palette::CANVAS } else { fill }, 8))
-            .child(span(weft_core::tree::decision(d)));
+            .child(span(capital(&weft_core::tree::decision(d))));
         if i == 0 { chip } else { chip.border_left(palette::LINE) }
     };
     div()
@@ -465,7 +481,7 @@ pub fn reason_chips(
             .font_size(14)
             .font_weight(if on { 600 } else { 400 })
             .color(if on { text } else { palette::MUTED })
-            .text(word(&format!("seal.r.{r}")).to_string());
+            .text(capital(word(&format!("seal.r.{r}"))));
         if i == 0 { chip } else { chip.border_left(palette::LINE) }
     };
     Some(
