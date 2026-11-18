@@ -144,7 +144,7 @@ impl Answering {
 
     /// On to the next question, or to the review after the last: only once
     /// the one shown has an answer.
-    pub fn next(&mut self) -> bool {
+    pub fn forward(&mut self) -> bool {
         if self.at >= self.questions.len() || self.given[self.at].is_none() {
             return false;
         }
@@ -210,19 +210,19 @@ mod tests {
     fn each_question_is_answered_before_the_next_and_the_seal_waits_for_every_answer() {
         let mut a = Answering::new(vec![q("q1", "did_you_want"), q("q2", "what_did_you_mean")]);
         assert_eq!(a.counter(), "Question 1 of 2");
-        assert!(!a.next(), "Next waits for an answer");
+        assert!(!a.forward(), "Next waits for an answer");
         assert!(!a.answer("now", None, 10), "not an answer this question takes");
         assert!(a.answer("not_wanted", None, 4200));
-        assert!(a.next());
+        assert!(a.forward());
         assert!(!a.answer("words", Some("  "), 5), "own words need words");
         assert!(a.answer("not_sure", None, 900), "not sure counts");
         assert!(!a.may_seal(), "not on the review yet");
-        assert!(a.next());
+        assert!(a.forward());
         assert!(a.may_seal());
         // Changed from the review: the new answer stands.
         a.change(1);
         assert!(a.answer("words", Some("only the login form"), 1800));
-        assert!(a.next());
+        assert!(a.forward());
         let sent = a.answers().unwrap();
         assert_eq!(
             sent[0],
