@@ -13,8 +13,8 @@ use crate::daemon::PaneView;
 use crate::daemon::Then;
 use crate::gpui::{Element, div, img_el, palette, span, svg_el};
 use crate::ui::{
-    Size, Tone, button, close_button, list_row, mark_colour, note, row_list, section_label, sheet,
-    sheet_body, sheet_foot, sheet_head, verdict_colour,
+    Size, Tone, button, close_button, list_row, mark_colour, note, report_colour, row_list,
+    section_label, sheet, sheet_body, sheet_foot, sheet_head,
 };
 
 /// The Eval's record: from the board's records, or as read through the
@@ -87,14 +87,10 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
         None => eval_id.to_string(),
     };
     let judging = detail.as_ref().map(|d| d.judging);
-    let verdict = detail.as_ref().and_then(|d| d.verdict);
-    let agreement = detail.as_ref().and_then(|d| d.agreement.clone());
-    let aside = match (judging, verdict) {
+    let report = detail.as_ref().and_then(|d| d.report);
+    let aside = match (judging, report) {
         (Some(true), _) => Some((word("tree.judging").to_string(), palette::AMBER)),
-        (_, Some(v)) => Some((
-            agreement.map_or_else(|| v.to_string(), |a| format!("{v} {a}")),
-            verdict_colour(v),
-        )),
+        (_, Some(r)) => Some((r.plain(), report_colour(&r))),
         _ => None,
     };
 
@@ -312,7 +308,7 @@ pub(super) fn render_view(
                             .gap(6)
                             .font_weight(600)
                             .font_size(17)
-                            .child(span(verdict).color(verdict_colour(verdict)))
+                            .child(span(verdict))
                             .children(parts.get(1).map(|c| span(format!("· {c}")))),
                     )
                     .child(note(

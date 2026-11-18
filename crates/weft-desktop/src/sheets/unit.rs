@@ -74,23 +74,9 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
                     Some(TreeAct::SelectAsk { project: at.clone(), unit: unit.clone() }),
                     Some(chevron()),
                 ),
-                Step::Eval { eval, n, verdict, agreement, aside } => {
-                    let said = match verdict {
-                        Some(v) => div()
-                            .flex_row()
-                            .gap(4)
-                            .child(
-                                div()
-                                    .font_size(14)
-                                    .color(verdict_colour(v))
-                                    .text(word(&format!("verdict.{v}")).to_string()),
-                            )
-                            .child(div().font_size(14).text(match agreement {
-                                Some(a) => {
-                                    format!("· {}", fill("unit.confidence", &[("agreement", a)]))
-                                }
-                                None => String::new(),
-                            })),
+                Step::Eval { eval, n, report, aside } => {
+                    let said = match report {
+                        Some(r) => div().font_size(14).color(report_colour(r)).text(r.plain()),
                         None => {
                             div().font_size(14).color(palette::AMBER).text(word("tree.judging"))
                         }
@@ -176,7 +162,7 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit: &str) -> Element 
     // The act its status puts forward is the sheet's primary one.
     let primary = match d.status {
         Status::Asking | Status::Asked | Status::Judging => "eval",
-        Status::Judged { .. } => "seal",
+        Status::Evaluated { .. } => "seal",
         Status::Sealed { .. } => "follow_up",
     };
     let tone = |act: &str| if act == primary { Tone::Primary } else { Tone::Plain };
@@ -238,6 +224,6 @@ fn chevron() -> Element {
     div().shrink_0().font_size(12).color(palette::DIM).text("›")
 }
 
-fn verdict_colour(v: &str) -> &'static str {
-    if v == "aligned" { palette::TEAL } else { palette::AMBER }
+fn report_colour(r: &weft_core::ledger::Report) -> &'static str {
+    crate::ui::report_colour(r)
 }

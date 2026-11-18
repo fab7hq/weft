@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::ledger::{Unit, Verdict};
+use crate::ledger::{Report, Unit};
 use crate::tree::Why;
 
 /// An Eval on the record, numbered by its `eval.opened` in the ledger.
@@ -20,8 +20,8 @@ pub struct Eval {
     pub opened_at: String,
     /// The Asks it covers: `basis.asks`, as completed when it has been.
     pub asks: Vec<String>,
-    pub verdict: Option<Verdict>,
-    pub agreement: Option<f64>,
+    /// Its report's counts, once it is completed.
+    pub report: Option<Report>,
     pub judged_by: Option<String>,
     pub completed_at: Option<String>,
     /// Withdrawn by a person: no longer built on or sealed on.
@@ -33,7 +33,7 @@ pub struct Eval {
 
 impl Eval {
     pub fn completed(&self) -> bool {
-        self.verdict.is_some()
+        self.report.is_some()
     }
 }
 
@@ -93,8 +93,7 @@ pub fn record(events: &[Value]) -> Record {
                 n: out.evals.len() + 1,
                 opened_at: text(e, "time"),
                 asks: asks(data),
-                verdict: None,
-                agreement: None,
+                report: None,
                 judged_by: None,
                 completed_at: None,
                 voided: false,
@@ -109,8 +108,7 @@ pub fn record(events: &[Value]) -> Record {
                         n: out.evals.len() + 1,
                         opened_at: text(e, "time"),
                         asks: asks(data),
-                        verdict: None,
-                        agreement: None,
+                        report: None,
                         judged_by: None,
                         completed_at: None,
                         voided: false,
@@ -118,17 +116,14 @@ pub fn record(events: &[Value]) -> Record {
                     });
                 }
                 let Some(v) = out.evals.iter_mut().find(|v| v.id == id) else { continue };
-                let Some(verdict) =
-                    data.get("verdict").and_then(Value::as_str).and_then(Verdict::of)
-                else {
+                let Some(report) = Report::of(data) else {
                     continue;
                 };
                 let covers = asks(data);
                 if !covers.is_empty() {
                     v.asks = covers;
                 }
-                v.verdict = Some(verdict);
-                v.agreement = data.get("confidence").and_then(Value::as_f64);
+                v.report = Some(report);
                 v.judged_by = data.get("judged_by").and_then(Value::as_str).map(str::to_string);
                 v.completed_at = Some(text(e, "time"));
             }
@@ -192,29 +187,10 @@ pub enum Status {
     Asked,
     /// Its newest Eval is open: not judged yet.
     Judging,
-    /// Its newest Eval's verdict, and not sealed.
-    Judged {
-        #[serde(with = "recorded")]
-        verdict: Verdict,
-        agreement: Option<f64>,
-    },
+    /// Its newest Eval is completed, and it is not sealed.
+    Evaluated { report: Report },
     /// Sealed: what was decided, as recorded.
     Sealed { decision: String },
-}
-
-/// A verdict as the record writes it: `aligned`, `drifted`, `incomplete`.
-mod recorded {
-    use crate::ledger::Verdict;
-    use serde::{Deserialize, Deserializer, Serializer, de::Error};
-
-    pub fn serialize<S: Serializer>(v: &Verdict, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(v.recorded())
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Verdict, D::Error> {
-        let text = String::deserialize(d)?;
-        Verdict::of(&text).ok_or_else(|| D::Error::custom(format!("no verdict {text}")))
-    }
 }
 
 /// One unit of work: its Asks, Evals and Seals, and where it stands.
@@ -283,7 +259,7 @@ impl Work {
     /// The Eval a Seal on this unit seals: its newest, once judged, while
     /// it judged every Ask still open.
     pub fn to_seal(&self, unit: &UnitOfWork) -> Option<&Eval> {
-        matches!(unit.status, Status::Judged { .. })
+        matches!(unit.status, Status::Evaluated { .. })
             .then(|| unit.evals.last())
             .flatten()
             .and_then(|id| self.record.evals.iter().find(|e| &e.id == id))
@@ -346,11 +322,10 @@ pub fn work(units: &[Unit], record: &Record) -> Work {
                 .is_some_and(|e| !e.completed() && e.asks.iter().any(|a| open.contains(a)))
             {
                 Status::Judging
-            } else if let Some((e, verdict)) = last
-                .filter(|e| open.iter().all(|a| e.asks.contains(a)))
-                .and_then(|e| Some((e, e.verdict?)))
+            } else if let Some(report) =
+                last.filter(|e| open.iter().all(|a| e.asks.contains(a))).and_then(|e| e.report)
             {
-                Status::Judged { verdict, agreement: e.agreement }
+                Status::Evaluated { report }
             } else if mine
                 .iter()
                 .rev()
@@ -430,7 +405,7 @@ pub fn seal_why(
         Status::Judging => named("why.judging"),
         Status::Asking | Status::Asked if unit.evals.is_empty() => named("why.no_eval"),
         Status::Asking | Status::Asked => named("why.eval_again"),
-        Status::Judged { .. } => match w.to_seal(unit) {
+        Status::Evaluated { .. } => match w.to_seal(unit) {
             Some(_) => ready(unit.route.as_deref()),
             None => named("why.no_eval"),
         },
@@ -471,7 +446,7 @@ mod tests {
 
     fn completed(id: &str, asks: &[&str], verdict: &str, minute: u32) -> Value {
         json!({"type": "eval.completed", "id": id, "time": at(minute),
-               "data": {"basis": {"asks": asks}, "verdict": verdict, "confidence": 0.67,
+               "data": {"basis": {"asks": asks}, "report": {"faults": usize::from(verdict != "aligned")},
                         "judged_by": "codex"}})
     }
 
@@ -501,12 +476,8 @@ mod tests {
         let evals: Vec<_> = r.evals.iter().map(|e| (e.id.as_str(), e.n, e.voided)).collect();
         assert_eq!(evals, [("evl_a", 1, false), ("evl_b", 2, true)]);
         let unopened = record(&[asked("ask_1", 1), completed("evl_x", &["ask_1"], "drifted", 2)]);
-        assert_eq!(
-            (unopened.evals[0].n, unopened.evals[0].verdict),
-            (1, Some(Verdict::DoesntMatch))
-        );
-        assert_eq!(r.evals[0].verdict, Some(Verdict::Matches));
-        assert_eq!(r.evals[0].agreement, Some(0.67));
+        assert_eq!((unopened.evals[0].n, unopened.evals[0].report.map(|r| r.faults)), (1, Some(1)));
+        assert_eq!(r.evals[0].report.map(|r| r.faults), Some(0));
         assert_eq!(r.evals[0].completed_at.as_deref(), Some(at(3).as_str()));
         let seals: Vec<_> =
             r.seals.iter().map(|s| (s.id.as_str(), s.n, s.eval.as_deref())).collect();
@@ -556,7 +527,7 @@ mod tests {
         let mut events = vec![asked("ask_1", 1), opened("evl_1", &["ask_1"], 2)];
         assert_eq!(status(&events), Status::Judging);
         events.push(completed("evl_1", &["ask_1"], "drifted", 3));
-        let judged = Status::Judged { verdict: Verdict::DoesntMatch, agreement: Some(0.67) };
+        let judged = Status::Evaluated { report: Report { faults: 1, ..Default::default() } };
         assert_eq!(status(&events), judged);
         events.push(sealed("sel_1", &["ask_1"], Some("evl_1"), 4));
         assert_eq!(status(&events), Status::Sealed { decision: "accepted".into() });
@@ -603,7 +574,7 @@ mod tests {
         ]);
         let u = &w.units[0];
         assert_eq!(u.evals, ["evl_2"]);
-        assert!(matches!(u.status, Status::Judged { .. }), "{:?}", u.status);
+        assert!(matches!(u.status, Status::Evaluated { .. }), "{:?}", u.status);
         assert!(w.record.evals[0].superseded);
         // An Eval left open over Asks a Seal has since closed judges nothing open.
         let w = grouped(&[
@@ -627,7 +598,7 @@ mod tests {
             completed("evl_2", &["ask_1"], "aligned", 5),
         ]);
         let one = w.of_ask("ask_1").unwrap();
-        assert!(matches!(one.status, Status::Judged { .. }), "{:?}", one.status);
+        assert!(matches!(one.status, Status::Evaluated { .. }), "{:?}", one.status);
         assert_eq!(w.to_seal(one).map(|e| e.id.as_str()), Some("evl_2"));
         assert_eq!(w.of_ask("ask_2").unwrap().status, Status::Judging, "evl_1 is still its newest");
     }

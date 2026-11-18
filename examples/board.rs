@@ -13,20 +13,7 @@ fn main() {
     for u in &units {
         println!("  {:<34} {:<12} {}", truncate(&u.title, 34), u.harness, u.status());
         if let Some(c) = &u.check {
-            let root = std::path::Path::new(&root);
-            match weft::record::read(root, &c.eval_id) {
-                Some(r) => println!(
-                    "    {} · judged by {} · recorded: {}",
-                    r.agreed(c.agreement),
-                    r.judged_by().join(" and "),
-                    c.verdict.recorded()
-                ),
-                None => println!(
-                    "    agreement {:.2} · judging host not recorded · recorded: {}",
-                    c.agreement,
-                    c.verdict.recorded()
-                ),
-            }
+            println!("    {} · {}", c.eval_id, c.report.plain());
         }
     }
 }

@@ -138,8 +138,7 @@ mod tests {
             ask_id: ask.into(),
             check: Some(weft_core::ledger::Check {
                 eval_id: eval.into(),
-                verdict: weft_core::ledger::Verdict::Matches,
-                agreement: 1.0,
+                report: weft_core::ledger::Report::default(),
                 judged_by: None,
             }),
             sealed: sealed.map(str::to_string),

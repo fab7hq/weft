@@ -115,29 +115,24 @@ pub struct WorkRow {
     pub status: Status,
     /// How many Asks it holds: the root and each follow-up.
     pub asks: usize,
+    /// How many of them no Seal has closed: the Asks since its last Seal.
+    #[serde(default)]
+    pub open: usize,
     /// `None` when Eval can run on it, else why not.
     pub eval: Option<Why>,
     /// `None` when Seal can run on it, else why not.
     pub seal: Option<Why>,
 }
 
-/// A unit's status as its row says it: asking, eval open, drifted · 0.75,
-/// sealed · accepted.
+/// A unit's status as its row says it: asking, eval open, evaluated, sealed ·
+/// accepted.
 pub fn status_word(s: &Status) -> String {
     use crate::words::{fill, word};
     match s {
         Status::Asking => word("work.asking").into(),
         Status::Asked => word("work.asked").into(),
         Status::Judging => word("work.eval_open").into(),
-        Status::Judged { verdict, agreement } => fill(
-            "work.judged",
-            &[
-                ("verdict", word(&format!("verdict.{}", verdict.recorded()))),
-                ("agreement", &agreement.map(crate::ledger::score).unwrap_or_default()),
-            ],
-        )
-        .trim_end_matches(" · ")
-        .to_string(),
+        Status::Evaluated { .. } => word("work.evaluated").into(),
         Status::Sealed { decision: d } => fill("work.sealed", &[("decision", &decision(d))]),
     }
 }
@@ -325,6 +320,7 @@ fn project(f: &Facts, folded: &dyn Fn(Fold) -> bool) -> Project {
                         harness: root.harness.clone(),
                         status: u.status.clone(),
                         asks: u.asks.len(),
+                        open: u.open.len(),
                         eval: crate::work::eval_why(u, root, &ready),
                         seal: crate::work::seal_why(w, u, root, &seal_ready),
                     })
@@ -436,7 +432,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::ledger::{Sent, Verdict};
+    use crate::ledger::{Report, Sent};
     use crate::sessions::Row;
     use crate::work::{Eval, Record, Seal};
 
@@ -477,16 +473,15 @@ mod tests {
         format!("2026-10-08T{h:02}:{m:02}:00Z")
     }
 
-    fn eval(id: &str, n: usize, ask: &str, verdict: Option<Verdict>, done: String) -> Eval {
+    fn eval(id: &str, n: usize, ask: &str, report: Option<Report>, done: String) -> Eval {
         Eval {
             id: id.into(),
             n,
             opened_at: done.clone(),
             asks: vec![ask.into()],
-            verdict,
-            agreement: verdict.map(|_| 0.75),
+            report,
             judged_by: None,
-            completed_at: verdict.map(|_| done),
+            completed_at: report.map(|_| done),
             voided: false,
             superseded: false,
         }
@@ -504,7 +499,13 @@ mod tests {
         ];
         let mut record = Record {
             evals: vec![
-                eval("evl_1", 1, "ask_3", Some(Verdict::DoesntMatch), at(11, 20)),
+                eval(
+                    "evl_1",
+                    1,
+                    "ask_3",
+                    Some(Report { faults: 1, ..Default::default() }),
+                    at(11, 20),
+                ),
                 eval("evl_2", 2, "ask_2", None, at(11, 10)),
             ],
             seals: Vec::new(),
@@ -666,7 +667,7 @@ mod tests {
             rows,
             [
                 ("fix login", "claude", "asked".to_string()),
-                ("health endpoint", "codex", "drifted · 0.75".to_string()),
+                ("health endpoint", "codex", "evaluated".to_string()),
                 ("telemetry", "claude", "eval open".to_string()),
                 ("build number", "codex", "sealed · accepted".to_string()),
                 ("readme fix", "codex", "sealed · parked".to_string()),
@@ -674,6 +675,8 @@ mod tests {
             ]
         );
         assert_eq!((t.open, t.work.earlier), (3, 11));
+        let open: Vec<usize> = t.work.units.iter().map(|u| u.open).collect();
+        assert_eq!(open, [1, 1, 1, 0, 0, 0], "the Asks since each unit's last Seal");
         let t = build(&weft(), READY, &|_, _| false);
         assert_eq!((t.work.units.len(), t.work.earlier), (17, 0));
     }
@@ -751,8 +754,8 @@ mod tests {
         assert_eq!(
             v["work"]["units"][1],
             serde_json::json!({"unit": "ask_3", "title": "health endpoint", "harness": "codex",
-                "status": {"state": "judged", "verdict": "drifted", "agreement": 0.75},
-                "asks": 1, "eval": {"key": "why.cannot_ask", "harness": "codex"},
+                "status": {"state": "evaluated", "report": {"faults": 1, "cannot_settle": 0, "declared": 0, "against_decisions": 0}},
+                "asks": 1, "open": 1, "eval": {"key": "why.cannot_ask", "harness": "codex"},
                 "seal": {"key": "why.cannot_ask", "harness": "codex"}})
         );
         assert_eq!(v["work"]["earlier"], 11);

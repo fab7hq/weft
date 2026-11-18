@@ -393,7 +393,8 @@ fn render_done(root: &Path, rows: &[weft_core::done::Done], props: &TreeProps) -
 }
 
 fn render_done_row(root: &Path, d: &weft_core::done::Done, selected: bool) -> Element {
-    let said = [Some(d.decision.as_str()), d.reason.as_deref(), d.verdict.as_deref()]
+    let found = d.report.map(|r| r.plain());
+    let said = [Some(d.decision.as_str()), d.reason.as_deref(), found.as_deref()]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -743,17 +744,20 @@ pub fn status_colour(s: &Status) -> &'static str {
     match s {
         Status::Asking | Status::Asked => palette::MUTED,
         Status::Judging => palette::BLUE_BORDER,
-        Status::Judged { verdict: weft_core::ledger::Verdict::Matches, .. } => palette::TEAL,
-        Status::Judged { .. } => palette::AMBER,
+        Status::Evaluated { .. } => palette::AMBER,
         Status::Sealed { .. } => palette::DIM,
     }
 }
 
-/// A unit of work: its title, its harness, and its one status.
+/// A unit of work (card 11.10): its title, its harness, and its one status;
+/// and, while it has Asks no Seal closed, a second line counting them.
 fn render_work_row(project: &Path, w: &WorkRow, selected: bool) -> Element {
     let colour = status_colour(&w.status);
-    row(format!("row unit {}", w.title), 36, 32, selected)
-        .on_click(TreeAct::SelectWork { project: project.to_path_buf(), unit: w.unit.clone() })
+    let first = div()
+        .self_stretch()
+        .flex_row()
+        .gap(10)
+        .items_center()
         .child(
             div()
                 .flex_1()
@@ -777,6 +781,28 @@ fn render_work_row(project: &Path, w: &WorkRow, selected: bool) -> Element {
                 .font_size(11)
                 .color(colour)
                 .text(tree::status_word(&w.status)),
+        );
+    let click = TreeAct::SelectWork { project: project.to_path_buf(), unit: w.unit.clone() };
+    let layer = format!("row unit {}", w.title);
+    if w.open == 0 || matches!(w.status, Status::Sealed { .. }) {
+        return row(layer, 36, 32, selected).on_click(click).child(first);
+    }
+    let since = match w.open {
+        1 => words::word("work.since_seal_one").to_string(),
+        n => words::fill("work.since_seal", &[("n", &n.to_string())]),
+    };
+    row(layer, 52, 32, selected)
+        .style("align-items", "flex-start")
+        .style("padding", "8px 16px 8px 32px")
+        .on_click(click)
+        .child(
+            div().flex_1().style("min-width", "0").flex_col().gap(2).child(first).child(
+                line(since)
+                    .layer("Asks since your last Seal")
+                    .font_mono()
+                    .font_size(11)
+                    .color(palette::DIM),
+            ),
         )
 }
 

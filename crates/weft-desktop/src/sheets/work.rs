@@ -75,7 +75,7 @@ pub(super) fn render(props: &SheetProps, project: &Path, unit_id: &str) -> Eleme
         .child(dim("›"));
     match &d.crumb.eval {
         Some(ev) => {
-            let said = ev.verdict.unwrap_or(word("tree.judging"));
+            let said = ev.report.map_or_else(|| word("tree.judging").to_string(), |r| r.plain());
             crumb = crumb
                 .child(link(
                     format!("{} · {said}", fill("tree.eval", &[("n", &ev.n.to_string())])),

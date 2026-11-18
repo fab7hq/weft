@@ -8,39 +8,48 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// What the screen says. The recorded
-/// term travels alongside so the plain wording is a gloss, never a substitute.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Verdict {
-    Matches,
-    DoesntMatch,
-    NotEnoughProof,
+/// An Eval's report, as counts: what it found, what it could not settle,
+/// what the agent declared, and what goes against the person's decisions.
+/// It is an observation; it never says the work is done.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Report {
+    pub faults: usize,
+    pub cannot_settle: usize,
+    pub declared: usize,
+    pub against_decisions: usize,
 }
 
-impl Verdict {
-    pub fn recorded(self) -> &'static str {
-        match self {
-            Verdict::Matches => "aligned",
-            Verdict::DoesntMatch => "drifted",
-            Verdict::NotEnoughProof => "incomplete",
-        }
+impl Report {
+    /// The counts `eval.completed` names in `report`; None for an Eval that
+    /// names none.
+    pub fn of(data: &Value) -> Option<Self> {
+        let r = data.get("report")?.as_object()?;
+        let n = |k: &str| r.get(k).and_then(Value::as_u64).unwrap_or(0) as usize;
+        Some(Report {
+            faults: n("faults"),
+            cannot_settle: n("cannot_settle"),
+            declared: n("declared"),
+            against_decisions: n("against_decisions"),
+        })
     }
 
-    pub fn plain(self) -> &'static str {
-        match self {
-            Verdict::Matches => "matches what you asked",
-            Verdict::DoesntMatch => "doesn't match what you asked",
-            Verdict::NotEnoughProof => "not enough proof either way",
+    /// The counts in plain words: `2 found · 1 not settled`, or `nothing found`.
+    pub fn plain(&self) -> String {
+        use crate::words::fill;
+        let mut parts = Vec::new();
+        if self.faults > 0 {
+            parts.push(fill("report.found", &[("n", &self.faults.to_string())]));
         }
-    }
-
-    /// The verdict a record wrote: `aligned`, `drifted` or `incomplete`.
-    pub fn of(s: &str) -> Option<Self> {
-        match s {
-            "aligned" => Some(Verdict::Matches),
-            "drifted" => Some(Verdict::DoesntMatch),
-            "incomplete" => Some(Verdict::NotEnoughProof),
-            _ => None,
+        if self.cannot_settle > 0 {
+            parts.push(fill("report.not_settled", &[("n", &self.cannot_settle.to_string())]));
+        }
+        if self.against_decisions > 0 {
+            parts.push(fill("report.against", &[("n", &self.against_decisions.to_string())]));
+        }
+        if parts.is_empty() {
+            crate::words::word("report.nothing_found").into()
+        } else {
+            parts.join(" · ")
         }
     }
 }
@@ -68,10 +77,8 @@ pub enum Sent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Check {
     pub eval_id: String,
-    pub verdict: Verdict,
-    /// Judge agreement, never correctness.
-    pub agreement: f64,
-    /// The host that produced the verdict. Always shown; no parity is implied.
+    pub report: Report,
+    /// The host that read it. Always shown; no parity is implied.
     pub judged_by: Option<String>,
 }
 
@@ -193,7 +200,7 @@ impl Unit {
             return word;
         }
         if let Some(c) = &self.check {
-            return c.verdict.plain().into();
+            return c.report.plain();
         }
         self.sent_phrase().into()
     }
@@ -209,7 +216,7 @@ impl Unit {
     }
 
     pub fn eval_state(&self) -> Option<String> {
-        self.check.as_ref().map(|c| format!("{}, {} agreed", c.verdict.plain(), score(c.agreement)))
+        self.check.as_ref().map(|c| c.report.plain())
     }
 
     pub fn seal_state(&self) -> Option<String> {
@@ -418,13 +425,12 @@ pub fn project(events: &[Value]) -> Vec<Unit> {
                         u.gathered = None;
                     }
                 }
-                let Some(verdict) = s(&data, &["verdict"]).and_then(Verdict::of) else {
+                let Some(report) = Report::of(&data) else {
                     continue;
                 };
                 let check = Check {
                     eval_id: id,
-                    verdict,
-                    agreement: data.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
+                    report,
                     judged_by: s(&data, &["judged_by"]).map(str::to_string),
                 };
                 for ask in basis_asks(&data) {
@@ -589,7 +595,7 @@ mod tests {
         events.push(ev(
             "eval.completed",
             "evl_1",
-            json!({"verdict": "aligned", "confidence": 1.0, "basis": {"asks": ["ask_1"]}}),
+            json!({"report": {"faults": 0}, "basis": {"asks": ["ask_1"]}}),
         ));
         let u = &project(&events)[0];
         assert_eq!(u.gathered, None);
@@ -722,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn a_verdict_is_shown_in_plain_words_and_keeps_its_recorded_term() {
+    fn a_report_is_shown_as_counts_in_plain_words() {
         let units = project(&[
             compiled("ask_1", "t", "codex", "human_handoff"),
             ev(
@@ -730,17 +736,24 @@ mod tests {
                 "evl_1",
                 json!({
                     "basis": {"asks": ["ask_1"]}, "subject": {},
-                    "verdict": "drifted", "confidence": 0.67,
+                    "report": {"faults": 1},
                     "artifact": {}, "limitations": []
                 }),
             ),
         ]);
         let check = units[0].check.clone().expect("a check");
-        assert_eq!(check.verdict, Verdict::DoesntMatch);
-        assert_eq!(check.verdict.plain(), "doesn't match what you asked");
-        assert_eq!(check.verdict.recorded(), "drifted");
-        assert_eq!(check.agreement, 0.67);
-        assert_eq!(units[0].status(), "doesn't match what you asked");
+        assert_eq!(check.report, Report { faults: 1, ..Default::default() });
+        assert_eq!(check.report.plain(), "1 found");
+        assert_eq!(units[0].status(), "1 found");
+        let none = Report::default();
+        assert_eq!(none.plain(), "nothing found", "never done, met or aligned");
+        let all = Report { faults: 2, cannot_settle: 1, declared: 1, against_decisions: 1 };
+        assert_eq!(all.plain(), "2 found · 1 not settled · 1 against your decisions");
+        assert_eq!(
+            Report::of(&json!({"verdict": "aligned"})),
+            None,
+            "an earlier record names no report"
+        );
     }
 
     #[test]
@@ -753,7 +766,7 @@ mod tests {
                 "evl_1",
                 json!({
                     "basis": {"asks": ["ask_1", "ask_2"]}, "subject": {},
-                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                    "report": {"faults": 0}, "artifact": {}, "limitations": []
                 }),
             ),
         ]);
@@ -769,7 +782,7 @@ mod tests {
                 "evl_1",
                 json!({
                     "basis": {"asks": ["ask_1"]}, "subject": {},
-                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                    "report": {"faults": 0}, "artifact": {}, "limitations": []
                 }),
             ),
             ev(
@@ -828,7 +841,7 @@ mod tests {
                 "evl_1",
                 json!({
                     "basis": {"asks": ["ask_1"]}, "subject": {},
-                    "verdict": "aligned", "confidence": 1.0, "artifact": {}, "limitations": []
+                    "report": {"faults": 0}, "artifact": {}, "limitations": []
                 }),
             ),
         ]);

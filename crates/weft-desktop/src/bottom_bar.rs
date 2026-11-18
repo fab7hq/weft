@@ -423,13 +423,8 @@ fn render_seal_disposition_bar(
     });
     let judged = client.and_then(|c| c.work.record.evals.iter().find(|e| e.id == eval));
     let verdict = judged.and_then(|e| {
-        let v = e.verdict?;
-        let agreement = e.agreement.map(|a| format!(" {a:.2}")).unwrap_or_default();
-        Some(format!(
-            "{}{agreement} · {}",
-            word(&format!("verdict.{}", v.recorded())),
-            fill("tree.eval", &[("n", &e.n.to_string())])
-        ))
+        let r = e.report?;
+        Some(format!("{} · {}", r.plain(), fill("tree.eval", &[("n", &e.n.to_string())])))
     });
     let reasons = weft_core::tree::reasons(selected);
     let said = fill(

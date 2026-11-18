@@ -108,15 +108,17 @@ pub fn notice(view: &EvalView) -> Option<Notice> {
 
 /// The act the bar puts forward for a unit, highlighted and never pressed:
 /// once its agent's turn has really ended, Eval for work that went and that
-/// nothing has judged, and Seal for work an Eval found aligned.
+/// nothing has judged, and Seal for work an Eval found nothing in.
 pub fn suggested(unit: &Unit, turn: Option<crate::turns::Turn>) -> Option<Act> {
     if turn != Some(crate::turns::Turn::TurnEnded) {
         return None;
     }
-    let aligned = unit.check.as_ref().is_some_and(|c| c.verdict == crate::ledger::Verdict::Matches);
+    let clean = unit.check.as_ref().is_some_and(|c| {
+        c.report.faults + c.report.cannot_settle + c.report.against_decisions == 0
+    });
     match next_step(unit)? {
         Next::Eval => Some(Act::Eval),
-        Next::Seal if aligned => Some(Act::Seal),
+        Next::Seal if clean => Some(Act::Seal),
         _ => None,
     }
 }
@@ -382,8 +384,7 @@ mod tests {
         assert_eq!(follow_up_of(&u), "ask_1");
         u.check = Some(crate::ledger::Check {
             eval_id: "evl_1".into(),
-            verdict: crate::ledger::Verdict::DoesntMatch,
-            agreement: 0.67,
+            report: crate::ledger::Report { faults: 1, ..Default::default() },
             judged_by: None,
         });
         assert_eq!(follow_up_of(&u), "evl_1");
@@ -391,10 +392,9 @@ mod tests {
 
     #[test]
     fn once_the_turn_has_ended_the_bar_puts_forward_eval_then_seal() {
-        use crate::ledger::{Check, Verdict};
+        use crate::ledger::{Check, Report};
         use crate::turns::Turn;
-        let judged =
-            |verdict| Check { eval_id: "evl_1".into(), verdict, agreement: 1.0, judged_by: None };
+        let judged = |report| Check { eval_id: "evl_1".into(), report, judged_by: None };
         let went = unit("codex", Sent::TakenByAgent);
         assert_eq!(suggested(&went, Some(Turn::TurnEnded)), Some(Act::Eval));
         // Still working, or asking its person something: nothing is put forward.
@@ -404,13 +404,18 @@ mod tests {
             assert_eq!(suggested(&went, turn), None, "{turn:?}");
         }
         let mut aligned = went.clone();
-        aligned.check = Some(judged(Verdict::Matches));
+        aligned.check = Some(judged(Report::default()));
         assert_eq!(suggested(&aligned, Some(Turn::TurnEnded)), Some(Act::Seal));
-        // A drifted Eval or one without proof is the person's to read first.
-        for verdict in [Verdict::DoesntMatch, Verdict::NotEnoughProof] {
+        // An Eval that found something, or could not settle something, is
+        // the person's to read first.
+        for report in [
+            Report { faults: 1, ..Default::default() },
+            Report { cannot_settle: 1, ..Default::default() },
+            Report { against_decisions: 1, ..Default::default() },
+        ] {
             let mut u = went.clone();
-            u.check = Some(judged(verdict));
-            assert_eq!(suggested(&u, Some(Turn::TurnEnded)), None, "{verdict:?}");
+            u.check = Some(judged(report));
+            assert_eq!(suggested(&u, Some(Turn::TurnEnded)), None, "{report:?}");
         }
         aligned.sealed = Some("accepted".into());
         assert_eq!(suggested(&aligned, Some(Turn::TurnEnded)), None);
@@ -502,8 +507,7 @@ mod tests {
         let mut judged = unit("codex", Sent::Arrived { exact: true });
         judged.check = Some(crate::ledger::Check {
             eval_id: "evl_1".into(),
-            verdict: crate::ledger::Verdict::Matches,
-            agreement: 1.0,
+            report: crate::ledger::Report::default(),
             judged_by: None,
         });
         let units = [judged];
@@ -602,8 +606,7 @@ mod tests {
         let mut u = unit("codex", Sent::Arrived { exact: true });
         u.check = Some(crate::ledger::Check {
             eval_id: "evl_1".into(),
-            verdict: crate::ledger::Verdict::Matches,
-            agreement: 1.0,
+            report: crate::ledger::Report::default(),
             judged_by: None,
         });
         assert_eq!(next_step(&u), Some(Next::Seal));

@@ -1099,8 +1099,7 @@ fn a_seal_names_its_units_eval_and_an_eval_acts_on_the_unit() {
         .append(true)
         .open(root.join(".fab7/rf/ledger.jsonl"))
         .expect("ledger");
-    let basis = serde_json::json!({"basis": {"asks": ["ask_1"]}, "verdict": "aligned",
-                                   "confidence": 1.0});
+    let basis = serde_json::json!({"basis": {"asks": ["ask_1"]}, "report": {"faults": 0}});
     writeln!(f, "{}", line("eval.completed", "evl_1", basis, serde_json::json!([]))).unwrap();
     drop(f);
     c.wait_until(|e| match e {

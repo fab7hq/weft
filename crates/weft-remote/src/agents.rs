@@ -870,7 +870,7 @@ mod tests {
             json!({"type": "eval.opened", "id": "evl_1", "time": "2026-10-08T10:00:00Z",
                    "data": {"basis": {"asks": asks}}}),
             json!({"type": "eval.completed", "id": "evl_1", "time": "2026-10-08T10:05:00Z",
-                   "data": {"basis": {"asks": asks}, "verdict": "aligned", "confidence": 1.0}}),
+                   "data": {"basis": {"asks": asks}, "report": {"faults": 0}}}),
         ]
     }
 
@@ -879,7 +879,7 @@ mod tests {
             json!({"type": "eval.opened", "id": id, "time": "2026-10-08T10:00:00Z",
                    "data": {"basis": {"asks": asks}}}),
             json!({"type": "eval.completed", "id": id, "time": "2026-10-08T10:05:00Z",
-                   "data": {"basis": {"asks": asks}, "verdict": "aligned", "confidence": 1.0}}),
+                   "data": {"basis": {"asks": asks}, "report": {"faults": 0}}}),
         ]
     }
 
@@ -1001,7 +1001,7 @@ mod tests {
             (g["title"].clone(), g["status"].clone()),
             (
                 json!("fix login"),
-                json!({"state": "judged", "verdict": "aligned", "agreement": 1.0})
+                json!({"state": "evaluated", "report": {"faults": 0, "cannot_settle": 0, "declared": 0, "against_decisions": 0}})
             )
         );
         assert!(p.heard(&Event::Exited { pane: 4 }));
@@ -1133,8 +1133,7 @@ mod tests {
         let events = judged_events(&["ask_1"]);
         p.units[0].check = Some(weft_core::ledger::Check {
             eval_id: "evl_1".into(),
-            verdict: weft_core::ledger::Verdict::Matches,
-            agreement: 1.0,
+            report: weft_core::ledger::Report::default(),
             judged_by: None,
         });
         p.work = work_of(&p.units, &events);
@@ -1341,7 +1340,10 @@ mod tests {
         let p = judged();
         let u = p.unit("ask_1").unwrap().clone();
         let d = p.detail(&u, Some("Refresh it"), Some("Refresh the token"));
-        assert_eq!(d["crumb"]["eval"], json!({"eval": "evl_1", "n": 1, "verdict": "aligned"}));
+        assert_eq!(
+            d["crumb"]["eval"],
+            json!({"eval": "evl_1", "n": 1, "report": {"faults": 0, "cannot_settle": 0, "declared": 0, "against_decisions": 0}})
+        );
         assert_eq!(d["ask"]["lines"][0], "You asked:");
         assert_eq!(d["session"]["agent"], agent_id(&p.key, 4));
         assert!(d.get("sections").is_none(), "no Eval or Seal section");
@@ -1366,8 +1368,8 @@ mod tests {
         let p = judged();
         let e = p.eval("evl_1").unwrap();
         assert_eq!(
-            (e["n"].clone(), e["verdict"].clone(), e["seal"].clone()),
-            (json!(1), json!("aligned"), Value::Null)
+            (e["n"].clone(), e["report"]["faults"].clone(), e["seal"].clone()),
+            (json!(1), json!(0), Value::Null)
         );
         assert_eq!(p.eval("evl_9").unwrap_err().0, "no_eval");
         let s = p.session("s_1").unwrap();

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use weft_core::conversation::{Item, Kind};
 use weft_core::harness::{Harness, Harnesses};
-use weft_core::ledger::{Check, Sent, Unit, Verdict};
+use weft_core::ledger::{Check, Report, Sent, Unit};
 use weft_core::onboarding::{Row as SetupRow, State as SetupState, View as SetupView};
 use weft_core::sessions::{Row, State};
 use weft_core::state::{
@@ -165,12 +165,7 @@ fn populate_sample_project(c: &mut ProjectClient) {
         requested_only: true,
         ..Default::default()
     };
-    let check = Check {
-        eval_id: "evl_3".into(),
-        verdict: Verdict::Matches,
-        agreement: 0.67,
-        judged_by: None,
-    };
+    let check = Check { eval_id: "evl_3".into(), report: Report::default(), judged_by: None };
     let u3 = Unit {
         ask_id: "ask_3".into(),
         title: "health endpoint".into(),
@@ -216,14 +211,14 @@ fn populate_sample_project(c: &mut ProjectClient) {
         json!({"type": "eval.opened", "id": "evl_2", "time": "2026-10-08T11:06:00Z",
                "data": {"basis": {"asks": ["ask_4"]}}}),
         json!({"type": "eval.completed", "id": "evl_2", "time": "2026-10-08T11:07:00Z",
-               "data": {"basis": {"asks": ["ask_4"]}, "verdict": "aligned", "confidence": 1.0}}),
+               "data": {"basis": {"asks": ["ask_4"]}, "report": {"faults": 0}}}),
         json!({"type": "seal.created", "id": "sel_4", "time": "2026-10-08T11:08:00Z",
                "actor": {"kind": "human"}, "links": [{"rel": "seals", "id": "evl_2"}],
                "data": {"disposition": "accepted"}}),
         json!({"type": "eval.opened", "id": "evl_3", "time": "2026-10-08T11:11:00Z",
                "data": {"basis": {"asks": ["ask_3"]}}}),
         json!({"type": "eval.completed", "id": "evl_3", "time": "2026-10-08T11:12:00Z",
-               "data": {"basis": {"asks": ["ask_3"]}, "verdict": "aligned", "confidence": 0.67}}),
+               "data": {"basis": {"asks": ["ask_3"]}, "report": {"faults": 0}}}),
     ]);
     c.work = weft_core::work::work(&c.units, &record);
 }
@@ -1019,7 +1014,8 @@ fn the_ask_sheet_offers_a_route_a_plan_and_rules_and_sends_what_was_kept() {
 fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     let (_tmp, mut app, mut wire) = wired_app();
     let tree = app.render().find_layer("tree").unwrap().all_text();
-    for said in ["asked", "asking", "aligned · 0.67", "sealed · accepted"] {
+    for said in ["asked", "asking", "evaluated", "1 Ask since your last Seal", "sealed · accepted"]
+    {
         assert!(tree.contains(said), "{said} in {tree}");
     }
     assert!(!tree.contains("Open") && !tree.contains("Eval 2"), "no rounds: {tree}");
@@ -1226,14 +1222,14 @@ fn sealed_work_is_found_in_done_in_the_sidebar() {
         app.render().find_layer("sidebar Done").map(|l| l.all_text()).unwrap_or_default()
     };
     let shown = side(&mut app);
-    for said in ["‹ weft", "Done", "SEALED", "build number", "accepted · aligned"] {
+    for said in ["‹ weft", "Done", "SEALED", "build number", "accepted · nothing found"] {
         assert!(shown.contains(said), "{said} in {shown}");
     }
     assert!(!shown.contains("health endpoint"), "open work is not done: {shown}");
     app.search.set_text("rejected");
     assert!(!side(&mut app).contains("build number"), "narrowed by its decision");
-    app.search.set_text("aligned");
-    assert!(side(&mut app).contains("build number"), "found by its verdict");
+    app.search.set_text("accepted");
+    assert!(side(&mut app).contains("build number"), "found by its decision");
     app.dispatch(TreeAct::SelectWork { project: weft(), unit: "ask_4".into() });
     assert!(matches!(&app.active_sheet, Some(ActiveSheet::Unit { unit, .. }) if unit == "ask_4"));
     assert!(side(&mut app).contains("build number"), "Done stays in the sidebar");
@@ -1420,14 +1416,13 @@ fn a_seals_receipt_is_checked_through_the_daemon_and_not_claimed_before() {
 }
 
 #[test]
-fn an_eval_shows_no_verdict_or_agreement_the_record_does_not_give() {
+fn an_eval_shows_no_report_the_record_does_not_give() {
     let (_tmp, mut app) = sample_app(false);
     let e = app.clients[0].work.record.evals.iter_mut().find(|e| e.id == "evl_3").unwrap();
-    e.verdict = None;
-    e.agreement = None;
+    e.report = None;
     app.dispatch(TreeAct::SelectEval { project: weft(), eval: "evl_3".into() });
     let sheet = app.render().find_layer("sheet EvalDetail").unwrap().all_text();
-    assert!(!sheet.contains("aligned"), "{sheet}");
+    assert!(!sheet.contains("nothing found") && !sheet.contains("aligned"), "{sheet}");
     assert!(!sheet.contains("1.0"), "{sheet}");
     // An Eval the record does not hold says so, with no number made up.
     app.dispatch(TreeAct::SelectEval { project: weft(), eval: "evl_9".into() });
@@ -1836,12 +1831,8 @@ fn once_the_turn_has_ended_the_bar_outlines_the_next_act_for_the_agent_in_fronts
     app.clients[0].sessions[2].turn = Some(Turn::TurnEnded);
     assert_eq!(app.suggested_act(), Some(Act::Eval));
     assert_eq!(outlined(&app), ["btn Eval"]);
-    app.clients[0].units[0].check = Some(Check {
-        eval_id: "evl_9".into(),
-        verdict: Verdict::Matches,
-        agreement: 1.0,
-        judged_by: None,
-    });
+    app.clients[0].units[0].check =
+        Some(Check { eval_id: "evl_9".into(), report: Report::default(), judged_by: None });
     assert_eq!(outlined(&app), ["btn Seal"]);
     app.clients[0].sessions[2].turn = Some(Turn::Working);
     assert!(outlined(&app).is_empty());

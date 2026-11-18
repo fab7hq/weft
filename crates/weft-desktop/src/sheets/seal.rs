@@ -32,11 +32,8 @@ pub(super) fn render(props: &SheetProps, project: &Path, seal_id: &str) -> Eleme
     let mut body = sheet_body();
     if let Some(ev) = &d.eval {
         let mut said = fill("desktop.seal.seals", &[("n", &ev.n.to_string())]);
-        if let Some(v) = ev.verdict {
-            said.push_str(&format!(" · {v}"));
-        }
-        if let Some(a) = &ev.agreement {
-            said.push_str(&format!(" {a}"));
+        if let Some(r) = ev.report {
+            said.push_str(&format!(" · {}", r.plain()));
         }
         body = body.child(
             div()

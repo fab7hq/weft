@@ -16,7 +16,8 @@ pub struct Done {
     pub harness: String,
     /// The verdict of the Eval it was sealed on, as recorded: `aligned`,
     /// `drifted`, `incomplete`; none when it was sealed on no Eval.
-    pub verdict: Option<String>,
+    /// The report of the Eval it sealed on, as counts.
+    pub report: Option<crate::ledger::Report>,
     /// accepted, parked, rejected or dropped.
     pub decision: String,
     /// Why, when a reason was given: `broke something`.
@@ -37,12 +38,11 @@ pub fn done(work: &Work, units: &[Unit]) -> Vec<Done> {
             let seal =
                 u.seals.last().and_then(|id| work.record.seals.iter().find(|s| &s.id == id))?;
             let root = units.iter().find(|a| a.ask_id == u.root)?;
-            let verdict = seal
+            let report = seal
                 .eval
                 .as_deref()
                 .and_then(|e| work.record.evals.iter().find(|v| v.id == e))
-                .and_then(|e| e.verdict)
-                .map(|v| v.recorded().to_string());
+                .and_then(|e| e.report);
             let reason = seal
                 .reason
                 .as_deref()
@@ -51,7 +51,7 @@ pub fn done(work: &Work, units: &[Unit]) -> Vec<Done> {
                 unit: u.root.clone(),
                 title: root.title.clone(),
                 harness: root.harness.clone(),
-                verdict,
+                report,
                 decision: crate::tree::decision(&seal.disposition),
                 reason,
                 at: seal.at.clone(),
@@ -64,12 +64,11 @@ pub fn done(work: &Work, units: &[Unit]) -> Vec<Done> {
 }
 
 /// Whether a row holds every word of `q`, ignoring case, in its title,
-/// harness, verdict, decision or reason.
+/// harness, decision or reason.
 pub fn matches(d: &Done, q: &str) -> bool {
     let text = [
         d.title.as_str(),
         d.harness.as_str(),
-        d.verdict.as_deref().unwrap_or_default(),
         d.decision.as_str(),
         d.reason.as_deref().unwrap_or_default(),
     ]
@@ -112,7 +111,7 @@ mod tests {
         vec![
             json!({"type": "eval.opened", "id": eval, "time": at(n), "data": {"basis": basis}}),
             json!({"type": "eval.completed", "id": eval, "time": at(n),
-                   "data": {"basis": basis, "verdict": verdict}}),
+                   "data": {"basis": basis, "report": {"faults": usize::from(verdict != "aligned")}}}),
             json!({"type": "seal.created", "id": seal, "time": at(n + 1),
                    "actor": {"kind": "human", "id": "local-user"},
                    "links": [{"rel": "seals", "id": ask}, {"rel": "seals", "id": eval}],
@@ -144,7 +143,7 @@ mod tests {
             "open work is not done"
         );
         let rejected = &rows[2];
-        assert_eq!(rejected.verdict.as_deref(), Some("drifted"));
+        assert_eq!(rejected.report.map(|r| r.faults), Some(1));
         assert_eq!(rejected.decision, "rejected");
         assert_eq!(rejected.reason.as_deref(), Some("broke something"));
         assert_eq!((rows[0].decision.as_str(), rows[0].parked), ("parked", true));
@@ -152,16 +151,15 @@ mod tests {
     }
 
     #[test]
-    fn done_is_searched_by_title_verdict_decision_or_reason() {
+    fn done_is_searched_by_title_decision_or_reason() {
         let rows = rows();
         let found = |q: &str| -> Vec<String> {
             rows.iter().filter(|d| matches(d, q)).map(|d| d.title.clone()).collect()
         };
         assert_eq!(found("Broke"), ["health endpoint"], "by reason");
         assert_eq!(found("parked"), ["readme fix"], "by decision");
-        assert_eq!(found("aligned"), ["readme fix", "build number"], "by verdict");
         assert_eq!(found("build"), ["build number"], "by title");
-        assert_eq!(found("rejected drifted"), ["health endpoint"], "every word");
+        assert_eq!(found("rejected broke"), ["health endpoint"], "every word");
         assert_eq!(found("").len(), 3, "nothing typed lists all");
         assert!(found("superseded").is_empty());
     }

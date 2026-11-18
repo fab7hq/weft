@@ -195,7 +195,8 @@ pub struct CrumbEval {
     pub eval: String,
     pub n: usize,
     /// As recorded; none while it is being judged.
-    pub verdict: Option<&'static str>,
+    /// Its report's counts, once it is completed.
+    pub report: Option<crate::ledger::Report>,
 }
 
 /// The Ask's own part: `DONE` or `ASKING`, its line, and what was asked,
@@ -259,11 +260,11 @@ pub fn work_detail(
         .rev()
         .find(|e| !e.completed() && !e.voided && e.asks.contains(&unit.ask_id));
     let eval = match (judging, &unit.check) {
-        (Some(j), _) => Some(CrumbEval { eval: j.id.clone(), n: j.n, verdict: None }),
+        (Some(j), _) => Some(CrumbEval { eval: j.id.clone(), n: j.n, report: None }),
         (None, Some(c)) => record.evals.iter().find(|e| e.id == c.eval_id).map(|e| CrumbEval {
             eval: e.id.clone(),
             n: e.n,
-            verdict: Some(c.verdict.recorded()),
+            report: Some(c.report),
         }),
         (None, None) => None,
     };
@@ -349,8 +350,7 @@ pub enum Step {
         eval: String,
         n: usize,
         /// As recorded; none while it is being judged.
-        verdict: Option<&'static str>,
-        agreement: Option<String>,
+        report: Option<crate::ledger::Report>,
         /// When it was judged and what it found: `judged 11:20 · 4 met · 1 not met`.
         aside: String,
     },
@@ -445,13 +445,7 @@ pub fn unit_detail(
         };
         timed.push((
             e.opened_at.clone(),
-            Step::Eval {
-                eval: e.id.clone(),
-                n: e.n,
-                verdict: e.verdict.map(|v| v.recorded()),
-                agreement: e.agreement.map(crate::ledger::score),
-                aside,
-            },
+            Step::Eval { eval: e.id.clone(), n: e.n, report: e.report, aside },
         ));
     }
     for id in &u.seals {
@@ -518,8 +512,8 @@ pub struct EvalDetail {
     pub eval: String,
     pub n: usize,
     pub judging: bool,
-    pub verdict: Option<&'static str>,
-    pub agreement: Option<String>,
+    /// Its report's counts, once it is completed.
+    pub report: Option<crate::ledger::Report>,
     /// Each judging harness and its model, `<harness> · <model>`.
     pub judged_by: Option<String>,
     /// When it was judged, in milliseconds since the epoch.
@@ -584,8 +578,7 @@ pub fn eval_detail(
         eval: eval.id.clone(),
         n: eval.n,
         judging: !eval.completed(),
-        verdict: eval.verdict.map(|v| v.recorded()),
-        agreement: eval.agreement.map(crate::ledger::score),
+        report: eval.report,
         judged_by: judged_by.filter(|b| !b.is_empty()).or_else(|| eval.judged_by.clone()),
         at: eval.completed_at.as_deref().and_then(at),
         findings,
@@ -606,8 +599,8 @@ pub fn eval_detail(
 pub struct SealedEval {
     pub eval: String,
     pub n: usize,
-    pub verdict: Option<&'static str>,
-    pub agreement: Option<String>,
+    /// Its report's counts, once it is completed.
+    pub report: Option<crate::ledger::Report>,
 }
 
 /// T11.4: a Seal, once. No act: a Seal is final.
@@ -656,12 +649,7 @@ pub fn seal_detail(
         n: seal.n,
         decision: crate::tree::decision(&seal.disposition),
         at: at(&seal.at),
-        eval: eval.map(|e| SealedEval {
-            eval: e.id.clone(),
-            n: e.n,
-            verdict: e.verdict.map(|v| v.recorded()),
-            agreement: e.agreement.map(crate::ledger::score),
-        }),
+        eval: eval.map(|e| SealedEval { eval: e.id.clone(), n: e.n, report: e.report }),
         receipt: checked
             .and_then(|c| c.get("seal_id"))
             .and_then(serde_json::Value::as_str)
@@ -792,7 +780,7 @@ mod tests {
                 "eval.completed",
                 "evl_2",
                 4,
-                json!({"basis": {"asks": ["ask_r"]}, "verdict": "aligned", "confidence": 1.0}),
+                json!({"basis": {"asks": ["ask_r"]}, "report": {"faults": 0}}),
             ),
             seal,
             compiled("ask_h", "health endpoint", 5),
@@ -801,7 +789,7 @@ mod tests {
                 "eval.completed",
                 "evl_3",
                 7,
-                json!({"basis": {"asks": ["ask_h"]}, "verdict": "aligned", "confidence": 0.67}),
+                json!({"basis": {"asks": ["ask_h"]}, "report": {"faults": 0}}),
             ),
             compiled("ask_f", "fix login", 29),
             compiled("ask_x", "old idea", 30),
@@ -842,7 +830,11 @@ mod tests {
         let health = work_detail(unit("ask_h"), &record, None, None, None, 0);
         assert_eq!(
             health.crumb.eval,
-            Some(CrumbEval { eval: "evl_3".into(), n: 3, verdict: Some("aligned") })
+            Some(CrumbEval {
+                eval: "evl_3".into(),
+                n: 3,
+                report: Some(crate::ledger::Report::default())
+            })
         );
         assert_eq!(health.crumb.seal, None, "not sealed");
         let readme = work_detail(unit("ask_r"), &record, None, None, None, 7 * 3_600_000);
@@ -937,8 +929,7 @@ mod tests {
                 Step::Eval {
                     eval: "evl_3".into(),
                     n: 3,
-                    verdict: Some("aligned"),
-                    agreement: Some("0.67".into()),
+                    report: Some(crate::ledger::Report::default()),
                     aside: "judged 11:07 · 1 met · 1 not met".into(),
                 },
                 Step::Ask {
@@ -985,7 +976,7 @@ mod tests {
         .unwrap();
         let e = &record.evals[2];
         let d = eval_detail(e, Some(&judges), &units, &record, None);
-        assert_eq!((d.n, d.verdict, d.agreement.as_deref()), (3, Some("aligned"), Some("0.67")));
+        assert_eq!((d.n, d.report), (3, Some(crate::ledger::Report::default())));
         assert_eq!(d.judged_by.as_deref(), Some("codex · gpt-5.6-terra"));
         assert_eq!(
             d.findings,
@@ -1021,8 +1012,8 @@ mod tests {
         let v = serde_json::to_value(&d).unwrap();
         assert!(v.get("by").is_none(), "the record names no one but you, so it says no one (11.4)");
         assert_eq!(
-            d.eval.as_ref().map(|e| (e.n, e.verdict, e.agreement.as_deref())),
-            Some((2, Some("aligned"), Some("1.0")))
+            d.eval.as_ref().map(|e| (e.n, e.report)),
+            Some((2, Some(crate::ledger::Report::default())))
         );
         assert_eq!(d.asks.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(), ["readme fix"]);
         let moved = json!({"seal_id": "sel_4", "codes": ["seal.receipt_tampered"], "subject_matches": false});

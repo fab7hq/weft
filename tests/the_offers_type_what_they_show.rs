@@ -120,7 +120,7 @@ fn judged_and_sealed(ask: &str, eval: &str, seal: &str, decided: &str) -> Vec<Va
     vec![
         json!({"type": "eval.opened", "id": eval, "links": [], "data": {"basis": basis, "brief": {}}}),
         json!({"type": "eval.completed", "id": eval, "links": [],
-               "data": {"basis": basis, "verdict": "drifted", "confidence": 0.75}}),
+               "data": {"basis": basis, "report": {"faults": 1}}}),
         json!({"type": "seal.created", "id": seal, "links": links,
                "data": {"basis": basis, "disposition": decided}}),
     ]
@@ -231,12 +231,12 @@ fn each_offer_types_what_its_dialog_shows() {
         .flatten()
         .map(|d| {
             let s = |k: &str| d[k].as_str().unwrap_or_default().to_string();
-            (s("title"), s("verdict"), s("decision"))
+            (s("title"), d["report"]["faults"].to_string(), s("decision"))
         })
         .collect();
     assert_eq!(rows.len(), 2, "{done}");
     assert!(
-        rows.contains(&("Add a health endpoint.".into(), "drifted".into(), "rejected".into())),
+        rows.contains(&("Add a health endpoint.".into(), "1".into(), "rejected".into())),
         "{done}"
     );
 

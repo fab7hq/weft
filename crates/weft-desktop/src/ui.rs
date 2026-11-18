@@ -160,8 +160,9 @@ pub fn mark_colour(mark: &str) -> &'static str {
 }
 
 /// A verdict's colour.
-pub fn verdict_colour(verdict: &str) -> &'static str {
-    if verdict == "aligned" { palette::TEAL } else { palette::AMBER }
+pub fn report_colour(report: &weft_core::ledger::Report) -> &'static str {
+    let found = report.faults + report.cannot_settle + report.against_decisions;
+    if found == 0 { palette::TEAL } else { palette::AMBER }
 }
 
 /// A bar along the window's foot that asks something: its line on top in
