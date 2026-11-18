@@ -29,6 +29,7 @@ pub mod projects;
 pub mod readiness;
 pub mod record;
 pub mod routing;
+pub mod seal_questions;
 pub mod sessions;
 pub mod signal;
 pub mod state;
