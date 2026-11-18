@@ -77,14 +77,14 @@ pub fn answer_words(answer: &str) -> String {
 }
 
 /// The colour an answer is said in, the same wherever it is shown, so the
-/// person spots each decision: teal for what they want, red for what they do
-/// not, amber for later, grey for not sure, blue for their own words.
+/// person spots each decision: teal for what they want, amber for what they
+/// do not (a decision, never an error), blue for later and for their own
+/// words, grey for not sure.
 pub fn answer_tone(answer: &str) -> &'static str {
     match answer {
         "wanted" | "now" => "teal",
-        "not_wanted" | "drop" => "red",
-        "later" => "amber",
-        "words" => "blue",
+        "not_wanted" | "drop" => "amber",
+        "later" | "words" => "blue",
         _ => "grey",
     }
 }
