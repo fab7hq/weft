@@ -650,8 +650,10 @@ pub fn seal(
     disposition: &str,
     eval_id: Option<&str>,
     reason: Option<&str>,
+    answers: Option<&[weft_core::ask::SealAnswer]>,
 ) -> Result<Value, Error> {
-    let req = api::SealCreate { disposition, eval_id, reason, note: None, answers: None };
+    let answers = answers.map(|a| serde_json::json!({ "answers": a }));
+    let req = api::SealCreate { disposition, eval_id, reason, note: None, answers };
     let sealed = api::seal_create(&workspace(project)?, req).map_err(|e| match e {
         api::Error::SealRefused(codes) => {
             Error::Refused { code: REFUSED_BY_A_RULE, message: codes.join(", ") }
@@ -1355,12 +1357,12 @@ pub(crate) mod tests {
             session: None,
         };
         compile(&repo, &draft, None).unwrap();
-        let wrong = seal(&repo, "rejected", None, Some("finish_later"));
+        let wrong = seal(&repo, "rejected", None, Some("finish_later"), None);
         assert!(
             matches!(&wrong, Err(Error::Refused { message, .. }) if message.contains("finish_later")),
             "{wrong:?}"
         );
-        let receipt = seal(&repo, "rejected", None, Some("not_what_i_asked")).unwrap();
+        let receipt = seal(&repo, "rejected", None, Some("not_what_i_asked"), None).unwrap();
         assert_eq!(
             (&receipt["disposition"], &receipt["reason"]),
             (&Value::from("rejected"), &Value::from("not_what_i_asked"))
@@ -1415,6 +1417,25 @@ pub(crate) mod tests {
                 api::EvalStep::Settled { report } => {
                     assert!(report.is_object(), "{report}");
                     assert!(kinds.contains("requirements") && kinds.contains("read"), "{kinds:?}");
+                    assert!(
+                        kinds.contains("question"),
+                        "an unsettled requirement is asked: {kinds:?}"
+                    );
+                    // The person's answer reaches the Seal as a decision.
+                    let said = weft_core::ask::SealAnswer {
+                        question: "q1".into(),
+                        answer: "words".into(),
+                        words: Some("only the server's uptime".into()),
+                        ms: Some(3000),
+                    };
+                    let receipt =
+                        seal(&repo, "accepted", Some(&eval_id), None, Some(&[said])).unwrap();
+                    let d = &receipt["decisions"][0];
+                    assert_eq!(
+                        (&d["answer"], &d["words"]),
+                        (&Value::from("words"), &Value::from("only the server's uptime"))
+                    );
+                    assert_eq!(d["ms"], 3000);
                     let _ = std::fs::remove_dir_all(repo);
                     return;
                 }

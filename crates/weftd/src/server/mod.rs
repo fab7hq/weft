@@ -1364,6 +1364,7 @@ impl Session {
                         }
                     };
                     let reason = draft.and_then(|d| d.reason.clone());
+                    let answers = draft.and_then(|d| d.answers.clone());
                     let (tx, disposition) = (self.tx.clone(), disposition.to_string());
                     // What the project records of it in Git, when it says.
                     let export =
@@ -1377,6 +1378,7 @@ impl Session {
                             &disposition,
                             eval.as_deref(),
                             reason.as_deref(),
+                            answers.as_deref(),
                         );
                         let answer = match sealed {
                             Ok(receipt) => {

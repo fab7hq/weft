@@ -6,7 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::bm25::{Bm25, words};
 
 /// What the person chose before an act's Send: an Ask's route, task, plan
-/// and practice rules, or a Seal's reason. A part left out is the default.
+/// and practice rules, or a Seal's reason and answers. A part left out is the
+/// default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Draft {
@@ -21,6 +22,22 @@ pub struct Draft {
     pub rules: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// A Seal's answers to its Eval's questions, as the person gave them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answers: Option<Vec<SealAnswer>>,
+}
+
+/// One answer to one of an Eval's questions: `wanted`, `not_wanted`,
+/// `now`, `later`, `drop`, `words` (with the words) or `not_sure`, and how
+/// long the person spent on it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealAnswer {
+    pub question: String,
+    pub answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub words: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ms: Option<u64>,
 }
 
 /// A route as the sheet names it: `native_goal` is "Goal", `human_handoff`
