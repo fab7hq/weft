@@ -11,6 +11,7 @@ pub mod instance;
 pub mod keys;
 pub mod markdown_view;
 pub mod panes_view;
+pub mod seal_dialog;
 pub mod sheets;
 pub mod terminal_input;
 pub mod terminal_view;

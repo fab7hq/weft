@@ -264,6 +264,15 @@ impl Work {
             .flatten()
             .and_then(|id| self.record.evals.iter().find(|e| &e.id == id))
     }
+
+    /// The Eval a Seal named by `id` seals: an Eval named as itself, or, for
+    /// an Ask, the Eval its unit of work would be sealed on, if it has one.
+    pub fn eval_to_seal<'a>(&'a self, id: &'a str) -> Option<&'a str> {
+        match self.of_ask(id) {
+            Some(u) => self.to_seal(u).map(|e| e.id.as_str()),
+            None => Some(id),
+        }
+    }
 }
 
 /// Group the Asks into units of work.
@@ -601,6 +610,10 @@ mod tests {
         assert!(matches!(one.status, Status::Evaluated { .. }), "{:?}", one.status);
         assert_eq!(w.to_seal(one).map(|e| e.id.as_str()), Some("evl_2"));
         assert_eq!(w.of_ask("ask_2").unwrap().status, Status::Judging, "evl_1 is still its newest");
+        // A Seal named by an Ask seals its unit's Eval; one named by its Eval, that Eval.
+        assert_eq!(w.eval_to_seal("ask_1"), Some("evl_2"));
+        assert_eq!(w.eval_to_seal("evl_2"), Some("evl_2"));
+        assert_eq!(w.eval_to_seal("ask_2"), None, "no Eval to seal yet");
     }
 
     /// Eval goes on with an open Eval only when it is the unit's own: its

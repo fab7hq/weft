@@ -6,7 +6,7 @@ use weft_core::turns;
 use weft_core::words::{fill, word};
 
 use crate::action::{Answer, BarAct, SheetAct};
-use crate::app::BottomBarState;
+use crate::app::{BottomBarState, SealQuestions};
 use crate::daemon::{ProjectClient, Staged};
 use crate::gpui::{Element, Run, div, palette, rich, span};
 use crate::tree_view::TreeSelection;
@@ -45,10 +45,27 @@ pub fn render_bottom_bar(props: &BottomBarProps) -> Element {
             render_remove_device_bar(device_id, device_name)
         }
         BottomBarState::CloseProjectConfirm { project } => render_close_project_bar(project),
-        BottomBarState::SealDisposition { project, eval, selected, reason } => {
+        BottomBarState::SealDisposition { project, eval, selected, reason, questions } => {
             let client = props.clients.iter().find(|c| &c.root == project);
             let picked = (selected.as_str(), reason.as_deref());
-            render_seal_disposition_bar(client, project, eval, picked, props.warning)
+            match questions {
+                // Until its questions are read, the Seal waits: nothing to seal yet.
+                SealQuestions::Reading => asking_bar("Seal disposition bar", palette::BLUE_BORDER)
+                    .child(title(word("dialog.seal.title")))
+                    .child(note(word("seal.q.reading"), palette::MUTED))
+                    .child(bar_acts(vec![button(
+                        "btn Cancel",
+                        word("act.cancel"),
+                        BarAct::Cancel,
+                        Tone::Quiet,
+                        Size::Bar,
+                    )])),
+                // The questions take the window's body; the bar is theirs.
+                SealQuestions::Asking(_) => div().layer("Seal asks"),
+                SealQuestions::Unasked => {
+                    render_seal_disposition_bar(client, project, eval, picked, props.warning)
+                }
+            }
         }
         BottomBarState::GitNoteConfirm { project } => render_git_note_bar(project),
         BottomBarState::Undo { commits, picked, .. } => render_undo_bar(commits, *picked),
@@ -224,8 +241,6 @@ fn yes_button(go: Option<&weft_proto::Go>, yes: BarAct) -> Element {
     button(format!("btn {said}"), said, yes, tone, Size::Sheet)
 }
 
-/// The Seal's one dialog (17.4, 17.5): the work it seals and the verdict it
-/// rests on, the decision, and for anything but a yes an optional reason.
 /// Turning a project's Git note on (17.19): what a note holds, and Turn on.
 fn render_git_note_bar(project: &std::path::Path) -> Element {
     let name = project.file_name().unwrap_or_default().to_string_lossy().into_owned();
@@ -361,6 +376,8 @@ fn render_undo_bar(commits: &[weft_core::after_seal::Commit], picked: usize) -> 
         )
 }
 
+/// The Seal's one dialog when its Eval asked nothing: the work it seals, the
+/// decision, and for anything but a yes an optional reason.
 fn render_seal_disposition_bar(
     client: Option<&ProjectClient>,
     project: &std::path::Path,
@@ -368,36 +385,6 @@ fn render_seal_disposition_bar(
     (selected, picked_reason): (&str, Option<&str>),
     warning: Option<&str>,
 ) -> Element {
-    let chip = |layer: String, said: String, picked: bool, act: BarAct| {
-        div()
-            .layer(layer)
-            .on_click(act)
-            .pad(6, 12)
-            .bg(if picked { palette::SELECTED_BG } else { palette::SURFACE })
-            .border(if picked { palette::BLUE_BORDER } else { palette::LINE })
-            .font_weight(if picked { 600 } else { 400 })
-            .font_size(13)
-            .color(if picked { palette::BLUE_BORDER } else { palette::MUTED })
-            .text(said)
-    };
-    let disposition = |d: &str| {
-        let act = BarAct::PickDisposition {
-            project: project.to_path_buf(),
-            eval: eval.to_string(),
-            disposition: d.to_string(),
-        };
-        chip(format!("disposition {d}"), weft_core::tree::decision(d), selected == d, act)
-    };
-    let reason = |r: &str| {
-        let picked = picked_reason == Some(r);
-        let act = BarAct::PickReason {
-            project: project.to_path_buf(),
-            eval: eval.to_string(),
-            disposition: selected.to_string(),
-            reason: (!picked).then(|| r.to_string()),
-        };
-        chip(format!("reason {r}"), word(&format!("seal.r.{r}")).to_string(), picked, act)
-    };
     let row = |label: &str| {
         div().flex_row().gap(10).items_center().font_size(13).child(
             div()
@@ -421,12 +408,6 @@ fn render_seal_disposition_bar(
             n => fill("dialog.eval.work", &[("title", &t), ("n", &n.to_string())]),
         }
     });
-    let judged = client.and_then(|c| c.work.record.evals.iter().find(|e| e.id == eval));
-    let verdict = judged.and_then(|e| {
-        let r = e.report?;
-        Some(format!("{} · {}", r.plain(), fill("tree.eval", &[("n", &e.n.to_string())])))
-    });
-    let reasons = weft_core::tree::reasons(selected);
     let said = fill(
         if picked_reason.is_some() { "dialog.seal.records_why" } else { "dialog.seal.records" },
         &[
@@ -443,13 +424,17 @@ fn render_seal_disposition_bar(
                 .child(title(word("dialog.seal.title")))
                 .children(work.map(|w| div().font_size(13).color(palette::MUTED).text(w))),
         )
-        .children(verdict.map(|v| row("dialog.seal.verdict").child(span(v))))
-        .child(row("dialog.seal.decision").children(weft_core::tree::DISPOSITIONS.map(disposition)))
-        .children((!reasons.is_empty()).then(|| {
-            row("dialog.seal.why")
-                .children(reasons.iter().map(|r| reason(r)))
-                .child(span(word("dialog.seal.optional")).font_size(12).color(palette::DIM))
-        }))
+        .child(
+            row("dialog.seal.decision")
+                .child(crate::seal_dialog::decision_chips(project, eval, selected)),
+        )
+        .children(crate::seal_dialog::reason_chips(project, eval, selected, picked_reason).map(
+            |chips| {
+                row("dialog.seal.why")
+                    .child(chips)
+                    .child(span(word("dialog.seal.optional")).font_size(12).color(palette::DIM))
+            },
+        ))
         // A setup warning takes the acts' left, as in the Ask; what the Seal
         // records then goes on its own line above them.
         .children(warning.is_some().then(|| note(said.clone(), palette::MUTED)))

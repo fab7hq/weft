@@ -270,6 +270,10 @@ pub enum Then {
     Commits {
         unit: String,
     },
+    /// The questions an Eval left for its Seal.
+    Questions {
+        eval: String,
+    },
 }
 
 /// An answer the daemon gave, with what it was for.
@@ -994,8 +998,15 @@ impl ProjectClient {
         self.tell(call, Then::Refusal)
     }
 
-    /// Seal the work an Eval judged, as decided in the Seal's dialog.
-    pub fn seal(&mut self, eval: &str, disposition: &str, reason: Option<&str>) -> Result<u64> {
+    /// Seal the work an Eval judged, as decided in the Seal's dialog, with
+    /// the person's answers to the Eval's questions, when it asked any.
+    pub fn seal(
+        &mut self,
+        eval: &str,
+        disposition: &str,
+        reason: Option<&str>,
+        answers: Option<Vec<weft_core::ask::SealAnswer>>,
+    ) -> Result<u64> {
         self.last_refusal = None;
         let call = Call::Act {
             act: "seal".into(),
@@ -1006,6 +1017,7 @@ impl ProjectClient {
             start: None,
             draft: Some(weft_core::ask::Draft {
                 reason: reason.map(str::to_string),
+                answers,
                 ..Default::default()
             }),
         };

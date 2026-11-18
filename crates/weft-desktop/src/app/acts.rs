@@ -8,7 +8,7 @@ use weft_core::state::{PaneViewMode, SavedPaneTab};
 use weft_core::tree;
 use weft_core::words;
 
-use super::{ActiveSheet, BottomBarState, WeftDesktopApp};
+use super::{ActiveSheet, BottomBarState, SealQuestions, WeftDesktopApp};
 use crate::action::{Action, Answer, BarAct, Focus, PaneAct, SheetAct, TreeAct, WindowAct};
 use crate::daemon::Then;
 use crate::panes_view::{join_all_panes, move_tab_to_next_pane, split_pane_down, split_pane_right};
@@ -327,14 +327,57 @@ impl WeftDesktopApp {
         });
         match eval {
             Some(eval) => {
+                // Its Eval's questions come first; until they are read the
+                // Seal waits.
+                let then = Then::Questions { eval: eval.clone() };
+                let read =
+                    self.client_mut(&project).map(|c| c.read("questions", &eval, None, then));
+                let questions = match read {
+                    Some(Ok(())) => SealQuestions::Reading,
+                    _ => SealQuestions::Unasked,
+                };
                 self.bottom_bar = BottomBarState::SealDisposition {
                     project,
                     eval,
                     selected: "accepted".into(),
                     reason: None,
+                    questions,
                 }
             }
             None => self.why_not(words::word("why.no_eval")),
+        }
+    }
+
+    /// A Seal's question is shown: its time counts from now, and one that
+    /// takes words has them back in its field, which takes the keyboard.
+    pub(super) fn show_seal_question(&mut self) {
+        let BottomBarState::SealDisposition { questions: SealQuestions::Asking(a), .. } =
+            &mut self.bottom_bar
+        else {
+            return;
+        };
+        a.shown = std::time::Instant::now();
+        let at = a.answering.at;
+        let words = a.answering.shown().filter(|q| q.answers().contains(&"words")).map(|_| {
+            a.answering.given[at].as_ref().and_then(|g| g.words.clone()).unwrap_or_default()
+        });
+        match words {
+            Some(w) => {
+                self.seal_words.set_text(&w);
+                self.focus = Focus::SealWords;
+            }
+            None if self.focus == Focus::SealWords => self.focus = Focus::Terminal,
+            None => {}
+        }
+    }
+
+    /// The Seal's questions, while it asks them, and its words field.
+    fn seal_asking_mut(&mut self) -> Option<(&mut super::SealAsking, &mut TextField)> {
+        match &mut self.bottom_bar {
+            BottomBarState::SealDisposition { questions: SealQuestions::Asking(a), .. } => {
+                Some((a, &mut self.seal_words))
+            }
+            _ => None,
         }
     }
 
@@ -381,7 +424,57 @@ impl WeftDesktopApp {
                 Some(TreeSelection::Work { project, unit }) => self.seal_work(project, unit),
                 _ => self.why_not_for(Act::Seal),
             },
-            BarAct::Cancel => (self.bottom_bar, self.act_warning) = (BottomBarState::None, None),
+            BarAct::Cancel => {
+                (self.bottom_bar, self.act_warning) = (BottomBarState::None, None);
+                if self.focus == Focus::SealWords {
+                    self.focus = Focus::Terminal;
+                }
+            }
+            // Picking an answer sends nothing: only Seal does.
+            BarAct::SealAnswer(answer) => {
+                if let Some((a, words)) = self.seal_asking_mut() {
+                    let ms = a.shown.elapsed().as_millis() as u64;
+                    // Own words are typed; Not sure in their place clears them.
+                    if answer != "words" && a.answering.answer(&answer, None, ms) {
+                        words.set_text("");
+                    }
+                }
+            }
+            BarAct::SealNext => {
+                let moved = self.seal_asking_mut().is_some_and(|(a, words)| {
+                    let ms = a.shown.elapsed().as_millis() as u64;
+                    let at = a.answering.at;
+                    let takes_words =
+                        a.answering.shown().is_some_and(|q| q.answers().contains(&"words"));
+                    if takes_words {
+                        let typed = words.text().trim().to_string();
+                        if !typed.is_empty() {
+                            a.answering.answer("words", Some(&typed), ms);
+                        } else if a.answering.given[at]
+                            .as_ref()
+                            .is_some_and(|g| g.answer == "words")
+                        {
+                            // Words taken back: the question waits for an answer again.
+                            a.answering.given[at] = None;
+                        }
+                    }
+                    a.answering.forward()
+                });
+                if moved {
+                    self.show_seal_question();
+                }
+            }
+            BarAct::SealBack => {
+                if self.seal_asking_mut().is_some_and(|(a, _)| a.answering.back()) {
+                    self.show_seal_question();
+                }
+            }
+            BarAct::SealChange(at) => {
+                if let Some((a, _)) = self.seal_asking_mut() {
+                    a.answering.change(at);
+                    self.show_seal_question();
+                }
+            }
             BarAct::PickCommit(at) => {
                 if let BottomBarState::Undo { commits, picked, .. } = &mut self.bottom_bar
                     && at < commits.len()
@@ -429,28 +522,52 @@ impl WeftDesktopApp {
                 }
             }
             BarAct::PickDisposition { project, eval, disposition } => {
-                self.bottom_bar = BottomBarState::SealDisposition {
-                    project,
-                    eval,
-                    selected: disposition,
-                    reason: None,
-                };
+                if let BottomBarState::SealDisposition {
+                    project: p, eval: e, selected, reason, ..
+                } = &mut self.bottom_bar
+                    && *p == project
+                    && *e == eval
+                {
+                    (*selected, *reason) = (disposition, None);
+                }
             }
             BarAct::PickReason { project, eval, disposition, reason } => {
-                self.bottom_bar = BottomBarState::SealDisposition {
-                    project,
-                    eval,
-                    selected: disposition,
-                    reason,
-                };
+                if let BottomBarState::SealDisposition {
+                    project: p,
+                    eval: e,
+                    selected,
+                    reason: r,
+                    ..
+                } = &mut self.bottom_bar
+                    && *p == project
+                    && *e == eval
+                {
+                    (*selected, *r) = (disposition, reason);
+                }
             }
             BarAct::ConfirmSeal { project, eval, disposition, reason } => {
+                // The Seal goes with every answer, or not at all: never while
+                // its questions are read or one waits for an answer.
+                let answers = match &self.bottom_bar {
+                    BottomBarState::SealDisposition { questions, .. } => match questions {
+                        SealQuestions::Reading => return,
+                        SealQuestions::Unasked => None,
+                        SealQuestions::Asking(a) => match a.answering.answers() {
+                            Some(answers) => Some(answers),
+                            None => return,
+                        },
+                    },
+                    _ => None,
+                };
                 self.act_warning = None;
                 if let Some(c) = self.client_mut(&project) {
-                    let _ = c.seal(&eval, &disposition, reason.as_deref());
+                    let _ = c.seal(&eval, &disposition, reason.as_deref(), answers);
                 }
                 self.bottom_bar = BottomBarState::None;
                 self.active_sheet = None;
+                if self.focus == Focus::SealWords {
+                    self.focus = Focus::Terminal;
+                }
             }
             BarAct::LeaveRunningAndQuit => {
                 self.bottom_bar = BottomBarState::None;

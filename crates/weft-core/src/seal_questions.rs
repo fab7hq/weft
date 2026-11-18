@@ -46,6 +46,16 @@ impl Question {
         }
     }
 
+    /// What it asks: `Did you want this?`, `Still want it?` or `What did you
+    /// mean?`.
+    pub fn label(&self) -> String {
+        let ask = match self.ask.as_str() {
+            a @ ("did_you_want" | "still_want") => a,
+            _ => "what_did_you_mean",
+        };
+        word(&format!("seal.q.{ask}")).to_string()
+    }
+
     /// The quiet line above a question asked before: `Asked before · not
     /// sure on 10 Nov`, or `… not wanted on 3 Nov`. None for this Eval's own.
     pub fn before_line(&self) -> Option<String> {
@@ -85,6 +95,18 @@ pub fn answer_tone(answer: &str) -> &'static str {
         "wanted" | "now" => "teal",
         "not_wanted" | "drop" => "amber",
         "later" | "words" => "blue",
+        _ => "grey",
+    }
+}
+
+/// The colour a Seal's decision is said in, on the same scale as the
+/// answers, cool to hot: teal accepted, blue parked, red rejected, grey
+/// dropped. A reason picked takes its decision's colour.
+pub fn decision_tone(disposition: &str) -> &'static str {
+    match disposition {
+        "accepted" => "teal",
+        "deferred" => "blue",
+        "rejected" => "red",
         _ => "grey",
     }
 }
@@ -271,5 +293,21 @@ mod tests {
             assert!(!answer_words(answer).starts_with("seal.a."), "{answer} has words");
         }
         assert_eq!(q("q", "still_want").answers(), ["now", "later", "drop", "not_sure"]);
+    }
+
+    #[test]
+    fn every_decision_has_one_colour_on_the_answers_scale() {
+        for (disposition, tone) in
+            [("accepted", "teal"), ("deferred", "blue"), ("rejected", "red"), ("abandoned", "grey")]
+        {
+            assert_eq!(decision_tone(disposition), tone, "{disposition}");
+        }
+    }
+
+    #[test]
+    fn each_question_says_what_it_asks() {
+        assert_eq!(q("q", "did_you_want").label(), "Did you want this?");
+        assert_eq!(q("q", "still_want").label(), "Still want it?");
+        assert_eq!(q("q", "what_did_you_mean").label(), "What did you mean?");
     }
 }

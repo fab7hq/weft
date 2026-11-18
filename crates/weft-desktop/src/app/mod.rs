@@ -4,6 +4,8 @@
 
 mod acts;
 #[cfg(test)]
+mod seal_tests;
+#[cfg(test)]
 pub(crate) mod tests;
 
 use std::collections::{HashMap, HashSet};
@@ -163,6 +165,7 @@ pub enum BottomBarState {
         eval: String,
         selected: String,
         reason: Option<String>,
+        questions: SealQuestions,
     },
     /// Turning a project's Git note on: what a note holds, and Turn on.
     GitNoteConfirm {
@@ -176,6 +179,25 @@ pub enum BottomBarState {
         commits: Vec<weft_core::after_seal::Commit>,
         picked: usize,
     },
+}
+
+/// The questions an Eval left for its Seal, as far as they are known.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealQuestions {
+    /// Being read: the Seal waits for them.
+    Reading,
+    /// None to answer: the decision, the reason, then Seal.
+    Unasked,
+    /// One at a time, each answered before the next, then the review.
+    Asking(Box<SealAsking>),
+}
+
+/// Where the person is in the Seal's questions, and since when the one
+/// shown has been shown: an answer's time is counted from there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SealAsking {
+    pub answering: weft_core::seal_questions::Answering,
+    pub shown: std::time::Instant,
 }
 
 /// Top-level Weft Desktop GPUI application.
@@ -244,6 +266,8 @@ pub struct WeftDesktopApp {
     /// What Weft reads of the setup of the harness an Eval or a Seal goes
     /// to, said in its dialog: a warning, never a stop.
     pub act_warning: Option<String>,
+    /// The person's own words for the Seal's question that takes them.
+    pub seal_words: TextField,
     /// Where the keyboard goes.
     pub focus: Focus,
     pub active_sheet: Option<ActiveSheet>,
@@ -292,6 +316,7 @@ impl WeftDesktopApp {
             selection: None,
             search: TextField::new(Shape::Line),
             setting_field: TextField::new(Shape::Line),
+            seal_words: TextField::new(Shape::Line),
             setting_editing: None,
             choice: None,
             project_menu: None,
@@ -633,6 +658,22 @@ impl WeftDesktopApp {
             v = &v[k.as_str()];
         }
         v.clone()
+    }
+
+    /// The Seal's words field, while its question shown takes words.
+    pub fn seal_words_mut(&mut self) -> Option<&mut TextField> {
+        self.seal_asking()
+            .and_then(|a| a.answering.shown())
+            .is_some_and(|q| q.answers().contains(&"words"))
+            .then_some(&mut self.seal_words)
+    }
+
+    /// The Seal's questions, while it asks them.
+    pub fn seal_asking(&self) -> Option<&SealAsking> {
+        match &self.bottom_bar {
+            BottomBarState::SealDisposition { questions: SealQuestions::Asking(a), .. } => Some(a),
+            _ => None,
+        }
     }
 
     /// The setting field, while one is being typed.
@@ -1009,6 +1050,30 @@ impl WeftDesktopApp {
                 if picked < commits.len() {
                     let project = root.to_path_buf();
                     self.bottom_bar = BottomBarState::Undo { project, unit, commits, picked };
+                }
+            }
+            // The Seal asks what its Eval left, one at a time; with none, or
+            // none that could be read, it goes as it always has.
+            (Then::Questions { eval }, answer) => {
+                if let BottomBarState::SealDisposition { project, eval: e, questions, .. } =
+                    &mut self.bottom_bar
+                    && project == root
+                    && *e == eval
+                    && *questions == SealQuestions::Reading
+                {
+                    let asked: Vec<weft_core::seal_questions::Question> = answer
+                        .ok()
+                        .and_then(|v| serde_json::from_value(v["questions"].clone()).ok())
+                        .unwrap_or_default();
+                    *questions = if asked.is_empty() {
+                        SealQuestions::Unasked
+                    } else {
+                        SealQuestions::Asking(Box::new(SealAsking {
+                            answering: weft_core::seal_questions::Answering::new(asked),
+                            shown: std::time::Instant::now(),
+                        }))
+                    };
+                    self.show_seal_question();
                 }
             }
             (Then::Conversation { pane }, Ok(v)) => {
@@ -1425,7 +1490,27 @@ impl WeftDesktopApp {
             );
         }
 
-        if self.state.settings.sidebar_open {
+        // The Seal's questions and its review take the window's body.
+        let seal = match &self.bottom_bar {
+            BottomBarState::SealDisposition {
+                project,
+                eval,
+                selected,
+                reason,
+                questions: SealQuestions::Asking(asking),
+            } => Some(crate::seal_dialog::render(&crate::seal_dialog::SealProps {
+                client: self.clients.iter().find(|c| &c.root == project),
+                project,
+                eval,
+                picked: (selected, reason.as_deref()),
+                asking,
+                words: self.seal_words.text(),
+                warning: self.act_warning.as_deref(),
+            })),
+            _ => None,
+        };
+
+        if self.state.settings.sidebar_open && seal.is_none() {
             body = body.child(render_tree(&TreeProps {
                 projects: &projects,
                 selection: self.selection.as_ref(),
@@ -1493,9 +1578,10 @@ impl WeftDesktopApp {
         // Ask docks under the panes it is about; every other sheet takes the
         // workspace's place.
         let docked = matches!(self.active_sheet, Some(ActiveSheet::Ask { .. }));
-        match sheet {
-            Some(sheet) if !docked => body = body.child(sheet),
-            dock => {
+        match (seal, sheet) {
+            (Some(seal), _) => body = body.child(seal),
+            (None, Some(sheet)) if !docked => body = body.child(sheet),
+            (None, dock) => {
                 body = body.child(render_panes_workspace(&PanesProps {
                     panes: &self.state.panes,
                     clients: &self.clients,

@@ -1690,11 +1690,23 @@ impl Session {
                     _ => Answer::No("no_record", "what was asked is not on disk".into()),
                 }
             }
-            // `unit` is an eval id: the questions it left for the Seal.
-            "questions" => match crate::ringframe::eval_questions(&root, unit) {
-                Ok(questions) => Answer::Ok(serde_json::json!({ "questions": questions })),
-                Err(e) => ringframe_error(e),
-            },
+            // `unit` is an Eval, or an Ask of the work a Seal would seal: the
+            // questions that Eval left for the Seal, and which Eval it is.
+            // Work with no Eval to seal has none.
+            "questions" => {
+                let (units, record) =
+                    (self.projects[at].ledger.units(), self.projects[at].ledger.record());
+                let work = weft_core::work::work(&units, &record);
+                match work.eval_to_seal(unit) {
+                    None => Answer::Ok(serde_json::json!({ "questions": [], "eval": null })),
+                    Some(eval) => match crate::ringframe::eval_questions(&root, eval) {
+                        Ok(questions) => {
+                            Answer::Ok(serde_json::json!({ "questions": questions, "eval": eval }))
+                        }
+                        Err(e) => ringframe_error(e),
+                    },
+                }
+            }
             // `unit` is an eval id here: a record is named by the Eval, not the Ask.
             "judges" => match crate::record::read(&root, unit) {
                 Some(r) => Answer::Ok(serde_json::to_value(&r).unwrap_or(serde_json::Value::Null)),

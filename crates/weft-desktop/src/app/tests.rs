@@ -1041,7 +1041,7 @@ fn a_unit_of_work_opens_as_its_workflow_and_its_acts_name_it() {
     app.active_sheet = None;
 
     // Seal decides on the unit's Eval; Eval names the unit.
-    app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
+    super::seal_tests::no_questions(&mut app, &mut wire);
     assert!(matches!(
         &app.bottom_bar,
         BottomBarState::SealDisposition { eval, .. } if eval == "evl_3"
@@ -2931,8 +2931,8 @@ fn a_dialog_that_types_nothing_names_its_work_in_its_head() {
 /// the Seal records moves to its own line above them.
 #[test]
 fn a_seal_with_a_setup_warning_has_it_beside_its_acts() {
-    let (_tmp, mut app, _wire) = wired_app();
-    app.dispatch(SheetAct::SealWork { project: weft(), unit: "ask_3".into() });
+    let (_tmp, mut app, mut wire) = wired_app();
+    super::seal_tests::no_questions(&mut app, &mut wire);
     let records = "Nothing is typed.";
     let acts = app.render().find_layer("seal acts").expect("its acts").clone();
     assert!(acts.all_text().contains(records), "no warning: the note beside the acts");

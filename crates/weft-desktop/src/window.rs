@@ -38,6 +38,7 @@ fn field(app: &mut WeftDesktopApp, which: Focus) -> Option<&mut TextField> {
         Focus::Message => Some(app.message_field()),
         Focus::Ask => app.ask_draft_mut(),
         Focus::Setting => app.setting_field_mut(),
+        Focus::SealWords => app.seal_words_mut(),
         Focus::Terminal => None,
     }
 }
@@ -569,6 +570,7 @@ impl GpuiDesktopView {
                 Focus::Message => guard.app.dispatch(crate::action::PaneAct::SendMessage),
                 Focus::Ask => guard.app.dispatch(SheetAct::SubmitAsk),
                 Focus::Setting => guard.app.dispatch(SheetAct::CommitSetting),
+                Focus::SealWords => guard.app.dispatch(crate::action::BarAct::SealNext),
                 _ => {}
             },
             // Escape leaves the field.
@@ -702,7 +704,9 @@ impl GpuiDesktopView {
             placeholder: parse_color(palette::DIM),
             caret: parse_color(palette::TEXT),
             selection: parse_color("#388bfd55"),
-            max_lines: if el.tag == "input" && matches!(which, Focus::Search | Focus::Setting) {
+            max_lines: if el.tag == "input"
+                && matches!(which, Focus::Search | Focus::Setting | Focus::SealWords)
+            {
                 1
             } else {
                 6

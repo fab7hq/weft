@@ -27,6 +27,8 @@ pub enum Focus {
     Ask,
     /// A setting typed in Settings (a role's model).
     Setting,
+    /// The Seal's question that takes the person's own words.
+    SealWords,
 }
 
 /// The top bar, `☰` and the window itself.
@@ -159,6 +161,13 @@ pub enum BarAct {
         disposition: String,
         reason: Option<String>,
     },
+    /// An answer to the Seal's question shown: picked, never sent.
+    SealAnswer(String),
+    /// On to the Seal's next question, or to its review after the last.
+    SealNext,
+    SealBack,
+    /// From the Seal's review, back to one question to change its answer.
+    SealChange(usize),
     LeaveRunningAndQuit,
     StopAgentsAndQuit,
     AllowDevice {
