@@ -260,13 +260,14 @@ mod tests {
         for (answer, tone) in [
             ("wanted", "teal"),
             ("now", "teal"),
-            ("not_wanted", "red"),
-            ("drop", "red"),
-            ("later", "amber"),
+            ("not_wanted", "amber"),
+            ("drop", "amber"),
+            ("later", "blue"),
             ("not_sure", "grey"),
             ("words", "blue"),
         ] {
             assert_eq!(answer_tone(answer), tone, "{answer}");
+            assert_ne!(answer_tone(answer), "red", "no answer is an error");
             assert!(!answer_words(answer).starts_with("seal.a."), "{answer} has words");
         }
         assert_eq!(q("q", "still_want").answers(), ["now", "later", "drop", "not_sure"]);
