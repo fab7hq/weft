@@ -9,6 +9,7 @@ pub mod checks;
 pub mod cli;
 pub mod compile;
 pub mod config;
+pub mod decisions;
 pub mod deltas;
 pub mod digest;
 pub mod documents;

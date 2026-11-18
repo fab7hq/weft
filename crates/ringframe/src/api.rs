@@ -636,6 +636,9 @@ pub struct SealCreate<'a> {
     /// Why, from the disposition's list (`seal::reasons`); accepted takes none.
     pub reason: Option<&'a str>,
     pub note: Option<&'a str>,
+    /// The person's answers to the Eval's questions,
+    /// `{"answers": [{question, answer, words, ms}]}`; None answers none.
+    pub answers: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -646,8 +649,15 @@ pub struct Sealed {
 }
 
 pub fn seal_create(ws: &Workspace, req: SealCreate<'_>) -> Result<Sealed, Error> {
-    let receipt =
-        seal::create(ws, req.disposition, req.eval_id, req.reason, req.note, Some(&person()))?;
+    let receipt = seal::create_with(
+        ws,
+        req.disposition,
+        req.eval_id,
+        req.reason,
+        req.note,
+        Some(&person()),
+        req.answers.as_ref(),
+    )?;
     Ok(Sealed { seal_id: str_of(&receipt, "seal_id"), receipt })
 }
 
@@ -842,6 +852,7 @@ mod tests {
                     eval_id: Some(eval_id),
                     reason: None,
                     note: Some("ship it"),
+                    answers: None,
                 };
                 seal_create(ws, req).unwrap().seal_id
             }
@@ -1037,10 +1048,21 @@ mod tests {
                 code(eval_submit(&ws, "nothing", &nowhere).unwrap_err()),
                 "eval.task_unknown"
             );
-            let bad = SealCreate { disposition: "merged", eval_id: None, reason: None, note: None };
+            let bad = SealCreate {
+                disposition: "merged",
+                eval_id: None,
+                reason: None,
+                note: None,
+                answers: None,
+            };
             assert_eq!(code(seal_create(&ws, bad).unwrap_err()), "seal.disposition");
-            let none =
-                SealCreate { disposition: "accepted", eval_id: None, reason: None, note: None };
+            let none = SealCreate {
+                disposition: "accepted",
+                eval_id: None,
+                reason: None,
+                note: None,
+                answers: None,
+            };
             assert_eq!(
                 seal_create(&ws, none).unwrap_err(),
                 Error::SealRefused(vec!["seal.no_open_ask".into()])
@@ -1196,6 +1218,7 @@ mod tests {
                 eval_id: Some(&eval_id),
                 reason: Some("not_what_i_asked"),
                 note: None,
+                answers: None,
             };
             let sealed = seal_create(ws, req).unwrap();
             assert_eq!(sealed.receipt["disposition"], "rejected");

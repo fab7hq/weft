@@ -86,9 +86,13 @@ fn spec(cmd: &str, sub: Option<&str>) -> Option<Spec> {
         ("eval", Some("void")) => {
             s(&["--eval", "--reason"], NONE, &["--eval", "--reason"], false, NONE)
         }
-        ("seal", Some("create")) => {
-            s(&["--disposition", "--eval", "--note"], NONE, &["--disposition"], false, NONE)
-        }
+        ("seal", Some("create")) => s(
+            &["--disposition", "--eval", "--note", "--answers"],
+            NONE,
+            &["--disposition"],
+            false,
+            NONE,
+        ),
         ("seal", Some("check")) => s(&["--seal"], NONE, &["--seal"], true, NONE),
         ("ledger", Some("verify")) => s(NONE, NONE, NONE, true, NONE),
         ("deltas", Some("domains")) => s(&["--override"], NONE, NONE, true, NONE),
@@ -717,13 +721,22 @@ fn dispatch(
             }
         }
         ("seal", Some("create")) => {
-            let out = seal::create(
+            let answers = match ns.one("--answers").map(|f| {
+                let text = std::fs::read_to_string(f).map_err(|e| format!("--answers {f}: {e}"))?;
+                serde_json::from_str::<Value>(&text).map_err(|e| format!("--answers {f}: {e}"))
+            }) {
+                Some(Err(e)) => return (ws, Outcome::UsageDetail(e)),
+                Some(Ok(v)) => Some(v),
+                None => None,
+            };
+            let out = seal::create_with(
                 &ws,
                 ns.one("--disposition").unwrap_or_default(),
                 ns.one("--eval"),
                 None,
                 ns.one("--note"),
                 Some(&actor),
+                answers.as_ref(),
             );
             match out {
                 Ok(v) => (ws, Outcome::Ok(0, v)),

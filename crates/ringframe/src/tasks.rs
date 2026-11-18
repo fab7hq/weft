@@ -135,7 +135,13 @@ impl Ctx {
             .iter()
             .map(|a| str_of(a, "ask_id"))
             .filter(|a| later.contains_key(a));
-        for ask in sentences.chain(followed) {
+        // The person's standing decisions are their words too: with any,
+        // every Ask's requirements are listed again with them.
+        let decided =
+            array_of(&brief, "decisions").iter().any(|d| crate::decisions::words(d).is_some());
+        let every =
+            array_of(&brief, "asks").iter().map(|a| str_of(a, "ask_id")).filter(|_| decided);
+        for ask in sentences.chain(followed).chain(every) {
             if !sentence_asks.contains(&ask) {
                 sentence_asks.push(ask);
             }
@@ -192,9 +198,32 @@ impl Ctx {
     /// and the rules all of it must keep (`cross`). How the work was done
     /// (`process`, `scope`) the change cannot show.
     fn judged_requirements(&self) -> Vec<&Value> {
+        // A requirement the person dropped is no longer asked for.
+        let dropped: BTreeSet<String> = array_of(&self.brief, "decisions")
+            .iter()
+            .filter(|d| d["answer"] == "drop")
+            .flat_map(|d| array_of(d, "requirements").iter().map(str_of_value))
+            .collect();
         self.requirements()
             .into_iter()
             .filter(|r| matches!(r["kind"].as_str(), Some("local" | "cross")))
+            .filter(|r| !dropped.contains(&str_of(r, "id")))
+            .collect()
+    }
+
+    /// The person's standing decisions as their words.
+    fn decision_words(&self) -> Vec<String> {
+        array_of(&self.brief, "decisions").iter().filter_map(crate::decisions::words).collect()
+    }
+
+    /// The behaviours the person said they did not want, as the read brief
+    /// numbers them: `D1`, `D2`, ….
+    fn not_wanted(&self) -> Vec<(String, &Value)> {
+        array_of(&self.brief, "decisions")
+            .iter()
+            .filter(|d| d["answer"] == "not_wanted")
+            .enumerate()
+            .map(|(n, d)| (format!("D{}", n + 1), d))
             .collect()
     }
 
@@ -527,7 +556,25 @@ fn question_items(ctx: &Ctx, s: &Settled) -> Vec<Value> {
                         "text": r["text"], "done_when": r["done_when"], "readings": readings,
                         "sentence": a["reason"]}));
     }
-    let _ = ctx;
+    // A behaviour that came back against a decision is asked again, its
+    // units with the decision named.
+    for a in array_of(&s.report, "against_decisions") {
+        for w in array_of(a, "windows").iter().map(str_of_value) {
+            let key = format!("w|{w}");
+            let against = json!({"decision": a["decision"], "date": a["date"],
+                                 "behaviour": a["behaviour"]});
+            match out.iter_mut().find(|i| i["key"] == key) {
+                Some(i) => i["against"] = against,
+                None => out.push(json!({"key": key, "kinds": ["did_you_want"], "unit": w,
+                                        "sentence": a["reason"], "against": against})),
+            }
+        }
+    }
+    // A question left not sure at the unit's last Seal is asked again.
+    for d in array_of(&ctx.brief, "carried") {
+        out.push(json!({"key": format!("c|{}", str_of(d, "id")), "kinds": [d["ask"]],
+                        "asked_before": d["behaviour"], "sentence": d["behaviour"]}));
+    }
     out
 }
 
@@ -603,6 +650,11 @@ under \"What the agent said\") state that it departed from the request there, \
 quote those words exactly. A claim that the work is done, or that tests pass, \
 declares nothing.
 
+`decisions`: where this file lists the person's past decisions, answer each \
+once: `brought_back` is `yes` when this change brings that behaviour back in any \
+form, `no` when it does not, `unsure` when you cannot tell; name in `windows` the \
+units that bring it back, and say why in `reason`.
+
 A citation names a unit id and quotes text copied exactly from that unit: one \
 line, or consecutive lines with or without their leading `+`, `-` or space, 8 to \
 300 characters. A quote that is not in the unit it names is not counted. Each \
@@ -615,7 +667,8 @@ Write your answer as one JSON object:
                    \"citations\": [{\"window\": \"<unit id>\", \"quote\": \"<exact text>\"}], \"missing\": null}],
  \"windows\": [{\"id\": \"<unit id>\", \"answer\": \"serves | follows_from | unexplained\", \"serves\": [\"<requirement id>\"],
               \"source\": null, \"quote\": null, \"reason\": null}],
- \"declared\": [{\"items\": [\"<unit or requirement id>\"], \"quote\": \"<the agent's exact words>\"}]}
+ \"declared\": [{\"items\": [\"<unit or requirement id>\"], \"quote\": \"<the agent's exact words>\"}],
+ \"decisions\": [{\"id\": \"D1\", \"brought_back\": \"yes | no | unsure\", \"windows\": [\"<unit id>\"], \"reason\": \"<one sentence>\"}]}
 ```
 ";
 
@@ -768,6 +821,14 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
             let _ = writeln!(b, "--- later\n{}\n", said.trim_end());
         }
     }
+    let words = ctx.decision_words();
+    if !words.is_empty() {
+        b.push_str("=== the person's decisions, in their words\n");
+        for w in &words {
+            let _ = writeln!(b, "- {w}");
+        }
+        b.push('\n');
+    }
     if t.kind == "requirements" {
         b.push_str("=== end of brief ===\n");
         return b;
@@ -783,6 +844,24 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
             let _ = writeln!(b, "- `{}`: {}", str_of(a, "ask_id"), str_of(a, "title"));
         }
         b.push('\n');
+    }
+    let not_wanted = ctx.not_wanted();
+    if !not_wanted.is_empty() {
+        b.push_str("## The person's past decisions\n\n");
+        for (id, d) in &not_wanted {
+            let _ = writeln!(
+                b,
+                "- {id} ({}, Seal {}): {} Not wanted.",
+                str_of(d, "date"),
+                str_of(d, "seal"),
+                str_of(d, "behaviour")
+            );
+        }
+        b.push_str(
+            "A decision stands until the person changes it. Check whether this change brings a \
+             decided behaviour back, in any form: the same code or other code that does the same \
+             thing. Answer each in `decisions`.\n\n",
+        );
     }
     b.push_str("## The requirements\n\n");
     for r in ctx.judged_requirements() {
@@ -846,18 +925,46 @@ fn question_brief(ctx: &Ctx, t: &Task, b: &mut String) {
     for (repo, log) in commits(&ctx.ws, &ctx.eval_id).unwrap_or_default() {
         let _ = writeln!(b, "=== commits, {repo}\n{}\n", log.trim_end());
     }
+    let standing = array_of(&ctx.brief, "decisions");
+    if !standing.is_empty() {
+        b.push_str("## The person's past decisions\n\n");
+        for d in standing {
+            let said = crate::decisions::words(d).unwrap_or_else(|| {
+                format!(
+                    "On {} (Seal {}) the person did not want: {}",
+                    str_of(d, "date"),
+                    str_of(d, "seal"),
+                    str_of(d, "behaviour")
+                )
+            });
+            let _ = writeln!(b, "- {said}");
+        }
+        b.push('\n');
+    }
     b.push_str(
         "## The items\n\nEach item's key, the kinds of question it allows, and what it is.\n\n",
     );
     for i in task_items(ctx, t) {
         let kinds: Vec<String> = array_of(&i, "kinds").iter().map(str_of_value).collect();
         let _ = writeln!(b, "### `{}` (allows {})\n", str_of(&i, "key"), kinds.join(", "));
-        if let Some(unit) = i["unit"].as_str() {
-            let _ = writeln!(
-                b,
-                "A change no request explains. The reader said: {}\n",
-                str_of(&i, "sentence")
-            );
+        if let Some(before) = i["asked_before"].as_str() {
+            let _ = writeln!(b, "Asked before, and the person was not sure: {before}\n");
+        } else if let Some(unit) = i["unit"].as_str() {
+            match i["against"].as_object() {
+                Some(a) => {
+                    let _ = writeln!(
+                        b,
+                        "A change that brings back what the person decided on {} they did not \
+                         want: {}",
+                        a["date"].as_str().unwrap_or_default(),
+                        a["behaviour"].as_str().unwrap_or_default()
+                    );
+                }
+                None => {
+                    let _ = writeln!(b, "A change no request explains.");
+                }
+            }
+            let _ = writeln!(b, "The reader said: {}\n", str_of(&i, "sentence"));
             let body = ctx.windows.get(unit).map_or("", String::as_str).trim_end_matches('\n');
             let _ = writeln!(b, "```diff\n{body}\n```\n");
         } else {
@@ -914,6 +1021,7 @@ fn persons_words(ctx: &Ctx) -> Vec<String> {
             std::iter::once(ask_words(&ctx.ws, &a))
                 .chain(ctx.later.get(&a).cloned().unwrap_or_default())
         })
+        .chain(ctx.decision_words())
         .collect()
 }
 
@@ -1440,6 +1548,7 @@ fn check_requirements(ch: &mut Checker, out: &Value) {
         let found = (QUOTE_MIN..=QUOTE_MAX).contains(&n)
             && std::iter::once(ask_words(&ch.ctx.ws, &ask))
                 .chain(later.cloned())
+                .chain(ch.ctx.decision_words())
                 .any(|said| squash(&said).contains(&quote));
         if listed && !found {
             ch.error(
@@ -1588,7 +1697,47 @@ fn check_read(ch: &mut Checker, out: &Value) {
     }
     ch.templated(&votes, "reason", "id");
     ch.templated(&votes, "missing", "id");
+    if ch.task.kind == "read" {
+        check_decisions(ch, out);
+    }
     ch.templated(&units, "reason", "id");
+}
+
+/// The whole reading answers each of the person's past decisions once, with
+/// the units of this change that bring it back.
+fn check_decisions(ch: &mut Checker, out: &Value) {
+    let listed: Vec<String> = ch.ctx.not_wanted().into_iter().map(|(id, _)| id).collect();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for (i, d) in array_of(out, "decisions").iter().enumerate() {
+        let at = format!("decisions[{i}]");
+        let id = str_of(d, "id");
+        if !listed.contains(&id) {
+            ch.error(&at, format!("{id:?} is not a decision this file lists"));
+            continue;
+        }
+        if !seen.insert(id.clone()) {
+            ch.error(&at, format!("{id} has two answers"));
+        }
+        let back = str_of(d, "brought_back");
+        if !matches!(back.as_str(), "yes" | "no" | "unsure") {
+            ch.error(&at, "brought_back is yes, no or unsure");
+        }
+        let windows: Vec<String> = array_of(d, "windows").iter().map(str_of_value).collect();
+        for w in &windows {
+            if !ch.ctx.windows.contains_key(w) {
+                ch.error(&at, format!("{w} is not a unit of this change"));
+            }
+        }
+        if back == "yes" && windows.is_empty() {
+            ch.error(&at, "a decision brought back names the units that bring it back");
+        }
+        if str_of(d, "reason").trim().is_empty() {
+            ch.error(&at, "say why in reason");
+        }
+    }
+    for id in listed.iter().filter(|id| !seen.contains(*id)) {
+        ch.error("decisions", format!("no answer for {id}"));
+    }
 }
 
 /// The question reader's answer: every item in exactly one question; every
@@ -1835,7 +1984,7 @@ fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<Stri
         at.strip_prefix(name)?.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok()
     };
     let mut drop: BTreeMap<&str, BTreeSet<usize>> = BTreeMap::new();
-    let lists = ["requirements", "windows", "declared"];
+    let lists = ["requirements", "windows", "declared", "decisions"];
     for e in errors {
         let at = str_of(e, "at");
         let hit = lists.iter().find_map(|l| index(&at, l).map(|i| (*l, i)));
@@ -2030,7 +2179,20 @@ fn settled(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Settled {
             _ => {}
         }
     }
-    let report = json!({"faults": faults, "declared": declared, "against_decisions": [],
+    // What the whole reading says comes back against the person's decisions.
+    let read = tasks.iter().find(|t| t.kind == "read").and_then(|t| st.accepted.get(&t.id));
+    let numbered = ctx.not_wanted();
+    let against: Vec<Value> = read
+        .map_or(&[][..], |r| array_of(r, "decisions"))
+        .iter()
+        .filter(|a| a["brought_back"] == "yes")
+        .filter_map(|a| {
+            let (_, d) = numbered.iter().find(|(id, _)| *id == str_of(a, "id"))?;
+            Some(json!({"decision": d["id"], "date": d["date"], "seal": d["seal"],
+                        "behaviour": d["behaviour"], "windows": a["windows"], "reason": a["reason"]}))
+        })
+        .collect();
+    let report = json!({"faults": faults, "declared": declared, "against_decisions": against,
                         "cannot_settle": cannot_settle});
     Settled { requirements, units, report }
 }
@@ -3315,6 +3477,298 @@ mod tests {
             assert_eq!(questions[0]["items"], json!([format!("w|{}", i.tele)]));
             assert_eq!(questions[0]["ask"], "did_you_want");
             assert_eq!(crate::api::eval_questions(ws, &e).unwrap(), questions);
+        });
+    }
+
+    /// An Eval of the bench read to the end: the beacon unexplained, the rest
+    /// met, its question answered by the scripted reader; then sealed with
+    /// `answers`. Returns the Eval, the Ask and the Seal.
+    fn sealed_with(ws: &Workspace, answers: Value) -> (String, String, Value) {
+        let e = bench(ws);
+        let i = ids(ws, &e);
+        let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+        let qs = read_to_questions(ws, &e, &unit, &met_in(&i.up)).expect("a question");
+        submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+        assert!(next(ws, &e).is_err());
+        let ask = str_of(&Ctx::load(ws, &e).unwrap().brief["asks"][0], "ask_id");
+        let receipt =
+            crate::seal::create_with(ws, "accepted", Some(&e), None, None, None, Some(&answers))
+                .unwrap();
+        (e, ask, receipt)
+    }
+
+    /// The next Ask of the same unit, and work that brings the beacon back
+    /// in other code, or other work; its Eval opened.
+    fn next_eval(ws: &Workspace, follows: &str, beacon: bool) -> String {
+        let next_ask =
+            crate::testing::confirm_ask_linked(ws, vec![json!({"rel": "follows", "id": follows})]);
+        let metrics = if beacon {
+            "export const report = () => navigator.sendBeacon('https://example.com/collect');\n"
+        } else {
+            "export const report = () => 1;\n"
+        };
+        commit(&ws.root, &[("src/metrics.js", Some(metrics))], "more work");
+        let out =
+            open_eval(ws, Open { ask: Some(&str_of(&next_ask, "ask_id")), ..Open::default() })
+                .unwrap();
+        let e = str_of(&out, "eval_id");
+        requirements_as_ringframe(ws, &e);
+        e
+    }
+
+    /// The next Eval's unit, which nothing it asks for explains.
+    fn other_work(id: &str) -> Value {
+        json!({"id": id, "answer": "unexplained", "quote": "export const report",
+               "reason": "It reports usage, which nobody asked for."})
+    }
+
+    /// No requirement: the next Ask asks for nothing the change can show.
+    fn no_req(id: &str) -> Value {
+        panic!("{id} is not asked for in the next Eval")
+    }
+
+    fn created(ws: &Workspace, seal: &Value) -> Value {
+        store::events(ws)
+            .unwrap()
+            .into_iter()
+            .find(|e| e["type"] == "seal.created" && e["id"] == seal["seal_id"])
+            .unwrap()
+    }
+
+    /// 4.1: the Seal takes answers and keeps them as decisions, with their
+    /// units and time; a question left without one is `not_sure`.
+    #[test]
+    fn a_seals_answers_are_its_decisions() {
+        eval_bench(|ws| {
+            let (e, _, seal) = sealed_with(
+                ws,
+                json!({"answers": [{"question": "q1", "answer": "not_wanted", "ms": 4200}]}),
+            );
+            let tele = window_for(ws, &e, "src/telemetry.js");
+            let d = &created(ws, &seal)["data"]["decisions"][0];
+            assert_eq!(d["answer"], "not_wanted");
+            assert_eq!(d["windows"], json!([tele]));
+            assert_eq!(d["ms"], 4200);
+            assert_eq!(d["ask"], "did_you_want");
+            assert_eq!(seal["decisions"], created(ws, &seal)["data"]["decisions"]);
+        });
+        eval_bench(|ws| {
+            let (_, _, seal) = sealed_with(ws, json!({}));
+            assert_eq!(created(ws, &seal)["data"]["decisions"][0]["answer"], "not_sure");
+        });
+        eval_bench(|ws| {
+            bench(ws);
+            let err = crate::seal::create_with(
+                ws,
+                "accepted",
+                None,
+                None,
+                None,
+                None,
+                Some(&json!({"answers": [{"question": "q1", "answer": "wanted"}]})),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains("seal.answers"), "{err}");
+        });
+    }
+
+    /// 4.2: a behaviour the person did not want, brought back in other code,
+    /// is reported against their decision with its date and Seal, and its
+    /// units are asked "Did you want this?" again; answered again, the new
+    /// decision supersedes the old (4.3).
+    #[test]
+    fn a_not_wanted_behaviour_that_comes_back_is_reported_and_asked_again() {
+        eval_bench(|ws| {
+            let (_, ask, seal) =
+                sealed_with(ws, json!({"answers": [{"question": "q1", "answer": "not_wanted"}]}));
+            let old = str_of(&created(ws, &seal)["data"]["decisions"][0], "id");
+            let e = next_eval(ws, &ask, true);
+            let rd = next(ws, &e).unwrap();
+            let md = brief_md(ws, &rd);
+            let date = &str_of(&created(ws, &seal), "time")[..10];
+            assert!(
+                md.contains(&format!("- D1 ({date}, Seal {})", str_of(&seal, "seal_id"))),
+                "{md}"
+            );
+            let metrics = window_for(ws, &e, "src/metrics.js");
+            let mut doc = answer(ws, &rd, &other_work, &no_req, json!([]));
+            put(ws, &rd, doc.clone());
+            let (_, out) = submit(ws, &rd).unwrap();
+            assert!(out.to_string().contains("no answer for D1"), "{out}");
+            doc["decisions"] = json!([{"id": "D1", "brought_back": "yes", "windows": [metrics],
+                                       "reason": "It sends the usage beacon again, another way."}]);
+            submit_ok(ws, &rd, doc);
+            let qs = loop {
+                let t = next(ws, &e).unwrap();
+                if t.ends_with("~qs1") {
+                    break t;
+                }
+                submit_ok(ws, &t, answer(ws, &t, &other_work, &no_req, json!([])));
+            };
+            let qmd = brief_md(ws, &qs);
+            assert!(qmd.contains(&format!("### `w|{metrics}` (allows did_you_want)")), "{qmd}");
+            assert!(qmd.contains("brings back what the person decided on"), "{qmd}");
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert!(next(ws, &e).is_err());
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            let against = &rec["report"]["against_decisions"][0];
+            assert_eq!(against["decision"], json!(old));
+            assert_eq!(against["seal"], seal["seal_id"]);
+            assert_eq!(against["windows"], json!([metrics]));
+            let md =
+                std::fs::read_to_string(ws.rf_dir().join(format!("evals/{e}/eval.md"))).unwrap();
+            assert!(md.contains("goes against your decision of"), "{md}");
+            // Answered again: the new decision supersedes the old, which stays.
+            let again = crate::seal::create_with(
+                ws,
+                "accepted",
+                Some(&e),
+                None,
+                None,
+                None,
+                Some(&json!({"answers": [{"question": "q1", "answer": "wanted"}]})),
+            )
+            .unwrap();
+            let d = &created(ws, &again)["data"]["decisions"][0];
+            assert_eq!(d["supersedes"], json!(old));
+            let standing: Vec<String> =
+                crate::decisions::standing(ws).iter().map(|d| str_of(d, "id")).collect();
+            assert_eq!(standing, [str_of(d, "id")], "only the newer stands");
+            assert!(
+                crate::decisions::all(ws).iter().any(|d| d["id"] == json!(old)),
+                "the older stays"
+            );
+        });
+    }
+
+    /// 4.2: none is reported when the behaviour does not come back.
+    #[test]
+    fn a_decision_not_brought_back_reports_nothing() {
+        eval_bench(|ws| {
+            let (_, ask, _) =
+                sealed_with(ws, json!({"answers": [{"question": "q1", "answer": "not_wanted"}]}));
+            let e = next_eval(ws, &ask, false);
+            while let Ok(t) = next(ws, &e) {
+                let mut doc = answer(ws, &t, &other_work, &no_req, json!([]));
+                if t.ends_with("~rd1") {
+                    doc["decisions"] = json!([{"id": "D1", "brought_back": "no", "windows": [],
+                                               "reason": "Nothing here sends a beacon."}]);
+                }
+                submit_ok(ws, &t, doc);
+            }
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            assert_eq!(rec["report"]["against_decisions"], json!([]));
+        });
+    }
+
+    /// 4.1, 3.1: a question left not sure comes back in the next Eval of its
+    /// unit, and only there.
+    #[test]
+    fn a_not_sure_question_comes_back_in_the_next_eval_of_its_unit() {
+        eval_bench(|ws| {
+            let (_, ask, seal) = sealed_with(ws, json!({}));
+            let d = str_of(&created(ws, &seal)["data"]["decisions"][0], "id");
+            assert!(crate::decisions::standing(ws).is_empty(), "not sure is no standing answer");
+            let e = next_eval(ws, &ask, false);
+            let qs = read_to_questions(ws, &e, &other_work, &no_req).expect("the carried question");
+            let md = brief_md(ws, &qs);
+            assert!(md.contains(&format!("### `c|{d}` (allows did_you_want)")), "{md}");
+            assert!(md.contains("Asked before, and the person was not sure"), "{md}");
+            // Another unit's Eval carries nothing.
+            let other = crate::testing::confirm_ask(ws, b"Something else.\n");
+            commit(&ws.root, &[("src/other.js", Some("export const other = () => 2;\n"))], "other");
+            let out =
+                open_eval(ws, Open { ask: Some(&str_of(&other, "ask_id")), ..Open::default() })
+                    .unwrap();
+            let brief = read_json(
+                &ws.rf_dir().join(format!("evals/{}/brief.json", str_of(&out, "eval_id"))),
+            )
+            .unwrap();
+            assert_eq!(brief["carried"], json!([]));
+        });
+    }
+
+    /// 4.2: a standing answer joins the next brief as the person's words,
+    /// which a requirement may quote; `drop` leaves its requirement out.
+    #[test]
+    fn a_standing_answer_is_the_persons_words_in_the_next_brief() {
+        eval_bench(|ws| {
+            let (_, ask, seal) =
+                sealed_with(ws, json!({"answers": [{"question": "q1", "answer": "wanted"}]}));
+            let next_ask =
+                crate::testing::confirm_ask_linked(ws, vec![json!({"rel": "follows", "id": ask})]);
+            commit(
+                &ws.root,
+                &[("src/metrics.js", Some("export const report = () => 1;\n"))],
+                "more",
+            );
+            let opened =
+                open_eval(ws, Open { ask: Some(&str_of(&next_ask, "ask_id")), ..Open::default() })
+                    .unwrap();
+            let e = str_of(&opened, "eval_id");
+            let q1 = next(ws, &e).unwrap();
+            assert!(q1.ends_with("~q1"), "the person's words are read for requirements: {q1}");
+            let md = brief_md(ws, &q1);
+            let said = format!(
+                "(Seal {}) the person wanted: Behaviour number 0 changed.",
+                str_of(&seal, "seal_id")
+            );
+            assert!(md.contains(&said), "{md}");
+            let asked = array_of(&task_of(ws, &q1), "asks")[0]["id"].clone();
+            put(
+                ws,
+                &q1,
+                json!({"requirements": [{"ask": asked, "kind": "local",
+                "text": "Usage is reported.", "quote": "the person wanted: Behaviour number 0 changed."}]}),
+            );
+            assert_eq!(submit(ws, &q1).unwrap().0, 0, "a quote of the person's decision holds");
+        });
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let not_met = |id: &str| {
+                if id == S2 {
+                    json!({"id": id, "vote": "not_met", "reason": "the notes do not name it", "missing": "a line"})
+                } else {
+                    met_in(&i.up)(id)
+                }
+            };
+            let qs = read_to_questions(ws, &e, &serves, &not_met).unwrap();
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert!(next(ws, &e).is_err());
+            crate::seal::create_with(
+                ws,
+                "deferred",
+                Some(&e),
+                None,
+                None,
+                None,
+                Some(&json!({"answers": [{"question": "q1", "answer": "drop"}]})),
+            )
+            .unwrap();
+            // The plan asked for again: its steps are requirements again, but
+            // the one dropped.
+            let again = confirm_ask_as(
+                ws,
+                b"Build Phase 1 of plans/plan.md, steps 1 to 2.\n",
+                "native_goal",
+            );
+            commit(
+                &ws.root,
+                &[("src/metrics.js", Some("export const report = () => 1;\n"))],
+                "more",
+            );
+            let opened =
+                open_eval(ws, Open { ask: Some(&str_of(&again, "ask_id")), ..Open::default() })
+                    .unwrap();
+            let ctx = Ctx::load(ws, &str_of(&opened, "eval_id")).unwrap();
+            let judged: Vec<String> =
+                ctx.judged_requirements().iter().map(|r| str_of(r, "id")).collect();
+            assert!(
+                !judged.contains(&S2.to_string()),
+                "a dropped requirement is not read: {judged:?}"
+            );
+            assert!(judged.contains(&S1.to_string()), "{judged:?}");
         });
     }
 }

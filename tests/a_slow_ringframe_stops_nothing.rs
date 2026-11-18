@@ -207,6 +207,7 @@ fn a_slow_ringframe_holds_up_only_what_waits_on_it() {
             eval_id: None,
             reason: None,
             note: None,
+            answers: None,
         },
     )
     .expect("sealed");

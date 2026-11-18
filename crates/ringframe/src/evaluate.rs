@@ -561,6 +561,14 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         _ => default_subject(ws)?,
     };
     let ask_ids: Vec<String> = asks.iter().map(|a| str_of(a, "ask_id")).collect();
+    let mut unit_asks: Vec<String> = Vec::new();
+    for a in &ask_ids {
+        for u in crate::ask::unit_of(ws, a).unwrap_or_default() {
+            if !unit_asks.contains(&u) {
+                unit_asks.push(u);
+            }
+        }
+    }
     let subject =
         json!({"kind": kind, "ref": reference, "sha256": subject_digest(ws, &kind, &reference)?});
     // An Eval left open over the same Asks is continued while it judges this
@@ -723,6 +731,10 @@ pub fn open_eval(ws: &Workspace, args: Open<'_>) -> Result<Value, EvalError> {
         "previous_evals": previous, "facts": facts, "limitations": limitations,
         "agents": agents, "changes_patch": changes_patch, "evidence": evidence,
         "judges": crate::tasks::judges(args.deny.as_ref()),
+        // The person's decisions as they stand now, and the questions they
+        // left not sure about in this unit: read by every task of this Eval.
+        "decisions": crate::decisions::standing(ws),
+        "carried": crate::decisions::carried(ws, &unit_asks),
         "statements": args.statements.iter().map(|s| json!({
             "session": s["session"], "text": s["text"],
         })).collect::<Vec<_>>(),

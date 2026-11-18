@@ -651,7 +651,7 @@ pub fn seal(
     eval_id: Option<&str>,
     reason: Option<&str>,
 ) -> Result<Value, Error> {
-    let req = api::SealCreate { disposition, eval_id, reason, note: None };
+    let req = api::SealCreate { disposition, eval_id, reason, note: None, answers: None };
     let sealed = api::seal_create(&workspace(project)?, req).map_err(|e| match e {
         api::Error::SealRefused(codes) => {
             Error::Refused { code: REFUSED_BY_A_RULE, message: codes.join(", ") }

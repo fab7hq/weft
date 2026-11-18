@@ -114,6 +114,22 @@ pub fn create(
     note: Option<&str>,
     actor: Option<&Value>,
 ) -> Result<Value, SealError> {
+    create_with(ws, disposition, eval_id, reason, note, actor, None)
+}
+
+/// `create`, with the person's answers to the Eval's questions
+/// (`{"answers": [{question, answer, words, ms}]}`): each question becomes a
+/// decision, `not_sure` where it has no answer. The disposition and reason
+/// stay the person's own choice; nothing is derived from the answers.
+pub fn create_with(
+    ws: &Workspace,
+    disposition: &str,
+    eval_id: Option<&str>,
+    reason: Option<&str>,
+    note: Option<&str>,
+    actor: Option<&Value>,
+    answers: Option<&Value>,
+) -> Result<Value, SealError> {
     if !DISPOSITIONS.contains(&disposition) {
         return Err(ledger(
             "seal.disposition",
@@ -182,6 +198,12 @@ pub fn create(
         codes.push("seal.not_a_person".into());
     }
     let seal_id = ids::new_id("sel");
+    let decisions = crate::decisions::for_seal(
+        record.as_ref().unwrap_or(&Value::Null),
+        answers.unwrap_or(&Value::Null),
+        &seal_id,
+    )
+    .map_err(|e| ledger("seal.answers", e))?;
     let fact = eval_fact(ws, record.as_ref(), &subject["sha256"]);
     let mut authority_block = actor.clone();
     if is_the_person(&actor) {
@@ -197,6 +219,7 @@ pub fn create(
     if let Some(note) = note.filter(|n| !n.is_empty()) {
         base["note"] = json!(note);
     }
+    base["decisions"] = json!(decisions);
     let mut links: Vec<Value> = base["basis"]["asks"]
         .as_array()
         .cloned()
