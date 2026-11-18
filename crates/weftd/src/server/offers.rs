@@ -123,9 +123,18 @@ impl Session {
         let found = crate::record::eval_view(root, eval)
             .map(|v| weft_core::after_seal::remedy_lines(&v))
             .unwrap_or_default();
+        // What the person decided at the Seal, from its receipt, word for word.
+        let receipt = sealed.unit.seals.last().and_then(|id| {
+            let path = root.join(".fab7/rf/seals").join(format!("{id}.json"));
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).ok()?).ok()
+        });
+        let decided = receipt
+            .and_then(|r| r["decisions"].as_array().cloned())
+            .map(|d| weft_core::after_seal::decision_lines(&d))
+            .unwrap_or_default();
         let n = self.projects[at].ledger.record().evals.iter().find(|e| e.id == eval).map(|e| e.n);
         Answer::Ok(serde_json::json!({
-            "words": weft_core::after_seal::remedy_words(&found),
+            "words": weft_core::after_seal::remedy_words(&found, &decided),
             "eval": eval,
             "n": n,
             "title": sealed.root().title,

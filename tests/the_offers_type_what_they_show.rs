@@ -174,6 +174,14 @@ fn each_offer_types_what_its_dialog_shows() {
     )
     .expect("a second Ask")
     .ask_id;
+    // The rejected Seal's receipt: one decision the person made, and one
+    // question left not sure.
+    let seals = root.join(".fab7/rf/seals");
+    std::fs::create_dir_all(&seals).unwrap();
+    let receipt = json!({"seal_id": "sel_1", "decisions": [
+        {"answer": "not_wanted", "behaviour": "Usage counts are sent to a server."},
+        {"answer": "not_sure", "behaviour": "The theme follows the hour."}]});
+    std::fs::write(seals.join("sel_1.json"), receipt.to_string()).unwrap();
     let mut events = judged_and_sealed(&rejected, "evl_1", "sel_1", "rejected");
     events.extend(judged_and_sealed(&accepted, "evl_2", "sel_2", "accepted"));
     append(&root, &events);
@@ -296,6 +304,11 @@ fn each_offer_types_what_its_dialog_shows() {
         words.contains("unexplained change: src/db/pool.rs rewrites the retry loop"),
         "{words}"
     );
+    assert!(
+        words.contains("What I decided:\n- I did not want: Usage counts are sent to a server."),
+        "the person's decisions, word for word: {words}"
+    );
+    assert!(!words.contains("theme"), "a question left not sure decides nothing: {words}");
     assert_eq!((remedy["eval"].as_str(), remedy["n"].as_u64()), (Some("evl_1"), Some(1)));
     c.call(offer("follow_up", &rejected, Some(pane), Some(&words)));
     let prompt = c.wait(|l| match l {

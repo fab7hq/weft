@@ -101,13 +101,41 @@ pub fn remedy_lines(view: &crate::eval_view::EvalView) -> Vec<String> {
 }
 
 /// A follow-up's words, written for the person to change: what the Eval
-/// found, one line each.
-pub fn remedy_words(findings: &[String]) -> String {
-    if findings.is_empty() {
-        return String::new();
-    }
-    let lines: Vec<String> = findings.iter().map(|f| format!("- {}", f.trim())).collect();
-    format!("{}\n{}", word("follow_up.from_findings"), lines.join("\n"))
+/// found, one line each; then what the person decided at the Seal, word for
+/// word.
+pub fn remedy_words(findings: &[String], decided: &[String]) -> String {
+    let block = |head: &str, lines: &[String]| -> Option<String> {
+        (!lines.is_empty()).then(|| {
+            let lines: Vec<String> = lines.iter().map(|f| format!("- {}", f.trim())).collect();
+            format!("{}\n{}", word(head), lines.join("\n"))
+        })
+    };
+    [block("follow_up.from_findings", findings), block("follow_up.from_decisions", decided)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The person's decisions at a Seal (its receipt's `decisions`), one line
+/// each, in their own terms; a question left not sure decides nothing.
+pub fn decision_lines(decisions: &[serde_json::Value]) -> Vec<String> {
+    decisions
+        .iter()
+        .filter_map(|d| {
+            let text = |k: &str| d[k].as_str().unwrap_or_default().trim().to_string();
+            let key = match text("answer").as_str() {
+                "wanted" => "follow_up.d.wanted",
+                "not_wanted" => "follow_up.d.not_wanted",
+                "now" => "follow_up.d.now",
+                "later" => "follow_up.d.later",
+                "drop" => "follow_up.d.drop",
+                "words" => "follow_up.d.words",
+                _ => return None,
+            };
+            Some(fill(key, &[("behaviour", &text("behaviour")), ("words", &text("words"))]))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -179,14 +207,34 @@ mod tests {
     }
 
     #[test]
-    fn a_follow_up_starts_from_what_the_eval_found() {
-        let words =
-            remedy_words(&["not met: Return 503".into(), "unexplained change: a.rs".into()]);
+    fn a_follow_up_starts_from_what_the_eval_found_and_what_the_person_decided() {
+        let found = ["not met: Return 503".to_string(), "unexplained change: a.rs".to_string()];
+        let words = remedy_words(&found, &[]);
         assert_eq!(
             words,
             "Fix what the last Eval found:\n- not met: Return 503\n- unexplained change: a.rs"
         );
-        assert_eq!(remedy_words(&[]), "");
+        assert_eq!(remedy_words(&[], &[]), "");
+        let decided = decision_lines(&[
+            serde_json::json!({"answer": "not_wanted", "behaviour": "Usage is sent to a server."}),
+            serde_json::json!({"answer": "not_sure", "behaviour": "The theme follows the hour."}),
+            serde_json::json!({"answer": "words", "behaviour": "show an error", "words": "a line under the field"}),
+            serde_json::json!({"answer": "later", "behaviour": "Sessions last a day."}),
+        ]);
+        assert_eq!(
+            decided,
+            [
+                "I did not want: Usage is sent to a server.",
+                "By “show an error” I meant: a line under the field",
+                "Still wanted, later: Sessions last a day.",
+            ],
+            "word for word, and not sure decides nothing"
+        );
+        let both = remedy_words(&found[..1], &decided[..1]);
+        assert_eq!(
+            both,
+            "Fix what the last Eval found:\n- not met: Return 503\n\nWhat I decided:\n- I did not want: Usage is sent to a server."
+        );
     }
 
     /// What a follow-up fixes, from the Eval's report: each requirement not
