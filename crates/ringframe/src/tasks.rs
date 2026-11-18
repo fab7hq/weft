@@ -2082,8 +2082,29 @@ fn questions_of(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Vec<Value> {
         out.push(json!({"ask": i["kinds"][0], "behaviour": i["sentence"], "why": null,
                         "items": [key], "quote": null, "readings": [], "from": "eval_reader"}));
     }
+    // Where a question comes from before this Eval, for the person to see:
+    // one left not sure at an earlier Seal, or one about a behaviour that
+    // goes against a decision they made.
+    let report = settled(ctx, st, tasks).report;
+    let carried = array_of(&ctx.brief, "carried");
     for (n, q) in out.iter_mut().enumerate() {
         q["id"] = json!(format!("q{}", n + 1));
+        let items: Vec<String> = array_of(q, "items").iter().map(str_of_value).collect();
+        let before = items
+            .iter()
+            .filter_map(|i| i.strip_prefix("c|"))
+            .find_map(|id| carried.iter().find(|d| d["id"] == id));
+        q["asked_before"] = match before {
+            Some(d) => json!({"decision": d["id"], "seal": d["seal"], "date": d["date"]}),
+            None => Value::Null,
+        };
+        let against = array_of(&report, "against_decisions").iter().find(|a| {
+            array_of(a, "windows").iter().any(|w| items.contains(&format!("w|{}", str_of_value(w))))
+        });
+        q["against"] = match against {
+            Some(a) => json!({"decision": a["decision"], "seal": a["seal"], "date": a["date"]}),
+            None => Value::Null,
+        };
     }
     out
 }
@@ -3615,6 +3636,12 @@ mod tests {
             assert_eq!(against["decision"], json!(old));
             assert_eq!(against["seal"], seal["seal_id"]);
             assert_eq!(against["windows"], json!([metrics]));
+            let asked = array_of(&rec, "questions")
+                .iter()
+                .find(|q| array_of(q, "items").contains(&json!(format!("w|{metrics}"))))
+                .unwrap();
+            assert_eq!(asked["against"]["decision"], json!(old));
+            assert_eq!(asked["asked_before"], Value::Null);
             let md =
                 std::fs::read_to_string(ws.rf_dir().join(format!("evals/{e}/eval.md"))).unwrap();
             assert!(md.contains("goes against your decision of"), "{md}");
@@ -3674,6 +3701,17 @@ mod tests {
             let md = brief_md(ws, &qs);
             assert!(md.contains(&format!("### `c|{d}` (allows did_you_want)")), "{md}");
             assert!(md.contains("Asked before, and the person was not sure"), "{md}");
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert!(next(ws, &e).is_err());
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            let carried = array_of(&rec, "questions")
+                .iter()
+                .find(|q| array_of(q, "items").iter().any(|i| str_of_value(i).starts_with("c|")))
+                .expect("the carried question");
+            assert_eq!(carried["asked_before"]["seal"], seal["seal_id"]);
+            assert_eq!(carried["asked_before"]["decision"], json!(d));
+            let new = array_of(&rec, "questions").iter().find(|q| q["asked_before"].is_null());
+            assert!(new.is_some(), "this Eval's own question is not marked");
             // Another unit's Eval carries nothing.
             let other = crate::testing::confirm_ask(ws, b"Something else.\n");
             commit(&ws.root, &[("src/other.js", Some("export const other = () => 2;\n"))], "other");
