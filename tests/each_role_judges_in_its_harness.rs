@@ -71,9 +71,9 @@ fn events(root: &Path, kind: &str) -> Vec<Value> {
 }
 
 /// The harness a task runs in: every reading, the requirements task and the
-/// re-reads included, in the read role's.
-fn expected(_task: &str) -> &'static str {
-    "sh-b"
+/// re-reads included, in the read role's; the questions in the debate's.
+fn expected(task: &str) -> &'static str {
+    if task.ends_with("~qs1") { "sh-a" } else { "sh-b" }
 }
 
 /// One judge pane: its harness, whether it said it is ready, and the tasks
@@ -216,7 +216,8 @@ fn each_judge_starts_in_its_roles_harness() {
     let named = record["readers"].as_array().cloned().unwrap_or_default();
     assert!(!named.is_empty(), "{record}");
     for j in &named {
-        assert_eq!(j["host"], "sh-b", "{named:?}");
+        let want = if j["role"] == "question" { "sh-a" } else { "sh-b" };
+        assert_eq!(j["host"], want, "{named:?}");
     }
 
     c.call(Call::Shutdown);

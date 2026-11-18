@@ -476,6 +476,13 @@ pub enum EvalStep {
     Settled { report: Value },
 }
 
+/// The questions an Eval left for the person, in order, each with its id,
+/// kind, behaviour, why and items; none while it is open.
+pub fn eval_questions(ws: &Workspace, eval_id: &str) -> Result<Vec<Value>, Error> {
+    let record = evaluate::load_record(ws, eval_id)?.unwrap_or_default();
+    Ok(record["questions"].as_array().cloned().unwrap_or_default())
+}
+
 /// One ready task for a reader, of `role` (`read` or `question`)
 /// when given. A task out past its time goes out once more, then fails.
 /// Once every task is in, the Eval settles.

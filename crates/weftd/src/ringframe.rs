@@ -1436,8 +1436,47 @@ pub(crate) mod tests {
     /// A reader's answer to a task file: the requirements quoting the Ask's
     /// words; every unit serving the first requirement; every requirement
     /// unknown, with what would settle it.
+    /// A question reader's answer, from its brief: each item in a question
+    /// of its own, of the first kind it allows; a `what_did_you_mean` quotes
+    /// the start of the first Ask.
+    pub(crate) fn questions_for(brief: &str) -> Value {
+        let words: String = brief
+            .split("## The requests\n\n=== ")
+            .nth(1)
+            .and_then(|r| r.lines().nth(1))
+            .unwrap_or_default()
+            .chars()
+            .take(20)
+            .collect();
+        let questions: Vec<Value> = brief
+            .lines()
+            .filter_map(|l| l.strip_prefix("### `"))
+            .filter_map(|l| {
+                let (key, rest) = l.split_once("` (allows ")?;
+                Some((key.to_string(), rest.trim_end_matches(')').split(", ").next()?.to_string()))
+            })
+            .enumerate()
+            .map(|(n, (key, kind))| {
+                let mut q = serde_json::json!({"ask": kind, "items": [key],
+                    "behaviour": format!("Behaviour number {n} changed."),
+                    "why": format!("Reason number {n} for asking.")});
+                if kind == "what_did_you_mean" {
+                    q["quote"] = serde_json::json!(words);
+                    q["readings"] = serde_json::json!(["one way", "another way"]);
+                }
+                q
+            })
+            .collect();
+        serde_json::json!({"questions": questions})
+    }
+
     fn answer(kind: &str, file: &Value) -> Value {
         let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+        if kind == "question" {
+            let out = file["output"].as_str().unwrap_or_default();
+            let brief = out.replace("/out/", "/tasks/").replace(".json", ".brief.md");
+            return questions_for(&std::fs::read_to_string(brief).unwrap());
+        }
         if kind == "requirements" {
             return serde_json::json!({"requirements": list("asks").iter().map(|a| {
                 serde_json::json!({"ask": a["id"], "kind": "local", "text": "the uptime export",

@@ -711,6 +711,7 @@ mod tests {
             .filter_map(|l| l.split(' ').next().map(|id| format!("w_{id}")))
             .find_map(|w| unit(&w).1.map(|q| (w, q)));
         let doc = match task.kind.as_str() {
+            "question" => crate::ringframe::tests::questions_for(&brief),
             "requirements" => json!({"requirements": list("asks").iter().map(|a| {
                 json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
                        "quote": a["text"].as_str().unwrap().trim()})

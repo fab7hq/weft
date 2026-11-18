@@ -443,9 +443,10 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
         Task { id: task_id(&ctx.eval_id, "rd1"), kind: "read", role: "read", items: ctx.items() };
     let mut done = st.done(&read.id);
     tasks.push(read);
-    for k in 1..READINGS_MAX {
+    let mut k = 1;
+    let readings_in = loop {
         if !done {
-            break;
+            break false;
         }
         let so_far = readings(st, &tasks);
         let unsure: Vec<String> = ctx
@@ -453,8 +454,8 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
             .into_iter()
             .filter(|item| open_again(item, so_far.get(item).map_or(&[][..], Vec::as_slice)))
             .collect();
-        if unsure.is_empty() {
-            break;
+        if unsure.is_empty() || k >= READINGS_MAX {
+            break true;
         }
         let again = Task {
             id: task_id(&ctx.eval_id, &format!("rr{k}")),
@@ -464,8 +465,70 @@ fn plan(ctx: &Ctx, st: &Status) -> Vec<Task> {
         };
         done = st.done(&again.id);
         tasks.push(again);
+        k += 1;
+    };
+    // Once the readings settle, the items only the person can settle go to
+    // the question reader, when there are any.
+    if readings_in {
+        let items = question_items(ctx, &settled(ctx, st, &tasks));
+        if !items.is_empty() {
+            let keys = items.iter().map(|i| str_of(i, "key")).collect();
+            tasks.push(Task {
+                id: task_id(&ctx.eval_id, "qs1"),
+                kind: "question",
+                role: "question",
+                items: keys,
+            });
+        }
     }
     tasks
+}
+
+/// The kinds of question, each with the answers it takes.
+pub const QUESTIONS: [(&str, &[&str]); 3] = [
+    ("did_you_want", &["wanted", "not_wanted", "not_sure"]),
+    ("still_want", &["now", "later", "drop", "not_sure"]),
+    ("what_did_you_mean", &["words", "not_sure"]),
+];
+
+/// What only the person can settle, from what the readings settled: a unit
+/// no request explains that the agent did not declare ("Did you want
+/// this?"), a requirement not met ("Still want it?"), a requirement the
+/// readings left unsettled ("What did you mean?"). Each comes with what the
+/// question reader is shown of it, and the reader's own sentence for it.
+fn question_items(ctx: &Ctx, s: &Settled) -> Vec<Value> {
+    let declared: BTreeSet<String> = array_of(&s.report, "declared")
+        .iter()
+        .flat_map(|d| array_of(d, "items").iter().map(str_of_value))
+        .collect();
+    let deciding = |rs: &[Value], want: &dyn Fn(&Value) -> bool| -> Value {
+        rs.iter().rev().map(|r| r["answer"].clone()).find(|a| want(a)).unwrap_or(Value::Null)
+    };
+    let mut out = Vec::new();
+    for u in &s.units {
+        let id = str_of(u, "id");
+        if u["result"] == "unexplained" && !declared.contains(&id) {
+            let a = deciding(array_of(u, "readings"), &|a| a["answer"] == "unexplained");
+            out.push(json!({"key": format!("w|{id}"), "kinds": ["did_you_want"],
+                            "unit": id, "path": u["path"], "sentence": a["reason"]}));
+        }
+    }
+    for r in &s.requirements {
+        let id = str_of(r, "id");
+        let readings: Vec<Value> =
+            array_of(r, "readings").iter().map(|x| x["answer"].clone()).collect();
+        let kind = match r["result"].as_str() {
+            Some("not_met") => "still_want",
+            Some("unsettled") => "what_did_you_mean",
+            _ => continue,
+        };
+        let a = deciding(array_of(r, "readings"), &|a| !a.is_null());
+        out.push(json!({"key": format!("r|{id}"), "kinds": [kind], "requirement": id,
+                        "text": r["text"], "done_when": r["done_when"], "readings": readings,
+                        "sentence": a["reason"]}));
+    }
+    let _ = ctx;
+    out
 }
 
 // ---- instructions ---------------------------------------------------------------
@@ -591,6 +654,51 @@ later prompts: the words this requirement comes from.
 steps are already requirements.
 ";
 
+const QUESTION_MD: &str = "\
+# RingFrame Eval task: question
+
+You prepare the questions a person answers when they seal a piece of work an \
+agent did for them. An Eval has already read the work. It found the items \
+below, which only the person can settle, because they are about what the \
+person meant, not about whether the code is right. Turn them into a few \
+questions about intent, in the person's terms. Judge nothing, fix nothing, and \
+say nothing about what to do.
+
+There are three kinds of question:
+- `did_you_want`: \"Did you want this?\" for a change nobody asked for. The \
+person answers wanted, not wanted or not sure.
+- `still_want`: \"Still want it?\" for something the person asked for that the \
+work does not do. The person answers now, later, drop or not sure.
+- `what_did_you_mean`: \"What did you mean by ...?\" for something they asked \
+for that the Eval could not settle. The person answers in their own words.
+
+Rules:
+1. Group items into behaviours: one question per behaviour the person would \
+recognise, not one per file or unit. Items of one behaviour go in one \
+question; items of different behaviours do not.
+2. Every item goes in exactly one question, of a kind it allows.
+3. Ask about behaviour and intent only. Never ask whether code is correct, and \
+never name a file, function, line, id or code in `behaviour` or `why`.
+4. Be neutral: no verdict, no opinion, nothing that suggests an answer, and do \
+not repeat the agent's justification as if it were true.
+5. Plain words: `behaviour` is one sentence saying what changed or what is \
+missing, as the person would see it; `why` is one sentence saying why the \
+person is asked.
+
+For `what_did_you_mean`, `quote` holds the person's words in question, copied \
+exactly from what they asked, and `readings` at least two ways they can be \
+read.
+
+Write your answer as one JSON object:
+
+```json
+{\"questions\": [
+  {\"ask\": \"did_you_want\", \"behaviour\": \"<one sentence>\", \"why\": \"<one sentence>\", \"items\": [\"<item key>\"]},
+  {\"ask\": \"what_did_you_mean\", \"behaviour\": \"…\", \"why\": \"…\", \"items\": [\"…\"],
+   \"quote\": \"<the person's words>\", \"readings\": [\"<one reading>\", \"<another>\"]}]}
+```
+";
+
 fn instructions(kind: &str, deny: &[String]) -> String {
     let rules = if deny.is_empty() {
         String::new()
@@ -598,7 +706,11 @@ fn instructions(kind: &str, deny: &[String]) -> String {
         let items: String = deny.iter().map(|r| format!("- {r}\n")).collect();
         format!("\nYou must not:\n{items}")
     };
-    let what = if kind == "requirements" { REQUIREMENTS_MD } else { READ_MD };
+    let what = match kind {
+        "requirements" => REQUIREMENTS_MD,
+        "question" => QUESTION_MD,
+        _ => READ_MD,
+    };
     format!("{what}\n{SUBMIT}{rules}")
 }
 
@@ -660,6 +772,10 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
         b.push_str("=== end of brief ===\n");
         return b;
     }
+    if t.kind == "question" {
+        question_brief(ctx, t, &mut b);
+        return b;
+    }
     let elsewhere = array_of(&ctx.brief, "elsewhere");
     if !elsewhere.is_empty() {
         b.push_str("## Other work\n\nOpen, and not judged in this Eval:\n\n");
@@ -704,6 +820,101 @@ fn brief(ctx: &Ctx, t: &Task, file: &Value, deny: &[String]) -> String {
     }
     b.push_str("=== end of brief ===\n");
     b
+}
+
+/// The question reader's brief after the requests: the plan each Ask named,
+/// the requirements, what the agent said, and every item with what it is.
+fn question_brief(ctx: &Ctx, t: &Task, b: &mut String) {
+    use std::fmt::Write as _;
+    for (ask, plan) in ask_plans(ctx) {
+        let text = std::fs::read_to_string(ctx.ws.root.join(&plan)).unwrap_or_default();
+        if !text.is_empty() {
+            let _ = writeln!(b, "## The plan {ask} named: {plan}\n\n{}\n", text.trim_end());
+        }
+    }
+    b.push_str("## The requirements\n\n");
+    for r in ctx.judged_requirements() {
+        let _ = writeln!(b, "- `{}`: {}", str_of(r, "id"), str_of(r, "text"));
+        if let Some(d) = r["done_when"].as_str().filter(|d| !d.is_empty()) {
+            let _ = writeln!(b, "  Done when: {d}");
+        }
+    }
+    b.push_str("\n## What the agent said\n\n");
+    for s in array_of(&ctx.brief, "statements") {
+        let _ = writeln!(b, "=== last message\n{}\n", str_of(s, "text").trim_end());
+    }
+    for (repo, log) in commits(&ctx.ws, &ctx.eval_id).unwrap_or_default() {
+        let _ = writeln!(b, "=== commits, {repo}\n{}\n", log.trim_end());
+    }
+    b.push_str(
+        "## The items\n\nEach item's key, the kinds of question it allows, and what it is.\n\n",
+    );
+    for i in task_items(ctx, t) {
+        let kinds: Vec<String> = array_of(&i, "kinds").iter().map(str_of_value).collect();
+        let _ = writeln!(b, "### `{}` (allows {})\n", str_of(&i, "key"), kinds.join(", "));
+        if let Some(unit) = i["unit"].as_str() {
+            let _ = writeln!(
+                b,
+                "A change no request explains. The reader said: {}\n",
+                str_of(&i, "sentence")
+            );
+            let body = ctx.windows.get(unit).map_or("", String::as_str).trim_end_matches('\n');
+            let _ = writeln!(b, "```diff\n{body}\n```\n");
+        } else {
+            let _ = writeln!(b, "What was asked: {}", str_of(&i, "text"));
+            if let Some(d) = i["done_when"].as_str().filter(|d| !d.is_empty()) {
+                let _ = writeln!(b, "Done when: {d}");
+            }
+            for r in array_of(&i, "readings").iter().filter(|r| !r.is_null()) {
+                let missing =
+                    r["missing"].as_str().map(|m| format!(" Missing: {m}")).unwrap_or_default();
+                let _ = writeln!(
+                    b,
+                    "- A reading: {}, because {}{missing}",
+                    str_of(r, "vote"),
+                    str_of(r, "reason")
+                );
+            }
+            b.push('\n');
+        }
+    }
+    b.push_str("=== end of brief ===\n");
+}
+
+/// The plan each of the Eval's Asks named, by its Ask: the path its
+/// compile recorded.
+fn ask_plans(ctx: &Ctx) -> Vec<(String, String)> {
+    let asks: BTreeSet<String> =
+        array_of(&ctx.brief, "asks").iter().map(|a| str_of(a, "ask_id")).collect();
+    store::events(&ctx.ws)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e["type"] == "ask.compiled" && asks.contains(&str_of(e, "id")))
+        .filter_map(|e| {
+            Some((str_of(e, "id"), e["data"]["compiler"]["plan"].as_str()?.to_string()))
+        })
+        .collect()
+}
+
+/// The question items a task asks about, as `question_items` made them.
+fn task_items(ctx: &Ctx, t: &Task) -> Vec<Value> {
+    let Ok(st) = status(ctx) else { return Vec::new() };
+    let tasks = plan(ctx, &st);
+    let items = question_items(ctx, &settled(ctx, &st, &tasks));
+    items.into_iter().filter(|i| t.items.contains(&str_of(i, "key"))).collect()
+}
+
+/// What the person said, every word of it: each Ask and the prompts typed
+/// after it.
+fn persons_words(ctx: &Ctx) -> Vec<String> {
+    array_of(&ctx.brief, "asks")
+        .iter()
+        .map(|a| str_of(a, "ask_id"))
+        .flat_map(|a| {
+            std::iter::once(ask_words(&ctx.ws, &a))
+                .chain(ctx.later.get(&a).cloned().unwrap_or_default())
+        })
+        .collect()
 }
 
 /// The brief's rules, or the default for an Eval opened before it had any.
@@ -1380,6 +1591,78 @@ fn check_read(ch: &mut Checker, out: &Value) {
     ch.templated(&units, "reason", "id");
 }
 
+/// The question reader's answer: every item in exactly one question; every
+/// question names its items, says its behaviour and why, and asks a kind every
+/// item of it allows; a `what_did_you_mean` quotes the person's words and
+/// gives two readings of them. Code never writes or rewords a question.
+fn check_question(ch: &mut Checker, out: &Value) {
+    let items = task_items(ch.ctx, ch.task);
+    let allows = |key: &str| -> Vec<String> {
+        items
+            .iter()
+            .find(|i| i["key"] == key)
+            .map_or(Vec::new(), |i| array_of(i, "kinds").iter().map(str_of_value).collect())
+    };
+    let said: Vec<String> = persons_words(ch.ctx).iter().map(|w| squash(w)).collect();
+    let keys = ["ask", "behaviour", "why", "items", "quote", "readings"];
+    let mut placed: BTreeMap<String, usize> = BTreeMap::new();
+    let questions = array_of(out, "questions").to_vec();
+    if questions.is_empty() {
+        ch.error("questions", "questions is a list of at least one question");
+    }
+    for (n, q) in questions.iter().enumerate() {
+        let at = format!("questions[{n}]");
+        for k in q.as_object().into_iter().flat_map(|o| o.keys()) {
+            if !keys.contains(&k.as_str()) {
+                ch.error(&at, format!("{k} is not a key of a question"));
+            }
+        }
+        let ask = str_of(q, "ask");
+        if !QUESTIONS.iter().any(|(k, _)| *k == ask) {
+            ch.error(&at, "ask is did_you_want, still_want or what_did_you_mean");
+        }
+        for field in ["behaviour", "why"] {
+            let text = str_of(q, field);
+            if text.trim().is_empty() || text.chars().count() > 300 {
+                ch.error(&at, format!("{field} is one plain sentence"));
+            }
+        }
+        let its: Vec<String> = array_of(q, "items").iter().map(str_of_value).collect();
+        if its.is_empty() {
+            ch.error(&at, "a question names its items");
+        }
+        for key in &its {
+            if !ch.task.items.contains(key) {
+                ch.error(&at, format!("{key} is not an item of this task"));
+                continue;
+            }
+            if let Some(other) = placed.insert(key.clone(), n) {
+                ch.error(&at, format!("{key} is in questions[{other}] too"));
+            }
+            if !allows(key).contains(&ask) {
+                ch.error(
+                    &at,
+                    format!("{key} cannot be asked as {ask}: it allows {}", allows(key).join(", ")),
+                );
+            }
+        }
+        if ask == "what_did_you_mean" {
+            let quote = squash(&str_of(q, "quote"));
+            if quote.chars().count() < QUOTE_MIN || !said.iter().any(|w| w.contains(&quote)) {
+                ch.error(&at, "quote is the person's words, copied exactly from what they asked");
+            }
+            if array_of(q, "readings").iter().filter(|r| !str_of_value(r).trim().is_empty()).count()
+                < 2
+            {
+                ch.error(&at, "readings gives at least two ways the words can be read");
+            }
+        }
+    }
+    for key in ch.task.items.iter().filter(|k| !placed.contains_key(*k)) {
+        ch.error("questions", format!("{key} is in no question"));
+    }
+}
+
 fn str_of_value(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
@@ -1480,6 +1763,7 @@ fn check_and_record(
             let out = Value::Object(out);
             match t.kind {
                 "requirements" => check_requirements(&mut ch, &out),
+                "question" => check_question(&mut ch, &out),
                 _ => check_read(&mut ch, &out),
             }
             bytes = store::canonical(&out);
@@ -1526,6 +1810,26 @@ fn kept_part(t: &Task, out: &Value, errors: &[Value]) -> Option<(Value, Vec<Stri
     // A list in part is not the Asks' requirements: the Eval keeps RingFrame's.
     if t.kind == "requirements" {
         return None;
+    }
+    if t.kind == "question" {
+        // The questions that checked; their items are asked, and the rest are
+        // asked in the Eval reader's own sentences.
+        let index =
+            |at: &str| at.strip_prefix("questions[")?.split(']').next()?.parse::<usize>().ok();
+        let bad: BTreeSet<usize> = errors.iter().filter_map(|e| index(&str_of(e, "at"))).collect();
+        let kept: Vec<Value> = array_of(out, "questions")
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !bad.contains(i))
+            .map(|(_, q)| q.clone())
+            .collect();
+        let asked: BTreeSet<String> =
+            kept.iter().flat_map(|q| array_of(q, "items").iter().map(str_of_value)).collect();
+        let left: Vec<String> = t.items.iter().filter(|i| !asked.contains(*i)).cloned().collect();
+        let mut doc = out.clone();
+        doc["questions"] = json!(kept);
+        doc["unjudged"] = json!(left);
+        return Some((doc, left));
     }
     let index = |at: &str, name: &str| {
         at.strip_prefix(name)?.strip_prefix('[')?.split(']').next()?.parse::<usize>().ok()
@@ -1603,19 +1907,47 @@ fn kept_reading(r: &Reading) -> Value {
     json!({"task": r.task, "kind": r.kind, "answer": r.answer})
 }
 
-fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
-    let eval_id = &ctx.eval_id;
-    let mut limitations: Vec<String> =
-        array_of(&ctx.brief, "limitations").iter().map(str_of_value).collect();
-    for (id, out) in &st.accepted {
-        let left = array_of(out, "unjudged");
-        if !left.is_empty() {
-            limitations.push(format!(
-                "{id}: kept without {} of its answers, whose checks failed on the last try",
-                left.len()
-            ));
+/// The questions for the person, in the question reader's order, each with
+/// its id; an item the reader's answer left out is asked on its own, in the
+/// Eval reader's own sentence.
+fn questions_of(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Vec<Value> {
+    let Some(t) = tasks.iter().find(|t| t.kind == "question") else { return Vec::new() };
+    let mut out: Vec<Value> = Vec::new();
+    let answer = st.accepted.get(&t.id);
+    for q in answer.map_or(&[][..], |a| array_of(a, "questions")) {
+        let mut q = json!({"ask": q["ask"], "behaviour": q["behaviour"], "why": q["why"],
+                           "items": q["items"], "quote": q["quote"], "readings": q["readings"],
+                           "from": "reader"});
+        if q["readings"].is_null() {
+            q["readings"] = json!([]);
         }
+        out.push(q);
     }
+    let asked: BTreeSet<String> =
+        out.iter().flat_map(|q| array_of(q, "items").iter().map(str_of_value)).collect();
+    for i in question_items(ctx, &settled(ctx, st, tasks)) {
+        let key = str_of(&i, "key");
+        if asked.contains(&key) {
+            continue;
+        }
+        out.push(json!({"ask": i["kinds"][0], "behaviour": i["sentence"], "why": null,
+                        "items": [key], "quote": null, "readings": [], "from": "eval_reader"}));
+    }
+    for (n, q) in out.iter_mut().enumerate() {
+        q["id"] = json!(format!("q{}", n + 1));
+    }
+    out
+}
+
+/// What the readings settled: each requirement and unit with its result, how
+/// many readings agree and the readings themselves, and the report.
+struct Settled {
+    requirements: Vec<Value>,
+    units: Vec<Value>,
+    report: Value,
+}
+
+fn settled(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Settled {
     let all = readings(st, tasks);
     let none: Vec<Reading> = Vec::new();
     let of = |item: &str| all.get(item).unwrap_or(&none);
@@ -1700,6 +2032,24 @@ fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
     }
     let report = json!({"faults": faults, "declared": declared, "against_decisions": [],
                         "cannot_settle": cannot_settle});
+    Settled { requirements, units, report }
+}
+
+fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
+    let eval_id = &ctx.eval_id;
+    let mut limitations: Vec<String> =
+        array_of(&ctx.brief, "limitations").iter().map(str_of_value).collect();
+    for (id, out) in &st.accepted {
+        let left = array_of(out, "unjudged");
+        if !left.is_empty() {
+            limitations.push(format!(
+                "{id}: kept without {} of its answers, whose checks failed on the last try",
+                left.len()
+            ));
+        }
+    }
+    let Settled { requirements, units, report } = settled(ctx, st, tasks);
+    let questions = questions_of(ctx, st, tasks);
     let not_judgeable: Vec<String> = ctx
         .requirements()
         .iter()
@@ -1779,7 +2129,8 @@ fn close(ctx: &Ctx, st: &Status, tasks: &[Task]) -> Result<Value, EvalError> {
         "subject": subject,
         "brief": {"path": format!("evals/{eval_id}/brief.json")},
         "requirements": requirements, "units": units, "report": report,
-        "questions": [], "questions_status": "none",
+        "questions_status": if questions.is_empty() { "none" } else { "asked" },
+        "questions": questions,
         "readers": readers,
         "findings": findings, "checks": checks,
         "fabrications": fabrications, "templated": templated,
@@ -2070,6 +2421,9 @@ mod tests {
         req: &dyn Fn(&str) -> Value,
         declared: Value,
     ) -> Value {
+        if task_of(ws, task)["kind"] == "question" {
+            return crate::testing::questions_for(&brief_md(ws, task));
+        }
         let items = array_of(&task_of(ws, task), "items").to_vec();
         let mut windows = Vec::new();
         let mut requirements = Vec::new();
@@ -2272,6 +2626,9 @@ mod tests {
             let rr2 = next(ws, &e).unwrap();
             assert!(rr2.ends_with("~rr2"), "{rr2}");
             submit_ok(ws, &rr2, answer(ws, &rr2, &unit, &unknown, json!([])));
+            let qs = next(ws, &e).unwrap();
+            assert!(qs.ends_with("~qs1"), "the questions come once the readings settle: {qs}");
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &unknown, json!([])));
             let done = next(ws, &e).unwrap_err();
             assert_eq!(done["state"], "done", "{done}");
             let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
@@ -2377,6 +2734,8 @@ mod tests {
                 array_of(&task_of(ws, &rr1), "items").iter().map(str_of_value).collect();
             assert_eq!(items, [format!("w|{}", i.tele)], "a lone not_met is taken at face value");
             submit_ok(ws, &rr1, answer(ws, &rr1, &unit, &not_met, json!([])));
+            let qs = next(ws, &e).unwrap();
+            submit_ok(ws, &qs, answer(ws, &qs, &unit, &not_met, json!([])));
             assert_eq!(next(ws, &e).unwrap_err()["state"], "done");
             let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
             assert!(rec.get("verdict").is_none() && rec.get("confidence").is_none());
@@ -2396,7 +2755,7 @@ mod tests {
             for i in array_of(&rec, "units").iter().chain(array_of(&rec, "requirements")) {
                 assert!(i.get("p").is_none(), "no probability: {i}");
             }
-            assert_eq!(rec["questions_status"], "none");
+            assert_eq!(rec["questions_status"], "asked");
             let completed = store::events(ws)
                 .unwrap()
                 .into_iter()
@@ -2471,6 +2830,7 @@ mod tests {
             }
             let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
             let report = &rec["report"];
+            assert_eq!(rec["questions_status"], "none", "a declared change is shown, not asked");
             assert!(array_of(report, "faults").is_empty(), "{report}");
             assert_eq!(
                 report["declared"],
@@ -2734,6 +3094,227 @@ mod tests {
             let rec = crate::testing::settled(ws, &str_of(&o.out, "eval_id"), true);
             assert_eq!(rec["schema"], RECORD2_SCHEMA);
             assert!(rec["report"].is_object());
+        });
+    }
+
+    /// Reads the change to the end with the fine reading, and returns the
+    /// question task, if one opens.
+    fn read_to_questions(
+        ws: &Workspace,
+        e: &str,
+        unit: &dyn Fn(&str) -> Value,
+        req: &dyn Fn(&str) -> Value,
+    ) -> Option<String> {
+        loop {
+            match next(ws, e) {
+                Ok(t) if t.ends_with("~qs1") => return Some(t),
+                Ok(t) => submit_ok(ws, &t, answer(ws, &t, unit, req, json!([]))),
+                Err(_) => return None,
+            }
+        }
+    }
+
+    /// 3.1: an Eval that settles with nothing for the person opens no
+    /// question task; one with a change nobody asked for, a requirement not
+    /// met and one left unsettled opens one, each item of its kind.
+    #[test]
+    fn the_items_that_need_the_person_open_one_question_task() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            assert_eq!(read_to_questions(ws, &e, &serves, &met_in(&i.up)), None);
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            assert_eq!(rec["questions_status"], "none");
+            assert_eq!(rec["questions"], json!([]));
+        });
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            let req = |id: &str| {
+                if id == S2 {
+                    json!({"id": id, "vote": "not_met", "reason": "the notes do not name it",
+                           "missing": "a line in the notes naming uptime_seconds"})
+                } else if id == S1 {
+                    met_in(&i.up)(id)
+                } else {
+                    json!({"id": id, "vote": "unknown", "reason": format!("{id} reads two ways"),
+                           "missing": "which way the person meant"})
+                }
+            };
+            let qs = read_to_questions(ws, &e, &unit, &req).expect("a question task");
+            let file = task_of(ws, &qs);
+            assert_eq!(file["role"], "question");
+            let md = brief_md(ws, &qs);
+            assert!(md.contains(&format!("### `w|{}` (allows did_you_want)", i.tele)), "{md}");
+            assert!(md.contains(&format!("### `r|{S2}` (allows still_want)")), "{md}");
+            assert!(md.contains("(allows what_did_you_mean)"), "an unsettled requirement: {md}");
+            assert!(!md.contains(&format!("`w|{}`", i.up)), "an explained unit is not asked");
+            assert!(!md.contains(&format!("`r|{S1}`")), "a met requirement is not asked");
+        });
+    }
+
+    /// 3.2: the question brief holds the requests with what was typed
+    /// later, the plan the Ask named, the requirements, what the agent said,
+    /// and each item with its change and the reader's reasons; the reply is
+    /// accepted.
+    #[test]
+    fn the_question_brief_holds_each_part() {
+        eval_bench(|ws| {
+            let statements =
+                vec![json!({"session": "s1", "text": "All set, and I added telemetry."})];
+            let e = bench_opened(ws, Open { statements, ..Open::default() });
+            let i = ids(ws, &e);
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            let qs = read_to_questions(ws, &e, &unit, &met_in(&i.up)).unwrap();
+            let md = brief_md(ws, &qs);
+            for part in [
+                "## The requests",
+                "Build Phase 1 of plans/plan.md",
+                "## The requirements",
+                S1,
+                "## What the agent said",
+                "All set, and I added telemetry.",
+                "## The items",
+                "It sends a usage beacon to an outside server.",
+                "fetch('https://example.com/collect')",
+                "=== end of brief ===",
+            ] {
+                assert!(md.contains(part), "{part:?} is in the brief: {md}");
+            }
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert_eq!(next(ws, &e).unwrap_err()["state"], "done");
+        });
+    }
+
+    /// 3.3: every item in exactly one question of a kind it allows, with its
+    /// behaviour, why and only a question's keys; a `what_did_you_mean`
+    /// quotes the person's words. Each failure says what to fix.
+    #[test]
+    fn the_coverage_check_refuses_what_does_not_cover_the_items() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            let req = |id: &str| {
+                if id == S2 {
+                    json!({"id": id, "vote": "not_met", "reason": "the notes do not name it",
+                           "missing": "a line in the notes"})
+                } else {
+                    met_in(&i.up)(id)
+                }
+            };
+            let qs = read_to_questions(ws, &e, &unit, &req).unwrap();
+            let w = format!("w|{}", i.tele);
+            let r = format!("r|{S2}");
+            let q = |ask: &str, items: Vec<&str>| {
+                json!({"ask": ask, "behaviour": format!("It does {ask}."),
+                                                          "why": format!("Asked as {ask}."), "items": items})
+            };
+            let refused = |doc: Value, want: &str| {
+                put(ws, &qs, doc);
+                let (code, out) = submit(ws, &qs).unwrap();
+                assert_ne!(code, 0, "{want}: {out}");
+                assert!(out.to_string().contains(want), "{want}: {out}");
+            };
+            refused(
+                json!({"questions": [q("did_you_want", vec![&w])]}),
+                &format!("{r} is in no question"),
+            );
+            refused(
+                json!({"questions": [q("did_you_want", vec![&w, &r])]}),
+                "cannot be asked as did_you_want",
+            );
+            put(
+                ws,
+                &qs,
+                json!({"questions": [q("did_you_want", vec![&w]), q("still_want", vec![&r, &w])]}),
+            );
+            let (code, out) = submit(ws, &qs).unwrap();
+            assert_eq!(code, 0, "the last try keeps what checks: {out}");
+            assert_eq!(out["unjudged"], json!([r]), "{out}");
+            assert!(next(ws, &e).is_err(), "nothing more");
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            let questions = array_of(&rec, "questions");
+            assert_eq!(rec["questions_status"], "asked");
+            assert_eq!(questions.len(), 2, "{questions:?}");
+            assert_eq!(
+                (questions[0]["id"].clone(), questions[0]["from"].clone()),
+                (json!("q1"), json!("reader"))
+            );
+            assert_eq!(questions[0]["items"], json!([w]));
+            assert_eq!(
+                questions[1]["from"], "eval_reader",
+                "the item left out, in the reader's own words"
+            );
+            assert_eq!(questions[1]["behaviour"], "the notes do not name it");
+            assert_eq!(questions[1]["ask"], "still_want");
+            assert_eq!(questions[1]["items"], json!([r]));
+        });
+    }
+
+    /// 3.3: the rest of the check, one failure at a time.
+    #[test]
+    fn a_question_without_its_parts_is_refused() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            let qs = read_to_questions(ws, &e, &unit, &met_in(&i.up)).unwrap();
+            let w = format!("w|{}", i.tele);
+            let ctx = Ctx::load(ws, &e).unwrap();
+            let st = status(&ctx).unwrap();
+            let t = plan(&ctx, &st).into_iter().find(|t| t.id == qs).unwrap();
+            let errors = |doc: Value| -> String {
+                let mut ch = Checker {
+                    ctx: &ctx,
+                    task: &t,
+                    facts: BTreeMap::new(),
+                    commit_logs: None,
+                    errors: Vec::new(),
+                    fabrications: Vec::new(),
+                };
+                check_question(&mut ch, &doc);
+                json!(ch.errors).to_string()
+            };
+            let ok = json!({"ask": "did_you_want", "behaviour": "It phones home.", "why": "Nobody asked.", "items": [w]});
+            assert_eq!(errors(json!({"questions": [ok]})), "[]");
+            let with = |k: &str, v: Value| {
+                let mut q = ok.clone();
+                q[k] = v;
+                json!({"questions": [q]})
+            };
+            assert!(
+                errors(with("behaviour", json!(""))).contains("behaviour is one plain sentence")
+            );
+            assert!(errors(with("why", Value::Null)).contains("why is one plain sentence"));
+            assert!(errors(with("file", json!("src/telemetry.js"))).contains("file is not a key"));
+            assert!(errors(with("ask", json!("is_it_right"))).contains("ask is did_you_want"));
+            assert!(errors(json!({"questions": [ok, ok]})).contains("is in questions[0] too"));
+            let mean = json!({"ask": "what_did_you_mean", "behaviour": "b", "why": "w", "items": [w],
+                              "quote": "words nobody said", "readings": ["one"]});
+            let said = errors(json!({"questions": [mean]}));
+            assert!(said.contains("quote is the person's words"), "{said}");
+            assert!(said.contains("at least two ways"), "{said}");
+        });
+    }
+
+    /// 3.4: the record holds the questions with their items; the api hands
+    /// them to Weft.
+    #[test]
+    fn the_questions_are_stored_and_handed_to_weft() {
+        eval_bench(|ws| {
+            let e = bench(ws);
+            let i = ids(ws, &e);
+            let unit = |id: &str| if id == i.tele { flags(id) } else { serves(id) };
+            let qs = read_to_questions(ws, &e, &unit, &met_in(&i.up)).unwrap();
+            submit_ok(ws, &qs, answer(ws, &qs, &serves, &serves, json!([])));
+            assert!(next(ws, &e).is_err());
+            let rec = crate::evaluate::load_record(ws, &e).unwrap().unwrap();
+            let questions = array_of(&rec, "questions").to_vec();
+            assert_eq!(questions[0]["items"], json!([format!("w|{}", i.tele)]));
+            assert_eq!(questions[0]["ask"], "did_you_want");
+            assert_eq!(crate::api::eval_questions(ws, &e).unwrap(), questions);
         });
     }
 }

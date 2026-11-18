@@ -270,11 +270,47 @@ fn asked(file: &Value) -> (Vec<String>, Vec<String>) {
     (of("w|"), of("r|"))
 }
 
+/// A question reader's answer: each item in a question of its own, of the
+/// first kind it allows, worded plainly; a `what_did_you_mean` quotes the
+/// start of the first Ask.
+pub fn questions_for(brief: &str) -> Value {
+    let words: String = brief
+        .split("## The requests\n\n=== ")
+        .nth(1)
+        .and_then(|r| r.lines().nth(1))
+        .unwrap_or_default()
+        .chars()
+        .take(20)
+        .collect();
+    let questions: Vec<Value> = brief
+        .lines()
+        .filter_map(|l| l.strip_prefix("### `"))
+        .filter_map(|l| {
+            let (key, rest) = l.split_once("` (allows ")?;
+            let kind = rest.trim_end_matches(')').split(", ").next()?.to_string();
+            Some((key.to_string(), kind))
+        })
+        .enumerate()
+        .map(|(n, (key, kind))| {
+            let mut q = json!({"ask": kind, "behaviour": format!("Behaviour number {n} changed."),
+                               "why": format!("Reason number {n} for asking."), "items": [key]});
+            if kind == "what_did_you_mean" {
+                q["quote"] = json!(words);
+                q["readings"] = json!(["one way", "another way"]);
+            }
+            q
+        })
+        .collect();
+    json!({"questions": questions})
+}
+
 /// A reader that finds nothing done: every unit unexplained, quoting its
 /// first added line, and every requirement not met.
 pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
     let (file, brief) = task_parts(ws, task_id);
-    let doc = if file["kind"] == "requirements" {
+    let doc = if file["kind"] == "question" {
+        questions_for(&brief)
+    } else if file["kind"] == "requirements" {
         listed_requirements(&file)
     } else {
         let (units, reqs) = asked(&file);
@@ -300,7 +336,9 @@ pub fn answer_task_wrong(ws: &Workspace, task_id: &str) {
 /// quote. Written where RingFrame said the answer goes.
 pub fn answer_task(ws: &Workspace, task_id: &str) {
     let (file, brief) = task_parts(ws, task_id);
-    let doc = if file["kind"] == "requirements" {
+    let doc = if file["kind"] == "question" {
+        questions_for(&brief)
+    } else if file["kind"] == "requirements" {
         listed_requirements(&file)
     } else {
         let all = all_requirements(&brief);

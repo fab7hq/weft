@@ -224,6 +224,40 @@ pub fn task_lines(typed: &str) -> Vec<(String, PathBuf, PathBuf)> {
         .collect()
 }
 
+/// A question reader's answer, from its brief: each item in a question of
+/// its own, of the first kind it allows; a `what_did_you_mean` quotes the
+/// start of the first Ask.
+pub fn questions_for(brief: &str) -> Value {
+    let words: String = brief
+        .split("## The requests\n\n=== ")
+        .nth(1)
+        .and_then(|r| r.lines().nth(1))
+        .unwrap_or_default()
+        .chars()
+        .take(20)
+        .collect();
+    let questions: Vec<Value> = brief
+        .lines()
+        .filter_map(|l| l.strip_prefix("### `"))
+        .filter_map(|l| {
+            let (key, rest) = l.split_once("` (allows ")?;
+            let kind = rest.trim_end_matches(')').split(", ").next()?.to_string();
+            Some((key.to_string(), kind))
+        })
+        .enumerate()
+        .map(|(n, (key, kind))| {
+            let mut q = json!({"ask": kind, "behaviour": format!("Behaviour number {n} changed."),
+                               "why": format!("Reason number {n} for asking."), "items": [key]});
+            if kind == "what_did_you_mean" {
+                q["quote"] = json!(words);
+                q["readings"] = json!(["one way", "another way"]);
+            }
+            q
+        })
+        .collect();
+    json!({"questions": questions})
+}
+
 /// What a task asks for, by its id: the person's requirements, or a reading
 /// of the change.
 pub fn kind_of(task: &str) -> &'static str {
@@ -243,6 +277,11 @@ pub fn is_reread(task: &str) -> bool {
 /// unknown, with what would settle it, so each is read once more.
 pub fn answer(kind: &str, file: &Value) -> Value {
     let list = |key: &str| file[key].as_array().cloned().unwrap_or_default();
+    if file["kind"] == "question" {
+        let out = file["output"].as_str().unwrap_or_default();
+        let brief = out.replace("/out/", "/tasks/").replace(".json", ".brief.md");
+        return questions_for(&std::fs::read_to_string(brief).unwrap_or_default());
+    }
     if kind == "requirements" {
         return json!({"requirements": list("asks").iter().map(|a| {
             json!({"ask": a["id"], "kind": "local", "text": "the uptime export",
