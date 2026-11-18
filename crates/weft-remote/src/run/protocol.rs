@@ -586,8 +586,9 @@ impl Remote {
                 (at, of, vec![(Part::Seal, "seal", id.to_string())])
             }
             // For rejected work: a follow-up's words, from what its Eval
-            // found, or the commits Undo offers.
-            Some(what @ ("remedy" | "commits")) => {
+            // found, or the commits Undo offers; for a Seal, the questions its
+            // Eval left (`unit` the Eval).
+            Some(what @ ("remedy" | "commits" | "questions")) => {
                 let at = self.project_named(m)?;
                 let id = m["unit"].as_str().ok_or(("bad_request", "no unit".to_string()))?;
                 let call = Call::Read {
@@ -609,7 +610,7 @@ impl Remote {
                 return Err((
                     "not_allowed",
                     "a device reads history, detail, work, eval, seal, session, sealed, sessions, \
-                     done, remedy, commits or eval_view"
+                     done, remedy, commits, questions or eval_view"
                         .into(),
                 ));
             }

@@ -175,6 +175,7 @@ pub fn allowed(call: &Call) -> bool {
                     | "ask"
                     | "remedy"
                     | "commits"
+                    | "questions"
             )
         }
         _ => false,
@@ -300,6 +301,14 @@ mod tests {
             Call::Read {
                 what: "commits".into(),
                 unit: "ask_1".into(),
+                pane: None,
+                lines: None,
+                before: None,
+                after: None,
+            },
+            Call::Read {
+                what: "questions".into(),
+                unit: "evl_1".into(),
                 pane: None,
                 lines: None,
                 before: None,

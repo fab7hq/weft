@@ -596,6 +596,12 @@ pub fn eval_open(
     }
 }
 
+/// The questions an Eval left for the person, in order, each with where it
+/// comes from before this Eval; none while it is open.
+pub fn eval_questions(project: &Path, eval_id: &str) -> Result<Vec<Value>, Error> {
+    api::eval_questions(&workspace(project)?, eval_id).map_err(refused)
+}
+
 /// One ready task of an open Eval for a judge in `harness`, of `role` when
 /// given, that reads nothing the judge's session has `read`; or that none is
 /// ready, or that the Eval has settled.
@@ -1422,6 +1428,8 @@ pub(crate) mod tests {
                         kinds.contains("question"),
                         "an unsettled requirement is asked: {kinds:?}"
                     );
+                    let questions = eval_questions(&repo, &eval_id).unwrap();
+                    assert_eq!(questions[0]["ask"], "what_did_you_mean", "{questions:?}");
                     // The person's answer reaches the Seal as a decision.
                     let said = weft_core::ask::SealAnswer {
                         question: "q1".into(),
