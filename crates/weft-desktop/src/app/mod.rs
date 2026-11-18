@@ -121,11 +121,11 @@ pub enum ActiveSheet {
         project: PathBuf,
         eval: String,
     },
-    /// The Eval view: steps or files, and the levels opened, the last in front.
+    /// The Eval view: the item picked, then `lines` or `reads` when one of
+    /// them is open.
     EvalView {
         project: PathBuf,
         eval: String,
-        by_file: bool,
         at: Vec<String>,
     },
     SealDetail {

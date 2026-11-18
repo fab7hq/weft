@@ -28,18 +28,21 @@ fn json_at(path: &Path) -> Option<Value> {
 }
 
 /// The Eval view of one Eval, from RingFrame's files as they are now: its
-/// record once it has closed, else what its judges have handed in so far.
+/// record once it has closed, else what its readers have handed in so far.
 pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_view::EvalView> {
     if !plain(eval_id) {
         return None;
     }
     let rf = project_root.join(".fab7/rf");
     let dir = rf.join("evals").join(eval_id);
-    let changes = json_at(&dir.join("changes.json"))?;
+    let record = json_at(&dir.join("record.json"));
+    let changes = match json_at(&dir.join("changes.json")) {
+        Some(c) => c,
+        None if record.is_some() => Value::Null,
+        None => return None,
+    };
     let evidence = json_at(&dir.join("evidence.json")).unwrap_or(Value::Null);
     let brief = json_at(&dir.join("brief.json")).unwrap_or(Value::Null);
-    let windows = json_at(&dir.join("windows.json")).unwrap_or(Value::Null);
-    let record = json_at(&dir.join("record.json"));
     // What is in, from the ledger: each accepted output, and every task that
     // is done with (accepted or failed).
     let mut outputs = Vec::new();
@@ -77,7 +80,6 @@ pub fn eval_view(project_root: &Path, eval_id: &str) -> Option<weft_core::eval_v
         changes: &changes,
         evidence: &evidence,
         brief: &brief,
-        windows: &windows,
         record: record.as_ref(),
         outputs: &outputs,
         planned: &planned,
@@ -123,13 +125,16 @@ mod tests {
         assert!(eval_view(dir.path(), "evl_1").unwrap().checks_running.is_empty());
     }
 
-    /// A closed Eval in `root`: its verdict, and how its one check went.
-    fn closed(root: &Path, id: &str, verdict: &str, check: &str) {
+    /// A closed Eval in `root`: whether it leaves a change to look at, and
+    /// how its one check went.
+    fn closed(root: &Path, id: &str, to_look_at: bool, check: &str) {
         let dir = root.join(".fab7/rf/evals").join(id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("changes.json"), r#"{"requirements": []}"#).unwrap();
-        let record = serde_json::json!({"verdict": verdict, "confidence": 1.0, "items": [],
-            "windows": [], "checks": [{"command": "cargo test", "outcome": check, "seconds": 1}]});
+        let result = if to_look_at { "unexplained" } else { "explained" };
+        let record = serde_json::json!({"schema": "ringframe.eval/2", "eval_id": id,
+            "units": [{"id": "w1", "path": "a.rs", "class": "code", "result": result, "agreed": 1, "readings": []}],
+            "checks": [{"command": "cargo test", "outcome": check, "seconds": 1}]});
         std::fs::write(dir.join("record.json"), record.to_string()).unwrap();
     }
 
@@ -150,10 +155,10 @@ mod tests {
     fn each_open_eval_is_ready_to_seal_or_needs_you_and_a_sealed_one_is_neither() {
         use weft_core::board::Notice;
         let dir = tempfile::tempdir().unwrap();
-        closed(dir.path(), "evl_ready", "aligned", "succeeded");
-        closed(dir.path(), "evl_failed", "aligned", "failed");
-        closed(dir.path(), "evl_drifted", "drifted", "succeeded");
-        closed(dir.path(), "evl_done", "aligned", "succeeded");
+        closed(dir.path(), "evl_ready", false, "succeeded");
+        closed(dir.path(), "evl_failed", false, "failed");
+        closed(dir.path(), "evl_drifted", true, "succeeded");
+        closed(dir.path(), "evl_done", false, "succeeded");
         let units = [
             judged("ask_1", "evl_ready", None),
             judged("ask_2", "evl_failed", None),
@@ -180,11 +185,74 @@ mod tests {
         let mut units = Vec::new();
         for n in 0..30 {
             let id = format!("evl_{n}");
-            closed(dir.path(), &id, "aligned", "succeeded");
+            closed(dir.path(), &id, false, "succeeded");
             units.push(judged(&format!("ask_{n}"), &id, Some("rejected")));
         }
-        closed(dir.path(), "evl_new", "aligned", "succeeded");
+        closed(dir.path(), "evl_new", false, "succeeded");
         units.push(judged("ask_new", "evl_new", None));
         assert_eq!(notices(dir.path(), &units).get("evl_new"), Some(&Notice::ReadyToSeal));
+    }
+
+    /// RingFrame's files while an Eval runs: the whole reading is in, and a
+    /// re-read of what it was unsure of is handed out.
+    #[test]
+    fn a_running_eval_is_read_from_the_readings_handed_in_so_far() {
+        let dir = tempfile::tempdir().unwrap();
+        let rf = dir.path().join(".fab7/rf");
+        let eval = rf.join("evals/evl_1");
+        let tasks = rf.join("tmp/eval-evl_1/tasks");
+        std::fs::create_dir_all(&eval).unwrap();
+        std::fs::create_dir_all(&tasks).unwrap();
+        let write = |p: std::path::PathBuf, v: serde_json::Value| {
+            std::fs::write(p, v.to_string()).unwrap();
+        };
+        write(
+            eval.join("changes.json"),
+            serde_json::json!({"requirements": [{"id": "R1", "kind": "local", "text": "Show an error."}]}),
+        );
+        write(
+            eval.join("evidence.json"),
+            serde_json::json!({"windows": [{"id": "w1", "path": "src/a.rs", "class": "code"}]}),
+        );
+        write(
+            eval.join("brief.json"),
+            serde_json::json!({"asks": [{"ask_id": "a", "title": "fix login"}]}),
+        );
+        write(tasks.join("evl_1~rd1.json"), serde_json::json!({}));
+        write(tasks.join("evl_1~rr1.json"), serde_json::json!({}));
+        let out = "evals/evl_1/tasks/evl_1.rd1.1.json";
+        std::fs::create_dir_all(rf.join("evals/evl_1/tasks")).unwrap();
+        write(
+            rf.join(out),
+            serde_json::json!({"kind": "read", "task_id": "evl_1~rd1",
+                "windows": [{"id": "w1", "answer": "unexplained", "quote": "x", "reason": "Posts outside."}],
+                "requirements": [{"id": "R1", "vote": "met", "reason": "shown", "citations": []}]}),
+        );
+        let event = serde_json::json!({"type": "eval.task", "data": {"eval_id": "evl_1",
+            "task_id": "evl_1~rd1", "outcome": "accepted", "artifact": {"path": out}}});
+        std::fs::write(rf.join("ledger.jsonl"), format!("{event}\n")).unwrap();
+
+        let v = eval_view(dir.path(), "evl_1").unwrap();
+        assert!(!v.closed);
+        let unit = v.item("w|w1").unwrap();
+        assert_eq!((unit.text.as_str(), unit.again), ("Posts outside.", true), "it is read again");
+        let p = v.running().unwrap();
+        assert_eq!((p.label.as_str(), p.note.as_str()), ("2nd read", "reading"));
+    }
+
+    /// A closed Eval is its record: no other file is needed.
+    #[test]
+    fn a_closed_eval_is_read_from_its_record_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let eval = dir.path().join(".fab7/rf/evals/evl_v4");
+        std::fs::create_dir_all(&eval).unwrap();
+        std::fs::write(
+            eval.join("record.json"),
+            include_str!("../../weft-core/tests/fixtures/eval-v4/record.json"),
+        )
+        .unwrap();
+        let v = eval_view(dir.path(), "evl_v4").unwrap();
+        assert_eq!(v.headline(), "5 things to look at · 4 settled");
+        assert_eq!(read(dir.path(), "evl_v4").unwrap().judged_by(), ["claude"]);
     }
 }

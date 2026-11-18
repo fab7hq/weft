@@ -236,6 +236,14 @@ impl WeftDesktopApp {
         }
     }
 
+    /// The Eval view of `eval`, read again from the daemon, with `at` picked.
+    fn eval_view(&mut self, project: PathBuf, eval: String, at: Vec<String>) {
+        if let Some(c) = self.client_mut(&project) {
+            let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
+        }
+        self.open_from_sheet(ActiveSheet::EvalView { project, eval, at });
+    }
+
     /// Open `next` over the Details shown, which `‹` then goes back to.
     fn open_from_sheet(&mut self, next: ActiveSheet) {
         if let Some(shown) = self.active_sheet.take() {
@@ -860,41 +868,41 @@ impl WeftDesktopApp {
             SheetAct::Seal { project, eval } => self.offer_seal(project, eval),
             SheetAct::EvalWork { project, unit } => self.eval_work(project, unit),
             SheetAct::SealWork { project, unit } => self.seal_work(project, unit),
-            SheetAct::EvalView { project, eval } => {
-                if let Some(c) = self.client_mut(&project) {
-                    let _ = c.read("eval", &eval, None, Then::EvalView { eval: eval.clone() });
-                }
-                self.open_from_sheet(ActiveSheet::EvalView {
-                    project,
-                    eval,
-                    by_file: false,
-                    at: Vec::new(),
-                });
-            }
-            SheetAct::ToggleEvalViewMode => {
-                if let Some(ActiveSheet::EvalView { by_file, at, .. }) = &mut self.active_sheet
-                    && at.is_empty()
-                {
-                    *by_file = !*by_file;
-                }
-            }
+            SheetAct::EvalView { project, eval } => self.eval_view(project, eval, Vec::new()),
+            SheetAct::EvalItem { project, eval, item } => self.eval_view(project, eval, vec![item]),
             SheetAct::EvalOpen(key) => {
-                let Some(ActiveSheet::EvalView { project, eval, at, .. }) = &mut self.active_sheet
+                let Some(ActiveSheet::EvalView { project, eval, at }) = &mut self.active_sheet
                 else {
                     return;
                 };
-                at.push(key.clone());
-                let (project, eval) = (project.clone(), eval.clone());
-                if let Some(window) = key.strip_prefix("c:")
+                if !matches!(key.as_str(), "lines" | "reads") {
+                    *at = vec![key];
+                    return;
+                }
+                let (project, eval, first) = (project.clone(), eval.clone(), at.first().cloned());
+                // An item's lines or reads open on the item picked, or the first.
+                let view: Option<weft_core::eval_view::EvalView> = self
+                    .client(&project)
+                    .and_then(|c| c.read.get(&Then::EvalView { eval: eval.clone() }))
+                    .and_then(|v| serde_json::from_value(v.clone()).ok());
+                let Some(v) = view else { return };
+                let picked = first.as_deref().and_then(|k| v.item(k)).or(v.items.first());
+                let Some(item) = picked.cloned() else { return };
+                if let Some(ActiveSheet::EvalView { at, .. }) = &mut self.active_sheet {
+                    *at = vec![item.key.clone(), key.clone()];
+                }
+                if key == "lines"
                     && let Some(c) = self.client_mut(&project)
                 {
-                    let then = Then::Window { eval: eval.clone(), window: window.to_string() };
-                    let _ = c.read("window", &format!("{eval}/{window}"), None, then);
+                    for w in &item.windows {
+                        let then = Then::Window { eval: eval.clone(), window: w.clone() };
+                        let _ = c.read("window", &format!("{eval}/{w}"), None, then);
+                    }
                 }
             }
             SheetAct::EvalBack => match &mut self.active_sheet {
-                Some(ActiveSheet::EvalView { at, .. }) if !at.is_empty() => {
-                    at.pop();
+                Some(ActiveSheet::EvalView { at, .. }) if at.len() > 1 => {
+                    at.truncate(1);
                 }
                 // Opened from other Details: back to them.
                 Some(ActiveSheet::EvalView { .. }) if !self.sheet_back.is_empty() => {

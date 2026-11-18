@@ -671,8 +671,7 @@ impl Remote {
             Part::Prompt => r.prompt = text(&answer),
             Part::Seal => r.seal = answer,
             Part::Hunk(i) => {
-                let window =
-                    r.view.as_ref().and_then(|v| v.changes.get(i)).map(|c| c.window.clone());
+                let window = r.view.as_ref().and_then(|v| v.windows.get(i)).map(|w| w.id.clone());
                 if let (Some(w), Some(t)) = (window, text(&answer)) {
                     r.hunks.insert(w, t);
                 }
@@ -685,7 +684,7 @@ impl Remote {
                     return self.error(r.conn, &r.req, "no_record", "that Eval is not on disk");
                 };
                 let windows: Vec<String> =
-                    view.changes.iter().map(|c| format!("{}/{}", view.eval_id, c.window)).collect();
+                    view.windows.iter().map(|w| format!("{}/{}", view.eval_id, w.id)).collect();
                 r.view = Some(view);
                 for (i, w) in windows.into_iter().enumerate() {
                     self.read_part(g, Part::Hunk(i), "window", w);

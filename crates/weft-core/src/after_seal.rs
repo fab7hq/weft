@@ -85,21 +85,18 @@ pub fn follow_up_link(unit: &crate::work::UnitOfWork) -> (&'static str, &str) {
     }
 }
 
-/// What a follow-up fixes, one line each, from the Eval's view: each step
-/// not met, each change nothing explains (its file, and why as a judge said),
-/// then what RingFrame found.
+/// What a follow-up fixes, one line each, from the Eval's report: each
+/// requirement not met, then each change nothing asked for (its file, and why
+/// as the reading said).
 pub fn remedy_lines(view: &crate::eval_view::EvalView) -> Vec<String> {
-    use crate::eval_view::State;
-    let not_met = view.groups.iter().flat_map(|g| &g.steps).filter(|s| s.state == State::NotMet);
-    let unexplained = view.changes.iter().filter(|c| c.result == "unexplained");
-    not_met
-        .map(|s| fill("follow_up.not_met", &[("what", s.text.trim())]))
-        .chain(unexplained.map(|c| {
-            fill("follow_up.unexplained", &[("path", &c.path), ("why", c.why.trim())])
+    let (reqs, units): (Vec<_>, Vec<_>) = view.faults.iter().partition(|f| f.requirement);
+    reqs.iter()
+        .map(|f| fill("follow_up.not_met", &[("what", f.what.trim())]))
+        .chain(units.iter().map(|f| {
+            fill("follow_up.unexplained", &[("path", &f.what), ("why", f.why.trim())])
                 .trim()
                 .to_string()
         }))
-        .chain(view.findings.iter().cloned())
         .collect()
 }
 
@@ -192,45 +189,21 @@ mod tests {
         assert_eq!(remedy_words(&[]), "");
     }
 
-    /// What a follow-up fixes, from the Eval's view: each step not met, each
-    /// change nothing explains (its file and why), then RingFrame's findings.
+    /// What a follow-up fixes, from the Eval's report: each requirement not
+    /// met, then each change nothing asked for (its file and why).
     #[test]
     fn a_follow_up_names_what_was_not_met_and_what_nothing_explains() {
-        use crate::eval_view::{Change, EvalView, Group, State, Step};
-        let step = |text: &str, state| Step {
-            id: text.into(),
-            label: String::new(),
-            text: text.into(),
-            done_when: String::new(),
-            state,
-            changes: Vec::new(),
-            readings: Vec::new(),
-            findings: Vec::new(),
-        };
-        let change = |path: &str, result: &str, why: &str| Change {
-            window: path.into(),
-            path: path.into(),
-            result: result.into(),
-            serves: Vec::new(),
+        use crate::eval_view::{EvalView, Fault};
+        let fault = |requirement, what: &str, why: &str| Fault {
+            requirement,
+            what: what.into(),
             why: why.into(),
-            quotes: Vec::new(),
-            lines: None,
-            readings: Vec::new(),
         };
         let view = EvalView {
-            groups: vec![Group {
-                key: "ask".into(),
-                title: "health endpoint".into(),
-                steps: vec![
-                    step("Add a health endpoint", State::Met),
-                    step("Return 503 while the database is down", State::NotMet),
-                ],
-            }],
-            changes: vec![
-                change("src/health.rs", "required", ""),
-                change("src/db/pool.rs", "unexplained", "rewrites the retry loop"),
+            faults: vec![
+                fault(false, "src/db/pool.rs", "rewrites the retry loop"),
+                fault(true, "Return 503 while the database is down", "no 503 anywhere"),
             ],
-            findings: vec!["unclaimed rewrite: commit 94d7989".into()],
             ..EvalView::default()
         };
         assert_eq!(
@@ -238,9 +211,23 @@ mod tests {
             [
                 "not met: Return 503 while the database is down",
                 "unexplained change: src/db/pool.rs rewrites the retry loop",
-                "unclaimed rewrite: commit 94d7989",
             ]
         );
         assert!(remedy_lines(&EvalView::default()).is_empty());
+    }
+
+    /// The faults a follow-up names are the report's, read from a record.
+    #[test]
+    fn a_follow_up_reads_the_report_s_faults() {
+        let record: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/eval-v4/record.json")).unwrap();
+        let view = crate::eval_view::EvalView::of_record("evl_v4", &record);
+        assert_eq!(
+            remedy_lines(&view),
+            [
+                "not met: Keep me signed in on this device.",
+                "unexplained change: src/auth/session.ts Sessions are cut to an hour.",
+            ]
+        );
     }
 }

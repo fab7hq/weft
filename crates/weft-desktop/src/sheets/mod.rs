@@ -118,9 +118,7 @@ fn sheet_of(props: &SheetProps) -> Element {
         ActiveSheet::Unit { project, unit } => unit::render(props, project, unit),
         ActiveSheet::WorkDetail { project, unit } => work::render(props, project, unit),
         ActiveSheet::EvalDetail { project, eval } => eval::render_detail(props, project, eval),
-        ActiveSheet::EvalView { project, eval, by_file, at } => {
-            eval::render_view(props, project, eval, *by_file, at)
-        }
+        ActiveSheet::EvalView { project, eval, at } => eval::render_view(props, project, eval, at),
         ActiveSheet::SealDetail { project, seal } => seal::render(props, project, seal),
         ActiveSheet::SessionDetail { project, session } => session::render(props, project, session),
         ActiveSheet::Updates => updates::render(props),

@@ -1,21 +1,17 @@
-//! An Eval's Details, and the Eval view of its record.
+//! An Eval's Details, and the Eval view: its items in a list on the left,
+//! the one picked in plain prose on the right.
 
 use std::path::Path;
 
-use weft_core::eval_view::{self, EvalView, Light, Lit, Mode, Progress, Row, RowKind, State};
+use weft_core::eval_view::{self, EvalView, Item, Kind, Light, Progress};
 use weft_core::record::Record;
-use weft_core::turns::Turn;
 use weft_core::words::{fill, word};
 
 use super::SheetProps;
 use crate::action::{SheetAct, TreeAct};
-use crate::daemon::PaneView;
-use crate::daemon::Then;
-use crate::gpui::{Element, div, img_el, palette, span, svg_el};
-use crate::ui::{
-    Size, Tone, button, close_button, list_row, mark_colour, note, report_colour, row_list,
-    section_label, sheet, sheet_body, sheet_foot, sheet_head,
-};
+use crate::daemon::{PaneView, Then};
+use crate::gpui::{Element, div, edge_bar, palette, rich, span, svg_el};
+use crate::ui::{Size, Tone, button, note, row_list, sheet_foot};
 
 /// The Eval's record: from the board's records, or as read through the
 /// daemon. None until one of them has it.
@@ -26,38 +22,12 @@ fn judges(props: &SheetProps, project: &Path, eval: &str) -> Option<Record> {
     held.into_iter().chain(read).find_map(Record::parse)
 }
 
-/// Marked lines in a box: ✓, ✗ or ? and what they say.
-fn marked(lines: &[weft_core::offers::Marked], mono: bool) -> Element {
-    row_list(
-        lines
-            .iter()
-            .map(|m| {
-                let text =
-                    div().flex_1().font_size(if mono { 12 } else { 13 }).text(m.text.clone());
-                let mut r = list_row()
-                    .child(
-                        div()
-                            .font_weight(700)
-                            .font_size(13)
-                            .color(mark_colour(m.mark))
-                            .text(m.mark),
-                    )
-                    .child(if mono { text.font_mono() } else { text });
-                if let Some(res) = &m.result {
-                    r = r.child(div().font_size(12).color(palette::MUTED).text(res.clone()));
-                }
-                r
-            })
-            .collect(),
-    )
-}
-
 /// Asks in a box, each opening its Details.
 pub(super) fn ask_rows(project: &Path, asks: &[weft_core::tree::Ask]) -> Element {
     row_list(
         asks.iter()
             .map(|a| {
-                list_row()
+                crate::ui::list_row()
                     .on_click(TreeAct::SelectAsk {
                         project: project.to_path_buf(),
                         unit: a.unit.clone(),
@@ -68,6 +38,41 @@ pub(super) fn ask_rows(project: &Path, asks: &[weft_core::tree::Ask]) -> Element
             })
             .collect(),
     )
+}
+
+/// An item's colour, on its shape and its dots only.
+fn colour(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Before => palette::TEAL,
+        Kind::Look => palette::AMBER_BORDER,
+        Kind::Unsettled => palette::BLUE_BORDER,
+        Kind::Settled => palette::MUTED,
+    }
+}
+
+/// How sure, one dot per reading, filled when it agrees.
+fn dots(item: &Item) -> Element {
+    let c = colour(item.kind);
+    div().layer("dots").flex_row().gap(4).shrink_0().children(item.dots.iter().map(|on| {
+        let dot = div().w(7).h(7).style("border-radius", "4px").border(c);
+        if *on { dot.layer("dot on").bg(c) } else { dot.layer("dot") }
+    }))
+}
+
+/// Its shape, in its colour.
+fn mark(kind: Kind) -> Element {
+    div()
+        .layer("mark")
+        .w(14)
+        .shrink_0()
+        .style("text-align", "center")
+        .color(colour(kind))
+        .text(kind.mark())
+}
+
+/// The text a Seal… button says.
+fn seal_said() -> String {
+    format!("{}…", word("act.seal"))
 }
 
 pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -> Element {
@@ -82,595 +87,574 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
         });
         Some(weft_core::offers::eval_detail(ev, record.as_ref(), &c.units, &c.work.record, seal))
     });
-    let title = match detail.as_ref().map(|d| d.n) {
-        Some(n) => fill("tree.eval", &[("n", &n.to_string())]),
-        None => eval_id.to_string(),
-    };
-    let judging = detail.as_ref().map(|d| d.judging);
-    let report = detail.as_ref().and_then(|d| d.report);
-    let aside = match (judging, report) {
-        (Some(true), _) => Some((word("tree.judging").to_string(), palette::AMBER)),
-        (_, Some(r)) => Some((r.plain(), report_colour(&r))),
-        _ => None,
-    };
-
-    let mut body = sheet_body();
-    match &detail {
-        None => body = body.child(note(word("desktop.eval.gone"), palette::MUTED)),
-        Some(d) => {
-            if let Some(by) = &d.judged_by {
-                let when = d.at.and_then(|t| client.map(|c| weft_core::offers::stamp(t, c.zone)));
-                let said = match when {
-                    Some(ts) => format!("{} {by} · {ts}", word("web.eval.judged_by")),
-                    None => format!("{} {by}", word("web.eval.judged_by")),
-                };
-                body = body.child(note(said, palette::MUTED));
-            }
-            body = body.child(match &d.sealed {
-                Some(sl) => div()
-                    .on_click(TreeAct::SelectSeal {
-                        project: project.to_path_buf(),
-                        seal: sl.seal.clone(),
-                    })
-                    .font_size(13)
-                    .color(palette::TEAL)
-                    .text(format!("{} ›", fill("web.eval.sealed_in", &[("n", &sl.n.to_string())]))),
-                None => note(
-                    match d.asks.len() {
-                        1 => word("web.eval.seal_what_one").to_string(),
-                        n => fill("web.eval.seal_what", &[("n", &n.to_string())]),
-                    },
-                    palette::MUTED,
-                ),
-            });
-            if !d.findings.is_empty() {
-                body = body
-                    .child(section_label(word("web.eval.findings")))
-                    .child(marked(&d.findings, false));
-            }
-            if !d.checks.is_empty() {
-                body = body
-                    .child(section_label(word("eval_view.checks")))
-                    .child(marked(&d.checks, true));
-            }
-            if !d.asks.is_empty() {
-                body = body
-                    .child(section_label(word("web.eval.asks")))
-                    .child(ask_rows(project, &d.asks));
-            }
-        }
-    }
-
     let ids = || (project.to_path_buf(), eval_id.to_string());
-    let left = vec![
-        button(
+    let mut body = div().self_stretch().flex_1().flex_col().style("overflow-y", "auto").pad(28, 48);
+    let Some(d) = &detail else {
+        body = body
+            .child(div().color(palette::MUTED).text(eval_id.to_string()))
+            .child(note(word("desktop.eval.gone"), palette::MUTED));
+        return div()
+            .layer("sheet EvalDetail")
+            .flex_1()
+            .self_stretch()
+            .flex_col()
+            .child(body)
+            .child(sheet_foot(Vec::new(), vec![crate::ui::close_button()]));
+    };
+    let title = d.asks.first().map(|a| a.title.clone()).unwrap_or_default();
+    let mut first = vec![fill("tree.eval", &[("n", &d.n.to_string())])];
+    if !title.is_empty() {
+        first.push(title);
+    }
+    let mut top = div().self_stretch().flex_row().gap(8).items_center();
+    top = match &d.sealed {
+        Some(sl) => top.child(span(first.join(" · ")).color(palette::MUTED)).child(
+            div()
+                .on_click(TreeAct::SelectSeal {
+                    project: project.to_path_buf(),
+                    seal: sl.seal.clone(),
+                })
+                .color(palette::TEAL)
+                .text(format!("· {} ›", fill("web.eval.sealed_in", &[("n", &sl.n.to_string())]))),
+        ),
+        None if d.judging => {
+            first.push(word("tree.judging").into());
+            top.child(span(first.join(" · ")).color(palette::MUTED))
+        }
+        None => {
+            first.push(word("tree.not_sealed").into());
+            top.child(span(first.join(" · ")).color(palette::MUTED))
+        }
+    };
+    top = top.child(div().flex_1());
+    if let Some(by) = &d.judged_by {
+        let when = d.at.and_then(|t| client.map(|c| weft_core::offers::stamp(t, c.zone)));
+        let said = match when {
+            Some(ts) => fill("details.read_by", &[("who", by), ("time", &ts)]),
+            None => fill("details.read_by_untimed", &[("who", by)]),
+        };
+        top = top.child(span(said).color(palette::DIM));
+    }
+    body = body.child(top);
+    if let Some(h) = &d.headline {
+        let (look, rest) = h.split_once(" · ").map_or((h.as_str(), None), |(a, b)| (a, Some(b)));
+        body = body.child(
+            div()
+                .layer("headline")
+                .flex_row()
+                .gap(6)
+                .items_baseline()
+                .style("padding-top", "16px")
+                .pad(16, 0)
+                .child(span(look.to_string()).font_size(20).font_weight(600))
+                .children(rest.map(|r| span(format!("· {r}")).color(palette::MUTED))),
+        );
+    }
+    if !d.items.is_empty() {
+        let mut list = div().layer("items").self_stretch().flex_col().border_top(palette::LINE);
+        let n = d.items.len();
+        for (i, it) in d.items.iter().enumerate() {
+            let act = SheetAct::EvalItem { project: ids().0, eval: ids().1, item: it.key.clone() };
+            let mut row = div()
+                .layer(format!("item {}", it.key))
+                .on_click(act)
+                .self_stretch()
+                .flex_row()
+                .gap(12)
+                .items_center()
+                .style("min-height", "44px")
+                .pad(10, 0)
+                .child(mark(it.kind))
+                .child(div().flex_1().style("min-width", "0").text(it.text.clone()));
+            if !it.dots.is_empty() {
+                row = row.child(dots(it));
+            }
+            row = row.child(div().w(10).color(palette::DIM).text("›"));
+            list = list.child(if i + 1 < n { row.border_bottom(palette::LINE) } else { row });
+        }
+        body = body.child(list);
+    }
+    if !d.asks.is_empty() {
+        let titles: Vec<&str> = d.asks.iter().map(|a| a.title.as_str()).collect();
+        let covers = match titles.len() {
+            1 => fill("details.covers_one", &[("asks", titles[0])]),
+            n => fill("details.covers", &[("n", &n.to_string()), ("asks", &titles.join(" · "))]),
+        };
+        body = body.child(div().pad(22, 0).child(note(covers, palette::MUTED)));
+    }
+    let seal_what = match (d.questions, d.asks.len()) {
+        (0, 1) => word("web.eval.seal_what_one").to_string(),
+        (0, n) => fill("web.eval.seal_what", &[("n", &n.to_string())]),
+        (1, _) => word("details.seal_asks_one").to_string(),
+        (n, _) => fill("details.seal_asks", &[("n", &n.to_string())]),
+    };
+    let left = vec![button(
+        "btn Eval view",
+        word("act.eval_view"),
+        SheetAct::EvalView { project: ids().0, eval: ids().1 },
+        Tone::Quiet,
+        Size::Sheet,
+    )];
+    let mut right = Vec::new();
+    if d.sealed.is_none() {
+        right.push(div().font_size(13).color(palette::DIM).text(seal_what));
+        right.push(button(
             "btn Seal",
-            word("act.seal"),
+            seal_said(),
             SheetAct::Seal { project: ids().0, eval: ids().1 },
             Tone::Primary,
             Size::Sheet,
-        ),
-        button(
-            "btn Eval view",
-            word("act.eval_view"),
-            SheetAct::EvalView { project: ids().0, eval: ids().1 },
-            Tone::Plain,
-            Size::Sheet,
-        ),
-    ];
-    sheet(
-        "sheet EvalDetail",
-        sheet_head(title, aside),
-        body,
-        sheet_foot(left, vec![close_button()]),
-    )
-}
-
-/// The section a heading row heads, by its word.
-const SECTIONS: [&str; 4] = ["findings", "unexplained", "checks", "limitations"];
-
-fn section_of(row: &Row) -> Option<&'static str> {
-    SECTIONS.into_iter().find(|k| word(&format!("eval_view.{k}")).to_uppercase() == row.text)
-}
-
-/// The rows under the top-level row at `at`.
-fn under(rows: &[Row], at: usize) -> &[Row] {
-    let end = rows[at + 1..].iter().position(|r| r.depth == 0).map_or(rows.len(), |n| at + 1 + n);
-    &rows[at + 1..end]
-}
-
-fn state_colour(state: &Option<State>) -> &'static str {
-    match state {
-        Some(State::Met) => palette::TEAL,
-        Some(State::NotMet) => palette::RED,
-        _ => palette::DIM,
+        ));
     }
+    right.push(crate::ui::close_button());
+    div()
+        .layer("sheet EvalDetail")
+        .flex_1()
+        .self_stretch()
+        .flex_col()
+        .child(body)
+        .child(sheet_foot(left, right))
 }
 
-/// A row to open, or only to read.
-fn item(row: &Row, key: Option<&str>) -> Element {
-    let name = row.key.split_once(':').map_or(row.key.as_str(), |(_, k)| k);
-    let mut el = div()
-        .layer(format!("eval row {name}"))
+// ---- the Eval view ----------------------------------------------------------------
+
+/// A section's name over its items.
+fn section(text: &str) -> Element {
+    div().color(palette::MUTED).style("padding", "8px 20px").text(text.to_string())
+}
+
+/// One line of the list: its shape, its text, and its dots or "reading again".
+fn list_row(it: &Item, picked: bool) -> Element {
+    let text = div()
+        .flex_1()
+        .style("min-width", "0")
+        .style("white-space", "nowrap")
+        .style("overflow", "hidden")
+        .style("text-overflow", "ellipsis")
+        .text(it.text.clone());
+    let text = if picked {
+        text.color(palette::TEXT).font_weight(600)
+    } else {
+        text.color(palette::MUTED)
+    };
+    let mut row = div()
+        .layer(format!("eval item {}", it.key))
+        .on_click(SheetAct::EvalOpen(it.key.clone()))
         .self_stretch()
         .flex_row()
         .gap(10)
-        .pad(11, 20)
         .items_center()
-        .border_bottom(palette::LINE);
-    if !row.mark.is_empty() && !matches!(row.kind, RowKind::Change | RowKind::Group) {
-        el = el.child(
-            div().font_mono().font_size(13).color(state_colour(&row.state)).text(row.mark.clone()),
-        );
+        .h(44)
+        .style("position", "relative")
+        .style("padding", "0 20px 0 17px")
+        .child(mark(it.kind))
+        .child(text);
+    if picked {
+        row = row
+            .layer(format!("eval item {} picked", it.key))
+            .bg(palette::SELECTED_BG)
+            .child(edge_bar("left", 3, palette::BLUE_BORDER).layer("picked bar"));
     }
-    el = el.child(
-        div()
-            .flex_1()
-            .font_size(15)
-            .text(row.text.split_whitespace().collect::<Vec<_>>().join(" ")),
-    );
-    if !row.aside.is_empty() {
-        // Each part, amber where it is what needs reading.
-        let mut aside = div().flex_row().font_mono().font_size(11).color(palette::MUTED);
-        for (i, part) in row.aside.split(" · ").enumerate() {
-            let needs = part.ends_with(word("eval.not_met")) || part.contains("unexplained");
-            let said = if i == 0 { part.to_string() } else { format!(" · {part}") };
-            aside =
-                aside.child(span(said).color(if needs { palette::AMBER } else { palette::MUTED }));
-        }
-        el = el.child(aside);
+    if it.again {
+        row = row.child(div().shrink_0().color(palette::DIM).text(word("eval_view.reading_again")));
+    } else if !it.dots.is_empty() {
+        row = row.child(dots(it));
     }
-    match key {
-        Some(k) => el
-            .on_click(SheetAct::EvalOpen(k.to_string()))
-            .child(div().font_weight(600).font_size(16).color(palette::DIM).text("›")),
-        None => el,
-    }
+    row
 }
 
-/// What a level is called, as the crumb back to it says.
-fn title_of(view: &EvalView, rows: &[Row], at: Option<&String>) -> String {
-    match at {
-        None => word("act.eval_view").to_string(),
-        Some(k) if k.starts_with("h:") => word(&format!("eval_view.{}", &k[2..])).to_string(),
-        Some(k) if k.starts_with("s:") => word("eval_view.a_step").to_string(),
-        Some(k) => rows
-            .iter()
-            .chain(eval_view::rows(view, Mode::Files, &Default::default()).iter())
-            .find(|r| &r.key == k)
-            .map_or_else(String::new, |r| {
-                r.text.split(" · ").next().unwrap_or_default().to_string()
-            }),
+/// The list: "To look at", a line, then "Settled".
+fn list_pane(v: &EvalView, crumb: &str, n: Option<usize>, picked: Option<&str>) -> Element {
+    let mut pane = div()
+        .layer("eval items")
+        .w(340)
+        .shrink_0()
+        .flex_col()
+        .border_right(palette::LINE)
+        .style("padding-top", "20px")
+        .style("overflow-y", "auto")
+        .child(
+            div()
+                .self_stretch()
+                .flex_row()
+                .items_center()
+                .style("padding", "0 20px 12px 20px")
+                .child(
+                    div()
+                        .layer("eval crumb")
+                        .on_click(SheetAct::EvalBack)
+                        .color(palette::BLUE_BORDER)
+                        .text(format!("‹ {crumb}")),
+                )
+                .child(div().flex_1())
+                .children(n.map(|n| {
+                    div().color(palette::DIM).text(fill("tree.eval", &[("n", &n.to_string())]))
+                })),
+        );
+    let (look, settled): (Vec<&Item>, Vec<&Item>) =
+        v.items.iter().partition(|i| i.kind.to_look_at());
+    if !look.is_empty() || v.waiting {
+        pane = pane.child(section(word("eval_view.to_look_at")));
+        for it in &look {
+            pane = pane.child(list_row(it, picked == Some(it.key.as_str())));
+        }
     }
+    if v.waiting {
+        pane = pane.child(
+            div()
+                .color(palette::DIM)
+                .style("padding", "12px 20px")
+                .text(word("eval_view.rest_later")),
+        );
+    }
+    if !settled.is_empty() {
+        if !look.is_empty() {
+            pane = pane.child(
+                div()
+                    .self_stretch()
+                    .style("padding", "12px 20px")
+                    .child(div().layer("divider").self_stretch().h(1).bg(palette::LINE)),
+            );
+        }
+        pane = pane.child(section(word("eval_view.settled")));
+        for it in &settled {
+            pane = pane.child(list_row(it, picked == Some(it.key.as_str())));
+        }
+    }
+    pane
+}
+
+/// The picked item, in plain prose.
+fn detail_pane(it: &Item, reads_open: bool) -> Element {
+    let c = colour(it.kind);
+    let mut pane = div()
+        .layer("eval detail")
+        .flex_1()
+        .style("min-width", "0")
+        .flex_col()
+        .gap(14)
+        .style("padding", "48px 48px 24px 48px")
+        .style("overflow-y", "auto")
+        .child(div().layer("detail head").color(c).font_weight(600).text(format!(
+            "{} {}",
+            it.kind.mark(),
+            it.head
+        )))
+        .child(
+            div()
+                .layer("detail big")
+                .self_stretch()
+                .font_size(20)
+                .font_weight(600)
+                .style("line-height", "29px")
+                .text(it.big.clone()),
+        );
+    for w in &it.why {
+        pane = pane.child(note(w.clone(), palette::MUTED).font_size(14));
+    }
+    if !it.sure.is_empty() {
+        pane = pane.child(
+            div()
+                .layer("how sure")
+                .flex_row()
+                .gap(8)
+                .items_center()
+                .child(dots(it))
+                .child(span(it.sure.clone()).color(palette::DIM)),
+        );
+    }
+    if let Some(q) = &it.said {
+        let said = fill("eval_view.agent_said", &[("quote", q)]);
+        let n = said.len();
+        let italic =
+            crate::gpui::Run { italic: true, color: Some(palette::MUTED), ..Default::default() };
+        pane = pane.child(
+            div().layer("agent said").self_stretch().child(rich(said, vec![(0..n, italic)])),
+        );
+    }
+    if let Some(check) = &it.check {
+        pane = pane.child(note(check.clone(), palette::MUTED).font_size(14));
+    }
+    let mut links = div().flex_row().gap(24);
+    if !it.windows.is_empty() {
+        links = links.child(
+            div()
+                .layer("link lines")
+                .on_click(SheetAct::EvalOpen("lines".into()))
+                .color(palette::MUTED)
+                .text(format!("{} ›", word("eval_view.lines"))),
+        );
+    }
+    if !it.reads.is_empty() {
+        let arrow = if reads_open { "⌄" } else { "›" };
+        links = links.child(
+            div()
+                .layer("link reads")
+                .on_click(if reads_open {
+                    SheetAct::EvalBack
+                } else {
+                    SheetAct::EvalOpen("reads".into())
+                })
+                .color(palette::MUTED)
+                .text(format!("{} {arrow}", word("eval_view.reads"))),
+        );
+    }
+    pane = pane.child(links);
+    if reads_open {
+        let mut reads = div().layer("reads").self_stretch().flex_col();
+        for r in &it.reads {
+            let who = format!("{} · ", r.who);
+            let n = who.len();
+            let faint = crate::gpui::Run { color: Some(palette::DIM), ..Default::default() };
+            reads = reads.child(
+                div()
+                    .self_stretch()
+                    .pad(10, 0)
+                    .border_top(palette::LINE)
+                    .child(rich(format!("{who}{}", r.said), vec![(0..n, faint)])),
+            );
+        }
+        pane = pane.child(reads);
+    }
+    pane
+}
+
+/// The lines that show an item, the ones a reading quoted brighter.
+fn lines_pane(v: &EvalView, it: &Item, texts: &dyn Fn(&str) -> Option<String>) -> Element {
+    let mut pane = div()
+        .layer("eval lines")
+        .flex_1()
+        .style("min-width", "0")
+        .flex_col()
+        .gap(14)
+        .style("padding", "48px 48px 24px 48px")
+        .style("overflow-y", "auto")
+        .child(div().color(colour(it.kind)).font_weight(600).text(format!(
+            "{} {}",
+            it.kind.mark(),
+            fill("eval_view.lines_of", &[("kind", it.kind.words())])
+        )))
+        .child(
+            div()
+                .layer("lines back")
+                .on_click(SheetAct::EvalBack)
+                .color(palette::BLUE_BORDER)
+                .text(format!("‹ {}", it.text)),
+        );
+    for id in &it.windows {
+        let w = v.window(id);
+        let mut code = div()
+            .layer(format!("lines {id}"))
+            .self_stretch()
+            .flex_col()
+            .style("padding", "12px 14px")
+            .bg(palette::TERMINAL_BG)
+            .style("border-radius", "4px")
+            .font_mono()
+            .style("line-height", "22px")
+            .style("white-space", "pre")
+            .style("overflow", "hidden")
+            .child(div().color(palette::DIM).text(w.map_or(id.clone(), |w| w.path.clone())));
+        match texts(id) {
+            None => {
+                code = code.child(div().color(palette::MUTED).text(word("desktop.eval.no_lines")))
+            }
+            Some(t) => {
+                let quotes = w.map_or(&[][..], |w| &w.quotes);
+                for l in eval_view::numbered(&t, quotes) {
+                    let n = l.n.map_or_else(String::new, |n| n.to_string());
+                    let text = span(l.text.clone());
+                    let text = if l.lit {
+                        text.color(palette::TEXT).font_weight(600)
+                    } else {
+                        text.color(palette::MUTED)
+                    };
+                    code = code.child(
+                        div()
+                            .layer(if l.lit { "line lit" } else { "line" })
+                            .flex_row()
+                            .child(span(n).w(32).shrink_0().color(palette::DIM))
+                            .child(text),
+                    );
+                }
+            }
+        }
+        pane = pane.child(code);
+    }
+    pane.child(div().color(palette::DIM).text(word("eval_view.quoted")))
+}
+
+/// One arc of the ring, as SVG: the `i`th of three.
+fn arc_svg(i: usize, colour: &str) -> String {
+    format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="150" height="150" viewBox="0 0 150 150"><g transform="rotate(-87 75 75)"><circle cx="75" cy="75" r="64" fill="none" stroke="{colour}" stroke-width="8" stroke-dasharray="122 280" stroke-dashoffset="{offset}"/></g></svg>"#,
+        offset = -(134 * i as i64),
+    )
+}
+
+/// While it runs (17.6, 6.7): one ring with an arc per reading, the one under
+/// way breathing, and the steps in quiet text.
+fn progress_pane(project: &Path, p: &Progress, judges: &[&PaneView]) -> Element {
+    let mut ring =
+        div().layer("progress ring").style("position", "relative").w(150).h(150).shrink_0();
+    for (i, a) in p.arcs.iter().enumerate() {
+        let c = if *a == Light::Next { palette::LINE } else { palette::BLUE_BORDER };
+        let mut arc = div()
+            .layer(match a {
+                Light::Done => format!("arc {i} done"),
+                Light::Now => format!("arc {i} now"),
+                Light::Next => format!("arc {i} next"),
+            })
+            .style("position", "absolute")
+            .style("top", "0")
+            .style("left", "0")
+            .child(svg_el(arc_svg(i, c)).w(150).h(150));
+        if *a == Light::Now {
+            arc = arc.style("animation", "pulse");
+        }
+        ring = ring.child(arc);
+    }
+    ring = ring.child(
+        div()
+            .layer("ring label")
+            .style("position", "absolute")
+            .style("top", "0")
+            .style("left", "0")
+            .w(150)
+            .h(150)
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .child(div().font_size(20).font_weight(600).text(p.label.clone()))
+            .child(div().color(palette::DIM).text(p.note.clone())),
+    );
+    let mut steps = div().layer("steps").flex_col().gap(10);
+    for s in &p.steps {
+        steps = steps.child(match s.light {
+            Light::Done => div().color(palette::MUTED).text(format!("✓ {}", s.name)),
+            Light::Now => div().layer("step now").color(palette::TEXT).text(s.name.clone()),
+            Light::Next => div().color(palette::DIM).text(s.name.clone()),
+        });
+    }
+    let mut more = div().flex_col().gap(10).style("padding-top", "14px");
+    for j in judges {
+        more = more.child(
+            div()
+                .layer(format!("judge {}", j.id))
+                .on_click(SheetAct::WatchJudge { project: project.to_path_buf(), pane: j.id })
+                .color(palette::DIM)
+                .text(format!(
+                    "{} · {}",
+                    fill("eval_view.is_reading", &[("harness", &j.harness)]),
+                    word("eval_view.watch")
+                )),
+        );
+    }
+    for t in &p.tests {
+        more = more.child(div().color(palette::DIM).text(t.clone()));
+    }
+    div()
+        .layer("eval progress")
+        .flex_1()
+        .style("min-width", "0")
+        .flex_row()
+        .gap(40)
+        .items_start()
+        .style("padding", "56px 48px 24px 48px")
+        .child(ring)
+        .child(steps.child(more))
 }
 
 pub(super) fn render_view(
     props: &SheetProps,
     project: &Path,
     eval_id: &str,
-    by_file: bool,
     at: &[String],
 ) -> Element {
     let client = props.client(project);
     let view: Option<EvalView> = client
         .and_then(|c| c.read.get(&Then::EvalView { eval: eval_id.to_string() }))
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let mode = if by_file { Mode::Files } else { Mode::Steps };
-    let rows =
-        view.as_ref().map(|v| eval_view::rows(v, mode, &Default::default())).unwrap_or_default();
-    let crumb = match (at.len(), &view) {
-        (0, _) | (_, None) => props.back.unwrap_or(word("web.detail.title")).to_string(),
-        (n, Some(v)) => title_of(v, &rows, at.get(n.wrapping_sub(2)).filter(|_| n >= 2)),
-    };
-    let head = div()
-        .self_stretch()
-        .flex_row()
-        .gap(10)
-        .pad(12, 20)
-        .items_center()
-        .border_bottom(palette::LINE)
-        .child(
-            div()
-                .on_click(SheetAct::EvalBack)
-                .font_size(13)
-                .color(palette::BLUE_BORDER)
-                .text(format!("‹ {crumb}")),
-        )
-        .child(div().flex_1())
-        .child(div().font_mono().font_size(11).color(palette::DIM).text(eval_id.to_string()));
-
-    let mut body = div().self_stretch().flex_1().flex_col().style("overflow-y", "auto");
-    match (&view, at.last()) {
-        (None, _) => {
-            // Not judged, it has no record to show; else it is still to come.
+    let n = client.and_then(|c| c.work.record.evals.iter().find(|e| e.id == eval_id)).map(|e| e.n);
+    let crumb = view
+        .as_ref()
+        .map(|v| v.title.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| props.back.unwrap_or(word("web.detail.title")).to_string());
+    let runs = view.as_ref().is_some_and(|v| v.running().is_some());
+    let panes = match &view {
+        None => {
+            // Not read, it has no record to show; else it is still to come.
             let judged = client.is_some_and(|c| {
                 c.work.record.evals.iter().any(|e| e.id == eval_id && e.completed())
             });
             let said = if judged { "desktop.eval.no_record" } else { "desktop.eval.not_judged" };
-            body = body.child(div().pad(18, 20).child(note(word(said), palette::MUTED)))
-        }
-        (Some(v), None) if v.running().is_some() => {
-            let p = v.running().expect("it runs");
-            let judges = client.map(|c| c.judges(eval_id)).unwrap_or_default();
-            body = body.child(running(project, v, &p, &judges));
-        }
-        (Some(v), None) => {
-            let header = v.header();
-            let parts: Vec<&str> = header.split(" · ").collect();
-            let mut top =
-                div().self_stretch().flex_col().gap(4).style("padding", "18px 20px 10px 20px");
-            if v.closed {
-                let verdict = parts.first().copied().unwrap_or_default();
-                top = top
-                    .child(
-                        div()
-                            .flex_row()
-                            .gap(6)
-                            .font_weight(600)
-                            .font_size(17)
-                            .child(span(verdict))
-                            .children(parts.get(1).map(|c| span(format!("· {c}")))),
-                    )
-                    .child(note(
-                        parts.get(2..).map(|p| p.join(" · ")).unwrap_or_default(),
-                        palette::MUTED,
-                    ));
-            } else {
-                top = top
-                    .child(div().font_weight(600).font_size(17).text(header.clone()))
-                    .child(note(word("web.eval.live"), palette::MUTED));
-            }
-            let chip = |files: bool| {
-                let on = files == by_file;
-                let mut c = div()
-                    .layer(if files { "by file" } else { "by step" })
-                    .pad(6, 12)
-                    .font_size(13)
-                    .bg(if on { palette::SELECTED_BG } else { palette::SURFACE })
-                    .border(if on { palette::BLUE_BORDER } else { palette::LINE })
-                    .color(if on { palette::BLUE_BORDER } else { palette::TEXT })
-                    .text(word(if files { "eval_view.by_file" } else { "eval_view.by_step" }));
-                if !on {
-                    c = c.on_click(SheetAct::ToggleEvalViewMode);
-                }
-                c
-            };
-            body = body.child(top).child(
+            div().self_stretch().flex_1().flex_col().style("padding", "20px").gap(12).children([
                 div()
-                    .flex_row()
-                    .gap(8)
-                    .style("padding", "0 20px 12px 20px")
-                    .child(chip(false))
-                    .child(chip(true)),
-            );
-            for (i, r) in rows.iter().enumerate().filter(|(_, r)| r.depth == 0) {
-                body = body.child(match section_of(r) {
-                    Some(k) => {
-                        let n = under(&rows, i).len();
-                        let mut row = r.clone();
-                        row.text = word(&format!("eval_view.{k}")).to_string();
-                        row.aside = n.to_string();
-                        row.key = format!("h:{k}");
-                        item(&row, Some(&row.key))
-                    }
-                    None => item(r, (!r.key.is_empty()).then_some(r.key.as_str())),
-                });
-            }
+                    .layer("eval crumb")
+                    .on_click(SheetAct::EvalBack)
+                    .color(palette::BLUE_BORDER)
+                    .text(format!("‹ {crumb}")),
+                note(word(said), palette::MUTED),
+            ])
         }
-        (Some(v), Some(k)) if k.starts_with("c:") => {
-            let window = &k[2..];
-            let change = v.change(window);
-            let text = client
-                .and_then(|c| {
-                    c.read.get(&Then::Window {
-                        eval: eval_id.to_string(),
-                        window: window.to_string(),
-                    })
-                })
-                .and_then(|t| t["text"].as_str().map(str::to_string));
-            let title = change.map_or(window.to_string(), |c| {
-                format!("{} {}", c.path, c.lines.as_deref().unwrap_or(window))
-            });
-            body = body.child(div().pad(18, 20).font_weight(600).font_size(16).text(title));
-            match text {
-                None => {
-                    body = body.child(
-                        div().pad(0, 20).child(note(word("desktop.eval.no_lines"), palette::MUTED)),
-                    )
-                }
-                Some(t) => {
-                    let lines = eval_view::numbered(&t, change.map_or(&[][..], |c| &c.quotes));
-                    let width =
-                        lines.iter().filter_map(|l| l.n).max().map_or(0, |n| n.to_string().len());
-                    let mut code = div()
-                        .self_stretch()
-                        .flex_col()
-                        .pad(10, 12)
-                        .bg(palette::TERMINAL_BG)
-                        .font_mono()
-                        .font_size(12)
-                        .style("line-height", "18px")
-                        .style("white-space", "pre");
-                    for l in lines {
-                        let n = l.n.map_or_else(String::new, |n| n.to_string());
-                        let (tag, rest) =
-                            l.text.split_at(l.text.chars().next().map_or(0, char::len_utf8));
-                        let tag_colour = match tag {
-                            "+" => palette::TEAL,
-                            "-" => palette::RED,
-                            _ => palette::DIM,
-                        };
-                        let mut text = span(rest.to_string());
-                        if l.lit {
-                            text = text.color(palette::AMBER).font_weight(700);
-                        }
-                        code = code.child(
-                            div()
-                                .layer(if l.lit { "line lit" } else { "line" })
-                                .flex_row()
-                                .gap(8)
-                                .child(span(format!("{n:>width$}")).color(palette::DIM))
-                                .child(
-                                    span(if tag == "+" || tag == "-" { tag } else { " " })
-                                        .color(tag_colour),
-                                )
-                                .child(text),
-                        );
-                    }
-                    body = body
-                        .child(div().self_stretch().style("padding", "0 20px").child(code))
-                        .child(
-                            div().pad(10, 20).child(note(word("web.eval.quoted"), palette::DIM)),
-                        );
-                }
-            }
-        }
-        (Some(v), Some(k)) if k.starts_with("s:") => {
-            let step = eval_view::step_rows(v, &k[2..]);
-            // Its head says what its row in the list said: its state and changes.
-            let said = eval_view::rows(v, Mode::Steps, &Default::default())
-                .into_iter()
-                .find(|r| r.key == *k)
-                .map(|r| r.aside);
-            if let Some((first, rest)) = step.split_first() {
-                body = body.child(
-                    div()
-                        .flex_col()
-                        .gap(4)
-                        .style("padding", "18px 20px 6px 20px")
-                        .child(
-                            div()
-                                .flex_row()
-                                .gap(6)
-                                .font_weight(600)
-                                .font_size(16)
-                                .child(span(first.mark.clone()).color(state_colour(&first.state)))
-                                .child(span(
-                                    first.text.split_whitespace().collect::<Vec<_>>().join(" "),
-                                )),
-                        )
-                        .child(note(said.unwrap_or_else(|| first.aside.clone()), palette::MUTED)),
-                );
-                let mut lines =
-                    div().self_stretch().flex_col().gap(6).style("padding", "0 20px 10px 20px");
-                for r in rest {
-                    lines = match r.kind {
-                        RowKind::Heading => lines.child(section_label(r.text.clone())),
-                        RowKind::Change => {
-                            body = body.child(lines);
-                            lines = div()
-                                .self_stretch()
-                                .flex_col()
-                                .gap(6)
-                                .style("padding", "0 20px 10px 20px");
-                            body = body.child(item(r, Some(&r.key)));
-                            continue;
-                        }
-                        _ => {
-                            let said = r.text.split_whitespace().collect::<Vec<_>>().join(" ");
-                            let said = if r.aside.is_empty() {
-                                said
-                            } else {
-                                format!("{said} · {}", r.aside)
-                            };
-                            lines.child(note(
-                                said,
-                                if r.depth > 1 { palette::MUTED } else { palette::TEXT },
-                            ))
-                        }
+        Some(v) => {
+            // The item picked, else the first one; none while it runs and
+            // nothing is picked, so its progress shows.
+            let picked = at
+                .first()
+                .and_then(|k| v.item(k))
+                .or_else(|| if runs { None } else { v.items.first() });
+            let right = match (picked, at.get(1).map(String::as_str)) {
+                (Some(it), Some("lines")) => {
+                    let texts = |w: &str| {
+                        client
+                            .and_then(|c| {
+                                c.read.get(&Then::Window {
+                                    eval: eval_id.to_string(),
+                                    window: w.to_string(),
+                                })
+                            })
+                            .and_then(|t| t["text"].as_str().map(str::to_string))
                     };
+                    lines_pane(v, it, &texts)
                 }
-                body = body.child(lines);
-            }
-        }
-        (Some(_), Some(k)) => {
-            let section = k.strip_prefix("h:");
-            let at = rows.iter().position(|r| match section {
-                Some(s) => section_of(r) == Some(s),
-                None => &r.key == k,
-            });
-            if let Some(i) = at {
-                let title = section.map_or_else(
-                    || rows[i].text.clone(),
-                    |s| word(&format!("eval_view.{s}")).to_string(),
-                );
-                body = body.child(div().pad(18, 20).font_weight(600).font_size(16).text(title));
-                for r in under(&rows, i) {
-                    body = body.child(item(r, (!r.key.is_empty()).then_some(r.key.as_str())));
-                }
-            }
-        }
-    }
-    let runs = at.is_empty() && view.as_ref().is_some_and(|v| v.running().is_some());
-    let stop = runs.then(|| {
-        let act = SheetAct::StopEval { project: project.to_path_buf(), eval: eval_id.to_string() };
-        let said = word("dialog.stop_eval.go");
-        button(format!("btn {said}"), said, act, Tone::Warn, Size::Sheet)
-    });
-    let hint = (!runs).then(|| note(word("web.eval.click"), palette::DIM));
-    sheet(
-        "sheet EvalView",
-        head,
-        body,
-        sheet_foot(
-            vec![div().flex_1().children(hint)],
-            stop.into_iter().chain([close_button()]).collect(),
-        ),
-    )
-}
-
-/// The ring a running Eval fills as its checking comes in, as SVG.
-fn ring_svg(percent: u8) -> String {
-    let around = (2.0 * std::f64::consts::PI * 56.0).round();
-    let filled = (f64::from(percent.min(100)) / 100.0 * around).round();
-    format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="132" height="132" viewBox="0 0 132 132"><circle cx="66" cy="66" r="56" fill="none" stroke="{line}" stroke-width="10"/><circle cx="66" cy="66" r="56" fill="none" stroke="{teal}" stroke-width="10" stroke-linecap="round" stroke-dasharray="{filled} {around}" transform="rotate(-90 66 66)"/></svg>"#,
-        line = palette::LINE,
-        teal = palette::TEAL,
-    )
-}
-
-/// How wide a running Eval's row of stages and its bar are drawn.
-const STAGES_WIDTH: u32 = 600;
-
-/// The bar under the stages: the share checked, filled from the left.
-fn bar_svg(percent: u8) -> String {
-    let filled = f64::from(percent.min(100)) / 100.0 * f64::from(STAGES_WIDTH);
-    format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="6" viewBox="0 0 {w} 6"><rect width="{w}" height="6" rx="3" fill="{line}"/><rect width="{filled:.0}" height="6" rx="3" fill="{teal}"/></svg>"#,
-        w = STAGES_WIDTH,
-        line = palette::LINE,
-        teal = palette::TEAL,
-    )
-}
-
-/// A running Eval as a picture (17.6): the ring, each stage lit in turn and
-/// the one under way breathing, and its judges as cards that open their pane.
-fn running(project: &Path, v: &EvalView, p: &Progress, judges: &[&PaneView]) -> Element {
-    let reading = match judges.len() {
-        0 => None,
-        1 => Some(word("eval_view.reading_one").to_string()),
-        n => Some(fill("eval_view.reading", &[("n", &n.to_string())])),
-    };
-    let head = div()
-        .flex_col()
-        .gap(4)
-        .child(div().font_weight(600).font_size(20).text(word("eval_view.checking")))
-        .child(note(
-            [v.title.clone()].into_iter().chain(reading).collect::<Vec<_>>().join(" · "),
-            palette::MUTED,
-        ));
-    // The ring, the share checked inside it (17.6).
-    let ring = div()
-        .layer("progress ring")
-        .style("position", "relative")
-        .style("width", "132px")
-        .style("height", "132px")
-        .shrink_0()
-        .child(svg_el(ring_svg(p.percent)).style("width", "132px").style("height", "132px"))
-        .child(
-            div().style("position", "absolute").style("top", "0").style("left", "0").child(
-                img_el("weft-sweep")
-                    .layer("progress sweep")
-                    .style("animation", "spin")
-                    .style("width", "132px")
-                    .style("height", "132px"),
-            ),
-        )
-        .child(
+                (Some(it), more) => detail_pane(it, more == Some("reads")),
+                (None, _) => match v.running() {
+                    Some(p) => {
+                        let judges = client.map(|c| c.judges(eval_id)).unwrap_or_default();
+                        progress_pane(project, p, &judges)
+                    }
+                    None => div().flex_1(),
+                },
+            };
             div()
-                .layer("ring label")
-                .style("position", "absolute")
-                .style("top", "0")
-                .style("left", "0")
-                .style("width", "132px")
-                .style("height", "132px")
-                .flex_col()
-                .items_center()
-                .style("justify-content", "center")
-                .child(div().font_weight(700).font_size(26).text(format!("{}%", p.percent)))
-                .child(div().font_size(12).color(palette::DIM).text(word("eval_view.checked"))),
-        );
-    let stage = |s: &Lit| {
-        let (mark, colour) = match s.light {
-            Light::Done => ("✓", palette::TEAL),
-            Light::Now => ("◉", palette::TEAL),
-            Light::Next => ("○", palette::DIM),
-            Light::Running => ("◌", palette::AMBER),
-        };
-        let mut node = div().font_size(18).color(colour).text(mark);
-        if matches!(s.light, Light::Now | Light::Running) {
-            node = node.style("animation", "pulse");
+                .self_stretch()
+                .flex_1()
+                .style("min-height", "0")
+                .flex_row()
+                .child(list_pane(v, &crumb, n, picked.map(|i| i.key.as_str())))
+                .child(right)
         }
-        let name = div()
-            .font_size(14)
-            .color(if s.light == Light::Next { palette::MUTED } else { palette::TEXT })
-            .text(s.name.clone());
-        let said = if s.light == Light::Running { palette::AMBER } else { palette::MUTED };
-        div()
-            .layer(format!("stage {}", s.name))
-            .flex_1()
-            .flex_col()
-            .gap(6)
-            .items_center()
-            .child(node)
-            .child(name)
-            .child(div().font_size(12).color(said).text(s.note.clone()))
     };
-    // The stages in a row, lit in turn, over a bar of the share checked.
-    let stages = div()
-        .flex_col()
-        .gap(14)
-        .style("width", format!("{STAGES_WIDTH}px"))
-        .child(div().layer("stages").flex_row().items_start().children(p.stages.iter().map(stage)))
-        .child(
-            svg_el(bar_svg(p.percent))
-                .layer("progress bar")
-                .style("width", format!("{STAGES_WIDTH}px"))
-                .style("height", "6px"),
-        );
-    let judge = |j: &&PaneView| {
-        let act = SheetAct::WatchJudge { project: project.to_path_buf(), pane: j.id };
-        let turn = j.turn.map_or(word("turn.ready"), Turn::words);
-        div()
-            .layer(format!("judge {}", j.id))
-            .on_click(act)
-            .flex_col()
-            .gap(4)
-            .pad(10, 12)
-            .style("width", "190px")
-            .bg(palette::SURFACE)
-            .border(palette::LINE)
-            .child(div().font_weight(600).font_size(14).text(j.harness.clone()))
-            .child(
-                div()
-                    .flex_row()
-                    .gap(6)
-                    .child(span("● ● ●").color(palette::TEAL).style("animation", "pulse"))
-                    .child(note(turn, palette::MUTED)),
-            )
+    let close = crate::ui::close_button();
+    let act = if runs {
+        let stop = SheetAct::StopEval { project: project.to_path_buf(), eval: eval_id.to_string() };
+        let said = word("dialog.stop_eval.go");
+        button(format!("btn {said}"), said, stop, Tone::Plain, Size::Sheet)
+    } else {
+        let seal = SheetAct::Seal { project: project.to_path_buf(), eval: eval_id.to_string() };
+        button("btn Seal", seal_said(), seal, Tone::Primary, Size::Sheet)
     };
-    let mut out = div()
+    let foot = div()
         .self_stretch()
-        .flex_col()
-        .gap(22)
-        .style("padding", "20px 28px")
-        .child(head)
-        .child(div().flex_row().gap(40).items_center().child(ring).child(stages));
-    if !judges.is_empty() {
-        out = out
-            .child(section_label(format!(
-                "{} · {}",
-                word("eval_view.judges"),
-                word("eval_view.watch")
-            )))
-            .child(
-                div()
-                    .flex_row()
-                    .gap(12)
-                    .style("flex-wrap", "wrap")
-                    .children(judges.iter().map(judge)),
-            );
-    }
-    out
+        .flex_row()
+        .gap(16)
+        .items_center()
+        .style("padding", "16px 48px 20px 48px")
+        .border_top(palette::LINE)
+        .child(close)
+        .child(div().flex_1())
+        .child(act);
+    div().layer("sheet EvalView").flex_1().self_stretch().flex_col().child(panes).child(foot)
 }

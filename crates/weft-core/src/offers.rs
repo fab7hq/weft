@@ -430,15 +430,8 @@ pub fn unit_detail(
             Some(t) => {
                 let mut line = fill("unit.judged", &[("time", &clock(t))]);
                 if let Some(r) = judges(&e.id) {
-                    let votes: Vec<&str> =
-                        r.items.iter().map(|i| mark_for(i.plain_majority())).collect();
-                    let met = votes.iter().filter(|m| **m == "✓").count();
-                    let not_met = votes.iter().filter(|m| **m == "✗").count();
                     line.push_str(" · ");
-                    line.push_str(&fill(
-                        "unit.met",
-                        &[("met", &met.to_string()), ("not_met", &not_met.to_string())],
-                    ));
+                    line.push_str(&r.view.headline());
                 }
                 line
             }
@@ -514,11 +507,16 @@ pub struct EvalDetail {
     pub judging: bool,
     /// Its report's counts, once it is completed.
     pub report: Option<crate::ledger::Report>,
-    /// Each judging harness and its model, `<harness> · <model>`.
+    /// Each harness that read it and its model, `<harness> · <model>`.
     pub judged_by: Option<String>,
-    /// When it was judged, in milliseconds since the epoch.
+    /// When it was read, in milliseconds since the epoch.
     pub at: Option<i64>,
-    pub findings: Vec<Marked>,
+    /// One sentence: `5 things to look at · 12 settled`, once its record is in.
+    pub headline: Option<String>,
+    /// Its items, each opening its own detail in the Eval view.
+    pub items: Vec<crate::eval_view::Item>,
+    /// How many questions its Seal asks.
+    pub questions: usize,
     pub checks: Vec<Marked>,
     pub asks: Vec<Ask>,
     pub sealed: Option<SealRef>,
@@ -547,18 +545,6 @@ pub fn eval_detail(
         }
         by.join(" and ")
     });
-    let findings = judges
-        .map(|r| {
-            r.items
-                .iter()
-                .map(|i| Marked {
-                    mark: mark_for(i.plain_majority()),
-                    text: i.text.clone(),
-                    result: None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
     let checks = judges
         .map(|r| {
             r.checks
@@ -581,7 +567,9 @@ pub fn eval_detail(
         report: eval.report,
         judged_by: judged_by.filter(|b| !b.is_empty()).or_else(|| eval.judged_by.clone()),
         at: eval.completed_at.as_deref().and_then(at),
-        findings,
+        headline: judges.map(|r| r.view.headline()),
+        items: judges.map(|r| r.view.items.clone()).unwrap_or_default(),
+        questions: judges.map_or(0, |r| r.view.questions),
         checks,
         asks: listed(units, &eval.asks),
         sealed: record
@@ -904,9 +892,10 @@ mod tests {
         let judges = |id: &str| {
             (id == "evl_3").then(|| {
                 crate::record::Record::parse(&json!({
-                    "eval_id": "evl_3", "verdict": "aligned", "confidence": 0.67, "judgements": [],
-                    "items": [{"text": "a", "majority": "yes", "agreement": 1.0},
-                              {"text": "b", "majority": "no", "agreement": 1.0}]
+                    "schema": "ringframe.eval/2", "eval_id": "evl_3",
+                    "requirements": [
+                        {"id": "a", "text": "a", "result": "met", "agreed": 1, "readings": []},
+                        {"id": "b", "text": "b", "result": "not_met", "agreed": 1, "readings": []}]
                 }))
                 .unwrap()
             })
@@ -930,7 +919,7 @@ mod tests {
                     eval: "evl_3".into(),
                     n: 3,
                     report: Some(crate::ledger::Report::default()),
-                    aside: "judged 11:07 · 1 met · 1 not met".into(),
+                    aside: "judged 11:07 · 1 thing to look at · 1 settled".into(),
                 },
                 Step::Ask {
                     unit: "ask_g".into(),
@@ -963,28 +952,26 @@ mod tests {
     }
 
     #[test]
-    fn an_evals_details_say_it_once_with_its_findings_checks_and_asks() {
+    fn an_evals_details_say_it_once_with_its_headline_items_checks_and_asks() {
         let events = sample();
         let (units, record) = (crate::ledger::project(&events), record_of(&events));
-        let judges = crate::record::Record::parse(&json!({
-            "eval_id": "evl_3", "verdict": "aligned", "confidence": 0.67,
-            "judgements": [{"judge": {"angle": "coverage", "host": "codex", "model": "gpt-5.6-terra"}},
-                           {"judge": {"angle": "drift", "host": "codex", "model": "gpt-5.6-terra"}}],
-            "items": [{"text": "/health returns the build number", "majority": "yes", "agreement": 1.0}],
-            "checks": [{"command": "cargo test", "outcome": "succeeded", "seconds": 12}]
-        }))
-        .unwrap();
+        let mut v: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/eval-v4/record.json")).unwrap();
+        v["eval_id"] = json!("evl_3");
+        v["readers"] = json!([{"role": "read", "host": "codex", "model": "gpt-5.6-terra"},
+                              {"role": "question", "host": "codex", "model": "gpt-5.6-terra"}]);
+        let judges = crate::record::Record::parse(&v).unwrap();
         let e = &record.evals[2];
         let d = eval_detail(e, Some(&judges), &units, &record, None);
         assert_eq!((d.n, d.report), (3, Some(crate::ledger::Report::default())));
         assert_eq!(d.judged_by.as_deref(), Some("codex · gpt-5.6-terra"));
-        assert_eq!(
-            d.findings,
-            [Marked { mark: "✓", text: "/health returns the build number".into(), result: None }]
-        );
+        assert_eq!(d.headline.as_deref(), Some("5 things to look at · 4 settled"));
+        assert_eq!(d.items.len(), 7);
+        assert_eq!(d.items[0].kind, crate::eval_view::Kind::Before, "the carried question on top");
+        assert_eq!(d.questions, 5);
         assert_eq!(
             d.checks,
-            [Marked { mark: "✓", text: "cargo test".into(), result: Some("passed".into()) }]
+            [Marked { mark: "✓", text: "npm test".into(), result: Some("passed".into()) }]
         );
         assert_eq!(
             d.asks.iter().map(|a| a.title.as_str()).collect::<Vec<_>>(),

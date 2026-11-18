@@ -2170,184 +2170,218 @@ fn the_state_is_written_once_by_whoever_takes_it() {
     assert!(app.unsaved_state().is_none(), "taken once");
 }
 
-/// An Eval's view as the daemon reads it: one part with a step not met, its
-/// change, a finding and a check.
+/// An Eval's view as the daemon reads it: the record of an Eval of "fix
+/// login", with a question carried from an earlier Seal, changes and a
+/// requirement to look at, one the readings could not settle, and the rest
+/// settled.
 fn an_eval_view() -> weft_core::eval_view::EvalView {
-    use weft_core::eval_view::{Change, EvalView, Group, Reading, State, Step};
-    EvalView {
-        eval_id: "evl_3".into(),
-        closed: true,
-        verdict: Some("drifted".into()),
-        confidence: Some(0.75),
-        commission: Some(0.02),
-        omission: Some(0.5),
-        findings: vec!["the error is logged and the person sees nothing".into()],
-        groups: vec![Group {
-            key: "p1".into(),
-            title: "Phase 1".into(),
-            steps: vec![Step {
-                id: "7".into(),
-                label: "7".into(),
-                text: "A failed send is told.".into(),
-                done_when: "a send that fails shows the reason".into(),
-                state: State::NotMet,
-                changes: vec!["w1".into()],
-                readings: vec![Reading {
-                    role: "map".into(),
-                    vote: "no".into(),
-                    reason: "the error is swallowed".into(),
-                    missing: String::new(),
-                    counted: true,
-                    cites: Vec::new(),
-                }],
-                findings: Vec::new(),
-            }],
-        }],
-        changes: vec![Change {
-            window: "w1".into(),
-            path: "src/send.rs".into(),
-            result: "required".into(),
-            serves: vec!["7".into()],
-            why: String::new(),
-            quotes: vec!["log::debug!".into()],
-            lines: Some("L88–L97".into()),
-            readings: Vec::new(),
-        }],
-        checks: vec!["cargo test passed".into()],
-        ..Default::default()
-    }
+    let record: serde_json::Value =
+        serde_json::from_str(include_str!("../../../weft-core/tests/fixtures/eval-v4/record.json"))
+            .unwrap();
+    let mut v = weft_core::eval_view::EvalView::of_record("evl_3", &record);
+    v.title = "fix login".into();
+    v
 }
 
-#[test]
-fn a_running_eval_is_a_picture_with_its_judges_and_a_stop() {
-    use weft_core::eval_view::{EvalView, Stage};
-    let (_tmp, mut app, mut wire) = wired_app();
-    let stage = |name: &str, done, planned| Stage { name: name.into(), done, planned };
-    let running = EvalView {
-        eval_id: "evl_3".into(),
-        title: "Build account erasure".into(),
-        progress: vec![stage("map", 1, 1), stage("reduce", 0, 1), stage("confirm", 0, 0)],
-        checks_running: vec!["cargo test".into()],
-        ..an_eval_view()
-    };
-    let running = EvalView { closed: false, verdict: None, ..running };
-    let mut judge = PaneView::new(9, "codex".into(), "codex -m gpt-6".into());
-    (judge.judge, judge.turn) = (Some("evl_3".into()), Some(Turn::Working));
-    app.clients[0].panes.push(judge);
-    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
-    let (id, _) = wire
-        .calls()
-        .into_iter()
-        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
-        .expect("read");
-    wire.answer(id, serde_json::to_value(&running).unwrap());
-    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
-
-    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
-    let text = sheet.all_text();
-    for said in [
-        "Checking your work",
-        "50%",
-        "Gather changes",
-        "Compare to your tasks",
-        "Run your tests",
-        "cargo test · running",
-    ] {
-        assert!(text.contains(said), "{said} in {text}");
-    }
-    assert!(sheet.find_layer("progress ring").is_some(), "a picture, not a status line");
-    // As 17.6: the share inside the ring, the stages in a row over a bar.
-    let ring = sheet.find_layer("progress ring").unwrap();
-    assert!(
-        ring.find_layer("ring label").is_some_and(|l| l.all_text().contains("50%")),
-        "{ring:?}"
-    );
-    let stages = sheet.find_layer("stages").expect("the stages");
-    assert!(stages.styles.iter().any(|(k, v)| k == "flex-direction" && v == "row"), "in a row");
-    assert!(sheet.find_layer("progress bar").is_some(), "a bar under the stages");
-    let sweep = sheet.find_layer("progress sweep").expect("an arc sweeping round the ring");
-    assert!(sweep.styles.iter().any(|(k, v)| k == "animation" && v == "spin"), "{sweep:?}");
-    assert!(crate::gpui::asset("weft-sweep").is_some(), "the arc is one of Weft's pictures");
-    assert!(!text.contains("map 1 of 1"), "no inner words: {text}");
-    assert!(text.contains("One judge is reading"), "one judge, said as one: {text}");
-    let card = sheet.find_layer("judge 9").expect("its judge, under it");
-    assert!(card.all_text().contains("codex"), "{:?}", card.all_text());
-    app.dispatch(SheetAct::WatchJudge { project: weft(), pane: 9 });
-    assert_eq!(app.active_tab().map(|t| t.pane), Some(9), "a judge opens to be watched");
-
-    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
-    if let Some((id, _)) = wire
-        .calls()
-        .into_iter()
-        .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
-    {
-        wire.answer(id, serde_json::to_value(&running).unwrap());
-        pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
-    }
-    let stop = app.render().find_layer("btn Stop Eval").expect("Stop Eval").clone();
-    assert_eq!(stop.all_text(), "Stop Eval");
-    app.dispatch(SheetAct::StopEval { project: weft(), eval: "evl_3".into() });
-    let asked = wire.calls().into_iter().any(|(_, c)| {
-        matches!(c, Call::Act { ref act, ref eval, .. } if act == "stop" && eval.as_deref() == Some("evl_3"))
-    });
-    assert!(asked, "Stop asks the daemon for its one dialog");
+/// The colour an item's shape is drawn in, in the list.
+fn mark_colour_of(sheet: &crate::gpui::Element, key: &str) -> String {
+    let row = sheet
+        .find_layer(&format!("eval item {key}"))
+        .or_else(|| sheet.find_layer(&format!("eval item {key} picked")))
+        .expect(key);
+    style(row.find_layer("mark").expect("its shape"), "color").unwrap_or_default().to_string()
 }
 
-#[test]
-fn the_eval_view_is_read_through_the_daemon_and_opened_level_by_level() {
-    let (_tmp, mut app, mut wire) = wired_app();
+/// Open the Eval view and answer its read with `view`.
+fn open_view(app: &mut WeftDesktopApp, wire: &mut Wire, view: &weft_core::eval_view::EvalView) {
     app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
+    answer_view(app, wire, view);
+}
+
+/// Answer the Eval view's newest read with `view`.
+fn answer_view(app: &mut WeftDesktopApp, wire: &mut Wire, view: &weft_core::eval_view::EvalView) {
     let (id, call) = wire
         .calls()
         .into_iter()
+        .rev()
         .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "eval"))
         .expect("read");
     assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3"));
+    wire.answer(id, serde_json::to_value(view).unwrap());
+    pumped(app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
+}
+
+#[test]
+fn the_eval_view_lists_its_items_and_shows_the_one_picked_in_plain_prose() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    app.dispatch(SheetAct::EvalView { project: weft(), eval: "evl_3".into() });
     let before = app.render().find_layer("sheet EvalView").unwrap().all_text();
     assert!(before.contains(words::word("desktop.eval.no_record")), "{before}");
-    wire.answer(id, serde_json::to_value(an_eval_view()).unwrap());
-    pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::EvalView { .. })));
+    open_view(&mut app, &mut wire, &an_eval_view());
 
-    let top = app.render().find_layer("sheet EvalView").unwrap().clone();
-    let text = top.all_text();
-    assert!(text.contains("drifted") && text.contains("confidence 0.75"), "{text}");
-    assert!(top.find_layer("by step").is_some() && top.find_layer("by file").is_some());
-    assert!(text.contains(words::word("eval_view.findings")), "{text}");
-    assert!(top.find_layer("eval row p1").is_some(), "{text}");
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let text = sheet.all_text();
+    for said in
+        ["‹ fix login", "To look at", "Settled", "3 other changes your Ask explains", "Seal…"]
+    {
+        assert!(text.contains(said), "{said} in {text}");
+    }
+    for gone in ["By file", "By step", "verdict", "aligned", "%"] {
+        assert!(!text.contains(gone), "{gone} in {text}");
+    }
+    assert!(sheet.find_layer("by file").is_none() && sheet.find_layer("by step").is_none());
+    // Each kind has its colour, on its shape only.
+    assert_eq!(mark_colour_of(&sheet, "c|sel_1/d2"), palette::TEAL, "asked before");
+    assert_eq!(mark_colour_of(&sheet, "w|w_sess"), palette::AMBER_BORDER, "to look at");
+    assert_eq!(mark_colour_of(&sheet, "r|ask_1/f0"), palette::BLUE_BORDER, "could not settle");
+    assert_eq!(mark_colour_of(&sheet, "r|ask_1/f1"), palette::MUTED, "settled");
+    // The question from an earlier Seal is on top, and picked first.
+    let list = sheet.find_layer("eval items").unwrap();
+    let first = list.all_text().find("↺").unwrap();
+    assert!(list.all_text()[..first].find('■').is_none(), "{}", list.all_text());
+    let picked = sheet.find_layer("eval item c|sel_1/d2 picked").expect("picked first");
+    assert_eq!(style(picked, "background"), Some(palette::SELECTED_BG));
+    assert!(picked.find_layer("picked bar").is_some(), "a bar on its left edge");
+    let detail = sheet.find_layer("eval detail").unwrap().all_text();
+    assert!(detail.contains("↺ Asked before · not sure at your Seal of 10 Nov"), "{detail}");
 
-    app.dispatch(SheetAct::EvalOpen("g:p1".into()));
-    assert!(app.render().find_layer("eval row 7").is_some());
-    app.dispatch(SheetAct::EvalOpen("s:7".into()));
-    let step = app.render().all_text();
-    assert!(step.contains("A failed send is told.") && step.contains("Done when"), "{step}");
-    // Its head says what its row said; a change is named by its lines.
-    assert!(step.contains("1 change"), "{step}");
-    assert!(step.contains("src/send.rs L88–L97") && !step.contains("w1"), "{step}");
-    app.dispatch(SheetAct::EvalOpen("c:w1".into()));
+    // Picking another shows it: against a decision, with what the agent said.
+    app.dispatch(SheetAct::EvalOpen("w|w_log".into()));
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    assert!(sheet.find_layer("eval item c|sel_1/d2 picked").is_none());
+    let row = sheet.find_layer("eval item w|w_log picked").expect("picked");
+    let words =
+        row.children.iter().find(|c| c.text.as_deref().is_some_and(|t| t.starts_with("A failed")));
+    assert_eq!(words.and_then(|w| style(w, "font-weight")), Some("600"), "bold");
+    let detail = sheet.find_layer("eval detail").unwrap();
+    let said = detail.all_text();
+    assert!(said.contains("■ To look at · against your decision of 3 Nov"), "{said}");
+    assert!(said.contains("read twice, both agree"), "{said}");
+    assert!(said.contains("The agent said: “Failed sign-ins"), "{said}");
+    let how = detail.find_layer("how sure").unwrap().find_layer("dots").unwrap();
+    assert_eq!(how.children.len(), 2, "a dot per reading");
+
+    // What each read said opens in place.
+    app.dispatch(SheetAct::EvalOpen("reads".into()));
+    let reads = app.render().find_layer("reads").expect("open").all_text();
+    assert!(reads.contains("First read · A failed sign-in"), "{reads}");
+    app.dispatch(SheetAct::EvalBack);
+    assert!(app.render().find_layer("reads").is_none());
+
+    // Its lines, the ones a reading quoted brighter.
+    app.dispatch(SheetAct::EvalOpen("lines".into()));
     let (id, call) = wire
         .calls()
         .into_iter()
         .find(|(_, c)| matches!(c, Call::Read { what, .. } if what == "window"))
         .expect("its lines");
-    assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3/w1"));
-    wire.answer(
-        id,
-        json!({"text": "@@ -88,2 +88,3 @@\n fn send() {\n+    log::debug!(\"send failed\");\n }"}),
-    );
+    assert!(matches!(call, Call::Read { ref unit, .. } if unit == "evl_3/w_log"));
+    wire.answer(id, json!({"text": "@@ -40,1 +40,2 @@\n fail() {\n+  log.warn(email)\n"}));
     pumped(&mut app, |a| !a.clients[0].owes_any(|t| matches!(t, Then::Window { .. })));
-    let lines = app.render().find_layer("sheet EvalView").unwrap().clone();
-    assert!(lines.all_text().contains("src/send.rs L88–L97"), "{}", lines.all_text());
-    let lit = lines.find_layer("line lit").expect("the quoted line is lit");
-    assert!(lit.all_text().contains("log::debug!"));
-    // The crumb goes back one level at a time, then to Details.
+    let lines = app.render().find_layer("eval lines").unwrap().clone();
+    assert!(lines.all_text().contains("■ To look at · the lines that show it"));
+    assert!(lines.all_text().contains("src/auth/login.ts"), "{}", lines.all_text());
+    let lit = lines.find_layer("line lit").expect("the quoted line is brighter");
+    assert!(lit.all_text().contains("log.warn(email)"));
+    // Back to the item, then to Details.
     app.dispatch(SheetAct::EvalBack);
-    assert!(app.render().all_text().contains("A failed send is told."));
-    app.dispatch(SheetAct::EvalBack);
-    app.dispatch(SheetAct::EvalBack);
-    app.dispatch(SheetAct::ToggleEvalViewMode);
-    assert!(app.render().find_layer("eval row src/send.rs").is_some(), "by file");
+    assert!(app.render().find_layer("eval detail").is_some());
     app.dispatch(SheetAct::EvalBack);
     assert!(matches!(app.active_sheet, Some(ActiveSheet::EvalDetail { .. })));
+}
+
+/// An Eval's Details (11.3): its headline, its items each opening the Eval
+/// view on itself, and what the Seal will ask.
+#[test]
+fn an_eval_s_details_say_its_headline_and_each_item_opens_the_view_on_itself() {
+    let (_tmp, mut app, mut wire) = wired_app();
+    let record: serde_json::Value =
+        serde_json::from_str(include_str!("../../../weft-core/tests/fixtures/eval-v4/record.json"))
+            .unwrap();
+    app.clients[0].records["evl_3"] = record;
+    app.dispatch(TreeAct::SelectEval { project: weft(), eval: "evl_3".into() });
+    let sheet = app.render().find_layer("sheet EvalDetail").unwrap().clone();
+    let text = sheet.all_text();
+    assert!(
+        sheet.find_layer("headline").unwrap().all_text().contains("5 things to look at"),
+        "{text}"
+    );
+    assert!(text.contains("read by claude"), "{text}");
+    assert!(text.contains("Seal asks you 5 questions, then records your decision."), "{text}");
+    for gone in ["verdict", "aligned", "met ·", "%", "By file"] {
+        assert!(!text.contains(gone), "{gone} in {text}");
+    }
+    let row = sheet.find_layer("item w|w_log").expect("an item");
+    assert_eq!(row.find_layer("mark").and_then(|m| style(m, "color")), Some(palette::AMBER_BORDER));
+    app.dispatch(SheetAct::EvalItem {
+        project: weft(),
+        eval: "evl_3".into(),
+        item: "w|w_log".into(),
+    });
+    answer_view(&mut app, &mut wire, &an_eval_view());
+    let view = app.render().find_layer("sheet EvalView").unwrap().clone();
+    assert!(view.find_layer("eval item w|w_log picked").is_some(), "opened on the item");
+}
+
+#[test]
+fn a_running_eval_is_one_ring_an_arc_per_reading_its_steps_and_a_plain_stop() {
+    use weft_core::eval_view::{EvalView, Sources};
+    let (_tmp, mut app, mut wire) = wired_app();
+    let rd1 = json!({"kind": "read", "task_id": "evl_3~rd1",
+        "windows": [{"id": "w1", "answer": "unexplained", "quote": "x", "reason": "Sessions end after an hour."}],
+        "requirements": []});
+    let evidence = json!({"windows": [{"id": "w1", "path": "src/a.ts", "class": "code"}]});
+    let brief = json!({"asks": [{"ask_id": "a", "title": "fix login"}]});
+    let (planned, done) =
+        (["evl_3~rd1".to_string(), "evl_3~rr1".to_string()], ["evl_3~rd1".to_string()]);
+    let running = EvalView::build(Sources {
+        eval_id: "evl_3",
+        changes: &json!({}),
+        evidence: &evidence,
+        brief: &brief,
+        record: None,
+        outputs: &[rd1],
+        planned: &planned,
+        done: &done,
+        checks_running: &["npm test".to_string()],
+    });
+    let mut judge = PaneView::new(9, "claude".into(), "claude".into());
+    (judge.judge, judge.turn) = (Some("evl_3".into()), Some(Turn::Working));
+    app.clients[0].panes.push(judge);
+    open_view(&mut app, &mut wire, &running);
+
+    let sheet = app.render().find_layer("sheet EvalView").unwrap().clone();
+    let text = sheet.all_text();
+    let ring = sheet.find_layer("progress ring").expect("one ring");
+    assert!(ring.find_layer("arc 0 done").is_some(), "{ring:?}");
+    let now = ring.find_layer("arc 1 now").expect("the second reading under way");
+    assert_eq!(style(now, "animation"), Some("pulse"), "it breathes");
+    assert!(ring.find_layer("arc 2 next").is_some());
+    assert!(ring.find_layer("ring label").unwrap().all_text().contains("2nd read"));
+    for said in [
+        "✓ What you asked",
+        "✓ Read the change",
+        "Reading again where unsure",
+        "Questions for your Seal, if needed",
+        "claude is reading · Watch ›",
+        "npm test is running",
+    ] {
+        assert!(text.contains(said), "{said} in {text}");
+    }
+    let row = sheet.find_layer("eval item w|w1").expect("the list fills in");
+    assert!(row.all_text().contains("reading again"), "{}", row.all_text());
+    app.dispatch(SheetAct::WatchJudge { project: weft(), pane: 9 });
+    assert_eq!(app.active_tab().map(|t| t.pane), Some(9), "the reader opens to be watched");
+
+    open_view(&mut app, &mut wire, &running);
+    let stop = app.render().find_layer("btn Stop Eval").expect("Stop Eval").clone();
+    assert_eq!(stop.all_text(), "Stop Eval");
+    assert_ne!(style(&stop, "color"), Some(palette::AMBER), "a plain button");
+    app.dispatch(SheetAct::StopEval { project: weft(), eval: "evl_3".into() });
+    let asked = wire.calls().into_iter().any(|(_, c)| {
+        matches!(c, Call::Act { ref act, ref eval, .. } if act == "stop" && eval.as_deref() == Some("evl_3"))
+    });
+    assert!(asked, "Stop asks the daemon for its one dialog");
 }
 
 #[test]

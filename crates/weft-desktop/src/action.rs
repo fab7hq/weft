@@ -276,10 +276,16 @@ pub enum SheetAct {
         project: PathBuf,
         eval: String,
     },
-    ToggleEvalViewMode,
-    /// Open a part, a file, a step or a change of the Eval view, by its key.
+    /// The Eval view, with one of its items picked.
+    EvalItem {
+        project: PathBuf,
+        eval: String,
+        item: String,
+    },
+    /// Pick an item of the Eval view by its key, or open the picked one's
+    /// `lines` or `reads`.
     EvalOpen(String),
-    /// Back one level of the Eval view; from its top, to the Eval's Details.
+    /// Back from an item's lines or reads; else, to the Eval's Details.
     EvalBack,
     /// A judge of a running Eval, in front to be watched.
     WatchJudge {

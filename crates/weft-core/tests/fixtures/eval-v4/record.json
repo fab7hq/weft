@@ -1,0 +1,51 @@
+{
+  "schema": "ringframe.eval/2",
+  "eval_id": "evl_v4",
+  "time": "2026-11-17T11:20:00Z",
+  "requirements": [
+    {"id": "ask_1/f0", "kind": "local", "text": "A wrong password shows an error.", "done_when": "",
+     "result": "unsettled", "agreed": 0, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "ask_1/f0", "vote": "unknown", "reason": "a message appears under the field, but the Ask may mean a pop-up", "citations": [], "missing": "which kind of error you wanted"}},
+      {"task": "evl_v4~rr1", "kind": "reread", "answer": {"id": "ask_1/f0", "vote": "met", "reason": "The change adds a short message under the password field, which is one way to show an error.", "citations": [{"window": "w_form", "quote": "setError(\"Wrong password\")"}], "missing": null}},
+      {"task": "evl_v4~rr2", "kind": "reread", "answer": {"id": "ask_1/f0", "vote": "not_met", "reason": "nothing says which kind of error you wanted", "citations": [], "missing": null}}]},
+    {"id": "ask_2/f0", "kind": "local", "text": "Keep me signed in on this device.", "done_when": "",
+     "result": "not_met", "agreed": 1, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "ask_2/f0", "vote": "not_met", "reason": "no unit keeps the session past the browser closing", "citations": [], "missing": "a remembered session"}}]},
+    {"id": "ask_1/f1", "kind": "local", "text": "The sign-in button is off while it sends. It comes back on an answer.", "done_when": "",
+     "result": "met", "agreed": 1, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "ask_1/f1", "vote": "met", "reason": "the button is disabled while the request runs", "citations": [{"window": "w_btn", "quote": "disabled={sending}"}], "missing": null}}]}
+  ],
+  "units": [
+    {"id": "w_sess", "path": "src/auth/session.ts", "class": "code", "result": "unexplained", "agreed": 2, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "w_sess", "answer": "unexplained", "serves": [], "source": null, "quote": "maxAgeHours: 1,", "reason": "Signed-in sessions end after 1 hour instead of 24."}},
+      {"task": "evl_v4~rr1", "kind": "reread", "answer": {"id": "w_sess", "answer": "unexplained", "serves": [], "source": null, "quote": "rolling: false,", "reason": "Sessions are cut to an hour."}}]},
+    {"id": "w_log", "path": "src/auth/login.ts", "class": "code", "result": "unexplained", "agreed": 2, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "w_log", "answer": "unexplained", "serves": [], "source": null, "quote": "log.warn(email)", "reason": "A failed sign-in writes the typed email into the server log."}},
+      {"task": "evl_v4~rr1", "kind": "reread", "answer": {"id": "w_log", "answer": "unexplained", "serves": [], "source": null, "quote": "log.warn(email)", "reason": "The email goes into the log."}}]},
+    {"id": "w_btn", "path": "src/ui/button.tsx", "class": "code", "result": "explained", "agreed": 1, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "w_btn", "answer": "serves", "serves": ["ask_1/f1"], "source": null, "quote": null, "reason": null}}]},
+    {"id": "w_form", "path": "src/ui/form.tsx", "class": "code", "result": "explained", "agreed": 1, "readings": [
+      {"task": "evl_v4~rd1", "kind": "read", "answer": {"id": "w_form", "answer": "follows_from", "serves": [], "source": "w_btn", "quote": null, "reason": null}}]},
+    {"id": "w_lock", "path": "package-lock.json", "class": "lock", "result": "mechanical", "agreed": 0, "readings": []}
+  ],
+  "report": {
+    "faults": [
+      {"item": "w|w_sess", "agreed": 2, "readings": 2, "evidence": [{"window": "w_sess", "quote": "rolling: false,"}], "reason": "Sessions are cut to an hour."},
+      {"item": "r|ask_2/f0", "agreed": 1, "readings": 1, "evidence": [], "reason": "no unit keeps the session past the browser closing", "missing": "a remembered session"}
+    ],
+    "declared": [{"items": ["w_log"], "quote": "Failed sign-ins are now logged with the email so we can spot attacks."}],
+    "against_decisions": [{"decision": "sel_0/d1", "date": "2026-11-03", "seal": "sel_0", "behaviour": "Emails are written to the server log.", "windows": ["w_log"], "reason": "the typed email is logged again"}],
+    "cannot_settle": [{"item": "r|ask_1/f0", "check": "type a wrong password on the sign-in page and see what appears"}]
+  },
+  "questions": [
+    {"id": "q1", "ask": "did_you_want", "behaviour": "The sign-in page remembers the last email address typed on this device.", "why": null, "items": ["c|sel_1/d2"], "quote": null, "readings": [], "from": "reader", "asked_before": {"decision": "sel_1/d2", "seal": "sel_1", "date": "2026-11-10"}, "against": null},
+    {"id": "q2", "ask": "did_you_want", "behaviour": "Signed-in sessions end after 1 hour instead of 24.", "why": "The agent didn't mention it, and your Ask doesn't cover it.", "items": ["w|w_sess"], "quote": null, "readings": [], "from": "reader", "asked_before": null, "against": null},
+    {"id": "q3", "ask": "did_you_want", "behaviour": "A failed sign-in now writes the email address that was typed into the server log.", "why": "Your Ask doesn't mention it either.", "items": ["w|w_log"], "quote": null, "readings": [], "from": "reader", "asked_before": null, "against": {"decision": "sel_0/d1", "seal": "sel_0", "date": "2026-11-03"}},
+    {"id": "q4", "ask": "still_want", "behaviour": "Staying signed in on this device is not in the change.", "why": "You asked for it in your second Ask.", "items": ["r|ask_2/f0"], "quote": null, "readings": [], "from": "reader", "asked_before": null, "against": null},
+    {"id": "q5", "ask": "what_did_you_mean", "behaviour": "What did you mean by a wrong password showing an error?", "why": "The reads differ on what you meant by “show an error”: a message under the field, or a pop-up.", "items": ["r|ask_1/f0"], "quote": "show an error", "readings": ["a message under the field", "a pop-up"], "from": "reader", "asked_before": null, "against": null}
+  ],
+  "questions_status": "asked",
+  "readers": [{"role": "read", "host": "claude", "model": "", "effort": ""}, {"role": "question", "host": "claude", "model": "", "effort": ""}],
+  "checks": [{"command": "npm test", "outcome": "succeeded", "seconds": 3}],
+  "limitations": []
+}

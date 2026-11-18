@@ -177,11 +177,14 @@ fn each_offer_types_what_its_dialog_shows() {
     let mut events = judged_and_sealed(&rejected, "evl_1", "sel_1", "rejected");
     events.extend(judged_and_sealed(&accepted, "evl_2", "sel_2", "accepted"));
     append(&root, &events);
-    let found = json!({"findings": [{"kind": "unclaimed_rewrite",
-                                     "detail": "src/db/pool.rs rewrites the retry loop"}]});
+    let found = json!({"schema": "ringframe.eval/2", "eval_id": "evl_1",
+        "units": [{"id": "w_pool", "path": "src/db/pool.rs", "class": "code",
+                   "result": "unexplained", "agreed": 1, "readings": []}],
+        "report": {"faults": [{"item": "w|w_pool", "agreed": 1, "readings": 1,
+                               "evidence": [], "reason": "rewrites the retry loop"}]}});
     let evl_1 = root.join(".fab7/rf/evals/evl_1");
     std::fs::create_dir_all(&evl_1).unwrap();
-    std::fs::write(evl_1.join("changes.json"), found.to_string()).expect("what the Eval found");
+    std::fs::write(evl_1.join("record.json"), found.to_string()).expect("what the Eval found");
     let base = std::fs::read_to_string(root.join(".fab7/rf/ledger.jsonl"))
         .unwrap()
         .lines()
@@ -289,7 +292,10 @@ fn each_offer_types_what_its_dialog_shows() {
         })
         .expect("the follow-up's words");
     let words = remedy["words"].as_str().unwrap_or_default().to_string();
-    assert!(words.contains("unclaimed rewrite: src/db/pool.rs rewrites the retry loop"), "{words}");
+    assert!(
+        words.contains("unexplained change: src/db/pool.rs rewrites the retry loop"),
+        "{words}"
+    );
     assert_eq!((remedy["eval"].as_str(), remedy["n"].as_u64()), (Some("evl_1"), Some(1)));
     c.call(offer("follow_up", &rejected, Some(pane), Some(&words)));
     let prompt = c.wait(|l| match l {

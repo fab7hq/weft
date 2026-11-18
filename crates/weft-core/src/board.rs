@@ -87,22 +87,19 @@ pub fn next_step(unit: &Unit) -> Option<Next> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Notice {
-    /// Aligned, nothing found, its checks passed and no change split: a
-    /// Seal is all it waits for.
+    /// Nothing to look at, nothing the readings could not settle, and its
+    /// checks passed: a Seal is all it waits for.
     ReadyToSeal,
     NeedsYou,
 }
 
-/// `None` while the Eval runs. Only RingFrame's verdict and the checks make
+/// `None` while the Eval runs. Nothing to look at and the checks passed make
 /// it ready to seal; anything else needs the person.
 pub fn notice(view: &EvalView) -> Option<Notice> {
     if !view.closed {
         return None;
     }
-    let ready = view.verdict.as_deref() == Some("aligned")
-        && view.findings.is_empty()
-        && view.checks_passed
-        && view.split.is_empty();
+    let ready = view.to_look_at() == 0 && view.checks_passed;
     Some(if ready { Notice::ReadyToSeal } else { Notice::NeedsYou })
 }
 
@@ -620,30 +617,32 @@ mod tests {
     }
 
     fn ready_eval() -> crate::eval_view::EvalView {
-        crate::eval_view::EvalView {
-            closed: true,
-            verdict: Some("aligned".into()),
-            checks_passed: true,
-            ..Default::default()
-        }
+        use crate::eval_view::{EvalView, Item, Kind};
+        let settled = Item { key: "r|R1".into(), kind: Kind::Settled, ..Item::default() };
+        EvalView { closed: true, checks_passed: true, items: vec![settled], ..EvalView::default() }
     }
 
-    /// Only RingFrame's verdict and the checks make an Eval ready to seal;
+    /// Only nothing to look at and the checks make an Eval ready to seal;
     /// anything else needs the person.
     #[test]
-    fn ready_to_seal_is_aligned_with_nothing_found_checks_passed_and_nothing_split() {
+    fn ready_to_seal_is_nothing_to_look_at_nothing_unsettled_and_the_checks_passed() {
+        use crate::eval_view::{EvalView, Item, Kind};
         assert_eq!(notice(&ready_eval()), Some(Notice::ReadyToSeal));
+        let with = |kind| {
+            let mut v = ready_eval();
+            v.items.push(Item { key: "w|w1".into(), kind, ..Item::default() });
+            v
+        };
         let needs = [
-            crate::eval_view::EvalView { verdict: Some("drifted".into()), ..ready_eval() },
-            crate::eval_view::EvalView { verdict: Some("incomplete".into()), ..ready_eval() },
-            crate::eval_view::EvalView { findings: vec!["scaffolding: x".into()], ..ready_eval() },
-            crate::eval_view::EvalView { checks_passed: false, ..ready_eval() },
-            crate::eval_view::EvalView { split: vec!["w_t".into()], ..ready_eval() },
+            with(Kind::Look),
+            with(Kind::Unsettled),
+            with(Kind::Before),
+            EvalView { checks_passed: false, ..ready_eval() },
         ];
         for view in needs {
             assert_eq!(notice(&view), Some(Notice::NeedsYou), "{view:?}");
         }
-        let running = crate::eval_view::EvalView { closed: false, ..ready_eval() };
+        let running = EvalView { closed: false, ..ready_eval() };
         assert_eq!(notice(&running), None, "nothing to tell while it runs");
     }
 
