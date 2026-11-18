@@ -504,6 +504,8 @@ pub struct Marked {
 pub struct EvalDetail {
     pub eval: String,
     pub n: usize,
+    /// The work it is of, by its first Ask's title.
+    pub title: String,
     pub judging: bool,
     /// Its report's counts, once it is completed.
     pub report: Option<crate::ledger::Report>,
@@ -560,9 +562,11 @@ pub fn eval_detail(
                 .collect()
         })
         .unwrap_or_default();
+    let asks = listed(units, &eval.asks);
     EvalDetail {
         eval: eval.id.clone(),
         n: eval.n,
+        title: asks.first().map(|a| a.title.clone()).unwrap_or_default(),
         judging: !eval.completed(),
         report: eval.report,
         judged_by: judged_by.filter(|b| !b.is_empty()).or_else(|| eval.judged_by.clone()),
@@ -571,7 +575,7 @@ pub fn eval_detail(
         items: judges.map(|r| r.view.items.clone()).unwrap_or_default(),
         questions: judges.map_or(0, |r| r.view.questions),
         checks,
-        asks: listed(units, &eval.asks),
+        asks,
         sealed: record
             .seals
             .iter()
@@ -969,6 +973,7 @@ mod tests {
         assert_eq!(d.items.len(), 7);
         assert_eq!(d.items[0].kind, crate::eval_view::Kind::Before, "the carried question on top");
         assert_eq!(d.questions, 5);
+        assert_eq!(d.title, "health endpoint", "named by its first Ask");
         assert_eq!(
             d.checks,
             [Marked { mark: "✓", text: "npm test".into(), result: Some("passed".into()) }]

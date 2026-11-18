@@ -101,7 +101,7 @@ pub(super) fn render_detail(props: &SheetProps, project: &Path, eval_id: &str) -
             .child(body)
             .child(sheet_foot(Vec::new(), vec![crate::ui::close_button()]));
     };
-    let title = d.asks.first().map(|a| a.title.clone()).unwrap_or_default();
+    let title = d.title.clone();
     let mut first = vec![fill("tree.eval", &[("n", &d.n.to_string())])];
     if !title.is_empty() {
         first.push(title);
