@@ -505,6 +505,10 @@ pub struct Session {
     clients: Clients,
     tx: Sender<Wake>,
     next_pending: u64,
+    /// While the projects an earlier daemon left open are opened again, the
+    /// list they come from is not rewritten in part: a read meanwhile would
+    /// find some of them gone.
+    reopening: bool,
     /// Weft's `config.toml`, read each time a project opens.
     config: PathBuf,
     /// The harnesses to use instead of the files beside `config`, for a test
@@ -1000,6 +1004,7 @@ impl Session {
             clients: Clients::default(),
             tx,
             next_pending: 1,
+            reopening: false,
             config: config.to_path_buf(),
             harnesses,
             outside,
@@ -2057,6 +2062,7 @@ impl Session {
             crate::state::load(&weft_dir).open_projects
         };
         let now = crate::turns::now_millis();
+        self.reopening = true;
         for path in paths {
             if path.is_dir() && self.projects.iter().all(|p| p.root != path) {
                 let at = self.project_at(path);
@@ -2064,6 +2070,7 @@ impl Session {
                 self.ask_set_up(at);
             }
         }
+        self.reopening = false;
         self.write_projects();
     }
 
@@ -2130,6 +2137,9 @@ impl Session {
     /// The projects open here, beside `config.toml`, synced atomically to both
     /// `state.json` and `projects.json` (`ADR-0003`).
     fn write_projects(&self) {
+        if self.reopening {
+            return;
+        }
         let open: Vec<_> = self
             .projects
             .iter()
